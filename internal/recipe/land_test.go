@@ -26,6 +26,12 @@ func newRemoteRepo(t *testing.T) string {
 	if out, err := exec.Command("git", "clone", "-q", remote, clone).CombinedOutput(); err != nil {
 		t.Fatalf("clone: %v: %s", err, out)
 	}
+	// Land() commits inside this clone via plain `git commit` (no explicit
+	// author env), relying on git config the way a real caller's environment
+	// would provide it. Set it locally here so the test is hermetic and
+	// doesn't depend on the CI runner having a global git identity.
+	git(t, clone, "config", "user.email", "t@t")
+	git(t, clone, "config", "user.name", "t")
 	write(t, clone, "README.md", "# Project\n\nIntro.\n")
 	git(t, clone, "add", "-A")
 	git(t, clone, "commit", "-qm", "init")
