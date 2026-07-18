@@ -27,8 +27,8 @@ func TestPreviewCommandNoDryRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.Changed || p.Summary != "would run: true" {
-		t.Errorf("got %+v, want Changed=true Summary=\"would run: true\"", p)
+	if !p.Changed || p.Summary != "run: true" {
+		t.Errorf("got %+v, want Changed=true Summary=\"run: true\"", p)
 	}
 }
 
@@ -49,8 +49,8 @@ func TestPreviewCommandNonZeroExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.Changed || p.Summary != "would run: fix-it" {
-		t.Errorf("got %+v, want Changed=true Summary=\"would run: fix-it\"", p)
+	if !p.Changed || p.Summary != "run: fix-it" {
+		t.Errorf("got %+v, want Changed=true Summary=\"run: fix-it\"", p)
 	}
 }
 

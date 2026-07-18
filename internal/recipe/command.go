@@ -28,7 +28,7 @@ type Preview struct {
 // sh's own exit 127, not as a Go-level failure to start a process.
 func previewCommand(r Recipe, repoPath string) (Preview, error) {
 	if r.DryRunCommand == "" {
-		return Preview{Summary: "would run: " + r.Command, Changed: true}, nil
+		return Preview{Summary: "run: " + r.Command, Changed: true}, nil
 	}
 	out, runErr := runShell(repoPath, r.DryRunCommand)
 	if runErr != nil && (!isExitError(runErr) || isCommandNotFound(runErr)) {
@@ -37,7 +37,7 @@ func previewCommand(r Recipe, repoPath string) (Preview, error) {
 	changed := runErr != nil
 	summary := "clean"
 	if changed {
-		summary = "would run: " + r.Command
+		summary = "run: " + r.Command
 	}
 	if r.CountRegex != "" {
 		re, err := regexp.Compile(r.CountRegex)
