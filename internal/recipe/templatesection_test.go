@@ -88,7 +88,7 @@ func TestApplyTemplateSectionInsertBeforeFirstH2(t *testing.T) {
 	idxBlock := strings.Index(out, "<!-- m:v1")
 	idxIntro := strings.Index(out, "A great project.")
 	idxUsage := strings.Index(out, "## Usage")
-	if !(idxIntro < idxBlock && idxBlock < idxUsage) {
+	if idxIntro >= idxBlock || idxBlock >= idxUsage {
 		t.Errorf("block not placed after intro and before ## Usage:\n%s", out)
 	}
 }
