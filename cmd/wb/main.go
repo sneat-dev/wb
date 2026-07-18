@@ -28,9 +28,6 @@ func main() {
 
 	root.AddCommand(newSyncCmd())
 	root.AddCommand(newRunCmd())
-	root.AddCommand(newSyncReadmeCmd())
-	root.AddCommand(newAuditCmd())
-	root.AddCommand(newSpecscoreLintCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -1,19 +1,18 @@
 # wb — the workbench CLI
 
 A Go CLI for running fleet-wide operations across **your** GitHub repositories
-(those owned by your user or an org you belong to), and for keeping your local
-`~/projects/{org}/{repo}` clones in sync with GitHub.
+(those owned by your user or an org you belong to): keeping local clones in
+sync with GitHub, and running config-driven recipes across every repo that
+matches.
 
 ## Commands
 
 ```
-wb sync            [flags]   # clone/pull/prune local clones to match GitHub, in parallel
-wb sync-readme      [flags]   # ensure the dev-approach section is present & current
-wb audit            [flags]   # read-only drift report (exits non-zero on drift)
-wb specscore-lint   [flags]   # lint (and optionally --fix) every SpecScore-managed repo
+wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
+wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 ```
 
-### Persistent flags (all commands except noted)
+### Persistent flags
 
 | Flag | Default | Meaning |
 |------|---------|---------|
@@ -46,7 +45,7 @@ Flags:
 |------|---------|---------|
 | `--dry-run`, `-n` | off | Print the plan; change nothing. |
 | `--workers`, `-j` | `8` | Max concurrent git/gh operations. |
-| `--org`, `-o` | — (all your orgs + your account) | Only sync this org (repeatable). Restricts, rather than adds — unlike the persistent `--org` on the other commands. |
+| `--org`, `-o` | — (all your orgs + your account) | Only sync this org (repeatable). Restricts, rather than adds — unlike the persistent `--org` on `run`. |
 
 ```sh
 wb sync --dry-run              # preview
@@ -54,64 +53,92 @@ wb sync -o sneat-co            # sync only the sneat-co org
 wb sync -j 16                  # more parallelism
 ```
 
-### `--apply` / `--fix` (sync-readme / specscore-lint)
+### `wb run` — config-driven recipes
 
-| Flag | Applies to | Default | Meaning |
-|------|------------|---------|---------|
-| `--apply` | `sync-readme` | off (dry-run) | Commit & push changes. Without it, only reports what would change. |
-| `--fix` | `specscore-lint` | off (dry-run) | Run `specscore spec lint --fix` and commit & push. Without it, only reports each repo's violation count. |
-| `--local-only` | `sync-readme` | off | Only process already-cloned repos; never clone remote-only repos. |
+`wb run <recipe>` applies one recipe, defined in a YAML config, across every
+repo it matches. **Dry-run by default** — pass `--apply` to commit & push.
 
-### `specscore-lint`
+```sh
+wb run --list                     # show configured recipe names
+wb run dev-approach               # preview
+wb run dev-approach --apply       # land it
+wb run specscore-lint --filter x  # preview, scoped to repos matching "x"
+```
 
-Lints every repo you own that is **SpecScore-managed** (carries a `specscore.yaml`
-at its root); non-SpecScore repos are skipped. Requires the `specscore` CLI on
-`PATH`.
+Flags:
 
-- **dry-run** (default): runs `specscore spec lint` read-only in each repo and
-  reports the violation count; exits non-zero if any repo has violations.
-- **`--fix`**: runs `specscore spec lint --fix` in a detached worktree off the
-  default branch and **lands** the result via the same direct-push / auto-merge-PR
-  path as `sync-readme` (a PR when the local clone is dirty or the branch is
-  protected, otherwise a direct push). In-progress local work is never disturbed.
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--apply` | off (dry-run) | Commit & push changes. Without it, only reports what would change. |
+| `--config PATH` | `~/.config/wb/wb.yaml` | Path to the recipe config. |
+| `--list` | off | Print configured recipe names and exit. |
 
-## How `sync-readme` / `audit` / `specscore-lint` work
+#### Config format
 
-1. **Discover (in parallel):**
-   - walk `~/projects/{org}/{repo}` for local clones;
-   - list repos for **owners you control** — your `gh` user plus every org from
-     `gh api user/orgs`, plus any `--org` — via `gh repo list`.
-2. **Reconcile** the two sets by `org/name`. Repos found only on GitHub are
-   cloned into `~/projects/{org}/{repo}` (on `--apply` only).
-3. **Skip**: forks (so the section is never stamped into a fork of someone
-   else's project), archived repos, repos with no Go/TS source, and any local
-   clone that is **not** under one of your owners (third-party clones are never
-   touched).
-4. **Per repo**, in a detached worktree off the default branch: locate the
-   `<!-- dev-approach:vN -->` … `<!-- /dev-approach -->` block in `README.md`
-   and insert / replace / leave it based on the version marker.
-5. **Land**: commit the change in the worktree, then:
-   - if the local clone is **dirty** (uncommitted/unstaged changes or unpushed
-     commits) **or** the default branch is **protected** → push to
-     `wb/dev-approach` and open an auto-merge PR (your in-progress work
-     is never disturbed);
-   - otherwise → push directly to the default branch.
+One YAML file, `~/.config/wb/wb.yaml` by default (override with `--config`).
+Two recipe kinds:
 
-`sync-readme` is **dry-run by default** — it reports what would change and
-writes nothing until you pass `--apply`. (`sync` is the opposite — apply by
-default, `--dry-run` to preview — matching the old `sync-repos.sh`.)
+**`template-section`** — merge a versioned block from a template file into a
+target file (default `README.md`) in every matching repo:
 
-## The dev-approach template
+```yaml
+recipes:
+  dev-approach:
+    type: template-section
+    target: README.md                          # default: README.md
+    template: ~/path/to/dev-approach.md         # required
+    marker: dev-approach                        # default: the recipe's own name
+    applies_if: "has_source:go,ts"
+```
 
-The canonical section lives in
-[`internal/readme/dev-approach.md`](internal/readme/dev-approach.md) and is
-embedded into the binary at build time. To change the content:
+The template file must contain the block wrapped in
+`<!-- {marker}:vN -->` … `<!-- /{marker} -->`. Bumping the version number in
+the template propagates it to every repo that already has an older section;
+repos with a current-or-newer section, or no target file at all, are left
+untouched.
 
-1. Edit `dev-approach.md`.
-2. **Bump the version** in both markers, e.g. `v1` → `v2`. The tool replaces any
-   section whose embedded version is lower than the template's, and leaves
-   equal-or-newer sections alone. Editing content **without** bumping the
-   version will not propagate updates to repos that already have the section.
+**`command`** — run a shell command in the worktree; "changed" means
+`git status --porcelain` is non-empty afterward:
+
+```yaml
+recipes:
+  specscore-lint:
+    type: command
+    command: "specscore spec lint --fix"        # required
+    dry_run_command: "specscore spec lint"       # optional: a read-only preview
+    count_regex: '(\d+)\s+violation'             # optional: extract a count from dry_run_command's output
+    applies_if: has_file:specscore.yaml
+```
+
+`dry_run_command`'s exit code (not the count) determines whether `--apply`
+would do anything; `count_regex` only prettifies the dry-run summary. If
+`dry_run_command` is omitted, dry-run mode can only report "would run: ...".
+
+**`applies_if`** (all recipe kinds; default `always`):
+
+- `always`
+- `has_file:<path>` — e.g. `has_file:specscore.yaml`
+- `has_source:go`, `has_source:ts`, or `has_source:go,ts` (comma = OR)
+
+**Landing options** (all optional, defaulted from the recipe's name):
+`commit_message`, `pr_branch`, `pr_title`, `pr_body`.
+
+#### How it lands
+
+Same worktree/commit/push-or-PR flow for both recipe kinds:
+
+1. **Discover** repos across your GitHub orgs, same as `wb sync`.
+2. **Skip**: forks, archived repos, local-only clones not under one of your
+   owners, and any repo `applies_if` excludes.
+3. **Land**, in a detached worktree off the default branch: if the local
+   clone is dirty (uncommitted/unpushed) or the default branch is protected
+   → push to `{pr_branch}` and open an auto-merge PR; otherwise → push
+   directly to the default branch.
+
+This founder's own recipes (the actual `dev-approach.md` content, the
+`specscore-lint` command definition) live in `workbench/wb-recipes/`, not in
+this module — `wb` itself ships with no recipes and no Sneat-specific
+content.
 
 ## Build & run
 
@@ -119,20 +146,24 @@ embedded into the binary at build time. To change the content:
 cd wb
 go build -o ~/.local/bin/wb ./cmd/wb   # install on PATH
 go test ./...                          # run tests
-wb audit                               # dry-run report
 wb sync --dry-run                      # preview a fleet sync
+wb run --list                          # see your configured recipes
 ```
 
 ## Adding a new operation
 
-The discovery/reconcile/gitops plumbing is shared (`internal/discover`,
-`internal/gitops`, `internal/fleetsync`). A new fleet command adds a `case`
-in `cmd/wb` and reuses that plumbing; only the per-repo logic differs.
+For anything expressible as "detect matching repos, mutate, land the
+result," add a recipe to your `wb.yaml` — no code change needed. For
+something structurally different (like `sync`, which reconciles local
+clones with GitHub existence rather than mutating already-cloned content), a
+new fleet command adds a `case` in `cmd/wb`, reusing `internal/discover` and
+`internal/gitops`.
 
 ## Known limitation
 
-Discovery keys on `org/name`. If a repo is cloned locally under a directory name
-that differs from its GitHub org (e.g. `~/projects/dalgo/...` vs the `dal-go`
-org), the mislabeled local copy is treated as local-only and skipped, and the
-correctly-named repo is cloned fresh under `~/projects/<org>/` on `--apply` /
-during `sync`. Use matching org directory names to avoid duplicate clones.
+Discovery keys on `org/name`. If a repo is cloned locally under a directory
+name that differs from its GitHub org (e.g. `~/projects/dalgo/...` vs the
+`dal-go` org), the mislabeled local copy is treated as local-only and
+skipped, and the correctly-named repo is cloned fresh under
+`~/projects/<org>/` during `sync`. Use matching org directory names to avoid
+duplicate clones.
