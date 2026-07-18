@@ -13,9 +13,14 @@ var skipDirs = map[string]bool{
 	"vendor":       true,
 }
 
-// HasGoOrTS reports whether root contains at least one Go or TypeScript source
-// file, skipping vendored and VCS directories. It stops at the first match.
-func HasGoOrTS(root string) (bool, error) {
+// HasExt reports whether root contains at least one file whose extension
+// (including the leading dot, e.g. ".go") is in exts, skipping vendored and
+// VCS directories. Stops at the first match.
+func HasExt(root string, exts ...string) (bool, error) {
+	want := map[string]bool{}
+	for _, e := range exts {
+		want[e] = true
+	}
 	found := false
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -27,8 +32,7 @@ func HasGoOrTS(root string) (bool, error) {
 			}
 			return nil
 		}
-		switch filepath.Ext(d.Name()) {
-		case ".go", ".ts", ".tsx":
+		if want[filepath.Ext(d.Name())] {
 			found = true
 			return filepath.SkipAll
 		}
