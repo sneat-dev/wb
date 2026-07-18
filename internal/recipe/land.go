@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/trakhimenok/workbench/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 // Land applies r to repoPath and lands the result via git (direct push, or

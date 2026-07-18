@@ -4,12 +4,12 @@ import "testing"
 
 func TestReconcile(t *testing.T) {
 	local := []Repo{
-		{Org: "trakhimenok", Name: "workbench", Path: "/p/trakhimenok/workbench"},
+		{Org: "sneat-dev", Name: "wb", Path: "/p/sneat-dev/wb"},
 		{Org: "dalgo", Name: "only-local", Path: "/p/dalgo/only-local"},
 	}
 	remote := []Repo{
-		{Org: "trakhimenok", Name: "workbench", CloneURL: "git@gh:trakhimenok/workbench.git", Archived: false},
-		{Org: "trakhimenok", Name: "only-remote", CloneURL: "git@gh:trakhimenok/only-remote.git", Archived: true},
+		{Org: "sneat-dev", Name: "wb", CloneURL: "git@gh:sneat-dev/wb.git", Archived: false},
+		{Org: "sneat-dev", Name: "only-remote", CloneURL: "git@gh:sneat-dev/only-remote.git", Archived: true},
 		{Org: "dalgo", Name: "only-local", CloneURL: "git@gh:dalgo/only-local.git", IsFork: true},
 	}
 	got := Reconcile(local, remote)
@@ -21,7 +21,7 @@ func TestReconcile(t *testing.T) {
 		by[r.Slug()] = r
 	}
 
-	wb := by["trakhimenok/workbench"]
+	wb := by["sneat-dev/wb"]
 	if !wb.Local || !wb.Remote {
 		t.Errorf("workbench should be both local and remote: %+v", wb)
 	}
@@ -37,7 +37,7 @@ func TestReconcile(t *testing.T) {
 		t.Errorf("only-local should inherit IsFork from remote: %+v", ol)
 	}
 
-	or := by["trakhimenok/only-remote"]
+	or := by["sneat-dev/only-remote"]
 	if or.Local || !or.Remote || !or.Archived {
 		t.Errorf("only-remote flags wrong: %+v", or)
 	}

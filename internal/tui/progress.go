@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trakhimenok/workbench/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/fleetsync"
 )
 
 var (

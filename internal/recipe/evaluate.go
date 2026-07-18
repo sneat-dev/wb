@@ -3,7 +3,7 @@ package recipe
 import (
 	"fmt"
 
-	"github.com/trakhimenok/workbench/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 // Evaluate previews what r would do to repoPath without mutating anything.

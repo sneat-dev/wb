@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"regexp"
 
-	"github.com/trakhimenok/workbench/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 // Preview is what dry-run mode reports for one repo.

@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/trakhimenok/workbench/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/fleetsync"
 )
 
 // resultItem adapts a fleetsync.Result to bubbles/list.Item.

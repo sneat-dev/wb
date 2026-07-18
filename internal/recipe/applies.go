@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/trakhimenok/workbench/wb/internal/scan"
+	"github.com/sneat-dev/wb/internal/scan"
 )
 
 var langExts = map[string][]string{

@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/trakhimenok/workbench/wb/internal/discover"
-	"github.com/trakhimenok/workbench/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 // Status is the outcome fleetsync.Sync took for a single repo.

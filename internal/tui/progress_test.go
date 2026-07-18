@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/trakhimenok/workbench/wb/internal/discover"
-	"github.com/trakhimenok/workbench/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/fleetsync"
 )
 
 func TestProgressModelTracksCounts(t *testing.T) {

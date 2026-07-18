@@ -9,9 +9,9 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/trakhimenok/workbench/wb/internal/discover"
-	"github.com/trakhimenok/workbench/wb/internal/fleetsync"
-	"github.com/trakhimenok/workbench/wb/internal/tui"
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/tui"
 )
 
 func newSyncCmd() *cobra.Command {

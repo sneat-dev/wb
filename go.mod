@@ -1,4 +1,4 @@
-module github.com/trakhimenok/workbench/wb
+module github.com/sneat-dev/wb
 
 go 1.26
 

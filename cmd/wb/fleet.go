@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/trakhimenok/workbench/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/discover"
 )
 
 // fleetOwners returns the authenticated user's login plus every org they

@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/trakhimenok/workbench/wb/internal/discover"
-	"github.com/trakhimenok/workbench/wb/internal/gitops"
-	"github.com/trakhimenok/workbench/wb/internal/recipe"
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/recipe"
 )
 
 func newRunCmd() *cobra.Command {
