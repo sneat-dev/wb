@@ -205,3 +205,121 @@ func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	return strings.TrimSpace(lines[len(lines)-1])
 }
+
+// Pull runs `git pull --quiet` on the currently checked-out branch of
+// repoPath.
+func Pull(repoPath string) error {
+	_, err := run(repoPath, "git", "pull", "--quiet")
+	return err
+}
+
+// RepoStatus is git working-tree/history state relevant to sync decisions
+// and to reporting why a repo needs attention.
+type RepoStatus struct {
+	Modified   []string // tracked files with changes
+	Untracked  []string // untracked files
+	Conflicted []string // merge-conflict paths
+	Unpushed   []string // `git log --branches --not --remotes --oneline` lines
+	Stashed    []string // `git stash list` lines
+}
+
+// WorkingTreeDirty reports whether the working tree itself has changes
+// (modified, untracked, or conflicted files) — the check used to decide
+// whether it is safe to `git pull`.
+func (s RepoStatus) WorkingTreeDirty() bool {
+	return len(s.Modified) > 0 || len(s.Untracked) > 0 || len(s.Conflicted) > 0
+}
+
+// Dirty reports whether s represents any state — working tree, stash, or
+// unpushed commits — that should block automatically removing an archived
+// repo's local clone.
+func (s RepoStatus) Dirty() bool {
+	return s.WorkingTreeDirty() || len(s.Unpushed) > 0 || len(s.Stashed) > 0
+}
+
+// Summary renders a short human-readable description of s, e.g. "3 modified
+// files, 1 untracked file". Empty when nothing is set.
+func (s RepoStatus) Summary() string {
+	var parts []string
+	if n := len(s.Modified); n > 0 {
+		parts = append(parts, plural(n, "modified file"))
+	}
+	if n := len(s.Untracked); n > 0 {
+		parts = append(parts, plural(n, "untracked file"))
+	}
+	if n := len(s.Conflicted); n > 0 {
+		parts = append(parts, plural(n, "conflict"))
+	}
+	if n := len(s.Unpushed); n > 0 {
+		parts = append(parts, plural(n, "unpushed commit"))
+	}
+	if n := len(s.Stashed); n > 0 {
+		parts = append(parts, plural(n, "stash entry"))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, noun)
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
+}
+
+// isConflictCode reports whether a two-character `git status --porcelain`
+// status code indicates an unresolved merge conflict.
+func isConflictCode(code string) bool {
+	switch code {
+	case "UU", "AA", "DD", "AU", "UA", "UD", "DU":
+		return true
+	default:
+		return false
+	}
+}
+
+// Status reads repoPath's working tree, stash, and unpushed-commit state.
+func Status(repoPath string) (RepoStatus, error) {
+	var s RepoStatus
+
+	out, err := run(repoPath, "git", "status", "--porcelain")
+	if err != nil {
+		return s, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 3 {
+			continue
+		}
+		code := line[:2]
+		path := strings.TrimSpace(line[3:])
+		switch {
+		case isConflictCode(code):
+			s.Conflicted = append(s.Conflicted, path)
+		case code == "??":
+			s.Untracked = append(s.Untracked, path)
+		default:
+			s.Modified = append(s.Modified, path)
+		}
+	}
+
+	out, err = run(repoPath, "git", "stash", "list")
+	if err != nil {
+		return s, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			s.Stashed = append(s.Stashed, line)
+		}
+	}
+
+	out, err = run(repoPath, "git", "log", "--branches", "--not", "--remotes", "--oneline")
+	if err != nil {
+		return s, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			s.Unpushed = append(s.Unpushed, line)
+		}
+	}
+
+	return s, nil
+}
