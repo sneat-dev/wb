@@ -36,8 +36,3 @@ func main() {
 		os.Exit(1)
 	}
 }
-
-// TODO(Task 7): remove this stub once cmd/wb/sync.go defines the real newSyncCmd.
-func newSyncCmd() *cobra.Command {
-	return &cobra.Command{Use: "sync", Short: "(not yet implemented)"}
-}
