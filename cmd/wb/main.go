@@ -27,6 +27,7 @@ func main() {
 	root.PersistentFlags().StringArrayVar(&extraOrgs, "org", nil, "additional GitHub owner to query (repeatable)")
 
 	root.AddCommand(newSyncCmd())
+	root.AddCommand(newRunCmd())
 	root.AddCommand(newSyncReadmeCmd())
 	root.AddCommand(newAuditCmd())
 	root.AddCommand(newSpecscoreLintCmd())
