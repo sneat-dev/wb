@@ -188,6 +188,7 @@ func printSyncSummary(results []fleetsync.Result) {
 		counts[r.Status]++
 	}
 	fmt.Printf("\n━━━ Summary ━━━\n")
+	fmt.Printf("Not owned/fork    %d\n", counts[fleetsync.NoOp])
 	fmt.Printf("Cloned            %d\n", counts[fleetsync.Cloned])
 	fmt.Printf("Pulled            %d\n", counts[fleetsync.Pulled])
 	fmt.Printf("Skipped (dirty)   %d\n", counts[fleetsync.SkippedDirty])

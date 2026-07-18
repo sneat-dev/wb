@@ -94,6 +94,7 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
+			m.quitting = true
 			return m, tea.Quit
 		}
 	}

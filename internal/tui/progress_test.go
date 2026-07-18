@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/trakhimenok/workbench/wb/internal/discover"
 	"github.com/trakhimenok/workbench/wb/internal/fleetsync"
 )
@@ -57,5 +59,17 @@ func TestProgressModelSyncDoneQuits(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Error("expected a non-nil tea.Cmd (tea.Quit) after SyncDone")
+	}
+}
+
+func TestProgressModelCtrlCQuits(t *testing.T) {
+	m := NewProgressModel(nil, 4)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(ProgressModel)
+	if !m.quitting {
+		t.Error("expected quitting=true after ctrl+c")
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil tea.Cmd (tea.Quit) after ctrl+c")
 	}
 }
