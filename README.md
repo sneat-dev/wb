@@ -1,31 +1,66 @@
-# all-repos
+# wb — the workbench CLI
 
 A Go CLI for running fleet-wide operations across **your** GitHub repositories
-(those owned by your user or an org you belong to). It reconciles your local
-`~/projects/{org}/{repo}` clones with what GitHub reports, then applies an
-operation to each repo that contains Go or TypeScript source.
-
-The first operation keeps the **"Our approach to development"** section in each
-repo's root `README.md` in sync with a single canonical template.
+(those owned by your user or an org you belong to), and for keeping your local
+`~/projects/{org}/{repo}` clones in sync with GitHub.
 
 ## Commands
 
 ```
-all-repos sync-readme    [flags]   # ensure the dev-approach section is present & current
-all-repos audit          [flags]   # read-only drift report (exits non-zero on drift)
-all-repos specscore-lint [flags]   # lint (and optionally --fix) every SpecScore-managed repo
+wb sync            [flags]   # clone/pull/prune local clones to match GitHub, in parallel
+wb sync-readme      [flags]   # ensure the dev-approach section is present & current
+wb audit            [flags]   # read-only drift report (exits non-zero on drift)
+wb specscore-lint   [flags]   # lint (and optionally --fix) every SpecScore-managed repo
 ```
 
-### Flags
+### Persistent flags (all commands except noted)
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--projects-root P` | `~/projects` | Root dir holding `{org}/{repo}` clones. |
+| `--filter S` | — | Only process repos whose `org/name` contains `S`. |
+| `--org O` | — | Query an additional GitHub owner (repeatable). **Not used by `sync`** — see below. |
+
+### `wb sync`
+
+Reconciles `~/projects/{org}/{repo}` with GitHub:
+
+- non-archived, missing locally → clone
+- non-archived, present locally → pull (skip if the working tree is dirty)
+- archived, present + safe (clean, no stash, nothing unpushed) → remove
+- archived, present + unsafe → keep, report why
+- archived, missing → nothing
+
+Runs against every repo owned by your GitHub account and every org you
+belong to, in parallel, with a live progress UI (overall + per-org bars, a
+live tail of in-flight repos). Anything left needing your attention (a hard
+error, or a repo skipped/kept because it's dirty) opens an interactive
+drill-down after the run — pick a repo to see exactly what's wrong
+(modified/untracked/conflicted files, unpushed commits, stash entries).
+Non-interactive runs (piped output, no TTY) print a plain summary instead
+and skip the drill-down.
+
+Flags:
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--dry-run`, `-n` | off | Print the plan; change nothing. |
+| `--workers`, `-j` | `8` | Max concurrent git/gh operations. |
+| `--org`, `-o` | — (all your orgs + your account) | Only sync this org (repeatable). Restricts, rather than adds — unlike the persistent `--org` on the other commands. |
+
+```sh
+wb sync --dry-run              # preview
+wb sync -o sneat-co            # sync only the sneat-co org
+wb sync -j 16                  # more parallelism
+```
+
+### `--apply` / `--fix` (sync-readme / specscore-lint)
 
 | Flag | Applies to | Default | Meaning |
 |------|------------|---------|---------|
 | `--apply` | `sync-readme` | off (dry-run) | Commit & push changes. Without it, only reports what would change. |
 | `--fix` | `specscore-lint` | off (dry-run) | Run `specscore spec lint --fix` and commit & push. Without it, only reports each repo's violation count. |
 | `--local-only` | `sync-readme` | off | Only process already-cloned repos; never clone remote-only repos. |
-| `--filter S` | all | — | Only process repos whose `org/name` contains `S`. |
-| `--org O` | all | — | Query an additional GitHub owner (repeatable). |
-| `--projects-root P` | all | `~/projects` | Root dir holding `{org}/{repo}` clones. |
 
 ### `specscore-lint`
 
@@ -40,7 +75,7 @@ at its root); non-SpecScore repos are skipped. Requires the `specscore` CLI on
   path as `sync-readme` (a PR when the local clone is dirty or the branch is
   protected, otherwise a direct push). In-progress local work is never disturbed.
 
-## How it works
+## How `sync-readme` / `audit` / `specscore-lint` work
 
 1. **Discover (in parallel):**
    - walk `~/projects/{org}/{repo}` for local clones;
@@ -58,14 +93,15 @@ at its root); non-SpecScore repos are skipped. Requires the `specscore` CLI on
 5. **Land**: commit the change in the worktree, then:
    - if the local clone is **dirty** (uncommitted/unstaged changes or unpushed
      commits) **or** the default branch is **protected** → push to
-     `all-repos/dev-approach` and open an auto-merge PR (your in-progress work
+     `wb/dev-approach` and open an auto-merge PR (your in-progress work
      is never disturbed);
    - otherwise → push directly to the default branch.
 
 `sync-readme` is **dry-run by default** — it reports what would change and
-writes nothing until you pass `--apply`.
+writes nothing until you pass `--apply`. (`sync` is the opposite — apply by
+default, `--dry-run` to preview — matching the old `sync-repos.sh`.)
 
-## The template
+## The dev-approach template
 
 The canonical section lives in
 [`internal/readme/dev-approach.md`](internal/readme/dev-approach.md) and is
@@ -80,28 +116,23 @@ embedded into the binary at build time. To change the content:
 ## Build & run
 
 ```sh
-cd all-repos
-go build -o ~/.local/bin/all-repos ./cmd/all-repos   # install on PATH
-go test ./...                                         # run tests
-all-repos audit                                       # dry-run report
-all-repos sync-readme --apply --filter myrepo         # apply to one repo first
+cd wb
+go build -o ~/.local/bin/wb ./cmd/wb   # install on PATH
+go test ./...                          # run tests
+wb audit                               # dry-run report
+wb sync --dry-run                      # preview a fleet sync
 ```
-
-Recommended workflow: run `audit` (or `sync-readme` with no `--apply`) to review
-the plan, try `sync-readme --apply --filter <one-repo>` on a single repo, then
-drop the filter to roll out fleet-wide.
 
 ## Adding a new operation
 
-The discovery/reconcile/land plumbing is shared. A new fleet command (e.g.
-`sync-file` for `CLAUDE.md`/`renovate.json`, or other audits) adds a `case` in
-`cmd/all-repos/main.go` and reuses `internal/discover` and `internal/gitops`;
-only the per-repo mutator differs.
+The discovery/reconcile/gitops plumbing is shared (`internal/discover`,
+`internal/gitops`, `internal/fleetsync`). A new fleet command adds a `case`
+in `cmd/wb` and reuses that plumbing; only the per-repo logic differs.
 
 ## Known limitation
 
 Discovery keys on `org/name`. If a repo is cloned locally under a directory name
 that differs from its GitHub org (e.g. `~/projects/dalgo/...` vs the `dal-go`
 org), the mislabeled local copy is treated as local-only and skipped, and the
-correctly-named repo is cloned fresh under `~/projects/<org>/` on `--apply`. Use
-matching org directory names to avoid duplicate clones.
+correctly-named repo is cloned fresh under `~/projects/<org>/` on `--apply` /
+during `sync`. Use matching org directory names to avoid duplicate clones.
