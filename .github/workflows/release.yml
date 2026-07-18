@@ -1,0 +1,43 @@
+name: Release
+
+# Continuous delivery: every merge to `main` runs the shared strongo/cicd
+# release workflow, which bumps the version from conventional commits and
+# releases it in one run. Pushing an explicit `vX.Y.Z` tag also works and
+# releases that exact version (the shared workflow skips the bump on a tag
+# ref). A docs/chore-only merge cuts no tag and publishes nothing.
+#
+# wb is pre-1.0: allow_major_version_bump stays false, so a stray `feat!:` is
+# CAPPED to a minor bump (0.x -> 0.(x+1)) instead of jumping to v1.0.0. Cut
+# v1.0.0 deliberately by pushing that tag.
+#
+# The Homebrew-cask publish step needs sneat-dev/homebrew-tap to exist and a
+# WB_GORELEASER_GITHUB_TOKEN secret (classic PAT, public_repo scope) on this
+# repo — both are manual, one-time founder setup. Until they exist, this
+# workflow still builds and creates the GitHub Release/binaries successfully;
+# only the cask-publish step fails (GoReleaser uploads the release before
+# running publishers).
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: strongo/cicd/.github/workflows/release.yml@v1
+    permissions:
+      contents: write
+    with:
+      allow_major_version_bump: false
+    secrets:
+      GORELEASER_GITHUB_TOKEN: ${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}

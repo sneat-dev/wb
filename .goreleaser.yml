@@ -1,0 +1,65 @@
+version: 2
+
+project_name: wb
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: wb
+    main: ./cmd/wb
+    binary: wb
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: wb
+    ids:
+      - wb
+    name_template: "wb_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+
+checksum:
+  name_template: "wb_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+# Homebrew cask — https://brew.sh
+# Publishes a Homebrew cask that installs the prebuilt darwin binary. Install
+# with: brew install --cask sneat-dev/tap/wb
+# Manifest pushed to sneat-dev/homebrew-tap under Casks/wb.rb. Uses
+# $GORELEASER_GITHUB_TOKEN, forwarded by the shared strongo/cicd release
+# workflow from the WB_GORELEASER_GITHUB_TOKEN secret. The tap repo must
+# exist at sneat-dev/homebrew-tap with a main branch before this step
+# succeeds — see release.yml's comment for the manual one-time setup this
+# depends on.
+homebrew_casks:
+  - name: wb
+    ids:
+      - wb
+    description: "wb — the Sneat workbench CLI: fleet-wide GitHub repo sync and config-driven recipes."
+    homepage: https://sneat.dev/wb
+    license: MIT
+    repository:
+      owner: sneat-dev
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.GORELEASER_GITHUB_TOKEN }}"
