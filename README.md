@@ -1,9 +1,18 @@
-# wb — the workbench CLI
+# wb
 
-A Go CLI for running fleet-wide operations across **your** GitHub repositories
-(those owned by your user or an org you belong to): keeping local clones in
-sync with GitHub, and running config-driven recipes across every repo that
-matches.
+Fleet-wide operations across **your** GitHub repositories, from the
+terminal: keep every local clone in sync with GitHub, and run config-driven
+recipes across every repo that matches — no per-repo scripting.
+
+Part of the [Sneat Developer Platform](https://sneat.dev).
+
+## Install
+
+```sh
+go install github.com/sneat-dev/wb/cmd/wb@latest
+```
+
+A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 
 ## Commands
 
@@ -49,7 +58,7 @@ Flags:
 
 ```sh
 wb sync --dry-run              # preview
-wb sync -o sneat-co            # sync only the sneat-co org
+wb sync -o your-org            # sync only one org
 wb sync -j 16                  # more parallelism
 ```
 
@@ -62,7 +71,7 @@ repo it matches. **Dry-run by default** — pass `--apply` to commit & push.
 wb run --list                     # show configured recipe names
 wb run dev-approach               # preview
 wb run dev-approach --apply       # land it
-wb run specscore-lint --filter x  # preview, scoped to repos matching "x"
+wb run some-lint --filter x       # preview, scoped to repos matching "x"
 ```
 
 Flags:
@@ -102,12 +111,12 @@ untouched.
 
 ```yaml
 recipes:
-  specscore-lint:
+  some-lint:
     type: command
-    command: "specscore spec lint --fix"        # required
-    dry_run_command: "specscore spec lint"       # optional: a read-only preview
-    count_regex: '(\d+)\s+violation'             # optional: extract a count from dry_run_command's output
-    applies_if: has_file:specscore.yaml
+    command: "some-linter --fix"                 # required
+    dry_run_command: "some-linter"                # optional: a read-only preview
+    count_regex: '(\d+)\s+problem'                # optional: extract a count from dry_run_command's output
+    applies_if: has_file:some-linter.yaml
 ```
 
 `dry_run_command`'s exit code (not the count) determines whether `--apply`
@@ -135,15 +144,12 @@ Same worktree/commit/push-or-PR flow for both recipe kinds:
    → push to `{pr_branch}` and open an auto-merge PR; otherwise → push
    directly to the default branch.
 
-This founder's own recipes (the actual `dev-approach.md` content, the
-`specscore-lint` command definition) live in `workbench/wb-recipes/`, not in
-this module — `wb` itself ships with no recipes and no Sneat-specific
-content.
+`wb` itself ships with **no recipes** — you define your own in
+`~/.config/wb/wb.yaml`.
 
-## Build & run
+## Build from source
 
 ```sh
-cd wb
 go build -o ~/.local/bin/wb ./cmd/wb   # install on PATH
 go test ./...                          # run tests
 wb sync --dry-run                      # preview a fleet sync
@@ -167,3 +173,7 @@ name that differs from its GitHub org (e.g. `~/projects/dalgo/...` vs the
 skipped, and the correctly-named repo is cloned fresh under
 `~/projects/<org>/` during `sync`. Use matching org directory names to avoid
 duplicate clones.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
