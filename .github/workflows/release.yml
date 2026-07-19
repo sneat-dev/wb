@@ -11,11 +11,20 @@ name: Release
 # v1.0.0 deliberately by pushing that tag.
 #
 # The Homebrew-cask publish step needs sneat-dev/homebrew-tap to exist and a
-# WB_GORELEASER_GITHUB_TOKEN secret (classic PAT, public_repo scope) on this
-# repo — both are manual, one-time founder setup. Until they exist, this
-# workflow still builds and creates the GitHub Release/binaries successfully;
-# only the cask-publish step fails (GoReleaser uploads the release before
-# running publishers).
+# WB_GORELEASER_GITHUB_TOKEN secret on this repo — both are manual, one-time
+# founder setup. Until they exist, this workflow still builds and creates the
+# GitHub Release/binaries successfully; only the cask-publish step fails
+# (GoReleaser uploads the release before running publishers).
+#
+# Token type: a fine-grained PAT scoped to just sneat-dev/homebrew-tap with
+# "Contents: Read and write" is sufficient — GoReleaser pushes the cask
+# manifest directly to that repo's main branch, no cross-fork PR involved.
+# (Sibling CLIs in this ecosystem use a classic public_repo-scoped PAT
+# instead, but only because they also publish to WinGet, which requires
+# opening a cross-fork PR against microsoft/winget-pkgs — a permission a
+# fine-grained PAT can't grant on a third-party repo. wb doesn't publish to
+# WinGet/Scoop, so that constraint doesn't apply here; prefer the
+# narrower-scoped fine-grained token.)
 
 on:
   push:
