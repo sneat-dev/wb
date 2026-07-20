@@ -58,5 +58,25 @@ jobs:
       - name: go build
         run: go build ./...
 
-      - name: go test
-        run: go test ./... -count=1
+      - name: go test with coverage threshold
+        env:
+          # Measured after adding the CI audit command and tests: 46.6%.
+          MINIMUM_COVERAGE: "46.5"
+        run: |
+          go test ./... -coverprofile=profile.cov -count=1
+          total_coverage="$(go tool cover -func=profile.cov | awk '/^total:/ { gsub(/%/, "", $3); print $3 }')"
+          echo "Total coverage: ${total_coverage}% (required: ${MINIMUM_COVERAGE}%)"
+          awk -v actual="$total_coverage" -v required="$MINIMUM_COVERAGE" 'BEGIN {
+            if (actual < required) {
+              printf "Coverage %.2f%% is below required %.2f%%\n", actual, required
+              exit 1
+            }
+          }'
+
+      - name: Upload coverage profile
+        uses: actions/upload-artifact@v7
+        with:
+          name: wb-go-coverage
+          path: profile.cov
+          if-no-files-found: error
+          retention-days: 14
