@@ -19,6 +19,7 @@ A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 ```
 wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
+wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 ```
 
 ### Persistent flags
@@ -146,6 +147,26 @@ Same worktree/commit/push-or-PR flow for both recipe kinds:
 
 `wb` itself ships with **no recipes** — you define your own in
 `~/.config/wb/wb.yaml`.
+
+### `wb ci audit` — CI/CD policy validation
+
+Audit the current repository, or every local clone, without changing anything:
+
+```sh
+wb ci audit --strict
+wb ci audit --fleet --strict
+wb ci audit --fleet --filter sneat-co/ --json
+```
+
+The audit detects Go and frontend stacks independently and requires each to
+have an explicit positive coverage threshold. Mixed-stack repositories are
+also required to select jobs from changed paths, so a backend-only change does
+not start frontend runners (and vice versa). Repeated Playwright setup across
+multiple E2E jobs is flagged for consolidation. For deployment workflows it flags
+source rebuilds, missing CI artifacts, and artifacts that are downloaded
+without source-SHA/checksum verification. `--strict` makes findings fail with a
+non-zero exit code, suitable for CI and pre-push hooks; `--json` is intended for
+Backstage/ops inventory.
 
 ## Build from source
 
