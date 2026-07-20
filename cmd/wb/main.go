@@ -19,8 +19,10 @@ var (
 func main() {
 	home, _ := os.UserHomeDir()
 	root := &cobra.Command{
-		Use:   "wb",
-		Short: "Workbench CLI — fleet-wide operations across your GitHub repositories",
+		Use:           "wb",
+		Short:         "Workbench CLI — fleet-wide operations across your GitHub repositories",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 	root.PersistentFlags().StringVar(&projectsRoot, "projects-root", filepath.Join(home, "projects"), "root dir containing {org}/{repo}")
 	root.PersistentFlags().StringVar(&filterFlag, "filter", "", "only repos whose org/name contains this substring")

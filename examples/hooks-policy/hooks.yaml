@@ -1,10 +1,18 @@
 version: 1
 
-hooks:
-  pre-commit:
-    template: templates/pre-commit.sh
-  pre-push:
-    template: templates/pre-push.sh
+profiles:
+  auto: true
+  definitions:
+    # Custom profiles can represent a product, framework, tool, or any other
+    # repository characteristic. Go and Node profiles are built in.
+    sneat-product:
+      order: 200
+      detect:
+        any_files:
+          - sneat.project.yaml
+      hooks:
+        pre-push:
+          template: templates/sneat-product/pre-push.sh
 
 metrics:
   enabled: true

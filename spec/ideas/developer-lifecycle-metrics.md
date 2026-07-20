@@ -31,8 +31,9 @@ same build takes 40 seconds on one developer's machine and six minutes on
 another.
 
 WB is in a unique position to create a trustworthy local event stream because
-it installs the hook shim, resolves user-owned templates, knows the repository
-and commit, and observes the duration and outcome. That event stream can answer
+it installs the hook shim, detects repository profiles, composes user-owned
+language/product blocks, knows the repository and commit, and observes each
+block's duration and outcome. That event stream can answer
 questions that no individual hook can answer:
 
 - Are local checks getting faster or slower?
@@ -69,7 +70,9 @@ with user-owned hook templates as its first producer.
    as `developer: dev-17` and `machine: laptop-a`; WB must not silently upload
    usernames, hostnames, email addresses, or hardware serial numbers.
 
-4. **Add named spans around meaningful commands.** A future wrapper such as
+4. **Use detected hook blocks as the first named spans, then generalize.** Go,
+   Node, and custom product-profile blocks already give hook work stable names
+   and separate timings. A future wrapper such as
    `wb metrics run --name frontend-build -- pnpm nx build app` should record a
    child span with toolchain versions, cache signals, duration, and outcome.
    This makes “the pre-push hook took six minutes” diagnosable as “the frontend
@@ -146,7 +149,9 @@ with user-owned hook templates as its first producer.
 - Exact successful local commit counts from `post-commit`.
 - Push-attempt and pre-push-check counts from `pre-push`, clearly labelled as
   attempts rather than confirmed remote pushes.
-- Pre-commit/pre-push outcome and whole-hook duration metrics.
+- Pre-commit/pre-push outcome plus whole WB-dispatch and detected-profile block
+  duration metrics; machine-local shell outside the managed delimiter remains
+  unobserved.
 - A daily terminal bar chart plus JSON summary, with date and repository
   filters.
 - Metrics enabled locally by default once WB hooks are installed; configurable
@@ -154,9 +159,10 @@ with user-owned hook templates as its first producer.
 - Metrics write failures are warnings and never change a hook's successful
   result.
 
-Named command spans, environment/toolchain snapshots beyond OS/architecture,
-CI/deployment import, shared dashboards, and automatic diagnostics are the next
-feature slices, not requirements for the first hook-management release.
+Named command spans outside profile blocks, environment/toolchain snapshots
+beyond OS/architecture, CI/deployment import, shared dashboards, and automatic
+diagnostics are the next feature slices, not requirements for the first
+hook-management release.
 
 ## Not Doing (and Why)
 

@@ -191,25 +191,36 @@ path and backs up any unmanaged collision inside WB's directory before replacing
 it. `check` (alias `validate`) detects missing, stale, unexpected, or
 non-executable shims; `--json` makes its result consumable by CI or Backstage.
 
-#### Hook policy and custom templates
+#### Hook policy, detection, and composable profiles
 
 Policy layers in this order: WB's conservative built-ins, the user's global
 `~/.config/wb/hooks.yaml`, then the repository's `.wb/hooks.yaml`. A repository
-entry overrides the same global hook. Relative template paths are resolved from
-the YAML file that declares them; template files are run with `/bin/sh` and do
-not need to be executable.
+entry overrides the same global hook. Automatic profiles are opt-in, so
+upgrading WB never adds expensive checks to an existing installation
+unexpectedly.
 
 ```yaml
 version: 1
 
-hooks:
-  pre-commit:
-    template: templates/pre-commit.sh
-  pre-push:
-    template: templates/pre-push.sh
-  # Disable a globally configured hook in this repository:
-  # pre-push:
-  #   disabled: true
+profiles:
+  auto: true                    # detect all built-in and custom definitions
+  # include: [sneat-product]    # force a profile even without a match
+  # exclude: [node]             # suppress a detected or inherited profile
+  definitions:
+    sneat-product:              # custom product/tool/domain profile
+      order: 200
+      detect:
+        any_files:
+          - sneat.project.yaml
+      hooks:
+        pre-push:
+          template: templates/sneat-product/pre-push.sh
+
+# A direct hook replaces WB's conservative base block. Setting it disabled
+# suppresses the whole hook, including blocks contributed by profiles.
+# hooks:
+#   pre-push:
+#     disabled: true
 
 metrics:
   enabled: true
@@ -219,21 +230,66 @@ metrics:
     machine: laptop-a
 ```
 
-Without configuration, pre-commit checks staged whitespace errors and pre-push
-checks worktree whitespace errors. Copy and adapt the scripts in
-[`examples/hooks-policy/`](examples/hooks-policy/) for repository-specific
-format, lint, test, coverage, or build commands. Templates receive
-`WB_HOOK`, `WB_REPO_ROOT`, `WB_REPO_SLUG`, `WB_HEAD_SHA`, `WB_BRANCH`,
-`WB_HOOKS_CONFIG`, and `WB_HOOK_METRICS_PATH`, plus the original Git hook
-arguments and standard input.
+With `profiles.auto: true`, the built-in detectors currently contribute:
+
+| Profile | Detection | Pre-commit block | Pre-push block |
+|---|---|---|---|
+| `go` | `go.mod` | `gofmt` on staged Go files | `go vet ./...`, then `go test ./...` |
+| `node` | `package.json` | — | run `lint` and `test` scripts when present, using the detected lockfile's package manager |
+
+A Go-only repository therefore runs the base and Go blocks, a Node-only
+repository runs the base and Node blocks, and a mixed repository runs all
+relevant blocks. Custom definitions use repository-relative `any_files` and
+`all_files` detectors; standard glob patterns are supported. A definition with
+the same name as `go` or `node` overrides selected built-in hooks, so users can
+replace either language template globally. The base block runs first; profiles
+run by ascending `order`, then name. Each pre-push block receives an independent
+copy of Git's stdin and execution stops on the first failure.
+
+Relative template paths are resolved from the YAML file that declares them;
+templates run with `/bin/sh` and need not be executable. Copy and adapt
+[`examples/hooks-policy/`](examples/hooks-policy/). Templates receive
+`WB_HOOK`, `WB_PROFILE`, `WB_BLOCK`, `WB_REPO_ROOT`, `WB_REPO_SLUG`,
+`WB_HEAD_SHA`, `WB_BRANCH`, `WB_HOOKS_CONFIG`, and `WB_HOOK_METRICS_PATH`, plus
+the original Git hook arguments and standard input. `wb hooks check` displays
+the detected profiles and exact block order; `--json` exposes the same data.
+
+#### Local user sections around WB
+
+Generated hook files are ordinary shell scripts. WB owns only the delimited
+dispatcher and preserves user commands before and after it during install or
+repair:
+
+```sh
+#!/bin/sh
+set -eu
+
+# Local commands that run before WB.
+
+### Start of WB managed hook ###
+'/path/to/wb' hooks run 'pre-push' -- "$@"
+_wb_hook_status=$?
+if [ "$_wb_hook_status" -ne 0 ]; then
+    exit "$_wb_hook_status"
+fi
+### End of WB managed hook ###
+
+# Local commands that run after every WB block succeeds.
+```
+
+Policy templates are preferable for shared, version-controlled checks. The
+outer sections are useful for machine-local behavior and remain untouched as
+WB updates only the marked section.
 
 #### Local lifecycle metrics
 
-Once installed, hooks append a versioned, local-only JSONL event after each
-run. WB records repository, hook/action, outcome, duration, commit, branch,
-OS/architecture, and optional labels—not diffs, filenames, commands, output,
-credentials, email, hostname, or source. A metrics write failure warns but never
-turns a successful hook into a failed commit or push.
+Once installed, hooks append versioned, local-only JSONL events in one batched
+write per WB run. WB records its managed dispatch and per-block
+outcomes/durations alongside repository, commit, branch, OS/architecture, and
+optional labels—not diffs, filenames, commands, output, credentials, email,
+hostname, or source. Machine-local commands outside the WB delimiter are
+intentionally not observed or timed. A metrics write failure warns but never
+turns a successful WB block into a failed commit or push.
 
 ```sh
 wb hooks metrics                  # 14-day terminal chart

@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,6 +20,8 @@ type Event struct {
 	Timestamp     time.Time         `json:"timestamp"`
 	Repository    string            `json:"repository"`
 	Hook          string            `json:"hook"`
+	Profile       string            `json:"profile,omitempty"`
+	Block         string            `json:"block,omitempty"`
 	Action        string            `json:"action"`
 	Outcome       string            `json:"outcome"`
 	DurationMS    int64             `json:"duration_ms"`
@@ -29,7 +32,33 @@ type Event struct {
 	Labels        map[string]string `json:"labels,omitempty"`
 }
 
-func newEvent(repoRoot, hook string, success bool, duration time.Duration, timestamp time.Time, labels map[string]string) Event {
+type eventContext struct {
+	repository string
+	commit     string
+	branch     string
+	labels     map[string]string
+}
+
+func loadEventContext(repoRoot string, labels map[string]string) eventContext {
+	commit, _ := gitOutput(repoRoot, "rev-parse", "HEAD")
+	branch, _ := gitOutput(repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
+	return eventContext{
+		repository: originSlug(repoRoot),
+		commit:     commit,
+		branch:     branch,
+		labels:     cloneLabels(labels),
+	}
+}
+
+func (context eventContext) newBlockEvent(hook string, block HookBlock, success bool, duration time.Duration, timestamp time.Time) Event {
+	event := context.newEvent(hook, success, duration, timestamp)
+	event.Action = "hook-block"
+	event.Profile = block.Profile
+	event.Block = block.ID
+	return event
+}
+
+func (context eventContext) newEvent(hook string, success bool, duration time.Duration, timestamp time.Time) Event {
 	outcome := "passed"
 	if !success {
 		outcome = "failed"
@@ -43,21 +72,19 @@ func newEvent(repoRoot, hook string, success bool, duration time.Duration, times
 	case "pre-commit":
 		action = "commit-check"
 	}
-	commit, _ := gitOutput(repoRoot, "rev-parse", "HEAD")
-	branch, _ := gitOutput(repoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
 	return Event{
 		SchemaVersion: EventSchemaVersion,
 		Timestamp:     timestamp.UTC(),
-		Repository:    originSlug(repoRoot),
+		Repository:    context.repository,
 		Hook:          hook,
 		Action:        action,
 		Outcome:       outcome,
 		DurationMS:    duration.Milliseconds(),
-		Commit:        commit,
-		Branch:        branch,
+		Commit:        context.commit,
+		Branch:        context.branch,
 		OS:            runtime.GOOS,
 		Arch:          runtime.GOARCH,
-		Labels:        cloneLabels(labels),
+		Labels:        cloneLabels(context.labels),
 	}
 }
 
@@ -73,6 +100,13 @@ func cloneLabels(labels map[string]string) map[string]string {
 }
 
 func AppendEvent(path string, event Event) error {
+	return AppendEvents(path, []Event{event})
+}
+
+func AppendEvents(path string, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create hook metrics directory: %w", err)
 	}
@@ -80,14 +114,24 @@ func AppendEvent(path string, event Event) error {
 	if err != nil {
 		return fmt.Errorf("open hook metrics %s: %w", path, err)
 	}
-	defer func() { _ = file.Close() }()
-	data, err := json.Marshal(event)
-	if err != nil {
-		return err
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("protect hook metrics %s: %w", path, err)
 	}
-	data = append(data, '\n')
-	if _, err := file.Write(data); err != nil {
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	for _, event := range events {
+		if err := encoder.Encode(event); err != nil {
+			_ = file.Close()
+			return err
+		}
+	}
+	if _, err := file.Write(data.Bytes()); err != nil {
+		_ = file.Close()
 		return fmt.Errorf("append hook metrics: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close hook metrics: %w", err)
 	}
 	return nil
 }
@@ -146,6 +190,17 @@ type MetricsSummary struct {
 	HookRuns          int            `json:"hook_runs"`
 	AverageDurationMS int64          `json:"average_duration_ms"`
 	Days              []DailyMetrics `json:"days"`
+	Blocks            []BlockMetrics `json:"blocks,omitempty"`
+}
+
+type BlockMetrics struct {
+	ID                string `json:"id"`
+	Profile           string `json:"profile"`
+	Hook              string `json:"hook"`
+	Runs              int    `json:"runs"`
+	Failures          int    `json:"failures"`
+	TotalDurationMS   int64  `json:"total_duration_ms"`
+	AverageDurationMS int64  `json:"average_duration_ms"`
 }
 
 func Summarize(events []Event, days int, repositoryFilter string, now time.Time) MetricsSummary {
@@ -162,6 +217,7 @@ func Summarize(events []Event, days int, repositoryFilter string, now time.Time)
 		Days:             make([]DailyMetrics, 0, days),
 	}
 	byDate := map[string]*DailyMetrics{}
+	byBlock := map[string]*BlockMetrics{}
 	for offset := 0; offset < days; offset++ {
 		date := from.AddDate(0, 0, offset).Format("2006-01-02")
 		daily := &DailyMetrics{Date: date}
@@ -175,6 +231,19 @@ func Summarize(events []Event, days int, repositoryFilter string, now time.Time)
 		date := event.Timestamp.In(location).Format("2006-01-02")
 		daily, ok := byDate[date]
 		if !ok {
+			continue
+		}
+		if event.Action == "hook-block" {
+			block := byBlock[event.Block]
+			if block == nil {
+				block = &BlockMetrics{ID: event.Block, Profile: event.Profile, Hook: event.Hook}
+				byBlock[event.Block] = block
+			}
+			block.Runs++
+			block.TotalDurationMS += event.DurationMS
+			if event.Outcome == "failed" {
+				block.Failures++
+			}
 			continue
 		}
 		daily.HookRuns++
@@ -215,6 +284,18 @@ func Summarize(events []Event, days int, repositoryFilter string, now time.Time)
 	}
 	if summary.HookRuns > 0 {
 		summary.AverageDurationMS = totalDuration / int64(summary.HookRuns)
+	}
+	blockIDs := make([]string, 0, len(byBlock))
+	for id := range byBlock {
+		blockIDs = append(blockIDs, id)
+	}
+	sort.Strings(blockIDs)
+	for _, id := range blockIDs {
+		block := byBlock[id]
+		if block.Runs > 0 {
+			block.AverageDurationMS = block.TotalDurationMS / int64(block.Runs)
+		}
+		summary.Blocks = append(summary.Blocks, *block)
 	}
 	return summary
 }

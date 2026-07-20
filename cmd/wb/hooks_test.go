@@ -108,6 +108,9 @@ func TestPrintHookMetricsExplainsPushAttempts(t *testing.T) {
 		Commits:      2,
 		PushAttempts: 1,
 		HookRuns:     3,
+		Blocks: []hooks.BlockMetrics{
+			{ID: "go/pre-push", Profile: "go", Hook: "pre-push", Runs: 2, AverageDurationMS: 1250},
+		},
 		Days: []hooks.DailyMetrics{
 			{Date: "2026-07-19", Commits: 2},
 			{Date: "2026-07-20", PushAttempts: 1},
@@ -116,7 +119,7 @@ func TestPrintHookMetricsExplainsPushAttempts(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := output.String()
-	for _, wanted := range []string{"2 commits", "1 push attempts", "Git has no post-push hook", "/tmp/events.jsonl"} {
+	for _, wanted := range []string{"2 commits", "1 push attempts", "go/pre-push", "average 1.25s", "Git has no post-push hook", "/tmp/events.jsonl"} {
 		if !strings.Contains(got, wanted) {
 			t.Fatalf("output missing %q:\n%s", wanted, got)
 		}
