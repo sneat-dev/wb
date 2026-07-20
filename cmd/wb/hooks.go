@@ -266,6 +266,26 @@ func printHooksCheckDetails(cmd *cobra.Command, report hooks.CheckReport) error 
 			}
 		}
 	}
+	if report.ProfilesAuto && len(report.ActiveProfiles) == 0 {
+		if err := writeLine(out, "  ✓ automatic profiles enabled; none detected"); err != nil {
+			return err
+		}
+	}
+	for _, profile := range report.ActiveProfiles {
+		if err := writeFormat(out, "  ✓ profile %s (%s)\n", profile.Name, profile.Reason); err != nil {
+			return err
+		}
+	}
+	hookNames := make([]string, 0, len(report.HookBlocks))
+	for hookName := range report.HookBlocks {
+		hookNames = append(hookNames, hookName)
+	}
+	sort.Strings(hookNames)
+	for _, hookName := range hookNames {
+		if err := writeLine(out, "  ✓ "+hookName+" blocks", strings.Join(report.HookBlocks[hookName], ", ")); err != nil {
+			return err
+		}
+	}
 	if len(report.Findings) == 0 {
 		if err := writeLine(out, "  ✓ core.hooksPath", report.ManagedPath); err != nil {
 			return err
@@ -396,6 +416,17 @@ func printHookMetrics(cmd *cobra.Command, summary hooks.MetricsSummary, metricsF
 	}
 	if err := writeFormat(out, "Average hook duration: %s\n", time.Duration(summary.AverageDurationMS)*time.Millisecond); err != nil {
 		return err
+	}
+	if len(summary.Blocks) > 0 {
+		if err := writeLine(out, "Blocks:"); err != nil {
+			return err
+		}
+		for _, block := range summary.Blocks {
+			if err := writeFormat(out, "  %-24s runs %3d  failures %2d  average %s\n",
+				block.ID, block.Runs, block.Failures, time.Duration(block.AverageDurationMS)*time.Millisecond); err != nil {
+				return err
+			}
+		}
 	}
 	if err := writeLine(out, "Pushes are pre-push attempts; Git has no post-push hook to confirm remote acceptance."); err != nil {
 		return err

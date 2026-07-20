@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -25,12 +26,20 @@ type RunOptions struct {
 type RunResult struct {
 	ExitCode     int
 	Duration     time.Duration
+	Blocks       []BlockRunResult
 	MetricsError error
 }
 
-// Run executes a configured template in the repository root and records a
-// compact local event. Hook script stdin/stdout/stderr and arguments are passed
-// through unchanged so pre-push and commit-message hooks keep Git semantics.
+type BlockRunResult struct {
+	ID       string
+	Profile  string
+	ExitCode int
+	Duration time.Duration
+}
+
+// Run executes the configured base and active-profile blocks in the repository
+// root and records compact local events. Hook arguments and streams are passed
+// through unchanged; composed pre-push blocks each receive the complete stdin.
 func Run(options RunOptions) (RunResult, error) {
 	if !validHookName.MatchString(options.Hook) {
 		return RunResult{ExitCode: 2}, fmt.Errorf("invalid hook name %q", options.Hook)
@@ -55,30 +64,56 @@ func Run(options RunOptions) (RunResult, error) {
 		options.Now = time.Now
 	}
 
+	blocks := hookBlocks(policy, options.Hook)
+	var replicatedInput []byte
+	if options.Hook == "pre-push" && len(blocks) > 1 {
+		replicatedInput, err = io.ReadAll(options.Stdin)
+		if err != nil {
+			return RunResult{ExitCode: 2}, fmt.Errorf("read pre-push input for composed hook blocks: %w", err)
+		}
+	}
+
+	var metricEvents []Event
+	executionContext := loadEventContext(policy.RepoRoot, policy.Metrics.Labels)
 	started := options.Now()
 	exitCode := 0
 	var runErr error
-	if hook, ok := policy.Hooks[options.Hook]; ok && !hook.Disabled && hook.Template != "" {
-		exitCode, runErr = runTemplate(policy, hook, options)
+	result := RunResult{Blocks: make([]BlockRunResult, 0, len(blocks))}
+	for _, block := range blocks {
+		blockOptions := options
+		if replicatedInput != nil {
+			blockOptions.Stdin = bytes.NewReader(replicatedInput)
+		}
+		blockStarted := options.Now()
+		exitCode, runErr = runTemplate(policy, block, blockOptions, executionContext)
+		blockDuration := options.Now().Sub(blockStarted)
+		result.Blocks = append(result.Blocks, BlockRunResult{
+			ID: block.ID, Profile: block.Profile, ExitCode: exitCode, Duration: blockDuration,
+		})
+		if policy.Metrics.Enabled {
+			metricEvents = append(metricEvents, executionContext.newBlockEvent(options.Hook, block, exitCode == 0, blockDuration, options.Now()))
+		}
+		if runErr != nil {
+			break
+		}
 	}
 	duration := options.Now().Sub(started)
-	result := RunResult{ExitCode: exitCode, Duration: duration}
+	result.ExitCode = exitCode
+	result.Duration = duration
 	if policy.Metrics.Enabled {
-		event := newEvent(policy.RepoRoot, options.Hook, exitCode == 0, duration, options.Now(), policy.Metrics.Labels)
-		if metricsErr := AppendEvent(policy.Metrics.Path, event); metricsErr != nil {
-			result.MetricsError = metricsErr
-		}
+		metricEvents = append(metricEvents, executionContext.newEvent(options.Hook, exitCode == 0, duration, options.Now()))
+		result.MetricsError = AppendEvents(policy.Metrics.Path, metricEvents)
 	}
 	return result, runErr
 }
 
-func runTemplate(policy Policy, hook ResolvedHook, options RunOptions) (int, error) {
-	templatePath := hook.Template
+func runTemplate(policy Policy, block HookBlock, options RunOptions, context eventContext) (int, error) {
+	templatePath := block.Hook.Template
 	cleanup := func() {}
-	if hook.Builtin {
-		content, ok := builtinTemplate(hook.Template)
+	if block.Hook.Builtin {
+		content, ok := builtinTemplate(block.Hook.Template)
 		if !ok {
-			return 2, fmt.Errorf("unknown built-in template %q", hook.Template)
+			return 2, fmt.Errorf("unknown built-in template %q", block.Hook.Template)
 		}
 		temporary, err := os.CreateTemp("", "wb-hook-*.sh")
 		if err != nil {
@@ -103,23 +138,23 @@ func runTemplate(policy Policy, hook ResolvedHook, options RunOptions) (int, err
 	cmd.Stdin = options.Stdin
 	cmd.Stdout = options.Stdout
 	cmd.Stderr = options.Stderr
-	commit, _ := gitOutput(policy.RepoRoot, "rev-parse", "HEAD")
-	branch, _ := gitOutput(policy.RepoRoot, "symbolic-ref", "--quiet", "--short", "HEAD")
 	cmd.Env = append(os.Environ(),
-		"WB_HOOK="+hook.Name,
+		"WB_HOOK="+block.Hook.Name,
+		"WB_PROFILE="+block.Profile,
+		"WB_BLOCK="+block.ID,
 		"WB_REPO_ROOT="+policy.RepoRoot,
-		"WB_REPO_SLUG="+originSlug(policy.RepoRoot),
-		"WB_HEAD_SHA="+commit,
-		"WB_BRANCH="+branch,
-		"WB_HOOKS_CONFIG="+hook.ConfigPath,
+		"WB_REPO_SLUG="+context.repository,
+		"WB_HEAD_SHA="+context.commit,
+		"WB_BRANCH="+context.branch,
+		"WB_HOOKS_CONFIG="+block.Hook.ConfigPath,
 		"WB_HOOK_METRICS_PATH="+policy.Metrics.Path,
 	)
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode(), fmt.Errorf("%s hook failed with exit %d", hook.Name, exitErr.ExitCode())
+			return exitErr.ExitCode(), fmt.Errorf("%s block failed with exit %d", block.ID, exitErr.ExitCode())
 		}
-		return 2, fmt.Errorf("run %s template %s: %w", hook.Name, filepath.Clean(templatePath), err)
+		return 2, fmt.Errorf("run %s template %s: %w", block.ID, filepath.Clean(templatePath), err)
 	}
 	return 0, nil
 }

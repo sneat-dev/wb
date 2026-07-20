@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const managedMarker = "# wb-hooks: managed shim v1"
+const (
+	managedStartMarker = "### Start of WB managed hook ###"
+	managedEndMarker   = "### End of WB managed hook ###"
+)
 
 type Finding struct {
 	Code    string `json:"code"`
@@ -18,12 +21,15 @@ type Finding struct {
 }
 
 type CheckReport struct {
-	RepoRoot    string    `json:"repo_root"`
-	ManagedPath string    `json:"managed_path"`
-	ConfigPaths []string  `json:"config_paths,omitempty"`
-	Hooks       []string  `json:"hooks"`
-	MetricsPath string    `json:"metrics_path,omitempty"`
-	Findings    []Finding `json:"findings,omitempty"`
+	RepoRoot       string              `json:"repo_root"`
+	ManagedPath    string              `json:"managed_path"`
+	ConfigPaths    []string            `json:"config_paths,omitempty"`
+	Hooks          []string            `json:"hooks"`
+	ProfilesAuto   bool                `json:"profiles_auto"`
+	ActiveProfiles []ActiveProfile     `json:"active_profiles,omitempty"`
+	HookBlocks     map[string][]string `json:"hook_blocks,omitempty"`
+	MetricsPath    string              `json:"metrics_path,omitempty"`
+	Findings       []Finding           `json:"findings,omitempty"`
 }
 
 type ApplyOptions struct {
@@ -55,6 +61,17 @@ func expectedHookNames(policy Policy) []string {
 			names[name] = true
 		}
 	}
+	for _, profile := range policy.ActiveProfiles {
+		definition := policy.ProfileDefinitions[profile.Name]
+		for name, hook := range definition.Hooks {
+			if direct, exists := policy.Hooks[name]; exists && direct.Disabled {
+				continue
+			}
+			if !hook.Disabled {
+				names[name] = true
+			}
+		}
+	}
 	if policy.Metrics.Enabled {
 		for _, name := range []string{"post-commit", "pre-push"} {
 			if hook, exists := policy.Hooks[name]; !exists || !hook.Disabled {
@@ -71,12 +88,22 @@ func expectedHookNames(policy Policy) []string {
 }
 
 func shimContent(executable, hook, explicitConfig string) string {
+	return "#!/bin/sh\nset -eu\n\n" + shimManagedSection(executable, hook, explicitConfig)
+}
+
+func shimManagedSection(executable, hook, explicitConfig string) string {
 	args := []string{shellQuote(executable), "hooks", "run"}
 	if explicitConfig != "" {
 		args = append(args, "--config", shellQuote(expandPath(explicitConfig)))
 	}
 	args = append(args, shellQuote(hook), "--", `"$@"`)
-	return "#!/bin/sh\n" + managedMarker + "\nexec " + strings.Join(args, " ") + "\n"
+	return managedStartMarker + "\n" +
+		strings.Join(args, " ") + "\n" +
+		"_wb_hook_status=$?\n" +
+		"if [ \"$_wb_hook_status\" -ne 0 ]; then\n" +
+		"    exit \"$_wb_hook_status\"\n" +
+		"fi\n" +
+		managedEndMarker + "\n"
 }
 
 func shellQuote(value string) string {
@@ -96,10 +123,13 @@ func Check(repoPath, configPath, wbExecutable string) (CheckReport, error) {
 	}
 	names := expectedHookNames(policy)
 	report := CheckReport{
-		RepoRoot:    policy.RepoRoot,
-		ManagedPath: managed,
-		ConfigPaths: append([]string(nil), policy.ConfigPaths...),
-		Hooks:       names,
+		RepoRoot:       policy.RepoRoot,
+		ManagedPath:    managed,
+		ConfigPaths:    append([]string(nil), policy.ConfigPaths...),
+		Hooks:          names,
+		ProfilesAuto:   policy.ProfilesAuto,
+		ActiveProfiles: append([]ActiveProfile(nil), policy.ActiveProfiles...),
+		HookBlocks:     profileBlockMap(policy),
 	}
 	if policy.Metrics.Enabled {
 		report.MetricsPath = policy.Metrics.Path
@@ -122,8 +152,9 @@ func Check(repoPath, configPath, wbExecutable string) (CheckReport, error) {
 			report.Findings = append(report.Findings, Finding{Code: "hook-missing", Message: fmt.Sprintf("managed %s hook is missing", name), Path: path})
 			continue
 		}
-		expected := shimContent(wbExecutable, name, policy.ExplicitPath)
-		if string(data) != expected {
+		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath)
+		actual, managed, valid := extractManagedSection(string(data))
+		if !managed || !valid || actual != expected {
 			report.Findings = append(report.Findings, Finding{Code: "hook-stale", Message: fmt.Sprintf("managed %s hook differs from the expected shim", name), Path: path})
 		}
 		if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o111 == 0 {
@@ -142,7 +173,7 @@ func Check(repoPath, configPath, wbExecutable string) (CheckReport, error) {
 			}
 			path := filepath.Join(managed, entry.Name())
 			data, _ := os.ReadFile(path)
-			if strings.Contains(string(data), managedMarker) {
+			if isManagedContent(string(data)) {
 				report.Findings = append(report.Findings, Finding{Code: "hook-unexpected", Message: fmt.Sprintf("stale managed hook %s remains active", entry.Name()), Path: path})
 			}
 		}
@@ -193,18 +224,29 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	names := expectedHookNames(policy)
 	for _, name := range names {
 		path := filepath.Join(managed, name)
-		expected := shimContent(options.WBExecutable, name, policy.ExplicitPath)
-		if existing, readErr := os.ReadFile(path); readErr == nil && string(existing) != expected && !strings.Contains(string(existing), managedMarker) {
-			if !options.Force {
-				return ApplyResult{}, fmt.Errorf("refusing to overwrite unmanaged hook %s; run repair with --force to back it up", path)
+		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath)
+		content := shimContent(options.WBExecutable, name, policy.ExplicitPath)
+		if existing, readErr := os.ReadFile(path); readErr == nil {
+			if !isManagedContent(string(existing)) {
+				if !options.Force {
+					return ApplyResult{}, fmt.Errorf("refusing to overwrite unmanaged hook %s; run repair with --force to back it up", path)
+				}
+				backup := path + ".wb-backup-" + options.Now().UTC().Format("20060102T150405Z")
+				if err := os.Rename(path, backup); err != nil {
+					return ApplyResult{}, fmt.Errorf("back up unmanaged hook %s: %w", path, err)
+				}
+				result.Actions = append(result.Actions, "backed up "+path+" to "+backup)
+			} else {
+				updated, err := replaceManagedSection(string(existing), expectedSection)
+				if err != nil {
+					return ApplyResult{}, fmt.Errorf("update managed hook %s: %w", path, err)
+				}
+				content = updated
 			}
-			backup := path + ".wb-backup-" + options.Now().UTC().Format("20060102T150405Z")
-			if err := os.Rename(path, backup); err != nil {
-				return ApplyResult{}, fmt.Errorf("back up unmanaged hook %s: %w", path, err)
-			}
-			result.Actions = append(result.Actions, "backed up "+path+" to "+backup)
+		} else if !os.IsNotExist(readErr) {
+			return ApplyResult{}, fmt.Errorf("read managed hook %s: %w", path, readErr)
 		}
-		if err := writeExecutable(path, []byte(expected)); err != nil {
+		if err := writeExecutable(path, []byte(content)); err != nil {
 			return ApplyResult{}, err
 		}
 		result.Actions = append(result.Actions, "installed "+name)
@@ -257,7 +299,18 @@ func removeStaleManagedHooks(managed string, expectedNames []string, actions *[]
 		}
 		path := filepath.Join(managed, entry.Name())
 		data, _ := os.ReadFile(path)
-		if !strings.Contains(string(data), managedMarker) {
+		if !isManagedContent(string(data)) {
+			continue
+		}
+		withoutManaged, err := removeManagedSection(string(data))
+		if err != nil {
+			return fmt.Errorf("remove stale managed section from %s: %w", path, err)
+		}
+		if hasUserHookContent(withoutManaged) {
+			if err := writeExecutable(path, []byte(withoutManaged)); err != nil {
+				return err
+			}
+			*actions = append(*actions, "removed stale WB section from "+entry.Name()+" and preserved user commands")
 			continue
 		}
 		if err := os.Remove(path); err != nil {
@@ -266,6 +319,63 @@ func removeStaleManagedHooks(managed string, expectedNames []string, actions *[]
 		*actions = append(*actions, "removed stale managed hook "+entry.Name())
 	}
 	return nil
+}
+
+func isManagedContent(content string) bool {
+	return strings.Contains(content, managedStartMarker) || strings.Contains(content, managedEndMarker)
+}
+
+func extractManagedSection(content string) (section string, managed, valid bool) {
+	start := strings.Index(content, managedStartMarker)
+	end := strings.Index(content, managedEndMarker)
+	if start >= 0 || end >= 0 {
+		if start < 0 || end < start {
+			return "", true, false
+		}
+		end += len(managedEndMarker)
+		if end < len(content) && content[end] == '\n' {
+			end++
+		}
+		return content[start:end], true, true
+	}
+	return "", false, false
+}
+
+func replaceManagedSection(content, expectedSection string) (string, error) {
+	return replaceManagedSectionWith(content, expectedSection)
+}
+
+func removeManagedSection(content string) (string, error) {
+	return replaceManagedSectionWith(content, "")
+}
+
+func replaceManagedSectionWith(content, replacement string) (string, error) {
+	start := strings.Index(content, managedStartMarker)
+	end := strings.Index(content, managedEndMarker)
+	if start >= 0 || end >= 0 {
+		if start < 0 || end < start {
+			return "", fmt.Errorf("managed section markers are incomplete or out of order")
+		}
+		end += len(managedEndMarker)
+		if end < len(content) && content[end] == '\n' {
+			end++
+		}
+		return content[:start] + replacement + content[end:], nil
+	}
+
+	return "", fmt.Errorf("managed section markers are missing")
+}
+
+func hasUserHookContent(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		switch strings.TrimSpace(line) {
+		case "", "#!/bin/sh", "set -eu":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func activeDefaultHooks(repoRoot string) ([]string, error) {
