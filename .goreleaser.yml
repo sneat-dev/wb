@@ -56,7 +56,7 @@ homebrew_casks:
     ids:
       - wb
     description: "wb — the Sneat workbench CLI: fleet-wide GitHub repo sync and config-driven recipes."
-    homepage: https://sneat.dev/wb
+    homepage: https://sneat.dev/workbench/
     license: MIT
     repository:
       owner: sneat-dev

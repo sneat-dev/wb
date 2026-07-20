@@ -1,10 +1,11 @@
-# wb
+# WB — the Workbench
 
 Fleet-wide operations across **your** GitHub repositories, from the
 terminal: keep every local clone in sync with GitHub, and run config-driven
 recipes across every repo that matches — no per-repo scripting.
 
-Part of the [Sneat Developer Platform](https://sneat.dev).
+Part of the [Sneat Developer Platform](https://sneat.dev/workbench/). The CLI
+and executable stay intentionally short: `wb`.
 
 ## Install
 
