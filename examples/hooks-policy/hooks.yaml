@@ -1,0 +1,14 @@
+version: 1
+
+hooks:
+  pre-commit:
+    template: templates/pre-commit.sh
+  pre-push:
+    template: templates/pre-push.sh
+
+metrics:
+  enabled: true
+  # Opt in to pseudonymous grouping when you want to compare exported events.
+  # labels:
+  #   developer: dev-17
+  #   machine: laptop-a

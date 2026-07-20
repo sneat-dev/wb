@@ -1,0 +1,7 @@
+# SpecScore Repo Config Schema: https://specscore.md/repo-config
+
+project:
+    title: WB — the Workbench
+    host: github.com
+    org: sneat-dev
+    repo: wb

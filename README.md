@@ -21,6 +21,7 @@ A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
+wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 ```
 
 ### Persistent flags
@@ -168,6 +169,90 @@ source rebuilds, missing CI artifacts, and artifacts that are downloaded
 without source-SHA/checksum verification. `--strict` makes findings fail with a
 non-zero exit code, suitable for CI and pre-push hooks; `--json` is intended for
 Backstage/ops inventory.
+
+### `wb hooks` — consistent, user-owned Git hooks
+
+WB installs small managed shims while you retain control of the scripts they
+run. Start conservatively in one repository, then roll the same policy through
+all local clones:
+
+```sh
+wb hooks install                         # current repository
+wb hooks check
+wb hooks repair
+wb hooks install --fleet                 # every clone below --projects-root
+wb hooks check --fleet --filter sneat-co/
+wb hooks repair --fleet
+```
+
+`install` and `repair` refuse to replace an existing `core.hooksPath` or an
+unmanaged active hook. `repair --force` preserves hooks at an old configured
+path and backs up any unmanaged collision inside WB's directory before replacing
+it. `check` (alias `validate`) detects missing, stale, unexpected, or
+non-executable shims; `--json` makes its result consumable by CI or Backstage.
+
+#### Hook policy and custom templates
+
+Policy layers in this order: WB's conservative built-ins, the user's global
+`~/.config/wb/hooks.yaml`, then the repository's `.wb/hooks.yaml`. A repository
+entry overrides the same global hook. Relative template paths are resolved from
+the YAML file that declares them; template files are run with `/bin/sh` and do
+not need to be executable.
+
+```yaml
+version: 1
+
+hooks:
+  pre-commit:
+    template: templates/pre-commit.sh
+  pre-push:
+    template: templates/pre-push.sh
+  # Disable a globally configured hook in this repository:
+  # pre-push:
+  #   disabled: true
+
+metrics:
+  enabled: true
+  # path: ~/.local/state/wb/hook-events.jsonl
+  labels:                       # optional, user-chosen pseudonyms
+    developer: dev-17
+    machine: laptop-a
+```
+
+Without configuration, pre-commit checks staged whitespace errors and pre-push
+checks worktree whitespace errors. Copy and adapt the scripts in
+[`examples/hooks-policy/`](examples/hooks-policy/) for repository-specific
+format, lint, test, coverage, or build commands. Templates receive
+`WB_HOOK`, `WB_REPO_ROOT`, `WB_REPO_SLUG`, `WB_HEAD_SHA`, `WB_BRANCH`,
+`WB_HOOKS_CONFIG`, and `WB_HOOK_METRICS_PATH`, plus the original Git hook
+arguments and standard input.
+
+#### Local lifecycle metrics
+
+Once installed, hooks append a versioned, local-only JSONL event after each
+run. WB records repository, hook/action, outcome, duration, commit, branch,
+OS/architecture, and optional labels—not diffs, filenames, commands, output,
+credentials, email, hostname, or source. A metrics write failure warns but never
+turns a successful hook into a failed commit or push.
+
+```sh
+wb hooks metrics                  # 14-day terminal chart
+wb hooks metrics --days 30
+wb hooks metrics --repo sneat-go
+wb hooks metrics --json
+```
+
+Successful commits are counted exactly through `post-commit`. Pushes are
+reported as **push attempts**, because Git provides `pre-push` but no
+`post-push` confirmation. The default event file is
+`~/.local/state/wb/hook-events.jsonl`; set `metrics.enabled: false` to disable
+collection or configure a different path. Cross-developer/machine aggregation
+is intentionally opt-in through explicit labels and a future exporter.
+
+The broader direction—named build/test spans, cache and machine diagnostics,
+local/CI/deployment correlation, CI-minute savings, and privacy-safe team
+comparisons—is captured in the SpecScore idea
+[`developer-lifecycle-metrics`](spec/ideas/developer-lifecycle-metrics.md).
 
 ## Build from source
 

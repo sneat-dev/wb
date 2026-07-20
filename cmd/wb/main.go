@@ -29,6 +29,7 @@ func main() {
 	root.AddCommand(newSyncCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newCICmd())
+	root.AddCommand(newHooksCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
