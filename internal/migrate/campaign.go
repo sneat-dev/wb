@@ -88,17 +88,36 @@ type CampaignRepositoryReport struct {
 
 // CampaignModuleReport identifies the submodule work done inside a repository.
 type CampaignModuleReport struct {
-	Path                string               `yaml:"path"`
-	WorktreeDir         string               `yaml:"worktree_dir,omitempty"`
-	MigrationEnabled    bool                 `yaml:"migration_enabled"`
-	PlanState           string               `yaml:"plan_state"`
-	ChangedFiles        *int                 `yaml:"changed_files,omitempty"`
-	ManifestChanged     bool                 `yaml:"manifest_changed"`
-	PublishableManifest bool                 `yaml:"publishable_manifest,omitempty"`
-	ReviewItems         int                  `yaml:"review_items"`
-	MigrationReportPath string               `yaml:"migration_report_path,omitempty"`
-	Verifications       []VerificationResult `yaml:"verifications,omitempty"`
-	Status              string               `yaml:"status"`
+	Path                string                 `yaml:"path"`
+	WorktreeDir         string                 `yaml:"worktree_dir,omitempty"`
+	MigrationEnabled    bool                   `yaml:"migration_enabled"`
+	PlanState           string                 `yaml:"plan_state"`
+	ChangedFiles        *int                   `yaml:"changed_files,omitempty"`
+	ManifestChanged     bool                   `yaml:"manifest_changed"`
+	PublishableManifest bool                   `yaml:"publishable_manifest,omitempty"`
+	DependencyDecisions []GoDependencyDecision `yaml:"dependency_decisions,omitempty"`
+	ReviewItems         int                    `yaml:"review_items"`
+	MigrationReportPath string                 `yaml:"migration_report_path,omitempty"`
+	Verifications       []VerificationResult   `yaml:"verifications,omitempty"`
+	Status              string                 `yaml:"status"`
+}
+
+// GoDependencyDecision records why one go.mod dependency did or did not
+// change. VersionAtCheck captures the selected requirement before WB invokes
+// Go tooling, while VersionAfter records the resulting requirement.
+type GoDependencyDecision struct {
+	Phase              string `yaml:"phase"`
+	Path               string `yaml:"path"`
+	RequiredAtCheck    bool   `yaml:"required_at_check"`
+	VersionAtCheck     string `yaml:"version_at_check"`
+	TargetVersion      string `yaml:"target_version,omitempty"`
+	RequiredAfter      bool   `yaml:"required_after"`
+	VersionAfter       string `yaml:"version_after"`
+	VersionAction      string `yaml:"version_action"`
+	ReplacementAtCheck string `yaml:"replacement_at_check,omitempty"`
+	ReplacementAfter   string `yaml:"replacement_after,omitempty"`
+	ReplacementAction  string `yaml:"replacement_action"`
+	Reason             string `yaml:"reason"`
 }
 
 // VerificationResult is deliberately compact: command output remains in the
@@ -597,11 +616,12 @@ func (c *campaign) updateRepositoryManifests(repo *campaignRepository, moduleRoo
 		if !module.migrate {
 			continue
 		}
-		changed, err := updateGoModule(module.root, c.spec, module.path, moduleRoots)
+		update, err := updateGoModule(module.root, c.spec, module.path, moduleRoots)
 		if err != nil {
 			return fmt.Errorf("update go.mod for %s: %w", module.path, err)
 		}
-		module.report.ManifestChanged = changed
+		module.report.ManifestChanged = update.Changed
+		module.report.DependencyDecisions = append(module.report.DependencyDecisions, update.DependencyDecisions...)
 	}
 	return refreshRepositoryChangeIndex(repo)
 }
@@ -649,11 +669,12 @@ func (c *campaign) finalizeRepositoryManifests(
 		if !module.migrate {
 			continue
 		}
-		changed, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots, releaseOverrides)
+		update, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots, releaseOverrides)
 		if err != nil {
 			return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
 		}
-		module.report.PublishableManifest = changed
+		module.report.PublishableManifest = update.Changed
+		module.report.DependencyDecisions = append(module.report.DependencyDecisions, update.DependencyDecisions...)
 	}
 	return nil
 }
@@ -1588,15 +1609,15 @@ func parseGoMod(path string) (*modfile.File, error) {
 	return modfile.Parse(path, contents, nil)
 }
 
-func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) (bool, error) {
+func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) (goManifestUpdate, error) {
 	goMod := filepath.Join(moduleRoot, "go.mod")
 	before, err := os.ReadFile(goMod)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	parsed, err := modfile.Parse(goMod, before, nil)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	direct := map[string]bool{}
 	for _, requirement := range parsed.Require {
@@ -1604,7 +1625,7 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 	}
 	for _, requirement := range spec.GoModuleRequires {
 		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-require="+requirement.Path+"@"+requirement.Version); err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 		direct[requirement.Path] = true
 	}
@@ -1613,18 +1634,18 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 			continue
 		}
 		if err := replaceGoModule(moduleRoot, goMod, path, root); err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 	}
 	if _, err := runIn(moduleRoot, "go", "mod", "tidy"); err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	// Tidy removes unused requirements but intentionally retains their replace
 	// directives. Drop only replacements that point at this campaign's known
 	// worktrees and no longer have a requirement, keeping the local diff minimal.
 	parsed, err = parseGoMod(goMod)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	required := map[string]bool{}
 	for _, requirement := range parsed.Require {
@@ -1639,14 +1660,22 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 			continue
 		}
 		if err := dropCampaignReplace(moduleRoot, parsed, path); err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 	}
 	after, err := os.ReadFile(goMod)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
-	return string(before) != string(after), nil
+	targets := make(map[string]string, len(spec.GoModuleRequires))
+	for _, requirement := range spec.GoModuleRequires {
+		targets[requirement.Path] = requirement.Version
+	}
+	decisions, err := auditGoDependencyDecisions(moduleRoot, "local_verification", before, after, targets, moduleRoots, true)
+	if err != nil {
+		return goManifestUpdate{}, err
+	}
+	return goManifestUpdate{Changed: string(before) != string(after), DependencyDecisions: decisions}, nil
 }
 
 // finalizeGoModule removes only WB's temporary worktree replacements and
@@ -1659,15 +1688,15 @@ func finalizeGoModule(
 	modulePath string,
 	moduleRoots map[string]string,
 	releaseOverrides map[string]string,
-) (bool, error) {
+) (goManifestUpdate, error) {
 	goMod := filepath.Join(moduleRoot, "go.mod")
 	before, err := os.ReadFile(goMod)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	parsed, err := modfile.Parse(goMod, before, nil)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	direct := map[string]bool{}
 	for _, requirement := range parsed.Require {
@@ -1686,36 +1715,40 @@ func finalizeGoModule(
 		}
 		hasReplace, err := hasCampaignReplace(moduleRoot, parsed, dependency, worktree)
 		if err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 		if !hasReplace {
 			continue
 		}
 		version := releases[dependency]
 		if version == "" {
-			return false, fmt.Errorf("dependency %s uses a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
+			return goManifestUpdate{}, fmt.Errorf("dependency %s uses a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
 		}
 		if err := dropCampaignReplace(moduleRoot, parsed, dependency); err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-require="+dependency+"@"+version); err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 	}
 	afterEdit, err := os.ReadFile(goMod)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
 	if string(before) != string(afterEdit) {
 		if _, err := runIn(moduleRoot, "go", "mod", "tidy"); err != nil {
-			return false, err
+			return goManifestUpdate{}, err
 		}
 	}
 	after, err := os.ReadFile(goMod)
 	if err != nil {
-		return false, err
+		return goManifestUpdate{}, err
 	}
-	return string(before) != string(after), nil
+	decisions, err := auditGoDependencyDecisions(moduleRoot, "publishable", before, after, releases, moduleRoots, false)
+	if err != nil {
+		return goManifestUpdate{}, err
+	}
+	return goManifestUpdate{Changed: string(before) != string(after), DependencyDecisions: decisions}, nil
 }
 
 // preflightPublishedReleases runs before applying source or manifest changes,
@@ -2004,6 +2037,21 @@ func (r CampaignReport) Markdown() string {
 				fmt.Fprintf(&out, "; [migration report](%s)", fileURL(filepath.Join(module.MigrationReportPath, "migration.md")))
 			}
 			out.WriteString("\n")
+			for _, decision := range module.DependencyDecisions {
+				checked := decision.VersionAtCheck
+				if !decision.RequiredAtCheck {
+					checked = "not required"
+				}
+				after := decision.VersionAfter
+				if !decision.RequiredAfter {
+					after = "not required"
+				}
+				fmt.Fprintf(&out, "  - Dependency `%s` (`%s`): checked `%s`", decision.Path, decision.Phase, checked)
+				if decision.TargetVersion != "" {
+					fmt.Fprintf(&out, "; target `%s`", decision.TargetVersion)
+				}
+				fmt.Fprintf(&out, "; after `%s`; version `%s`; replacement `%s` — %s\n", after, decision.VersionAction, decision.ReplacementAction, decision.Reason)
+			}
 			for _, verification := range module.Verifications {
 				fmt.Fprintf(&out, "  - `%s`: `%t`", verification.Command, verification.Passed)
 				if verification.Detail != "" {

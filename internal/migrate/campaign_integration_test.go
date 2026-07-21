@@ -297,14 +297,23 @@ func TestUpdateGoModuleTidiesUnusedMigrationRequirement(t *testing.T) {
 	writeCampaignFile(t, filepath.Join(moduleRoot, "go.mod"), "module github.com/acme/unused\n\ngo 1.24\n")
 	writeCampaignFile(t, filepath.Join(moduleRoot, "unused.go"), "package unused\n")
 	writeCampaignFile(t, filepath.Join(recordRoot, "go.mod"), "module github.com/dal-go/record\n\ngo 1.24\n")
-	changed, err := updateGoModule(moduleRoot, Spec{
+	update, err := updateGoModule(moduleRoot, Spec{
 		GoModuleRequires: []GoModuleRequire{{Path: "github.com/dal-go/record", Version: "v0.1.0"}},
 	}, "github.com/acme/unused", map[string]string{"github.com/dal-go/record": recordRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if changed {
+	if update.Changed {
 		t.Fatalf("unused migration requirement left a go.mod change:\n%s", mustReadCampaignFile(t, filepath.Join(moduleRoot, "go.mod")))
+	}
+	if len(update.DependencyDecisions) != 1 {
+		t.Fatalf("dependency decisions = %+v", update.DependencyDecisions)
+	}
+	decision := update.DependencyDecisions[0]
+	if decision.Path != "github.com/dal-go/record" || decision.RequiredAtCheck || decision.RequiredAfter ||
+		decision.TargetVersion != "v0.1.0" || decision.VersionAction != "not_required" ||
+		!strings.Contains(decision.Reason, "no source use") {
+		t.Fatalf("dependency decision = %+v", decision)
 	}
 }
 
