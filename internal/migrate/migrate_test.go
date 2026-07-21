@@ -279,8 +279,8 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 		spec.GoModuleReleases[7] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-go-core", Version: "v0.60.4"}) ||
 		spec.GoModuleReleases[8] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram", Version: "v0.28.1"}) ||
 		spec.GoModuleReleases[9] != (GoModuleRelease{Path: "github.com/sneat-co/gameboard/backend", Version: "v0.4.4"}) ||
-		spec.GoModuleReleases[10] != (GoModuleRelease{Path: "github.com/sneat-co/ext-contactus/backend", Version: "v0.1.7"}) ||
-		spec.GoModuleReleases[11] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-core-modules", Version: "v0.53.6"}) ||
+		spec.GoModuleReleases[10] != (GoModuleRelease{Path: "github.com/sneat-co/ext-contactus/backend", Version: "v0.1.6"}) ||
+		spec.GoModuleReleases[11] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-core-modules", Version: "v0.53.5"}) ||
 		spec.GoModuleReleases[12] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram-dalgo", Version: "v0.1.1"}) ||
 		spec.GoModuleReleases[13] != (GoModuleRelease{Path: "github.com/sneat-co/assetus/backend", Version: "v0.3.7"}) ||
 		spec.GoModuleReleases[14] != (GoModuleRelease{Path: "github.com/sneat-co/calendarius/backend", Version: "v0.4.7"}) ||

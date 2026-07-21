@@ -121,11 +121,11 @@ migration "dalgo-record-v1" {
   }
 
   go_module_release "github.com/sneat-co/ext-contactus/backend" {
-    version = "v0.1.7"
+    version = "v0.1.6"
   }
 
   go_module_release "github.com/sneat-co/sneat-core-modules" {
-    version = "v0.53.6"
+    version = "v0.53.5"
   }
 
   go_module_release "github.com/bots-go-framework/bots-fw-telegram-dalgo" {
