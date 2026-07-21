@@ -120,17 +120,6 @@ migration "dalgo-record-v1" {
     version = "v0.4.4"
   }
 
-  # This pair has a pre-existing module cycle. Bootstrap both migrated PRs
-  # against the peer's already-published version; their new releases become
-  # the boundary used by downstream campaign repositories.
-  go_module_release "github.com/sneat-co/ext-contactus/backend" {
-    version = "v0.1.2"
-  }
-
-  go_module_release "github.com/sneat-co/sneat-core-modules" {
-    version = "v0.53.3"
-  }
-
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {
