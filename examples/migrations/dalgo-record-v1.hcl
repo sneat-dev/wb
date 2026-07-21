@@ -1,0 +1,105 @@
+format = "https://sneat.dev/workbench/formats/migration/v1"
+
+migration "dalgo-record-v1" {
+  title = "Extract DALgo's persistence-neutral record model"
+
+  scope {
+    languages = ["go"]
+  }
+
+  import_replace "go" {
+    from = "github.com/dal-go/dalgo/record"
+    to   = "github.com/dal-go/record"
+  }
+
+  import_replace "go" {
+    from = "github.com/dal-go/dalgo/update"
+    to   = "github.com/dal-go/record/update"
+  }
+
+  selector_rewrite "go" {
+    import        = "github.com/dal-go/dalgo/dal"
+    add_import    = "github.com/dal-go/record"
+    add_import_as = "record"
+
+    rewrites = {
+      ErrNoError                     = "record.ErrNoError"
+      ErrRecordNotFound               = "record.ErrRecordNotFound"
+      Key                            = "record.Key"
+      KeyOption                      = "record.KeyOption"
+      FieldVal                       = "record.FieldVal"
+      Record                         = "record.Record"
+      RecordWithID                   = "record.WithID"
+      WithID                         = "record.WithKeyID"
+      DataWithID                     = "record.DataWithID"
+      Updates                        = "record.Updates"
+      EscapeID                       = "record.EscapeID"
+      EqualKeys                      = "record.EqualKeys"
+      WithFields                     = "record.WithFields"
+      WithParentKey                  = "record.WithParentKey"
+      WithStringID                   = "record.WithStringID"
+      WithIntID                      = "record.WithIntID"
+      NewKeyWithID                   = "record.NewKeyWithID"
+      NewKeyWithParentAndID          = "record.NewKeyWithParentAndID"
+      NewIncompleteKey               = "record.NewIncompleteKey"
+      NewKeyWithFields               = "record.NewKeyWithFields"
+      NewKeyWithOptions              = "record.NewKeyWithOptions"
+      NewWithID                      = "record.NewWithID"
+      NewDataWithID                  = "record.NewDataWithID"
+      NewRecord                      = "record.NewRecord"
+      NewRecordWithData              = "record.NewRecordWithData"
+      NewRecordWithIncompleteKey     = "record.NewRecordWithIncompleteKey"
+      NewRecordWithoutKey            = "record.NewRecordWithoutKey"
+      AnyRecordWithError             = "record.AnyRecordWithError"
+      DataToMap                      = "record.DataToMap"
+      MapToData                      = "record.MapToData"
+      IsNotFound                     = "record.IsNotFound"
+    }
+  }
+
+  # This is intentionally a separate, repeatable block type. More than one
+  # selector_rename "go" block is valid in a migration document.
+  selector_rename "go" {
+    import = "github.com/dal-go/record"
+    from   = "WithRecordChanges"
+    to     = "Changes"
+  }
+
+  # RecordWithID used to be the embedded field name in DataWithID and in
+  # application structs that embed it. Rename keyed struct-literal fields too.
+  composite_field_rename "go" {
+    from = "RecordWithID"
+    to   = "WithID"
+  }
+
+  # Hierarchical Go campaigns add this requirement and a local worktree
+  # replacement. It gives ordinary Go tooling a real module version too.
+  go_module_require "github.com/dal-go/record" {
+    version = "v0.1.0"
+  }
+
+  # This already-published module can replace the campaign worktree in a
+  # publishable consumer PR. Add the corresponding DALgo release only after
+  # its migration branch has been merged and tagged.
+  go_module_release "github.com/dal-go/record" {
+    version = "v0.1.0"
+  }
+
+  # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
+  # following method invocation cannot safely be rewritten mechanically.
+  review "changes-executor" {
+    language        = "go"
+    pattern         = "[.]ApplyChanges[(]"
+    exclude_pattern = "dal[.]ApplyChanges[(]"
+    message         = "Call dal.ApplyChanges with the transaction and record.Changes envelope."
+  }
+
+  # Go AST rewrites intentionally preserve comments and strings. Surface old
+  # API spellings there so a resumed campaign cannot report a clean migration
+  # while its documentation still teaches removed DALgo names.
+  review "legacy-record-api" {
+    language = "go"
+    pattern  = "(github[.]com/dal-go/dalgo/(record|update)([^[:alnum:]_]|$)|dal[.](ErrNoError|ErrRecordNotFound|Key|KeyOption|FieldVal|Record|RecordWithID|WithID|DataWithID|Updates|EscapeID|EqualKeys|WithFields|WithParentKey|WithStringID|WithIntID|NewKeyWithID|NewKeyWithParentAndID|NewIncompleteKey|NewKeyWithFields|NewKeyWithOptions|NewWithID|NewDataWithID|NewRecord|NewRecordWithData|NewRecordWithIncompleteKey|NewRecordWithoutKey|AnyRecordWithError|DataToMap|MapToData|IsNotFound)([^[:alnum:]_]|$)|record[.](RecordWithID|WithRecordChanges)([^[:alnum:]_]|$)|WithRecordChanges([^[:alnum:]_]|$)|RecordWithID[[:space:]]*:)"
+    message  = "Update comments, examples, or remaining code to the github.com/dal-go/record API."
+  }
+}

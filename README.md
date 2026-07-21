@@ -20,7 +20,12 @@ A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 ```
 wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
+wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
+wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
+wb verify [path] [flags]     # run conventional lint, test, and build checks
+wb check [path] [flags]      # run a named local CI-equivalent check profile
+wb status [path] [flags]     # inspect every local repo by default, or one path
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 ```
 
@@ -149,6 +154,369 @@ Same worktree/commit/push-or-PR flow for both recipe kinds:
 
 `wb` itself ships with **no recipes** — you define your own in
 `~/.config/wb/wb.yaml`.
+
+### Fleet coverage and verification
+
+These commands are read-only: they operate on existing local clones and never
+fetch, modify source, commit, or push. Without `--fleet` they run against one
+repository path (the current directory by default). `--fleet` scans every Git
+repository below `--projects-root`.
+
+```sh
+# Go coverage for all cloned Sneat repositories, aggregated by statements.
+wb coverage --fleet --match 'sneat-co/*' --parallel=2
+
+# Emit a deterministic report for a human or agent.
+wb coverage --fleet --regex '^sneat-co/(sneat|bots)' \
+  --report-dir /tmp/wb-coverage --format yaml
+
+# Run Go vet/test/build and defined Node lint/test/build scripts.
+wb verify --fleet --filter sneat-co/ --parallel=2
+
+# Restrict verification to compilation-oriented checks for one repository.
+wb verify ~/projects/sneat-co/sneat-bots --checks lint,build
+
+# CI profile adds SpecScore lint for repositories that contain spec/.
+wb check --fleet --match 'sneat-co/*' --profile ci --parallel=2 \
+  --timeout 10m --retry 1 --report-dir /tmp/wb-check
+
+# After a partial failure, re-run only prior failed repositories.
+wb check --fleet --match 'sneat-co/*' --profile ci \
+  --resume --report-dir /tmp/wb-check
+```
+
+`--filter` (substring), `--match` (glob), and `--regex` are composed against
+the `org/repo` name; every supplied filter must match. Both commands write
+Markdown by default, can print YAML or JSON, and can write stable Markdown and
+YAML files with `--report-dir`.
+
+Coverage discovers every `go.mod` below a selected repository (excluding
+`.git`, `vendor`, and `node_modules`) and uses temporary profiles outside the
+repository. Its fleet percentage is statement-weighted, rather than an average
+of repository percentages. Verification runs `go vet ./...`, `go test ./...`,
+and `go build ./...` for each Go module; for a root Node project it runs only
+defined `lint`, `test`, and `build` scripts with the detected package manager.
+Other stacks remain explicit, reusable `wb run` recipes.
+
+`wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
+default) runs lint/test/build, and `ci` additionally runs `specscore spec lint`
+for repositories with `spec/`. `--timeout` applies to each external command;
+`--retry=N` retries only failed commands N additional times; and
+`--resume --report-dir DIR` selects only repository failures from the previous
+YAML report. These controls also apply to `wb coverage` and `wb verify`.
+
+### `wb status` — fleet-first local Git health
+
+Status is fleet-first because the normal question is “which local checkouts
+need attention?” Run `wb status` with no flags to scan all repositories below
+`--projects-root`; there is intentionally no `--fleet` flag. Supplying a path
+narrows the same command to one checkout.
+
+```sh
+wb status
+wb status --filter sneat-co/ --match 'sneat-co/*' --parallel=8
+wb status ~/projects/sneat-co/sneat-bots --details --format yaml
+```
+
+It reads only local Git state—never fetches, pulls, modifies, commits, or
+pushes—and reports clean, attention, or inspection-error status. Attention
+covers modified, untracked, conflicted, stashed, and unpushed work. Markdown
+defaults to concise summaries; YAML/JSON and `--details` provide individual
+paths and Git entries.
+
+### `wb migrate` — declarative source migrations
+
+`wb migrate` is for repeatable codebase migrations rather than arbitrary shell
+recipes. An HCL specification, decoded with HashiCorp's official HCL decoder,
+declares the intended edit. WB discovers source files below the explicit roots,
+produces a deterministic plan, and writes only when `--apply` is passed.
+
+```sh
+# Preview a migration; no files are edited.
+wb migrate examples/migrations/dalgo-record-v1.hcl ~/projects/sneat-co
+
+# Make the planned edits. `--check` instead exits 1 when drift is found.
+wb migrate examples/migrations/dalgo-record-v1.hcl ~/projects/sneat-co --apply
+```
+
+Every planned file carries a SHA-256 of the source it was built from. Apply
+refuses to overwrite a file changed after planning, and each replacement is
+atomic. Migration specs contain no arbitrary commands, which keeps a preview
+meaningful and makes the same spec suitable for CI.
+
+#### Review reports
+
+Markdown is the default stdout format. It is a compact index of changed files,
+operations, source hashes, local-file links, and the exact `git diff` command
+for each file. The detailed patch remains in Git, where humans and AI agents
+can inspect it normally after an apply.
+
+Use `--report-dir` to also write both representations:
+
+```sh
+wb migrate examples/migrations/dalgo-record-v1.hcl ~/projects/sneat-co \
+  --report-dir /tmp/dalgo-record-report
+```
+
+- `migration.md` is the linked review index for humans and AI agents.
+- `migration.yaml` is the sorted deterministic manifest for tools.
+- `--format yaml` writes the same manifest to stdout instead of Markdown.
+
+Reports are opt-in files, so an ordinary dry-run leaves source trees untouched.
+Specifications can also declare regex-based `review` rules. They never edit
+code; WB indexes matching files and line numbers under **Required review** so
+an agent or human can handle semantic changes separately from mechanical ones.
+
+The runner is language-neutral; structural transformations are supplied by
+language adapters rather than by regexes. Today the Go adapter supports
+syntax-aware `import.replace`, `selector.rewrite`, and `selector.rename`
+operations, preserving comments and strings and choosing an import alias when
+a name would be shadowed. The generic `text.replace` operation is available for
+Go, Python, and TypeScript. Python and TypeScript structural adapters are
+intentionally not implemented yet: a spec requesting one fails safely instead
+of performing an unsafe text rewrite.
+
+```hcl
+format = "https://sneat.dev/workbench/formats/migration/v1"
+
+migration "rename-api-v1" {
+  title = "Rename the shared API"
+
+  scope {
+    languages = ["go"]
+  }
+
+  import_replace "go" {
+    from = "example.com/old/api"
+    to   = "example.com/new/api"
+  }
+
+  selector_rewrite "go" {
+    import        = "example.com/old/service"
+    add_import    = "example.com/new/model"
+    add_import_as = "model"
+    rewrites = {
+      Record = "model.Record"
+    }
+  }
+
+  # Repeat this block freely, including with the same "go" label.
+  selector_rename "go" {
+    import = "example.com/new/model"
+    from   = "OldType"
+    to     = "NewType"
+  }
+
+  composite_field_rename "go" {
+    from = "OldEmbeddedField"
+    to   = "NewEmbeddedField"
+  }
+}
+```
+
+`format` is the migration-spec contract, not an opaque integer. It is a link
+to the format definition at
+[`https://sneat.dev/workbench/formats/migration/v1`](https://sneat.dev/workbench/formats/migration/v1).
+The first implementation recognises that exact format offline; it does not
+fetch the URL while planning a migration.
+
+Every `selector_rename "go"` block is a list entry, not a map entry, so many
+blocks with the same language label are valid. It renames a qualified package
+member such as `model.OldType`; it does not rename locally declared Go types or
+unqualified identifiers. Those need a future type-aware rename operation based
+on `go/types` (and corresponding LibCST/TypeScript compiler adapters), rather
+than an unsafe text replacement.
+
+`composite_field_rename "go"` renames only identifier keys in explicitly typed
+named composite literals, such as `Entry{OldEmbeddedField: value}`. It skips
+maps, arrays, slices, elided nested literals, strings, comments, declarations,
+and ordinary identifier uses. The instruction is intentionally syntax-aware,
+not owner-type-aware; use a distinctive field name and a narrow file scope
+when the old name is common.
+
+For a deterministic specification, WB evaluates HCL operation phases in this
+order: `text_replace`, `import_replace`, `selector_rewrite`,
+`selector_rename`, then `composite_field_rename`. Repeated blocks keep their
+source order within a phase. The
+separate, future local-type rename is deliberately not accepted until an
+adapter can resolve declarations and references across its complete package.
+
+Semantic review rules can omit already-correct forms on the same source line:
+
+```hcl
+review "changes-executor" {
+  language        = "go"
+  pattern         = "[.]ApplyChanges[(]"
+  exclude_pattern = "dal[.]ApplyChanges[(]"
+  message         = "Call the DAL executor with the record changes envelope."
+}
+```
+
+`exclude_pattern` is optional and line-scoped. A matching exclusion suppresses
+only review matches on that line, so a correct form elsewhere in the file does
+not hide a method call that still needs semantic migration.
+
+When a migration introduces a new Go module, declare its version explicitly:
+
+```hcl
+go_module_require "github.com/example/new-model" {
+  version = "v1.2.3"
+}
+
+# Required when a campaign branch that used a local worktree replacement is
+# about to become a PR. This version must already be available to remote CI.
+go_module_release "github.com/example/new-model" {
+  version = "v1.2.3"
+}
+```
+
+The normal source-only runner leaves this declaration alone. It is consumed by
+the hierarchical Go workflow below, which adds the requirement and redirects it
+to the campaign's local worktree. `go_module_release` is intentionally
+separate: it says which published version replaces that temporary local path
+before a PR can be opened.
+
+#### Hierarchical Go campaigns
+
+Use `--hierarchical` when the migration must move a Go dependency graph rather
+than one checked-out repository. It reads the source module's `go mod graph`,
+finds the reverse dependency closure of the module paths referenced by the
+migration, and prepares each GitHub repository independently.
+
+```sh
+# Plan only. No clone, fetch, worktree, source, commit, or push occurs.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Apply into dedicated branches and worktrees, verifying every changed Go
+# module with `go vet ./...` and `go test ./...` (the default `full` mode).
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Commit only after all default verification succeeds. Push is separately
+# opt-in and pushes those branches only.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --commit --push \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Open one PR per changed repository. WB continues with other ready
+# repositories while GitHub Actions runs for PRs already opened.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --pr --parallel=2 \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Merge only after every campaign PR has successful required GitHub checks.
+# This does not enable auto-merge or bypass protected-branch rules.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --merge \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Resume partial campaign worktrees on their expected branches.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --resume
+
+# Remove only clean worktrees for the named migration. No source root is used.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  --hierarchical --cleanup
+```
+
+Canonical clones live at `<github-dir>/<org>/<repo>`; `--github-dir` defaults
+to `--projects-root`. The campaign creates its worktrees under
+`<github-dir>/.wb/worktrees/<migration>/<org>/<repo>` from `origin/<ref>`
+(`main` by default). A dirty canonical clone is never checked out, reset, or
+otherwise modified: WB only fetches `origin`, then branches its dedicated
+worktree from the requested remote ref. Missing, resolvable GitHub repositories
+are cloned during `--apply`, regardless of organisation.
+
+For changed consumer modules, WB updates `go.mod` requirements declared in the
+spec and writes relative `replace` directives to the matching campaign
+worktrees. It does not create a shared `go.work` file. This lets dependent
+worktrees compile together while keeping the changes reviewable and
+committable per repository. Before `--pr` (and therefore `--merge`), WB removes
+those temporary replacements, requires an explicit `go_module_release` for
+each affected module, runs `go mod tidy`, and reruns the selected verification.
+This prevents a PR from containing local paths that GitHub Actions cannot
+resolve. If a module has not been released yet, the campaign fails safely
+before the affected repository is committed, pushed, or submitted for review.
+
+Verification is enabled by default for every `--apply` campaign:
+
+| Setting | Checks |
+|---|---|
+| `--verify=compile` | `go test -run=^$ ./...` |
+| `--verify=test` | `go test ./...` |
+| `--verify=full` (default) | `go vet ./...`, then `go test ./...` |
+| `--no-verify` or `--verify=none` | No checks |
+
+`--commit` requires `--apply`. `--push` implies `--commit` and also requires
+`--apply`. `--pr` implies `--push`; it opens one ordinary (non-draft) PR per
+changed repository, with no auto-merge. `--merge` implies `--pr` and is a
+separate final phase: WB first checks every campaign PR's required GitHub
+checks, then uses GitHub's normal merge operation in dependency order. It
+stops before merging anything when a check is pending or failing, and never
+bypasses branch protection.
+
+`--parallel=N` (default `1`) runs independent repositories concurrently. WB
+still processes dependency layers in order: a provider's migration and local
+verification complete before a consumer that uses its local replacement starts.
+Within each layer, WB completes source edits across all repositories before
+normalizing manifests, then verifies the layer. This makes cyclic Go module
+groups safe because dependency tooling never reads a peer's half-rewritten
+source tree.
+Once a repository is verified and `--pr` is active, its PR is opened
+immediately; WB does not wait for its remote CI before working on later ready
+repositories. Only the final `--merge` phase waits for required GitHub checks.
+Local campaigns without commit or publishing flags continue verification after
+a failure so the final report indexes every failing repository. Publishing
+campaigns remain fail-fast before dependent branches can be committed.
+
+`--resume` is an explicit recovery path: it accepts an existing worktree on the
+expected campaign branch, preserves partial or manually corrected migration
+changes, and verifies those existing changes. Dependency discovery also uses
+the validated root campaign worktree, so prerequisite refactors that introduce
+modules bring those providers into the next campaign pass automatically. Go's
+own module tooling repairs incomplete `go.mod`/`go.sum` metadata during that
+apply-only resume discovery. An
+apply campaign holds an
+exclusive lock under its migration worktree root, so concurrent runs fail safely.
+`--cleanup` removes only clean worktrees for that migration; it leaves
+canonical clones, branches, and reports intact.
+
+Every hierarchical run writes a linked human index and deterministic manifest
+to `<github-dir>/.wb/reports/<migration>/campaign.md` and `campaign.yaml`
+(or `--report-dir`). Per-module `migration.md` and `migration.yaml` reports
+are nested beneath that directory. The campaign index lists every
+repository-relative path that differs from its configured base ref, including
+committed, staged, unstaged, and untracked files. This cumulative index remains
+truthful after an idempotent `--resume`; per-module counts describe only files
+rewritten by the current mechanical pass. The Markdown index points at
+worktrees and per-module reports, while Git remains the source of the detailed
+diff.
+
+On a dry run the campaign deliberately reports `plan_state: deferred` and no
+`changed_files` count: WB has not created worktrees or evaluated their source.
+Its Markdown index says `unknown (worktree not created)` rather than implying
+that no files will change.
+
+Adapter work is deliberately isolated behind the same planning and apply
+protocol:
+
+| Language | Structural adapter | Package/manifest work |
+|---|---|---|
+| Go | Implemented with `go/ast`, `go/types`, and `go/format` | `go.mod` support is implemented; local type rename remains a future type-aware operation |
+| Python | Planned with LibCST | `pyproject.toml` |
+| TypeScript | Planned with the TypeScript compiler API | `package.json` |
+
+The initial DALgo migration definition is
+[`examples/migrations/dalgo-record-v1.hcl`](examples/migrations/dalgo-record-v1.hcl).
 
 ### `wb ci audit` — CI/CD policy validation
 

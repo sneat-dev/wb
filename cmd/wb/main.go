@@ -30,8 +30,13 @@ func main() {
 
 	root.AddCommand(newSyncCmd())
 	root.AddCommand(newRunCmd())
+	root.AddCommand(newMigrateCmd())
 	root.AddCommand(newCICmd())
 	root.AddCommand(newHooksCmd())
+	root.AddCommand(newCoverageCmd())
+	root.AddCommand(newVerifyCmd())
+	root.AddCommand(newCheckCmd())
+	root.AddCommand(newStatusCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
