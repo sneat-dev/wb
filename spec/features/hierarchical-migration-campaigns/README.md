@@ -145,6 +145,22 @@ MUST continue ready local work while already-opened pull requests run remote
 CI; `--merge` is a final phase that requires every campaign PR's required
 checks to pass before any merge is attempted.
 
+Release preflight MUST run immediately before each dependency layer. A missing
+release in a later layer MUST NOT prevent a ready earlier layer from being
+published, and WB MUST stop before modifying the blocked layer so `--resume`
+can continue after the release handoff.
+
+A repository containing only provider modules MUST NOT be committed, pushed,
+or submitted for review by the campaign, even when its worktree is dirty. WB
+MUST preserve such provider-only changes.
+
+#### REQ: human-readable-change-titles
+
+When a migration declares a human-readable title, WB MUST use that title for
+generated commit and pull-request subjects. The stable migration ID remains in
+branch names, reports, and PR metadata; it MUST NOT be presented as a product
+or API version. If the title is absent, WB MAY fall back to the migration ID.
+
 For a local apply campaign without commit or publishing flags, verification
 failures MUST be collected deterministically and MUST NOT prevent later
 dependency layers from being verified. WB MUST return the collected failures
