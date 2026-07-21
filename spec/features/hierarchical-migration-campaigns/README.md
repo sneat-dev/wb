@@ -137,6 +137,10 @@ that published version, run `go mod tidy`, and rerun the selected local
 verification. A missing release declaration or an unrelated replacement MUST
 fail before that repository is committed, pushed, or submitted for review.
 
+The publishability preflight MUST reject every local filesystem replacement
+that does not point to the expected worktree of a module in the current
+campaign, even when that replacement was preserved from an earlier resume.
+
 #### REQ: dependency-layers-and-parallelism
 
 WB MUST process provider dependency layers before consumer layers. Independent

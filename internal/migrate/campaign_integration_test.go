@@ -285,6 +285,21 @@ func TestCampaignPRRequiresPublishedVersionsBeforePush(t *testing.T) {
 	assertGitClean(t, consumerWorktree)
 }
 
+func TestPreflightPublishedReleasesRejectsUnrelatedLocalReplacement(t *testing.T) {
+	moduleRoot := t.TempDir()
+	writeCampaignFile(t, filepath.Join(moduleRoot, "go.mod"), "module github.com/acme/consumer\n\ngo 1.24\n\nrequire example.com/unrelated v0.0.0\n\nreplace example.com/unrelated => ../unrelated\n")
+
+	err := preflightPublishedReleases(
+		moduleRoot,
+		Spec{},
+		"github.com/acme/consumer",
+		map[string]string{"github.com/acme/provider": t.TempDir()},
+	)
+	if err == nil || !strings.Contains(err.Error(), "has local replacement") {
+		t.Fatalf("preflight error = %v, want unrelated local replacement rejection", err)
+	}
+}
+
 type campaignIntegrationFixture struct {
 	spec       Spec
 	sourceRoot string
