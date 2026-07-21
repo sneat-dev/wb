@@ -17,7 +17,7 @@ func newMigrateCmd() *cobra.Command {
 		reportDir string
 	)
 	cmd := &cobra.Command{
-		Use:   "migrate <spec.yaml> <root> [root...]",
+		Use:   "migrate <spec.hcl> <root> [root...]",
 		Short: "Plan or apply a declarative source migration (dry-run by default)",
 		Long: "Migrate evaluates a versioned, language-neutral specification against one or more source roots. " +
 			"It never edits files unless --apply is set.",

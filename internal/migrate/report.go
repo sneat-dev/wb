@@ -24,9 +24,9 @@ type Report struct {
 
 // ReportMigration identifies the migration that produced a report.
 type ReportMigration struct {
-	ID      string `yaml:"id"`
-	Title   string `yaml:"title,omitempty"`
-	Version int    `yaml:"version"`
+	ID     string `yaml:"id"`
+	Title  string `yaml:"title,omitempty"`
+	Format string `yaml:"format"`
 }
 
 // ReportFile identifies one changed file and the Git command that reveals its
@@ -64,7 +64,7 @@ func NewReport(spec Spec, plan Plan, roots []string, status string) Report {
 	sort.Slice(absRoots, func(i, j int) bool { return len(absRoots[i]) > len(absRoots[j]) })
 	report := Report{
 		SchemaVersion: 1,
-		Migration:     ReportMigration{ID: spec.ID, Title: spec.Title, Version: spec.Version},
+		Migration:     ReportMigration{ID: spec.ID, Title: spec.Title, Format: spec.Format},
 		Status:        status,
 		Files:         make([]ReportFile, 0, len(plan.Changes)),
 		ReviewItems:   make([]ReportFinding, 0, len(plan.Findings)),
@@ -105,7 +105,7 @@ func (r Report) Markdown() string {
 	if r.Migration.Title != "" {
 		fmt.Fprintf(&out, "%s\n\n", r.Migration.Title)
 	}
-	fmt.Fprintf(&out, "- Schema: `%d`\n- Version: `%d`\n- Status: `%s`\n- Changed files: `%d`\n- Review items: `%d`\n\n", r.SchemaVersion, r.Migration.Version, r.Status, len(r.Files), len(r.ReviewItems))
+	fmt.Fprintf(&out, "- Report schema: `%d`\n- Migration format: [%s](%s)\n- Status: `%s`\n- Changed files: `%d`\n- Review items: `%d`\n\n", r.SchemaVersion, r.Migration.Format, r.Migration.Format, r.Status, len(r.Files), len(r.ReviewItems))
 	if len(r.Files) == 0 {
 		out.WriteString("No files require a change.\n")
 	} else {

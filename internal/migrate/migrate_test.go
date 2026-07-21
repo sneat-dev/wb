@@ -23,12 +23,22 @@ func create(record string) dal.Record {
 	_ = "dal.Record must stay a string"
 	return dal.NewRecord(dal.NewKeyWithID("Things", "one"))
 }
+
+func changes() *record.WithRecordChanges {
+	return &record.WithRecordChanges{}
+}
+
+type local struct{ WithRecordChanges int }
+
+func localMember(record local) int {
+	return record.WithRecordChanges
+}
 `
 	requireWrite(t, path, source)
 	spec := Spec{
-		ID:      "dalgo-record-v1",
-		Version: 1,
-		Scope:   Scope{Languages: []string{"go"}},
+		Format: MigrationFormatV1,
+		ID:     "dalgo-record-v1",
+		Scope:  Scope{Languages: []string{"go"}},
 		Steps: []Step{
 			{Kind: "import.replace", Language: "go", From: "github.com/dal-go/dalgo/record", To: "github.com/dal-go/record"},
 			{Kind: "import.replace", Language: "go", From: "github.com/dal-go/dalgo/update", To: "github.com/dal-go/record/update"},
@@ -44,6 +54,7 @@ func create(record string) dal.Record {
 					"NewKeyWithID": "record.NewKeyWithID",
 				},
 			},
+			{Kind: "selector.rename", Language: "go", Import: "github.com/dal-go/record", From: "WithRecordChanges", To: "Changes"},
 		},
 	}
 
@@ -60,6 +71,8 @@ func create(record string) dal.Record {
 		`"github.com/dal-go/record/update"`,
 		`dalrecord.Record`,
 		`dalrecord.NewRecord(dalrecord.NewKeyWithID`,
+		`*dalrecord.Changes`,
+		`return record.WithRecordChanges`,
 		`"dal.Record must stay a string"`,
 	} {
 		if !strings.Contains(updated, want) {
@@ -97,9 +110,9 @@ func TestBuildPlanTextReplaceSupportsPythonAndTypeScript(t *testing.T) {
 	requireWrite(t, typescript, "import { Record } from 'old-api';\n")
 
 	spec := Spec{
-		ID:      "cross-language-imports",
-		Version: 1,
-		Scope:   Scope{Languages: []string{"python", "typescript"}},
+		Format: MigrationFormatV1,
+		ID:     "cross-language-imports",
+		Scope:  Scope{Languages: []string{"python", "typescript"}},
 		Steps: []Step{
 			{Kind: "text.replace", Language: "python", From: "old_api", To: "new_api"},
 			{Kind: "text.replace", Language: "typescript", From: "old-api", To: "new-api"},
@@ -123,7 +136,7 @@ func TestApplyRefusesStalePlan(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "example.py")
 	requireWrite(t, path, "old\n")
-	spec := Spec{ID: "stale-plan", Version: 1, Steps: []Step{{Kind: "text.replace", From: "old", To: "new"}}}
+	spec := Spec{Format: MigrationFormatV1, ID: "stale-plan", Steps: []Step{{Kind: "text.replace", From: "old", To: "new"}}}
 	plan, err := BuildPlan(spec, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +149,7 @@ func TestApplyRefusesStalePlan(t *testing.T) {
 }
 
 func TestValidateKnownFutureAdapterLanguage(t *testing.T) {
-	spec := Spec{ID: "python-import", Version: 1, Steps: []Step{{Kind: "import.replace", Language: "python", From: "old", To: "new"}}}
+	spec := Spec{Format: MigrationFormatV1, ID: "python-import", Steps: []Step{{Kind: "import.replace", Language: "python", From: "old", To: "new"}}}
 	if err := spec.Validate(); err != nil {
 		t.Fatalf("known future adapter language should validate: %v", err)
 	}
@@ -154,7 +167,7 @@ func TestReportIndexesFilesForHumansAndTools(t *testing.T) {
 		},
 		Findings: []Finding{{Path: first, Language: "go", RuleID: "semantic-step", Message: "Review this call", Lines: []int{12}}},
 	}
-	report := NewReport(Spec{ID: "example-v1", Title: "Example", Version: 1}, plan, []string{dir}, "planned")
+	report := NewReport(Spec{Format: MigrationFormatV1, ID: "example-v1", Title: "Example"}, plan, []string{dir}, "planned")
 	if len(report.Files) != 2 || report.Files[0].Path != "a/two.go" {
 		t.Fatalf("files = %+v, want sorted relative paths", report.Files)
 	}
@@ -183,6 +196,54 @@ func TestReportIndexesFilesForHumansAndTools(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(reportDir, name)); err != nil {
 			t.Errorf("missing written report %s: %v", name, err)
 		}
+	}
+}
+
+func TestLoadHCLAllowsRepeatedSelectorRename(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rename.hcl")
+	requireWrite(t, path, `format = "https://sneat.dev/workbench/formats/migration/v1"
+
+migration "rename-types" {
+  selector_rename "go" {
+    import = "example.com/model"
+    from = "OldType"
+    to = "NewType"
+  }
+
+  selector_rename "go" {
+    import = "example.com/model"
+    from = "OldError"
+    to = "NewError"
+  }
+}
+`)
+
+	spec, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Format != MigrationFormatV1 || spec.ID != "rename-types" {
+		t.Fatalf("loaded spec = %+v", spec)
+	}
+	if len(spec.Steps) != 2 {
+		t.Fatalf("steps = %+v, want two selector renames", spec.Steps)
+	}
+	if spec.Steps[0].From != "OldType" || spec.Steps[1].From != "OldError" {
+		t.Fatalf("selector rename order = %+v", spec.Steps)
+	}
+}
+
+func TestLoadDALgoRecordExample(t *testing.T) {
+	spec, err := Load(filepath.Join("..", "..", "examples", "migrations", "dalgo-record-v1.hcl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.ID != "dalgo-record-v1" || spec.Format != MigrationFormatV1 {
+		t.Fatalf("loaded spec = %+v", spec)
+	}
+	if len(spec.Steps) != 4 || spec.Steps[3].Kind != "selector.rename" {
+		t.Fatalf("steps = %+v, want two imports, one rewrite, and one selector rename", spec.Steps)
 	}
 }
 

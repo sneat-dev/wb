@@ -35,10 +35,7 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 			}
 		}
 	case "selector.rewrite":
-		aliases := importAliases(file, step.Import)
-		if len(aliases) == 0 {
-			return source, false, nil
-		}
+		info := goTypeInfo(fset, file)
 		needsRewrite := false
 		ast.Inspect(file, func(node ast.Node) bool {
 			selector, ok := node.(*ast.SelectorExpr)
@@ -46,7 +43,7 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 				return true
 			}
 			prefix, ok := selector.X.(*ast.Ident)
-			if ok && aliases[prefix.Name] {
+			if ok && importedGoPackage(info, prefix, step.Import) {
 				_, needsRewrite = step.Rewrites[selector.Sel.Name]
 			}
 			return !needsRewrite
@@ -62,7 +59,7 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 				return true
 			}
 			prefix, ok := selector.X.(*ast.Ident)
-			if !ok || !aliases[prefix.Name] {
+			if !ok || !importedGoPackage(info, prefix, step.Import) {
 				return true
 			}
 			target, ok := step.Rewrites[selector.Sel.Name]
@@ -78,6 +75,20 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 			changed = true
 			return true
 		})
+	case "selector.rename":
+		info := goTypeInfo(fset, file)
+		ast.Inspect(file, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			prefix, ok := selector.X.(*ast.Ident)
+			if ok && importedGoPackage(info, prefix, step.Import) && selector.Sel.Name == step.From {
+				selector.Sel.Name = step.To
+				changed = true
+			}
+			return true
+		})
 	default:
 		return nil, false, fmt.Errorf("unsupported Go step %q", step.Kind)
 	}
@@ -91,22 +102,32 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 	return out.Bytes(), true, nil
 }
 
-func importAliases(file *ast.File, importPath string) map[string]bool {
-	aliases := map[string]bool{}
-	for _, spec := range file.Imports {
-		value, err := strconv.Unquote(spec.Path.Value)
-		if err != nil || value != importPath {
-			continue
+// importedGoPackage confirms that an identifier is the imported package, not
+// a local variable that happens to use the same spelling. This is the key
+// distinction between a type-aware selector operation and a text replacement.
+func importedGoPackage(info *types.Info, ident *ast.Ident, importPath string) bool {
+	pkgName, ok := info.Uses[ident].(*types.PkgName)
+	if !ok {
+		// A stub importer deliberately has no exported members. If a selector
+		// fails to resolve, go/types may omit its X identifier from Uses even
+		// though it still records the package name in its enclosing scope.
+		// Resolve that scope rather than falling back to a spelling-only match.
+		var innermost *types.Scope
+		for _, scope := range info.Scopes {
+			if !scope.Contains(ident.Pos()) {
+				continue
+			}
+			if innermost == nil || (scope.Pos() >= innermost.Pos() && scope.End() <= innermost.End()) {
+				innermost = scope
+			}
 		}
-		name := path.Base(value)
-		if spec.Name != nil {
-			name = spec.Name.Name
+		if innermost == nil {
+			return false
 		}
-		if name != "_" && name != "." {
-			aliases[name] = true
-		}
+		_, object := innermost.LookupParent(ident.Name, ident.Pos())
+		pkgName, ok = object.(*types.PkgName)
 	}
-	return aliases
+	return ok && pkgName.Imported().Path() == importPath
 }
 
 // ensureGoImport returns the package identifier that is safe to use in this
@@ -188,7 +209,11 @@ func renameGoImport(file *ast.File, fset *token.FileSet, spec *ast.ImportSpec, o
 }
 
 func goTypeInfo(fset *token.FileSet, file *ast.File) *types.Info {
-	info := &types.Info{Uses: map[*ast.Ident]types.Object{}}
+	info := &types.Info{
+		Defs:   map[*ast.Ident]types.Object{},
+		Uses:   map[*ast.Ident]types.Object{},
+		Scopes: map[ast.Node]*types.Scope{},
+	}
 	config := types.Config{
 		Importer: stubImporter{},
 		Error:    func(error) {}, // Syntax-aware rewrites tolerate unknown dependencies.
@@ -203,7 +228,9 @@ func goTypeInfo(fset *token.FileSet, file *ast.File) *types.Info {
 type stubImporter struct{}
 
 func (stubImporter) Import(importPath string) (*types.Package, error) {
-	return types.NewPackage(importPath, path.Base(importPath)), nil
+	pkg := types.NewPackage(importPath, path.Base(importPath))
+	pkg.MarkComplete()
+	return pkg, nil
 }
 
 func availableGoIdentifier(file *ast.File, preferred string) string {

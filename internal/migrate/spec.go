@@ -3,33 +3,38 @@ package migrate
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/hashicorp/hcl/v2/hclsimple"
 )
 
-// Spec is a versioned, language-neutral migration definition.
+// MigrationFormatV1 is the format contract for HCL migration specifications.
+// It is deliberately a stable public URL so it can become human-readable
+// documentation without teaching the runner a second, implicit versioning
+// system.
+const MigrationFormatV1 = "https://sneat.dev/workbench/formats/migration/v1"
+
+// Spec is a format-versioned, language-neutral migration definition.
 //
 // The core owns discovery, planning, application, and reporting. Individual
 // adapters own structural edits for their language.
 type Spec struct {
-	ID      string       `yaml:"id"`
-	Title   string       `yaml:"title"`
-	Version int          `yaml:"version"`
-	Scope   Scope        `yaml:"scope"`
-	Steps   []Step       `yaml:"steps"`
-	Review  []ReviewRule `yaml:"review"`
+	Format string
+	ID     string
+	Title  string
+	Scope  Scope
+	Steps  []Step
+	Review []ReviewRule
 }
 
 // Scope limits the files to which a migration applies. Empty Languages means
 // every language known to the runner.
 type Scope struct {
-	Languages []string `yaml:"languages"`
-	Include   []string `yaml:"include"`
-	Exclude   []string `yaml:"exclude"`
+	Languages []string
+	Include   []string
+	Exclude   []string
 }
 
 // Step is one declarative edit. Kinds are intentionally small:
@@ -37,41 +42,44 @@ type Scope struct {
 //   - text.replace applies an exact replacement to a selected file;
 //   - import.replace delegates an import-path rewrite to a language adapter;
 //   - selector.rewrite delegates a qualified-symbol rewrite to an adapter.
+//   - selector.rename renames one qualified symbol without changing imports.
 //
 // More language capabilities can be added without changing the runner's plan
 // and apply protocol.
 type Step struct {
-	Kind     string `yaml:"kind"`
-	Language string `yaml:"language"`
+	Kind     string
+	Language string
 
-	From string `yaml:"from"`
-	To   string `yaml:"to"`
+	From string
+	To   string
 
-	Import      string            `yaml:"import"`
-	AddImport   string            `yaml:"add_import"`
-	AddImportAs string            `yaml:"add_import_as"`
-	Rewrites    map[string]string `yaml:"rewrites"`
+	Import      string
+	AddImport   string
+	AddImportAs string
+	Rewrites    map[string]string
 }
 
 // ReviewRule identifies a source pattern that needs semantic review after the
 // mechanical plan. It is reported with affected files and line numbers, but
 // never changes source code itself.
 type ReviewRule struct {
-	ID       string `yaml:"id"`
-	Language string `yaml:"language"`
-	Pattern  string `yaml:"pattern"`
-	Message  string `yaml:"message"`
+	ID       string
+	Language string
+	Pattern  string
+	Message  string
 }
 
-// Load reads and validates a migration specification.
+// Load reads and validates an HCL migration specification with HashiCorp's
+// official hclsimple decoder. WB defines the document schema below but never
+// parses HCL itself.
 func Load(path string) (Spec, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return Spec{}, fmt.Errorf("read migration %s: %w", path, err)
-	}
-	var spec Spec
-	if err := yaml.Unmarshal(raw, &spec); err != nil {
+	var document hclDocument
+	if err := hclsimple.DecodeFile(path, nil, &document); err != nil {
 		return Spec{}, fmt.Errorf("parse migration %s: %w", path, err)
+	}
+	spec, err := document.spec()
+	if err != nil {
+		return Spec{}, fmt.Errorf("migration %s: %w", filepath.Base(path), err)
 	}
 	if err := spec.Validate(); err != nil {
 		return Spec{}, fmt.Errorf("migration %s: %w", filepath.Base(path), err)
@@ -85,8 +93,8 @@ func (s Spec) Validate() error {
 	if strings.TrimSpace(s.ID) == "" {
 		return fmt.Errorf("missing id")
 	}
-	if s.Version < 1 {
-		return fmt.Errorf("version must be at least 1")
+	if s.Format != MigrationFormatV1 {
+		return fmt.Errorf("unsupported format %q (want %q)", s.Format, MigrationFormatV1)
 	}
 	for _, language := range s.Scope.Languages {
 		if !knownLanguage(language) {
@@ -134,6 +142,13 @@ func (s Step) Validate() error {
 		}
 		if s.Import == "" || s.AddImport == "" || len(s.Rewrites) == 0 {
 			return fmt.Errorf("selector.rewrite requires import, add_import, and rewrites")
+		}
+	case "selector.rename":
+		if !knownLanguage(s.Language) {
+			return fmt.Errorf("selector.rename requires a known language")
+		}
+		if s.Import == "" || s.From == "" || s.To == "" {
+			return fmt.Errorf("selector.rename requires import, from, and to")
 		}
 	default:
 		return fmt.Errorf("unknown kind %q", s.Kind)

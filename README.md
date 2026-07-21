@@ -154,16 +154,16 @@ Same worktree/commit/push-or-PR flow for both recipe kinds:
 ### `wb migrate` — declarative source migrations
 
 `wb migrate` is for repeatable codebase migrations rather than arbitrary shell
-recipes. A versioned YAML specification declares the intended edit; WB
-discovers source files below the explicit roots, produces a deterministic plan,
-and writes only when `--apply` is passed.
+recipes. An HCL specification, decoded with HashiCorp's official HCL decoder,
+declares the intended edit. WB discovers source files below the explicit roots,
+produces a deterministic plan, and writes only when `--apply` is passed.
 
 ```sh
 # Preview a migration; no files are edited.
-wb migrate examples/migrations/dalgo-record-v1.yaml ~/projects/sneat-co
+wb migrate examples/migrations/dalgo-record-v1.hcl ~/projects/sneat-co
 
 # Make the planned edits. `--check` instead exits 1 when drift is found.
-wb migrate examples/migrations/dalgo-record-v1.yaml ~/projects/sneat-co --apply
+wb migrate examples/migrations/dalgo-record-v1.hcl ~/projects/sneat-co --apply
 ```
 
 Every planned file carries a SHA-256 of the source it was built from. Apply
@@ -181,7 +181,7 @@ can inspect it normally after an apply.
 Use `--report-dir` to also write both representations:
 
 ```sh
-wb migrate examples/migrations/dalgo-record-v1.yaml ~/projects/sneat-co \
+wb migrate examples/migrations/dalgo-record-v1.hcl ~/projects/sneat-co \
   --report-dir /tmp/dalgo-record-report
 ```
 
@@ -196,35 +196,58 @@ an agent or human can handle semantic changes separately from mechanical ones.
 
 The runner is language-neutral; structural transformations are supplied by
 language adapters rather than by regexes. Today the Go adapter supports
-syntax-aware `import.replace` and `selector.rewrite` operations, preserving
-comments and strings and choosing an import alias when a name would be
-shadowed. The generic `text.replace` operation is available for Go, Python,
-and TypeScript. Python and TypeScript structural adapters are intentionally not
-implemented yet: a spec requesting one fails safely instead of performing an
-unsafe text rewrite.
+syntax-aware `import.replace`, `selector.rewrite`, and `selector.rename`
+operations, preserving comments and strings and choosing an import alias when
+a name would be shadowed. The generic `text.replace` operation is available for
+Go, Python, and TypeScript. Python and TypeScript structural adapters are
+intentionally not implemented yet: a spec requesting one fails safely instead
+of performing an unsafe text rewrite.
 
-```yaml
-id: rename-api-v1
-title: Rename the shared API
-version: 1
+```hcl
+format = "https://sneat.dev/workbench/formats/migration/v1"
 
-scope:
-  languages: [go]
+migration "rename-api-v1" {
+  title = "Rename the shared API"
 
-steps:
-  - kind: import.replace
-    language: go
-    from: example.com/old/api
-    to: example.com/new/api
+  scope {
+    languages = ["go"]
+  }
 
-  - kind: selector.rewrite
-    language: go
-    import: example.com/old/service
-    add_import: example.com/new/model
-    add_import_as: model
-    rewrites:
-      Record: model.Record
+  import_replace "go" {
+    from = "example.com/old/api"
+    to   = "example.com/new/api"
+  }
+
+  selector_rewrite "go" {
+    import        = "example.com/old/service"
+    add_import    = "example.com/new/model"
+    add_import_as = "model"
+    rewrites = {
+      Record = "model.Record"
+    }
+  }
+
+  # Repeat this block freely, including with the same "go" label.
+  selector_rename "go" {
+    import = "example.com/new/model"
+    from   = "OldType"
+    to     = "NewType"
+  }
+}
 ```
+
+`format` is the migration-spec contract, not an opaque integer. It is a link
+to the format definition at
+[`https://sneat.dev/workbench/formats/migration/v1`](https://sneat.dev/workbench/formats/migration/v1).
+The first implementation recognises that exact format offline; it does not
+fetch the URL while planning a migration.
+
+Every `selector_rename "go"` block is a list entry, not a map entry, so many
+blocks with the same language label are valid. It renames a qualified package
+member such as `model.OldType`; it does not rename locally declared Go types or
+unqualified identifiers. Those need a future type-aware rename operation based
+on `go/types` (and corresponding LibCST/TypeScript compiler adapters), rather
+than an unsafe text replacement.
 
 Adapter work is deliberately isolated behind the same planning and apply
 protocol:
@@ -236,7 +259,7 @@ protocol:
 | TypeScript | Planned with the TypeScript compiler API | `package.json` |
 
 The initial DALgo migration definition is
-[`examples/migrations/dalgo-record-v1.yaml`](examples/migrations/dalgo-record-v1.yaml).
+[`examples/migrations/dalgo-record-v1.hcl`](examples/migrations/dalgo-record-v1.hcl).
 
 ### `wb ci audit` — CI/CD policy validation
 
