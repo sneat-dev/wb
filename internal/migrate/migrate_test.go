@@ -245,6 +245,9 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.Steps) != 4 || spec.Steps[3].Kind != "selector.rename" {
 		t.Fatalf("steps = %+v, want two imports, one rewrite, and one selector rename", spec.Steps)
 	}
+	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
+		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
+	}
 }
 
 func requireWrite(t *testing.T, path, content string) {

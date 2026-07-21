@@ -21,12 +21,13 @@ const MigrationFormatV1 = "https://sneat.dev/workbench/formats/migration/v1"
 // The core owns discovery, planning, application, and reporting. Individual
 // adapters own structural edits for their language.
 type Spec struct {
-	Format string
-	ID     string
-	Title  string
-	Scope  Scope
-	Steps  []Step
-	Review []ReviewRule
+	Format           string
+	ID               string
+	Title            string
+	Scope            Scope
+	Steps            []Step
+	Review           []ReviewRule
+	GoModuleRequires []GoModuleRequire
 }
 
 // Scope limits the files to which a migration applies. Empty Languages means
@@ -67,6 +68,14 @@ type ReviewRule struct {
 	Language string
 	Pattern  string
 	Message  string
+}
+
+// GoModuleRequire declares a module made newly necessary by the migration.
+// It is acted on only by a hierarchical Go campaign; ordinary source-only
+// migration deliberately leaves package manifests alone.
+type GoModuleRequire struct {
+	Path    string
+	Version string
 }
 
 // Load reads and validates an HCL migration specification with HashiCorp's
@@ -112,6 +121,11 @@ func (s Spec) Validate() error {
 	for i, rule := range s.Review {
 		if err := rule.Validate(); err != nil {
 			return fmt.Errorf("review rule %d: %w", i+1, err)
+		}
+	}
+	for i, requirement := range s.GoModuleRequires {
+		if strings.TrimSpace(requirement.Path) == "" || strings.TrimSpace(requirement.Version) == "" {
+			return fmt.Errorf("go module requirement %d requires path and version", i+1)
 		}
 	}
 	return nil

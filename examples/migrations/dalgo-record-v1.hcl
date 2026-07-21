@@ -65,6 +65,12 @@ migration "dalgo-record-v1" {
     to     = "Changes"
   }
 
+  # Hierarchical Go campaigns add this requirement and a local worktree
+  # replacement. It gives ordinary Go tooling a real module version too.
+  go_module_require "github.com/dal-go/record" {
+    version = "v0.1.0"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {

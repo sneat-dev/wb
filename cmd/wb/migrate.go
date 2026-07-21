@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +17,18 @@ func newMigrateCmd() *cobra.Command {
 		check     bool
 		format    string
 		reportDir string
+
+		hierarchical bool
+		githubDir    string
+		ref          string
+		moduleRefs   []string
+		verify       string
+		noVerify     bool
+		commit       bool
+		push         bool
+		pr           bool
+		merge        bool
+		parallel     int
 	)
 	cmd := &cobra.Command{
 		Use:   "migrate <spec.hcl> <root> [root...]",
@@ -23,6 +37,20 @@ func newMigrateCmd() *cobra.Command {
 			"It never edits files unless --apply is set.",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if hierarchical {
+				code := runHierarchicalMigration(args[0], args[1:], hierarchicalMigrationOptions{
+					apply: apply, check: check, format: format, reportDir: reportDir, githubDir: githubDir,
+					ref: ref, moduleRefs: moduleRefs, verify: verify, noVerify: noVerify, commit: commit, push: push,
+					pr: pr, merge: merge, parallel: parallel, verifyExplicit: cmd.Flags().Changed("verify"),
+				})
+				if code != 0 {
+					os.Exit(code)
+				}
+				return nil
+			}
+			if commit || push || pr || merge || noVerify || cmd.Flags().Changed("verify") || cmd.Flags().Changed("github-dir") || cmd.Flags().Changed("ref") || cmd.Flags().Changed("parallel") || len(moduleRefs) > 0 {
+				return fmt.Errorf("--commit, --push, --pr, --merge, --verify, --no-verify, --github-dir, --ref, --module-ref, and --parallel require --hierarchical")
+			}
 			code := runMigrate(args[0], args[1:], apply, check, format, reportDir)
 			if code != 0 {
 				os.Exit(code)
@@ -34,7 +62,96 @@ func newMigrateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&check, "check", false, "exit 1 when changes would be made")
 	cmd.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown or yaml")
 	cmd.Flags().StringVar(&reportDir, "report-dir", "", "write migration.md and migration.yaml to this directory")
+	cmd.Flags().BoolVar(&hierarchical, "hierarchical", false, "migrate Go dependents in isolated local worktrees")
+	cmd.Flags().StringVar(&githubDir, "github-dir", "", "canonical GitHub clone root (defaults to --projects-root)")
+	cmd.Flags().StringVar(&ref, "ref", "main", "base ref for campaign worktrees")
+	cmd.Flags().StringArrayVar(&moduleRefs, "module-ref", nil, "module-specific ref as module=ref (repeatable)")
+	cmd.Flags().StringVar(&verify, "verify", "full", "post-apply verification: compile, test, full, or none")
+	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "skip post-apply verification")
+	cmd.Flags().BoolVar(&commit, "commit", false, "commit verified campaign changes on local branches")
+	cmd.Flags().BoolVar(&push, "push", false, "push committed campaign branches without opening pull requests")
+	cmd.Flags().BoolVar(&pr, "pr", false, "open pull requests for pushed campaign branches")
+	cmd.Flags().BoolVar(&merge, "merge", false, "merge campaign pull requests only after required GitHub checks pass")
+	cmd.Flags().IntVar(&parallel, "parallel", 1, "maximum independent repositories to migrate concurrently")
 	return cmd
+}
+
+type hierarchicalMigrationOptions struct {
+	apply, check, noVerify, commit, push, pr, merge bool
+	format, reportDir, githubDir, ref, verify       string
+	moduleRefs                                      []string
+	parallel                                        int
+	verifyExplicit                                  bool
+}
+
+func runHierarchicalMigration(specPath string, roots []string, options hierarchicalMigrationOptions) int {
+	if len(roots) != 1 {
+		fmt.Fprintln(os.Stderr, "--hierarchical requires exactly one source root")
+		return 2
+	}
+	if options.check {
+		fmt.Fprintln(os.Stderr, "--check is not supported with --hierarchical; use the campaign report from the dry run")
+		return 2
+	}
+	if options.noVerify && options.verifyExplicit {
+		fmt.Fprintln(os.Stderr, "--no-verify and --verify cannot be used together")
+		return 2
+	}
+	refs, err := parseModuleRefs(options.moduleRefs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	spec, err := migrate.Load(specPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	githubDir := options.githubDir
+	if githubDir == "" {
+		githubDir = projectsRoot
+	}
+	verification := migrate.Verification(options.verify)
+	if options.noVerify {
+		verification = migrate.VerifyNone
+	}
+	reportDir := options.reportDir
+	if reportDir == "" {
+		reportDir = filepath.Join(githubDir, ".wb", "reports", spec.ID)
+	}
+	report, runErr := migrate.RunCampaign(spec, roots[0], migrate.CampaignOptions{
+		GitHubDir: githubDir, Ref: options.ref, ModuleRefs: refs, Apply: options.apply,
+		Verify: verification, Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
+		Parallel: options.parallel, ReportDir: reportDir,
+	})
+	if err := migrate.WriteCampaignReports(reportDir, report); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if err := writeCampaignReport(report, options.format); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if runErr != nil {
+		fmt.Fprintln(os.Stderr, runErr)
+		return 2
+	}
+	return 0
+}
+
+func parseModuleRefs(values []string) (map[string]string, error) {
+	refs := make(map[string]string, len(values))
+	for _, value := range values {
+		module, ref, ok := strings.Cut(value, "=")
+		if !ok || strings.TrimSpace(module) == "" || strings.TrimSpace(ref) == "" {
+			return nil, fmt.Errorf("invalid --module-ref %q (want module=ref)", value)
+		}
+		if _, exists := refs[module]; exists {
+			return nil, fmt.Errorf("duplicate --module-ref for %s", module)
+		}
+		refs[module] = ref
+	}
+	return refs, nil
 }
 
 func runMigrate(specPath string, roots []string, apply, check bool, format, reportDir string) int {
@@ -81,6 +198,23 @@ func writeMigrationReport(report migrate.Report, format, reportDir string) error
 			return err
 		}
 	}
+	switch format {
+	case "markdown":
+		_, err := fmt.Print(report.Markdown())
+		return err
+	case "yaml":
+		raw, err := report.YAML()
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(raw)
+		return err
+	default:
+		return fmt.Errorf("unknown --format %q (want markdown or yaml)", format)
+	}
+}
+
+func writeCampaignReport(report migrate.CampaignReport, format string) error {
 	switch format {
 	case "markdown":
 		_, err := fmt.Print(report.Markdown())

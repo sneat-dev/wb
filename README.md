@@ -249,6 +249,105 @@ unqualified identifiers. Those need a future type-aware rename operation based
 on `go/types` (and corresponding LibCST/TypeScript compiler adapters), rather
 than an unsafe text replacement.
 
+When a migration introduces a new Go module, declare its version explicitly:
+
+```hcl
+go_module_require "github.com/example/new-model" {
+  version = "v1.2.3"
+}
+```
+
+The normal source-only runner leaves this declaration alone. It is consumed by
+the hierarchical Go workflow below, which adds the requirement and redirects it
+to the campaign's local worktree.
+
+#### Hierarchical Go campaigns
+
+Use `--hierarchical` when the migration must move a Go dependency graph rather
+than one checked-out repository. It reads the source module's `go mod graph`,
+finds the reverse dependency closure of the module paths referenced by the
+migration, and prepares each GitHub repository independently.
+
+```sh
+# Plan only. No clone, fetch, worktree, source, commit, or push occurs.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Apply into dedicated branches and worktrees, verifying every changed Go
+# module with `go vet ./...` and `go test ./...` (the default `full` mode).
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Commit only after all default verification succeeds. Push is separately
+# opt-in and pushes those branches only.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --commit --push \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Open one PR per changed repository. WB continues with other ready
+# repositories while GitHub Actions runs for PRs already opened.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --pr --parallel=2 \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Merge only after every campaign PR has successful required GitHub checks.
+# This does not enable auto-merge or bypass protected-branch rules.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --merge \
+  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+```
+
+Canonical clones live at `<github-dir>/<org>/<repo>`; `--github-dir` defaults
+to `--projects-root`. The campaign creates its worktrees under
+`<github-dir>/.wb/worktrees/<migration>/<org>/<repo>` from `origin/<ref>`
+(`main` by default). A dirty canonical clone is never checked out, reset, or
+otherwise modified: WB only fetches `origin`, then branches its dedicated
+worktree from the requested remote ref. Missing, resolvable GitHub repositories
+are cloned during `--apply`, regardless of organisation.
+
+For changed consumer modules, WB updates `go.mod` requirements declared in the
+spec and writes relative `replace` directives to the matching campaign
+worktrees. It does not create a shared `go.work` file. This lets dependent
+worktrees compile together while keeping the changes reviewable and
+committable per repository.
+
+Verification is enabled by default for every `--apply` campaign:
+
+| Setting | Checks |
+|---|---|
+| `--verify=compile` | `go test -run=^$ ./...` |
+| `--verify=test` | `go test ./...` |
+| `--verify=full` (default) | `go vet ./...`, then `go test ./...` |
+| `--no-verify` or `--verify=none` | No checks |
+
+`--commit` requires `--apply`. `--push` implies `--commit` and also requires
+`--apply`. `--pr` implies `--push`; it opens one ordinary (non-draft) PR per
+changed repository, with no auto-merge. `--merge` implies `--pr` and is a
+separate final phase: WB first checks every campaign PR's required GitHub
+checks, then uses GitHub's normal merge operation in dependency order. It
+stops before merging anything when a check is pending or failing, and never
+bypasses branch protection.
+
+`--parallel=N` (default `1`) runs independent repositories concurrently. WB
+still processes dependency layers in order: a provider's migration and local
+verification complete before a consumer that uses its local replacement starts.
+Once a repository is verified and `--pr` is active, its PR is opened
+immediately; WB does not wait for its remote CI before working on later ready
+repositories. Only the final `--merge` phase waits for required GitHub checks.
+
+Every hierarchical run writes a linked human index and deterministic manifest
+to `<github-dir>/.wb/reports/<migration>/campaign.md` and `campaign.yaml`
+(or `--report-dir`). Per-module `migration.md` and `migration.yaml` reports
+are nested beneath that directory. The Markdown index points at worktrees and
+the per-module reports; Git remains the source of the detailed diff.
+
 Adapter work is deliberately isolated behind the same planning and apply
 protocol:
 
