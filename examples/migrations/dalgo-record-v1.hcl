@@ -92,6 +92,18 @@ migration "dalgo-record-v1" {
     version = "v0.31.48"
   }
 
+  go_module_release "github.com/bots-go-framework/bots-fw-telegram-models" {
+    version = "v0.3.71"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2firestore" {
+    version = "v0.9.6"
+  }
+
+  go_module_release "github.com/sneat-co/commitius/backend" {
+    version = "v0.2.3"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {
