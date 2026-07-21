@@ -24,6 +24,8 @@ wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
+wb check [path] [flags]      # run a named local CI-equivalent check profile
+wb status [path] [flags]     # inspect every local repo by default, or one path
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 ```
 
@@ -173,6 +175,14 @@ wb verify --fleet --filter sneat-co/ --parallel=2
 
 # Restrict verification to compilation-oriented checks for one repository.
 wb verify ~/projects/sneat-co/sneat-bots --checks lint,build
+
+# CI profile adds SpecScore lint for repositories that contain spec/.
+wb check --fleet --match 'sneat-co/*' --profile ci --parallel=2 \
+  --timeout 10m --retry 1 --report-dir /tmp/wb-check
+
+# After a partial failure, re-run only prior failed repositories.
+wb check --fleet --match 'sneat-co/*' --profile ci \
+  --resume --report-dir /tmp/wb-check
 ```
 
 `--filter` (substring), `--match` (glob), and `--regex` are composed against
@@ -187,6 +197,32 @@ of repository percentages. Verification runs `go vet ./...`, `go test ./...`,
 and `go build ./...` for each Go module; for a root Node project it runs only
 defined `lint`, `test`, and `build` scripts with the detected package manager.
 Other stacks remain explicit, reusable `wb run` recipes.
+
+`wb check` provides stable local CI profiles: `fast` runs lint, `full` (the
+default) runs lint/test/build, and `ci` additionally runs `specscore spec lint`
+for repositories with `spec/`. `--timeout` applies to each external command;
+`--retry=N` retries only failed commands N additional times; and
+`--resume --report-dir DIR` selects only repository failures from the previous
+YAML report. These controls also apply to `wb coverage` and `wb verify`.
+
+### `wb status` — fleet-first local Git health
+
+Status is fleet-first because the normal question is “which local checkouts
+need attention?” Run `wb status` with no flags to scan all repositories below
+`--projects-root`; there is intentionally no `--fleet` flag. Supplying a path
+narrows the same command to one checkout.
+
+```sh
+wb status
+wb status --filter sneat-co/ --match 'sneat-co/*' --parallel=8
+wb status ~/projects/sneat-co/sneat-bots --details --format yaml
+```
+
+It reads only local Git state—never fetches, pulls, modifies, commits, or
+pushes—and reports clean, attention, or inspection-error status. Attention
+covers modified, untracked, conflicted, stashed, and unpushed work. Markdown
+defaults to concise summaries; YAML/JSON and `--details` provide individual
+paths and Git entries.
 
 ### `wb migrate` — declarative source migrations
 

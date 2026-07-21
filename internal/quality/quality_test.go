@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCoverAggregatesGoStatements(t *testing.T) {
@@ -81,6 +82,30 @@ func TestParseChecks(t *testing.T) {
 	}
 	if _, err := ParseChecks("format"); err == nil {
 		t.Fatal("unknown check should fail")
+	}
+}
+
+func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	dir := t.TempDir()
+	countPath := filepath.Join(dir, "attempts")
+	retryTool := filepath.Join(dir, "retry-tool")
+	writeQualityFile(t, retryTool, "#!/bin/sh\ncount=0\nif [ -f \""+countPath+"\" ]; then count=$(cat \""+countPath+"\"); fi\ncount=$((count + 1))\nprintf '%s' \"$count\" > \""+countPath+"\"\nif [ \"$count\" -lt 2 ]; then exit 1; fi\n")
+	if err := os.Chmod(retryTool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err, attempts := runWithOptions(context.Background(), RunOptions{Retry: 1}, dir, retryTool); err != nil || attempts != 2 {
+		t.Fatalf("retry result = err %v, attempts %d", err, attempts)
+	}
+	timeoutTool := filepath.Join(dir, "timeout-tool")
+	writeQualityFile(t, timeoutTool, "#!/bin/sh\nsleep 1\n")
+	if err := os.Chmod(timeoutTool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err, attempts := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
 	}
 }
 

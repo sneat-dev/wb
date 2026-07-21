@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Check selects a conventional verification class.
@@ -18,7 +19,15 @@ const (
 	CheckLint  Check = "lint"
 	CheckTest  Check = "test"
 	CheckBuild Check = "build"
+	CheckSpec  Check = "spec"
 )
+
+// RunOptions bounds a single external command and retries only failed
+// attempts. Zero Timeout disables the per-command deadline.
+type RunOptions struct {
+	Timeout time.Duration
+	Retry   int
+}
 
 // VerificationReport records all conventional checks applicable to a
 // repository. Unsupported stacks and missing optional Node scripts are skipped
@@ -38,12 +47,20 @@ type VerificationEntry struct {
 	Command  string `yaml:"command,omitempty" json:"command,omitempty"`
 	Status   Status `yaml:"status" json:"status"`
 	Detail   string `yaml:"detail,omitempty" json:"detail,omitempty"`
+	Attempts int    `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
 // Verify runs the requested conventional Go and Node checks. The caller owns
 // cross-repository parallelism; checks within one module run in the requested
 // order to keep output and failures clear.
 func Verify(ctx context.Context, repository, path string, checks []Check) VerificationReport {
+	return VerifyWithOptions(ctx, repository, path, checks, RunOptions{})
+}
+
+// VerifyWithOptions runs the requested checks with per-command reliability
+// controls. The returned report includes every attempted, skipped, passed, or
+// failed command.
+func VerifyWithOptions(ctx context.Context, repository, path string, checks []Check, options RunOptions) VerificationReport {
 	report := VerificationReport{Repository: repository, Path: path, Status: StatusSkipped}
 	modules, err := goModules(path)
 	if err != nil {
@@ -51,8 +68,11 @@ func Verify(ctx context.Context, repository, path string, checks []Check) Verifi
 	}
 	for _, module := range modules {
 		for _, check := range checks {
+			if check == CheckSpec {
+				continue
+			}
 			command := goCommand(check)
-			entry := runVerification(ctx, "go", relativePath(path, module), check, module, command...)
+			entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
 			report.Results = append(report.Results, entry)
 		}
 	}
@@ -60,13 +80,26 @@ func Verify(ctx context.Context, repository, path string, checks []Check) Verifi
 		report.Results = append(report.Results, VerificationEntry{Language: "node", Status: StatusFailed, Detail: err.Error()})
 	} else if ok {
 		for _, check := range checks {
+			if check == CheckSpec {
+				continue
+			}
 			if !node.Scripts[string(check)] {
 				report.Results = append(report.Results, VerificationEntry{Language: "node", Check: check, Status: StatusSkipped, Detail: "script is not defined"})
 				continue
 			}
 			command := []string{node.PackageManager, "run", string(check)}
-			entry := runVerification(ctx, "node", ".", check, path, command...)
+			entry := runVerification(ctx, options, "node", ".", check, path, command...)
 			report.Results = append(report.Results, entry)
+		}
+	}
+	if containsCheck(checks, CheckSpec) {
+		if _, err := os.Stat(filepath.Join(path, "spec")); err == nil {
+			entry := runVerification(ctx, options, "specscore", ".", CheckSpec, path, "specscore", "spec", "lint")
+			report.Results = append(report.Results, entry)
+		} else if !os.IsNotExist(err) {
+			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: err.Error()})
+		} else {
+			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"})
 		}
 	}
 	if len(report.Results) == 0 {
@@ -82,6 +115,15 @@ func Verify(ctx context.Context, repository, path string, checks []Check) Verifi
 	return report
 }
 
+func containsCheck(checks []Check, want Check) bool {
+	for _, check := range checks {
+		if check == want {
+			return true
+		}
+	}
+	return false
+}
+
 func goCommand(check Check) []string {
 	switch check {
 	case CheckLint:
@@ -95,14 +137,15 @@ func goCommand(check Check) []string {
 	}
 }
 
-func runVerification(ctx context.Context, language, module string, check Check, dir string, command ...string) VerificationEntry {
+func runVerification(ctx context.Context, options RunOptions, language, module string, check Check, dir string, command ...string) VerificationEntry {
 	entry := VerificationEntry{Language: language, Module: module, Check: check, Command: strings.Join(command, " ")}
 	if len(command) == 0 {
 		entry.Status = StatusSkipped
 		entry.Detail = "unsupported check"
 		return entry
 	}
-	output, err := run(ctx, dir, command[0], command[1:]...)
+	output, err, attempts := runWithOptions(ctx, options, dir, command[0], command[1:]...)
+	entry.Attempts = attempts
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
@@ -173,6 +216,27 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 	return string(output), err
 }
 
+func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, error, int) {
+	attempts := 0
+	for {
+		attempts++
+		attemptCtx := ctx
+		cancel := func() {}
+		if options.Timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
+		}
+		output, err := run(attemptCtx, dir, name, args...)
+		timedOut := attemptCtx.Err() == context.DeadlineExceeded
+		cancel()
+		if timedOut {
+			err = fmt.Errorf("timed out after %s", options.Timeout)
+		}
+		if err == nil || attempts > options.Retry {
+			return output, err, attempts
+		}
+	}
+}
+
 func commandError(command, output string, err error) string {
 	detail := strings.TrimSpace(output)
 	if detail == "" {
@@ -196,9 +260,9 @@ func ParseChecks(value string) ([]Check, error) {
 	for _, raw := range strings.Split(value, ",") {
 		check := Check(strings.TrimSpace(raw))
 		switch check {
-		case CheckLint, CheckTest, CheckBuild:
+		case CheckLint, CheckTest, CheckBuild, CheckSpec:
 		default:
-			return nil, fmt.Errorf("unknown check %q (want lint, test, or build)", raw)
+			return nil, fmt.Errorf("unknown check %q (want lint, test, build, or spec)", raw)
 		}
 		if !seen[check] {
 			checks = append(checks, check)

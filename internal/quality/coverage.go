@@ -43,6 +43,7 @@ type ModuleCoverage struct {
 	Statements int     `yaml:"statements" json:"statements"`
 	Covered    int     `yaml:"covered" json:"covered"`
 	Percentage float64 `yaml:"percentage" json:"percentage"`
+	Attempts   int     `yaml:"attempts,omitempty" json:"attempts,omitempty"`
 }
 
 // Status is the outcome of a repository or a discrete verification command.
@@ -57,6 +58,12 @@ const (
 // Cover measures all Go modules below path. It creates profiles in the system
 // temporary directory, never in the repository.
 func Cover(ctx context.Context, repository, path string) RepositoryCoverage {
+	return CoverWithOptions(ctx, repository, path, RunOptions{})
+}
+
+// CoverWithOptions measures coverage with a deadline and retries for each Go
+// module's test command.
+func CoverWithOptions(ctx context.Context, repository, path string, options RunOptions) RepositoryCoverage {
 	report := RepositoryCoverage{Repository: repository, Path: path}
 	modules, err := goModules(path)
 	if err != nil {
@@ -83,7 +90,7 @@ func Cover(ctx context.Context, repository, path string) RepositoryCoverage {
 			report.Error = err.Error()
 			return report
 		}
-		output, err := run(ctx, module, "go", "test", "-coverprofile="+profilePath, "./...")
+		output, err, attempts := runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
 		if err != nil {
 			_ = os.Remove(profilePath)
 			report.Status = StatusFailed
@@ -102,6 +109,7 @@ func Cover(ctx context.Context, repository, path string) RepositoryCoverage {
 			Statements: statements,
 			Covered:    covered,
 			Percentage: percent(covered, statements),
+			Attempts:   attempts,
 		}
 		report.Modules = append(report.Modules, moduleReport)
 		report.Statements += statements

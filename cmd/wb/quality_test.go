@@ -42,3 +42,38 @@ func TestQualityMarkdownIncludesTotalsAndCommands(t *testing.T) {
 		t.Fatalf("verification markdown = %s", markdown)
 	}
 }
+
+func TestResumeTargetsSelectsOnlyPriorFailures(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "verify.yaml"), []byte("schema_version: 1\nrepositories:\n  - repository: acme/failing\n    status: failed\n  - repository: acme/passing\n    status: passed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	targets := []qualityTarget{{repository: "acme/failing"}, {repository: "acme/passing"}}
+	resumed, previous, err := resumeVerificationTargets(targets, dir, "verify")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed) != 1 || resumed[0].repository != "acme/failing" {
+		t.Fatalf("resumed targets = %+v", resumed)
+	}
+	merged := mergeVerificationReports(previous, verificationIndex{SchemaVersion: 1, Repositories: []quality.VerificationReport{{Repository: "acme/failing", Status: quality.StatusPassed}}})
+	if len(merged.Repositories) != 2 || merged.Repositories[0].Repository != "acme/failing" || merged.Repositories[0].Status != quality.StatusPassed {
+		t.Fatalf("merged verification = %+v", merged)
+	}
+	if _, err := checksForProfile("ci"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checksForProfile("unknown"); err == nil {
+		t.Fatal("unknown profile should fail")
+	}
+}
+
+func TestStatusMarkdownReportsAttention(t *testing.T) {
+	report := statusIndex{Repositories: []repositoryStatusInfo{{Repository: "acme/repo", Status: "attention", Summary: "1 modified file", Modified: []string{"main.go"}}}}
+	markdown := statusMarkdown(report, true)
+	for _, want := range []string{"attention", "1 modified file", "main.go"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("status markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}

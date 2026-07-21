@@ -58,6 +58,20 @@ For a root `package.json`, `wb verify` MUST run only defined `lint`, `test`, and
 
 Quality commands MUST continue after repository-level failures and report each attempted, skipped, passed, or failed check. They MUST return non-zero after the complete index is written if any selected repository failed.
 
+### Check profiles and reliability
+
+#### REQ: check-profiles
+
+`wb check` MUST provide named built-in profiles: `fast` runs lint, `full` runs lint, test, and build, and `ci` adds SpecScore lint when a repository has a `spec/` directory. `full` MUST be the default profile. A profile MUST use the same conventional Go and Node adapters as `wb verify`.
+
+#### REQ: bounded-command-execution
+
+Coverage, verification, and check commands MUST apply `--timeout` independently to every external command. The default timeout MUST be finite; `0` MAY explicitly disable it. `--retry=N` MUST make at most N additional attempts for a failed command and record the number of attempts in the report.
+
+#### REQ: report-resume
+
+When `--resume` and `--report-dir` are supplied, a quality command MUST read its previous YAML report and run only selected repositories whose prior status was failed. It MUST fail when the report is unavailable or invalid, and MUST leave it intact when no selected repository needs resuming.
+
 ### Reports and extension
 
 #### REQ: dual-audience-reports
@@ -82,7 +96,7 @@ A selected local fleet has predictable filtering and bounded execution, and its 
 
 ### AC: complete-conventional-verification
 
-**Requirements:** fleet-quality#req:conventional-go-checks, fleet-quality#req:conventional-node-checks, fleet-quality#req:complete-index, fleet-quality#req:dual-audience-reports, fleet-quality#req:custom-stack-recipes
+**Requirements:** fleet-quality#req:conventional-go-checks, fleet-quality#req:conventional-node-checks, fleet-quality#req:complete-index, fleet-quality#req:check-profiles, fleet-quality#req:bounded-command-execution, fleet-quality#req:report-resume, fleet-quality#req:dual-audience-reports, fleet-quality#req:custom-stack-recipes
 
 Every applicable conventional check appears in a complete, tool-readable and human-readable index. Unsupported custom stacks are not guessed and remain available through explicit recipes.
 
