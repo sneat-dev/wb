@@ -88,6 +88,10 @@ migration "dalgo-record-v1" {
     version = "v0.63.1"
   }
 
+  go_module_release "github.com/strongo/strongoapp" {
+    version = "v0.31.48"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {
