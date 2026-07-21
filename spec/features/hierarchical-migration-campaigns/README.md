@@ -172,6 +172,14 @@ generated commit and pull-request subjects. The stable migration ID remains in
 branch names, reports, and PR metadata; it MUST NOT be presented as a product
 or API version. If the title is absent, WB MAY fall back to the migration ID.
 
+#### REQ: open-pr-retry
+
+When `--pr` retries or resumes a published campaign branch, WB MUST reuse an
+existing open pull request with the same head and base branches. It MUST NOT
+reuse a closed or merged pull request. If the branch contains later campaign
+commits after an earlier pull request was merged, WB MUST open a new pull
+request for those commits.
+
 For a local apply campaign without commit or publishing flags, verification
 failures MUST be collected deterministically and MUST NOT prevent later
 dependency layers from being verified. WB MUST return the collected failures
@@ -250,7 +258,7 @@ worktrees.
 
 ### AC: publishable-review-branch
 
-**Requirements:** hierarchical-migration-campaigns#req:local-replace-for-verification, hierarchical-migration-campaigns#req:released-before-pr, hierarchical-migration-campaigns#req:dependency-layers-and-parallelism
+**Requirements:** hierarchical-migration-campaigns#req:local-replace-for-verification, hierarchical-migration-campaigns#req:released-before-pr, hierarchical-migration-campaigns#req:dependency-layers-and-parallelism, hierarchical-migration-campaigns#req:open-pr-retry
 
 Local verification may use a dependency worktree, but a review branch uses
 published module versions and passes its selected verification again before

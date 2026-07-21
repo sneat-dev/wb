@@ -1886,9 +1886,15 @@ func campaignChangeTitle(spec Spec) string {
 }
 
 func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
-	// A retry after a transient failure should reuse the branch's existing PR
-	// rather than opening a duplicate one.
-	if output, err := runIn(repo.worktree, "gh", "pr", "view", repo.branch, "--json", "url", "--jq", ".url"); err == nil {
+	// A retry after a transient failure should reuse an open PR rather than
+	// opening a duplicate one. A merged PR for the same branch must not be
+	// reused: the branch may contain a later release-chain update.
+	if output, err := runIn(repo.worktree, "gh", "pr", "list",
+		"--head", repo.branch,
+		"--base", repo.ref,
+		"--state", "open",
+		"--json", "url",
+		"--jq", ".[0].url"); err == nil {
 		if url := strings.TrimSpace(output); url != "" {
 			return url, nil
 		}
