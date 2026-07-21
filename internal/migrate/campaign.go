@@ -417,15 +417,18 @@ func (c *campaign) apply() error {
 	if err != nil {
 		return err
 	}
-	if c.options.PR {
-		if err := runRepositoriesParallel(c.repos, c.options.Parallel, func(repo *campaignRepository) error {
-			return c.preflightRepository(repo, moduleRoots)
-		}); err != nil {
-			return err
-		}
-	}
 	var localVerificationErrors []error
 	for _, layer := range layers {
+		// Preflight only the layer that is about to be changed. Earlier ready
+		// layers can then be published while a dependent layer waits for their
+		// release tags; --resume continues from that handoff point.
+		if c.options.PR {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+				return c.preflightRepository(repo, moduleRoots)
+			}); err != nil {
+				return err
+			}
+		}
 		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
 			return c.applyRepositorySources(repo)
 		}); err != nil {
@@ -610,6 +613,9 @@ func (c *campaign) finalizeRepositoryManifests(repo *campaignRepository, moduleR
 // dependency layer has completed source, manifest, and verification phases.
 // GitHub CI can then run while later consumer layers continue locally.
 func (c *campaign) commitAndPublishRepository(repo *campaignRepository) error {
+	if !repo.hasMigratingModules() {
+		return nil
+	}
 	changed, err := worktreeChanged(repo.worktree)
 	if err != nil {
 		return err
@@ -644,6 +650,15 @@ func (c *campaign) commitAndPublishRepository(repo *campaignRepository) error {
 	}
 	repo.report.Commit = strings.TrimSpace(head)
 	return c.publishRepository(repo)
+}
+
+func (repo *campaignRepository) hasMigratingModules() bool {
+	for _, module := range repo.modules {
+		if module.migrate {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *campaign) publishRepository(repo *campaignRepository) error {

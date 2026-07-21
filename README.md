@@ -387,36 +387,31 @@ migration, and prepares each GitHub repository independently.
 # Plan only. No clone, fetch, worktree, source, commit, or push occurs.
 wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
-  --hierarchical \
-  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+  --hierarchical
 
 # Apply into dedicated branches and worktrees, verifying every changed Go
 # module with `go vet ./...` and `go test ./...` (the default `full` mode).
 wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
-  --hierarchical --apply \
-  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+  --hierarchical --apply
 
 # Commit only after all default verification succeeds. Push is separately
 # opt-in and pushes those branches only.
 wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
-  --hierarchical --apply --commit --push \
-  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+  --hierarchical --apply --commit --push
 
 # Open one PR per changed repository. WB continues with other ready
 # repositories while GitHub Actions runs for PRs already opened.
 wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
-  --hierarchical --apply --pr --parallel=2 \
-  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+  --hierarchical --apply --pr --parallel=2
 
 # Merge only after every campaign PR has successful required GitHub checks.
 # This does not enable auto-merge or bypass protected-branch rules.
 wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
-  --hierarchical --apply --merge \
-  --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+  --hierarchical --apply --merge
 
 # Resume partial campaign worktrees on their expected branches.
 wb migrate examples/migrations/dalgo-record-v1.hcl \
