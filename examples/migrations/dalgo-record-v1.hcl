@@ -104,6 +104,14 @@ migration "dalgo-record-v1" {
     version = "v0.2.3"
   }
 
+  go_module_release "github.com/bots-go-framework/bots-fw-store-dalgo" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-go-core" {
+    version = "v0.60.4"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {
