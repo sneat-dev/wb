@@ -417,15 +417,18 @@ func (c *campaign) apply() error {
 	if err != nil {
 		return err
 	}
-	if c.options.PR {
-		if err := runRepositoriesParallel(c.repos, c.options.Parallel, func(repo *campaignRepository) error {
-			return c.preflightRepository(repo, moduleRoots)
-		}); err != nil {
-			return err
-		}
-	}
 	var localVerificationErrors []error
 	for _, layer := range layers {
+		// Preflight only the layer that is about to be changed. Earlier ready
+		// layers can then be published while a dependent layer waits for their
+		// release tags; --resume continues from that handoff point.
+		if c.options.PR {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+				return c.preflightRepository(repo, moduleRoots)
+			}); err != nil {
+				return err
+			}
+		}
 		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
 			return c.applyRepositorySources(repo)
 		}); err != nil {
