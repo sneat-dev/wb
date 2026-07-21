@@ -260,11 +260,24 @@ func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 		Status:        "planned",
 		Repositories: []CampaignRepositoryReport{{
 			Repository: "github.com/acme/repo", WorktreeDir: filepath.Join(t.TempDir(), "worktree"), Ref: "main",
-			Modules: []CampaignModuleReport{{Path: "github.com/acme/repo", Status: "planned", PlanState: "deferred"}},
+			Modules: []CampaignModuleReport{{
+				Path: "github.com/acme/repo", Status: "planned", PlanState: "deferred",
+				DependencyDecisions: []GoDependencyDecision{{
+					Phase: "local_verification", Path: "github.com/acme/stable",
+					RequiredAtCheck: true, VersionAtCheck: "v1.2.3",
+					RequiredAfter: true, VersionAfter: "v1.2.3",
+					VersionAction: "unchanged", ReplacementAction: "unchanged",
+					Reason: "no target version configured; WB preserved the selected version",
+				}},
+			}},
 		}},
 	}
 	markdown := report.Markdown()
-	for _, want := range []string{"# WB hierarchical migration: example", "github.com/acme/repo", "file://", "planned", "unknown (worktree not created)"} {
+	for _, want := range []string{
+		"# WB hierarchical migration: example", "github.com/acme/repo", "file://", "planned",
+		"unknown (worktree not created)", "github.com/acme/stable", "checked `v1.2.3`",
+		"no target version configured",
+	} {
 		if !strings.Contains(markdown, want) {
 			t.Errorf("Markdown missing %q:\n%s", want, markdown)
 		}
@@ -273,7 +286,11 @@ func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(yaml), "schema_version: 1") || !strings.Contains(string(yaml), "repositories:") || !strings.Contains(string(yaml), "plan_state: deferred") {
+	if !strings.Contains(string(yaml), "schema_version: 1") ||
+		!strings.Contains(string(yaml), "repositories:") ||
+		!strings.Contains(string(yaml), "plan_state: deferred") ||
+		!strings.Contains(string(yaml), "version_at_check: v1.2.3") ||
+		!strings.Contains(string(yaml), "reason: no target version configured") {
 		t.Errorf("YAML = %s", yaml)
 	}
 	if strings.Contains(string(yaml), "changed_files:") {

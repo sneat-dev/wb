@@ -112,6 +112,17 @@ including committed, staged, unstaged, and untracked files. `--resume` MUST
 retain this cumulative review surface even when the latest mechanical pass is
 idempotent; per-module plan counts MAY describe only the latest pass.
 
+#### REQ: auditable-go-dependency-decisions
+
+For every Go module requirement inspected during manifest normalization, the
+campaign YAML and Markdown reports MUST record the dependency path, its
+required version at the time of the check, any configured target version, the
+resulting version, and separate version and replacement actions. When WB does
+not update a dependency, the report MUST state why, including whether it was
+already at the configured target or WB preserved it because the migration did
+not configure a target version. Publication reporting MUST likewise explain
+the removal of temporary campaign worktree replacements.
+
 #### REQ: precise-review-rules
 
 A migration review rule MAY define an optional line-scoped exclusion pattern.
@@ -267,7 +278,7 @@ CI overlap safely.
 
 ### AC: truthful-extensible-specification
 
-**Requirements:** hierarchical-migration-campaigns#req:deterministic-operation-order, hierarchical-migration-campaigns#req:deferred-dry-run-results, hierarchical-migration-campaigns#req:linked-review-index, hierarchical-migration-campaigns#req:cumulative-resume-change-index, hierarchical-migration-campaigns#req:type-aware-local-renames, hierarchical-migration-campaigns#req:adapter-owned-manifests, hierarchical-migration-campaigns#req:hermetic-campaign-tests
+**Requirements:** hierarchical-migration-campaigns#req:deterministic-operation-order, hierarchical-migration-campaigns#req:deferred-dry-run-results, hierarchical-migration-campaigns#req:linked-review-index, hierarchical-migration-campaigns#req:cumulative-resume-change-index, hierarchical-migration-campaigns#req:auditable-go-dependency-decisions, hierarchical-migration-campaigns#req:type-aware-local-renames, hierarchical-migration-campaigns#req:adapter-owned-manifests, hierarchical-migration-campaigns#req:hermetic-campaign-tests
 
 The format has deterministic operation phases, reports distinguish deferred
 planning from measured changes, and the adapter roadmap preserves type safety
