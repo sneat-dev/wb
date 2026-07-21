@@ -641,7 +641,7 @@ func (c *campaign) commitAndPublishRepository(repo *campaignRepository) error {
 	if _, err := runIn(repo.worktree, "git", "add", "-A"); err != nil {
 		return err
 	}
-	if _, err := runIn(repo.worktree, "git", "commit", "-m", "chore: migrate "+c.spec.ID); err != nil {
+	if _, err := runIn(repo.worktree, "git", "commit", "-m", campaignChangeTitle(c.spec)); err != nil {
 		return err
 	}
 	head, err := runIn(repo.worktree, "git", "rev-parse", "HEAD")
@@ -669,7 +669,7 @@ func (c *campaign) publishRepository(repo *campaignRepository) error {
 		repo.report.Pushed = true
 	}
 	if c.options.PR {
-		prURL, err := openCampaignPR(repo, c.spec.ID)
+		prURL, err := openCampaignPR(repo, c.spec)
 		if err != nil {
 			return err
 		}
@@ -1604,7 +1604,14 @@ func worktreeChanged(dir string) (bool, error) {
 	return strings.TrimSpace(output) != "", err
 }
 
-func openCampaignPR(repo *campaignRepository, migrationID string) (string, error) {
+func campaignChangeTitle(spec Spec) string {
+	if title := strings.TrimSpace(spec.Title); title != "" {
+		return "chore: " + strings.TrimSuffix(title, ".")
+	}
+	return "chore: migrate " + spec.ID
+}
+
+func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
 	// A retry after a transient failure should reuse the branch's existing PR
 	// rather than opening a duplicate one.
 	if output, err := runIn(repo.worktree, "gh", "pr", "view", repo.branch, "--json", "url", "--jq", ".url"); err == nil {
@@ -1615,8 +1622,8 @@ func openCampaignPR(repo *campaignRepository, migrationID string) (string, error
 	output, err := runIn(repo.worktree, "gh", "pr", "create",
 		"--base", repo.ref,
 		"--head", repo.branch,
-		"--title", "chore: migrate "+migrationID,
-		"--body", "Automated WB migration `"+migrationID+"`. Local verification completed before this pull request was opened.")
+		"--title", campaignChangeTitle(spec),
+		"--body", "Automated WB migration `"+spec.ID+"`. Local verification completed before this pull request was opened.")
 	if err != nil {
 		return "", err
 	}

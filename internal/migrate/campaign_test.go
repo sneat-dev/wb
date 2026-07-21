@@ -97,6 +97,15 @@ func TestCampaignOptionsDefaultVerificationAndPush(t *testing.T) {
 	}
 }
 
+func TestCampaignChangeTitle(t *testing.T) {
+	if got, want := campaignChangeTitle(Spec{ID: "dalgo-record-v1", Title: "Extract DALgo records."}), "chore: Extract DALgo records"; got != want {
+		t.Fatalf("campaign title = %q, want %q", got, want)
+	}
+	if got, want := campaignChangeTitle(Spec{ID: "rename-types"}), "chore: migrate rename-types"; got != want {
+		t.Fatalf("fallback campaign title = %q, want %q", got, want)
+	}
+}
+
 func TestCampaignOptionsImplyPRAndMergePhases(t *testing.T) {
 	options, err := normalizeCampaignOptions(CampaignOptions{GitHubDir: t.TempDir(), Apply: true, Merge: true, Parallel: 2})
 	if err != nil {
