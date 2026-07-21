@@ -268,7 +268,7 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
-	if len(spec.GoModuleReleases) != 12 ||
+	if len(spec.GoModuleReleases) != 19 ||
 		spec.GoModuleReleases[0] != (GoModuleRelease{Path: "github.com/dal-go/record", Version: "v0.1.0"}) ||
 		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) ||
 		spec.GoModuleReleases[2] != (GoModuleRelease{Path: "github.com/strongo/strongoapp", Version: "v0.31.48"}) ||
@@ -279,8 +279,15 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 		spec.GoModuleReleases[7] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-go-core", Version: "v0.60.4"}) ||
 		spec.GoModuleReleases[8] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram", Version: "v0.28.1"}) ||
 		spec.GoModuleReleases[9] != (GoModuleRelease{Path: "github.com/sneat-co/gameboard/backend", Version: "v0.4.4"}) ||
-		spec.GoModuleReleases[10] != (GoModuleRelease{Path: "github.com/sneat-co/ext-contactus/backend", Version: "v0.1.6"}) ||
-		spec.GoModuleReleases[11] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-core-modules", Version: "v0.53.5"}) {
+		spec.GoModuleReleases[10] != (GoModuleRelease{Path: "github.com/sneat-co/ext-contactus/backend", Version: "v0.1.7"}) ||
+		spec.GoModuleReleases[11] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-core-modules", Version: "v0.53.6"}) ||
+		spec.GoModuleReleases[12] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram-dalgo", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[13] != (GoModuleRelease{Path: "github.com/sneat-co/assetus/backend", Version: "v0.3.7"}) ||
+		spec.GoModuleReleases[14] != (GoModuleRelease{Path: "github.com/sneat-co/calendarius/backend", Version: "v0.4.7"}) ||
+		spec.GoModuleReleases[15] != (GoModuleRelease{Path: "github.com/sneat-co/listus/backend", Version: "v0.1.12"}) ||
+		spec.GoModuleReleases[16] != (GoModuleRelease{Path: "github.com/sneat-co/remindius/backend", Version: "v0.1.10"}) ||
+		spec.GoModuleReleases[17] != (GoModuleRelease{Path: "github.com/sneat-co/sourcer/backend", Version: "v0.17.5"}) ||
+		spec.GoModuleReleases[18] != (GoModuleRelease{Path: "github.com/sneat-co/togethered/backend", Version: "v0.6.1"}) {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
 	}
 	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {
