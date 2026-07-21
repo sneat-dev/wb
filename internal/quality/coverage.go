@@ -90,7 +90,7 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			report.Error = err.Error()
 			return report
 		}
-		output, err, attempts := runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
+		output, attempts, err := runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
 		if err != nil {
 			_ = os.Remove(profilePath)
 			report.Status = StatusFailed

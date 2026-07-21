@@ -126,20 +126,13 @@ func (d hclDocument) spec() (Spec, error) {
 		})
 	}
 	for _, requirement := range migration.GoModuleRequires {
-		spec.GoModuleRequires = append(spec.GoModuleRequires, GoModuleRequire{
-			Path: requirement.Path, Version: requirement.Version,
-		})
+		spec.GoModuleRequires = append(spec.GoModuleRequires, GoModuleRequire(requirement))
 	}
 	for _, release := range migration.GoModuleReleases {
-		spec.GoModuleReleases = append(spec.GoModuleReleases, GoModuleRelease{
-			Path: release.Path, Version: release.Version,
-		})
+		spec.GoModuleReleases = append(spec.GoModuleReleases, GoModuleRelease(release))
 	}
 	for _, rule := range migration.Reviews {
-		spec.Review = append(spec.Review, ReviewRule{
-			ID: rule.ID, Language: rule.Language, Pattern: rule.Pattern,
-			ExcludePattern: rule.ExcludePattern, Message: rule.Message,
-		})
+		spec.Review = append(spec.Review, ReviewRule(rule))
 	}
 	return spec, nil
 }

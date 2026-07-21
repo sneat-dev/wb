@@ -96,7 +96,7 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	if err := os.Chmod(retryTool, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err, attempts := runWithOptions(context.Background(), RunOptions{Retry: 1}, dir, retryTool); err != nil || attempts != 2 {
+	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Retry: 1}, dir, retryTool); err != nil || attempts != 2 {
 		t.Fatalf("retry result = err %v, attempts %d", err, attempts)
 	}
 	timeoutTool := filepath.Join(dir, "timeout-tool")
@@ -104,7 +104,7 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	if err := os.Chmod(timeoutTool, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err, attempts := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
+	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
 	}
 }

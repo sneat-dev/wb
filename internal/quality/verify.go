@@ -144,7 +144,7 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 		entry.Detail = "unsupported check"
 		return entry
 	}
-	output, err, attempts := runWithOptions(ctx, options, dir, command[0], command[1:]...)
+	output, attempts, err := runWithOptions(ctx, options, dir, command[0], command[1:]...)
 	entry.Attempts = attempts
 	if err != nil {
 		entry.Status = StatusFailed
@@ -216,7 +216,7 @@ func run(ctx context.Context, dir, name string, args ...string) (string, error) 
 	return string(output), err
 }
 
-func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, error, int) {
+func runWithOptions(ctx context.Context, options RunOptions, dir, name string, args ...string) (string, int, error) {
 	attempts := 0
 	for {
 		attempts++
@@ -232,7 +232,7 @@ func runWithOptions(ctx context.Context, options RunOptions, dir, name string, a
 			err = fmt.Errorf("timed out after %s", options.Timeout)
 		}
 		if err == nil || attempts > options.Retry {
-			return output, err, attempts
+			return output, attempts, err
 		}
 	}
 }

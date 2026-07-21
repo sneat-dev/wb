@@ -190,9 +190,7 @@ func (s Scope) matches(path string) bool {
 
 func matchPath(path, pattern string) bool {
 	pattern = filepath.ToSlash(pattern)
-	if strings.HasPrefix(pattern, "**/") {
-		pattern = strings.TrimPrefix(pattern, "**/")
-	}
+	pattern = strings.TrimPrefix(pattern, "**/")
 	if strings.HasSuffix(pattern, "/**") {
 		return strings.HasPrefix(path, strings.TrimSuffix(pattern, "/**")+"/")
 	}
