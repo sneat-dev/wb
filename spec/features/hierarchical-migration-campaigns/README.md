@@ -150,6 +150,13 @@ release in a later layer MUST NOT prevent a ready earlier layer from being
 published, and WB MUST stop before modifying the blocked layer so `--resume`
 can continue after the release handoff.
 
+Within one dependency layer, a missing release for one independent repository
+MUST NOT prevent release-ready peers from being published. WB MUST leave the
+blocked repository unchanged, publish the ready peers, and then report the
+remaining blockers so `--resume` can continue. A strongly connected repository
+component MUST remain atomic: if any member fails release preflight, no member
+of that cyclic component may be modified or published.
+
 A repository containing only provider modules MUST NOT be committed, pushed,
 or submitted for review by the campaign, even when its worktree is dirty. WB
 MUST preserve such provider-only changes.

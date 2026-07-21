@@ -25,6 +25,27 @@ func TestRunRepositoriesParallelErrorsPreservesRepositoryOrder(t *testing.T) {
 	}
 }
 
+func TestReadyRepositoryComponentsContinuesIndependentPeersAtomically(t *testing.T) {
+	blocked := &campaignRepository{repository: "github.com/acme/blocked"}
+	cyclicPeer := &campaignRepository{repository: "github.com/acme/cyclic-peer"}
+	ready := &campaignRepository{repository: "github.com/acme/ready"}
+	components := [][]*campaignRepository{{blocked, cyclicPeer}, {ready}}
+
+	gotReady, gotBlocked := readyRepositoryComponents(components, 2, func(repo *campaignRepository) error {
+		if repo == blocked {
+			return errors.New("missing release")
+		}
+		return nil
+	})
+
+	if len(gotReady) != 1 || gotReady[0] != ready {
+		t.Fatalf("ready = %+v, want only independent ready repository", gotReady)
+	}
+	if len(gotBlocked) != 1 || gotBlocked[0].Error() != "missing release" {
+		t.Fatalf("blocked errors = %v", gotBlocked)
+	}
+}
+
 func TestCampaignGraphSelectsDependentsDependencyFirst(t *testing.T) {
 	children := map[string][]string{
 		"github.com/sneat-co/bots": {"github.com/sneat-co/core"},

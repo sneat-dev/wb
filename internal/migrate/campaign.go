@@ -413,20 +413,25 @@ func (c *campaign) apply() error {
 			moduleRoots[module.path] = root
 		}
 	}
-	layers, err := c.repositoryLayers()
+	componentLayers, err := c.repositoryComponentLayers()
 	if err != nil {
 		return err
 	}
+	layers := flattenRepositoryComponentLayers(componentLayers)
 	var localVerificationErrors []error
-	for _, layer := range layers {
+	for _, componentLayer := range componentLayers {
+		layer := flattenRepositoryComponents(componentLayer)
+		var preflightErrors []error
 		// Preflight only the layer that is about to be changed. Earlier ready
 		// layers can then be published while a dependent layer waits for their
-		// release tags; --resume continues from that handoff point.
+		// release tags. Independent ready components in the same layer also
+		// proceed, while blocked components remain untouched for --resume.
 		if c.options.PR {
-			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+			layer, preflightErrors = readyRepositoryComponents(componentLayer, c.options.Parallel, func(repo *campaignRepository) error {
 				return c.preflightRepository(repo, moduleRoots)
-			}); err != nil {
-				return err
+			})
+			if len(layer) == 0 {
+				return errors.Join(preflightErrors...)
 			}
 		}
 		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
@@ -464,6 +469,9 @@ func (c *campaign) apply() error {
 			if err := runRepositoriesParallel(layer, c.options.Parallel, c.commitAndPublishRepository); err != nil {
 				return err
 			}
+		}
+		if len(preflightErrors) > 0 {
+			return errors.Join(preflightErrors...)
 		}
 	}
 	if len(localVerificationErrors) > 0 {
@@ -707,6 +715,14 @@ func (c *campaign) verifyRepository(repo *campaignRepository, publishableOnly bo
 }
 
 func (c *campaign) repositoryLayers() ([][]*campaignRepository, error) {
+	componentLayers, err := c.repositoryComponentLayers()
+	if err != nil {
+		return nil, err
+	}
+	return flattenRepositoryComponentLayers(componentLayers), nil
+}
+
+func (c *campaign) repositoryComponentLayers() ([][][]*campaignRepository, error) {
 	repositories := map[string]*campaignRepository{}
 	for _, repo := range c.repos {
 		repositories[repo.repository] = repo
@@ -769,15 +785,43 @@ func (c *campaign) repositoryLayers() ([][]*campaignRepository, error) {
 			maxDepth = value
 		}
 	}
-	layers := make([][]*campaignRepository, maxDepth+1)
+	components := make([][]*campaignRepository, componentCount)
 	for repository, repo := range repositories {
-		depth := componentDepths[componentByRepository[repository]]
-		layers[depth] = append(layers[depth], repo)
+		component := componentByRepository[repository]
+		components[component] = append(components[component], repo)
+	}
+	for _, component := range components {
+		sort.Slice(component, func(i, j int) bool { return component[i].repository < component[j].repository })
+	}
+	layers := make([][][]*campaignRepository, maxDepth+1)
+	for component, repositories := range components {
+		depth := componentDepths[component]
+		layers[depth] = append(layers[depth], repositories)
 	}
 	for _, layer := range layers {
-		sort.Slice(layer, func(i, j int) bool { return layer[i].repository < layer[j].repository })
+		sort.Slice(layer, func(i, j int) bool {
+			return layer[i][0].repository < layer[j][0].repository
+		})
 	}
 	return layers, nil
+}
+
+func flattenRepositoryComponentLayers(componentLayers [][][]*campaignRepository) [][]*campaignRepository {
+	layers := make([][]*campaignRepository, 0, len(componentLayers))
+	for _, componentLayer := range componentLayers {
+		layer := flattenRepositoryComponents(componentLayer)
+		sort.Slice(layer, func(i, j int) bool { return layer[i].repository < layer[j].repository })
+		layers = append(layers, layer)
+	}
+	return layers
+}
+
+func flattenRepositoryComponents(components [][]*campaignRepository) []*campaignRepository {
+	var repositories []*campaignRepository
+	for _, component := range components {
+		repositories = append(repositories, component...)
+	}
+	return repositories
 }
 
 // repositoryComponents collapses cyclic repository dependencies into strongly
@@ -857,6 +901,25 @@ func runRepositoriesParallel(repositories []*campaignRepository, parallel int, a
 		return errors[0]
 	}
 	return nil
+}
+
+// readyRepositoryComponents preflights independent strongly connected
+// components atomically. A blocked cyclic peer therefore cannot be modified
+// separately, while unrelated ready repositories at the same depth proceed.
+func readyRepositoryComponents(
+	components [][]*campaignRepository,
+	parallel int,
+	preflight func(*campaignRepository) error,
+) (ready []*campaignRepository, blocked []error) {
+	for _, component := range components {
+		errs := runRepositoriesParallelErrors(component, parallel, preflight)
+		if len(errs) > 0 {
+			blocked = append(blocked, errs...)
+			continue
+		}
+		ready = append(ready, component...)
+	}
+	return ready, blocked
 }
 
 // runRepositoriesParallelErrors runs every repository and preserves input
