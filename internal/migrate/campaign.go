@@ -35,6 +35,7 @@ type CampaignOptions struct {
 	Ref        string
 	ModuleRefs map[string]string
 	Apply      bool
+	Resume     bool
 	Verify     Verification
 	Commit     bool
 	Push       bool
@@ -42,6 +43,11 @@ type CampaignOptions struct {
 	Merge      bool
 	Parallel   int
 	ReportDir  string
+
+	// CloneURL overrides the canonical GitHub clone URL for a repository. It is
+	// primarily useful for hermetic integration tests; normal campaigns use
+	// https://<repository>.git.
+	CloneURL func(repository string) string
 }
 
 // CampaignReport is the Markdown/YAML index for a migration campaign.
@@ -80,8 +86,10 @@ type CampaignModuleReport struct {
 	Path                string               `yaml:"path"`
 	WorktreeDir         string               `yaml:"worktree_dir,omitempty"`
 	MigrationEnabled    bool                 `yaml:"migration_enabled"`
-	ChangedFiles        int                  `yaml:"changed_files"`
+	PlanState           string               `yaml:"plan_state"`
+	ChangedFiles        *int                 `yaml:"changed_files,omitempty"`
 	ManifestChanged     bool                 `yaml:"manifest_changed"`
+	PublishableManifest bool                 `yaml:"publishable_manifest,omitempty"`
 	ReviewItems         int                  `yaml:"review_items"`
 	MigrationReportPath string               `yaml:"migration_report_path,omitempty"`
 	Verifications       []VerificationResult `yaml:"verifications,omitempty"`
@@ -131,6 +139,8 @@ type campaignRepository struct {
 	worktree   string
 	branch     string
 	ref        string
+	cloneURL   string
+	resume     bool
 	modules    []*campaignModule
 	report     *CampaignRepositoryReport
 }
@@ -209,6 +219,9 @@ func normalizeCampaignOptions(options CampaignOptions) (CampaignOptions, error) 
 	if (options.Commit || options.Push || options.PR || options.Merge) && !options.Apply {
 		return CampaignOptions{}, fmt.Errorf("--commit, --push, --pr, and --merge require --apply")
 	}
+	if options.Resume && !options.Apply {
+		return CampaignOptions{}, fmt.Errorf("--resume requires --apply")
+	}
 	if options.Verify == "" {
 		options.Verify = VerifyFull
 	}
@@ -286,6 +299,11 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 				worktree:   worktree,
 				branch:     "wb/migrate/" + slug(spec.ID),
 				ref:        ref,
+				resume:     options.Resume,
+			}
+			repo.cloneURL = "https://" + repository + ".git"
+			if options.CloneURL != nil {
+				repo.cloneURL = options.CloneURL(repository)
 			}
 			repo.report = &CampaignRepositoryReport{
 				Repository: repository, CanonicalDir: repo.canonical, WorktreeDir: repo.worktree,
@@ -300,7 +318,14 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 			path: modulePath, version: module.Version, ref: ref, repository: repository,
 			migrate: !targets[modulePath] && !requirementModules[modulePath],
 		}
-		entry.report = &CampaignModuleReport{Path: modulePath, MigrationEnabled: entry.migrate, Status: "planned"}
+		entry.report = &CampaignModuleReport{Path: modulePath, MigrationEnabled: entry.migrate}
+		if entry.migrate {
+			entry.report.Status = "planned"
+			entry.report.PlanState = "deferred"
+		} else {
+			entry.report.Status = "provided"
+			entry.report.PlanState = "not_applicable"
+		}
 		c.modules[modulePath] = entry
 		repo.modules = append(repo.modules, entry)
 		repo.report.Modules = append(repo.report.Modules, *entry.report)
@@ -317,6 +342,11 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 
 func (c *campaign) apply() error {
 	defer c.syncReport()
+	lock, err := acquireCampaignLock(c.options.GitHubDir, c.spec.ID)
+	if err != nil {
+		return err
+	}
+	defer lock.release()
 	if err := runRepositoriesParallel(c.repos, c.options.Parallel, prepareCampaignRepository); err != nil {
 		return err
 	}
@@ -385,6 +415,11 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 			module.report.Status = "provided"
 			continue
 		}
+		if c.options.PR {
+			if err := preflightPublishedReleases(module.root, c.spec, module.path, moduleRoots); err != nil {
+				return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
+			}
+		}
 		plan, err := BuildPlan(c.spec, module.root)
 		if err != nil {
 			return fmt.Errorf("plan %s: %w", module.path, err)
@@ -396,7 +431,9 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 		if err != nil {
 			return fmt.Errorf("update go.mod for %s: %w", module.path, err)
 		}
-		module.report.ChangedFiles = len(plan.Changes)
+		changedFiles := len(plan.Changes)
+		module.report.ChangedFiles = &changedFiles
+		module.report.PlanState = "complete"
 		module.report.ManifestChanged = manifestChanged
 		module.report.ReviewItems = len(plan.Findings)
 		module.report.Status = "applied"
@@ -408,18 +445,22 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 			module.report.MigrationReportPath = dir
 		}
 	}
-	if c.options.Verify != VerifyNone {
+	if err := c.verifyRepository(repo, false); err != nil {
+		return err
+	}
+	if c.options.PR {
 		for _, module := range repo.modules {
-			if !module.migrate || (module.report.ChangedFiles == 0 && !module.report.ManifestChanged) {
+			if !module.migrate {
 				continue
 			}
-			results := verifyGoModule(module.root, c.options.Verify)
-			module.report.Verifications = results
-			for _, result := range results {
-				if !result.Passed {
-					return fmt.Errorf("verification failed for %s: %s", module.path, result.Command)
-				}
+			changed, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots)
+			if err != nil {
+				return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
 			}
+			module.report.PublishableManifest = changed
+		}
+		if err := c.verifyRepository(repo, true); err != nil {
+			return err
 		}
 	}
 	if !c.options.Commit {
@@ -430,7 +471,22 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 		return err
 	}
 	if !changed {
-		return nil
+		if !c.options.Resume {
+			return nil
+		}
+		ahead, err := runIn(repo.worktree, "git", "rev-list", "origin/"+repo.ref+"..HEAD")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(ahead) == "" {
+			return nil
+		}
+		head, err := runIn(repo.worktree, "git", "rev-parse", "HEAD")
+		if err != nil {
+			return err
+		}
+		repo.report.Commit = strings.TrimSpace(head)
+		return c.publishRepository(repo)
 	}
 	if _, err := runIn(repo.worktree, "git", "add", "-A"); err != nil {
 		return err
@@ -443,6 +499,10 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 		return err
 	}
 	repo.report.Commit = strings.TrimSpace(head)
+	return c.publishRepository(repo)
+}
+
+func (c *campaign) publishRepository(repo *campaignRepository) error {
 	if c.options.Push {
 		if _, err := runIn(repo.worktree, "git", "push", "-u", "origin", repo.branch); err != nil {
 			return err
@@ -455,6 +515,30 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 			return err
 		}
 		repo.report.PR = prURL
+	}
+	return nil
+}
+
+func (c *campaign) verifyRepository(repo *campaignRepository, publishableOnly bool) error {
+	if c.options.Verify == VerifyNone {
+		return nil
+	}
+	for _, module := range repo.modules {
+		if !module.migrate {
+			continue
+		}
+		changed := module.report.ChangedFiles != nil && *module.report.ChangedFiles > 0
+		if (!publishableOnly && !changed && !module.report.ManifestChanged) ||
+			(publishableOnly && !module.report.PublishableManifest) {
+			continue
+		}
+		results := verifyGoModule(module.root, c.options.Verify)
+		module.report.Verifications = append(module.report.Verifications, results...)
+		for _, result := range results {
+			if !result.Passed {
+				return fmt.Errorf("verification failed for %s: %s", module.path, result.Command)
+			}
+		}
 	}
 	return nil
 }
@@ -594,8 +678,7 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 		if err := os.MkdirAll(filepath.Dir(repo.canonical), 0o755); err != nil {
 			return err
 		}
-		cloneURL := "https://" + repo.repository + ".git"
-		if _, err := runIn(filepath.Dir(repo.canonical), "git", "clone", "--quiet", cloneURL, repo.canonical); err != nil {
+		if _, err := runIn(filepath.Dir(repo.canonical), "git", "clone", "--quiet", repo.cloneURL, repo.canonical); err != nil {
 			return err
 		}
 	}
@@ -607,6 +690,9 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 		return fmt.Errorf("%s does not contain %s: %w", repo.repository, base, err)
 	}
 	if _, err := os.Stat(repo.worktree); err == nil {
+		if repo.resume {
+			return validateResumeWorktree(repo)
+		}
 		return fmt.Errorf("campaign worktree already exists: %s (leave it intact or choose a different migration id)", repo.worktree)
 	} else if !os.IsNotExist(err) {
 		return err
@@ -621,6 +707,107 @@ func prepareCampaignRepository(repo *campaignRepository) error {
 		return err
 	}
 	return nil
+}
+
+func validateResumeWorktree(repo *campaignRepository) error {
+	branch, err := runIn(repo.worktree, "git", "branch", "--show-current")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(branch) != repo.branch {
+		return fmt.Errorf("cannot resume %s: worktree branch is %q, want %q", repo.repository, strings.TrimSpace(branch), repo.branch)
+	}
+	changed, err := worktreeChanged(repo.worktree)
+	if err != nil {
+		return err
+	}
+	if changed {
+		return fmt.Errorf("cannot resume %s: campaign worktree is dirty: %s", repo.repository, repo.worktree)
+	}
+	return nil
+}
+
+type campaignLock struct {
+	path string
+}
+
+func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
+	dir := filepath.Join(githubDir, ".wb", "worktrees", slug(migrationID))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return campaignLock{}, err
+	}
+	path := filepath.Join(dir, ".lock")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return campaignLock{}, fmt.Errorf("migration campaign %q is already running or was interrupted: remove %s only after confirming no WB process is active", migrationID, path)
+		}
+		return campaignLock{}, err
+	}
+	if _, err := fmt.Fprintf(file, "migration=%s\npid=%d\n", migrationID, os.Getpid()); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return campaignLock{}, err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return campaignLock{}, err
+	}
+	return campaignLock{path: path}, nil
+}
+
+func (l campaignLock) release() {
+	_ = os.Remove(l.path)
+}
+
+// CleanupCampaignWorktrees removes clean, dedicated worktrees for one
+// migration. It never removes canonical clones, branches, reports, or a
+// worktree with uncommitted changes.
+func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
+	root, err := filepath.Abs(filepath.Join(githubDir, ".wb", "worktrees", slug(migrationID)))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(filepath.Join(root, ".lock")); err == nil {
+		return nil, fmt.Errorf("campaign %q is locked at %s", migrationID, root)
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if _, err := os.Stat(root); os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	worktrees := []string{}
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Name() == ".git" {
+			worktrees = append(worktrees, filepath.Dir(path))
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(worktrees, func(i, j int) bool { return len(worktrees[i]) > len(worktrees[j]) })
+	for _, worktree := range worktrees {
+		changed, err := worktreeChanged(worktree)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			return nil, fmt.Errorf("refusing to clean dirty campaign worktree: %s", worktree)
+		}
+		if _, err := runIn(worktree, "git", "worktree", "remove", worktree); err != nil {
+			return nil, err
+		}
+	}
+	return worktrees, nil
 }
 
 func inspectGoModuleGraph(root string) (map[string]listedModule, map[string][]string, error) {
@@ -836,6 +1023,131 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 	return string(before) != string(after), nil
 }
 
+// finalizeGoModule removes only WB's temporary worktree replacements and
+// pins their published counterparts before a campaign branch is pushed for
+// review. A pull request with local paths in go.mod cannot be verified by CI,
+// so an explicit release is required for every affected dependency.
+func finalizeGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) (bool, error) {
+	goMod := filepath.Join(moduleRoot, "go.mod")
+	before, err := os.ReadFile(goMod)
+	if err != nil {
+		return false, err
+	}
+	parsed, err := modfile.Parse(goMod, before, nil)
+	if err != nil {
+		return false, err
+	}
+	direct := map[string]bool{}
+	for _, requirement := range parsed.Require {
+		direct[requirement.Mod.Path] = true
+	}
+	releases := map[string]string{}
+	for _, release := range spec.GoModuleReleases {
+		releases[release.Path] = release.Version
+	}
+	for dependency, worktree := range moduleRoots {
+		if dependency == modulePath || !direct[dependency] {
+			continue
+		}
+		hasReplace, err := hasCampaignReplace(moduleRoot, parsed, dependency, worktree)
+		if err != nil {
+			return false, err
+		}
+		if !hasReplace {
+			continue
+		}
+		version := releases[dependency]
+		if version == "" {
+			return false, fmt.Errorf("dependency %s uses a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
+		}
+		if err := dropCampaignReplace(moduleRoot, parsed, dependency); err != nil {
+			return false, err
+		}
+		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-require="+dependency+"@"+version); err != nil {
+			return false, err
+		}
+	}
+	afterEdit, err := os.ReadFile(goMod)
+	if err != nil {
+		return false, err
+	}
+	if string(before) != string(afterEdit) {
+		if _, err := runIn(moduleRoot, "go", "mod", "tidy"); err != nil {
+			return false, err
+		}
+	}
+	after, err := os.ReadFile(goMod)
+	if err != nil {
+		return false, err
+	}
+	return string(before) != string(after), nil
+}
+
+// preflightPublishedReleases runs before applying source or manifest changes,
+// so an incomplete --pr request never strands a campaign worktree dirty.
+func preflightPublishedReleases(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) error {
+	goMod := filepath.Join(moduleRoot, "go.mod")
+	contents, err := os.ReadFile(goMod)
+	if err != nil {
+		return err
+	}
+	parsed, err := modfile.Parse(goMod, contents, nil)
+	if err != nil {
+		return err
+	}
+	direct := map[string]bool{}
+	for _, requirement := range parsed.Require {
+		direct[requirement.Mod.Path] = true
+	}
+	for _, requirement := range spec.GoModuleRequires {
+		direct[requirement.Path] = true
+	}
+	releases := map[string]bool{}
+	for _, release := range spec.GoModuleReleases {
+		releases[release.Path] = true
+	}
+	for dependency := range moduleRoots {
+		if dependency != modulePath && direct[dependency] && !releases[dependency] {
+			return fmt.Errorf("dependency %s will use a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
+		}
+	}
+	return nil
+}
+
+func hasCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath, campaignRoot string) (bool, error) {
+	for _, replacement := range parsed.Replace {
+		if replacement.Old.Path != modulePath {
+			continue
+		}
+		replacementPath := replacement.New.Path
+		if !filepath.IsAbs(replacementPath) {
+			replacementPath = filepath.Join(moduleRoot, replacementPath)
+		}
+		replacementPath = filepath.Clean(replacementPath)
+		if replacementPath != filepath.Clean(campaignRoot) {
+			return false, fmt.Errorf("dependency %s has non-campaign replacement %q; remove it manually before using --pr", modulePath, replacement.New.Path)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func dropCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath string) error {
+	for _, replacement := range parsed.Replace {
+		if replacement.Old.Path != modulePath {
+			continue
+		}
+		old := replacement.Old.Path
+		if replacement.Old.Version != "" {
+			old += "@" + replacement.Old.Version
+		}
+		if _, err := runIn(moduleRoot, "go", "mod", "edit", "-dropreplace="+old); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func replaceGoModule(moduleRoot, goMod, modulePath, replacementRoot string) error {
 	contents, err := os.ReadFile(goMod)
 	if err != nil {
@@ -988,7 +1300,16 @@ func (r CampaignReport) Markdown() string {
 	for _, repo := range r.Repositories {
 		fmt.Fprintf(&out, "\n## %s\n\n", repo.Repository)
 		for _, module := range repo.Modules {
-			fmt.Fprintf(&out, "- `%s` — `%s`; files: `%d`; manifest changed: `%t`", module.Path, module.Status, module.ChangedFiles, module.ManifestChanged)
+			files := "unknown (worktree not created)"
+			if module.PlanState == "not_applicable" {
+				files = "not applicable"
+			} else if module.ChangedFiles != nil {
+				files = fmt.Sprintf("%d", *module.ChangedFiles)
+			}
+			fmt.Fprintf(&out, "- `%s` — `%s`; plan: `%s`; files: %s; manifest changed: `%t`", module.Path, module.Status, module.PlanState, files, module.ManifestChanged)
+			if module.PublishableManifest {
+				out.WriteString("; publishable manifest: `true`")
+			}
 			if module.MigrationReportPath != "" {
 				fmt.Fprintf(&out, "; [migration report](%s)", fileURL(filepath.Join(module.MigrationReportPath, "migration.md")))
 			}

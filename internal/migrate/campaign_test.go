@@ -43,6 +43,9 @@ func TestCampaignOptionsDefaultVerificationAndPush(t *testing.T) {
 	if _, err := normalizeCampaignOptions(CampaignOptions{GitHubDir: t.TempDir(), Commit: true}); err == nil {
 		t.Fatal("commit without apply should fail")
 	}
+	if _, err := normalizeCampaignOptions(CampaignOptions{GitHubDir: t.TempDir(), Resume: true}); err == nil {
+		t.Fatal("resume without apply should fail")
+	}
 }
 
 func TestCampaignOptionsImplyPRAndMergePhases(t *testing.T) {
@@ -91,11 +94,11 @@ func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 		Status:        "planned",
 		Repositories: []CampaignRepositoryReport{{
 			Repository: "github.com/acme/repo", WorktreeDir: filepath.Join(t.TempDir(), "worktree"), Ref: "main",
-			Modules: []CampaignModuleReport{{Path: "github.com/acme/repo", Status: "planned"}},
+			Modules: []CampaignModuleReport{{Path: "github.com/acme/repo", Status: "planned", PlanState: "deferred"}},
 		}},
 	}
 	markdown := report.Markdown()
-	for _, want := range []string{"# WB hierarchical migration: example", "github.com/acme/repo", "file://", "planned"} {
+	for _, want := range []string{"# WB hierarchical migration: example", "github.com/acme/repo", "file://", "planned", "unknown (worktree not created)"} {
 		if !strings.Contains(markdown, want) {
 			t.Errorf("Markdown missing %q:\n%s", want, markdown)
 		}
@@ -104,7 +107,10 @@ func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(yaml), "schema_version: 1") || !strings.Contains(string(yaml), "repositories:") {
+	if !strings.Contains(string(yaml), "schema_version: 1") || !strings.Contains(string(yaml), "repositories:") || !strings.Contains(string(yaml), "plan_state: deferred") {
 		t.Errorf("YAML = %s", yaml)
+	}
+	if strings.Contains(string(yaml), "changed_files:") {
+		t.Errorf("deferred YAML must not invent a changed_files count: %s", yaml)
 	}
 }

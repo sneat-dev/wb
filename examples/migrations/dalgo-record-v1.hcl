@@ -71,6 +71,13 @@ migration "dalgo-record-v1" {
     version = "v0.1.0"
   }
 
+  # This already-published module can replace the campaign worktree in a
+  # publishable consumer PR. Add the corresponding DALgo release only after
+  # its migration branch has been merged and tagged.
+  go_module_release "github.com/dal-go/record" {
+    version = "v0.1.0"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {

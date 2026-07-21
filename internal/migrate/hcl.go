@@ -19,6 +19,7 @@ type hclMigration struct {
 	SelectorRewrites []hclSelectorRewrite `hcl:"selector_rewrite,block"`
 	SelectorRenames  []hclSelectorRename  `hcl:"selector_rename,block"`
 	GoModuleRequires []hclGoModuleRequire `hcl:"go_module_require,block"`
+	GoModuleReleases []hclGoModuleRelease `hcl:"go_module_release,block"`
 	Reviews          []hclReview          `hcl:"review,block"`
 }
 
@@ -58,6 +59,11 @@ type hclSelectorRename struct {
 }
 
 type hclGoModuleRequire struct {
+	Path    string `hcl:"path,label"`
+	Version string `hcl:"version"`
+}
+
+type hclGoModuleRelease struct {
 	Path    string `hcl:"path,label"`
 	Version string `hcl:"version"`
 }
@@ -106,6 +112,11 @@ func (d hclDocument) spec() (Spec, error) {
 	for _, requirement := range migration.GoModuleRequires {
 		spec.GoModuleRequires = append(spec.GoModuleRequires, GoModuleRequire{
 			Path: requirement.Path, Version: requirement.Version,
+		})
+	}
+	for _, release := range migration.GoModuleReleases {
+		spec.GoModuleReleases = append(spec.GoModuleReleases, GoModuleRelease{
+			Path: release.Path, Version: release.Version,
 		})
 	}
 	for _, rule := range migration.Reviews {

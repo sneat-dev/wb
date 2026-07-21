@@ -249,17 +249,31 @@ unqualified identifiers. Those need a future type-aware rename operation based
 on `go/types` (and corresponding LibCST/TypeScript compiler adapters), rather
 than an unsafe text replacement.
 
+For a deterministic specification, WB evaluates HCL operation phases in this
+order: `text_replace`, `import_replace`, `selector_rewrite`, then
+`selector_rename`. Repeated blocks keep their source order within a phase. The
+separate, future local-type rename is deliberately not accepted until an
+adapter can resolve declarations and references across its complete package.
+
 When a migration introduces a new Go module, declare its version explicitly:
 
 ```hcl
 go_module_require "github.com/example/new-model" {
   version = "v1.2.3"
 }
+
+# Required when a campaign branch that used a local worktree replacement is
+# about to become a PR. This version must already be available to remote CI.
+go_module_release "github.com/example/new-model" {
+  version = "v1.2.3"
+}
 ```
 
 The normal source-only runner leaves this declaration alone. It is consumed by
 the hierarchical Go workflow below, which adds the requirement and redirects it
-to the campaign's local worktree.
+to the campaign's local worktree. `go_module_release` is intentionally
+separate: it says which published version replaces that temporary local path
+before a PR can be opened.
 
 #### Hierarchical Go campaigns
 
@@ -302,6 +316,15 @@ wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
   --hierarchical --apply --merge \
   --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
+
+# Resume only clean campaign worktrees on their expected branches.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  ~/projects/sneat-co/sneat-bots \
+  --hierarchical --apply --resume
+
+# Remove only clean worktrees for the named migration. No source root is used.
+wb migrate examples/migrations/dalgo-record-v1.hcl \
+  --hierarchical --cleanup
 ```
 
 Canonical clones live at `<github-dir>/<org>/<repo>`; `--github-dir` defaults
@@ -316,7 +339,12 @@ For changed consumer modules, WB updates `go.mod` requirements declared in the
 spec and writes relative `replace` directives to the matching campaign
 worktrees. It does not create a shared `go.work` file. This lets dependent
 worktrees compile together while keeping the changes reviewable and
-committable per repository.
+committable per repository. Before `--pr` (and therefore `--merge`), WB removes
+those temporary replacements, requires an explicit `go_module_release` for
+each affected module, runs `go mod tidy`, and reruns the selected verification.
+This prevents a PR from containing local paths that GitHub Actions cannot
+resolve. If a module has not been released yet, the campaign fails safely
+before the affected repository is committed, pushed, or submitted for review.
 
 Verification is enabled by default for every `--apply` campaign:
 
@@ -342,18 +370,29 @@ Once a repository is verified and `--pr` is active, its PR is opened
 immediately; WB does not wait for its remote CI before working on later ready
 repositories. Only the final `--merge` phase waits for required GitHub checks.
 
+`--resume` is an explicit recovery path: it only accepts a clean existing
+worktree on the expected campaign branch. An apply campaign holds an exclusive
+lock under its migration worktree root, so concurrent runs fail safely.
+`--cleanup` removes only clean worktrees for that migration; it leaves
+canonical clones, branches, and reports intact.
+
 Every hierarchical run writes a linked human index and deterministic manifest
 to `<github-dir>/.wb/reports/<migration>/campaign.md` and `campaign.yaml`
 (or `--report-dir`). Per-module `migration.md` and `migration.yaml` reports
 are nested beneath that directory. The Markdown index points at worktrees and
 the per-module reports; Git remains the source of the detailed diff.
 
+On a dry run the campaign deliberately reports `plan_state: deferred` and no
+`changed_files` count: WB has not created worktrees or evaluated their source.
+Its Markdown index says `unknown (worktree not created)` rather than implying
+that no files will change.
+
 Adapter work is deliberately isolated behind the same planning and apply
 protocol:
 
 | Language | Structural adapter | Package/manifest work |
 |---|---|---|
-| Go | Implemented with `go/ast`, `go/types`, and `go/format` | `go.mod` support is next |
+| Go | Implemented with `go/ast`, `go/types`, and `go/format` | `go.mod` support is implemented; local type rename remains a future type-aware operation |
 | Python | Planned with LibCST | `pyproject.toml` |
 | TypeScript | Planned with the TypeScript compiler API | `package.json` |
 

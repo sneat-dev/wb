@@ -248,6 +248,9 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
+	if len(spec.GoModuleReleases) != 1 || spec.GoModuleReleases[0].Path != "github.com/dal-go/record" {
+		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
+	}
 }
 
 func requireWrite(t *testing.T, path, content string) {

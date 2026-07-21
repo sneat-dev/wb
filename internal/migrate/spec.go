@@ -28,6 +28,7 @@ type Spec struct {
 	Steps            []Step
 	Review           []ReviewRule
 	GoModuleRequires []GoModuleRequire
+	GoModuleReleases []GoModuleRelease
 }
 
 // Scope limits the files to which a migration applies. Empty Languages means
@@ -74,6 +75,15 @@ type ReviewRule struct {
 // It is acted on only by a hierarchical Go campaign; ordinary source-only
 // migration deliberately leaves package manifests alone.
 type GoModuleRequire struct {
+	Path    string
+	Version string
+}
+
+// GoModuleRelease declares the published version that replaces a temporary
+// campaign worktree replacement before a branch may become a pull request.
+// It is intentionally separate from GoModuleRequire: an existing dependency
+// may need an upgrade without being newly introduced by source edits.
+type GoModuleRelease struct {
 	Path    string
 	Version string
 }
@@ -127,6 +137,16 @@ func (s Spec) Validate() error {
 		if strings.TrimSpace(requirement.Path) == "" || strings.TrimSpace(requirement.Version) == "" {
 			return fmt.Errorf("go module requirement %d requires path and version", i+1)
 		}
+	}
+	releases := map[string]bool{}
+	for i, release := range s.GoModuleReleases {
+		if strings.TrimSpace(release.Path) == "" || strings.TrimSpace(release.Version) == "" {
+			return fmt.Errorf("go module release %d requires path and version", i+1)
+		}
+		if releases[release.Path] {
+			return fmt.Errorf("duplicate go module release for %q", release.Path)
+		}
+		releases[release.Path] = true
 	}
 	return nil
 }
