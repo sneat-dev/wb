@@ -156,6 +156,10 @@ migration "dalgo-record-v1" {
     version = "v0.6.1"
   }
 
+  go_module_release "github.com/sneat-co/contactus/backend" {
+    version = "v0.1.9"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {

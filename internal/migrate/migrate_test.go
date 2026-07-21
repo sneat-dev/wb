@@ -268,7 +268,7 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
-	if len(spec.GoModuleReleases) != 19 ||
+	if len(spec.GoModuleReleases) != 20 ||
 		spec.GoModuleReleases[0] != (GoModuleRelease{Path: "github.com/dal-go/record", Version: "v0.1.0"}) ||
 		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) ||
 		spec.GoModuleReleases[2] != (GoModuleRelease{Path: "github.com/strongo/strongoapp", Version: "v0.31.48"}) ||
@@ -287,7 +287,8 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 		spec.GoModuleReleases[15] != (GoModuleRelease{Path: "github.com/sneat-co/listus/backend", Version: "v0.1.12"}) ||
 		spec.GoModuleReleases[16] != (GoModuleRelease{Path: "github.com/sneat-co/remindius/backend", Version: "v0.1.10"}) ||
 		spec.GoModuleReleases[17] != (GoModuleRelease{Path: "github.com/sneat-co/sourcer/backend", Version: "v0.17.5"}) ||
-		spec.GoModuleReleases[18] != (GoModuleRelease{Path: "github.com/sneat-co/togethered/backend", Version: "v0.6.1"}) {
+		spec.GoModuleReleases[18] != (GoModuleRelease{Path: "github.com/sneat-co/togethered/backend", Version: "v0.6.1"}) ||
+		spec.GoModuleReleases[19] != (GoModuleRelease{Path: "github.com/sneat-co/contactus/backend", Version: "v0.1.9"}) {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
 	}
 	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {
