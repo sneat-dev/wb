@@ -73,6 +73,48 @@ func TestCampaignUsesIsolatedWorktreesAndCanResumeAndClean(t *testing.T) {
 	}
 }
 
+func TestOpenCampaignPRDoesNotReuseMergedPullRequest(t *testing.T) {
+	worktree := t.TempDir()
+	binDir := filepath.Join(t.TempDir(), "bin")
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	writeCampaignFile(t, filepath.Join(binDir, "gh"), `#!/bin/sh
+printf '%s\n' "$*" >> "$GH_LOG"
+if [ "$1 $2" = "pr list" ]; then
+	exit 0
+fi
+if [ "$1 $2" = "pr create" ]; then
+	printf '%s\n' 'https://github.com/acme/example/pull/2'
+	exit 0
+fi
+exit 1
+`)
+	if err := os.Chmod(filepath.Join(binDir, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_LOG", logPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	url, err := openCampaignPR(&campaignRepository{
+		repository: "github.com/acme/example",
+		worktree:   worktree,
+		branch:     "wb/migrate/example",
+		ref:        "main",
+	}, Spec{ID: "example", Title: "Example migration"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "https://github.com/acme/example/pull/2" {
+		t.Fatalf("pull request URL = %q", url)
+	}
+	log := mustReadCampaignFile(t, logPath)
+	if !strings.Contains(log, "pr list --head wb/migrate/example --base main --state open") {
+		t.Fatalf("open pull request lookup missing from gh calls:\n%s", log)
+	}
+	if !strings.Contains(log, "pr create --base main --head wb/migrate/example") {
+		t.Fatalf("new pull request was not created after open lookup returned none:\n%s", log)
+	}
+}
+
 func TestCampaignResumesPartialDirtyWorktrees(t *testing.T) {
 	test := newCampaignIntegrationFixture(t)
 	firstReport, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
