@@ -256,6 +256,10 @@ type campaignIntegrationFixture struct {
 
 func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 	t.Helper()
+	t.Setenv("GIT_AUTHOR_NAME", "WB Test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "wb@example.test")
+	t.Setenv("GIT_COMMITTER_NAME", "WB Test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "wb@example.test")
 	root := t.TempDir()
 	remotes := filepath.Join(root, "remotes")
 	providerSource := filepath.Join(root, "source", "provider")
