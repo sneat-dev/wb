@@ -31,11 +31,14 @@ func TestReadyRepositoryComponentsContinuesIndependentPeersAtomically(t *testing
 	ready := &campaignRepository{repository: "github.com/acme/ready"}
 	components := [][]*campaignRepository{{blocked, cyclicPeer}, {ready}}
 
-	gotReady, gotBlocked := readyRepositoryComponents(components, 2, func(repo *campaignRepository) error {
+	gotReady, gotBootstraps, gotBlocked := readyRepositoryComponents(components, func(
+		repo *campaignRepository,
+		_ map[string]bool,
+	) (map[string]bool, error) {
 		if repo == blocked {
-			return errors.New("missing release")
+			return nil, errors.New("missing release")
 		}
-		return nil
+		return nil, nil
 	})
 
 	if len(gotReady) != 1 || gotReady[0] != ready {
@@ -43,6 +46,53 @@ func TestReadyRepositoryComponentsContinuesIndependentPeersAtomically(t *testing
 	}
 	if len(gotBlocked) != 1 || gotBlocked[0].Error() != "missing release" {
 		t.Fatalf("blocked errors = %v", gotBlocked)
+	}
+	if len(gotBootstraps) != 0 {
+		t.Fatalf("bootstraps = %+v, want none for blocked component", gotBootstraps)
+	}
+}
+
+func TestReadyRepositoryComponentsBootstrapsMissingCycleReleases(t *testing.T) {
+	cycleA := &campaignRepository{repository: "github.com/acme/cycle-a"}
+	cycleB := &campaignRepository{repository: "github.com/acme/cycle-b"}
+	cycleA.modules = []*campaignModule{{path: cycleA.repository, migrate: true}}
+	cycleB.modules = []*campaignModule{{path: cycleB.repository, migrate: true}}
+
+	ready, bootstraps, blocked := readyRepositoryComponents(
+		[][]*campaignRepository{{cycleA, cycleB}},
+		func(repo *campaignRepository, allowed map[string]bool) (map[string]bool, error) {
+			if !allowed[cycleA.repository] || !allowed[cycleB.repository] {
+				t.Fatalf("allowed cycle modules = %v", allowed)
+			}
+			if repo == cycleA {
+				return map[string]bool{cycleB.repository: true}, nil
+			}
+			return map[string]bool{cycleA.repository: true}, nil
+		},
+	)
+
+	if len(blocked) != 0 || len(ready) != 2 || len(bootstraps) != 1 {
+		t.Fatalf("ready = %v, bootstraps = %+v, blocked = %v", ready, bootstraps, blocked)
+	}
+	if !bootstraps[0].modulePaths[cycleA.repository] || !bootstraps[0].modulePaths[cycleB.repository] {
+		t.Fatalf("bootstrap paths = %v", bootstraps[0].modulePaths)
+	}
+}
+
+func TestPseudoVersionForCommitUsesCurrentTaggedVersion(t *testing.T) {
+	repository := t.TempDir()
+	runCampaignGit(t, repository, "init", "--initial-branch=main")
+	writeCampaignFile(t, filepath.Join(repository, "go.mod"), "module github.com/acme/module\n\ngo 1.24\n")
+	runCampaignGit(t, repository, "add", ".")
+	runCampaignGit(t, repository, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "seed")
+	revision := strings.TrimSpace(runCampaignGit(t, repository, "rev-parse", "HEAD"))
+
+	version, err := pseudoVersionForCommit(repository, "github.com/acme/module", "v0.53.3", revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(version, "v0.53.4-0.") || !strings.HasSuffix(version, revision[:12]) {
+		t.Fatalf("pseudo-version = %q", version)
 	}
 }
 

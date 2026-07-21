@@ -184,6 +184,16 @@ layer instead of rejecting the campaign. All worktrees MUST be prepared before
 repositories in that layer are migrated, so their local replacements are
 available during verification.
 
+When changed Go modules in one strongly connected component do not yet have
+declared peer releases, `--pr` MUST bootstrap the cycle without publishing a
+local replacement. WB MUST commit and push an intermediate seed for every
+repository in the component, derive valid Go pseudo-versions for the exact
+seed commits, finalize each review branch against those peer pseudo-versions,
+rerun verification, and open the component PRs. WB MUST then stop before
+modifying downstream layers until the component PRs are merged and explicit
+`go_module_release` versions are declared. Seed commits MUST NOT be tagged or
+merged independently.
+
 Within each dependency layer, WB MUST complete source edits for every
 repository before normalizing any manifests, and MUST complete all manifest
 normalization before verification begins. Cyclic peers MUST NOT observe a

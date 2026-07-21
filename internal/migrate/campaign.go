@@ -12,10 +12,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 
 	"golang.org/x/mod/modfile"
 	modmodule "golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
 )
 
@@ -146,6 +148,11 @@ type campaignRepository struct {
 	resume     bool
 	modules    []*campaignModule
 	report     *CampaignRepositoryReport
+}
+
+type cycleBootstrap struct {
+	repositories []*campaignRepository
+	modulePaths  map[string]bool
 }
 
 type listedModule struct {
@@ -422,13 +429,17 @@ func (c *campaign) apply() error {
 	for _, componentLayer := range componentLayers {
 		layer := flattenRepositoryComponents(componentLayer)
 		var preflightErrors []error
+		var cycleBootstraps []cycleBootstrap
 		// Preflight only the layer that is about to be changed. Earlier ready
 		// layers can then be published while a dependent layer waits for their
 		// release tags. Independent ready components in the same layer also
 		// proceed, while blocked components remain untouched for --resume.
 		if c.options.PR {
-			layer, preflightErrors = readyRepositoryComponents(componentLayer, c.options.Parallel, func(repo *campaignRepository) error {
-				return c.preflightRepository(repo, moduleRoots)
+			layer, cycleBootstraps, preflightErrors = readyRepositoryComponents(componentLayer, func(
+				repo *campaignRepository,
+				allowedUnreleased map[string]bool,
+			) (map[string]bool, error) {
+				return c.preflightRepository(repo, moduleRoots, allowedUnreleased)
 			})
 			if len(layer) == 0 {
 				return errors.Join(preflightErrors...)
@@ -454,8 +465,18 @@ func (c *campaign) apply() error {
 			localVerificationErrors = append(localVerificationErrors, verificationErrors...)
 		}
 		if c.options.PR {
+			bootstrapVersions := map[string]string{}
+			for _, bootstrap := range cycleBootstraps {
+				versions, err := c.seedCycleComponent(bootstrap)
+				if err != nil {
+					return err
+				}
+				for path, version := range versions {
+					bootstrapVersions[path] = version
+				}
+			}
 			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
-				return c.finalizeRepositoryManifests(repo, moduleRoots)
+				return c.finalizeRepositoryManifests(repo, moduleRoots, bootstrapVersions)
 			}); err != nil {
 				return err
 			}
@@ -469,6 +490,13 @@ func (c *campaign) apply() error {
 			if err := runRepositoriesParallel(layer, c.options.Parallel, c.commitAndPublishRepository); err != nil {
 				return err
 			}
+		}
+		if len(cycleBootstraps) > 0 {
+			bootstrapError := fmt.Errorf(
+				"published %d cyclic repository component(s) with seed pseudo-versions; merge their PRs, publish releases, and add go_module_release entries before --resume",
+				len(cycleBootstraps),
+			)
+			return errors.Join(append([]error{bootstrapError}, preflightErrors...)...)
 		}
 		if len(preflightErrors) > 0 {
 			return errors.Join(preflightErrors...)
@@ -507,16 +535,25 @@ func (c *campaign) apply() error {
 	return nil
 }
 
-func (c *campaign) preflightRepository(repo *campaignRepository, moduleRoots map[string]string) error {
+func (c *campaign) preflightRepository(
+	repo *campaignRepository,
+	moduleRoots map[string]string,
+	allowedUnreleased map[string]bool,
+) (map[string]bool, error) {
+	bootstrap := map[string]bool{}
 	for _, module := range repo.modules {
 		if !module.migrate {
 			continue
 		}
-		if err := preflightPublishedReleases(module.root, c.spec, module.path, moduleRoots); err != nil {
-			return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
+		dependencies, err := preflightPublishedReleases(module.root, c.spec, module.path, moduleRoots, allowedUnreleased)
+		if err != nil {
+			return nil, fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
+		}
+		for dependency := range dependencies {
+			bootstrap[dependency] = true
 		}
 	}
-	return nil
+	return bootstrap, nil
 }
 
 // applyRepositorySources is a distinct campaign phase. Every repository in a
@@ -603,18 +640,130 @@ func splitNUL(value string) []string {
 	return strings.Split(strings.TrimSuffix(value, "\x00"), "\x00")
 }
 
-func (c *campaign) finalizeRepositoryManifests(repo *campaignRepository, moduleRoots map[string]string) error {
+func (c *campaign) finalizeRepositoryManifests(
+	repo *campaignRepository,
+	moduleRoots map[string]string,
+	releaseOverrides map[string]string,
+) error {
 	for _, module := range repo.modules {
 		if !module.migrate {
 			continue
 		}
-		changed, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots)
+		changed, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots, releaseOverrides)
 		if err != nil {
 			return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
 		}
 		module.report.PublishableManifest = changed
 	}
 	return nil
+}
+
+// seedCycleComponent publishes an intermediate commit for each repository in
+// a strongly connected component, then derives valid Go pseudo-versions for
+// the exact module commits needed by cyclic peers. Replace directives in a
+// dependency module are ignored by Go, so the final review commits can safely
+// depend on these seeds while removing every local path from their own go.mod.
+func (c *campaign) seedCycleComponent(bootstrap cycleBootstrap) (map[string]string, error) {
+	heads := make(map[string]string, len(bootstrap.repositories))
+	for _, repo := range bootstrap.repositories {
+		if !repo.hasMigratingModules() {
+			continue
+		}
+		changed, err := worktreeChanged(repo.worktree)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			if _, err := runIn(repo.worktree, "git", "add", "-A"); err != nil {
+				return nil, err
+			}
+			if _, err := runIn(repo.worktree, "git", "commit", "-m", campaignChangeTitle(c.spec)+" (cycle seed)"); err != nil {
+				return nil, err
+			}
+		}
+		head, err := runIn(repo.worktree, "git", "rev-parse", "HEAD")
+		if err != nil {
+			return nil, err
+		}
+		head = strings.TrimSpace(head)
+		heads[repo.repository] = head
+		if _, err := runIn(repo.worktree, "git", "push", "-u", "origin", repo.branch); err != nil {
+			return nil, err
+		}
+		repo.report.Pushed = true
+	}
+
+	versions := make(map[string]string, len(bootstrap.modulePaths))
+	for modulePath := range bootstrap.modulePaths {
+		module := c.modules[modulePath]
+		if module == nil {
+			return nil, fmt.Errorf("cannot seed unknown cyclic module %s", modulePath)
+		}
+		head := heads[module.repository]
+		if head == "" {
+			return nil, fmt.Errorf("cannot seed cyclic module %s without a migrating repository commit", modulePath)
+		}
+		repo := c.repositoryByName(module.repository)
+		if repo == nil {
+			return nil, fmt.Errorf("cannot find repository %s for cyclic module %s", module.repository, modulePath)
+		}
+		version, err := pseudoVersionForCommit(repo.worktree, module.path, module.version, head)
+		if err != nil {
+			return nil, err
+		}
+		versions[module.path] = version
+	}
+	return versions, nil
+}
+
+func (c *campaign) repositoryByName(repository string) *campaignRepository {
+	for _, repo := range c.repos {
+		if repo.repository == repository {
+			return repo
+		}
+	}
+	return nil
+}
+
+func pseudoVersionForCommit(worktree, modulePath, olderVersion, revision string) (string, error) {
+	if len(revision) < 12 {
+		return "", fmt.Errorf("revision for %s is too short: %q", modulePath, revision)
+	}
+	timestamp, err := runIn(worktree, "git", "show", "-s", "--format=%cI", revision)
+	if err != nil {
+		return "", err
+	}
+	commitTime, err := time.Parse(time.RFC3339, strings.TrimSpace(timestamp))
+	if err != nil {
+		return "", fmt.Errorf("parse commit time for %s: %w", modulePath, err)
+	}
+	if modmodule.IsPseudoVersion(olderVersion) {
+		olderVersion, err = modmodule.PseudoVersionBase(olderVersion)
+		if err != nil {
+			return "", fmt.Errorf("find pseudo-version base for %s: %w", modulePath, err)
+		}
+	}
+	if olderVersion != "" && !semver.IsValid(olderVersion) {
+		return "", fmt.Errorf("cannot seed %s from invalid version %q", modulePath, olderVersion)
+	}
+	major := semver.Major(olderVersion)
+	if major == "" {
+		major = "v0"
+		_, pathMajor, ok := modmodule.SplitPathVersion(modulePath)
+		if !ok {
+			return "", fmt.Errorf("cannot determine module path major for %s", modulePath)
+		}
+		if strings.HasPrefix(pathMajor, "/v") {
+			major = strings.TrimPrefix(pathMajor, "/")
+		} else if strings.HasPrefix(pathMajor, ".v") {
+			major = strings.TrimPrefix(pathMajor, ".")
+		}
+	}
+	version := modmodule.PseudoVersion(major, olderVersion, commitTime.UTC(), revision[:12])
+	if err := modmodule.Check(modulePath, version); err != nil {
+		return "", fmt.Errorf("validate seed pseudo-version for %s: %w", modulePath, err)
+	}
+	return version, nil
 }
 
 // commitAndPublishRepository runs only after every repository in the current
@@ -904,22 +1053,48 @@ func runRepositoriesParallel(repositories []*campaignRepository, parallel int, a
 }
 
 // readyRepositoryComponents preflights independent strongly connected
-// components atomically. A blocked cyclic peer therefore cannot be modified
-// separately, while unrelated ready repositories at the same depth proceed.
+// components atomically. Missing releases inside a cycle become an explicit
+// seed bootstrap; every other preflight error blocks the whole component.
 func readyRepositoryComponents(
 	components [][]*campaignRepository,
-	parallel int,
-	preflight func(*campaignRepository) error,
-) (ready []*campaignRepository, blocked []error) {
+	preflight func(*campaignRepository, map[string]bool) (map[string]bool, error),
+) (ready []*campaignRepository, bootstraps []cycleBootstrap, blocked []error) {
 	for _, component := range components {
-		errs := runRepositoriesParallelErrors(component, parallel, preflight)
+		allowedUnreleased := map[string]bool{}
+		if len(component) > 1 {
+			for _, repo := range component {
+				for _, module := range repo.modules {
+					if module.migrate {
+						allowedUnreleased[module.path] = true
+					}
+				}
+			}
+		}
+		bootstrapPaths := map[string]bool{}
+		var errs []error
+		for _, repo := range component {
+			paths, err := preflight(repo, allowedUnreleased)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			for path := range paths {
+				bootstrapPaths[path] = true
+			}
+		}
 		if len(errs) > 0 {
 			blocked = append(blocked, errs...)
 			continue
 		}
 		ready = append(ready, component...)
+		if len(bootstrapPaths) > 0 {
+			bootstraps = append(bootstraps, cycleBootstrap{
+				repositories: component,
+				modulePaths:  bootstrapPaths,
+			})
+		}
 	}
-	return ready, blocked
+	return ready, bootstraps, blocked
 }
 
 // runRepositoriesParallelErrors runs every repository and preserves input
@@ -1478,7 +1653,13 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 // pins their published counterparts before a campaign branch is pushed for
 // review. A pull request with local paths in go.mod cannot be verified by CI,
 // so an explicit release is required for every affected dependency.
-func finalizeGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) (bool, error) {
+func finalizeGoModule(
+	moduleRoot string,
+	spec Spec,
+	modulePath string,
+	moduleRoots map[string]string,
+	releaseOverrides map[string]string,
+) (bool, error) {
 	goMod := filepath.Join(moduleRoot, "go.mod")
 	before, err := os.ReadFile(goMod)
 	if err != nil {
@@ -1495,6 +1676,9 @@ func finalizeGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoo
 	releases := map[string]string{}
 	for _, release := range spec.GoModuleReleases {
 		releases[release.Path] = release.Version
+	}
+	for path, version := range releaseOverrides {
+		releases[path] = version
 	}
 	for dependency, worktree := range moduleRoots {
 		if dependency == modulePath || !direct[dependency] {
@@ -1536,15 +1720,21 @@ func finalizeGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoo
 
 // preflightPublishedReleases runs before applying source or manifest changes,
 // so an incomplete --pr request never strands a campaign worktree dirty.
-func preflightPublishedReleases(moduleRoot string, spec Spec, modulePath string, moduleRoots map[string]string) error {
+func preflightPublishedReleases(
+	moduleRoot string,
+	spec Spec,
+	modulePath string,
+	moduleRoots map[string]string,
+	allowedUnreleased map[string]bool,
+) (map[string]bool, error) {
 	goMod := filepath.Join(moduleRoot, "go.mod")
 	contents, err := os.ReadFile(goMod)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	parsed, err := modfile.Parse(goMod, contents, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	direct := map[string]bool{}
 	for _, requirement := range parsed.Require {
@@ -1563,22 +1753,27 @@ func preflightPublishedReleases(moduleRoot string, spec Spec, modulePath string,
 		}
 		campaignRoot, ok := moduleRoots[replacement.Old.Path]
 		if !ok {
-			return fmt.Errorf(
+			return nil, fmt.Errorf(
 				"dependency %s has local replacement %q; remove it manually before using --pr",
 				replacement.Old.Path,
 				replacement.New.Path,
 			)
 		}
 		if _, err := hasCampaignReplace(moduleRoot, parsed, replacement.Old.Path, campaignRoot); err != nil {
-			return err
+			return nil, err
 		}
 	}
+	bootstrap := map[string]bool{}
 	for dependency := range moduleRoots {
 		if dependency != modulePath && direct[dependency] && !releases[dependency] {
-			return fmt.Errorf("dependency %s will use a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
+			if allowedUnreleased[dependency] {
+				bootstrap[dependency] = true
+				continue
+			}
+			return nil, fmt.Errorf("dependency %s will use a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
 		}
 	}
-	return nil
+	return bootstrap, nil
 }
 
 func hasCampaignReplace(moduleRoot string, parsed *modfile.File, modulePath, campaignRoot string) (bool, error) {
