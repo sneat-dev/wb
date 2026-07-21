@@ -117,6 +117,44 @@ func TestCampaignResumesPartialDirtyWorktrees(t *testing.T) {
 	}
 }
 
+func TestCampaignDoesNotCommitDirtyProviderWorktree(t *testing.T) {
+	test := newCampaignIntegrationFixture(t)
+	report, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
+		GitHubDir: test.githubDir,
+		Apply:     true,
+		Verify:    VerifyNone,
+		CloneURL:  test.cloneURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := campaignRepositoryByName(t, report, "github.com/acme/provider")
+	providerHead := strings.TrimSpace(runCampaignGit(t, provider.WorktreeDir, "rev-parse", "HEAD"))
+	writeCampaignFile(t, filepath.Join(provider.WorktreeDir, "provider-local.txt"), "must remain uncommitted\n")
+
+	resumed, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
+		GitHubDir: test.githubDir,
+		Apply:     true,
+		Resume:    true,
+		Commit:    true,
+		Verify:    VerifyNone,
+		CloneURL:  test.cloneURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedProvider := campaignRepositoryByName(t, resumed, "github.com/acme/provider")
+	if resumedProvider.Commit != "" {
+		t.Fatalf("provider commit = %q, want none", resumedProvider.Commit)
+	}
+	if head := strings.TrimSpace(runCampaignGit(t, provider.WorktreeDir, "rev-parse", "HEAD")); head != providerHead {
+		t.Fatalf("provider HEAD = %s, want unchanged %s", head, providerHead)
+	}
+	if status := runCampaignGit(t, provider.WorktreeDir, "status", "--porcelain"); !strings.Contains(status, "provider-local.txt") {
+		t.Fatalf("provider worktree change was not preserved: %q", status)
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

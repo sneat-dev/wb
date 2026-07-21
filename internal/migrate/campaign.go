@@ -610,6 +610,9 @@ func (c *campaign) finalizeRepositoryManifests(repo *campaignRepository, moduleR
 // dependency layer has completed source, manifest, and verification phases.
 // GitHub CI can then run while later consumer layers continue locally.
 func (c *campaign) commitAndPublishRepository(repo *campaignRepository) error {
+	if !repo.hasMigratingModules() {
+		return nil
+	}
 	changed, err := worktreeChanged(repo.worktree)
 	if err != nil {
 		return err
@@ -644,6 +647,15 @@ func (c *campaign) commitAndPublishRepository(repo *campaignRepository) error {
 	}
 	repo.report.Commit = strings.TrimSpace(head)
 	return c.publishRepository(repo)
+}
+
+func (repo *campaignRepository) hasMigratingModules() bool {
+	for _, module := range repo.modules {
+		if module.migrate {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *campaign) publishRepository(repo *campaignRepository) error {
