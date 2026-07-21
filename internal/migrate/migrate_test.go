@@ -268,7 +268,7 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
-	if len(spec.GoModuleReleases) != 8 ||
+	if len(spec.GoModuleReleases) != 12 ||
 		spec.GoModuleReleases[0] != (GoModuleRelease{Path: "github.com/dal-go/record", Version: "v0.1.0"}) ||
 		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) ||
 		spec.GoModuleReleases[2] != (GoModuleRelease{Path: "github.com/strongo/strongoapp", Version: "v0.31.48"}) ||
@@ -276,7 +276,11 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 		spec.GoModuleReleases[4] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2firestore", Version: "v0.9.6"}) ||
 		spec.GoModuleReleases[5] != (GoModuleRelease{Path: "github.com/sneat-co/commitius/backend", Version: "v0.2.3"}) ||
 		spec.GoModuleReleases[6] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-store-dalgo", Version: "v0.1.1"}) ||
-		spec.GoModuleReleases[7] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-go-core", Version: "v0.60.4"}) {
+		spec.GoModuleReleases[7] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-go-core", Version: "v0.60.4"}) ||
+		spec.GoModuleReleases[8] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram", Version: "v0.28.1"}) ||
+		spec.GoModuleReleases[9] != (GoModuleRelease{Path: "github.com/sneat-co/gameboard/backend", Version: "v0.4.4"}) ||
+		spec.GoModuleReleases[10] != (GoModuleRelease{Path: "github.com/sneat-co/ext-contactus/backend", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[11] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-core-modules", Version: "v0.53.3"}) {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
 	}
 	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {
