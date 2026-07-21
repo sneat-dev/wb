@@ -22,6 +22,8 @@ wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
+wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
+wb verify [path] [flags]     # run conventional lint, test, and build checks
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 ```
 
@@ -150,6 +152,41 @@ Same worktree/commit/push-or-PR flow for both recipe kinds:
 
 `wb` itself ships with **no recipes** — you define your own in
 `~/.config/wb/wb.yaml`.
+
+### Fleet coverage and verification
+
+These commands are read-only: they operate on existing local clones and never
+fetch, modify source, commit, or push. Without `--fleet` they run against one
+repository path (the current directory by default). `--fleet` scans every Git
+repository below `--projects-root`.
+
+```sh
+# Go coverage for all cloned Sneat repositories, aggregated by statements.
+wb coverage --fleet --match 'sneat-co/*' --parallel=2
+
+# Emit a deterministic report for a human or agent.
+wb coverage --fleet --regex '^sneat-co/(sneat|bots)' \
+  --report-dir /tmp/wb-coverage --format yaml
+
+# Run Go vet/test/build and defined Node lint/test/build scripts.
+wb verify --fleet --filter sneat-co/ --parallel=2
+
+# Restrict verification to compilation-oriented checks for one repository.
+wb verify ~/projects/sneat-co/sneat-bots --checks lint,build
+```
+
+`--filter` (substring), `--match` (glob), and `--regex` are composed against
+the `org/repo` name; every supplied filter must match. Both commands write
+Markdown by default, can print YAML or JSON, and can write stable Markdown and
+YAML files with `--report-dir`.
+
+Coverage discovers every `go.mod` below a selected repository (excluding
+`.git`, `vendor`, and `node_modules`) and uses temporary profiles outside the
+repository. Its fleet percentage is statement-weighted, rather than an average
+of repository percentages. Verification runs `go vet ./...`, `go test ./...`,
+and `go build ./...` for each Go module; for a root Node project it runs only
+defined `lint`, `test`, and `build` scripts with the detected package manager.
+Other stacks remain explicit, reusable `wb run` recipes.
 
 ### `wb migrate` — declarative source migrations
 

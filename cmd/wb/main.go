@@ -33,6 +33,8 @@ func main() {
 	root.AddCommand(newMigrateCmd())
 	root.AddCommand(newCICmd())
 	root.AddCommand(newHooksCmd())
+	root.AddCommand(newCoverageCmd())
+	root.AddCommand(newVerifyCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
