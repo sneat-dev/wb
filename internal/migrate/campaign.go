@@ -1557,6 +1557,22 @@ func preflightPublishedReleases(moduleRoot string, spec Spec, modulePath string,
 	for _, release := range spec.GoModuleReleases {
 		releases[release.Path] = true
 	}
+	for _, replacement := range parsed.Replace {
+		if replacement.New.Version != "" {
+			continue
+		}
+		campaignRoot, ok := moduleRoots[replacement.Old.Path]
+		if !ok {
+			return fmt.Errorf(
+				"dependency %s has local replacement %q; remove it manually before using --pr",
+				replacement.Old.Path,
+				replacement.New.Path,
+			)
+		}
+		if _, err := hasCampaignReplace(moduleRoot, parsed, replacement.Old.Path, campaignRoot); err != nil {
+			return err
+		}
+	}
 	for dependency := range moduleRoots {
 		if dependency != modulePath && direct[dependency] && !releases[dependency] {
 			return fmt.Errorf("dependency %s will use a campaign worktree; add go_module_release %q before using --pr", dependency, dependency)
