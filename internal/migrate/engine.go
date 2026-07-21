@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
@@ -206,13 +207,28 @@ func reviewFindings(rules []ReviewRule, language string, source []byte, path str
 			continue
 		}
 		re := regexp.MustCompile(rule.Pattern) // validated when the spec was loaded
+		var exclude *regexp.Regexp
+		if rule.ExcludePattern != "" {
+			exclude = regexp.MustCompile(rule.ExcludePattern)
+		}
 		matches := re.FindAllIndex(source, -1)
 		if len(matches) == 0 {
 			continue
 		}
 		lines := make([]int, 0, len(matches))
 		for _, match := range matches {
+			lineStart := bytes.LastIndexByte(source[:match[0]], '\n') + 1
+			lineEnd := len(source)
+			if offset := bytes.IndexByte(source[match[1]:], '\n'); offset >= 0 {
+				lineEnd = match[1] + offset
+			}
+			if exclude != nil && exclude.Match(source[lineStart:lineEnd]) {
+				continue
+			}
 			lines = append(lines, sourceLine(source, match[0]))
+		}
+		if len(lines) == 0 {
+			continue
 		}
 		findings = append(findings, Finding{
 			Path: path, Language: language, RuleID: rule.ID, Message: rule.Message, Lines: slices.Compact(lines),

@@ -79,7 +79,7 @@ func newMigrateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&pr, "pr", false, "open pull requests for pushed campaign branches")
 	cmd.Flags().BoolVar(&merge, "merge", false, "merge campaign pull requests only after required GitHub checks pass")
 	cmd.Flags().IntVar(&parallel, "parallel", 1, "maximum independent repositories to migrate concurrently")
-	cmd.Flags().BoolVar(&resume, "resume", false, "resume clean, existing campaign worktrees")
+	cmd.Flags().BoolVar(&resume, "resume", false, "resume existing campaign worktrees and preserve partial changes")
 	cmd.Flags().BoolVar(&cleanup, "cleanup", false, "remove clean campaign worktrees without touching branches or reports")
 	return cmd
 }

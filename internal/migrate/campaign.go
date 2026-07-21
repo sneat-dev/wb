@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"unicode"
 
 	"golang.org/x/mod/modfile"
+	modmodule "golang.org/x/mod/module"
 	"gopkg.in/yaml.v3"
 )
 
@@ -73,6 +75,7 @@ type CampaignRepositoryReport struct {
 	Branch         string                 `yaml:"branch"`
 	Ref            string                 `yaml:"ref"`
 	Actions        []string               `yaml:"actions"`
+	ChangedFiles   *[]string              `yaml:"changed_files,omitempty"`
 	Modules        []CampaignModuleReport `yaml:"modules"`
 	Commit         string                 `yaml:"commit,omitempty"`
 	Pushed         bool                   `yaml:"pushed,omitempty"`
@@ -149,12 +152,15 @@ type listedModule struct {
 	Path    string
 	Version string
 	Main    bool
+	GoMod   string
 }
 
 type goListModule struct {
 	Path    string
 	Version string
 	Main    bool
+	GoMod   string
+	Replace *goListModule
 }
 
 // RunCampaign plans or applies a hierarchy-aware Go migration. On apply it
@@ -167,6 +173,13 @@ func RunCampaign(spec Spec, sourceRoot string, options CampaignOptions) (Campaig
 	options, err := normalizeCampaignOptions(options)
 	if err != nil {
 		return CampaignReport{}, err
+	}
+	if options.Apply {
+		lock, err := acquireCampaignLock(options.GitHubDir, spec.ID)
+		if err != nil {
+			return CampaignReport{}, err
+		}
+		defer lock.release()
 	}
 	c, err := planCampaign(spec, sourceRoot, options)
 	if err != nil {
@@ -238,7 +251,11 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 	if err != nil {
 		return nil, err
 	}
-	listed, children, err := inspectGoModuleGraph(sourceRoot)
+	discoveryRoot, err := campaignDiscoveryRoot(spec, sourceRoot, options)
+	if err != nil {
+		return nil, err
+	}
+	listed, children, err := inspectGoModuleGraph(discoveryRoot, options.Resume && options.Apply)
 	if err != nil {
 		return nil, err
 	}
@@ -340,13 +357,48 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 	return c, nil
 }
 
+// campaignDiscoveryRoot lets a resumed campaign evolve after manual fixes or
+// prerequisite branches add dependencies. The original source root remains
+// the report identity, while graph inspection uses the validated campaign
+// worktree when it already exists.
+func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions) (string, error) {
+	if !options.Resume {
+		return sourceRoot, nil
+	}
+	parsed, err := parseGoMod(filepath.Join(sourceRoot, "go.mod"))
+	if err != nil {
+		return "", fmt.Errorf("read source module for resume discovery: %w", err)
+	}
+	if parsed.Module == nil || parsed.Module.Mod.Path == "" {
+		return "", fmt.Errorf("source root %s has no module path", sourceRoot)
+	}
+	owner, name, repository, err := githubRepository(parsed.Module.Mod.Path)
+	if err != nil {
+		return "", err
+	}
+	worktree := filepath.Join(options.GitHubDir, ".wb", "worktrees", slug(spec.ID), owner, name)
+	if _, err := os.Stat(worktree); os.IsNotExist(err) {
+		return sourceRoot, nil
+	} else if err != nil {
+		return "", err
+	}
+	expectedBranch := "wb/migrate/" + slug(spec.ID)
+	branch, err := runIn(worktree, "git", "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(branch) != expectedBranch {
+		return "", fmt.Errorf("cannot discover resumed %s from branch %q, want %q", repository, strings.TrimSpace(branch), expectedBranch)
+	}
+	root, err := findModuleRoot(worktree, parsed.Module.Mod.Path)
+	if err != nil {
+		return "", fmt.Errorf("locate resumed source module: %w", err)
+	}
+	return root, nil
+}
+
 func (c *campaign) apply() error {
 	defer c.syncReport()
-	lock, err := acquireCampaignLock(c.options.GitHubDir, c.spec.ID)
-	if err != nil {
-		return err
-	}
-	defer lock.release()
 	if err := runRepositoriesParallel(c.repos, c.options.Parallel, prepareCampaignRepository); err != nil {
 		return err
 	}
@@ -365,12 +417,54 @@ func (c *campaign) apply() error {
 	if err != nil {
 		return err
 	}
-	for _, layer := range layers {
-		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
-			return c.processRepository(repo, moduleRoots)
+	if c.options.PR {
+		if err := runRepositoriesParallel(c.repos, c.options.Parallel, func(repo *campaignRepository) error {
+			return c.preflightRepository(repo, moduleRoots)
 		}); err != nil {
 			return err
 		}
+	}
+	var localVerificationErrors []error
+	for _, layer := range layers {
+		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+			return c.applyRepositorySources(repo)
+		}); err != nil {
+			return err
+		}
+		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+			return c.updateRepositoryManifests(repo, moduleRoots)
+		}); err != nil {
+			return err
+		}
+		verificationErrors := runRepositoriesParallelErrors(layer, c.options.Parallel, func(repo *campaignRepository) error {
+			return c.verifyRepository(repo, false)
+		})
+		if len(verificationErrors) > 0 {
+			if c.options.Commit {
+				return errors.Join(verificationErrors...)
+			}
+			localVerificationErrors = append(localVerificationErrors, verificationErrors...)
+		}
+		if c.options.PR {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+				return c.finalizeRepositoryManifests(repo, moduleRoots)
+			}); err != nil {
+				return err
+			}
+			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+				return c.verifyRepository(repo, true)
+			}); err != nil {
+				return err
+			}
+		}
+		if c.options.Commit {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, c.commitAndPublishRepository); err != nil {
+				return err
+			}
+		}
+	}
+	if len(localVerificationErrors) > 0 {
+		return errors.Join(localVerificationErrors...)
 	}
 	if c.options.Merge {
 		// Preflight every PR before merging any of them. A pending or failing
@@ -402,10 +496,22 @@ func (c *campaign) apply() error {
 	return nil
 }
 
-// processRepository runs the local mutation, verification, and optional
-// publish phases for a dependency-ready repository. GitHub CI therefore runs
-// asynchronously while WB proceeds to other ready repositories.
-func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[string]string) error {
+func (c *campaign) preflightRepository(repo *campaignRepository, moduleRoots map[string]string) error {
+	for _, module := range repo.modules {
+		if !module.migrate {
+			continue
+		}
+		if err := preflightPublishedReleases(module.root, c.spec, module.path, moduleRoots); err != nil {
+			return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
+		}
+	}
+	return nil
+}
+
+// applyRepositorySources is a distinct campaign phase. Every repository in a
+// dependency layer finishes source rewriting before any peer normalizes its
+// manifest, so cyclic modules never observe a half-rewritten dependency.
+func (c *campaign) applyRepositorySources(repo *campaignRepository) error {
 	for _, modulePath := range c.order {
 		module := c.modules[modulePath]
 		if module.repository != repo.repository {
@@ -415,11 +521,6 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 			module.report.Status = "provided"
 			continue
 		}
-		if c.options.PR {
-			if err := preflightPublishedReleases(module.root, c.spec, module.path, moduleRoots); err != nil {
-				return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
-			}
-		}
 		plan, err := BuildPlan(c.spec, module.root)
 		if err != nil {
 			return fmt.Errorf("plan %s: %w", module.path, err)
@@ -427,14 +528,9 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 		if err := Apply(plan); err != nil {
 			return fmt.Errorf("apply %s: %w", module.path, err)
 		}
-		manifestChanged, err := updateGoModule(module.root, c.spec, module.path, moduleRoots)
-		if err != nil {
-			return fmt.Errorf("update go.mod for %s: %w", module.path, err)
-		}
 		changedFiles := len(plan.Changes)
 		module.report.ChangedFiles = &changedFiles
 		module.report.PlanState = "complete"
-		module.report.ManifestChanged = manifestChanged
 		module.report.ReviewItems = len(plan.Findings)
 		module.report.Status = "applied"
 		if c.options.ReportDir != "" {
@@ -445,27 +541,75 @@ func (c *campaign) processRepository(repo *campaignRepository, moduleRoots map[s
 			module.report.MigrationReportPath = dir
 		}
 	}
-	if err := c.verifyRepository(repo, false); err != nil {
-		return err
-	}
-	if c.options.PR {
-		for _, module := range repo.modules {
-			if !module.migrate {
-				continue
-			}
-			changed, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots)
-			if err != nil {
-				return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
-			}
-			module.report.PublishableManifest = changed
+	return nil
+}
+
+func (c *campaign) updateRepositoryManifests(repo *campaignRepository, moduleRoots map[string]string) error {
+	for _, module := range repo.modules {
+		if !module.migrate {
+			continue
 		}
-		if err := c.verifyRepository(repo, true); err != nil {
-			return err
+		changed, err := updateGoModule(module.root, c.spec, module.path, moduleRoots)
+		if err != nil {
+			return fmt.Errorf("update go.mod for %s: %w", module.path, err)
 		}
+		module.report.ManifestChanged = changed
 	}
-	if !c.options.Commit {
-		return nil
+	return refreshRepositoryChangeIndex(repo)
+}
+
+// refreshRepositoryChangeIndex records the complete review surface relative
+// to the campaign's base ref. This deliberately differs from a module plan's
+// ChangedFiles count: on --resume the latest mechanical pass can be
+// idempotent while the campaign branch still contains all earlier edits and
+// manual fixes that a reviewer must inspect.
+func refreshRepositoryChangeIndex(repo *campaignRepository) error {
+	base := "origin/" + repo.ref
+	tracked, err := runIn(repo.worktree, "git", "diff", "--name-only", "-z", base)
+	if err != nil {
+		return fmt.Errorf("index changed files for %s: %w", repo.repository, err)
 	}
+	untracked, err := runIn(repo.worktree, "git", "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return fmt.Errorf("index untracked files for %s: %w", repo.repository, err)
+	}
+	seen := map[string]bool{}
+	files := make([]string, 0)
+	for _, path := range append(splitNUL(tracked), splitNUL(untracked)...) {
+		path = filepath.ToSlash(path)
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		files = append(files, path)
+	}
+	sort.Strings(files)
+	repo.report.ChangedFiles = &files
+	return nil
+}
+
+func splitNUL(value string) []string {
+	return strings.Split(strings.TrimSuffix(value, "\x00"), "\x00")
+}
+
+func (c *campaign) finalizeRepositoryManifests(repo *campaignRepository, moduleRoots map[string]string) error {
+	for _, module := range repo.modules {
+		if !module.migrate {
+			continue
+		}
+		changed, err := finalizeGoModule(module.root, c.spec, module.path, moduleRoots)
+		if err != nil {
+			return fmt.Errorf("make go.mod publishable for %s: %w", module.path, err)
+		}
+		module.report.PublishableManifest = changed
+	}
+	return nil
+}
+
+// commitAndPublishRepository runs only after every repository in the current
+// dependency layer has completed source, manifest, and verification phases.
+// GitHub CI can then run while later consumer layers continue locally.
+func (c *campaign) commitAndPublishRepository(repo *campaignRepository) error {
 	changed, err := worktreeChanged(repo.worktree)
 	if err != nil {
 		return err
@@ -527,7 +671,11 @@ func (c *campaign) verifyRepository(repo *campaignRepository, publishableOnly bo
 		if !module.migrate {
 			continue
 		}
-		changed := module.report.ChangedFiles != nil && *module.report.ChangedFiles > 0
+		moduleDirty, err := worktreeChanged(module.root)
+		if err != nil {
+			return err
+		}
+		changed := moduleDirty || module.report.ChangedFiles != nil && *module.report.ChangedFiles > 0
 		if (!publishableOnly && !changed && !module.report.ManifestChanged) ||
 			(publishableOnly && !module.report.PublishableManifest) {
 			continue
@@ -565,44 +713,51 @@ func (c *campaign) repositoryLayers() ([][]*campaignRepository, error) {
 			dependencies[parentModule.repository][childModule.repository] = true
 		}
 	}
-	state := map[string]int{}
-	depths := map[string]int{}
-	var depth func(string) (int, error)
-	depth = func(repository string) (int, error) {
-		switch state[repository] {
-		case 1:
-			return 0, fmt.Errorf("cycle in campaign repository dependencies at %s", repository)
-		case 2:
-			return depths[repository], nil
+	componentByRepository, componentCount := repositoryComponents(repositories, dependencies)
+	componentDependencies := make(map[int]map[int]bool, componentCount)
+	for repository, repositoryDependencies := range dependencies {
+		component, ok := componentByRepository[repository]
+		if !ok {
+			continue
 		}
-		state[repository] = 1
-		level := 0
-		for dependency := range dependencies[repository] {
-			candidate, err := depth(dependency)
-			if err != nil {
-				return 0, err
+		for dependency := range repositoryDependencies {
+			dependencyComponent, ok := componentByRepository[dependency]
+			if !ok || component == dependencyComponent {
+				continue
 			}
+			if componentDependencies[component] == nil {
+				componentDependencies[component] = map[int]bool{}
+			}
+			componentDependencies[component][dependencyComponent] = true
+		}
+	}
+	componentDepths := map[int]int{}
+	var componentDepth func(int) int
+	componentDepth = func(component int) int {
+		if level, ok := componentDepths[component]; ok {
+			return level
+		}
+		level := 0
+		for dependency := range componentDependencies[component] {
+			candidate := componentDepth(dependency)
 			if candidate+1 > level {
 				level = candidate + 1
 			}
 		}
-		state[repository] = 2
-		depths[repository] = level
-		return level, nil
+		componentDepths[component] = level
+		return level
 	}
 	maxDepth := 0
-	for repository := range repositories {
-		value, err := depth(repository)
-		if err != nil {
-			return nil, err
-		}
+	for component := range componentCount {
+		value := componentDepth(component)
 		if value > maxDepth {
 			maxDepth = value
 		}
 	}
 	layers := make([][]*campaignRepository, maxDepth+1)
 	for repository, repo := range repositories {
-		layers[depths[repository]] = append(layers[depths[repository]], repo)
+		depth := componentDepths[componentByRepository[repository]]
+		layers[depth] = append(layers[depth], repo)
 	}
 	for _, layer := range layers {
 		sort.Slice(layer, func(i, j int) bool { return layer[i].repository < layer[j].repository })
@@ -610,7 +765,88 @@ func (c *campaign) repositoryLayers() ([][]*campaignRepository, error) {
 	return layers, nil
 }
 
+// repositoryComponents collapses cyclic repository dependencies into strongly
+// connected components. Go modules may legitimately form cycles; every
+// campaign worktree is prepared before processing starts, so repositories in
+// one component can be migrated and verified in the same dependency layer.
+func repositoryComponents(
+	repositories map[string]*campaignRepository,
+	dependencies map[string]map[string]bool,
+) (componentByRepository map[string]int, componentCount int) {
+	componentByRepository = make(map[string]int, len(repositories))
+	indices := make(map[string]int, len(repositories))
+	lowLinks := make(map[string]int, len(repositories))
+	onStack := make(map[string]bool, len(repositories))
+	stack := make([]string, 0, len(repositories))
+	nextIndex := 0
+
+	var visit func(string)
+	visit = func(repository string) {
+		indices[repository] = nextIndex
+		lowLinks[repository] = nextIndex
+		nextIndex++
+		stack = append(stack, repository)
+		onStack[repository] = true
+
+		dependencyNames := make([]string, 0, len(dependencies[repository]))
+		for dependency := range dependencies[repository] {
+			if _, ok := repositories[dependency]; ok {
+				dependencyNames = append(dependencyNames, dependency)
+			}
+		}
+		sort.Strings(dependencyNames)
+		for _, dependency := range dependencyNames {
+			dependencyIndex, visited := indices[dependency]
+			if !visited {
+				visit(dependency)
+				if lowLinks[dependency] < lowLinks[repository] {
+					lowLinks[repository] = lowLinks[dependency]
+				}
+			} else if onStack[dependency] && dependencyIndex < lowLinks[repository] {
+				lowLinks[repository] = dependencyIndex
+			}
+		}
+
+		if lowLinks[repository] != indices[repository] {
+			return
+		}
+		for {
+			last := len(stack) - 1
+			member := stack[last]
+			stack = stack[:last]
+			onStack[member] = false
+			componentByRepository[member] = componentCount
+			if member == repository {
+				break
+			}
+		}
+		componentCount++
+	}
+
+	repositoryNames := make([]string, 0, len(repositories))
+	for repository := range repositories {
+		repositoryNames = append(repositoryNames, repository)
+	}
+	sort.Strings(repositoryNames)
+	for _, repository := range repositoryNames {
+		if _, visited := indices[repository]; !visited {
+			visit(repository)
+		}
+	}
+	return componentByRepository, componentCount
+}
+
 func runRepositoriesParallel(repositories []*campaignRepository, parallel int, action func(*campaignRepository) error) error {
+	errors := runRepositoriesParallelErrors(repositories, parallel, action)
+	if len(errors) > 0 {
+		return errors[0]
+	}
+	return nil
+}
+
+// runRepositoriesParallelErrors runs every repository and preserves input
+// order in its result, regardless of goroutine completion order.
+func runRepositoriesParallelErrors(repositories []*campaignRepository, parallel int, action func(*campaignRepository) error) []error {
 	if len(repositories) == 0 {
 		return nil
 	}
@@ -618,30 +854,30 @@ func runRepositoriesParallel(repositories []*campaignRepository, parallel int, a
 	if workers > len(repositories) {
 		workers = len(repositories)
 	}
-	jobs := make(chan *campaignRepository)
-	errors := make(chan error, len(repositories))
+	jobs := make(chan int)
+	results := make([]error, len(repositories))
 	var group sync.WaitGroup
 	for range workers {
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			for repo := range jobs {
-				if err := action(repo); err != nil {
-					errors <- err
-				}
+			for index := range jobs {
+				results[index] = action(repositories[index])
 			}
 		}()
 	}
-	for _, repo := range repositories {
-		jobs <- repo
+	for index := range repositories {
+		jobs <- index
 	}
 	close(jobs)
 	group.Wait()
-	close(errors)
-	for err := range errors {
-		return err
+	errors := make([]error, 0, len(results))
+	for _, err := range results {
+		if err != nil {
+			errors = append(errors, err)
+		}
 	}
-	return nil
+	return errors
 }
 
 func orderedRepositories(layers [][]*campaignRepository) []*campaignRepository {
@@ -660,6 +896,12 @@ func (c *campaign) syncReport() {
 				continue
 			}
 			reportRepo.Actions = append([]string(nil), repo.report.Actions...)
+			if repo.report.ChangedFiles == nil {
+				reportRepo.ChangedFiles = nil
+			} else {
+				files := append([]string(nil), (*repo.report.ChangedFiles)...)
+				reportRepo.ChangedFiles = &files
+			}
 			reportRepo.Commit = repo.report.Commit
 			reportRepo.Pushed = repo.report.Pushed
 			reportRepo.PR = repo.report.PR
@@ -716,13 +958,6 @@ func validateResumeWorktree(repo *campaignRepository) error {
 	}
 	if strings.TrimSpace(branch) != repo.branch {
 		return fmt.Errorf("cannot resume %s: worktree branch is %q, want %q", repo.repository, strings.TrimSpace(branch), repo.branch)
-	}
-	changed, err := worktreeChanged(repo.worktree)
-	if err != nil {
-		return err
-	}
-	if changed {
-		return fmt.Errorf("cannot resume %s: campaign worktree is dirty: %s", repo.repository, repo.worktree)
 	}
 	return nil
 }
@@ -810,8 +1045,16 @@ func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
 	return worktrees, nil
 }
 
-func inspectGoModuleGraph(root string) (map[string]listedModule, map[string][]string, error) {
-	output, err := runIn(root, "go", "list", "-m", "-json", "all")
+func inspectGoModuleGraph(root string, repairManifest bool) (map[string]listedModule, map[string][]string, error) {
+	args := []string{"list"}
+	if repairManifest {
+		// A prerequisite commit or manual partial fix may update go.mod before
+		// go.sum. Resume is an apply-only operation, so let official Go tooling
+		// reconcile that metadata before graph discovery.
+		args = append(args, "-mod=mod")
+	}
+	args = append(args, "-m", "-json", "all")
+	output, err := runIn(root, "go", args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -825,13 +1068,20 @@ func inspectGoModuleGraph(root string) (map[string]listedModule, map[string][]st
 			}
 			return nil, nil, fmt.Errorf("decode go module list: %w", err)
 		}
-		modules[module.Path] = listedModule{Path: module.Path, Version: module.Version, Main: module.Main}
+		goMod := module.GoMod
+		if module.Replace != nil && module.Replace.GoMod != "" {
+			goMod = module.Replace.GoMod
+		}
+		modules[module.Path] = listedModule{Path: module.Path, Version: module.Version, Main: module.Main, GoMod: goMod}
+	}
+	if err := populateGoModPaths(root, modules); err != nil {
+		return nil, nil, err
 	}
 	graph, err := runIn(root, "go", "mod", "graph")
 	if err != nil {
 		return nil, nil, err
 	}
-	children := map[string][]string{}
+	childSets := map[string]map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(graph), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) != 2 {
@@ -844,12 +1094,109 @@ func inspectGoModuleGraph(root string) (map[string]listedModule, map[string][]st
 		if _, ok := modules[child]; !ok {
 			continue
 		}
-		children[parent] = append(children[parent], child)
+		if childSets[parent] == nil {
+			childSets[parent] = map[string]bool{}
+		}
+		childSets[parent][child] = true
 	}
-	for module := range children {
+	if err := addGoModRequirementEdges(modules, childSets); err != nil {
+		return nil, nil, err
+	}
+	children := make(map[string][]string, len(childSets))
+	for module, dependencies := range childSets {
+		for dependency := range dependencies {
+			children[module] = append(children[module], dependency)
+		}
 		sort.Strings(children[module])
 	}
 	return modules, children, nil
+}
+
+func populateGoModPaths(root string, modules map[string]listedModule) error {
+	moduleCache, err := runIn(root, "go", "env", "GOMODCACHE")
+	if err != nil {
+		return err
+	}
+	moduleCache = strings.TrimSpace(moduleCache)
+	paths := make([]string, 0, len(modules))
+	for modulePath := range modules {
+		paths = append(paths, modulePath)
+	}
+	sort.Strings(paths)
+	for _, modulePath := range paths {
+		module := modules[modulePath]
+		if module.GoMod != "" || module.Version == "" {
+			continue
+		}
+		candidate, candidateErr := cachedGoModPath(moduleCache, module.Path, module.Version)
+		if candidateErr == nil {
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				module.GoMod = candidate
+				modules[modulePath] = module
+				continue
+			}
+		}
+		output, listErr := runIn(root, "go", "list", "-m", "-json", module.Path+"@"+module.Version)
+		if listErr != nil {
+			return fmt.Errorf("resolve go.mod for %s@%s: %w", module.Path, module.Version, listErr)
+		}
+		var resolved goListModule
+		if err := json.Unmarshal([]byte(output), &resolved); err != nil {
+			return fmt.Errorf("decode module metadata for %s@%s: %w", module.Path, module.Version, err)
+		}
+		module.GoMod = resolved.GoMod
+		if resolved.Replace != nil && resolved.Replace.GoMod != "" {
+			module.GoMod = resolved.Replace.GoMod
+		}
+		modules[modulePath] = module
+	}
+	return nil
+}
+
+func cachedGoModPath(moduleCache, modulePath, version string) (string, error) {
+	escapedPath, err := modmodule.EscapePath(modulePath)
+	if err != nil {
+		return "", err
+	}
+	escapedVersion, err := modmodule.EscapeVersion(version)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(moduleCache, "cache", "download", escapedPath, "@v", escapedVersion+".mod"), nil
+}
+
+// addGoModRequirementEdges restores direct requirement edges hidden by Go's
+// pruned module graph. Reverse migration discovery needs to know that an
+// adapter depends on a changed module even when `go mod graph` omits the
+// adapter's outgoing edges from the root module's pruned view.
+func addGoModRequirementEdges(modules map[string]listedModule, children map[string]map[string]bool) error {
+	for modulePath, module := range modules {
+		if module.GoMod == "" {
+			continue
+		}
+		contents, err := os.ReadFile(module.GoMod)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read go.mod for %s: %w", modulePath, err)
+		}
+		parsed, err := modfile.ParseLax(module.GoMod, contents, nil)
+		if err != nil {
+			return fmt.Errorf("parse go.mod requirements for %s: %w", modulePath, err)
+		}
+		for _, requirement := range parsed.Require {
+			dependency := requirement.Mod.Path
+			if _, selected := modules[dependency]; !selected {
+				continue
+			}
+			if children[modulePath] == nil {
+				children[modulePath] = map[string]bool{}
+			}
+			children[modulePath][dependency] = true
+		}
+	}
+	return nil
 }
 
 func migrationTargetModules(spec Spec, modules map[string]listedModule) map[string]bool {
@@ -1013,6 +1360,32 @@ func updateGoModule(moduleRoot string, spec Spec, modulePath string, moduleRoots
 			continue
 		}
 		if err := replaceGoModule(moduleRoot, goMod, path, root); err != nil {
+			return false, err
+		}
+	}
+	if _, err := runIn(moduleRoot, "go", "mod", "tidy"); err != nil {
+		return false, err
+	}
+	// Tidy removes unused requirements but intentionally retains their replace
+	// directives. Drop only replacements that point at this campaign's known
+	// worktrees and no longer have a requirement, keeping the local diff minimal.
+	parsed, err = parseGoMod(goMod)
+	if err != nil {
+		return false, err
+	}
+	required := map[string]bool{}
+	for _, requirement := range parsed.Require {
+		required[requirement.Mod.Path] = true
+	}
+	for path, root := range moduleRoots {
+		if path == modulePath || required[path] {
+			continue
+		}
+		hasReplace, replaceErr := hasCampaignReplace(moduleRoot, parsed, path, root)
+		if replaceErr != nil || !hasReplace {
+			continue
+		}
+		if err := dropCampaignReplace(moduleRoot, parsed, path); err != nil {
 			return false, err
 		}
 	}
@@ -1289,16 +1662,31 @@ func (r CampaignReport) Markdown() string {
 	}
 	fmt.Fprintf(&out, "- Migration format: [%s](%s)\n- Status: `%s`\n- Base ref: `%s`\n- Verification: `%s`\n- Source root: `%s`\n\n", r.Migration.Format, r.Migration.Format, r.Status, r.BaseRef, r.Verification, r.SourceRoot)
 	out.WriteString("## Repository index\n\n")
-	out.WriteString("| Repository | Worktree | Ref | Modules | Commit | Pushed | PR | Merged |\n|---|---|---|---:|---|---|---|---|\n")
+	out.WriteString("| Repository | Worktree | Ref | Changed files | Modules | Commit | Pushed | PR | Merged |\n|---|---|---|---:|---:|---|---|---|---|\n")
 	for _, repo := range r.Repositories {
 		pr := ""
 		if repo.PR != "" {
 			pr = "[PR](" + repo.PR + ")"
 		}
-		fmt.Fprintf(&out, "| `%s` | [%s](%s) | `%s` | `%d` | `%s` | `%t` | %s | `%t` |\n", repo.Repository, repo.WorktreeDir, fileURL(repo.WorktreeDir), repo.Ref, len(repo.Modules), repo.Commit, repo.Pushed, pr, repo.Merged)
+		changedFiles := "unknown"
+		if repo.ChangedFiles != nil {
+			changedFiles = fmt.Sprintf("%d", len(*repo.ChangedFiles))
+		}
+		fmt.Fprintf(&out, "| `%s` | [%s](%s) | `%s` | `%s` | `%d` | `%s` | `%t` | %s | `%t` |\n", repo.Repository, repo.WorktreeDir, fileURL(repo.WorktreeDir), repo.Ref, changedFiles, len(repo.Modules), repo.Commit, repo.Pushed, pr, repo.Merged)
 	}
 	for _, repo := range r.Repositories {
 		fmt.Fprintf(&out, "\n## %s\n\n", repo.Repository)
+		if repo.ChangedFiles != nil {
+			if len(*repo.ChangedFiles) == 0 {
+				out.WriteString("No files differ from the campaign base ref.\n\n")
+			} else {
+				out.WriteString("Changed files relative to the campaign base ref:\n\n")
+				for _, path := range *repo.ChangedFiles {
+					fmt.Fprintf(&out, "- [%s](%s)\n", path, fileURL(filepath.Join(repo.WorktreeDir, filepath.FromSlash(path))))
+				}
+				fmt.Fprintf(&out, "\nInspect the repository diff with `%s`.\n\n", fmt.Sprintf("git -C %s diff %s", shellQuote(repo.WorktreeDir), shellQuote("origin/"+repo.Ref)))
+			}
+		}
 		for _, module := range repo.Modules {
 			files := "unknown (worktree not created)"
 			if module.PlanState == "not_applicable" {
@@ -1306,7 +1694,7 @@ func (r CampaignReport) Markdown() string {
 			} else if module.ChangedFiles != nil {
 				files = fmt.Sprintf("%d", *module.ChangedFiles)
 			}
-			fmt.Fprintf(&out, "- `%s` — `%s`; plan: `%s`; files: %s; manifest changed: `%t`", module.Path, module.Status, module.PlanState, files, module.ManifestChanged)
+			fmt.Fprintf(&out, "- `%s` — `%s`; plan: `%s`; files rewritten this pass: %s; manifest changed this pass: `%t`", module.Path, module.Status, module.PlanState, files, module.ManifestChanged)
 			if module.PublishableManifest {
 				out.WriteString("; publishable manifest: `true`")
 			}

@@ -306,6 +306,11 @@ migration "rename-api-v1" {
     from   = "OldType"
     to     = "NewType"
   }
+
+  composite_field_rename "go" {
+    from = "OldEmbeddedField"
+    to   = "NewEmbeddedField"
+  }
 }
 ```
 
@@ -322,11 +327,34 @@ unqualified identifiers. Those need a future type-aware rename operation based
 on `go/types` (and corresponding LibCST/TypeScript compiler adapters), rather
 than an unsafe text replacement.
 
+`composite_field_rename "go"` renames only identifier keys in explicitly typed
+named composite literals, such as `Entry{OldEmbeddedField: value}`. It skips
+maps, arrays, slices, elided nested literals, strings, comments, declarations,
+and ordinary identifier uses. The instruction is intentionally syntax-aware,
+not owner-type-aware; use a distinctive field name and a narrow file scope
+when the old name is common.
+
 For a deterministic specification, WB evaluates HCL operation phases in this
-order: `text_replace`, `import_replace`, `selector_rewrite`, then
-`selector_rename`. Repeated blocks keep their source order within a phase. The
+order: `text_replace`, `import_replace`, `selector_rewrite`,
+`selector_rename`, then `composite_field_rename`. Repeated blocks keep their
+source order within a phase. The
 separate, future local-type rename is deliberately not accepted until an
 adapter can resolve declarations and references across its complete package.
+
+Semantic review rules can omit already-correct forms on the same source line:
+
+```hcl
+review "changes-executor" {
+  language        = "go"
+  pattern         = "[.]ApplyChanges[(]"
+  exclude_pattern = "dal[.]ApplyChanges[(]"
+  message         = "Call the DAL executor with the record changes envelope."
+}
+```
+
+`exclude_pattern` is optional and line-scoped. A matching exclusion suppresses
+only review matches on that line, so a correct form elsewhere in the file does
+not hide a method call that still needs semantic migration.
 
 When a migration introduces a new Go module, declare its version explicitly:
 
@@ -390,7 +418,7 @@ wb migrate examples/migrations/dalgo-record-v1.hcl \
   --hierarchical --apply --merge \
   --module-ref github.com/dal-go/dalgo=issue-100-record-extraction
 
-# Resume only clean campaign worktrees on their expected branches.
+# Resume partial campaign worktrees on their expected branches.
 wb migrate examples/migrations/dalgo-record-v1.hcl \
   ~/projects/sneat-co/sneat-bots \
   --hierarchical --apply --resume
@@ -439,21 +467,39 @@ bypasses branch protection.
 `--parallel=N` (default `1`) runs independent repositories concurrently. WB
 still processes dependency layers in order: a provider's migration and local
 verification complete before a consumer that uses its local replacement starts.
+Within each layer, WB completes source edits across all repositories before
+normalizing manifests, then verifies the layer. This makes cyclic Go module
+groups safe because dependency tooling never reads a peer's half-rewritten
+source tree.
 Once a repository is verified and `--pr` is active, its PR is opened
 immediately; WB does not wait for its remote CI before working on later ready
 repositories. Only the final `--merge` phase waits for required GitHub checks.
+Local campaigns without commit or publishing flags continue verification after
+a failure so the final report indexes every failing repository. Publishing
+campaigns remain fail-fast before dependent branches can be committed.
 
-`--resume` is an explicit recovery path: it only accepts a clean existing
-worktree on the expected campaign branch. An apply campaign holds an exclusive
-lock under its migration worktree root, so concurrent runs fail safely.
+`--resume` is an explicit recovery path: it accepts an existing worktree on the
+expected campaign branch, preserves partial or manually corrected migration
+changes, and verifies those existing changes. Dependency discovery also uses
+the validated root campaign worktree, so prerequisite refactors that introduce
+modules bring those providers into the next campaign pass automatically. Go's
+own module tooling repairs incomplete `go.mod`/`go.sum` metadata during that
+apply-only resume discovery. An
+apply campaign holds an
+exclusive lock under its migration worktree root, so concurrent runs fail safely.
 `--cleanup` removes only clean worktrees for that migration; it leaves
 canonical clones, branches, and reports intact.
 
 Every hierarchical run writes a linked human index and deterministic manifest
 to `<github-dir>/.wb/reports/<migration>/campaign.md` and `campaign.yaml`
 (or `--report-dir`). Per-module `migration.md` and `migration.yaml` reports
-are nested beneath that directory. The Markdown index points at worktrees and
-the per-module reports; Git remains the source of the detailed diff.
+are nested beneath that directory. The campaign index lists every
+repository-relative path that differs from its configured base ref, including
+committed, staged, unstaged, and untracked files. This cumulative index remains
+truthful after an idempotent `--resume`; per-module counts describe only files
+rewritten by the current mechanical pass. The Markdown index points at
+worktrees and per-module reports, while Git remains the source of the detailed
+diff.
 
 On a dry run the campaign deliberately reports `plan_state: deferred` and no
 `changed_files` count: WB has not created worktrees or evaluated their source.

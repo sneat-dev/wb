@@ -18,6 +18,7 @@ type hclMigration struct {
 	ImportReplaces   []hclImportReplace   `hcl:"import_replace,block"`
 	SelectorRewrites []hclSelectorRewrite `hcl:"selector_rewrite,block"`
 	SelectorRenames  []hclSelectorRename  `hcl:"selector_rename,block"`
+	CompositeFields  []hclCompositeField  `hcl:"composite_field_rename,block"`
 	GoModuleRequires []hclGoModuleRequire `hcl:"go_module_require,block"`
 	GoModuleReleases []hclGoModuleRelease `hcl:"go_module_release,block"`
 	Reviews          []hclReview          `hcl:"review,block"`
@@ -58,6 +59,15 @@ type hclSelectorRename struct {
 	To       string `hcl:"to"`
 }
 
+// hclCompositeField is intentionally syntax-scoped: it renames only a keyed
+// field in an explicitly typed Go composite literal. It does not claim to
+// resolve the owning type across packages.
+type hclCompositeField struct {
+	Language string `hcl:"language,label"`
+	From     string `hcl:"from"`
+	To       string `hcl:"to"`
+}
+
 type hclGoModuleRequire struct {
 	Path    string `hcl:"path,label"`
 	Version string `hcl:"version"`
@@ -69,10 +79,11 @@ type hclGoModuleRelease struct {
 }
 
 type hclReview struct {
-	ID       string `hcl:"id,label"`
-	Language string `hcl:"language"`
-	Pattern  string `hcl:"pattern"`
-	Message  string `hcl:"message"`
+	ID             string `hcl:"id,label"`
+	Language       string `hcl:"language"`
+	Pattern        string `hcl:"pattern"`
+	ExcludePattern string `hcl:"exclude_pattern,optional"`
+	Message        string `hcl:"message"`
 }
 
 func (d hclDocument) spec() (Spec, error) {
@@ -109,6 +120,11 @@ func (d hclDocument) spec() (Spec, error) {
 			Kind: "selector.rename", Language: step.Language, Import: step.Import, From: step.From, To: step.To,
 		})
 	}
+	for _, step := range migration.CompositeFields {
+		spec.Steps = append(spec.Steps, Step{
+			Kind: "composite_field.rename", Language: step.Language, From: step.From, To: step.To,
+		})
+	}
 	for _, requirement := range migration.GoModuleRequires {
 		spec.GoModuleRequires = append(spec.GoModuleRequires, GoModuleRequire{
 			Path: requirement.Path, Version: requirement.Version,
@@ -121,7 +137,8 @@ func (d hclDocument) spec() (Spec, error) {
 	}
 	for _, rule := range migration.Reviews {
 		spec.Review = append(spec.Review, ReviewRule{
-			ID: rule.ID, Language: rule.Language, Pattern: rule.Pattern, Message: rule.Message,
+			ID: rule.ID, Language: rule.Language, Pattern: rule.Pattern,
+			ExcludePattern: rule.ExcludePattern, Message: rule.Message,
 		})
 	}
 	return spec, nil

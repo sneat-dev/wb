@@ -21,7 +21,7 @@ func transform(steps []Step, language string, original []byte, path string) ([]b
 		case "text.replace":
 			next = []byte(strings.ReplaceAll(string(updated), step.From, step.To))
 			changed = string(next) != string(updated)
-		case "import.replace", "selector.rewrite", "selector.rename":
+		case "import.replace", "selector.rewrite", "selector.rename", "composite_field.rename":
 			adapter, ok := structuralAdapters[language]
 			if !ok {
 				return nil, nil, fmt.Errorf("%s for %s requires a structural adapter", step.Kind, language)

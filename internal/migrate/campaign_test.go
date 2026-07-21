@@ -1,10 +1,29 @@
 package migrate
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRunRepositoriesParallelErrorsPreservesRepositoryOrder(t *testing.T) {
+	repositories := []*campaignRepository{
+		{repository: "github.com/acme/first"},
+		{repository: "github.com/acme/second"},
+	}
+	errs := runRepositoriesParallelErrors(repositories, 2, func(repo *campaignRepository) error {
+		if repo == repositories[0] {
+			time.Sleep(10 * time.Millisecond)
+		}
+		return errors.New(repo.repository)
+	})
+	if len(errs) != 2 || errs[0].Error() != repositories[0].repository || errs[1].Error() != repositories[1].repository {
+		t.Fatalf("errors = %v, want repository order", errs)
+	}
+}
 
 func TestCampaignGraphSelectsDependentsDependencyFirst(t *testing.T) {
 	children := map[string][]string{
@@ -29,6 +48,36 @@ func TestMigrationTargetModulesUsesLongestGoModulePrefix(t *testing.T) {
 	targets := migrationTargetModules(spec, modules)
 	if !targets["github.com/dal-go/dalgo/adapter"] || len(targets) != 1 {
 		t.Fatalf("targets = %v", targets)
+	}
+}
+
+func TestAddGoModRequirementEdgesRestoresPrunedDependency(t *testing.T) {
+	root := t.TempDir()
+	adapterMod := filepath.Join(root, "adapter.mod")
+	if err := os.WriteFile(adapterMod, []byte("module github.com/acme/adapter\n\ngo 1.24\n\nrequire github.com/acme/core v1.2.3\n\nfuture_directive example\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modules := map[string]listedModule{
+		"github.com/acme/adapter": {Path: "github.com/acme/adapter", GoMod: adapterMod},
+		"github.com/acme/core":    {Path: "github.com/acme/core"},
+	}
+	edges := map[string]map[string]bool{}
+	if err := addGoModRequirementEdges(modules, edges); err != nil {
+		t.Fatal(err)
+	}
+	if !edges["github.com/acme/adapter"]["github.com/acme/core"] {
+		t.Fatalf("requirement edge was not restored: %+v", edges)
+	}
+}
+
+func TestCachedGoModPathUsesOfficialModuleEscaping(t *testing.T) {
+	got, err := cachedGoModPath("/cache", "github.com/RoaringBitmap/roaring/v2", "v2.21.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join("/cache", "cache", "download", "github.com", "!roaring!bitmap", "roaring", "v2", "@v", "v2.21.0.mod")
+	if got != want {
+		t.Fatalf("cached go.mod path = %q, want %q", got, want)
 	}
 }
 
@@ -80,6 +129,43 @@ func TestRepositoryLayersRunDependenciesFirst(t *testing.T) {
 	}
 }
 
+func TestRepositoryLayersCollapseDependencyCycles(t *testing.T) {
+	provider := &campaignRepository{repository: "github.com/acme/provider"}
+	cycleA := &campaignRepository{repository: "github.com/acme/cycle-a"}
+	cycleB := &campaignRepository{repository: "github.com/acme/cycle-b"}
+	consumer := &campaignRepository{repository: "github.com/acme/consumer"}
+	c := campaign{
+		repos: []*campaignRepository{consumer, cycleB, provider, cycleA},
+		modules: map[string]*campaignModule{
+			provider.repository: {repository: provider.repository},
+			cycleA.repository:   {repository: cycleA.repository},
+			cycleB.repository:   {repository: cycleB.repository},
+			consumer.repository: {repository: consumer.repository},
+		},
+		children: map[string][]string{
+			cycleA.repository:   {cycleB.repository},
+			cycleB.repository:   {cycleA.repository, provider.repository},
+			consumer.repository: {cycleA.repository},
+		},
+	}
+	layers, err := c.repositoryLayers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 3 {
+		t.Fatalf("len(layers) = %d, want 3: %+v", len(layers), layers)
+	}
+	if len(layers[0]) != 1 || layers[0][0] != provider {
+		t.Fatalf("provider layer = %+v", layers[0])
+	}
+	if len(layers[1]) != 2 || layers[1][0] != cycleA || layers[1][1] != cycleB {
+		t.Fatalf("cycle layer = %+v", layers[1])
+	}
+	if len(layers[2]) != 1 || layers[2][0] != consumer {
+		t.Fatalf("consumer layer = %+v", layers[2])
+	}
+}
+
 func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 	owner, name, repository, err := githubRepository("github.com/acme/repo/submodule")
 	if err != nil {
@@ -112,5 +198,30 @@ func TestGitHubRepositoryAndCampaignReport(t *testing.T) {
 	}
 	if strings.Contains(string(yaml), "changed_files:") {
 		t.Errorf("deferred YAML must not invent a changed_files count: %s", yaml)
+	}
+}
+
+func TestCampaignReportIndexesCumulativeRepositoryChanges(t *testing.T) {
+	changedFiles := []string{"go.mod", "pkg/example.go"}
+	report := CampaignReport{
+		SchemaVersion: 1,
+		Migration:     ReportMigration{ID: "example", Format: MigrationFormatV1},
+		Status:        "applied",
+		Repositories: []CampaignRepositoryReport{{
+			Repository: "github.com/acme/repo", WorktreeDir: filepath.Join(t.TempDir(), "worktree"), Ref: "main", ChangedFiles: &changedFiles,
+		}},
+	}
+	markdown := report.Markdown()
+	for _, want := range []string{"pkg/example.go", "git -C", "origin/main"} {
+		if !strings.Contains(markdown, want) {
+			t.Errorf("Markdown missing %q:\n%s", want, markdown)
+		}
+	}
+	yaml, err := report.YAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(yaml), "changed_files:\n") || !strings.Contains(string(yaml), "- pkg/example.go") {
+		t.Errorf("YAML missing deterministic change index: %s", yaml)
 	}
 }

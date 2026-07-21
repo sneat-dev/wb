@@ -36,17 +36,29 @@ An apply campaign MUST clone missing repositories to
 `<github-dir>/.wb/worktrees/<migration>/<org>/<repo>`. It MUST NOT check out,
 reset, or edit the canonical clone, including when that clone is dirty.
 
-#### REQ: clean-resume
+#### REQ: recoverable-resume
 
 `--resume` MUST reuse only an existing worktree on the expected campaign
-branch that has no uncommitted changes. A missing, dirty, or differently
-branched worktree MUST fail without replacing it.
+branch. It MUST preserve and idempotently continue uncommitted changes left by
+a partial campaign or manual migration fix, and MUST include those changes when
+deciding which modules require verification. A missing or differently branched
+worktree MUST fail without replacing it.
+
+#### REQ: evolving-resume-graph
+
+When the root campaign worktree already exists, `--resume` MUST rediscover the
+Go module graph from that validated worktree rather than the original clone.
+Dependencies introduced by manual fixes or prerequisite branch integration
+MUST join the campaign on the next run and receive their own isolated
+worktrees, migrations, manifest replacements, and verification. Apply/resume
+MUST let official Go tooling repair incomplete `go.mod`/`go.sum` metadata
+before inspecting that evolving graph.
 
 #### REQ: campaign-lock
 
 An apply campaign MUST hold one exclusive migration lock below its dedicated
-worktree root. A concurrent or interrupted lock MUST cause a safe failure and
-MUST NOT be silently overwritten.
+worktree root for both planning and application. A concurrent or interrupted
+lock MUST cause a safe failure and MUST NOT be silently overwritten.
 
 #### REQ: narrow-cleanup
 
@@ -56,13 +68,27 @@ worktree with uncommitted changes.
 
 ### Planning and reports
 
+#### REQ: pruned-go-graph-discovery
+
+WB MUST augment the root command's pruned `go mod graph` with direct
+requirements read from the selected modules' own `go.mod` files. A transitive
+adapter that directly requires a migration target MUST be included even when
+Go omits that adapter's outgoing edges from the root graph view.
+
 #### REQ: deterministic-operation-order
 
 The migration format MUST execute HCL operations in this stable phase order:
 `text_replace`, `import_replace`, `selector_rewrite`, then
-`selector_rename`; manifest edits occur only in a hierarchical campaign after
-source edits. Repeated blocks with the same language label remain valid and
-preserve their source order within a phase.
+`selector_rename`, then `composite_field_rename`; manifest edits occur only in
+a hierarchical campaign after source edits. Repeated blocks with the same
+language label remain valid and preserve their source order within a phase.
+
+#### REQ: syntax-safe-composite-field-rename
+
+The Go adapter MUST limit `composite_field_rename` to identifier keys in
+explicitly typed named composite literals. It MUST NOT rewrite maps, arrays,
+slices, elided literals, strings, comments, field declarations, or ordinary
+identifier references.
 
 #### REQ: deferred-dry-run-results
 
@@ -77,6 +103,21 @@ Every campaign report MUST provide Markdown links to its isolated worktrees
 and per-module migration reports, together with a deterministic YAML index.
 Detailed code diffs remain available through Git rather than duplicated in
 the report.
+
+#### REQ: cumulative-resume-change-index
+
+After an apply, every repository report MUST deterministically list the
+repository-relative paths that differ from its configured remote base ref,
+including committed, staged, unstaged, and untracked files. `--resume` MUST
+retain this cumulative review surface even when the latest mechanical pass is
+idempotent; per-module plan counts MAY describe only the latest pass.
+
+#### REQ: precise-review-rules
+
+A migration review rule MAY define an optional line-scoped exclusion pattern.
+WB MUST suppress only matches whose source line satisfies that exclusion; an
+already-correct form elsewhere in the file MUST NOT hide a remaining semantic
+review item.
 
 ### Publishable Go branches
 
@@ -103,6 +144,29 @@ repositories MAY run up to `--parallel` concurrently. When `--pr` is set, WB
 MUST continue ready local work while already-opened pull requests run remote
 CI; `--merge` is a final phase that requires every campaign PR's required
 checks to pass before any merge is attempted.
+
+For a local apply campaign without commit or publishing flags, verification
+failures MUST be collected deterministically and MUST NOT prevent later
+dependency layers from being verified. WB MUST return the collected failures
+after all layers have run. A campaign that can commit, push, open PRs, or merge
+MUST remain fail-fast before publishing dependent repositories.
+
+Go module graphs MAY contain repository dependency cycles. WB MUST collapse
+each strongly connected repository group into one deterministic processing
+layer instead of rejecting the campaign. All worktrees MUST be prepared before
+repositories in that layer are migrated, so their local replacements are
+available during verification.
+
+Within each dependency layer, WB MUST complete source edits for every
+repository before normalizing any manifests, and MUST complete all manifest
+normalization before verification begins. Cyclic peers MUST NOT observe a
+half-rewritten source tree while running dependency tooling.
+
+After adding requirements and local campaign replacements, WB MUST run the
+language adapter's dependency normalization before verification. For Go this
+is `go mod tidy`; WB MUST also remove campaign replacements whose requirements
+were removed as unused, so modules with no applicable source change remain
+clean.
 
 ### Language adapter evolution
 
@@ -140,11 +204,12 @@ without changing the campaign lifecycle contract.
 
 ### AC: safe-isolated-campaign
 
-**Requirements:** hierarchical-migration-campaigns#req:canonical-clones-untouched, hierarchical-migration-campaigns#req:clean-resume, hierarchical-migration-campaigns#req:campaign-lock, hierarchical-migration-campaigns#req:narrow-cleanup
+**Requirements:** hierarchical-migration-campaigns#req:canonical-clones-untouched, hierarchical-migration-campaigns#req:recoverable-resume, hierarchical-migration-campaigns#req:campaign-lock, hierarchical-migration-campaigns#req:narrow-cleanup
 
-A campaign creates or reuses only clean, dedicated worktrees, leaves canonical
-clones untouched, prevents concurrent execution, and cleans no broader target
-than the named migration worktrees.
+A campaign creates or explicitly resumes dedicated worktrees, preserves
+partial migration changes, leaves canonical clones untouched, prevents
+concurrent execution, and cleans no broader target than the named migration
+worktrees.
 
 ### AC: publishable-review-branch
 
@@ -157,7 +222,7 @@ CI overlap safely.
 
 ### AC: truthful-extensible-specification
 
-**Requirements:** hierarchical-migration-campaigns#req:deterministic-operation-order, hierarchical-migration-campaigns#req:deferred-dry-run-results, hierarchical-migration-campaigns#req:linked-review-index, hierarchical-migration-campaigns#req:type-aware-local-renames, hierarchical-migration-campaigns#req:adapter-owned-manifests, hierarchical-migration-campaigns#req:hermetic-campaign-tests
+**Requirements:** hierarchical-migration-campaigns#req:deterministic-operation-order, hierarchical-migration-campaigns#req:deferred-dry-run-results, hierarchical-migration-campaigns#req:linked-review-index, hierarchical-migration-campaigns#req:cumulative-resume-change-index, hierarchical-migration-campaigns#req:type-aware-local-renames, hierarchical-migration-campaigns#req:adapter-owned-manifests, hierarchical-migration-campaigns#req:hermetic-campaign-tests
 
 The format has deterministic operation phases, reports distinguish deferred
 planning from measured changes, and the adapter roadmap preserves type safety

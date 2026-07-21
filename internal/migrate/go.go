@@ -38,6 +38,9 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 		info := goTypeInfo(fset, file)
 		needsRewrite := false
 		ast.Inspect(file, func(node ast.Node) bool {
+			if needsRewrite {
+				return false
+			}
 			selector, ok := node.(*ast.SelectorExpr)
 			if !ok {
 				return true
@@ -46,7 +49,7 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 			if ok && importedGoPackage(info, prefix, step.Import) {
 				_, needsRewrite = step.Rewrites[selector.Sel.Name]
 			}
-			return !needsRewrite
+			return true
 		})
 		if !needsRewrite {
 			return source, false, nil
@@ -75,6 +78,9 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 			changed = true
 			return true
 		})
+		if removeUnusedGoImport(file, fset, step.Import) {
+			changed = true
+		}
 	case "selector.rename":
 		info := goTypeInfo(fset, file)
 		ast.Inspect(file, func(node ast.Node) bool {
@@ -89,6 +95,25 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 			}
 			return true
 		})
+	case "composite_field.rename":
+		ast.Inspect(file, func(node ast.Node) bool {
+			literal, ok := node.(*ast.CompositeLit)
+			if !ok || !typedStructComposite(literal.Type) {
+				return true
+			}
+			for _, element := range literal.Elts {
+				keyValue, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				field, ok := keyValue.Key.(*ast.Ident)
+				if ok && field.Name == step.From {
+					field.Name = step.To
+					changed = true
+				}
+			}
+			return true
+		})
 	default:
 		return nil, false, fmt.Errorf("unsupported Go step %q", step.Kind)
 	}
@@ -100,6 +125,88 @@ func transformGo(source []byte, filename string, step Step) ([]byte, bool, error
 		return nil, false, fmt.Errorf("format Go source: %w", err)
 	}
 	return out.Bytes(), true, nil
+}
+
+// typedStructComposite accepts named and instantiated named types. Maps,
+// arrays, slices, and elided nested literals are excluded because their keyed
+// elements are not known to be struct fields without package-wide type data.
+func typedStructComposite(expr ast.Expr) bool {
+	switch expr := expr.(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		return true
+	case *ast.IndexExpr:
+		return typedStructComposite(expr.X)
+	case *ast.IndexListExpr:
+		return typedStructComposite(expr.X)
+	default:
+		return false
+	}
+}
+
+// removeUnusedGoImport removes a normal package import only when the rewritten
+// AST has no selector still bound to it. Blank and dot imports have semantics
+// beyond qualified selectors and are always preserved.
+func removeUnusedGoImport(file *ast.File, fset *token.FileSet, importPath string) bool {
+	var target *ast.ImportSpec
+	for _, spec := range file.Imports {
+		value, err := strconv.Unquote(spec.Path.Value)
+		if err != nil || value != importPath {
+			continue
+		}
+		if spec.Name != nil && (spec.Name.Name == "_" || spec.Name.Name == ".") {
+			return false
+		}
+		target = spec
+		break
+	}
+	if target == nil {
+		return false
+	}
+	info := goTypeInfo(fset, file)
+	used := false
+	ast.Inspect(file, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		prefix, ok := selector.X.(*ast.Ident)
+		if ok && importedGoPackage(info, prefix, importPath) {
+			used = true
+			return false
+		}
+		return true
+	})
+	if used {
+		return false
+	}
+
+	imports := file.Imports[:0]
+	for _, spec := range file.Imports {
+		if spec != target {
+			imports = append(imports, spec)
+		}
+	}
+	file.Imports = imports
+	declarations := file.Decls[:0]
+	for _, declaration := range file.Decls {
+		gen, ok := declaration.(*ast.GenDecl)
+		if !ok || gen.Tok != token.IMPORT {
+			declarations = append(declarations, declaration)
+			continue
+		}
+		specs := gen.Specs[:0]
+		for _, spec := range gen.Specs {
+			if spec != target {
+				specs = append(specs, spec)
+			}
+		}
+		gen.Specs = specs
+		if len(gen.Specs) > 0 {
+			declarations = append(declarations, declaration)
+		}
+	}
+	file.Decls = declarations
+	return true
 }
 
 // importedGoPackage confirms that an identifier is the imported package, not

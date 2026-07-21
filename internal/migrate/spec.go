@@ -45,6 +45,7 @@ type Scope struct {
 //   - import.replace delegates an import-path rewrite to a language adapter;
 //   - selector.rewrite delegates a qualified-symbol rewrite to an adapter.
 //   - selector.rename renames one qualified symbol without changing imports.
+//   - composite_field.rename renames a keyed field in typed composite literals.
 //
 // More language capabilities can be added without changing the runner's plan
 // and apply protocol.
@@ -65,10 +66,11 @@ type Step struct {
 // mechanical plan. It is reported with affected files and line numbers, but
 // never changes source code itself.
 type ReviewRule struct {
-	ID       string
-	Language string
-	Pattern  string
-	Message  string
+	ID             string
+	Language       string
+	Pattern        string
+	ExcludePattern string
+	Message        string
 }
 
 // GoModuleRequire declares a module made newly necessary by the migration.
@@ -184,6 +186,13 @@ func (s Step) Validate() error {
 		if s.Import == "" || s.From == "" || s.To == "" {
 			return fmt.Errorf("selector.rename requires import, from, and to")
 		}
+	case "composite_field.rename":
+		if !knownLanguage(s.Language) {
+			return fmt.Errorf("composite_field.rename requires a known language")
+		}
+		if s.From == "" || s.To == "" {
+			return fmt.Errorf("composite_field.rename requires from and to")
+		}
 	default:
 		return fmt.Errorf("unknown kind %q", s.Kind)
 	}
@@ -202,6 +211,11 @@ func (r ReviewRule) Validate() error {
 	}
 	if _, err := regexp.Compile(r.Pattern); err != nil {
 		return fmt.Errorf("invalid pattern %q: %w", r.Pattern, err)
+	}
+	if r.ExcludePattern != "" {
+		if _, err := regexp.Compile(r.ExcludePattern); err != nil {
+			return fmt.Errorf("invalid exclude_pattern %q: %w", r.ExcludePattern, err)
+		}
 	}
 	if strings.TrimSpace(r.Message) == "" {
 		return fmt.Errorf("missing message")

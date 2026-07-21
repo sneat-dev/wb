@@ -29,10 +29,10 @@ migration "dalgo-record-v1" {
       KeyOption                      = "record.KeyOption"
       FieldVal                       = "record.FieldVal"
       Record                         = "record.Record"
+      RecordWithID                   = "record.WithID"
       WithID                         = "record.WithKeyID"
       DataWithID                     = "record.DataWithID"
       Updates                        = "record.Updates"
-      Changes                        = "record.Changes"
       EscapeID                       = "record.EscapeID"
       EqualKeys                      = "record.EqualKeys"
       WithFields                     = "record.WithFields"
@@ -65,6 +65,13 @@ migration "dalgo-record-v1" {
     to     = "Changes"
   }
 
+  # RecordWithID used to be the embedded field name in DataWithID and in
+  # application structs that embed it. Rename keyed struct-literal fields too.
+  composite_field_rename "go" {
+    from = "RecordWithID"
+    to   = "WithID"
+  }
+
   # Hierarchical Go campaigns add this requirement and a local worktree
   # replacement. It gives ordinary Go tooling a real module version too.
   go_module_require "github.com/dal-go/record" {
@@ -81,8 +88,18 @@ migration "dalgo-record-v1" {
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {
+    language        = "go"
+    pattern         = "[.]ApplyChanges[(]"
+    exclude_pattern = "dal[.]ApplyChanges[(]"
+    message         = "Call dal.ApplyChanges with the transaction and record.Changes envelope."
+  }
+
+  # Go AST rewrites intentionally preserve comments and strings. Surface old
+  # API spellings there so a resumed campaign cannot report a clean migration
+  # while its documentation still teaches removed DALgo names.
+  review "legacy-record-api" {
     language = "go"
-    pattern  = "[.]ApplyChanges[(]"
-    message  = "Call dal.ApplyChanges with the transaction and record.Changes envelope."
+    pattern  = "(github[.]com/dal-go/dalgo/(record|update)([^[:alnum:]_]|$)|dal[.](ErrNoError|ErrRecordNotFound|Key|KeyOption|FieldVal|Record|RecordWithID|WithID|DataWithID|Updates|EscapeID|EqualKeys|WithFields|WithParentKey|WithStringID|WithIntID|NewKeyWithID|NewKeyWithParentAndID|NewIncompleteKey|NewKeyWithFields|NewKeyWithOptions|NewWithID|NewDataWithID|NewRecord|NewRecordWithData|NewRecordWithIncompleteKey|NewRecordWithoutKey|AnyRecordWithError|DataToMap|MapToData|IsNotFound)([^[:alnum:]_]|$)|record[.](RecordWithID|WithRecordChanges)([^[:alnum:]_]|$)|WithRecordChanges([^[:alnum:]_]|$)|RecordWithID[[:space:]]*:)"
+    message  = "Update comments, examples, or remaining code to the github.com/dal-go/record API."
   }
 }

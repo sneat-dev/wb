@@ -148,6 +148,20 @@ func TestApplyRefusesStalePlan(t *testing.T) {
 	}
 }
 
+func TestReviewRuleExcludesMatchingLines(t *testing.T) {
+	source := []byte("package p\nfunc f() {\n\tparams.ApplyChanges(ctx, tx)\n\tdal.ApplyChanges(ctx, tx, params.Changes)\n}\n")
+	findings := reviewFindings([]ReviewRule{{
+		ID:             "changes-executor",
+		Language:       "go",
+		Pattern:        "[.]ApplyChanges[(]",
+		ExcludePattern: "dal[.]ApplyChanges[(]",
+		Message:        "use the DAL executor",
+	}}, "go", source, "example.go")
+	if len(findings) != 1 || len(findings[0].Lines) != 1 || findings[0].Lines[0] != 3 {
+		t.Fatalf("findings = %+v, want only the method call on line 3", findings)
+	}
+}
+
 func TestValidateKnownFutureAdapterLanguage(t *testing.T) {
 	spec := Spec{Format: MigrationFormatV1, ID: "python-import", Steps: []Step{{Kind: "import.replace", Language: "python", From: "old", To: "new"}}}
 	if err := spec.Validate(); err != nil {
@@ -242,14 +256,23 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if spec.ID != "dalgo-record-v1" || spec.Format != MigrationFormatV1 {
 		t.Fatalf("loaded spec = %+v", spec)
 	}
-	if len(spec.Steps) != 4 || spec.Steps[3].Kind != "selector.rename" {
-		t.Fatalf("steps = %+v, want two imports, one rewrite, and one selector rename", spec.Steps)
+	if len(spec.Steps) != 5 || spec.Steps[3].Kind != "selector.rename" || spec.Steps[4].Kind != "composite_field.rename" {
+		t.Fatalf("steps = %+v, want two imports, one rewrite, one selector rename, and one composite-field rename", spec.Steps)
+	}
+	if spec.Steps[2].Rewrites["RecordWithID"] != "record.WithID" {
+		t.Fatalf("RecordWithID rewrite = %q", spec.Steps[2].Rewrites["RecordWithID"])
+	}
+	if _, exists := spec.Steps[2].Rewrites["Changes"]; exists {
+		t.Fatal("dal.Changes must remain in the DAL package")
 	}
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
 	if len(spec.GoModuleReleases) != 1 || spec.GoModuleReleases[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
+	}
+	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {
+		t.Fatalf("review rules = %+v, want executor exclusion and legacy API audit", spec.Review)
 	}
 }
 
