@@ -20,6 +20,7 @@ A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 ```
 wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
+wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 ```
@@ -149,6 +150,93 @@ Same worktree/commit/push-or-PR flow for both recipe kinds:
 
 `wb` itself ships with **no recipes** — you define your own in
 `~/.config/wb/wb.yaml`.
+
+### `wb migrate` — declarative source migrations
+
+`wb migrate` is for repeatable codebase migrations rather than arbitrary shell
+recipes. A versioned YAML specification declares the intended edit; WB
+discovers source files below the explicit roots, produces a deterministic plan,
+and writes only when `--apply` is passed.
+
+```sh
+# Preview a migration; no files are edited.
+wb migrate examples/migrations/dalgo-record-v1.yaml ~/projects/sneat-co
+
+# Make the planned edits. `--check` instead exits 1 when drift is found.
+wb migrate examples/migrations/dalgo-record-v1.yaml ~/projects/sneat-co --apply
+```
+
+Every planned file carries a SHA-256 of the source it was built from. Apply
+refuses to overwrite a file changed after planning, and each replacement is
+atomic. Migration specs contain no arbitrary commands, which keeps a preview
+meaningful and makes the same spec suitable for CI.
+
+#### Review reports
+
+Markdown is the default stdout format. It is a compact index of changed files,
+operations, source hashes, local-file links, and the exact `git diff` command
+for each file. The detailed patch remains in Git, where humans and AI agents
+can inspect it normally after an apply.
+
+Use `--report-dir` to also write both representations:
+
+```sh
+wb migrate examples/migrations/dalgo-record-v1.yaml ~/projects/sneat-co \
+  --report-dir /tmp/dalgo-record-report
+```
+
+- `migration.md` is the linked review index for humans and AI agents.
+- `migration.yaml` is the sorted deterministic manifest for tools.
+- `--format yaml` writes the same manifest to stdout instead of Markdown.
+
+Reports are opt-in files, so an ordinary dry-run leaves source trees untouched.
+Specifications can also declare regex-based `review` rules. They never edit
+code; WB indexes matching files and line numbers under **Required review** so
+an agent or human can handle semantic changes separately from mechanical ones.
+
+The runner is language-neutral; structural transformations are supplied by
+language adapters rather than by regexes. Today the Go adapter supports
+syntax-aware `import.replace` and `selector.rewrite` operations, preserving
+comments and strings and choosing an import alias when a name would be
+shadowed. The generic `text.replace` operation is available for Go, Python,
+and TypeScript. Python and TypeScript structural adapters are intentionally not
+implemented yet: a spec requesting one fails safely instead of performing an
+unsafe text rewrite.
+
+```yaml
+id: rename-api-v1
+title: Rename the shared API
+version: 1
+
+scope:
+  languages: [go]
+
+steps:
+  - kind: import.replace
+    language: go
+    from: example.com/old/api
+    to: example.com/new/api
+
+  - kind: selector.rewrite
+    language: go
+    import: example.com/old/service
+    add_import: example.com/new/model
+    add_import_as: model
+    rewrites:
+      Record: model.Record
+```
+
+Adapter work is deliberately isolated behind the same planning and apply
+protocol:
+
+| Language | Structural adapter | Package/manifest work |
+|---|---|---|
+| Go | Implemented with `go/ast`, `go/types`, and `go/format` | `go.mod` support is next |
+| Python | Planned with LibCST | `pyproject.toml` |
+| TypeScript | Planned with the TypeScript compiler API | `package.json` |
+
+The initial DALgo migration definition is
+[`examples/migrations/dalgo-record-v1.yaml`](examples/migrations/dalgo-record-v1.yaml).
 
 ### `wb ci audit` — CI/CD policy validation
 

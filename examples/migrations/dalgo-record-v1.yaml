@@ -1,0 +1,63 @@
+id: dalgo-record-v1
+title: Extract DALgo's persistence-neutral record model
+version: 1
+
+scope:
+  languages: [go]
+
+steps:
+  - kind: import.replace
+    language: go
+    from: github.com/dal-go/dalgo/record
+    to: github.com/dal-go/record
+
+  - kind: import.replace
+    language: go
+    from: github.com/dal-go/dalgo/update
+    to: github.com/dal-go/record/update
+
+  - kind: selector.rewrite
+    language: go
+    import: github.com/dal-go/dalgo/dal
+    add_import: github.com/dal-go/record
+    add_import_as: record
+    rewrites:
+      ErrNoError: record.ErrNoError
+      ErrRecordNotFound: record.ErrRecordNotFound
+      Key: record.Key
+      KeyOption: record.KeyOption
+      FieldVal: record.FieldVal
+      Record: record.Record
+      WithID: record.WithKeyID
+      DataWithID: record.DataWithID
+      Updates: record.Updates
+      Changes: record.Changes
+      EscapeID: record.EscapeID
+      EqualKeys: record.EqualKeys
+      WithFields: record.WithFields
+      WithParentKey: record.WithParentKey
+      WithStringID: record.WithStringID
+      WithIntID: record.WithIntID
+      NewKeyWithID: record.NewKeyWithID
+      NewKeyWithParentAndID: record.NewKeyWithParentAndID
+      NewIncompleteKey: record.NewIncompleteKey
+      NewKeyWithFields: record.NewKeyWithFields
+      NewKeyWithOptions: record.NewKeyWithOptions
+      NewWithID: record.NewWithID
+      NewDataWithID: record.NewDataWithID
+      NewRecord: record.NewRecord
+      NewRecordWithData: record.NewRecordWithData
+      NewRecordWithIncompleteKey: record.NewRecordWithIncompleteKey
+      NewRecordWithoutKey: record.NewRecordWithoutKey
+      AnyRecordWithError: record.AnyRecordWithError
+      DataToMap: record.DataToMap
+      MapToData: record.MapToData
+      IsNotFound: record.IsNotFound
+
+# These calls need a semantic rewrite: record.Changes is still an envelope, but
+# DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...).
+review:
+  - id: changes-executor
+    language: go
+    pattern: 'record\.WithRecordChanges|\.ApplyChanges\('
+    message: Embed or use record.Changes, then call dal.ApplyChanges with the transaction and change envelope.
