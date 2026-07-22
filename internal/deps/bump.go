@@ -62,6 +62,10 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
 		}
+		if err := graph.validateUniqueModuleDeclarations(); err != nil {
+			report.Status = "failed"
+			return report, persistBumpFailure(options, report, err)
+		}
 		if err := graph.validateAcyclicPropagation(events); err != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
