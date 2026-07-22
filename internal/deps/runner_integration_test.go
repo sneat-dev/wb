@@ -63,7 +63,7 @@ func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
 
 func TestNormalizeOptionsMakesPublicationFlagsCumulative(t *testing.T) {
 	t.Parallel()
-	options, err := normalizeOptions(Options{GitHubDir: t.TempDir(), Merge: true})
+	options, _, err := normalizeOptions(Options{GitHubDir: t.TempDir(), Merge: true}, "deps-set-test")
 	if err != nil {
 		t.Fatal(err)
 	}

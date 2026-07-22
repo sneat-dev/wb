@@ -157,7 +157,7 @@ func rewriteGitHubActions(contents []byte, name string, target Target, apply, al
 		beforeRef := match[5]
 		beforeVersion := githubActionsVersion(beforeRef, match[7])
 		decision := Decision{
-			File: name, BeforeRef: beforeRef, BeforeVersion: beforeVersion,
+			Dependency: target.Dependency, File: name, BeforeRef: beforeRef, BeforeVersion: beforeVersion,
 			TargetVersion: target.Version, ResolvedRef: target.Resolved,
 			AfterRef: target.Resolved, AfterVersion: target.Version,
 		}

@@ -36,7 +36,7 @@ func (goAdapter) inspect(ctx context.Context, repositoryDir, base string, target
 			continue
 		}
 		decision := Decision{
-			File: name, BeforeRef: version, BeforeVersion: version,
+			Dependency: target.Dependency, File: name, BeforeRef: version, BeforeVersion: version,
 			TargetVersion: target.Version, ResolvedRef: target.Version,
 			AfterRef: target.Version, AfterVersion: target.Version,
 		}
@@ -67,7 +67,7 @@ func (goAdapter) apply(ctx context.Context, worktree string, target Target, opti
 	decisions := make([]Decision, 0, len(modules))
 	for _, module := range modules {
 		decision := Decision{
-			File: module.relative, BeforeRef: module.version, BeforeVersion: module.version,
+			Dependency: target.Dependency, File: module.relative, BeforeRef: module.version, BeforeVersion: module.version,
 			TargetVersion: target.Version, ResolvedRef: target.Version,
 		}
 		if comparableDowngrade(module.version, target.Version) && !options.AllowDowngrade {
@@ -193,4 +193,51 @@ func ignoredManifestPath(path string) bool {
 		}
 	}
 	return false
+}
+
+func validatePublishableGoManifests(root string) error {
+	var localReplacements []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "vendor", "node_modules":
+				if path != root {
+					return filepath.SkipDir
+				}
+			}
+			return nil
+		}
+		if entry.Name() != "go.mod" {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		parsed, err := modfile.Parse(relative, contents, nil)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", filepath.ToSlash(relative), err)
+		}
+		for _, replacement := range parsed.Replace {
+			if replacement.New.Version == "" {
+				localReplacements = append(localReplacements, fmt.Sprintf("%s: %s => %s", filepath.ToSlash(relative), replacement.Old.Path, replacement.New.Path))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Strings(localReplacements)
+	if len(localReplacements) > 0 {
+		return fmt.Errorf("local Go module replacements cannot be committed or published: %s", strings.Join(localReplacements, "; "))
+	}
+	return nil
 }

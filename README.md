@@ -22,6 +22,7 @@ wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
+wb deps bump go --changed M@V # propagate published Go releases through dependency waves
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
@@ -276,9 +277,59 @@ verification, commits, PR links, CI checks, and merge outcomes. Git remains the
 source of detailed patches; the Markdown report includes the exact diff command.
 
 See the [Exact Dependency Set feature specification](spec/features/dependency-set/README.md)
-for synthetic use cases and acceptance criteria. Unlike the planned
-`wb deps bump`, `deps set` does not discover newer releases or recalculate
-provider-to-consumer release waves.
+for synthetic use cases and acceptance criteria. By default, `deps set` does
+not discover newer releases or recalculate provider-to-consumer release waves.
+For an exact Go target, `--propagate --fleet` delegates to `deps bump` with one
+initial release event; `--max-waves` and `--release-poll` tune that delegated
+campaign.
+
+### `wb deps bump` — published-version propagation waves
+
+Use `deps bump` after one or more exact Go module versions have been published
+and their dependants must be moved in provider-first order:
+
+```sh
+wb deps bump go \
+  --changed github.com/dal-go/record@v0.3.0 \
+  --changed github.com/dal-go/dalgo@v0.64.0 \
+  --fleet --parallel=2 --merge
+
+# The same planner with one seed release:
+wb deps set go github.com/dal-go/record@v0.3.0 \
+  --fleet --propagate --parallel=2 --merge
+```
+
+`--propagate` is therefore similar to bump limited to one *initial* dependency,
+but the campaign is not limited to that dependency. When an updated consumer
+is merged and a newer module version is observed, that consumer module becomes
+a release event for the next wave. `deps bump` also accepts multiple initial
+`--changed` events, which is useful when a coordinated release publishes
+several providers together.
+
+Each wave rebuilds the graph from `origin/<ref>` and changes direct consumers
+whose requirements are stale. Independent repositories share the same typed
+clone/worktree/verification/commit/PR/CI lifecycle used by `deps set`. After
+green PRs merge, WB captures an actual newer registry version before touching
+downstream repositories; it never invents the next version. If a release is
+not visible before `--timeout`, the report remains `awaiting_release` and
+`--resume` continues from the persisted pre-merge baseline.
+
+A second sweep can traverse repositories that were already updated before the
+campaign: WB requires both a current `origin/<ref>` manifest and a published
+module whose downloaded `go.mod` contains the seed versions. This evidence
+turns the existing consumer release into the next event. Relevant
+cross-repository dependency cycles fail before any worktree is created because
+they need a separate coordinated-release protocol.
+
+Without publication flags, the first changed wave stays in local worktrees.
+`--commit`, `--push`, `--pr`, and `--merge` are cumulative just as for
+`deps set`; automatic downstream propagation requires `--merge` so WB can
+associate each next wave with observed publication evidence. Markdown and YAML
+state are written as `deps-bump.md` and `deps-bump.yaml` below the operation's
+report directory.
+
+See the [Dependency Bump Waves feature specification](spec/features/dependency-bump-waves/README.md)
+for synthetic use cases and acceptance criteria.
 
 ### `wb migrate` — declarative source migrations
 
