@@ -44,6 +44,20 @@ func TestDepsCommandIncludesBumpWithWaveLifecycleFlags(t *testing.T) {
 	}
 }
 
+func TestDepsCommandIncludesGraphViewsAndBrowserReportFlags(t *testing.T) {
+	t.Parallel()
+	command := newDepsCmd()
+	graph, _, err := command.Find([]string{"graph"})
+	if err != nil || graph == command {
+		t.Fatalf("find graph: command=%q, error=%v", graph.Name(), err)
+	}
+	for _, name := range []string{"fleet", "match", "regex", "ref", "parallel", "dependency", "view", "format", "report-dir", "open"} {
+		if graph.Flags().Lookup(name) == nil {
+			t.Errorf("deps graph is missing --%s", name)
+		}
+	}
+}
+
 func TestParseReleaseEventsPreservesMultipleExactSeeds(t *testing.T) {
 	t.Parallel()
 	events, err := parseReleaseEvents([]string{"example.com/a@v0.2.0", "example.com/b@v1.3.0"})

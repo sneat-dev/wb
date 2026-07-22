@@ -23,6 +23,7 @@ wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
 wb deps bump go --changed M@V # propagate published Go releases through dependency waves
+wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
@@ -329,6 +330,56 @@ state are written as `deps-bump.md` and `deps-bump.yaml` below the operation's
 report directory.
 
 See the [Dependency Bump Waves feature specification](spec/features/dependency-bump-waves/README.md)
+for synthetic use cases and acceptance criteria.
+
+### `wb deps graph` — one scan, three dependency views
+
+`deps graph` scans Go module declarations and requirements once, preserves the
+manifest evidence, and derives three views from the same canonical model:
+
+- `--view repos` shows internal provider repository → consumer repository
+  edges for release order and propagation blast radius.
+- `--view dependencies` shows dependency/module → consuming repository edges,
+  including external dependencies.
+- `--view selections` shows `dependency@version` → consuming repository edges
+  and highlights versions behind the highest comparable version observed in
+  this fleet. “Fleet-highest” is deliberately not described as registry-latest.
+
+```sh
+# Generate all report artifacts and open the repository view in a browser.
+wb deps graph --fleet --match 'dal-go/*' --view repos --open
+
+# Find every selected consumer of one exact module.
+wb deps graph --fleet \
+  --dependency github.com/dal-go/dalgo \
+  --view dependencies
+
+# Inspect one checkout and emit standalone SVG to stdout.
+wb deps graph ~/projects/sneat-co/sneat-go \
+  --view selections --format svg
+```
+
+The default report directory is
+`<projects-root>/.wb/reports/deps-graph-go` (override it with `--report-dir`).
+Every run writes:
+
+- `deps-graph.md` — compact human and AI evidence index;
+- `deps-graph.yaml` and `deps-graph.json` — deterministic canonical evidence;
+- `deps-graph.svg` — accessible standalone rendering of the selected view;
+- `deps-graph.html` — self-contained interactive report containing all three
+  projections, search, path highlighting, fleet-drift highlighting, and zoom.
+
+`--open` is explicit: headless and CI runs never attempt a GUI action. WB writes
+every report before invoking the operating system's browser command, so an open
+failure still leaves a usable HTML path. Providers flow left-to-right toward
+consumers; direct and indirect requirements have distinct edge styles, and
+cross-repository cycles are rendered rather than rejected.
+
+The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
+Projection and rendering are independent of that adapter so Python and
+TypeScript evidence can later feed the same report model.
+
+See the [Dependency Graph feature specification](spec/features/dependency-graph/README.md)
 for synthetic use cases and acceptance criteria.
 
 ### `wb migrate` — declarative source migrations

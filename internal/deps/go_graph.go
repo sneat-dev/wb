@@ -14,9 +14,10 @@ import (
 )
 
 type goFleetGraph struct {
-	modules           map[string]goFleetModule
-	requirements      map[string][]goFleetRequirement
-	repositoryModules map[string][]string
+	modules            map[string]goFleetModule
+	moduleDeclarations map[string][]goFleetModule
+	requirements       map[string][]goFleetRequirement
+	repositoryModules  map[string][]string
 }
 
 type goFleetModule struct {
@@ -31,11 +32,12 @@ type goFleetRequirement struct {
 	ConsumerModule string
 	Repository     string
 	Manifest       string
+	Indirect       bool
 }
 
 func discoverGoFleetGraph(ctx context.Context, repositories []Repository, options orchestrate.Options) (goFleetGraph, error) {
 	graph := goFleetGraph{
-		modules: map[string]goFleetModule{}, requirements: map[string][]goFleetRequirement{},
+		modules: map[string]goFleetModule{}, moduleDeclarations: map[string][]goFleetModule{}, requirements: map[string][]goFleetRequirement{},
 		repositoryModules: map[string][]string{},
 	}
 	type repositoryGraph struct {
@@ -99,10 +101,12 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	for _, result := range results {
 		for _, module := range result.modules {
-			if previous, exists := graph.modules[module.Path]; exists && (previous.Repository != module.Repository || previous.Manifest != module.Manifest) {
-				return graph, fmt.Errorf("go module %s is declared by both %s:%s and %s:%s", module.Path, previous.Repository, previous.Manifest, module.Repository, module.Manifest)
+			graph.moduleDeclarations[module.Path] = append(graph.moduleDeclarations[module.Path], module)
+			if len(graph.moduleDeclarations[module.Path]) == 1 {
+				graph.modules[module.Path] = module
+			} else {
+				delete(graph.modules, module.Path)
 			}
-			graph.modules[module.Path] = module
 			graph.repositoryModules[module.Repository] = append(graph.repositoryModules[module.Repository], module.Path)
 		}
 		for _, requirement := range result.requirements {
@@ -121,7 +125,56 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 			return left.Repository < right.Repository
 		})
 	}
+	for module := range graph.moduleDeclarations {
+		sort.Slice(graph.moduleDeclarations[module], func(i, j int) bool {
+			left, right := graph.moduleDeclarations[module][i], graph.moduleDeclarations[module][j]
+			if left.Repository == right.Repository {
+				return left.Manifest < right.Manifest
+			}
+			return left.Repository < right.Repository
+		})
+		if canonical, ok := canonicalGoModuleDeclaration(module, graph.moduleDeclarations[module]); ok {
+			graph.modules[module] = canonical
+		}
+	}
 	return graph, nil
+}
+
+func canonicalGoModuleDeclaration(module string, declarations []goFleetModule) (goFleetModule, bool) {
+	if len(declarations) == 1 {
+		return declarations[0], true
+	}
+	parts := strings.Split(strings.TrimPrefix(module, "github.com/"), "/")
+	if !strings.HasPrefix(module, "github.com/") || len(parts) < 2 {
+		return goFleetModule{}, false
+	}
+	slug := parts[0] + "/" + parts[1]
+	for _, declaration := range declarations {
+		if declaration.Repository == slug {
+			return declaration, true
+		}
+	}
+	return goFleetModule{}, false
+}
+
+func (graph goFleetGraph) validateUniqueModuleDeclarations() error {
+	var conflicts []string
+	for module, declarations := range graph.moduleDeclarations {
+		if len(declarations) < 2 {
+			continue
+		}
+		locations := make([]string, 0, len(declarations))
+		for _, declaration := range declarations {
+			locations = append(locations, declaration.Repository+":"+declaration.Manifest)
+		}
+		sort.Strings(locations)
+		conflicts = append(conflicts, fmt.Sprintf("go module %s is declared by %s", module, strings.Join(locations, ", ")))
+	}
+	sort.Strings(conflicts)
+	if len(conflicts) > 0 {
+		return errors.New(strings.Join(conflicts, "; "))
+	}
+	return nil
 }
 
 func inspectRepositoryGoGraph(ctx context.Context, repository, canonical, base string, options orchestrate.Options) (struct {
@@ -156,7 +209,7 @@ func inspectRepositoryGoGraph(ctx context.Context, repository, canonical, base s
 		for _, requirement := range parsed.Require {
 			result.requirements = append(result.requirements, goFleetRequirement{
 				Dependency: requirement.Mod.Path, Version: requirement.Mod.Version,
-				ConsumerModule: module.Path, Repository: repository, Manifest: name,
+				ConsumerModule: module.Path, Repository: repository, Manifest: name, Indirect: requirement.Indirect,
 			})
 		}
 	}

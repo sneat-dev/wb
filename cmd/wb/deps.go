@@ -35,6 +35,91 @@ func newDepsCmd() *cobra.Command {
 	}
 	command.AddCommand(newDepsSetCmd())
 	command.AddCommand(newDepsBumpCmd())
+	command.AddCommand(newDepsGraphCmd())
+	return command
+}
+
+type depsGraphOptions struct {
+	fleet, open                                bool
+	match, regex, ref, format, reportDir, view string
+	ecosystem                                  string
+	parallel, retry                            int
+	timeout                                    time.Duration
+	dependencies                               []string
+}
+
+func newDepsGraphCmd() *cobra.Command {
+	options := depsGraphOptions{}
+	command := &cobra.Command{
+		Use:   "graph [repository-path]",
+		Short: "Project dependency evidence as repository, dependency, and version graphs",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if options.fleet && len(args) == 1 {
+				return fmt.Errorf("repository-path cannot be used with --fleet")
+			}
+			if options.ecosystem != string(deps.EcosystemGo) {
+				return fmt.Errorf("dependency graph currently supports only the go ecosystem")
+			}
+			view, err := deps.ParseGraphView(options.view)
+			if err != nil {
+				return err
+			}
+			repositoryArgs := []string{options.ecosystem, "graph"}
+			if len(args) == 1 {
+				repositoryArgs = append(repositoryArgs, args[0])
+			}
+			repositories, err := dependencyRepositories(repositoryArgs, depsSetOptions{
+				fleet: options.fleet, match: options.match, regex: options.regex, ref: options.ref,
+				parallel: options.parallel, retry: options.retry, timeout: options.timeout,
+			})
+			if err != nil {
+				return err
+			}
+			graph, err := deps.BuildGraph(command.Context(), repositories, deps.GraphOptions{
+				Ecosystem: deps.EcosystemGo, GitHubDir: projectsRoot, Ref: options.ref,
+				Parallel: options.parallel, Timeout: options.timeout, Retry: options.retry,
+				Dependencies: options.dependencies,
+			})
+			if err != nil {
+				return err
+			}
+			reportDirectory := options.reportDir
+			if reportDirectory == "" {
+				reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", "deps-graph-go")
+			}
+			paths, err := deps.WriteGraphReports(reportDirectory, graph, view)
+			if err != nil {
+				return err
+			}
+			contents, err := graph.Output(options.format, view)
+			if err != nil {
+				return err
+			}
+			if _, err := command.OutOrStdout().Write(contents); err != nil {
+				return err
+			}
+			if options.open {
+				if err := openBrowser(paths.HTML); err != nil {
+					return fmt.Errorf("reports were written; open %s manually: %w", paths.HTML, err)
+				}
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&options.ecosystem, "ecosystem", string(deps.EcosystemGo), "manifest ecosystem (currently go)")
+	command.Flags().BoolVar(&options.fleet, "fleet", false, "reconcile and inspect selected local and owned GitHub repositories")
+	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. dal-go/*")
+	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
+	command.Flags().StringVar(&options.ref, "ref", "main", "remote ref whose manifests are inspected")
+	command.Flags().IntVar(&options.parallel, "parallel", 1, "maximum repositories to inspect concurrently")
+	command.Flags().DurationVar(&options.timeout, "timeout", 5*time.Minute, "maximum duration per fetch or inspection command (0 disables)")
+	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
+	command.Flags().StringArrayVar(&options.dependencies, "dependency", nil, "exact dependency module to retain (repeatable)")
+	command.Flags().StringVar(&options.view, "view", string(deps.GraphViewRepositories), "default graph view: repos, dependencies, or selections")
+	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, json, svg, or html")
+	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-graph Markdown, YAML, JSON, SVG, and HTML here")
+	command.Flags().BoolVar(&options.open, "open", false, "open the self-contained HTML report in the default browser after writing it")
 	return command
 }
 
