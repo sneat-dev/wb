@@ -88,6 +88,186 @@ migration "dalgo-record-v1" {
     version = "v0.63.1"
   }
 
+  go_module_release "github.com/strongo/strongoapp" {
+    version = "v0.31.48"
+  }
+
+  go_module_release "github.com/bots-go-framework/bots-fw-telegram-models" {
+    version = "v0.3.71"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2firestore" {
+    version = "v0.9.6"
+  }
+
+  go_module_release "github.com/sneat-co/commitius/backend" {
+    version = "v0.2.3"
+  }
+
+  go_module_release "github.com/bots-go-framework/bots-fw-store-dalgo" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-go-core" {
+    version = "v0.60.4"
+  }
+
+  go_module_release "github.com/bots-go-framework/bots-fw-telegram" {
+    version = "v0.28.1"
+  }
+
+  go_module_release "github.com/sneat-co/gameboard/backend" {
+    version = "v0.4.4"
+  }
+
+  go_module_release "github.com/sneat-co/ext-contactus/backend" {
+    version = "v0.1.7"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-core-modules" {
+    version = "v0.53.6"
+  }
+
+  go_module_release "github.com/bots-go-framework/bots-fw-telegram-dalgo" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/assetus/backend" {
+    version = "v0.3.7"
+  }
+
+  go_module_release "github.com/sneat-co/calendarius/backend" {
+    version = "v0.4.7"
+  }
+
+  go_module_release "github.com/sneat-co/listus/backend" {
+    version = "v0.1.12"
+  }
+
+  go_module_release "github.com/sneat-co/remindius/backend" {
+    version = "v0.1.10"
+  }
+
+  go_module_release "github.com/sneat-co/sourcer/backend" {
+    version = "v0.17.5"
+  }
+
+  go_module_release "github.com/sneat-co/togethered/backend" {
+    version = "v0.6.1"
+  }
+
+  go_module_release "github.com/sneat-co/contactus/backend" {
+    version = "v0.1.9"
+  }
+
+  go_module_release "github.com/sneat-co/debtus/backend" {
+    version = "v0.2.30"
+  }
+
+  go_module_release "github.com/sneat-co/rosycycle/backend" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/sneat-co/trackus/backend" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/paymentus/backend" {
+    version = "v0.5.5"
+  }
+
+  go_module_release "github.com/dal-go/dalgo-memcache-appengine" {
+    version = "v0.4.37"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-bots" {
+    version = "v0.20.16"
+  }
+
+  go_module_release "github.com/sneat-co/advertus/backend" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/requoter/backend" {
+    version = "v0.1.3"
+  }
+
+  go_module_release "github.com/sneat-co/bookius/backend" {
+    version = "v0.1.10"
+  }
+
+  go_module_release "github.com/sneat-co/schoolus/backend" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/ingitdb/ingitdb-go/ingitdb" {
+    version = "v0.5.2"
+  }
+
+  go_module_release "github.com/ingitdb/dalgo2ingitdb4github" {
+    version = "v0.2.2"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2sql" {
+    version = "v0.9.7"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2sqlite" {
+    version = "v0.0.26"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2mysql" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2postgres" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2openvaultdb" {
+    version = "v0.2.1"
+  }
+
+  go_module_release "github.com/sneat-co/ovdb/backend" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/kids-club/backend" {
+    version = "v0.0.3"
+  }
+
+  go_module_release "github.com/sneat-co/renewon/backend" {
+    version = "v0.1.3"
+  }
+
+  go_module_release "github.com/bots-go-framework/bots-fw-whatsapp-dalgo" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-work/backend" {
+    version = "v0.1.3"
+  }
+
+  go_module_release "github.com/sneat-co/sportus/backend" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/logistus/backend" {
+    version = "v0.1.4"
+  }
+
+  go_module_release "github.com/ingitdb/dalgo2ingitdb" {
+    version = "v0.2.3"
+  }
+
+  go_module_release "github.com/sneat-co/eventius/backend" {
+    version = "v0.8.4"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2datastore" {
+    version = "v0.5.0"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {

@@ -268,9 +268,54 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
-	if len(spec.GoModuleReleases) != 2 ||
+	if len(spec.GoModuleReleases) != 47 ||
 		spec.GoModuleReleases[0] != (GoModuleRelease{Path: "github.com/dal-go/record", Version: "v0.1.0"}) ||
-		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) {
+		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) ||
+		spec.GoModuleReleases[2] != (GoModuleRelease{Path: "github.com/strongo/strongoapp", Version: "v0.31.48"}) ||
+		spec.GoModuleReleases[3] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram-models", Version: "v0.3.71"}) ||
+		spec.GoModuleReleases[4] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2firestore", Version: "v0.9.6"}) ||
+		spec.GoModuleReleases[5] != (GoModuleRelease{Path: "github.com/sneat-co/commitius/backend", Version: "v0.2.3"}) ||
+		spec.GoModuleReleases[6] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-store-dalgo", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[7] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-go-core", Version: "v0.60.4"}) ||
+		spec.GoModuleReleases[8] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram", Version: "v0.28.1"}) ||
+		spec.GoModuleReleases[9] != (GoModuleRelease{Path: "github.com/sneat-co/gameboard/backend", Version: "v0.4.4"}) ||
+		spec.GoModuleReleases[10] != (GoModuleRelease{Path: "github.com/sneat-co/ext-contactus/backend", Version: "v0.1.7"}) ||
+		spec.GoModuleReleases[11] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-core-modules", Version: "v0.53.6"}) ||
+		spec.GoModuleReleases[12] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-telegram-dalgo", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[13] != (GoModuleRelease{Path: "github.com/sneat-co/assetus/backend", Version: "v0.3.7"}) ||
+		spec.GoModuleReleases[14] != (GoModuleRelease{Path: "github.com/sneat-co/calendarius/backend", Version: "v0.4.7"}) ||
+		spec.GoModuleReleases[15] != (GoModuleRelease{Path: "github.com/sneat-co/listus/backend", Version: "v0.1.12"}) ||
+		spec.GoModuleReleases[16] != (GoModuleRelease{Path: "github.com/sneat-co/remindius/backend", Version: "v0.1.10"}) ||
+		spec.GoModuleReleases[17] != (GoModuleRelease{Path: "github.com/sneat-co/sourcer/backend", Version: "v0.17.5"}) ||
+		spec.GoModuleReleases[18] != (GoModuleRelease{Path: "github.com/sneat-co/togethered/backend", Version: "v0.6.1"}) ||
+		spec.GoModuleReleases[19] != (GoModuleRelease{Path: "github.com/sneat-co/contactus/backend", Version: "v0.1.9"}) ||
+		spec.GoModuleReleases[20] != (GoModuleRelease{Path: "github.com/sneat-co/debtus/backend", Version: "v0.2.30"}) ||
+		spec.GoModuleReleases[21] != (GoModuleRelease{Path: "github.com/sneat-co/rosycycle/backend", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[22] != (GoModuleRelease{Path: "github.com/sneat-co/trackus/backend", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[23] != (GoModuleRelease{Path: "github.com/sneat-co/paymentus/backend", Version: "v0.5.5"}) ||
+		spec.GoModuleReleases[24] != (GoModuleRelease{Path: "github.com/dal-go/dalgo-memcache-appengine", Version: "v0.4.37"}) ||
+		spec.GoModuleReleases[25] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-bots", Version: "v0.20.16"}) ||
+		spec.GoModuleReleases[26] != (GoModuleRelease{Path: "github.com/sneat-co/advertus/backend", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[27] != (GoModuleRelease{Path: "github.com/sneat-co/requoter/backend", Version: "v0.1.3"}) ||
+		spec.GoModuleReleases[28] != (GoModuleRelease{Path: "github.com/sneat-co/bookius/backend", Version: "v0.1.10"}) ||
+		spec.GoModuleReleases[29] != (GoModuleRelease{Path: "github.com/sneat-co/schoolus/backend", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[30] != (GoModuleRelease{Path: "github.com/ingitdb/ingitdb-go/ingitdb", Version: "v0.5.2"}) ||
+		spec.GoModuleReleases[31] != (GoModuleRelease{Path: "github.com/ingitdb/dalgo2ingitdb4github", Version: "v0.2.2"}) ||
+		spec.GoModuleReleases[32] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2sql", Version: "v0.9.7"}) ||
+		spec.GoModuleReleases[33] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2sqlite", Version: "v0.0.26"}) ||
+		spec.GoModuleReleases[34] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2mysql", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[35] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2postgres", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[36] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2openvaultdb", Version: "v0.2.1"}) ||
+		spec.GoModuleReleases[37] != (GoModuleRelease{Path: "github.com/sneat-co/ovdb/backend", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[38] != (GoModuleRelease{Path: "github.com/sneat-co/kids-club/backend", Version: "v0.0.3"}) ||
+		spec.GoModuleReleases[39] != (GoModuleRelease{Path: "github.com/sneat-co/renewon/backend", Version: "v0.1.3"}) ||
+		spec.GoModuleReleases[40] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-whatsapp-dalgo", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[41] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-work/backend", Version: "v0.1.3"}) ||
+		spec.GoModuleReleases[42] != (GoModuleRelease{Path: "github.com/sneat-co/sportus/backend", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[43] != (GoModuleRelease{Path: "github.com/sneat-co/logistus/backend", Version: "v0.1.4"}) ||
+		spec.GoModuleReleases[44] != (GoModuleRelease{Path: "github.com/ingitdb/dalgo2ingitdb", Version: "v0.2.3"}) ||
+		spec.GoModuleReleases[45] != (GoModuleRelease{Path: "github.com/sneat-co/eventius/backend", Version: "v0.8.4"}) ||
+		spec.GoModuleReleases[46] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2datastore", Version: "v0.5.0"}) {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
 	}
 	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {
