@@ -1,13 +1,13 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Implementing
 ---
 
 # Feature: Dependency Bump Waves
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/dependency-bump-waves?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/dependency-bump-waves?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/dependency-bump-waves?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/dependency-bump-waves?op=request-change) |
 
-**Status:** Draft
+**Status:** Implementing
 **Source Ideas:** —
 
 ## Summary
@@ -17,6 +17,10 @@ versions through local repository worktrees in provider-first waves. It runs
 language-owned manifest updates and verification, optionally publishes review
 branches, waits for CI, discovers released versions, and requeues dependants
 until a fresh graph scan reaches a fixpoint.
+
+`wb deps set go <module>@<version> --propagate` is a convenience spelling for
+this command with one exact `--changed` event. Exact target selection belongs
+to `set`; release-event propagation belongs only to this wave engine.
 
 ## Problem
 
@@ -39,6 +43,11 @@ events and MUST be able to consume the deterministic output of
 `wb deps drift`. It MUST record whether each starting version came from an
 explicit event, a drift report, or online discovery.
 
+The initial CLI form MUST be
+`wb deps bump go --changed <module>@<version> [--changed ...] --fleet`.
+`deps set --propagate` MUST invoke the same planner and report format rather
+than implementing a parallel wave loop.
+
 #### REQ: scoped-repository-discovery
 
 The command MUST operate only on repositories selected below the configured
@@ -54,12 +63,32 @@ with the prior wave, and requeue every affected direct or transitive dependant.
 Processing MUST repeat until a complete recalculation yields no manifest
 change, no campaign replacement, and no unresolved dependency blocker.
 
+When a direct consumer is already current, WB MUST advance through it only
+after registry evidence proves that a published consumer module selects the
+event versions. A current source manifest by itself is insufficient. This
+allows a second campaign sweep to reach stale transitive dependants without
+inventing a release.
+
 #### REQ: bounded-wave-parallelism
 
 Independent repositories in one wave MAY execute concurrently up to
 `--parallel`. A dependant MUST NOT publish before all changed providers it
 uses have published versions. While remote CI runs, WB SHOULD continue local
 work for repositories whose provider releases are already available.
+
+Relevant cross-repository dependency cycles MUST be detected before mutation
+and rejected with the cycle path until a coordinated cyclic-release protocol
+is available. `--max-waves` MUST independently bound release churn and graph
+changes that are not structural cycles.
+
+#### REQ: shared-typed-lifecycle-engine
+
+Exact set and bump waves MUST use one typed repository lifecycle engine for
+clone/fetch, worktrees, verification, commit, push, PR creation, CI waiting,
+merge, resume validation, locks, and completion of independent results.
+Mutation metadata MUST remain adapter-typed so exact-set decisions and wave
+events do not depend on unstructured `any` values. The planner chooses
+independent execution or dependency waves without duplicating lifecycle code.
 
 ### Safe updates and verification
 
@@ -106,6 +135,12 @@ version from configured release metadata or an observed tag. It MUST NOT
 invent a version. The observed release becomes a dependency event for the
 next recalculated wave.
 
+WB MUST capture the latest observed provider version before merging a wave and
+MUST require a newer published version afterward before advancing dependants.
+If no release appears before `--timeout`, the report MUST use
+`awaiting_release`, retain the before version and attempted source, leave
+downstream repositories untouched, and allow `--resume` to continue.
+
 #### REQ: resumable-failures
 
 Every wave and repository state MUST be persisted before external actions.
@@ -132,7 +167,7 @@ storage adapters, `acme/facade`, and `acme/api` form successive dependency
 layers. The operator runs:
 
 ```text
-wb deps bump --fleet ~/projects \
+wb deps bump go --fleet \
   --changed example.org/data/record@v0.2.0 \
   --parallel 2 --commit --push --pr --merge
 ```
@@ -166,6 +201,28 @@ version, attempted source, and sanitized error, preserves the manifest for an
 explicit reason, and does not claim that `v1.3.0` is latest. After credentials
 are configured, `--retry` adds a new attempt and retains the failed audit row.
 
+### UC: exact set delegates to the wave engine
+
+The fictional `data/record v0.2.0` release is already chosen. The operator runs:
+
+```text
+wb deps set go example.org/data/record@v0.2.0 --fleet --propagate --merge
+```
+
+WB records the exact release as the sole initial bump event, then uses the same
+provider-first graph, worktrees, release observations, reports, and resume state
+as `wb deps bump go --changed example.org/data/record@v0.2.0 --fleet --merge`.
+No exact-set-specific propagation loop exists.
+
+### UC: second sweep crosses an already released adapter
+
+The fictional adapter's `origin/main` already requires
+`data/record v0.2.0`, and registry release `adapter v0.7.1` contains the same
+requirement, but a facade still requires `adapter v0.6.0`. Rerunning the record
+bump downloads the published adapter `go.mod`, records both pieces of evidence,
+turns `adapter v0.7.1` into the next event, and plans the facade update. It does
+not skip the facade merely because the direct adapter needs no new source edit.
+
 ## Interaction with Other Features
 
 [Dependency Drift](../dependency-drift/README.md) supplies convergence evidence
@@ -178,7 +235,7 @@ migrations that also trigger dependency waves.
 
 ### AC: released-provider-requeues-dependants
 
-**Requirements:** dependency-bump-waves#req:changed-release-input, dependency-bump-waves#req:provider-first-recalculated-waves, dependency-bump-waves#req:bounded-wave-parallelism, dependency-bump-waves#req:release-event-propagation
+**Requirements:** dependency-bump-waves#req:changed-release-input, dependency-bump-waves#req:provider-first-recalculated-waves, dependency-bump-waves#req:bounded-wave-parallelism, dependency-bump-waves#req:shared-typed-lifecycle-engine, dependency-bump-waves#req:release-event-propagation
 
 **Given** a fictional provider release has two independent adapters and a
 consumer that depends on both

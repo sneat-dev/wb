@@ -20,6 +20,11 @@ worktrees, delegates manifest changes to ecosystem adapters, verifies every
 changed repository, and can optionally commit, push, open pull requests, wait
 for CI, and merge.
 
+For Go, `--propagate` is command sugar for seeding
+`wb deps bump --changed <dependency>@<version>` with the same scope and
+publication options. It delegates to the bump wave planner instead of
+maintaining a second propagation implementation inside exact set.
+
 ## Problem
 
 Shared build infrastructure and application dependencies sometimes need one
@@ -90,6 +95,15 @@ Ecosystem discovery, target resolution, mutation, and result inspection MUST be
 implemented behind an adapter boundary so Python and TypeScript package-manager
 adapters can be added without changing fleet orchestration or publication.
 Requesting an unregistered ecosystem MUST fail before any repository changes.
+
+#### REQ: propagation-delegates-to-bump
+
+`wb deps set go <module>@<version> --propagate` MUST translate the exact target
+into one bump release event and delegate planning, wave recalculation, release
+observation, reports, resume, and publication to `wb deps bump`. Propagation
+MUST require fleet scope. It MUST be rejected for ecosystems without a module
+dependency graph, including `github-actions`. Exact set and bump MUST share one
+repository lifecycle engine.
 
 ### Worktrees, verification, and publication
 
@@ -245,6 +259,17 @@ module graph forces a different version
 successful repositories continue independently, the forced mismatch fails
 before publication, and sorted Markdown and YAML record every decision and
 Git diff command.
+
+### AC: exact-propagation-is-one-seed-for-bump
+
+**Requirements:** dependency-set#req:canonical-command-and-identity, dependency-set#req:propagation-delegates-to-bump, dependency-set#req:cumulative-publication-flags
+
+**Given** an exact Go provider version is published and selected fleet
+dependants span several release layers
+**When** the operator uses `deps set go <module>@<version> --fleet --propagate`
+**Then** WB creates one initial bump event, uses the shared typed lifecycle and
+wave report, and allows observed consumer releases to become later dependency
+events without running a second exact-set propagation implementation.
 
 ## Open Questions
 

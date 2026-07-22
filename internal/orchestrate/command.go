@@ -1,4 +1,4 @@
-package deps
+package orchestrate
 
 import (
 	"context"
@@ -32,4 +32,14 @@ func runCommand(ctx context.Context, timeout time.Duration, retry int, dir, name
 			return string(output), attempts, nil
 		}
 	}
+}
+
+func lastNonEmptyLine(value string) string {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		if line := strings.TrimSpace(lines[index]); line != "" {
+			return line
+		}
+	}
+	return ""
 }

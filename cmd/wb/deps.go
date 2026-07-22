@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -19,11 +20,11 @@ import (
 )
 
 type depsSetOptions struct {
-	fleet, dryRun, resume, allowDowngrade, noVerify bool
-	commit, push, pr, merge                         bool
-	match, regex, ref, checks, format, reportDir    string
-	parallel, retry                                 int
-	timeout                                         time.Duration
+	fleet, dryRun, resume, allowDowngrade, noVerify, propagate bool
+	commit, push, pr, merge                                    bool
+	match, regex, ref, checks, format, reportDir               string
+	parallel, retry, maxWaves                                  int
+	timeout, releasePoll                                       time.Duration
 }
 
 func newDepsCmd() *cobra.Command {
@@ -33,6 +34,7 @@ func newDepsCmd() *cobra.Command {
 		Short:   "Inspect and coordinate dependencies across repositories",
 	}
 	command.AddCommand(newDepsSetCmd())
+	command.AddCommand(newDepsBumpCmd())
 	return command
 }
 
@@ -61,13 +63,18 @@ func newDepsSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			report, runErr := deps.Run(context.Background(), target, repositories, deps.Options{
-				GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
-				DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
-				Verify: !options.noVerify, Checks: checks, Timeout: options.timeout, Retry: options.retry,
-				Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
-				ReportDir: options.reportDir,
-			})
+			lifecycle := dependencyOptions(options, checks)
+			if options.propagate {
+				if !options.fleet {
+					return fmt.Errorf("--propagate requires --fleet")
+				}
+				if target.Ecosystem != deps.EcosystemGo {
+					return fmt.Errorf("--propagate is supported only for the go ecosystem; it delegates to deps bump")
+				}
+				events := []deps.ReleaseEvent{{Dependency: target.Dependency, Version: target.Version, Source: "exact_set"}}
+				return runDepsBump(command, events, repositories, options, lifecycle)
+			}
+			report, runErr := deps.Run(context.Background(), target, repositories, lifecycle)
 			reportDirectory := options.reportDir
 			if reportDirectory == "" && report.Operation != "" {
 				reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", report.Operation)
@@ -91,6 +98,9 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect and report without creating worktrees or changing dependency files")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse validated operation worktrees, branches, and open pull requests")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a target lower than an observed semantic version")
+	command.Flags().BoolVar(&options.propagate, "propagate", false, "delegate this exact Go release event to deps bump waves (requires --fleet)")
+	command.Flags().IntVar(&options.maxWaves, "max-waves", 20, "maximum recalculated dependency waves when --propagate is used")
+	command.Flags().DurationVar(&options.releasePoll, "release-poll", 10*time.Second, "provider release polling interval when --propagate is used")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
 	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "explicitly skip local verification")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check and CI wait (0 disables)")
@@ -102,6 +112,120 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown or yaml")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-set.md and deps-set.yaml to this directory")
 	return command
+}
+
+func newDepsBumpCmd() *cobra.Command {
+	options := depsSetOptions{}
+	var changed []string
+	command := &cobra.Command{
+		Use:   "bump <ecosystem>",
+		Short: "Propagate published dependency versions through recalculated waves",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if args[0] != string(deps.EcosystemGo) {
+				return fmt.Errorf("dependency waves currently support only the go ecosystem")
+			}
+			if !options.fleet {
+				return fmt.Errorf("deps bump requires --fleet")
+			}
+			if options.noVerify && command.Flags().Changed("checks") {
+				return fmt.Errorf("--no-verify and --checks cannot be used together")
+			}
+			events, err := parseReleaseEvents(changed)
+			if err != nil {
+				return err
+			}
+			checks, err := quality.ParseChecks(options.checks)
+			if err != nil {
+				return err
+			}
+			repositories, err := dependencyRepositories([]string{args[0], "events"}, options)
+			if err != nil {
+				return err
+			}
+			return runDepsBump(command, events, repositories, options, dependencyOptions(options, checks))
+		},
+	}
+	command.Flags().StringArrayVar(&changed, "changed", nil, "published module@version release event (repeatable)")
+	command.Flags().BoolVar(&options.fleet, "fleet", false, "reconcile and process selected local and owned GitHub repositories")
+	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. sneat-co/*")
+	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
+	command.Flags().StringVar(&options.ref, "ref", "main", "base ref for operation worktrees")
+	command.Flags().IntVar(&options.parallel, "parallel", 1, "maximum repositories or release observations to process concurrently")
+	command.Flags().IntVar(&options.maxWaves, "max-waves", 20, "maximum recalculated dependency waves")
+	command.Flags().DurationVar(&options.releasePoll, "release-poll", 10*time.Second, "interval between provider release observations")
+	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect the first wave without creating worktrees or changing dependency files")
+	command.Flags().BoolVar(&options.resume, "resume", false, "reuse validated wave worktrees, branches, PRs, and report state")
+	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
+	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
+	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "explicitly skip local verification")
+	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check, CI wait, or release wait (0 disables)")
+	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
+	command.Flags().BoolVar(&options.commit, "commit", false, "commit verified changes on wave branches")
+	command.Flags().BoolVar(&options.push, "push", false, "push wave branches; implies --commit")
+	command.Flags().BoolVar(&options.pr, "pr", false, "open pull requests; implies --push and --commit")
+	command.Flags().BoolVar(&options.merge, "merge", false, "merge passing PRs and observe releases; implies --pr, --push, and --commit")
+	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown or yaml")
+	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-bump.md and deps-bump.yaml to this directory")
+	return command
+}
+
+func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Options {
+	return deps.Options{
+		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
+		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
+		Verify: !options.noVerify, Checks: checks, Timeout: options.timeout, Retry: options.retry,
+		Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
+		ReportDir: options.reportDir,
+	}
+}
+
+func parseReleaseEvents(values []string) ([]deps.ReleaseEvent, error) {
+	if len(values) == 0 {
+		return nil, fmt.Errorf("at least one --changed module@version event is required")
+	}
+	events := make([]deps.ReleaseEvent, 0, len(values))
+	for _, value := range values {
+		target, err := deps.ParseTarget(string(deps.EcosystemGo), value)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, deps.ReleaseEvent{Dependency: target.Dependency, Version: target.Version, Source: "explicit"})
+	}
+	return events, nil
+}
+
+func runDepsBump(command *cobra.Command, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
+	operation := deps.BumpOperationID(events)
+	reportDirectory := options.reportDir
+	if reportDirectory == "" {
+		reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", operation)
+	}
+	bumpOptions := deps.BumpOptions{
+		Options: lifecycle, MaxWaves: options.maxWaves, PollInterval: options.releasePoll,
+		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
+	}
+	if options.resume {
+		if previous, err := deps.LoadBumpReport(reportDirectory); err == nil {
+			bumpOptions.Previous = &previous
+		} else {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("--resume requires %s: %w", filepath.Join(reportDirectory, "deps-bump.yaml"), err)
+			}
+			return err
+		}
+	}
+	report, runErr := deps.RunBump(context.Background(), events, repositories, bumpOptions)
+	if report.Operation == "" {
+		return runErr
+	}
+	if err := deps.WriteBumpReports(reportDirectory, report); err != nil {
+		return err
+	}
+	if err := writeDepsBumpReport(command, report, options.format); err != nil {
+		return err
+	}
+	return runErr
 }
 
 func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repository, error) {
@@ -213,6 +337,23 @@ func githubSlug(remote string) string {
 }
 
 func writeDepsSetReport(command *cobra.Command, report deps.Report, format string) error {
+	switch format {
+	case "markdown":
+		_, err := fmt.Fprint(command.OutOrStdout(), report.Markdown())
+		return err
+	case "yaml":
+		raw, err := report.YAML()
+		if err != nil {
+			return err
+		}
+		_, err = command.OutOrStdout().Write(raw)
+		return err
+	default:
+		return fmt.Errorf("unknown --format %q (want markdown or yaml)", format)
+	}
+}
+
+func writeDepsBumpReport(command *cobra.Command, report deps.BumpReport, format string) error {
 	switch format {
 	case "markdown":
 		_, err := fmt.Fprint(command.OutOrStdout(), report.Markdown())

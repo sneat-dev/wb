@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -56,12 +57,7 @@ func ParseTarget(ecosystem, value string) (Target, error) {
 }
 
 // Repository identifies a canonical clone selected by command-level discovery.
-type Repository struct {
-	Slug     string
-	Path     string
-	CloneURL string
-	Archived bool
-}
+type Repository = orchestrate.Repository
 
 // Options controls repository isolation, verification, and optional publishing.
 type Options struct {
@@ -119,6 +115,7 @@ type RepositoryReport struct {
 
 // Decision explains one existing dependency reference before and after update.
 type Decision struct {
+	Dependency    string `yaml:"dependency,omitempty"`
 	File          string `yaml:"file"`
 	BeforeRef     string `yaml:"before_ref,omitempty"`
 	BeforeVersion string `yaml:"before_version,omitempty"`
@@ -131,18 +128,9 @@ type Decision struct {
 }
 
 // RemoteCheck is the normalized GitHub check state observed before merge.
-type RemoteCheck struct {
-	Name   string `json:"name" yaml:"name"`
-	Bucket string `json:"bucket" yaml:"bucket"`
-	Link   string `json:"link,omitempty" yaml:"link,omitempty"`
-}
+type RemoteCheck = orchestrate.RemoteCheck
 
 func sortRepositoryReport(report *RepositoryReport) {
 	sort.Strings(report.ChangedFiles)
-	sort.Slice(report.Decisions, func(i, j int) bool {
-		if report.Decisions[i].File == report.Decisions[j].File {
-			return report.Decisions[i].BeforeRef < report.Decisions[j].BeforeRef
-		}
-		return report.Decisions[i].File < report.Decisions[j].File
-	})
+	sortDecisions(report.Decisions)
 }

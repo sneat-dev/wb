@@ -33,6 +33,25 @@ func TestGoAdapterUsesGoToolingForExactExistingRequirement(t *testing.T) {
 	}
 }
 
+func TestValidatePublishableGoManifestsRejectsLocalReplace(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	writeTestFile(t, filepath.Join(repository, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire example.com/model v0.2.0\n\nreplace example.com/model => ../model\n")
+	err := validatePublishableGoManifests(repository)
+	if err == nil || !strings.Contains(err.Error(), "example.com/model => ../model") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestValidatePublishableGoManifestsAllowsVersionedReplace(t *testing.T) {
+	t.Parallel()
+	repository := t.TempDir()
+	writeTestFile(t, filepath.Join(repository, "go.mod"), "module example.com/app\n\ngo 1.24\n\nrequire example.com/model v0.2.0\n\nreplace example.com/model => example.com/fork/model v0.2.1\n")
+	if err := validatePublishableGoManifests(repository); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
