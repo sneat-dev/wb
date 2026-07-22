@@ -1,0 +1,104 @@
+#!/bin/sh
+# WB CLI installer
+#
+# Usage:
+#   curl -fsSL https://wb.sneat.dev/install/get-cli | sh
+#
+# Environment variables:
+#   WB_VERSION      Version tag to install (default: latest)
+#   WB_INSTALL_DIR  Install location (default: /usr/local/bin or ~/.local/bin)
+
+set -eu
+
+REPO="sneat-dev/wb"
+BIN_NAME="wb"
+
+log()  { printf '%s\n' "$*"; }
+err()  { printf 'error: %s\n' "$*" >&2; }
+die()  { err "$*"; exit 1; }
+
+# --- Detect OS -------------------------------------------------------------
+OS="$(uname -s)"
+case "$OS" in
+  Linux*)  OS="linux" ;;
+  Darwin*) OS="darwin" ;;
+  *) die "unsupported OS: $OS (WB releases currently target macOS and Linux)" ;;
+esac
+
+# --- Detect architecture ---------------------------------------------------
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64)  ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64" ;;
+  *) die "unsupported architecture: $ARCH" ;;
+esac
+
+# --- Resolve release -------------------------------------------------------
+VERSION="${WB_VERSION:-latest}"
+if [ "$VERSION" = "latest" ]; then
+  VERSION="$(
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
+      | head -n1
+  )"
+  [ -n "$VERSION" ] || die "failed to resolve the latest WB release from GitHub"
+fi
+
+VER_NO_V="${VERSION#v}"
+ARCHIVE="${BIN_NAME}_${VER_NO_V}_${OS}_${ARCH}.tar.gz"
+CHECKSUMS="${BIN_NAME}_${VER_NO_V}_checksums.txt"
+BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+# --- Resolve destination ---------------------------------------------------
+if [ -n "${WB_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$WB_INSTALL_DIR"
+elif [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+  INSTALL_DIR="/usr/local/bin"
+elif [ -w "/usr/local/bin" ] 2>/dev/null; then
+  INSTALL_DIR="/usr/local/bin"
+else
+  INSTALL_DIR="$HOME/.local/bin"
+fi
+
+mkdir -p "$INSTALL_DIR" || die "cannot create $INSTALL_DIR"
+
+# --- Download, verify, install --------------------------------------------
+TMP="$(mktemp -d 2>/dev/null || mktemp -d -t "$BIN_NAME")"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
+log "WB ${VERSION} (${OS}/${ARCH})"
+curl -fsSL "${BASE_URL}/${ARCHIVE}" -o "$TMP/$ARCHIVE" \
+  || die "download failed: ${BASE_URL}/${ARCHIVE}"
+curl -fsSL "${BASE_URL}/${CHECKSUMS}" -o "$TMP/$CHECKSUMS" \
+  || die "checksum manifest unavailable: ${BASE_URL}/${CHECKSUMS}"
+
+EXPECTED="$(awk -v f="$ARCHIVE" '$2==f {print $1}' "$TMP/$CHECKSUMS")"
+[ -n "$EXPECTED" ] || die "${ARCHIVE} is missing from the checksum manifest"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$TMP/$ARCHIVE" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL="$(shasum -a 256 "$TMP/$ARCHIVE" | awk '{print $1}')"
+else
+  die "sha256sum or shasum is required to verify the download"
+fi
+
+[ "$ACTUAL" = "$EXPECTED" ] \
+  || die "checksum mismatch for $ARCHIVE (expected $EXPECTED, got $ACTUAL)"
+log "  checksum: OK"
+
+tar -xzf "$TMP/$ARCHIVE" -C "$TMP"
+[ -f "$TMP/$BIN_NAME" ] || die "binary not found in archive: $BIN_NAME"
+
+cp "$TMP/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+chmod +x "$INSTALL_DIR/$BIN_NAME"
+log "installed WB ${VERSION} to ${INSTALL_DIR}/${BIN_NAME}"
+
+case ":$PATH:" in
+  *":$INSTALL_DIR:"*) ;;
+  *)
+    log ""
+    log "note: ${INSTALL_DIR} is not in your PATH. Add it with:"
+    log "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+    ;;
+esac

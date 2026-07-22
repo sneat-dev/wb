@@ -1,0 +1,75 @@
+---
+export interface TerminalLine {
+  html: string;
+  kind?: 'command' | 'output' | 'muted' | 'success' | 'warning' | 'accent' | 'blank';
+  delay?: number;
+}
+
+interface Props {
+  label?: string;
+  lines: TerminalLine[];
+  status?: string;
+  animated?: boolean;
+  class?: string;
+}
+
+const {
+  label = 'terminal',
+  lines,
+  status,
+  animated = false,
+  class: className,
+} = Astro.props;
+---
+
+<div class:list={['terminal-window', className]} data-terminal={animated ? 'animated' : undefined}>
+  <div class="terminal-bar">
+    <span class="terminal-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="terminal-label">{label}</span>
+    {status && <span class="terminal-status">{status}</span>}
+  </div>
+  <pre class="terminal-body"><code>{lines.map((line, index) => (
+    <span
+      class:list={['terminal-line', `is-${line.kind ?? 'output'}`]}
+      data-terminal-line={animated ? '' : undefined}
+      data-delay={line.delay ?? index * 360}
+    >{line.kind === 'command' && <span class="terminal-prompt">$</span>}<span set:html={line.html} /></span>
+  ))}<span class="terminal-cursor" aria-hidden="true"></span></code></pre>
+</div>
+
+{animated && (
+  <script is:inline>
+    (function () {
+      var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      document.querySelectorAll('[data-terminal="animated"]').forEach(function (terminal) {
+        if (terminal.getAttribute('data-playback-ready') === 'true' || reduce) return;
+        terminal.setAttribute('data-playback-ready', 'true');
+        var lines = Array.prototype.slice.call(terminal.querySelectorAll('[data-terminal-line]'));
+        var timers = [];
+
+        function play() {
+          timers.forEach(window.clearTimeout);
+          timers = [];
+          terminal.classList.add('is-playing');
+          lines.forEach(function (line) { line.classList.remove('line-visible'); });
+          lines.forEach(function (line) {
+            var delay = Number(line.getAttribute('data-delay') || 0) + 220;
+            timers.push(window.setTimeout(function () { line.classList.add('line-visible'); }, delay));
+          });
+          var lastDelay = lines.reduce(function (max, line) {
+            return Math.max(max, Number(line.getAttribute('data-delay') || 0));
+          }, 0);
+          timers.push(window.setTimeout(play, lastDelay + 4200));
+        }
+
+        var inView = new IntersectionObserver(function (entries) {
+          if (entries.some(function (entry) { return entry.isIntersecting; })) {
+            inView.disconnect();
+            play();
+          }
+        }, { threshold: 0.25 });
+        inView.observe(terminal);
+      });
+    })();
+  </script>
+)}

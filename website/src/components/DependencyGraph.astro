@@ -1,0 +1,734 @@
+---
+type Status = 'current' | 'behind' | 'blocked' | 'selected';
+
+interface GraphNode {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  org: 'dal-go' | 'sneat-co';
+  repo: string;
+  module: string;
+  version: string;
+  status: Status;
+  manifest: string;
+  relation: string;
+  consumers: number;
+  upstream: string[];
+  downstream: string[];
+}
+
+interface GraphEdge {
+  from: string;
+  to: string;
+  indirect?: boolean;
+  primary?: boolean;
+}
+
+const W = 1040;
+const H = 580;
+const nodeW = 174;
+const nodeH = 72;
+
+const nodes: GraphNode[] = [
+  {
+    id: 'record', x: 22, y: 236, w: nodeW, h: nodeH, org: 'dal-go', repo: 'dal-go/record',
+    module: 'github.com/dal-go/record', version: 'v0.1.0', status: 'selected', manifest: 'go.mod',
+    relation: 'selected provider', consumers: 7, upstream: [],
+    downstream: ['dalgo', 'firestore', 'datastore', 'sql', 'facade', 'api', 'bots'],
+  },
+  {
+    id: 'dalgo', x: 228, y: 236, w: nodeW, h: nodeH, org: 'dal-go', repo: 'dal-go/dalgo',
+    module: 'github.com/dal-go/dalgo', version: 'v0.63.1', status: 'behind', manifest: 'go.mod',
+    relation: 'direct consumer · provider', consumers: 6, upstream: ['record'],
+    downstream: ['firestore', 'datastore', 'sql', 'facade', 'api', 'bots'],
+  },
+  {
+    id: 'firestore', x: 434, y: 94, w: nodeW, h: nodeH, org: 'dal-go', repo: 'dal-go/dalgo2firestore',
+    module: 'github.com/dal-go/dalgo2firestore', version: 'v0.16.3', status: 'current', manifest: 'go.mod',
+    relation: 'direct consumer · adapter', consumers: 3, upstream: ['record', 'dalgo'],
+    downstream: ['facade', 'api', 'bots'],
+  },
+  {
+    id: 'datastore', x: 434, y: 236, w: nodeW, h: nodeH, org: 'dal-go', repo: 'dal-go/dalgo2datastore',
+    module: 'github.com/dal-go/dalgo2datastore', version: 'v0.9.2', status: 'behind', manifest: 'go.mod',
+    relation: 'direct consumer · adapter', consumers: 3, upstream: ['record', 'dalgo'],
+    downstream: ['facade', 'api', 'bots'],
+  },
+  {
+    id: 'sql', x: 434, y: 378, w: nodeW, h: nodeH, org: 'dal-go', repo: 'dal-go/dalgo2sql',
+    module: 'github.com/dal-go/dalgo2sql', version: 'v0.8.4', status: 'blocked', manifest: 'go.mod',
+    relation: 'direct consumer · adapter', consumers: 3, upstream: ['record', 'dalgo'],
+    downstream: ['facade', 'api', 'bots'],
+  },
+  {
+    id: 'facade', x: 640, y: 236, w: nodeW, h: nodeH, org: 'sneat-co', repo: 'sneat-co/facade',
+    module: 'github.com/sneat-co/facade', version: 'v0.12.0', status: 'behind', manifest: 'go.mod',
+    relation: 'direct consumer · provider', consumers: 2,
+    upstream: ['record', 'dalgo', 'firestore', 'datastore', 'sql'], downstream: ['api', 'bots'],
+  },
+  {
+    id: 'api', x: 846, y: 164, w: nodeW, h: nodeH, org: 'sneat-co', repo: 'sneat-co/sneat-api',
+    module: 'github.com/sneat-co/sneat-api', version: 'v0.31.0', status: 'blocked', manifest: 'go.mod',
+    relation: 'direct consumer · application', consumers: 0,
+    upstream: ['record', 'dalgo', 'firestore', 'datastore', 'sql', 'facade'], downstream: [],
+  },
+  {
+    id: 'bots', x: 846, y: 308, w: nodeW, h: nodeH, org: 'sneat-co', repo: 'sneat-co/sneat-bots',
+    module: 'github.com/sneat-co/sneat-bots', version: 'v0.19.0', status: 'behind', manifest: 'go.mod',
+    relation: 'direct consumer · application', consumers: 0,
+    upstream: ['record', 'dalgo', 'firestore', 'datastore', 'sql', 'facade'], downstream: [],
+  },
+];
+
+const edges: GraphEdge[] = [
+  { from: 'record', to: 'dalgo', primary: true },
+  { from: 'dalgo', to: 'firestore', primary: true },
+  { from: 'dalgo', to: 'datastore' },
+  { from: 'dalgo', to: 'sql' },
+  { from: 'firestore', to: 'facade', primary: true },
+  { from: 'datastore', to: 'facade' },
+  { from: 'sql', to: 'facade' },
+  { from: 'facade', to: 'api', primary: true },
+  { from: 'facade', to: 'bots' },
+  { from: 'record', to: 'facade', indirect: true },
+  { from: 'dalgo', to: 'api', indirect: true },
+];
+
+const byId = new Map(nodes.map((node) => [node.id, node]));
+const edgePath = (edge: GraphEdge) => {
+  const from = byId.get(edge.from)!;
+  const to = byId.get(edge.to)!;
+  const x1 = from.x + from.w;
+  const y1 = from.y + from.h / 2;
+  const x2 = to.x;
+  const y2 = to.y + to.h / 2;
+  const bend = Math.max(12, (x2 - x1) * 0.5);
+  if (edge.indirect) {
+    const lift = edge.from === 'record' ? -176 : 154;
+    return `M ${x1} ${y1} C ${x1 + bend * 0.45} ${y1 + lift}, ${x2 - bend * 0.45} ${y2 + lift}, ${x2} ${y2}`;
+  }
+  return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+};
+
+const statusLabel: Record<Status, string> = {
+  current: 'current',
+  behind: 'behind',
+  blocked: 'blocked',
+  selected: 'selected release',
+};
+
+const shortModule = (module: string) => module.replace('github.com/', '');
+---
+
+<section class="dependency-feature section" id="deps-graph" data-dependency-graph>
+  <div class="container">
+    <header class="dependency-heading" data-reveal>
+      <div>
+        <p class="eyebrow">Coming soon · <code>wb deps graph</code></p>
+        <h2>Understand the dependency fleet.</h2>
+      </div>
+      <div class="dependency-heading-copy">
+        <p class="lead">See the blast radius before changing a dependency.</p>
+        <p>
+          Discover relationships across selected repositories, expose version drift,
+          and see the provider-first release order before a worktree is created.
+        </p>
+      </div>
+    </header>
+
+    <div class="graph-browser" data-reveal>
+      <div class="graph-toolbar" aria-label="Dependency graph controls">
+        <div class="graph-tabs" role="tablist" aria-label="Graph projection">
+          <button type="button" role="tab" aria-selected="true" data-projection="repos">Repositories</button>
+          <button type="button" role="tab" aria-selected="false" data-projection="dependencies">Dependencies</button>
+          <button type="button" role="tab" aria-selected="false" data-projection="versions">Versions</button>
+        </div>
+        <label class="graph-search">
+          <span class="sr-only">Search repositories and modules</span>
+          <input type="search" placeholder="Search graph…" data-graph-search />
+          <kbd>/</kbd>
+        </label>
+        <label class="graph-org">
+          <span class="sr-only">Filter by GitHub organisation</span>
+          <select data-graph-org>
+            <option value="all">All organisations</option>
+            <option value="dal-go">dal-go</option>
+            <option value="sneat-co">sneat-co</option>
+          </select>
+        </label>
+        <button class="outdated-toggle" type="button" aria-pressed="false" data-highlight-outdated>
+          <span aria-hidden="true"></span> Highlight outdated
+        </button>
+      </div>
+
+      <div class="graph-workspace">
+        <div class="graph-canvas">
+          <div class="graph-canvas-head">
+            <div>
+              <b>github.com</b>
+              <span>provider-first release topology</span>
+            </div>
+            <div class="graph-zoom" aria-label="Graph zoom controls">
+              <button type="button" data-zoom="in" aria-label="Zoom in">+</button>
+              <button type="button" data-zoom="out" aria-label="Zoom out">−</button>
+              <button type="button" data-zoom="fit">Fit</button>
+              <button type="button" data-zoom="reset">Reset</button>
+            </div>
+          </div>
+
+          <div class="graph-stage">
+            <svg
+              data-graph-svg
+              viewBox={`0 0 ${W} ${H}`}
+              xmlns="http://www.w3.org/2000/svg"
+              role="img"
+              aria-labelledby="dependency-graph-title dependency-graph-desc"
+            >
+              <title id="dependency-graph-title">Example WB repository dependency graph</title>
+              <desc id="dependency-graph-desc">
+                Provider repositories are arranged left to right in release waves. The highlighted path runs from record through DALgo and the Firestore adapter to facade and the API.
+              </desc>
+              <defs>
+                <marker id="graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                  <path d="M 0 0 L 8 4 L 0 8 z" />
+                </marker>
+                <marker id="graph-arrow-active" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                  <path d="M 0 0 L 8 4 L 0 8 z" />
+                </marker>
+              </defs>
+
+              <g data-graph-viewport>
+                <rect class="org-zone" x="8" y="42" width="612" height="500" rx="18" />
+                <rect class="org-zone org-zone-sneat" x="626" y="42" width="406" height="500" rx="18" />
+                <text class="org-label" x="24" y="68">github.com/dal-go</text>
+                <text class="org-label" x="642" y="68">github.com/sneat-co</text>
+
+                {[
+                  ['provider', 109], ['core', 315], ['adapter wave', 521], ['facade', 727], ['applications', 933],
+                ].map(([label, x], index) => (
+                  <g class="wave-guide" aria-hidden="true">
+                    <line x1={x} y1="78" x2={x} y2="522" />
+                    <text x={x} y="564" text-anchor="middle">0{index} · {String(label).toUpperCase()}</text>
+                  </g>
+                ))}
+
+                <g class="graph-edges" aria-hidden="true">
+                  {edges.map((edge) => (
+                    <path
+                      d={edgePath(edge)}
+                      class:list={['graph-edge', { 'is-indirect': edge.indirect, 'is-primary': edge.primary }]}
+                      data-from={edge.from}
+                      data-to={edge.to}
+                      marker-end={edge.primary ? 'url(#graph-arrow-active)' : 'url(#graph-arrow)'}
+                    />
+                  ))}
+                </g>
+
+                <g class="graph-nodes">
+                  {nodes.map((node) => (
+                    <a
+                      href="#dependency-details"
+                      class:list={['graph-node', `status-${node.status}`, { 'is-primary': ['record', 'dalgo', 'firestore', 'facade', 'api'].includes(node.id) }]}
+                      data-graph-node
+                      data-id={node.id}
+                      data-org={node.org}
+                      data-repo={node.repo}
+                      data-module={node.module}
+                      data-version={node.version}
+                      data-status={statusLabel[node.status]}
+                      data-manifest={node.manifest}
+                      data-relation={node.relation}
+                      data-consumers={String(node.consumers)}
+                      data-upstream={node.upstream.join(',')}
+                      data-downstream={node.downstream.join(',')}
+                      data-main-repos={node.repo}
+                      data-sub-repos={`${node.version} · ${statusLabel[node.status]}`}
+                      data-main-dependencies={shortModule(node.module)}
+                      data-sub-dependencies={`${node.consumers} downstream consumer${node.consumers === 1 ? '' : 's'}`}
+                      data-main-versions={`${node.repo.split('/').at(-1)}@${node.version}`}
+                      data-sub-versions={`${node.manifest} · ${statusLabel[node.status]}`}
+                      aria-label={`${node.repo}, ${node.module} at ${node.version}, ${statusLabel[node.status]}, ${node.consumers} downstream consumers`}
+                    >
+                      <g>
+                        <rect class="node-card" x={node.x} y={node.y} width={node.w} height={node.h} rx="12" />
+                        <rect class="node-accent" x={node.x} y={node.y} width="5" height={node.h} rx="2.5" />
+                        <circle class="node-status" cx={node.x + 18} cy={node.y + 19} r="4" />
+                        <text class="node-main" x={node.x + 29} y={node.y + 23} data-node-main>{node.repo}</text>
+                        <text class="node-sub" x={node.x + 16} y={node.y + 46} data-node-sub>{node.version} · {statusLabel[node.status]}</text>
+                        <text class="node-meta" x={node.x + 16} y={node.y + 62}>{node.manifest}</text>
+                        <path class="node-chevron" d={`M ${node.x + node.w - 18} ${node.y + 32} l 5 4 l -5 4`} />
+                      </g>
+                    </a>
+                  ))}
+                </g>
+              </g>
+            </svg>
+          </div>
+
+          <div class="graph-mobile" aria-label="Simplified dependency release order">
+            <ol>
+              <li class="status-selected"><b>dal-go/record</b><span>v0.1.0 · selected provider</span></li>
+              <li class="status-behind"><b>dal-go/dalgo</b><span>v0.63.1 · behind</span></li>
+              <li class="mobile-branch">
+                <span><b>dalgo2firestore</b><small>current</small></span>
+                <span><b>dalgo2datastore</b><small>behind</small></span>
+                <span><b>dalgo2sql</b><small>blocked</small></span>
+              </li>
+              <li class="status-behind"><b>sneat-co/facade</b><span>v0.12.0 · behind</span></li>
+              <li class="mobile-branch">
+                <span><b>sneat-api</b><small>blocked</small></span>
+                <span><b>sneat-bots</b><small>behind</small></span>
+              </li>
+            </ol>
+          </div>
+
+          <div class="graph-legend" aria-label="Dependency graph legend">
+            <span><i class="legend-line"></i> direct</span>
+            <span><i class="legend-line is-dashed"></i> indirect</span>
+            <span><i class="legend-dot is-current"></i> current</span>
+            <span><i class="legend-dot is-behind"></i> behind</span>
+            <span><i class="legend-dot is-blocked"></i> blocked</span>
+            <span><i class="legend-dot is-selected"></i> selected release</span>
+          </div>
+        </div>
+
+        <aside class="graph-inspector" aria-label="Graph command and selected dependency details">
+          <div class="graph-command-card">
+            <div class="graph-command-label"><span>Command</span><b>planned</b></div>
+            <code><span>$</span> <span data-graph-command>wb deps graph --fleet --view repos --open</span></code>
+            <button type="button" class="copy-btn" data-copy="wb deps graph --fleet --view repos --open" data-graph-copy>Copy</button>
+          </div>
+          <dl class="graph-results" aria-label="Representative graph results">
+            <div><dt>34</dt><dd>repositories</dd></div>
+            <div><dt>19</dt><dd>modules</dd></div>
+            <div><dt>61</dt><dd>dependency edges</dd></div>
+            <div class="result-warning"><dt>4</dt><dd>outdated selections</dd></div>
+            <div class="result-danger"><dt>2</dt><dd>blocked release paths</dd></div>
+          </dl>
+          <div class="graph-details" id="dependency-details" aria-live="polite">
+            <p class="graph-detail-label">Selected node</p>
+            <h3 data-detail-repo>dal-go/record</h3>
+            <dl>
+              <div><dt>Module</dt><dd data-detail-module>github.com/dal-go/record</dd></div>
+              <div><dt>Version</dt><dd data-detail-version>v0.1.0</dd></div>
+              <div><dt>Manifest</dt><dd data-detail-manifest>go.mod</dd></div>
+              <div><dt>Relationship</dt><dd data-detail-relation>selected provider</dd></div>
+              <div><dt>Downstream</dt><dd data-detail-consumers>7 consumers</dd></div>
+            </dl>
+            <p>Focus a card for details. Select it to trace its complete upstream and downstream path.</p>
+          </div>
+        </aside>
+      </div>
+
+      <div class="dependency-table-wrap">
+        <table>
+          <caption>Accessible dependency order for the example fleet</caption>
+          <thead><tr><th>Wave</th><th>Repository</th><th>Selected version</th><th>Status</th></tr></thead>
+          <tbody>
+            {nodes.map((node, index) => (
+              <tr><td>{index < 2 ? index : index < 5 ? 2 : index === 5 ? 3 : 4}</td><th scope="row">{node.repo}</th><td>{node.version}</td><td>{statusLabel[node.status]}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="projection-notes" data-reveal>
+      <article><span>01</span><h3>Repositories</h3><p>Repository → repository. Read release order, propagation waves, and downstream blockers.</p></article>
+      <article><span>02</span><h3>Dependencies</h3><p>Module → consumer. Ask which repositories are affected before a provider changes.</p></article>
+      <article><span>03</span><h3>Versions</h3><p>Dependency@version → repository. Make old, current, and conflicting selections visible.</p></article>
+    </div>
+  </div>
+</section>
+
+<script>
+  const graphRoot = document.querySelector<HTMLElement>('[data-dependency-graph]');
+
+  if (graphRoot) {
+    const graphNodes = Array.from(graphRoot.querySelectorAll<SVGAElement>('[data-graph-node]'));
+    const graphEdges = Array.from(graphRoot.querySelectorAll<SVGPathElement>('.graph-edge'));
+    const tabs = Array.from(graphRoot.querySelectorAll<HTMLButtonElement>('[data-projection]'));
+    const search = graphRoot.querySelector<HTMLInputElement>('[data-graph-search]');
+    const org = graphRoot.querySelector<HTMLSelectElement>('[data-graph-org]');
+    const outdated = graphRoot.querySelector<HTMLButtonElement>('[data-highlight-outdated]');
+    const svg = graphRoot.querySelector<SVGSVGElement>('[data-graph-svg]');
+    const command = graphRoot.querySelector<HTMLElement>('[data-graph-command]');
+    const copy = graphRoot.querySelector<HTMLButtonElement>('[data-graph-copy]');
+    let selectedId = 'record';
+    let projection = 'repos';
+
+    const commands: Record<string, string> = {
+      repos: 'wb deps graph --fleet --view repos --open',
+      dependencies: "wb deps graph --fleet --view dependencies --match 'dal-go/*' --open",
+      versions: 'wb deps graph --fleet --view selections --dependency github.com/dal-go/dalgo --open',
+    };
+
+    const details = {
+      repo: graphRoot.querySelector<HTMLElement>('[data-detail-repo]'),
+      module: graphRoot.querySelector<HTMLElement>('[data-detail-module]'),
+      version: graphRoot.querySelector<HTMLElement>('[data-detail-version]'),
+      manifest: graphRoot.querySelector<HTMLElement>('[data-detail-manifest]'),
+      relation: graphRoot.querySelector<HTMLElement>('[data-detail-relation]'),
+      consumers: graphRoot.querySelector<HTMLElement>('[data-detail-consumers]'),
+    };
+
+    const showDetails = (node: SVGAElement) => {
+      if (details.repo) details.repo.textContent = node.dataset.repo ?? '';
+      if (details.module) details.module.textContent = node.dataset.module ?? '';
+      if (details.version) details.version.textContent = node.dataset.version ?? '';
+      if (details.manifest) details.manifest.textContent = node.dataset.manifest ?? '';
+      if (details.relation) details.relation.textContent = node.dataset.relation ?? '';
+      if (details.consumers) {
+        const count = Number(node.dataset.consumers ?? 0);
+        details.consumers.textContent = `${count} consumer${count === 1 ? '' : 's'}`;
+      }
+    };
+
+    const selectNode = (node: SVGAElement) => {
+      selectedId = node.dataset.id ?? '';
+      const related = new Set([
+        selectedId,
+        ...(node.dataset.upstream ?? '').split(',').filter(Boolean),
+        ...(node.dataset.downstream ?? '').split(',').filter(Boolean),
+      ]);
+      graphRoot.classList.add('has-node-selection');
+      graphNodes.forEach((candidate) => {
+        const id = candidate.dataset.id ?? '';
+        candidate.classList.toggle('is-selected-node', id === selectedId);
+        candidate.classList.toggle('is-related', related.has(id));
+        candidate.classList.toggle('is-dimmed', !related.has(id));
+      });
+      graphEdges.forEach((edge) => {
+        const active = related.has(edge.dataset.from ?? '') && related.has(edge.dataset.to ?? '');
+        edge.classList.toggle('is-path', active);
+        edge.classList.toggle('is-dimmed', !active);
+      });
+      showDetails(node);
+    };
+
+    const applyProjection = (next: string) => {
+      projection = next;
+      graphRoot.dataset.projection = projection;
+      tabs.forEach((tab) => tab.setAttribute('aria-selected', String(tab.dataset.projection === projection)));
+      graphNodes.forEach((node) => {
+        const main = node.querySelector<SVGTextElement>('[data-node-main]');
+        const sub = node.querySelector<SVGTextElement>('[data-node-sub]');
+        const key = projection === 'dependencies' ? 'Dependencies' : projection === 'versions' ? 'Versions' : 'Repos';
+        if (main) main.textContent = node.dataset[`main${key}`] ?? '';
+        if (sub) sub.textContent = node.dataset[`sub${key}`] ?? '';
+      });
+      const value = commands[projection];
+      if (command) command.textContent = value;
+      if (copy) copy.dataset.copy = value;
+    };
+
+    const applyFilters = () => {
+      const query = (search?.value ?? '').trim().toLowerCase();
+      const selectedOrg = org?.value ?? 'all';
+      graphNodes.forEach((node) => {
+        const haystack = `${node.dataset.repo} ${node.dataset.module} ${node.dataset.version}`.toLowerCase();
+        const match = (!query || haystack.includes(query)) && (selectedOrg === 'all' || node.dataset.org === selectedOrg);
+        node.classList.toggle('is-filtered', !match);
+      });
+    };
+
+    tabs.forEach((tab) => tab.addEventListener('click', () => applyProjection(tab.dataset.projection ?? 'repos')));
+    search?.addEventListener('input', applyFilters);
+    org?.addEventListener('change', applyFilters);
+    outdated?.addEventListener('click', () => {
+      const pressed = outdated.getAttribute('aria-pressed') !== 'true';
+      outdated.setAttribute('aria-pressed', String(pressed));
+      graphRoot.classList.toggle('highlight-outdated', pressed);
+    });
+
+    graphNodes.forEach((node) => {
+      node.addEventListener('mouseenter', () => showDetails(node));
+      node.addEventListener('focus', () => showDetails(node));
+      node.addEventListener('mouseleave', () => {
+        const selected = graphNodes.find((candidate) => candidate.dataset.id === selectedId);
+        if (selected) showDetails(selected);
+      });
+      node.addEventListener('click', (event) => {
+        event.preventDefault();
+        selectNode(node);
+      });
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === '/' && document.activeElement !== search) {
+        event.preventDefault();
+        search?.focus();
+      }
+    });
+
+    if (svg) {
+      const initial = { x: 0, y: 0, width: 1040, height: 580 };
+      let view = { ...initial };
+      let pointer: { id: number; x: number; y: number } | undefined;
+      const updateView = () => svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.width} ${view.height}`);
+      const zoomBy = (factor: number) => {
+        const nextWidth = Math.min(1450, Math.max(500, view.width * factor));
+        const nextHeight = nextWidth * (initial.height / initial.width);
+        view.x += (view.width - nextWidth) / 2;
+        view.y += (view.height - nextHeight) / 2;
+        view.width = nextWidth;
+        view.height = nextHeight;
+        updateView();
+      };
+      graphRoot.querySelector('[data-zoom="in"]')?.addEventListener('click', () => zoomBy(0.82));
+      graphRoot.querySelector('[data-zoom="out"]')?.addEventListener('click', () => zoomBy(1.22));
+      graphRoot.querySelector('[data-zoom="fit"]')?.addEventListener('click', () => { view = { ...initial }; updateView(); });
+      graphRoot.querySelector('[data-zoom="reset"]')?.addEventListener('click', () => {
+        view = { ...initial };
+        updateView();
+        projection = 'repos';
+        applyProjection(projection);
+        if (search) search.value = '';
+        if (org) org.value = 'all';
+        if (outdated) outdated.setAttribute('aria-pressed', 'false');
+        graphRoot.classList.remove('highlight-outdated', 'has-node-selection');
+        graphNodes.forEach((node) => node.classList.remove('is-selected-node', 'is-related', 'is-dimmed', 'is-filtered'));
+        graphEdges.forEach((edge) => edge.classList.remove('is-path', 'is-dimmed'));
+        selectedId = 'record';
+        const selected = graphNodes.find((node) => node.dataset.id === selectedId);
+        if (selected) showDetails(selected);
+      });
+      svg.addEventListener('pointerdown', (event) => {
+        if ((event.target as Element).closest('[data-graph-node]')) return;
+        pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+        svg.setPointerCapture(event.pointerId);
+        svg.classList.add('is-panning');
+      });
+      svg.addEventListener('pointermove', (event) => {
+        if (!pointer || pointer.id !== event.pointerId) return;
+        view.x -= (event.clientX - pointer.x) * (view.width / svg.clientWidth);
+        view.y -= (event.clientY - pointer.y) * (view.height / svg.clientHeight);
+        pointer.x = event.clientX;
+        pointer.y = event.clientY;
+        updateView();
+      });
+      const endPan = (event: PointerEvent) => {
+        if (!pointer || pointer.id !== event.pointerId) return;
+        pointer = undefined;
+        svg.classList.remove('is-panning');
+      };
+      svg.addEventListener('pointerup', endPan);
+      svg.addEventListener('pointercancel', endPan);
+    }
+  }
+</script>
+
+<style>
+  .dependency-feature {
+    overflow: clip;
+    background:
+      radial-gradient(circle at 88% 8%, color-mix(in srgb, var(--indigo-soft) 78%, transparent), transparent 25rem),
+      var(--paper-2);
+    border-block: 1px solid var(--line);
+  }
+
+  .dependency-heading {
+    display: grid;
+    grid-template-columns: 1.12fr .88fr;
+    gap: clamp(2rem, 7vw, 7rem);
+    align-items: end;
+    margin-bottom: clamp(2.5rem, 5vw, 4rem);
+  }
+
+  .dependency-heading h2 { max-width: 10ch; }
+  .dependency-heading-copy { padding-bottom: .35rem; }
+  .dependency-heading-copy .lead { margin-bottom: .65rem; color: var(--ink); font-weight: 600; }
+  .dependency-heading-copy > p:last-child { color: var(--ink-2); }
+  .dependency-heading .eyebrow code { text-transform: none; }
+
+  .graph-browser {
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--indigo) 20%, var(--line));
+    border-radius: 24px;
+    background: #fdfdff;
+    box-shadow: 0 34px 80px -42px rgba(33, 28, 99, .42);
+  }
+
+  .graph-toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(180px, 1fr) auto auto;
+    gap: .65rem;
+    align-items: center;
+    padding: .8rem;
+    border-bottom: 1px solid #dedfeb;
+    background: #f5f5fa;
+  }
+
+  .graph-tabs { display: inline-flex; gap: .2rem; padding: .25rem; border-radius: 10px; background: #e8e8f1; }
+  .graph-tabs button,
+  .outdated-toggle,
+  .graph-zoom button,
+  .graph-org select {
+    appearance: none;
+    border: 1px solid transparent;
+    color: #55566e;
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: .66rem;
+    cursor: pointer;
+  }
+  .graph-tabs button { padding: .48rem .65rem; border-radius: 7px; }
+  .graph-tabs button[aria-selected='true'] { border-color: #d9d9e5; background: white; color: var(--ink); box-shadow: 0 2px 5px #20203f12; }
+
+  .graph-search { min-width: 0; display: flex; align-items: center; gap: .5rem; padding: .48rem .65rem; border: 1px solid #dcdce7; border-radius: 9px; background: white; }
+  .graph-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font-family: var(--font-mono); font-size: .69rem; }
+  .graph-search kbd { color: #9696aa; font-family: var(--font-mono); font-size: .62rem; }
+  .graph-org { display: flex; }
+  .graph-org select { padding: .55rem 1.65rem .55rem .65rem; border-color: #dcdce7; border-radius: 9px; background: white; background-image: linear-gradient(45deg, transparent 50%, #77778c 50%), linear-gradient(135deg, #77778c 50%, transparent 50%); background-position: calc(100% - 12px) 50%, calc(100% - 8px) 50%; background-size: 4px 4px; background-repeat: no-repeat; }
+  .outdated-toggle { display: inline-flex; align-items: center; gap: .45rem; padding: .55rem .65rem; border-color: #dcdce7; border-radius: 9px; background: white; white-space: nowrap; }
+  .outdated-toggle > span { width: 7px; height: 7px; border-radius: 50%; background: #e8a93f; box-shadow: 0 0 0 3px #fff1d8; }
+  .outdated-toggle[aria-pressed='true'] { border-color: #e4ac50; background: #fff8e9; color: #825511; }
+
+  .graph-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 280px; min-height: 610px; }
+  .graph-canvas { min-width: 0; padding: 1rem 1rem .8rem; background: #fbfbfe; }
+  .graph-canvas-head { display: flex; justify-content: space-between; gap: 1rem; align-items: center; margin-bottom: .7rem; padding-inline: .25rem; }
+  .graph-canvas-head > div:first-child { display: flex; gap: .6rem; align-items: baseline; }
+  .graph-canvas-head b { font-family: var(--font-mono); font-size: .73rem; }
+  .graph-canvas-head span { color: #818297; font-family: var(--font-mono); font-size: .61rem; }
+  .graph-zoom { display: flex; gap: .3rem; }
+  .graph-zoom button { min-width: 29px; padding: .35rem .5rem; border-color: #dedfeb; border-radius: 7px; background: white; }
+  .graph-zoom button:hover { border-color: #a8a5ef; color: var(--indigo-deep); }
+
+  .graph-stage {
+    overflow: hidden;
+    border: 1px solid #e1e2ec;
+    border-radius: 14px;
+    background-color: #fff;
+    background-image:
+      linear-gradient(#eef0fa 1px, transparent 1px),
+      linear-gradient(90deg, #eef0fa 1px, transparent 1px),
+      linear-gradient(#f7f7fb 1px, transparent 1px),
+      linear-gradient(90deg, #f7f7fb 1px, transparent 1px);
+    background-size: 48px 48px, 48px 48px, 12px 12px, 12px 12px;
+  }
+  [data-graph-svg] { display: block; width: 100%; height: auto; min-height: 470px; cursor: grab; touch-action: none; user-select: none; }
+  [data-graph-svg].is-panning { cursor: grabbing; }
+  .org-zone { fill: #f6f7fb; fill-opacity: .78; stroke: #e4e4ee; stroke-width: 1; }
+  .org-zone-sneat { fill: #f8f6ff; stroke: #e4e1f5; }
+  .org-label { fill: #77788e; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .wave-guide line { stroke: #dedfe9; stroke-width: 1; stroke-dasharray: 2 6; }
+  .wave-guide text { fill: #a0a1b3; font-family: var(--font-mono); font-size: 8px; letter-spacing: .09em; }
+
+  #graph-arrow path { fill: #b8bac9; }
+  #graph-arrow-active path { fill: #655cf2; }
+  .graph-edge { fill: none; stroke: #b8bac9; stroke-width: 1.5; transition: opacity .2s, stroke .2s, stroke-width .2s; }
+  .graph-edge.is-indirect { stroke-dasharray: 5 6; opacity: .55; }
+  .graph-edge.is-primary,
+  .graph-edge.is-path { stroke: #655cf2; stroke-width: 2.4; opacity: .88; }
+  .graph-browser:not(.has-node-selection) .graph-edge:not(.is-primary) { opacity: .26; }
+  .graph-edge.is-dimmed { opacity: .08; }
+
+  .graph-node { outline: none; transition: opacity .2s; }
+  .node-card { fill: white; stroke: #d9dae5; stroke-width: 1; filter: drop-shadow(0 5px 8px rgba(29, 28, 63, .08)); transition: stroke .2s, stroke-width .2s, fill .2s; }
+  .node-accent { fill: #44aa75; }
+  .node-status { fill: #44aa75; }
+  .node-main { fill: #23233a; font-family: var(--font-mono); font-size: 9.4px; font-weight: 700; }
+  .node-sub { fill: #66677c; font-family: var(--font-mono); font-size: 8.5px; }
+  .node-meta { fill: #a0a0b0; font-family: var(--font-mono); font-size: 7.5px; }
+  .node-chevron { fill: none; stroke: #adaebe; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+  .status-behind .node-accent, .status-behind .node-status { fill: #e5a538; }
+  .status-blocked .node-accent, .status-blocked .node-status { fill: #df5b68; }
+  .status-selected .node-accent, .status-selected .node-status { fill: #5b53f0; }
+  .status-selected .node-card { stroke: #7770f2; stroke-width: 1.8; fill: #faf9ff; }
+  .graph-node:hover .node-card,
+  .graph-node:focus .node-card,
+  .graph-node.is-selected-node .node-card { stroke: #5b53f0; stroke-width: 2.2; fill: #f7f6ff; }
+  .graph-node:focus .node-card { filter: drop-shadow(0 0 5px rgba(91, 83, 240, .55)); }
+  .graph-browser:not(.has-node-selection) .graph-node:not(.is-primary) { opacity: .52; }
+  .graph-node.is-dimmed { opacity: .18; }
+  .graph-node.is-filtered { opacity: .08 !important; pointer-events: none; }
+  .highlight-outdated .status-current { opacity: .16 !important; }
+  .highlight-outdated :is(.status-behind, .status-blocked) .node-card { stroke-width: 2; }
+
+  .graph-legend { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .75rem; padding-inline: .25rem; color: #77788d; font-family: var(--font-mono); font-size: .59rem; }
+  .graph-legend span { display: inline-flex; align-items: center; gap: .35rem; }
+  .legend-line { width: 20px; border-top: 2px solid #7770f2; }
+  .legend-line.is-dashed { border-top-style: dashed; border-color: #aaaaba; }
+  .legend-dot { width: 7px; height: 7px; border-radius: 50%; background: #44aa75; }
+  .legend-dot.is-behind { background: #e5a538; }
+  .legend-dot.is-blocked { background: #df5b68; }
+  .legend-dot.is-selected { background: #5b53f0; }
+
+  .graph-inspector { display: flex; flex-direction: column; min-width: 0; border-left: 1px solid #dedfeb; background: #f5f5fa; }
+  .graph-command-card { position: relative; padding: 1.2rem; color: #eeeefd; background: var(--code); border-bottom: 1px solid var(--code-line); }
+  .graph-command-label { display: flex; justify-content: space-between; margin-bottom: .85rem; color: #7f82a3; font-family: var(--font-mono); font-size: .6rem; text-transform: uppercase; letter-spacing: .08em; }
+  .graph-command-label b { color: #ffb18d; font-weight: 650; }
+  .graph-command-card code { display: block; min-height: 5.6rem; color: #e4e5f7; font-size: .69rem; line-height: 1.65; overflow-wrap: anywhere; }
+  .graph-command-card code > span:first-child { color: #898dff; }
+  .graph-command-card .copy-btn { position: absolute; right: .8rem; bottom: .8rem; border-color: #303251; color: #9ea0bd; background: #17182b; }
+  .graph-results { display: grid; grid-template-columns: repeat(2, 1fr); margin: 0; padding: .85rem; border-bottom: 1px solid #dedfeb; }
+  .graph-results > div { padding: .7rem; border-bottom: 1px solid #e4e4ed; }
+  .graph-results > div:nth-child(odd) { border-right: 1px solid #e4e4ed; }
+  .graph-results > div:nth-last-child(-n+2) { border-bottom: 0; }
+  .graph-results dt { color: #28283c; font-family: var(--font-display); font-size: 1.5rem; font-weight: 650; line-height: 1; }
+  .graph-results dd { margin: .3rem 0 0; color: #85869a; font-family: var(--font-mono); font-size: .55rem; line-height: 1.35; }
+  .graph-results .result-warning dt { color: #ad7012; }
+  .graph-results .result-danger dt { color: #bc3f4c; }
+  .graph-details { padding: 1.15rem; }
+  .graph-detail-label { margin-bottom: .25rem; color: var(--indigo-deep); font-family: var(--font-mono); font-size: .6rem; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; }
+  .graph-details h3 { margin-bottom: .9rem; font-family: var(--font-mono); font-size: .92rem; letter-spacing: -.02em; overflow-wrap: anywhere; }
+  .graph-details dl { display: grid; gap: .42rem; margin: 0; }
+  .graph-details dl > div { display: grid; grid-template-columns: 76px 1fr; gap: .5rem; align-items: start; }
+  .graph-details dt { color: #8b8c9f; font-family: var(--font-mono); font-size: .56rem; text-transform: uppercase; }
+  .graph-details dd { margin: 0; color: #45465b; font-family: var(--font-mono); font-size: .59rem; line-height: 1.4; overflow-wrap: anywhere; }
+  .graph-details > p:last-child { margin-top: 1rem; color: #9192a4; font-size: .65rem; line-height: 1.5; }
+
+  .projection-notes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1rem; }
+  .projection-notes article { padding: 1.2rem 1.3rem; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, white 72%, transparent); }
+  .projection-notes span { display: block; margin-bottom: 1rem; color: var(--ember); font-family: var(--font-mono); font-size: .65rem; }
+  .projection-notes h3 { margin-bottom: .45rem; font-size: 1rem; }
+  .projection-notes p { color: var(--ink-2); font-size: .77rem; line-height: 1.55; }
+
+  .graph-mobile, .dependency-table-wrap { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+  @media (max-width: 1000px) {
+    .graph-toolbar { grid-template-columns: 1fr 1fr; }
+    .graph-tabs { justify-self: start; }
+    .outdated-toggle { justify-self: end; }
+    .graph-workspace { grid-template-columns: minmax(0, 1fr) 240px; }
+    [data-graph-svg] { min-height: 420px; }
+  }
+
+  @media (max-width: 800px) {
+    .dependency-heading { grid-template-columns: 1fr; gap: 1.25rem; }
+    .dependency-heading h2 { max-width: 12ch; }
+    .graph-toolbar { grid-template-columns: 1fr; }
+    .graph-tabs { width: 100%; overflow-x: auto; }
+    .graph-tabs button { flex: 1; }
+    .outdated-toggle { justify-self: stretch; justify-content: center; }
+    .graph-workspace { grid-template-columns: 1fr; }
+    .graph-inspector { border-left: 0; border-top: 1px solid #dedfeb; }
+    .graph-stage, .graph-canvas-head { display: none; }
+    .graph-mobile { display: block; }
+    .graph-mobile ol { display: grid; gap: 1.55rem; margin: 0; padding: 1rem 0; list-style: none; }
+    .graph-mobile li { position: relative; margin-inline: auto; width: min(100%, 330px); padding: .8rem .9rem; border: 1px solid #d9dae5; border-left: 4px solid #44aa75; border-radius: 11px; background: white; box-shadow: 0 7px 20px -17px rgba(29, 28, 63, .5); }
+    .graph-mobile li:not(:last-child)::after { content: '↓'; position: absolute; left: 50%; bottom: -1.45rem; color: #7973ed; font-family: var(--font-mono); transform: translateX(-50%); }
+    .graph-mobile li.status-selected { border-left-color: #5b53f0; }
+    .graph-mobile li.status-behind { border-left-color: #e5a538; }
+    .graph-mobile li b, .graph-mobile li > span { display: block; font-family: var(--font-mono); font-size: .7rem; }
+    .graph-mobile li > span { margin-top: .15rem; color: #85869a; font-size: .6rem; }
+    .graph-mobile .mobile-branch { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; gap: .45rem; padding: 0; border: 0; background: transparent; box-shadow: none; }
+    .graph-mobile .mobile-branch > span { margin: 0; padding: .65rem .5rem; border: 1px solid #d9dae5; border-radius: 9px; background: white; text-align: center; }
+    .graph-mobile .mobile-branch b { font-size: .55rem; overflow-wrap: anywhere; }
+    .graph-mobile .mobile-branch small { display: block; margin-top: .25rem; color: #85869a; font-family: var(--font-mono); font-size: .5rem; }
+    .dependency-table-wrap { display: block; overflow-x: auto; margin-top: 1rem; border: 1px solid var(--line); border-radius: 12px; background: white; }
+    .dependency-table-wrap table { width: 100%; min-width: 560px; border-collapse: collapse; font-family: var(--font-mono); font-size: .64rem; }
+    .dependency-table-wrap caption { padding: .8rem; color: var(--ink-2); text-align: left; font-weight: 700; }
+    .dependency-table-wrap :is(th, td) { padding: .65rem .8rem; border-top: 1px solid var(--line); text-align: left; }
+    .dependency-table-wrap thead th { color: var(--ink-3); font-size: .56rem; text-transform: uppercase; }
+    .projection-notes { grid-template-columns: 1fr; }
+    .graph-command-card code { min-height: 3.8rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .graph-edge, .graph-node, .node-card { transition: none; }
+  }
+</style>

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://wb.sneat.dev/sitemap-index.xml

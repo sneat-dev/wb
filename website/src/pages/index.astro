@@ -1,0 +1,497 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import DependencyGraph from '../components/DependencyGraph.astro';
+import Terminal from '../components/Terminal.astro';
+
+const curlInstall = 'curl -fsSL https://wb.sneat.dev/install/get-cli | sh';
+const goInstall = 'go install github.com/sneat-dev/wb/cmd/wb@latest';
+---
+
+<BaseLayout
+  title="WB — One workbench. Every repository."
+  description="Synchronize repositories, understand dependency relationships, land fleet-wide changes, and verify every step with the open-source Workbench CLI."
+>
+  <section class="hero">
+    <div class="container hero-grid">
+      <div class="hero-copy" data-reveal>
+        <p class="eyebrow">WB · the repository workbench</p>
+        <h1>One workbench. <span class="accent">Every repository.</span></h1>
+        <p class="lead">
+          Sync every clone. Land the same change across a fleet. Audit CI and
+          keep Git hooks honest — from one local, open-source tool that previews
+          before it acts.
+        </p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#install">Install WB <span aria-hidden="true">↓</span></a>
+          <a class="btn btn-secondary" href="#deps-graph">Preview the graph <span aria-hidden="true">↘</span></a>
+        </div>
+        <div class="hero-proof" aria-label="Product facts">
+          <span>Open source</span>
+          <span>Runs locally</span>
+          <span>Dry-run first</span>
+        </div>
+      </div>
+
+      <div class="hero-terminal" data-reveal>
+        <Terminal
+          label="~/projects · fleet preview"
+          status="live"
+          animated
+          lines={[
+            { kind: 'command', html: 'wb sync --dry-run', delay: 100 },
+            { kind: 'muted', html: 'Discovering GitHub account + 6 organisations…', delay: 720 },
+            { kind: 'output', html: '<b>147 repositories</b> · 42 local · 105 remote', delay: 1300 },
+            { kind: 'success', html: '✓ would pull  sneat-co/gameboard', delay: 1970 },
+            { kind: 'success', html: '✓ would clone ingitdb/ingitdb-ai-skills', delay: 2440 },
+            { kind: 'warning', html: '! kept       specscore/specscore — dirty worktree', delay: 2910 },
+            { kind: 'muted', html: '━━━ Plan ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', delay: 3510 },
+            { kind: 'accent', html: '11 changes ready · 1 needs you · 0 files touched', delay: 4010 },
+          ]}
+        />
+        <p class="hero-terminal-note"><span>representative output</span><span>replays automatically</span></p>
+      </div>
+    </div>
+  </section>
+
+  <div class="quick-install">
+    <div class="container quick-install-inner">
+      <span class="quick-label">Install on macOS / Linux</span>
+      <code class="quick-command"><span class="prompt">$</span>{curlInstall}</code>
+      <button class="copy-btn" type="button" data-copy={curlInstall} aria-label="Copy install command">Copy</button>
+    </div>
+  </div>
+
+  <DependencyGraph />
+
+  <section class="proof-section" aria-labelledby="proof-title">
+    <div class="container proof-shell" data-reveal>
+      <div class="proof-heading">
+        <p class="eyebrow">Stats from the <a href="https://sneat.co">creators ↗</a></p>
+        <h2 id="proof-title">Built in the fleet it runs.</h2>
+        <p>WB was forged against a real multi-org codebase, not a tidy demo directory.</p>
+      </div>
+      <dl class="proof-stats">
+        <div><dt>27</dt><dd>organisations</dd></div>
+        <div><dt>345</dt><dd>repositories</dd></div>
+        <div><dt>3,293</dt><dd>declared dependencies</dd></div>
+        <div class="proof-one"><dt>1</dt><dd>command to rule them all</dd></div>
+      </dl>
+      <p class="proof-note">Measured across the creators’ local Go + Node fleet on 22 July 2026.</p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <header class="section-head center" data-reveal>
+        <p class="eyebrow">The fleet is the codebase</p>
+        <h2>Your repos multiply. Your standards drift.</h2>
+        <p>
+          Git is excellent one repository at a time. The work begins when your
+          product lives across forty of them — and one small change turns into
+          a week of tabs, scripts, and almost-identical pull requests.
+        </p>
+      </header>
+      <div class="friction-grid">
+        <article class="friction-card" data-reveal>
+          <span class="friction-num">01 / drift</span>
+          <h3>Local clones stop matching reality.</h3>
+          <p>New repos never arrive. Archived repos linger. Dirty worktrees make “just pull everything” unsafe.</p>
+        </article>
+        <article class="friction-card" data-reveal>
+          <span class="friction-num">02 / repetition</span>
+          <h3>One policy becomes forty manual edits.</h3>
+          <p>The same README block, lint rule, or config change gets copied, committed, and reviewed repo by repo.</p>
+        </article>
+        <article class="friction-card" data-reveal>
+          <span class="friction-num">03 / blind spots</span>
+          <h3>CI and hooks look consistent — until they aren’t.</h3>
+          <p>Coverage gates vanish, deploys rebuild source, and the useful local checks live on one developer’s laptop.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt" id="commands">
+    <div class="container">
+      <header class="command-intro" data-reveal>
+        <h2>Ten commands. One workbench.</h2>
+        <p>
+          Each command owns a distinct part of repository life. Start with the
+          four everyday operations, then reach deeper into migration, quality,
+          coverage, and dependency work when the fleet demands it.
+        </p>
+      </header>
+
+      <div class="command-stack">
+        <article class="command-row" id="sync" data-reveal>
+          <div class="command-copy">
+            <p class="command-kicker"><span class="command-index">01</span><code>wb sync</code></p>
+            <h3>Make local match real.</h3>
+            <p>
+              Reconcile <code>~/projects</code> with GitHub in parallel. Missing
+              repositories are cloned, clean clones are pulled, and archived
+              repos are removed only when WB can prove it is safe.
+            </p>
+            <ul class="feature-list">
+              <li>Skips dirty worktrees instead of trampling them</li>
+              <li>Live progress by organisation, then a focused review queue</li>
+              <li>Scope by org, tune parallelism, or preview the whole plan</li>
+            </ul>
+          </div>
+          <div class="command-visual">
+            <Terminal
+              label="wb sync"
+              status="8 workers"
+              lines={[
+                { kind: 'command', html: 'wb sync -o sneat-co -j 8' },
+                { kind: 'output', html: '<span class="purple">sneat-co</span>  ███████████████████░  38/40' },
+                { kind: 'success', html: '✓ pulled  gameboard' },
+                { kind: 'success', html: '✓ cloned  commitius' },
+                { kind: 'warning', html: '! kept   sneat-go — 2 unpushed commits' },
+                { kind: 'muted', html: '━━━ Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' },
+                { kind: 'output', html: 'Pulled 12 · cloned 2 · review 1 · errors 0' },
+              ]}
+            />
+            <p class="terminal-caption">WB never removes an archived clone with local work, a stash, or unpushed commits.</p>
+          </div>
+        </article>
+
+        <article class="command-row" id="run" data-reveal>
+          <div class="command-copy">
+            <p class="command-kicker"><span class="command-index">02</span><code>wb run</code></p>
+            <h3>Change the fleet without copy-paste PRs.</h3>
+            <p>
+              Describe a reusable recipe in YAML. WB finds the repositories it
+              applies to, shows the exact blast radius, then lands the change by
+              direct push or auto-merge PR according to each repo’s state.
+            </p>
+            <ul class="feature-list">
+              <li>Versioned template sections or arbitrary commands</li>
+              <li>Target by file, language, source type, or fleet filter</li>
+              <li>Dry-run is the default; <code>--apply</code> is explicit</li>
+            </ul>
+          </div>
+          <div class="command-visual">
+            <Terminal
+              label="~/.config/wb/wb.yaml → wb run"
+              status="dry-run"
+              lines={[
+                { kind: 'muted', html: 'recipes:' },
+                { kind: 'output', html: '  coverage-gate:' },
+                { kind: 'output', html: '    type: template-section' },
+                { kind: 'output', html: '    target: .github/workflows/go-ci.yml' },
+                { kind: 'output', html: '    applies_if: <span class="orange">has_source:go</span>' },
+                { kind: 'blank', html: '' },
+                { kind: 'command', html: 'wb run coverage-gate' },
+                { kind: 'success', html: '✓ 7 repos would update · 31 already current' },
+                { kind: 'accent', html: 'dry-run — pass --apply to commit &amp; push' },
+              ]}
+            />
+            <p class="terminal-caption">A recipe ships no hidden policy. It is just readable YAML you own.</p>
+          </div>
+        </article>
+
+        <article class="command-row" id="ci" data-reveal>
+          <div class="command-copy">
+            <p class="command-kicker"><span class="command-index">03</span><code>wb ci</code></p>
+            <h3>Turn pipeline principles into checks.</h3>
+            <p>
+              Audit CI/CD without changing a byte. WB detects Go, frontend, and
+              mixed stacks, then checks the policies that keep builds fast,
+              testable, and traceable all the way to deployment.
+            </p>
+            <ul class="feature-list">
+              <li>Positive coverage gates for every detected stack</li>
+              <li>Path-scoped jobs and consolidated browser-test setup</li>
+              <li>Build-once artifact promotion with provenance checks</li>
+            </ul>
+          </div>
+          <div class="command-visual">
+            <Terminal
+              label="wb ci audit"
+              status="strict"
+              lines={[
+                { kind: 'command', html: 'wb ci audit --fleet --strict' },
+                { kind: 'output', html: 'sneat-co/gameboard' },
+                { kind: 'success', html: '  ✓ coverage gate: frontend 80%' },
+                { kind: 'success', html: '  ✓ deploy promotes verified CI artifact' },
+                { kind: 'output', html: 'sneat-co/sneat-go' },
+                { kind: 'warning', html: '  ✗ Go sources need a positive coverage gate' },
+                { kind: 'warning', html: '  ✗ deploy rebuilds source' },
+                { kind: 'accent', html: '38 repos · 2 findings · exit 1' },
+              ]}
+            />
+            <p class="terminal-caption">Use <code>--json</code> for Backstage, automation, or your own reporting layer.</p>
+          </div>
+        </article>
+
+        <article class="command-row" id="hooks" data-reveal>
+          <div class="command-copy">
+            <p class="command-kicker"><span class="command-index">04</span><code>wb hooks</code></p>
+            <h3>One hook policy. Still your hooks.</h3>
+            <p>
+              Install small managed shims while preserving the commands you own.
+              Profiles detect Go, Node, and custom product shapes, compose the
+              right checks, and record privacy-safe local lifecycle metrics.
+            </p>
+            <ul class="feature-list">
+              <li>Install, check, and repair one repo or the whole fleet</li>
+              <li>Never silently replaces an unmanaged hook</li>
+              <li>Metrics record outcomes and timing — never code or output</li>
+            </ul>
+          </div>
+          <div class="command-visual">
+            <Terminal
+              label="wb hooks"
+              status="local only"
+              lines={[
+                { kind: 'command', html: 'wb hooks install' },
+                { kind: 'success', html: '✓ detected profiles: base → go → sneat-product' },
+                { kind: 'success', html: '✓ installed pre-commit, pre-push, post-commit' },
+                { kind: 'output', html: '  local metrics: ~/.local/state/wb/hook-events.jsonl' },
+                { kind: 'blank', html: '' },
+                { kind: 'command', html: 'wb hooks check' },
+                { kind: 'success', html: '✓ managed blocks current' },
+                { kind: 'success', html: '✓ local commands preserved before + after WB' },
+              ]}
+            />
+            <p class="terminal-caption">Fleet rollout stays opt-in: prove the policy in one repo, then expand.</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section command-catalog" id="toolbelt">
+    <div class="container">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">The rest of the bench</p>
+        <h2>When “all repos” becomes the unit of work.</h2>
+        <p>
+          The same fleet selection, deterministic reports, parallel execution,
+          and explicit safety boundaries carry into the harder jobs too.
+        </p>
+      </header>
+
+      <div class="catalog-grid">
+        <article class="catalog-card" id="migrate" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb migrate</code><span>source change</span></p>
+            <h3>Turn a migration into a reviewable plan.</h3>
+            <p>
+              Declare syntax-aware Go transformations in HCL, preview a
+              deterministic plan, and apply only when every source hash still matches.
+            </p>
+          </div>
+          <Terminal
+            label="declarative migration"
+            status="dry-run"
+            lines={[
+              { kind: 'command', html: 'wb migrate dalgo-record-v1.hcl ~/projects/sneat-co' },
+              { kind: 'success', html: '✓ 14 files · 3 repositories · 22 operations' },
+              { kind: 'output', html: '  import.replace      6' },
+              { kind: 'output', html: '  selector.rewrite   11' },
+              { kind: 'warning', html: '  required review     5' },
+              { kind: 'accent', html: 'Source unchanged. Plan includes SHA-256 guards.' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="deps" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps</code><span class="next-badge">set on main · graph coming soon</span></p>
+            <h3>Move a dependency set together.</h3>
+            <p>
+              Set an exact dependency version across matching repos, verify in
+              isolated worktrees, then commit, open PRs, and merge behind passing checks.
+              The planned graph view exposes the release wave before you move it.
+            </p>
+          </div>
+          <Terminal
+            label="dependency orchestration"
+            status="preview"
+            lines={[
+              { kind: 'command', html: 'wb deps set go github.com/dal-go/dalgo@v0.75.0 --fleet --dry-run' },
+              { kind: 'success', html: '✓ 9 references already exact' },
+              { kind: 'warning', html: '↻ 6 repositories would update' },
+              { kind: 'muted', html: '  verification: lint · test · build' },
+              { kind: 'accent', html: 'No worktrees created. No manifests changed.' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="coverage" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb coverage</code><span>quality signal</span></p>
+            <h3>Measure coverage as a fleet, not a feeling.</h3>
+            <p>
+              Discover every Go module, run tests outside the worktree, and
+              aggregate statements correctly instead of averaging percentages.
+            </p>
+          </div>
+          <Terminal
+            label="fleet coverage"
+            status="read-only"
+            lines={[
+              { kind: 'command', html: "wb coverage --fleet --match 'sneat-co/*' --parallel=2" },
+              { kind: 'output', html: 'sneat-co/sneat-go       <span class="green">72.4%</span>' },
+              { kind: 'output', html: 'sneat-co/gameboard      <span class="green">81.1%</span>' },
+              { kind: 'warning', html: 'sneat-co/sneat-bots     58.0%' },
+              { kind: 'accent', html: 'Fleet · 68.7% statement-weighted' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="verify" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb verify</code><span>conventional checks</span></p>
+            <h3>Run the checks every repo should know.</h3>
+            <p>
+              Detect Go modules and Node projects, then run the conventional
+              lint, test, and build checks each project actually defines.
+            </p>
+          </div>
+          <Terminal
+            label="local verification"
+            status="parallel=2"
+            lines={[
+              { kind: 'command', html: 'wb verify --fleet --filter sneat-co/' },
+              { kind: 'success', html: '✓ gameboard     lint · test · build' },
+              { kind: 'success', html: '✓ sneat-go      vet · test · build' },
+              { kind: 'warning', html: '✗ sneat-bots    test failed (attempt 1/2)' },
+              { kind: 'accent', html: 'Resume from a stable YAML report.' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="check" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb check</code><span>CI-equivalent profiles</span></p>
+            <h3>Bring CI’s contract back to the laptop.</h3>
+            <p>
+              Choose <code>fast</code>, <code>full</code>, or <code>ci</code>;
+              add timeouts and retries; resume only the failures from a prior run.
+            </p>
+          </div>
+          <Terminal
+            label="profile: ci"
+            status="resumable"
+            lines={[
+              { kind: 'command', html: 'wb check --fleet --profile ci --resume' },
+              { kind: 'muted', html: 'Previous report: 3 failed repositories' },
+              { kind: 'success', html: '✓ specscore spec lint' },
+              { kind: 'success', html: '✓ lint · test · build' },
+              { kind: 'accent', html: '3 rerun · 3 passed · 35 intentionally skipped' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="status" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb status</code><span>fleet-first Git health</span></p>
+            <h3>See every checkout that needs you.</h3>
+            <p>
+              Read local Git state across the fleet: modified, untracked,
+              conflicted, stashed, and unpushed work — without fetching or changing anything.
+            </p>
+          </div>
+          <Terminal
+            label="local repository status"
+            status="read-only"
+            lines={[
+              { kind: 'command', html: 'wb status --filter sneat-co/' },
+              { kind: 'success', html: '✓ 31 clean' },
+              { kind: 'warning', html: '!  4 modified · 2 untracked' },
+              { kind: 'warning', html: '!  1 stash · 1 unpushed branch' },
+              { kind: 'accent', html: '39 repositories · 8 need attention · 0 errors' },
+            ]}
+          />
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section ai-section" id="ai-skills">
+    <div class="container ai-grid">
+      <div class="ai-copy" data-reveal>
+        <p class="eyebrow">WB skills for AI agents</p>
+        <h2>You don’t need to remember any of this.</h2>
+        <p class="lead">
+          Tell your agent what “healthy” looks like. The WB skill layer chooses
+          the command, inspects the fleet, and returns a dry-run before anything
+          lands — even when you never say the letters <code>wb</code>.
+        </p>
+        <p class="ai-quote">“Bring every Go repo up to our coverage gate. Show me the blast radius first.”</p>
+        <a class="btn btn-primary" href="/skills/">Explore AI skills <span aria-hidden="true">→</span></a>
+      </div>
+
+      <div class="ai-shell" data-reveal>
+        <div class="ai-message">
+          <b>You</b>
+          Bring every repo up to our coverage policy — and don’t touch generated workflows.
+        </div>
+        <Terminal
+          label="agent · workbench tools"
+          status="approval required"
+          lines={[
+            { kind: 'muted', html: 'I’ll audit first, then build a scoped recipe.' },
+            { kind: 'command', html: 'wb ci audit --fleet --json' },
+            { kind: 'success', html: '✓ 29 compliant · 7 missing a gate · 2 excluded' },
+            { kind: 'command', html: 'wb run coverage-gate' },
+            { kind: 'accent', html: '7 proposed updates · 0 files touched' },
+            { kind: 'warning', html: 'Ready to apply when you approve.' },
+          ]}
+        />
+      </div>
+    </div>
+    <div class="container skills-strip" data-reveal aria-label="WB AI skills">
+      <div class="skill-chip"><code>fleet-sync</code><span>Reconcile safely</span></div>
+      <div class="skill-chip"><code>fleet-recipe</code><span>Plan repeatable change</span></div>
+      <div class="skill-chip"><code>ci-audit</code><span>Find pipeline drift</span></div>
+      <div class="skill-chip"><code>hook-policy</code><span>Roll out local checks</span></div>
+    </div>
+  </section>
+
+  <section class="section install-section" id="install">
+    <div class="container install-grid">
+      <div class="install-copy" data-reveal>
+        <p class="eyebrow">Put it on your path</p>
+        <h2>Your fleet is one install away.</h2>
+        <p>
+          WB is a single Go binary. The installer downloads the matching GitHub
+          release and verifies its SHA-256 checksum before installation.
+        </p>
+        <div class="install-meta">
+          <span>macOS</span><span>Linux</span><span>amd64</span><span>arm64</span>
+        </div>
+      </div>
+
+      <div class="install-options" data-reveal>
+        <article class="install-card">
+          <div class="install-card-head">
+            <div><h3>Release binary</h3><p>Fastest · verified checksum</p></div>
+          </div>
+          <div class="install-code">
+            <code>{curlInstall}</code>
+            <button class="copy-btn" type="button" data-copy={curlInstall} aria-label="Copy curl installation command">Copy</button>
+          </div>
+        </article>
+
+        <article class="install-card">
+          <div class="install-card-head">
+            <div><h3>Build with Go</h3><p>Requires a current Go toolchain</p></div>
+          </div>
+          <div class="install-code">
+            <code>{goInstall}</code>
+            <button class="copy-btn" type="button" data-copy={goInstall} aria-label="Copy Go installation command">Copy</button>
+          </div>
+        </article>
+
+        <p class="install-note">
+          Then run <code>wb --help</code>. Source, releases, and the full command reference live on
+          <a href="https://github.com/sneat-dev/wb">GitHub</a>.
+        </p>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

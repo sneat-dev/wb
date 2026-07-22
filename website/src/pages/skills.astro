@@ -1,0 +1,226 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Terminal from '../components/Terminal.astro';
+
+const panels = [
+  {
+    id: 'sync',
+    label: 'reconcile',
+    title: 'fleet-sync',
+    lines: [
+      { kind: 'muted' as const, html: '<b>You:</b> Make my local projects match GitHub. Don’t lose anything.' },
+      { kind: 'muted' as const, html: '<b>Agent:</b> I’ll preview the reconciliation and isolate anything unsafe.' },
+      { kind: 'command' as const, html: 'wb sync --dry-run' },
+      { kind: 'success' as const, html: '✓ 9 pulls · 3 clones · 1 dirty repo preserved' },
+      { kind: 'accent' as const, html: 'No changes made. Apply the safe operations?' },
+    ],
+  },
+  {
+    id: 'recipe',
+    label: 'change',
+    title: 'fleet-recipe',
+    lines: [
+      { kind: 'muted' as const, html: '<b>You:</b> Add our security note to every public Go service.' },
+      { kind: 'muted' as const, html: '<b>Agent:</b> I found 18 matches and built an idempotent template recipe.' },
+      { kind: 'command' as const, html: 'wb run security-note' },
+      { kind: 'success' as const, html: '✓ 11 current · 7 would update · 0 non-Go repos touched' },
+      { kind: 'accent' as const, html: 'Dry-run ready for review.' },
+    ],
+  },
+  {
+    id: 'ci',
+    label: 'audit',
+    title: 'ci-audit',
+    lines: [
+      { kind: 'muted' as const, html: '<b>You:</b> Why are deploys slow across the frontend fleet?' },
+      { kind: 'muted' as const, html: '<b>Agent:</b> I’ll compare build and deploy workflows without changing them.' },
+      { kind: 'command' as const, html: 'wb ci audit --fleet --json' },
+      { kind: 'warning' as const, html: '! 4 deploys rebuild source · 3 repeat Playwright setup' },
+      { kind: 'success' as const, html: '✓ 12 already promote verified artifacts' },
+    ],
+  },
+  {
+    id: 'hooks',
+    label: 'standardise',
+    title: 'hook-policy',
+    lines: [
+      { kind: 'muted' as const, html: '<b>You:</b> Give every Go repo the same pre-push checks.' },
+      { kind: 'muted' as const, html: '<b>Agent:</b> I’ll validate one repo before proposing a fleet rollout.' },
+      { kind: 'command' as const, html: 'wb hooks install ./sneat-go' },
+      { kind: 'success' as const, html: '✓ base → go → sneat-product · local hook code preserved' },
+      { kind: 'accent' as const, html: 'Pilot is healthy. Expand with --fleet?' },
+    ],
+  },
+];
+---
+
+<BaseLayout
+  title="WB Skills — Give your AI agent a workbench"
+  description="Use WB skills to let AI agents inspect and operate repository fleets safely, with explicit dry-runs and approvals."
+>
+  <section class="page-hero">
+    <div class="container">
+      <p class="eyebrow">WB skills for AI agents</p>
+      <h1>Your agent knows the fleet.</h1>
+      <p class="lead">
+        Ask for the outcome, not the incantation. WB skills translate intent
+        into safe repository operations, collect evidence, and stop at the
+        approval boundary before anything lands.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="/#install">Install WB</a>
+        <a class="btn btn-secondary" href="https://github.com/sneat-dev/wb">View the source ↗</a>
+      </div>
+
+      <div class="skills-demo" data-skills-demo>
+        <div class="skills-tabs" role="tablist" aria-label="AI skill examples">
+          {panels.map((panel, index) => (
+            <button
+              class:list={['skills-tab', index === 0 && 'is-active']}
+              type="button"
+              role="tab"
+              id={`skill-tab-${panel.id}`}
+              aria-controls={`skill-panel-${panel.id}`}
+              aria-selected={index === 0 ? 'true' : 'false'}
+              tabindex={index === 0 ? '0' : '-1'}
+              data-skill-step={index}
+            >{panel.label}</button>
+          ))}
+        </div>
+        <div class="skills-viewport">
+          <div class="skills-track" style="transform: translateX(0%)">
+            {panels.map((panel, index) => (
+              <div
+                class="skills-panel"
+                role="tabpanel"
+                id={`skill-panel-${panel.id}`}
+                aria-labelledby={`skill-tab-${panel.id}`}
+                aria-hidden={index === 0 ? 'false' : 'true'}
+              >
+                <Terminal label={`agent · ${panel.title}`} status="WB skill" lines={panel.lines} />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt">
+    <div class="container">
+      <header class="section-head center" data-reveal>
+        <p class="eyebrow">The safety contract</p>
+        <h2>Useful autonomy has visible boundaries.</h2>
+        <p>WB gives an agent power over many repositories. The skill layer makes that power legible before it becomes mutable.</p>
+      </header>
+      <div class="principles-grid">
+        <article class="principle" data-reveal>
+          <h3>Read the fleet</h3>
+          <p>Discover owners, local clones, repository state, and the policy already in place.</p>
+        </article>
+        <article class="principle" data-reveal>
+          <h3>Choose the tool</h3>
+          <p>Map the intent to sync, recipe, CI audit, or hook policy without making you memorize flags.</p>
+        </article>
+        <article class="principle" data-reveal>
+          <h3>Preview the blast radius</h3>
+          <p>Run the read-only path first and explain what matches, what is skipped, and why.</p>
+        </article>
+        <article class="principle" data-reveal>
+          <h3>Ask before apply</h3>
+          <p>Mutation remains an explicit decision. The agent presents evidence and waits at the boundary.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">Speak normally</p>
+        <h2>Prompts that become fleet operations.</h2>
+        <p>The skill can be called directly, or selected by an agent because the job matches.</p>
+      </header>
+      <div class="prompt-grid">
+        <article class="prompt-card" data-reveal>
+          <span class="prompt-label">maintenance</span>
+          <blockquote>“Clean up my local projects. Keep anything with work I haven’t pushed.”</blockquote>
+          <code>→ fleet-sync → wb sync --dry-run</code>
+        </article>
+        <article class="prompt-card" data-reveal>
+          <span class="prompt-label">governance</span>
+          <blockquote>“Find every deploy that rebuilds source instead of promoting CI output.”</blockquote>
+          <code>→ ci-audit → wb ci audit --fleet</code>
+        </article>
+        <article class="prompt-card" data-reveal>
+          <span class="prompt-label">rollout</span>
+          <blockquote>“Put our contributor block into every open-source README, once.”</blockquote>
+          <code>→ fleet-recipe → wb run contributor-block</code>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section install-section">
+    <div class="container install-grid">
+      <div class="install-copy" data-reveal>
+        <p class="eyebrow">Agent-ready by construction</p>
+        <h2>A predictable CLI makes a trustworthy tool.</h2>
+        <p>
+          WB’s dry-run defaults, structured JSON output, narrow filters, and
+          explicit apply flags give agents a command surface they can reason about.
+        </p>
+      </div>
+      <div class="install-options" data-reveal>
+        <Terminal
+          label="what the agent can rely on"
+          status="contract"
+          lines={[
+            { kind: 'success', html: '✓ inspect before mutation' },
+            { kind: 'success', html: '✓ stable exit codes for automation' },
+            { kind: 'success', html: '✓ JSON when machines need structure' },
+            { kind: 'success', html: '✓ filters that keep scope explicit' },
+            { kind: 'success', html: '✓ user approval before --apply' },
+          ]}
+        />
+        <a class="btn btn-primary" href="/#install">Get WB <span aria-hidden="true">→</span></a>
+      </div>
+    </div>
+  </section>
+
+  <script is:inline slot="scripts">
+    (function () {
+      document.querySelectorAll('[data-skills-demo]').forEach(function (demo) {
+        var tabs = Array.prototype.slice.call(demo.querySelectorAll('[data-skill-step]'));
+        var panels = Array.prototype.slice.call(demo.querySelectorAll('[role="tabpanel"]'));
+        var track = demo.querySelector('.skills-track');
+
+        function activate(index, focus) {
+          tabs.forEach(function (tab, i) {
+            var active = i === index;
+            tab.classList.toggle('is-active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+            tab.setAttribute('tabindex', active ? '0' : '-1');
+            if (active && focus) tab.focus();
+          });
+          panels.forEach(function (panel, i) { panel.setAttribute('aria-hidden', i === index ? 'false' : 'true'); });
+          track.style.transform = 'translateX(-' + (index * 25) + '%)';
+        }
+
+        tabs.forEach(function (tab, index) {
+          tab.addEventListener('click', function () { activate(index, false); });
+          tab.addEventListener('keydown', function (event) {
+            if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            var next = index;
+            if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+            if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+            if (event.key === 'Home') next = 0;
+            if (event.key === 'End') next = tabs.length - 1;
+            activate(next, true);
+          });
+        });
+      });
+    })();
+  </script>
+</BaseLayout>

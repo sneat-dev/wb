@@ -1,0 +1,125 @@
+---
+import '@fontsource-variable/space-grotesk/index.css';
+import '@fontsource-variable/inter/index.css';
+import '@fontsource-variable/jetbrains-mono/index.css';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+  path?: string;
+}
+
+const { title, description, path = Astro.url.pathname } = Astro.props;
+const canonical = new URL(path, Astro.site ?? Astro.url.origin);
+const socialImage = new URL('/og.png', Astro.site ?? Astro.url.origin);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#fbfaf7" />
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="WB · Sneat.dev" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:width" content="1733" />
+    <meta property="og:image:height" content="907" />
+    <meta property="og:image:alt" content="WB — One command. Every repository." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content={socialImage} />
+    <link rel="canonical" href={canonical} />
+    <title>{title}</title>
+    <script is:inline>document.documentElement.classList.add('js');</script>
+    <slot name="head" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="container nav-shell">
+        <a class="wordmark" href="/" aria-label="WB — home">
+          <span class="wordmark-mark">wb</span>
+          <span class="wordmark-domain">sneat.dev</span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="/#deps-graph">Dependency graph</a>
+          <a href="/#commands">Commands</a>
+          <a href="/skills/">AI skills</a>
+          <a href="/#install">Install</a>
+        </nav>
+        <a class="nav-github" href="https://github.com/sneat-dev/wb" target="_blank" rel="noopener">
+          GitHub <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </header>
+
+    <main id="main"><slot /></main>
+
+    <footer class="site-footer">
+      <div class="container footer-grid">
+        <div>
+          <a class="wordmark footer-wordmark" href="/">
+            <span class="wordmark-mark">wb</span>
+            <span class="wordmark-domain">sneat.dev</span>
+          </a>
+          <p>Fleet-wide repository operations. Open source, local-first, and built to be inspected.</p>
+        </div>
+        <div class="footer-links">
+          <div>
+            <b>Workbench</b>
+            <a href="/#deps-graph">Dependency graph</a>
+            <a href="/#commands">Commands</a>
+            <a href="/skills/">AI skills</a>
+            <a href="/#install">Install</a>
+          </div>
+          <div>
+            <b>Ecosystem</b>
+            <a href="https://sneat.dev/workbench/">Sneat.dev</a>
+            <a href="https://github.com/sneat-dev/wb">Source</a>
+            <a href="https://sneat.co">Sneat Co.</a>
+          </div>
+        </div>
+      </div>
+      <div class="container footer-base">
+        <span>© {new Date().getFullYear()} Sneat Co.</span>
+        <span>MIT licensed · built in Go</span>
+      </div>
+    </footer>
+
+    <script is:inline>
+      document.querySelectorAll('[data-copy]').forEach(function (button) {
+        button.addEventListener('click', async function () {
+          var value = button.getAttribute('data-copy') || '';
+          try {
+            await navigator.clipboard.writeText(value);
+            var before = button.textContent;
+            button.textContent = 'Copied';
+            button.classList.add('is-copied');
+            window.setTimeout(function () {
+              button.textContent = before;
+              button.classList.remove('is-copied');
+            }, 1500);
+          } catch (_) {
+            window.prompt('Copy this command:', value);
+          }
+        });
+      });
+
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('is-visible');
+            observer.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.12 });
+      document.querySelectorAll('[data-reveal]').forEach(function (node) { observer.observe(node); });
+    </script>
+    <slot name="scripts" />
+  </body>
+</html>
