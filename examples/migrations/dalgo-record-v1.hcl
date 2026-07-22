@@ -252,6 +252,22 @@ migration "dalgo-record-v1" {
     version = "v0.1.1"
   }
 
+  go_module_release "github.com/sneat-co/logistus/backend" {
+    version = "v0.1.4"
+  }
+
+  go_module_release "github.com/ingitdb/dalgo2ingitdb" {
+    version = "v0.2.3"
+  }
+
+  go_module_release "github.com/sneat-co/eventius/backend" {
+    version = "v0.8.4"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2datastore" {
+    version = "v0.5.0"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {

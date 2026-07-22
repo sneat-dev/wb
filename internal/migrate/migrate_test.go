@@ -268,7 +268,7 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
-	if len(spec.GoModuleReleases) != 43 ||
+	if len(spec.GoModuleReleases) != 47 ||
 		spec.GoModuleReleases[0] != (GoModuleRelease{Path: "github.com/dal-go/record", Version: "v0.1.0"}) ||
 		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) ||
 		spec.GoModuleReleases[2] != (GoModuleRelease{Path: "github.com/strongo/strongoapp", Version: "v0.31.48"}) ||
@@ -311,7 +311,11 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 		spec.GoModuleReleases[39] != (GoModuleRelease{Path: "github.com/sneat-co/renewon/backend", Version: "v0.1.3"}) ||
 		spec.GoModuleReleases[40] != (GoModuleRelease{Path: "github.com/bots-go-framework/bots-fw-whatsapp-dalgo", Version: "v0.1.1"}) ||
 		spec.GoModuleReleases[41] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-work/backend", Version: "v0.1.3"}) ||
-		spec.GoModuleReleases[42] != (GoModuleRelease{Path: "github.com/sneat-co/sportus/backend", Version: "v0.1.1"}) {
+		spec.GoModuleReleases[42] != (GoModuleRelease{Path: "github.com/sneat-co/sportus/backend", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[43] != (GoModuleRelease{Path: "github.com/sneat-co/logistus/backend", Version: "v0.1.4"}) ||
+		spec.GoModuleReleases[44] != (GoModuleRelease{Path: "github.com/ingitdb/dalgo2ingitdb", Version: "v0.2.3"}) ||
+		spec.GoModuleReleases[45] != (GoModuleRelease{Path: "github.com/sneat-co/eventius/backend", Version: "v0.8.4"}) ||
+		spec.GoModuleReleases[46] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2datastore", Version: "v0.5.0"}) {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
 	}
 	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {
