@@ -7,6 +7,10 @@ recipes across every repo that matches — no per-repo scripting.
 Part of the [Sneat Developer Platform](https://sneat.dev/workbench/). The CLI
 and executable stay intentionally short: `wb`.
 
+The public [wb.sneat.dev](https://wb.sneat.dev) site is tracked in
+[`website/`](website/README.md). It has its own Astro build and CI gate while
+remaining versioned beside the CLI it presents.
+
 ## Install
 
 ```sh

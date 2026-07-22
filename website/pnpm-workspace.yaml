@@ -1,0 +1,7 @@
+# Standalone project (not part of a monorepo); this file carries pnpm's build
+# policy. These packages ship trusted platform binaries required by Astro and
+# Wrangler.
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true

@@ -1,0 +1,27 @@
+{
+  "name": "wb-sneat-dev-website",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WB — the Workbench for fleet-wide repository operations.",
+  "packageManager": "pnpm@11.12.0",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro check && astro build",
+    "build:fast": "astro build",
+    "check": "astro check",
+    "deploy": "pnpm build && wrangler deploy"
+  },
+  "dependencies": {
+    "@astrojs/sitemap": "^3.7.3",
+    "@fontsource-variable/inter": "^5.2.6",
+    "@fontsource-variable/jetbrains-mono": "^5.2.6",
+    "@fontsource-variable/space-grotesk": "^5.2.6",
+    "astro": "^7.0.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.0.0"
+  }
+}
