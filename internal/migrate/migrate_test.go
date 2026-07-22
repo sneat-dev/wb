@@ -268,7 +268,7 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 	if len(spec.GoModuleRequires) != 1 || spec.GoModuleRequires[0].Path != "github.com/dal-go/record" {
 		t.Fatalf("Go module requirements = %+v", spec.GoModuleRequires)
 	}
-	if len(spec.GoModuleReleases) != 24 ||
+	if len(spec.GoModuleReleases) != 37 ||
 		spec.GoModuleReleases[0] != (GoModuleRelease{Path: "github.com/dal-go/record", Version: "v0.1.0"}) ||
 		spec.GoModuleReleases[1] != (GoModuleRelease{Path: "github.com/dal-go/dalgo", Version: "v0.63.1"}) ||
 		spec.GoModuleReleases[2] != (GoModuleRelease{Path: "github.com/strongo/strongoapp", Version: "v0.31.48"}) ||
@@ -292,7 +292,20 @@ func TestLoadDALgoRecordExample(t *testing.T) {
 		spec.GoModuleReleases[20] != (GoModuleRelease{Path: "github.com/sneat-co/debtus/backend", Version: "v0.2.30"}) ||
 		spec.GoModuleReleases[21] != (GoModuleRelease{Path: "github.com/sneat-co/rosycycle/backend", Version: "v0.1.2"}) ||
 		spec.GoModuleReleases[22] != (GoModuleRelease{Path: "github.com/sneat-co/trackus/backend", Version: "v0.1.1"}) ||
-		spec.GoModuleReleases[23] != (GoModuleRelease{Path: "github.com/sneat-co/paymentus/backend", Version: "v0.5.5"}) {
+		spec.GoModuleReleases[23] != (GoModuleRelease{Path: "github.com/sneat-co/paymentus/backend", Version: "v0.5.5"}) ||
+		spec.GoModuleReleases[24] != (GoModuleRelease{Path: "github.com/dal-go/dalgo-memcache-appengine", Version: "v0.4.37"}) ||
+		spec.GoModuleReleases[25] != (GoModuleRelease{Path: "github.com/sneat-co/sneat-bots", Version: "v0.20.16"}) ||
+		spec.GoModuleReleases[26] != (GoModuleRelease{Path: "github.com/sneat-co/advertus/backend", Version: "v0.1.1"}) ||
+		spec.GoModuleReleases[27] != (GoModuleRelease{Path: "github.com/sneat-co/requoter/backend", Version: "v0.1.3"}) ||
+		spec.GoModuleReleases[28] != (GoModuleRelease{Path: "github.com/sneat-co/bookius/backend", Version: "v0.1.10"}) ||
+		spec.GoModuleReleases[29] != (GoModuleRelease{Path: "github.com/sneat-co/schoolus/backend", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[30] != (GoModuleRelease{Path: "github.com/ingitdb/ingitdb-go/ingitdb", Version: "v0.5.2"}) ||
+		spec.GoModuleReleases[31] != (GoModuleRelease{Path: "github.com/ingitdb/dalgo2ingitdb4github", Version: "v0.2.2"}) ||
+		spec.GoModuleReleases[32] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2sql", Version: "v0.9.7"}) ||
+		spec.GoModuleReleases[33] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2sqlite", Version: "v0.0.26"}) ||
+		spec.GoModuleReleases[34] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2mysql", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[35] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2postgres", Version: "v0.1.2"}) ||
+		spec.GoModuleReleases[36] != (GoModuleRelease{Path: "github.com/dal-go/dalgo2openvaultdb", Version: "v0.2.1"}) {
 		t.Fatalf("Go module releases = %+v", spec.GoModuleReleases)
 	}
 	if len(spec.Review) != 2 || spec.Review[0].ID != "changes-executor" || spec.Review[0].ExcludePattern == "" || spec.Review[1].ID != "legacy-record-api" {

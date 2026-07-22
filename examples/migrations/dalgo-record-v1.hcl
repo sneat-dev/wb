@@ -176,6 +176,58 @@ migration "dalgo-record-v1" {
     version = "v0.5.5"
   }
 
+  go_module_release "github.com/dal-go/dalgo-memcache-appengine" {
+    version = "v0.4.37"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-bots" {
+    version = "v0.20.16"
+  }
+
+  go_module_release "github.com/sneat-co/advertus/backend" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/requoter/backend" {
+    version = "v0.1.3"
+  }
+
+  go_module_release "github.com/sneat-co/bookius/backend" {
+    version = "v0.1.10"
+  }
+
+  go_module_release "github.com/sneat-co/schoolus/backend" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/ingitdb/ingitdb-go/ingitdb" {
+    version = "v0.5.2"
+  }
+
+  go_module_release "github.com/ingitdb/dalgo2ingitdb4github" {
+    version = "v0.2.2"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2sql" {
+    version = "v0.9.7"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2sqlite" {
+    version = "v0.0.26"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2mysql" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2postgres" {
+    version = "v0.1.2"
+  }
+
+  go_module_release "github.com/dal-go/dalgo2openvaultdb" {
+    version = "v0.2.1"
+  }
+
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
   # following method invocation cannot safely be rewritten mechanically.
   review "changes-executor" {
