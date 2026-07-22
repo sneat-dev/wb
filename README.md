@@ -21,6 +21,7 @@ A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
+wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
@@ -223,6 +224,61 @@ pushes—and reports clean, attention, or inspection-error status. Attention
 covers modified, untracked, conflicted, stashed, and unpushed work. Markdown
 defaults to concise summaries; YAML/JSON and `--details` provide individual
 paths and Git entries.
+
+### `wb deps set` — one exact dependency version
+
+Use `deps set` when the desired version is already known and must be applied
+consistently. It updates existing references only; a repository that does not
+already use the dependency is skipped with an explicit reason. Dependency
+identities are fully qualified, so WB never guesses that `cicd` means a
+particular owner and repository.
+
+```sh
+# Inspect one repository without creating a worktree.
+wb deps set github-actions strongo/cicd@v1.10.5 \
+  ~/projects/sneat-dev/wb --dry-run
+
+# Set an exact reusable-workflow version across the selected fleet, verify
+# locally, open PRs, wait for CI, and merge only passing PRs.
+wb deps set github-actions strongo/cicd@v1.10.5 --fleet \
+  --parallel=2 --commit --push --pr --merge
+
+# Set an existing Go module requirement with go get and go mod tidy.
+wb deps set go github.com/dal-go/dalgo@v0.63.1 \
+  ~/projects/sneat-co/sneat-go
+```
+
+The initial adapters are `github-actions` and `go`. GitHub Actions tags are
+resolved once to immutable commit SHAs; WB preserves the action or reusable
+workflow subpath and writes `# <version>` next to the SHA. The Go adapter uses
+official Go tooling rather than implementing module selection itself. A
+semantic downgrade is rejected unless `--allow-downgrade` is explicit.
+
+Canonical clones remain untouched, including dirty clones. WB fetches
+`origin/<ref>` (`main` by default) and creates branches and worktrees below
+`<projects-root>/.wb/worktrees/<operation>/<org>/<repo>`. Without publication
+flags, verified changes remain in those local worktrees. `--push` implies
+`--commit`; `--pr` implies push and commit; and `--merge` implies all prior
+stages. Local lint, test, and build checks are enabled by default; use
+`--checks`, `--timeout`, and `--retry` to tune them or `--no-verify` to disable
+them explicitly.
+
+WB opens all eligible PRs before entering its CI-wait phase, so independent
+repository work continues while earlier PRs build. A merge requires at least
+one observed GitHub check and every observed check must pass or be explicitly
+skipped. Failing, cancelled, conflicted, checkless, and timed-out PRs remain
+open. `--resume` validates and reuses the expected worktree branch and open PR.
+
+Every run writes `deps-set.md` and `deps-set.yaml` below
+`<projects-root>/.wb/reports/<operation>` (or `--report-dir`). Both formats
+record observed and target versions, resolved SHAs, reasons, changed files,
+verification, commits, PR links, CI checks, and merge outcomes. Git remains the
+source of detailed patches; the Markdown report includes the exact diff command.
+
+See the [Exact Dependency Set feature specification](spec/features/dependency-set/README.md)
+for synthetic use cases and acceptance criteria. Unlike the planned
+`wb deps bump`, `deps set` does not discover newer releases or recalculate
+provider-to-consumer release waves.
 
 ### `wb migrate` — declarative source migrations
 

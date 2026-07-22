@@ -31,6 +31,7 @@ func main() {
 	root.AddCommand(newSyncCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newMigrateCmd())
+	root.AddCommand(newDepsCmd())
 	root.AddCommand(newCICmd())
 	root.AddCommand(newHooksCmd())
 	root.AddCommand(newCoverageCmd())
