@@ -20,6 +20,10 @@ func TestGraphProjectionsShareCanonicalEvidence(t *testing.T) {
 	if len(repositories.Nodes) != 4 || len(repositories.Edges) != 2 {
 		t.Fatalf("repository projection = %+v", repositories)
 	}
+	provider := projectionNode(repositories, "acme/provider")
+	if provider.CodeGrapherURL != "https://codegrapher.dev/github.com/acme/provider" || provider.GitHubURL != "https://github.com/acme/provider" {
+		t.Fatalf("provider links = %+v", provider)
+	}
 	dependencies, err := graph.Project(GraphViewDependencies)
 	if err != nil {
 		t.Fatal(err)
@@ -177,13 +181,30 @@ func TestGraphReportsAreDeterministicAndSelfContained(t *testing.T) {
 		}
 	}
 	htmlContents := string(first["deps-graph.html"])
-	for _, expected := range []string{`data-select-view="repos"`, `data-select-view="dependencies"`, `data-select-view="selections"`, "Canonical requirement evidence", "Search graph nodes"} {
+	for _, expected := range []string{
+		`data-select-view="repos"`, `data-select-view="dependencies"`, `data-select-view="selections"`,
+		"Canonical requirement evidence", "Search graph nodes", "Explore code in CodeGrapher",
+		`href="https://codegrapher.dev/github.com/acme/consumer"`, "Highlight organization", "data-inspector-connected",
+	} {
 		if !strings.Contains(htmlContents, expected) {
 			t.Errorf("HTML does not contain %q", expected)
 		}
 	}
 	if strings.Contains(htmlContents, "<script src=") || strings.Contains(htmlContents, "<link rel=") {
 		t.Fatal("HTML report contains an external asset")
+	}
+}
+
+func TestGraphRepositoryLinksAreDeterministicAndRejectInvalidSlugs(t *testing.T) {
+	t.Parallel()
+	githubURL, codeGrapherURL := graphRepositoryLinks("acme/repo with space")
+	if githubURL != "https://github.com/acme/repo%20with%20space" || codeGrapherURL != "https://codegrapher.dev/github.com/acme/repo%20with%20space" {
+		t.Fatalf("links = %q, %q", githubURL, codeGrapherURL)
+	}
+	for _, value := range []string{"", "acme", "acme/repo/extra", "/repo", "acme/"} {
+		if githubURL, codeGrapherURL := graphRepositoryLinks(value); githubURL != "" || codeGrapherURL != "" {
+			t.Errorf("graphRepositoryLinks(%q) = %q, %q", value, githubURL, codeGrapherURL)
+		}
 	}
 }
 
@@ -205,7 +226,7 @@ func TestGraphSVGEscapesLabelsAndRendersCycles(t *testing.T) {
 	if strings.Contains(value, "<a>") || strings.Contains(value, "<script>") || !strings.Contains(value, "acme/&lt;a&gt;") {
 		t.Fatalf("unsafe or missing escaped SVG label:\n%s", value)
 	}
-	if strings.Count(value, `class="edge`) < 2 || !strings.Contains(value, `role="img"`) || !strings.Contains(value, `tabindex="0"`) {
+	if strings.Count(value, `class="edge`) < 2 || !strings.Contains(value, `role="img"`) || !strings.Contains(value, `tabindex="0"`) || !strings.Contains(value, "Release wave 00") {
 		t.Fatalf("cycle or accessibility metadata missing:\n%s", value)
 	}
 }
@@ -236,6 +257,15 @@ func projectionHasStatus(projection GraphProjection, label, status string) bool 
 		}
 	}
 	return false
+}
+
+func projectionNode(projection GraphProjection, label string) GraphProjectionNode {
+	for _, node := range projection.Nodes {
+		if node.Label == label {
+			return node
+		}
+	}
+	return GraphProjectionNode{}
 }
 
 func graphFixture() Graph {

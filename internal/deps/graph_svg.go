@@ -59,8 +59,18 @@ func (graph Graph) SVG(view GraphView) ([]byte, error) {
 	fmt.Fprintf(&output, `<desc id="desc_%s">Providers flow from left to consuming repositories on the right. The graph contains %d nodes and %d edges.</desc>`, viewID, len(projection.Nodes), len(projection.Edges))
 	output.WriteString(`<defs><marker id="arrow_` + viewID + `" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>`)
 	output.WriteString(`<style>
-svg{background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.edge{fill:none;stroke:#94a3b8;stroke-width:1.7;marker-end:url(#arrow_` + viewID + `)}.edge.indirect{stroke-dasharray:7 6}.edge.behind{stroke:#d97706;stroke-width:2.3}.edge-hit{fill:none;stroke:transparent;stroke-width:14}.node{cursor:pointer;outline:none}.node rect{fill:#fff;stroke:#cbd5e1;stroke-width:1.4;rx:12}.node.repository rect{fill:#eff6ff;stroke:#93c5fd}.node.dependency rect{fill:#f8fafc;stroke:#94a3b8}.node.selection rect{fill:#f5f3ff;stroke:#c4b5fd}.node.behind rect{fill:#fffbeb;stroke:#f59e0b}.node.fleet-highest rect{fill:#ecfdf5;stroke:#34d399}.node:focus rect,.node:hover rect,.node.selected rect{stroke:#2563eb;stroke-width:3}.label{font-size:13px;font-weight:650;fill:#0f172a}.subtitle{font-size:10.5px;fill:#64748b}.edge-label{font-size:10px;fill:#475569}.legend{font-size:11px;fill:#475569}.dim{opacity:.15}.highlight{opacity:1!important}
+svg{background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.edge{fill:none;stroke:#94a3b8;stroke-width:1.7;marker-end:url(#arrow_` + viewID + `)}.edge.indirect{stroke-dasharray:7 6}.edge.behind{stroke:#d97706;stroke-width:2.3}.edge-hit{fill:none;stroke:transparent;stroke-width:14}.node{cursor:pointer;outline:none}.node rect{fill:#fff;stroke:#cbd5e1;stroke-width:1.4;rx:12}.node.repository rect{fill:#eff6ff;stroke:#93c5fd}.node.dependency rect{fill:#f8fafc;stroke:#94a3b8}.node.selection rect{fill:#f5f3ff;stroke:#c4b5fd}.node.behind rect{fill:#fffbeb;stroke:#f59e0b}.node.fleet-highest rect{fill:#ecfdf5;stroke:#34d399}.node:focus rect,.node:hover rect,.node.selected rect{stroke:#2563eb;stroke-width:3}.label{font-size:13px;font-weight:650;fill:#0f172a}.subtitle{font-size:10.5px;fill:#64748b}.edge-label{font-size:10px;fill:#475569}.wave-label{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;fill:#64748b}.legend{font-size:11px;fill:#475569}.dim{opacity:.15}.highlight{opacity:1!important}
 </style>`)
+	output.WriteString(`<g class="waves" aria-hidden="true">`)
+	for level := 0; level <= maxLevel; level++ {
+		label := fmt.Sprintf("Layer %02d", level)
+		if view == GraphViewRepositories {
+			label = fmt.Sprintf("Release wave %02d", level)
+		}
+		fmt.Fprintf(&output, `<text class="wave-label" x="%.0f" y="34" text-anchor="middle">%s</text>`,
+			50+float64(level)*410+140, html.EscapeString(label))
+	}
+	output.WriteString(`</g>`)
 	output.WriteString(`<g class="edges">`)
 	for _, edge := range projection.Edges {
 		from, fromOK := positions[edge.From]
@@ -93,9 +103,12 @@ svg{background:#f8fafc;color:#0f172a;font-family:Inter,ui-sans-serif,system-ui,-
 			class += " " + node.Status
 		}
 		search := strings.Join([]string{node.Label, node.Subtitle, node.Repository, node.Dependency, node.Version}, " ")
-		fmt.Fprintf(&output, `<g id="%s_%s" class="%s" transform="translate(%.0f %.0f)" tabindex="0" role="button" aria-label="%s, %s" data-node-id="%s" data-status="%s" data-search="%s">`,
+		fmt.Fprintf(&output, `<g id="%s_%s" class="%s" transform="translate(%.0f %.0f)" tabindex="0" role="button" aria-label="%s, %s" data-node-id="%s" data-kind="%s" data-status="%s" data-repository="%s" data-organization="%s" data-dependency="%s" data-version="%s" data-github-url="%s" data-codegrapher-url="%s" data-search="%s">`,
 			viewID, html.EscapeString(node.ID), html.EscapeString(class), point.x, point.y,
-			html.EscapeString(node.Label), html.EscapeString(node.Subtitle), html.EscapeString(node.ID), html.EscapeString(node.Status), html.EscapeString(strings.ToLower(search)))
+			html.EscapeString(node.Label), html.EscapeString(node.Subtitle), html.EscapeString(node.ID),
+			html.EscapeString(node.Kind), html.EscapeString(node.Status), html.EscapeString(node.Repository),
+			html.EscapeString(node.Organization), html.EscapeString(node.Dependency), html.EscapeString(node.Version),
+			html.EscapeString(node.GitHubURL), html.EscapeString(node.CodeGrapherURL), html.EscapeString(strings.ToLower(search)))
 		fmt.Fprintf(&output, `<title>%s — %s</title><rect width="280" height="74"/><text class="label" x="14" y="29">%s</text><text class="subtitle" x="14" y="52">%s</text></g>`,
 			html.EscapeString(node.Label), html.EscapeString(node.Subtitle), html.EscapeString(graphTruncate(node.Label, 38)), html.EscapeString(graphTruncate(node.Subtitle, 46)))
 	}

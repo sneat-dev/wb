@@ -60,7 +60,8 @@ func Reconcile(local, remote []Repo) []Repo {
 }
 
 // ScanLocal walks projectsRoot two levels deep ({org}/{repo}) and returns every
-// directory that is a git repository.
+// canonical git repository. Linked worktrees use a .git file and are excluded:
+// they are alternate checkouts of a canonical repository, not fleet members.
 func ScanLocal(projectsRoot string) ([]Repo, error) {
 	orgs, err := os.ReadDir(projectsRoot)
 	if err != nil {
@@ -81,7 +82,8 @@ func ScanLocal(projectsRoot string) ([]Repo, error) {
 				continue
 			}
 			repoPath := filepath.Join(orgPath, e.Name())
-			if _, err := os.Stat(filepath.Join(repoPath, ".git")); err != nil {
+			gitDirectory, err := os.Stat(filepath.Join(repoPath, ".git"))
+			if err != nil || !gitDirectory.IsDir() {
 				continue
 			}
 			repos = append(repos, Repo{Org: org.Name(), Name: e.Name(), Path: repoPath})

@@ -48,7 +48,13 @@ func (graph Graph) Project(view GraphView) (GraphProjection, error) {
 		} else if moduleCount > 1 {
 			subtitle = fmt.Sprintf("%d modules", moduleCount)
 		}
-		nodes[id] = GraphProjectionNode{ID: id, Kind: "repository", Label: repository, Subtitle: subtitle, Status: "normal", Repository: repository}
+		githubURL, codeGrapherURL := graphRepositoryLinks(repository)
+		nodes[id] = GraphProjectionNode{
+			ID: id, Kind: "repository", Label: repository, Subtitle: subtitle,
+			Status: "normal", Repository: repository,
+			GitHubURL: githubURL, CodeGrapherURL: codeGrapherURL,
+			Organization: graphRepositoryOrganization(repository),
+		}
 		return id
 	}
 	if view == GraphViewRepositories {
@@ -82,7 +88,14 @@ func (graph Graph) Project(view GraphView) (GraphProjection, error) {
 				} else if len(requirement.ProviderCandidates) > 0 {
 					subtitle = fmt.Sprintf("ambiguous provider · %d declarations", len(requirement.ProviderCandidates))
 				}
-				nodes[from] = GraphProjectionNode{ID: from, Kind: "dependency", Label: requirement.Dependency, Subtitle: subtitle, Status: "normal", Dependency: requirement.Dependency}
+				githubURL, codeGrapherURL := graphRepositoryLinks(requirement.ProviderRepository)
+				nodes[from] = GraphProjectionNode{
+					ID: from, Kind: "dependency", Label: requirement.Dependency, Subtitle: subtitle,
+					Status: "normal", Repository: requirement.ProviderRepository,
+					Dependency: requirement.Dependency, GitHubURL: githubURL,
+					CodeGrapherURL: codeGrapherURL,
+					Organization:   graphRepositoryOrganization(requirement.ProviderRepository),
+				}
 			}
 			to = addRepository(requirement.ConsumerRepository)
 		case GraphViewSelections:
@@ -96,7 +109,14 @@ func (graph Graph) Project(view GraphView) (GraphProjection, error) {
 				case "behind":
 					subtitle = "behind fleet-highest observed version"
 				}
-				nodes[from] = GraphProjectionNode{ID: from, Kind: "selection", Label: selection, Subtitle: subtitle, Status: status, Dependency: requirement.Dependency, Version: requirement.Version}
+				githubURL, codeGrapherURL := graphRepositoryLinks(requirement.ProviderRepository)
+				nodes[from] = GraphProjectionNode{
+					ID: from, Kind: "selection", Label: selection, Subtitle: subtitle,
+					Status: status, Repository: requirement.ProviderRepository,
+					Dependency: requirement.Dependency, Version: requirement.Version,
+					GitHubURL: githubURL, CodeGrapherURL: codeGrapherURL,
+					Organization: graphRepositoryOrganization(requirement.ProviderRepository),
+				}
 			}
 			to = addRepository(requirement.ConsumerRepository)
 		}
