@@ -25,6 +25,7 @@ type depsSetOptions struct {
 	match, regex, ref, checks, format, reportDir               string
 	parallel, retry, maxWaves                                  int
 	timeout, releasePoll                                       time.Duration
+	goPrivate                                                  []string
 }
 
 func newDepsCmd() *cobra.Command {
@@ -196,6 +197,7 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.merge, "merge", false, "wait for passing GitHub checks and merge; implies --pr, --push, and --commit")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown or yaml")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-set.md and deps-set.yaml to this directory")
+	command.Flags().StringArrayVar(&options.goPrivate, "go-private", nil, "private Go module path pattern excluded from public proxy and checksum lookup (repeatable)")
 	return command
 }
 
@@ -252,6 +254,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.merge, "merge", false, "merge passing PRs and observe releases; implies --pr, --push, and --commit")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown or yaml")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-bump.md and deps-bump.yaml to this directory")
+	command.Flags().StringArrayVar(&options.goPrivate, "go-private", nil, "private Go module path pattern excluded from public proxy and checksum lookup (repeatable)")
 	return command
 }
 
@@ -260,7 +263,8 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
 		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
 		Verify: !options.noVerify, Checks: checks, Timeout: options.timeout, Retry: options.retry,
-		Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
+		GoPrivate: options.goPrivate,
+		Commit:    options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
 		ReportDir: options.reportDir,
 	}
 }

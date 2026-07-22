@@ -89,19 +89,19 @@ func (goAdapter) apply(ctx context.Context, worktree string, target Target, opti
 			decision.Reason = "requirement already declares the exact target version"
 			continue
 		}
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, module.dir, "go", "get", target.Dependency+"@"+target.Version); err != nil {
+		if _, _, err := runGoCommand(ctx, options, module.dir, "get", target.Dependency+"@"+target.Version); err != nil {
 			decision.Action = "failed"
 			decision.Reason = err.Error()
 			updateErrors = append(updateErrors, fmt.Errorf("%s: %w", module.relative, err))
 			continue
 		}
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, module.dir, "go", "mod", "tidy"); err != nil {
+		if _, _, err := runGoCommand(ctx, options, module.dir, "mod", "tidy"); err != nil {
 			decision.Action = "failed"
 			decision.Reason = err.Error()
 			updateErrors = append(updateErrors, fmt.Errorf("%s: %w", module.relative, err))
 			continue
 		}
-		selected, _, err := runCommand(ctx, options.Timeout, options.Retry, module.dir, "go", "list", "-m", "-f", "{{.Version}}", target.Dependency)
+		selected, _, err := runGoCommand(ctx, options, module.dir, "list", "-m", "-f", "{{.Version}}", target.Dependency)
 		if err != nil {
 			decision.Action = "failed"
 			decision.Reason = err.Error()

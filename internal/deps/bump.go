@@ -484,7 +484,7 @@ func validateGoWaveSelections(ctx context.Context, worktree string, decisions []
 			continue
 		}
 		moduleDir := filepath.Join(worktree, filepath.Dir(filepath.FromSlash(decision.File)))
-		selected, _, err := runCommand(ctx, options.Timeout, options.Retry, moduleDir, "go", "list", "-m", "-f", "{{.Version}}", decision.Dependency)
+		selected, _, err := runGoCommand(ctx, options, moduleDir, "list", "-m", "-f", "{{.Version}}", decision.Dependency)
 		if err != nil {
 			decision.Action = "failed"
 			decision.Reason = "final wave validation failed: " + err.Error()
@@ -653,7 +653,7 @@ func latestPublishedGoRelease(ctx context.Context, module string, options BumpOp
 		}
 		return release, nil
 	}
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "go", "mod", "download", "-json", module+"@latest")
+	output, _, err := runGoCommand(ctx, options.Options, options.GitHubDir, "mod", "download", "-json", module+"@latest")
 	if err != nil {
 		return PublishedGoRelease{}, err
 	}
@@ -749,7 +749,7 @@ func latestGoVersion(ctx context.Context, module string, options BumpOptions) (s
 	if options.LatestGoVersion != nil {
 		return options.LatestGoVersion(ctx, module)
 	}
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "go", "list", "-m", "-json", module+"@latest")
+	output, _, err := runGoCommand(ctx, options.Options, options.GitHubDir, "list", "-m", "-json", module+"@latest")
 	if err != nil {
 		return "", err
 	}

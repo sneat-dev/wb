@@ -260,6 +260,24 @@ workflow subpath and writes `# <version>` next to the SHA. The Go adapter uses
 official Go tooling rather than implementing module selection itself. A
 semantic downgrade is rejected unless `--allow-downgrade` is explicit.
 
+#### Private Go modules
+
+Use repeatable `--go-private` for module-path patterns that must be fetched
+without a public Go proxy or checksum-database lookup. WB merges each pattern
+into `GOPRIVATE`, `GONOPROXY`, and `GONOSUMDB` for Go commands only; it does not
+modify global Go configuration or accept credentials. Configure Git access
+first—for GitHub, `gh auth setup-git` configures Git to use the existing GitHub
+CLI authentication.
+
+```sh
+wb deps set go github.com/acme/private-sdk@v1.4.0 \
+  --go-private github.com/acme
+
+wb deps bump go --fleet \
+  --changed github.com/acme/private-sdk@v1.4.0 \
+  --go-private github.com/acme --merge
+```
+
 Canonical clones remain untouched, including dirty clones. WB fetches
 `origin/<ref>` (`main` by default) and creates branches and worktrees below
 `<projects-root>/.wb/worktrees/<operation>/<org>/<repo>`. Without publication
