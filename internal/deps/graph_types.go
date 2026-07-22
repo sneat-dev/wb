@@ -86,14 +86,17 @@ type GraphProjection struct {
 
 // GraphProjectionNode is a visual entity with stable identity.
 type GraphProjectionNode struct {
-	ID         string
-	Kind       string
-	Label      string
-	Subtitle   string
-	Status     string
-	Repository string
-	Dependency string
-	Version    string
+	ID             string
+	Kind           string
+	Label          string
+	Subtitle       string
+	Status         string
+	Repository     string
+	Dependency     string
+	Version        string
+	GitHubURL      string
+	CodeGrapherURL string
+	Organization   string
 }
 
 // GraphProjectionEdge aggregates canonical evidence for a visual relation.

@@ -41,7 +41,9 @@ The command MUST accept `wb deps graph [repository-path]`. Go MUST be the
 initial and default ecosystem. `--fleet` MUST use the same repository discovery,
 `--match`, `--regex`, `--filter`, `--org`, `--ref`, and clone layout as the
 other dependency commands. Without `--fleet`, the supplied repository or the
-current repository MUST be inspected.
+current repository MUST be inspected. Fleet discovery MUST treat linked Git
+worktrees as alternate checkouts of their canonical repository, not as
+additional fleet repositories or module providers.
 
 #### REQ: canonical-evidence-model
 
@@ -123,6 +125,17 @@ selection highlighting, node-path highlighting, zoom, reset, and a readable
 mobile fallback. All manifest-derived text MUST be escaped before inclusion in
 SVG or HTML.
 
+#### REQ: explicit-code-intelligence-drilldown
+
+Repository-backed nodes MUST expose deterministic GitHub and CodeGrapher
+drill-down links derived from the canonical `owner/repository` identity. The
+HTML report MUST show those links in selected-node details and Markdown MUST
+link requirement consumers to their code graph. Report generation MUST NOT
+probe CodeGrapher, publish a snapshot, trigger indexing, or otherwise make a
+network request. External dependencies without a resolved provider repository
+MUST NOT receive an invented CodeGrapher target. Navigation MUST happen only
+after an explicit user click and MUST preserve the local report.
+
 #### REQ: explicit-browser-open
 
 Browser opening MUST be opt-in through `--open`. WB MUST first finish writing
@@ -188,6 +201,24 @@ other. Repository projection places them in one deterministic cycle layer and
 draws both directed edges. Visualization succeeds even though dependency bump
 would require a coordinated cyclic-release protocol.
 
+### UC: drill from fleet impact into code impact
+
+An operator selects `data/storage-firestore` in the repository projection.
+The inspector reports its repository identity and connected fleet nodes, then
+offers **Explore code in CodeGrapher**. Opening it navigates to the deterministic
+CodeGrapher repository route in a new tab. The original offline WB report stays
+open; WB neither checks for nor publishes a CodeGrapher snapshot. Requirement
+evidence also links directly to each consumer repository so an operator can
+inspect where the dependency is used.
+
+### UC: campaign worktrees do not duplicate fleet members
+
+An operator has canonical `acme/widgets` plus linked worktrees named
+`widgets-refactor` and `widgets-hotfix` under the same projects tree. A fleet
+graph contains `acme/widgets` once. The alternate checkout names do not become
+invented repository identities and duplicate module declarations do not create
+a false ambiguous provider.
+
 ## Interaction with Other Features
 
 [Dependency Bump Waves](../dependency-bump-waves/README.md) consumes the same
@@ -196,6 +227,13 @@ Set](../dependency-set/README.md) supplies mutation lifecycle primitives but
 does not alter this read-only command. A future [Dependency
 Drift](../dependency-drift/README.md) command can consume the canonical graph
 instead of implementing another manifest scanner.
+
+[CodeGrapher](https://codegrapher.dev/) complements this fleet-level evidence
+with repository-level symbols, imports, calls, implementations, and impact.
+CodeGrapher can link back to `https://wb.sneat.dev/` with `repository`, `ref`,
+and `view` query context plus the `#deps-graph` fragment. This public link is a
+navigation contract only: hosted WB graph publication remains a separate,
+explicit future capability.
 
 ## Acceptance Criteria
 
@@ -228,6 +266,17 @@ selects one exact module
 **Then** no unselected repository is cloned, every matching consumer evidence
 row remains, and required internal provider context is present without unrelated
 dependency edges.
+
+### AC: code-intelligence-links-are-passive
+
+**Requirements:** dependency-graph#req:explicit-code-intelligence-drilldown, dependency-graph#req:interactive-html, dependency-graph#req:deterministic-report-set
+
+**Given** canonical evidence contains internal GitHub repositories and an
+external dependency without a provider
+**When** Markdown, SVG, and HTML reports are generated offline
+**Then** internal repository nodes and consumer evidence expose deterministic
+GitHub and CodeGrapher links, the external dependency has no invented code
+graph, and report generation performs no network or publication action.
 
 ## Open Questions
 

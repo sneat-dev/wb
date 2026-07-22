@@ -367,13 +367,20 @@ Every run writes:
 - `deps-graph.yaml` and `deps-graph.json` — deterministic canonical evidence;
 - `deps-graph.svg` — accessible standalone rendering of the selected view;
 - `deps-graph.html` — self-contained interactive report containing all three
-  projections, search, path highlighting, fleet-drift highlighting, and zoom.
+  projections, search, path highlighting, fleet-drift highlighting, zoom/pan,
+  organization highlighting, selected-node details, and CodeGrapher drill-down.
 
 `--open` is explicit: headless and CI runs never attempt a GUI action. WB writes
 every report before invoking the operating system's browser command, so an open
 failure still leaves a usable HTML path. Providers flow left-to-right toward
 consumers; direct and indirect requirements have distinct edge styles, and
 cross-repository cycles are rendered rather than rejected.
+
+Repository-backed nodes link to both GitHub and
+[CodeGrapher](https://codegrapher.dev/), which provides repository-level symbol,
+call, import, and impact exploration beneath WB's fleet-level topology. These
+links are deterministic and passive: WB does not query CodeGrapher, publish a
+snapshot, or trigger indexing while generating a report.
 
 The first discovery adapter is Go and uses `golang.org/x/mod/modfile`.
 Projection and rendering are independent of that adapter so Python and
@@ -851,7 +858,9 @@ new fleet command adds a `case` in `cmd/wb`, reusing `internal/discover` and
 
 ## Known limitation
 
-Discovery keys on `org/name`. If a repo is cloned locally under a directory
+Discovery keys on `org/name` and ignores linked Git worktrees, which are
+alternate checkouts rather than additional fleet repositories. If a repo is
+cloned locally under a directory
 name that differs from its GitHub org (e.g. `~/projects/dalgo/...` vs the
 `dal-go` org), the mislabeled local copy is treated as local-only and
 skipped, and the correctly-named repo is cloned fresh under

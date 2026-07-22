@@ -1,6 +1,10 @@
 package discover
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestReconcile(t *testing.T) {
 	local := []Repo{
@@ -47,5 +51,28 @@ func TestReconcileSortedDeterministic(t *testing.T) {
 	got := Reconcile([]Repo{{Org: "z", Name: "b"}, {Org: "a", Name: "a"}}, nil)
 	if got[0].Slug() != "a/a" || got[1].Slug() != "z/b" {
 		t.Errorf("not sorted by slug: %v", got)
+	}
+}
+
+func TestScanLocalExcludesLinkedWorktrees(t *testing.T) {
+	projectsRoot := t.TempDir()
+	organization := filepath.Join(projectsRoot, "acme")
+	canonical := filepath.Join(organization, "widgets")
+	worktree := filepath.Join(organization, "widgets-feature")
+	for _, directory := range []string{filepath.Join(canonical, ".git"), worktree} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: ../widgets/.git/worktrees/widgets-feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repositories, err := ScanLocal(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repositories) != 1 || repositories[0].Slug() != "acme/widgets" {
+		t.Fatalf("ScanLocal() = %+v, want only canonical acme/widgets", repositories)
 	}
 }
