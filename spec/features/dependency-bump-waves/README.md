@@ -105,6 +105,12 @@ MUST use Go tooling to apply requested versions, upgrade compatible package
 dependencies, run `go mod tidy`, and inspect the resulting selected build
 list; it MUST NOT implement its own `go.mod` parser or dependency solver.
 
+For repeatable `--go-private` patterns, every Go subprocess used for mutation,
+final selection, and release observation MUST extend inherited `GOPRIVATE`,
+`GONOPROXY`, and `GONOSUMDB` settings. WB MUST never hardcode, persist, or log
+credentials; direct Git authentication is supplied by the operator's existing
+credential helper.
+
 #### REQ: default-verification
 
 Verification MUST be enabled by default. The Go adapter MUST run the
@@ -200,6 +206,21 @@ Version discovery lacks registry authentication. WB records the checked
 version, attempted source, and sanitized error, preserves the manifest for an
 explicit reason, and does not claim that `v1.3.0` is latest. After credentials
 are configured, `--retry` adds a new attempt and retains the failed audit row.
+
+### UC: private provider release propagates with scoped Go privacy settings
+
+The fictional provider `github.com/acme/private-sdk@v1.4.0` is private. The
+operator already has GitHub Git credentials configured and runs:
+
+```text
+wb deps bump go --fleet \
+  --changed github.com/acme/private-sdk@v1.4.0 \
+  --go-private github.com/acme --retry=1
+```
+
+WB uses the pattern for `go get`, `go mod tidy`, final selections, and every
+release lookup. Public proxy and checksum requests are avoided without placing
+a credential in the command, report, or repository.
 
 ### UC: exact set delegates to the wave engine
 

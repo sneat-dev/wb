@@ -71,11 +71,16 @@ type Options struct {
 	Checks         []quality.Check
 	Timeout        time.Duration
 	Retry          int
-	Commit         bool
-	Push           bool
-	PR             bool
-	Merge          bool
-	ReportDir      string
+	// GoPrivate supplies comma-separated Go module path patterns that must not
+	// be looked up through a public module proxy or checksum database. The
+	// patterns are merged with the caller's GOPRIVATE/GONOPROXY/GONOSUMDB only
+	// for Go subprocesses; WB never writes Go's global environment.
+	GoPrivate []string
+	Commit    bool
+	Push      bool
+	PR        bool
+	Merge     bool
+	ReportDir string
 
 	// ResolveGitHubRef is injectable for hermetic adapter tests.
 	ResolveGitHubRef func(context.Context, string, string) (string, error)

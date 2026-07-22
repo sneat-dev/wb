@@ -335,16 +335,12 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	}
 	for {
 		output, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", "pr", "checks", result.PR, "--json", "name,bucket,link")
-		var checks []RemoteCheck
-		if decodeErr := json.Unmarshal([]byte(output), &checks); decodeErr != nil {
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("decode checks for %s: %w", result.PR, decodeErr)
+		checks, pending, checkErr := decodePullRequestChecks(result.PR, output, err)
+		if checkErr != nil {
+			return checkErr
 		}
 		result.Checks = checks
 		failed := false
-		pending := len(checks) == 0
 		for _, check := range checks {
 			switch check.Bucket {
 			case "pass", "skipping":
@@ -369,7 +365,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(githubChecksPollInterval(options)):
 		}
 	}
 	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", "pr", "merge", result.PR, "--merge"); err != nil {
@@ -379,6 +375,27 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	result.Status = "merged"
 	result.Reason = "all observed GitHub checks passed or skipped; pull request merged normally"
 	return nil
+}
+
+func decodePullRequestChecks(pr, output string, commandErr error) ([]RemoteCheck, bool, error) {
+	if commandErr != nil {
+		if strings.Contains(strings.ToLower(output), "no checks reported") {
+			return nil, true, nil
+		}
+		return nil, false, commandErr
+	}
+	var checks []RemoteCheck
+	if err := json.Unmarshal([]byte(output), &checks); err != nil {
+		return nil, false, fmt.Errorf("decode checks for %s: %w", pr, err)
+	}
+	return checks, len(checks) == 0, nil
+}
+
+func githubChecksPollInterval(options Options) time.Duration {
+	if options.CheckPollInterval > 0 {
+		return options.CheckPollInterval
+	}
+	return 10 * time.Second
 }
 
 func failResult[T any](result *Result[T], err error) error {

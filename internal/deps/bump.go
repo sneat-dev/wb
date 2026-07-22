@@ -35,7 +35,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		defer lock.Release()
 	}
 	report := BumpReport{
-		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running",
+		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
 		Ecosystem: EcosystemGo, SeedEvents: append([]ReleaseEvent(nil), events...),
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, Parallel: lifecycle.Parallel,
 	}
@@ -57,7 +57,31 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		return report, err
 	}
 	for waveIndex := startWave; waveIndex <= options.MaxWaves; waveIndex++ {
-		graph, err := discoverGoFleetGraph(ctx, repositories, lifecycle)
+		report.Phase = BumpPhaseDiscoveringGraph
+		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(repositories)}
+		if err := persistBumpReport(options, report); err != nil {
+			return report, err
+		}
+		var progressMu sync.Mutex
+		var progressErr error
+		graph, err := discoverGoFleetGraph(ctx, repositories, lifecycle, func(progress graphDiscoveryProgress) {
+			progressMu.Lock()
+			defer progressMu.Unlock()
+			if progressErr != nil {
+				return
+			}
+			report.Progress = BumpProgress{
+				Wave:                  waveIndex,
+				RepositoriesTotal:     progress.RepositoriesTotal,
+				RepositoriesCompleted: progress.RepositoriesCompleted,
+				LastRepository:        progress.LastRepository,
+			}
+			progressErr = persistBumpReport(options, report)
+		})
+		if progressErr != nil {
+			report.Status = "failed"
+			return report, persistBumpFailure(options, report, progressErr)
+		}
 		if err != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
@@ -70,6 +94,10 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
 		}
+		report.Phase = BumpPhasePlanningWave
+		if err := persistBumpReport(options, report); err != nil {
+			return report, err
+		}
 		carriers, carrierErr := discoverExistingReleaseCarriers(ctx, graph, events, options)
 		targetsByRepository := graph.repositoriesForEvents(events)
 		if len(targetsByRepository) == 0 {
@@ -80,6 +108,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 						wave.Status = "planned"
 						report.Waves = append(report.Waves, wave)
 						report.Status = "planned"
+						report.Phase = BumpPhasePlanned
 						if persistErr := persistBumpReport(options, report); persistErr != nil {
 							return report, persistErr
 						}
@@ -99,6 +128,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 					wave.Status = "awaiting_release"
 					report.Waves = append(report.Waves, wave)
 					report.Status = "awaiting_release"
+					report.Phase = BumpPhaseAwaitingRelease
 					return report, persistBumpFailure(options, report, carrierErr)
 				}
 				report.Waves = append(report.Waves, wave)
@@ -111,6 +141,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				}
 			}
 			report.Status = "completed"
+			report.Phase = BumpPhaseCompleted
 			if persistErr := persistBumpReport(options, report); persistErr != nil {
 				return report, persistErr
 			}
@@ -132,6 +163,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		}
 		report.Waves = append(report.Waves, wave)
 		waveReport := &report.Waves[len(report.Waves)-1]
+		report.Phase = BumpPhaseProcessingWave
+		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(affectedRepositories)}
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr
 		}
@@ -143,6 +176,10 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		for _, result := range results {
 			waveReport.Repositories = append(waveReport.Repositories, repositoryReportFromResult(result))
 		}
+		report.Progress.RepositoriesCompleted = len(results)
+		if persistErr := persistBumpReport(options, report); persistErr != nil {
+			return report, persistErr
+		}
 		if runErr != nil {
 			waveReport.Status = "failed"
 			report.Status = "failed"
@@ -151,6 +188,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		if lifecycle.DryRun {
 			waveReport.Status = "planned"
 			report.Status = "planned"
+			report.Phase = BumpPhasePlanned
 			if persistErr := persistBumpReport(options, report); persistErr != nil {
 				return report, persistErr
 			}
@@ -159,6 +197,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		if !lifecycle.Merge {
 			waveReport.Status = "awaiting_merge"
 			report.Status = "awaiting_merge"
+			report.Phase = BumpPhaseAwaitingMerge
 			if persistErr := persistBumpReport(options, report); persistErr != nil {
 				return report, persistErr
 			}
@@ -174,6 +213,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		if releaseErr != nil {
 			waveReport.Status = "awaiting_release"
 			report.Status = "awaiting_release"
+			report.Phase = BumpPhaseAwaitingRelease
 			return report, persistBumpFailure(options, report, releaseErr)
 		}
 		waveReport.Status = "completed"
@@ -183,6 +223,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		events = releaseEventsFromObservations(waveReport.Releases)
 		if len(events) == 0 {
 			report.Status = "completed"
+			report.Phase = BumpPhaseCompleted
 			if persistErr := persistBumpReport(options, report); persistErr != nil {
 				return report, persistErr
 			}
@@ -443,7 +484,7 @@ func validateGoWaveSelections(ctx context.Context, worktree string, decisions []
 			continue
 		}
 		moduleDir := filepath.Join(worktree, filepath.Dir(filepath.FromSlash(decision.File)))
-		selected, _, err := runCommand(ctx, options.Timeout, options.Retry, moduleDir, "go", "list", "-m", "-f", "{{.Version}}", decision.Dependency)
+		selected, _, err := runGoCommand(ctx, options, moduleDir, "list", "-m", "-f", "{{.Version}}", decision.Dependency)
 		if err != nil {
 			decision.Action = "failed"
 			decision.Reason = "final wave validation failed: " + err.Error()
@@ -612,7 +653,7 @@ func latestPublishedGoRelease(ctx context.Context, module string, options BumpOp
 		}
 		return release, nil
 	}
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "go", "mod", "download", "-json", module+"@latest")
+	output, _, err := runGoCommand(ctx, options.Options, options.GitHubDir, "mod", "download", "-json", module+"@latest")
 	if err != nil {
 		return PublishedGoRelease{}, err
 	}
@@ -708,7 +749,7 @@ func latestGoVersion(ctx context.Context, module string, options BumpOptions) (s
 	if options.LatestGoVersion != nil {
 		return options.LatestGoVersion(ctx, module)
 	}
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "go", "list", "-m", "-json", module+"@latest")
+	output, _, err := runGoCommand(ctx, options.Options, options.GitHubDir, "list", "-m", "-json", module+"@latest")
 	if err != nil {
 		return "", err
 	}

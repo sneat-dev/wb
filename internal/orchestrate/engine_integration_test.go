@@ -149,6 +149,43 @@ func TestNormalizePublicationImplicationsAndValidation(t *testing.T) {
 	}
 }
 
+func TestWaitAndMergeRetriesUntilGitHubChecksAppear(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "checks-state")
+	script := `#!/bin/sh
+if [ "$2" = checks ]; then
+  if [ ! -f "$WB_CHECK_STATE" ]; then
+    : > "$WB_CHECK_STATE"
+    echo "no checks reported on the branch" >&2
+    exit 1
+  fi
+  echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'
+  exit 0
+fi
+if [ "$2" = merge ]; then
+  exit 0
+fi
+exit 2
+`
+	writeEngineFile(t, filepath.Join(bin, "gh"), script)
+	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_CHECK_STATE", state)
+
+	result := Result[string]{WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1"}
+	if err := waitAndMerge(context.Background(), Options{Timeout: time.Second, CheckPollInterval: time.Millisecond}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Merged || result.Status != "merged" || len(result.Checks) != 1 || result.Checks[0].Bucket != "pass" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 type engineFixture struct {
 	githubDir  string
 	canonical  string

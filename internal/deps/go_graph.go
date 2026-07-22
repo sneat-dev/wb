@@ -35,7 +35,13 @@ type goFleetRequirement struct {
 	Indirect       bool
 }
 
-func discoverGoFleetGraph(ctx context.Context, repositories []Repository, options orchestrate.Options) (goFleetGraph, error) {
+type graphDiscoveryProgress struct {
+	RepositoriesTotal     int
+	RepositoriesCompleted int
+	LastRepository        string
+}
+
+func discoverGoFleetGraph(ctx context.Context, repositories []Repository, options orchestrate.Options, onProgress func(graphDiscoveryProgress)) (goFleetGraph, error) {
 	graph := goFleetGraph{
 		modules: map[string]goFleetModule{}, moduleDeclarations: map[string][]goFleetModule{}, requirements: map[string][]goFleetRequirement{},
 		repositoryModules: map[string][]string{},
@@ -55,33 +61,52 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	jobs := make(chan int)
 	var group sync.WaitGroup
+	var progressMu sync.Mutex
+	completed := 0
+	recordProgress := func(repository string) {
+		if onProgress == nil {
+			return
+		}
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		completed++
+		progress := graphDiscoveryProgress{
+			RepositoriesTotal:     len(repositories),
+			RepositoriesCompleted: completed,
+			LastRepository:        repository,
+		}
+		onProgress(progress)
+	}
 	for range workers {
 		group.Add(1)
 		go func() {
 			defer group.Done()
 			for index := range jobs {
 				repository := repositories[index]
-				if repository.Archived {
-					continue
-				}
-				owner, name, ok := strings.Cut(repository.Slug, "/")
-				if !ok || owner == "" || name == "" {
-					errorsByRepository[index] = fmt.Errorf("invalid repository slug %q", repository.Slug)
-					continue
-				}
-				canonical := repository.Path
-				if canonical == "" {
-					canonical = filepath.Join(options.GitHubDir, owner, name)
-				}
-				if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
-					errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
-					continue
-				}
-				result, err := inspectRepositoryGoGraph(ctx, repository.Slug, canonical, "origin/"+options.Ref, options)
-				results[index] = result
-				if err != nil {
-					errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
-				}
+				func() {
+					defer recordProgress(repository.Slug)
+					if repository.Archived {
+						return
+					}
+					owner, name, ok := strings.Cut(repository.Slug, "/")
+					if !ok || owner == "" || name == "" {
+						errorsByRepository[index] = fmt.Errorf("invalid repository slug %q", repository.Slug)
+						return
+					}
+					canonical := repository.Path
+					if canonical == "" {
+						canonical = filepath.Join(options.GitHubDir, owner, name)
+					}
+					if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
+						errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
+						return
+					}
+					result, err := inspectRepositoryGoGraph(ctx, repository.Slug, canonical, "origin/"+options.Ref, options)
+					results[index] = result
+					if err != nil {
+						errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
+					}
+				}()
 			}
 		}()
 	}

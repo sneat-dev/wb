@@ -29,7 +29,7 @@ func BuildGraph(ctx context.Context, repositories []Repository, options GraphOpt
 	if err != nil {
 		return Graph{}, err
 	}
-	discovered, err := discoverGoFleetGraph(ctx, repositories, lifecycle)
+	discovered, err := discoverGoFleetGraph(ctx, repositories, lifecycle, nil)
 	if err != nil {
 		return Graph{}, err
 	}

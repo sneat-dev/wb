@@ -68,6 +68,41 @@ func TestRunBumpDryRunPlansOnlyDirectConsumers(t *testing.T) {
 	}
 }
 
+func TestRunBumpPersistsGraphDiscoveryProgress(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n"),
+		newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n"),
+		newBumpRepository(t, root, githubDir, "consumer", "module example.com/consumer\n\ngo 1.24\n\nrequire example.com/adapter v0.1.0\n"),
+	}
+	var persisted []BumpReport
+	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}, repositories, BumpOptions{
+		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 1, DryRun: true},
+		Persist: func(report BumpReport) error {
+			persisted = append(persisted, report)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var started, completed, processing bool
+	for _, report := range persisted {
+		switch {
+		case report.Phase == BumpPhaseDiscoveringGraph && report.Progress.RepositoriesTotal == len(repositories) && report.Progress.RepositoriesCompleted == 0:
+			started = true
+		case report.Phase == BumpPhaseDiscoveringGraph && report.Progress.RepositoriesTotal == len(repositories) && report.Progress.RepositoriesCompleted == len(repositories) && report.Progress.LastRepository != "":
+			completed = true
+		case report.Phase == BumpPhaseProcessingWave && report.Progress.Wave == 1 && report.Progress.RepositoriesTotal == 1:
+			processing = true
+		}
+	}
+	if !started || !completed || !processing {
+		t.Fatalf("persisted phases do not show discovery and processing progress: %+v", persisted)
+	}
+}
+
 func TestRunBumpSecondSweepTraversesExistingPublishedConsumer(t *testing.T) {
 	root := t.TempDir()
 	githubDir := filepath.Join(root, "projects")
@@ -208,9 +243,9 @@ func TestRunBumpResumeRequiresPersistedReport(t *testing.T) {
 func TestBumpReportRoundTrip(t *testing.T) {
 	t.Parallel()
 	report := BumpReport{
-		SchemaVersion: 1, Operation: "deps-bump-go-test", Status: "awaiting_release", Ecosystem: EcosystemGo,
+		SchemaVersion: 1, Operation: "deps-bump-go-test", Status: "awaiting_release", Phase: BumpPhaseAwaitingRelease, Ecosystem: EcosystemGo,
 		SeedEvents: []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}},
-		BaseRef:    "main", Waves: []BumpWaveReport{{
+		BaseRef:    "main", Progress: BumpProgress{Wave: 1, RepositoriesTotal: 3, RepositoriesCompleted: 2, LastRepository: "acme/adapter"}, Waves: []BumpWaveReport{{
 			Index: 1, Status: "awaiting_release",
 			Releases: []ReleaseObservation{{Module: "example.com/adapter", Before: "v0.4.0", Status: "awaiting_release"}},
 		}},
@@ -223,14 +258,14 @@ func TestBumpReportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Operation != report.Operation || loaded.Waves[0].Releases[0].Before != "v0.4.0" {
+	if loaded.Operation != report.Operation || loaded.Phase != BumpPhaseAwaitingRelease || loaded.Progress.RepositoriesCompleted != 2 || loaded.Waves[0].Releases[0].Before != "v0.4.0" {
 		t.Fatalf("loaded report = %+v", loaded)
 	}
 	markdown, err := os.ReadFile(filepath.Join(directory, "deps-bump.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(markdown), "Release evidence") || !strings.Contains(string(markdown), "example.com/adapter") {
+	if !strings.Contains(string(markdown), "Release evidence") || !strings.Contains(string(markdown), "example.com/adapter") || !strings.Contains(string(markdown), "Phase: `awaiting_release`") || !strings.Contains(string(markdown), "repositories `2/3`") {
 		t.Fatalf("unexpected Markdown:\n%s", markdown)
 	}
 }

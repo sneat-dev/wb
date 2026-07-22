@@ -17,6 +17,16 @@ func (report BumpReport) Markdown() string {
 	fmt.Fprintf(&output, "- Operation: `%s`\n", report.Operation)
 	fmt.Fprintf(&output, "- Ecosystem: `%s`\n", report.Ecosystem)
 	fmt.Fprintf(&output, "- Status: `%s`\n", report.Status)
+	if report.Phase != "" {
+		fmt.Fprintf(&output, "- Phase: `%s`\n", report.Phase)
+	}
+	if report.Progress.RepositoriesTotal > 0 {
+		fmt.Fprintf(&output, "- Progress: wave `%d`, repositories `%d/%d`", report.Progress.Wave, report.Progress.RepositoriesCompleted, report.Progress.RepositoriesTotal)
+		if report.Progress.LastRepository != "" {
+			fmt.Fprintf(&output, "; last completed `%s`", report.Progress.LastRepository)
+		}
+		output.WriteByte('\n')
+	}
 	fmt.Fprintf(&output, "- Base ref: `%s`\n", report.BaseRef)
 	fmt.Fprintf(&output, "- Waves: `%d`\n\n", len(report.Waves))
 	output.WriteString("## Seed release events\n\n")

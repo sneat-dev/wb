@@ -30,10 +30,14 @@ type Options struct {
 	Checks    []quality.Check
 	Timeout   time.Duration
 	Retry     int
-	Commit    bool
-	Push      bool
-	PR        bool
-	Merge     bool
+	// CheckPollInterval overrides the GitHub-check polling delay. A zero value
+	// uses the production default. It is primarily useful for deterministic
+	// lifecycle tests.
+	CheckPollInterval time.Duration
+	Commit            bool
+	Push              bool
+	PR                bool
+	Merge             bool
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.

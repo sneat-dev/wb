@@ -42,6 +42,8 @@ type BumpReport struct {
 	SchemaVersion int              `yaml:"schema_version"`
 	Operation     string           `yaml:"operation"`
 	Status        string           `yaml:"status"`
+	Phase         BumpPhase        `yaml:"phase"`
+	Progress      BumpProgress     `yaml:"progress"`
 	Ecosystem     Ecosystem        `yaml:"ecosystem"`
 	SeedEvents    []ReleaseEvent   `yaml:"seed_events"`
 	GitHubDir     string           `yaml:"github_dir"`
@@ -49,6 +51,32 @@ type BumpReport struct {
 	Verification  []quality.Check  `yaml:"verification,omitempty"`
 	Parallel      int              `yaml:"parallel"`
 	Waves         []BumpWaveReport `yaml:"waves"`
+}
+
+// BumpPhase identifies the operation currently represented by a persisted
+// report. It makes an interrupted campaign distinguish graph discovery from a
+// wave that is waiting on local or remote work.
+type BumpPhase string
+
+const (
+	BumpPhasePreparing        BumpPhase = "preparing"
+	BumpPhaseDiscoveringGraph BumpPhase = "discovering_graph"
+	BumpPhasePlanningWave     BumpPhase = "planning_wave"
+	BumpPhaseProcessingWave   BumpPhase = "processing_wave"
+	BumpPhasePlanned          BumpPhase = "planned"
+	BumpPhaseAwaitingMerge    BumpPhase = "awaiting_merge"
+	BumpPhaseAwaitingRelease  BumpPhase = "awaiting_release"
+	BumpPhaseCompleted        BumpPhase = "completed"
+)
+
+// BumpProgress records the bounded unit of work for Phase. During graph
+// discovery it advances once per selected repository; during wave processing
+// it identifies the selected wave repositories.
+type BumpProgress struct {
+	Wave                  int    `yaml:"wave,omitempty"`
+	RepositoriesTotal     int    `yaml:"repositories_total,omitempty"`
+	RepositoriesCompleted int    `yaml:"repositories_completed,omitempty"`
+	LastRepository        string `yaml:"last_repository,omitempty"`
 }
 
 // BumpWaveReport records one recalculated direct-consumer layer.

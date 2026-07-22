@@ -130,6 +130,7 @@ func normalizeOptions(options Options, operation string) (Options, orchestrate.O
 	options.Ref = lifecycle.Ref
 	options.Parallel = lifecycle.Parallel
 	options.Checks = append(options.Checks[:0], lifecycle.Checks...)
+	options.GoPrivate = normalizeGoPrivatePatterns(options.GoPrivate)
 	options.Commit = lifecycle.Commit
 	options.Push = lifecycle.Push
 	options.PR = lifecycle.PR

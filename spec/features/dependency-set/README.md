@@ -89,6 +89,15 @@ run `go mod tidy`, and inspect the selected result. It MUST NOT implement a Go
 dependency solver. A selected version different from the exact target MUST fail
 with the before, target, and selected versions in the audit.
 
+#### REQ: private-go-module-environment
+
+For private Go module patterns supplied with repeatable `--go-private`, WB MUST
+extend Go subprocess `GOPRIVATE`, `GONOPROXY`, and `GONOSUMDB` settings for the
+operation only. It MUST preserve inherited patterns, avoid the public proxy and
+checksum database for the supplied patterns, and never store, print, or invent
+credentials. Direct Git fetches MUST use the operator's existing Git credential
+helper; WB errors MUST retain the attempted command and sanitized Go/Git output.
+
 #### REQ: adapter-boundary
 
 Ecosystem discovery, target resolution, mutation, and result inspection MUST be
@@ -207,6 +216,23 @@ Two modules in the fictional `acme/facade` repository require
 both module roots, records resulting `go.mod` and `go.sum` changes, and verifies
 the whole repository. If another requirement forces `v0.6.0`, WB reports the
 selected mismatch and does not commit.
+
+### UC: update a private GitHub module without exposing it to public services
+
+The fictional `acme/app` module already requires private
+`github.com/acme/private-sdk`. Its developer has configured Git credentials
+(for GitHub CLI this can be `gh auth setup-git`) but does not want private
+module paths sent to a public proxy or checksum database. They run:
+
+```text
+wb deps set go github.com/acme/private-sdk@v1.4.0 \
+  --go-private github.com/acme --commit
+```
+
+WB passes the pattern only to the Go subprocesses it creates, merging it with
+any inherited Go privacy settings. `go get`, `go mod tidy`, and final module
+inspection fetch directly through the configured Git credential helper. No
+token appears in WB flags, worktrees, reports, or logs.
 
 ### UC: CI failure is resumed without duplicate PRs
 
