@@ -121,11 +121,11 @@ migration "dalgo-record-v1" {
   }
 
   go_module_release "github.com/sneat-co/ext-contactus/backend" {
-    version = "v0.1.6"
+    version = "v0.1.7"
   }
 
   go_module_release "github.com/sneat-co/sneat-core-modules" {
-    version = "v0.53.5"
+    version = "v0.53.6"
   }
 
   go_module_release "github.com/bots-go-framework/bots-fw-telegram-dalgo" {
@@ -226,6 +226,30 @@ migration "dalgo-record-v1" {
 
   go_module_release "github.com/dal-go/dalgo2openvaultdb" {
     version = "v0.2.1"
+  }
+
+  go_module_release "github.com/sneat-co/ovdb/backend" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/kids-club/backend" {
+    version = "v0.0.3"
+  }
+
+  go_module_release "github.com/sneat-co/renewon/backend" {
+    version = "v0.1.3"
+  }
+
+  go_module_release "github.com/bots-go-framework/bots-fw-whatsapp-dalgo" {
+    version = "v0.1.1"
+  }
+
+  go_module_release "github.com/sneat-co/sneat-work/backend" {
+    version = "v0.1.3"
+  }
+
+  go_module_release "github.com/sneat-co/sportus/backend" {
+    version = "v0.1.1"
   }
 
   # DAL owns the executor as dal.ApplyChanges(ctx, tx, changes, ...), so the
