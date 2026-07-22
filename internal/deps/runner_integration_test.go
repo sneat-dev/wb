@@ -105,6 +105,66 @@ func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 	}
 }
 
+func TestRunCommitsVerifiedOperationWithoutPushing(t *testing.T) {
+	fixture := t.TempDir()
+	seed := filepath.Join(fixture, "seed")
+	remote := filepath.Join(fixture, "remote.git")
+	githubDir := filepath.Join(fixture, "projects")
+	canonical := filepath.Join(githubDir, "acme", "app")
+	writeTestFile(t, filepath.Join(seed, ".github", "workflows", "ci.yml"), "uses: acme/cicd/action@v1.0.0\n")
+	runTestGit(t, seed, "init", "-b", "main")
+	runTestGit(t, seed, "config", "user.name", "WB Test")
+	runTestGit(t, seed, "config", "user.email", "wb@example.test")
+	runTestGit(t, seed, "add", "-A")
+	runTestGit(t, seed, "commit", "-m", "initial")
+	runTestGit(t, fixture, "clone", "--bare", seed, remote)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, fixture, "clone", remote, canonical)
+	runTestGit(t, canonical, "config", "user.name", "WB Test")
+	runTestGit(t, canonical, "config", "user.email", "wb@example.test")
+	target := Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}
+	report, err := Run(context.Background(), target, []Repository{{Slug: "acme/app", Path: canonical}}, Options{
+		GitHubDir: githubDir, Ref: "main", Commit: true, Timeout: time.Minute,
+		ResolveGitHubRef: func(context.Context, string, string) (string, error) { return strings.Repeat("4", 40), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := report.Repositories[0]
+	if repository.Status != "committed" || repository.Commit == "" || repository.Pushed {
+		t.Fatalf("repository report = %+v", repository)
+	}
+	message := strings.TrimSpace(runTestGit(t, repository.WorktreeDir, "log", "-1", "--format=%s"))
+	if message != "chore(deps): set acme/cicd to v1.1.0" {
+		t.Fatalf("commit message = %q", message)
+	}
+	remoteHead := strings.TrimSpace(runTestGit(t, repository.WorktreeDir, "rev-parse", "origin/main"))
+	if remoteHead == repository.Commit {
+		t.Fatal("local-only commit was unexpectedly pushed")
+	}
+}
+
+func TestRunSkipsArchivedRepositoryWithoutCloning(t *testing.T) {
+	t.Parallel()
+	githubDir := t.TempDir()
+	target := Target{Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd", Version: "v1.1.0"}
+	report, err := Run(context.Background(), target, []Repository{{Slug: "acme/retired", Archived: true}}, Options{
+		GitHubDir: githubDir, DryRun: true,
+		ResolveGitHubRef: func(context.Context, string, string) (string, error) { return strings.Repeat("5", 40), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Repositories[0].Status != "skipped" || report.Repositories[0].Reason != "repository is archived" {
+		t.Fatalf("repository report = %+v", report.Repositories[0])
+	}
+	if _, err := os.Stat(filepath.Join(githubDir, "acme", "retired")); !os.IsNotExist(err) {
+		t.Fatalf("archived repository was cloned: %v", err)
+	}
+}
+
 func runTestGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
