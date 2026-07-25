@@ -212,7 +212,7 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.push, "push", false, "push operation branches; implies --commit")
 	command.Flags().BoolVar(&options.pr, "pr", false, "open pull requests; implies --push and --commit")
 	command.Flags().BoolVar(&options.merge, "merge", false, "wait for passing GitHub checks and merge; implies --pr, --push, and --commit")
-	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown or yaml")
+	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-set.md and deps-set.yaml to this directory")
 	command.Flags().StringArrayVar(&options.goPrivate, "go-private", nil, "private Go module path pattern excluded from public proxy and checksum lookup (repeatable)")
 	return command
@@ -269,7 +269,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.push, "push", false, "push wave branches; implies --commit")
 	command.Flags().BoolVar(&options.pr, "pr", false, "open pull requests; implies --push and --commit")
 	command.Flags().BoolVar(&options.merge, "merge", false, "merge passing PRs and observe releases; implies --pr, --push, and --commit")
-	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown or yaml")
+	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-bump.md and deps-bump.yaml to this directory")
 	command.Flags().StringArrayVar(&options.goPrivate, "go-private", nil, "private Go module path pattern excluded from public proxy and checksum lookup (repeatable)")
 	return command
@@ -455,8 +455,15 @@ func writeDepsSetReport(command *cobra.Command, report deps.Report, format strin
 		}
 		_, err = command.OutOrStdout().Write(raw)
 		return err
+	case "json":
+		raw, err := report.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = command.OutOrStdout().Write(raw)
+		return err
 	default:
-		return fmt.Errorf("unknown --format %q (want markdown or yaml)", format)
+		return fmt.Errorf("unknown --format %q (want markdown, yaml, or json)", format)
 	}
 }
 
@@ -472,7 +479,14 @@ func writeDepsBumpReport(command *cobra.Command, report deps.BumpReport, format 
 		}
 		_, err = command.OutOrStdout().Write(raw)
 		return err
+	case "json":
+		raw, err := report.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = command.OutOrStdout().Write(raw)
+		return err
 	default:
-		return fmt.Errorf("unknown --format %q (want markdown or yaml)", format)
+		return fmt.Errorf("unknown --format %q (want markdown, yaml, or json)", format)
 	}
 }

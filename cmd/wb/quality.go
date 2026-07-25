@@ -63,7 +63,7 @@ func newCoverageCmd() *cobra.Command {
 					return err
 				}
 				if len(targets) == 0 {
-					fmt.Println("No failed repositories to resume.")
+					fmt.Fprintln(os.Stderr, "no failed repositories to resume; nothing to do")
 					return nil
 				}
 			}
@@ -76,7 +76,10 @@ func newCoverageCmd() *cobra.Command {
 				return err
 			}
 			if coverageFailed(report) {
-				return &exitError{code: 1}
+				return &exitError{
+					code:    exitFindings,
+					message: "coverage could not be measured in one or more repositories; see the `error` column above, then rerun just those with --resume --report-dir",
+				}
 			}
 			return nil
 		},
@@ -116,7 +119,7 @@ func newVerifyCmd() *cobra.Command {
 					return err
 				}
 				if len(targets) == 0 {
-					fmt.Println("No failed repositories to resume.")
+					fmt.Fprintln(os.Stderr, "no failed repositories to resume; nothing to do")
 					return nil
 				}
 			}
@@ -130,7 +133,10 @@ func newVerifyCmd() *cobra.Command {
 				return err
 			}
 			if verificationFailed(report) {
-				return &exitError{code: 1}
+				return &exitError{
+					code:    exitFindings,
+					message: "verification failed in one or more repositories; the failing check and its output are in the `detail` of each `failed` row above",
+				}
 			}
 			return nil
 		},
@@ -172,7 +178,7 @@ func newCheckCmd() *cobra.Command {
 					return err
 				}
 				if len(targets) == 0 {
-					fmt.Println("No failed repositories to resume.")
+					fmt.Fprintln(os.Stderr, "no failed repositories to resume; nothing to do")
 					return nil
 				}
 			}
@@ -186,7 +192,10 @@ func newCheckCmd() *cobra.Command {
 				return err
 			}
 			if verificationFailed(report) {
-				return &exitError{code: 1}
+				return &exitError{
+					code:    exitFindings,
+					message: "profile checks failed in one or more repositories; the failing check and its output are in the `detail` of each `failed` row above",
+				}
 			}
 			return nil
 		},

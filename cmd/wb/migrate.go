@@ -47,7 +47,10 @@ func newMigrateCmd() *cobra.Command {
 					verifyExplicit: cmd.Flags().Changed("verify"),
 				})
 				if code != 0 {
-					os.Exit(code)
+					return &exitError{
+						code:    code,
+						message: "the migration campaign reported failures; see the per-repository rows above and the report directory",
+					}
 				}
 				return nil
 			}
@@ -57,16 +60,18 @@ func newMigrateCmd() *cobra.Command {
 			if commit || push || pr || merge || resume || cleanup || noVerify || cmd.Flags().Changed("verify") || cmd.Flags().Changed("github-dir") || cmd.Flags().Changed("ref") || cmd.Flags().Changed("parallel") || len(moduleRefs) > 0 {
 				return fmt.Errorf("--commit, --push, --pr, --merge, --resume, --cleanup, --verify, --no-verify, --github-dir, --ref, --module-ref, and --parallel require --hierarchical")
 			}
-			code := runMigrate(args[0], args[1:], apply, check, format, reportDir)
-			if code != 0 {
-				os.Exit(code)
+			if code := runMigrate(args[0], args[1:], apply, check, format, reportDir); code != 0 {
+				return &exitError{
+					code:    code,
+					message: "the migration reported changes or failures; rerun with --apply to write them, or inspect the report above",
+				}
 			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&apply, "apply", false, "write the planned changes")
 	cmd.Flags().BoolVar(&check, "check", false, "exit 1 when changes would be made")
-	cmd.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown or yaml")
+	cmd.Flags().StringVar(&format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	cmd.Flags().StringVar(&reportDir, "report-dir", "", "write migration.md and migration.yaml to this directory")
 	cmd.Flags().BoolVar(&hierarchical, "hierarchical", false, "migrate Go dependents in isolated local worktrees")
 	cmd.Flags().StringVar(&githubDir, "github-dir", "", "canonical GitHub clone root (defaults to --projects-root)")
@@ -236,8 +241,15 @@ func writeMigrationReport(report migrate.Report, format, reportDir string) error
 		}
 		_, err = os.Stdout.Write(raw)
 		return err
+	case "json":
+		raw, err := report.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(raw)
+		return err
 	default:
-		return fmt.Errorf("unknown --format %q (want markdown or yaml)", format)
+		return fmt.Errorf("unknown --format %q (want markdown, yaml, or json)", format)
 	}
 }
 
@@ -253,7 +265,14 @@ func writeCampaignReport(report migrate.CampaignReport, format string) error {
 		}
 		_, err = os.Stdout.Write(raw)
 		return err
+	case "json":
+		raw, err := report.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = os.Stdout.Write(raw)
+		return err
 	default:
-		return fmt.Errorf("unknown --format %q (want markdown or yaml)", format)
+		return fmt.Errorf("unknown --format %q (want markdown, yaml, or json)", format)
 	}
 }

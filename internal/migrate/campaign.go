@@ -19,6 +19,9 @@ import (
 	modmodule "golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/encode"
 )
 
 // Verification selects the built-in, non-arbitrary checks a hierarchical Go
@@ -1981,6 +1984,7 @@ func lastNonEmptyLine(value string) string {
 func runIn(dir, name string, args ...string) (string, error) {
 	command := exec.Command(name, args...)
 	command.Dir = dir
+	command.Env = console.Env()
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return string(output), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
@@ -2073,6 +2077,11 @@ func (r CampaignReport) Markdown() string {
 // YAML renders the deterministic campaign manifest.
 func (r CampaignReport) YAML() ([]byte, error) {
 	return yaml.Marshal(r)
+}
+
+// JSON renders the same manifest with the field names YAML uses.
+func (r CampaignReport) JSON() ([]byte, error) {
+	return encode.JSON(r)
 }
 
 // WriteCampaignReports writes both report formats to dir.

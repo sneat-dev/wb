@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/tui"
@@ -24,9 +24,11 @@ func newSyncCmd() *cobra.Command {
 		Use:   "sync",
 		Short: "Clone/pull/prune local clones to match GitHub (parallel, with a live progress UI)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			code := runSync(projectsRoot, filterFlag, only, workers, dryRun)
-			if code != 0 {
-				os.Exit(code)
+			if code := runSync(projectsRoot, filterFlag, only, workers, dryRun); code != 0 {
+				return &exitError{
+					code:    code,
+					message: "one or more repositories failed to sync; each failure is listed after the summary above",
+				}
 			}
 			return nil
 		},
@@ -71,7 +73,9 @@ func runSync(projectsRoot, filter string, only []string, workers int, dryRun boo
 		orgTotal[r.Org]++
 	}
 
-	interactive := term.IsTerminal(int(os.Stdout.Fd()))
+	// The live progress UI and the results browser both take over the terminal
+	// and wait for keystrokes, so they run only when there is a human at one.
+	interactive := console.Interactive(os.Stdout, nonInteractive)
 
 	var results []fleetsync.Result
 	if interactive {

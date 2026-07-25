@@ -5,11 +5,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/console"
 )
 
 func gitOutput(repoPath string, args ...string) (string, error) {
 	commandArgs := append([]string{"-C", repoPath}, args...)
 	cmd := exec.Command("git", commandArgs...)
+	cmd.Env = console.Env()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

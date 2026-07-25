@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/console"
 )
 
 // Repo identifies a single repository and where it lives.
@@ -106,6 +108,7 @@ func ListRemote(owner string) ([]Repo, error) {
 	cmd := exec.Command("gh", "repo", "list", owner,
 		"--limit", "1000",
 		"--json", "name,isArchived,isFork,sshUrl")
+	cmd.Env = console.Env()
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -129,7 +132,9 @@ func ListRemote(owner string) ([]Repo, error) {
 
 // AuthUser returns the authenticated GitHub login via gh.
 func AuthUser() (string, error) {
-	out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output()
+	command := exec.Command("gh", "api", "user", "--jq", ".login")
+	command.Env = console.Env()
+	out, err := command.Output()
 	if err != nil {
 		return "", err
 	}
@@ -140,7 +145,9 @@ func AuthUser() (string, error) {
 // the authoritative source of "owners I control" — local directory names are
 // not, since they include third-party clones.
 func MemberOrgs() ([]string, error) {
-	out, err := exec.Command("gh", "api", "user/orgs", "--jq", ".[].login").Output()
+	command := exec.Command("gh", "api", "user/orgs", "--jq", ".[].login")
+	command.Env = console.Env()
+	out, err := command.Output()
 	if err != nil {
 		return nil, err
 	}

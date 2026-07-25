@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/encode"
 )
 
 // Markdown renders the wave, repository, and release-evidence index.
@@ -93,6 +95,9 @@ func expectedRequirementsMarkdown(requirements map[string]string) string {
 
 // YAML renders deterministic machine-readable wave state.
 func (report BumpReport) YAML() ([]byte, error) { return yaml.Marshal(report) }
+
+// JSON renders the same wave state with the field names YAML uses.
+func (report BumpReport) JSON() ([]byte, error) { return encode.JSON(report) }
 
 // WriteBumpReports atomically replaces the human and machine campaign indexes.
 func WriteBumpReports(directory string, report BumpReport) error {

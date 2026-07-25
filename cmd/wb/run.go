@@ -28,9 +28,11 @@ func newRunCmd() *cobra.Command {
 			if len(args) == 1 {
 				name = args[0]
 			}
-			code := runRun(projectsRoot, filterFlag, extraOrgs, configPath, name, list, apply)
-			if code != 0 {
-				os.Exit(code)
+			if code := runRun(projectsRoot, filterFlag, extraOrgs, configPath, name, list, apply); code != 0 {
+				return &exitError{
+					code:    code,
+					message: "the recipe reported errors, or drift that --apply would land; see the per-repository lines above",
+				}
 			}
 			return nil
 		},
@@ -82,7 +84,7 @@ func runRun(projectsRoot, filter string, extraOrgs []string, configPath, name st
 		return 1
 	}
 	if !apply {
-		fmt.Println("(dry-run — pass --apply to commit & push)")
+		fmt.Fprintln(os.Stderr, "dry-run: reporting only; pass --apply to commit & push")
 	}
 
 	var rep report

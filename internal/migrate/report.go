@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/encode"
 )
 
 // Report is the portable index of a migration plan. It intentionally records
@@ -133,6 +135,11 @@ func (r Report) Markdown() string {
 // YAML renders the same report as stable machine-readable YAML.
 func (r Report) YAML() ([]byte, error) {
 	return yaml.Marshal(r)
+}
+
+// JSON renders the same report with the field names YAML uses.
+func (r Report) JSON() ([]byte, error) {
+	return encode.JSON(r)
 }
 
 // WriteReports writes the Markdown and YAML representations to dir. It is
