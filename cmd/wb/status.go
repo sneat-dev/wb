@@ -40,7 +40,10 @@ func newStatusCmd() *cobra.Command {
 				return err
 			}
 			if statusFailed(report) {
-				return &exitError{code: 1}
+				return &exitError{
+					code:    exitFindings,
+					message: "one or more repositories could not be inspected; see the `error` field of each `error` row above",
+				}
 			}
 			return nil
 		},

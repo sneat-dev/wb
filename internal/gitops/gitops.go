@@ -10,12 +10,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/console"
 )
 
-// run executes a command in dir and returns combined output.
+// run executes a command in dir and returns combined output. The child runs
+// with prompting disabled so a missing credential or an unknown host key fails
+// with a message instead of blocking on a terminal nobody is watching.
 func run(dir, name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
+	cmd.Env = console.Env()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))

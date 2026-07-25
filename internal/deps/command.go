@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/console"
 )
 
 func runCommand(ctx context.Context, timeout time.Duration, retry int, dir, name string, args ...string) (string, int, error) {
@@ -28,9 +30,10 @@ func runCommandWithEnv(ctx context.Context, timeout time.Duration, retry int, di
 		}
 		command := exec.CommandContext(attemptCtx, name, args...)
 		command.Dir = dir
-		if environment != nil {
-			command.Env = environment
+		if environment == nil {
+			environment = os.Environ()
 		}
+		command.Env = console.CommandEnv(environment)
 		output, err := command.CombinedOutput()
 		timedOut := attemptCtx.Err() == context.DeadlineExceeded
 		cancel()

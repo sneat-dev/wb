@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/console"
 )
 
 type RunOptions struct {
@@ -66,7 +68,7 @@ func Run(options RunOptions) (RunResult, error) {
 
 	blocks := hookBlocks(policy, options.Hook)
 	var replicatedInput []byte
-	if options.Hook == "pre-push" && len(blocks) > 1 {
+	if shouldReplicateStdin(options.Hook, len(blocks), console.IsTerminal(options.Stdin)) {
 		replicatedInput, err = io.ReadAll(options.Stdin)
 		if err != nil {
 			return RunResult{ExitCode: 2}, fmt.Errorf("read pre-push input for composed hook blocks: %w", err)
@@ -105,6 +107,22 @@ func Run(options RunOptions) (RunResult, error) {
 		result.MetricsError = AppendEvents(policy.Metrics.Path, metricEvents)
 	}
 	return result, runErr
+}
+
+// shouldReplicateStdin reports whether stdin must be drained so that every
+// composed block receives the same input.
+//
+// Only a composed pre-push hook needs it: git streams the pushed refs on stdin
+// and each block expects the complete list. When wb is invoked by hand or by an
+// agent rather than by git, stdin is the terminal, and draining it would block
+// forever waiting for a human who was never asked to type anything — the whole
+// command hangs with no output. A terminal therefore counts as no input at all;
+// a pipe or a redirect is real input and is drained as before.
+func shouldReplicateStdin(hook string, blockCount int, stdinIsTerminal bool) bool {
+	if hook != "pre-push" || blockCount <= 1 {
+		return false
+	}
+	return !stdinIsTerminal
 }
 
 func runTemplate(policy Policy, block HookBlock, options RunOptions, context eventContext) (int, error) {

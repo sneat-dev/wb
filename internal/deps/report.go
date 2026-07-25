@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sneat-dev/wb/internal/encode"
 )
 
 // Markdown renders a linked index suitable for human or AI review.
@@ -90,6 +92,9 @@ func (report Report) Markdown() string {
 
 // YAML renders the same deterministic report for tooling.
 func (report Report) YAML() ([]byte, error) { return yaml.Marshal(report) }
+
+// JSON renders the report with the same field names and shape as YAML.
+func (report Report) JSON() ([]byte, error) { return encode.JSON(report) }
 
 // WriteReports writes deps-set.md and deps-set.yaml to the requested directory.
 func WriteReports(directory string, report Report) error {
