@@ -21,11 +21,12 @@ import (
 
 type depsSetOptions struct {
 	fleet, dryRun, resume, allowDowngrade, noVerify, propagate bool
-	commit, push, pr, merge                                    bool
-	match, regex, ref, checks, format, reportDir               string
+	commit, push, pr, merge, order                             bool
+	match, regex, ref, checks, format, reportDir, layer        string
 	parallel, retry, maxWaves                                  int
 	timeout, releasePoll                                       time.Duration
 	goPrivate                                                  []string
+	layers                                                     deps.LayerSelection
 }
 
 func newDepsCmd() *cobra.Command {
@@ -137,8 +138,22 @@ func newDepsSetCmd() *cobra.Command {
 			if options.noVerify && command.Flags().Changed("checks") {
 				return fmt.Errorf("--no-verify and --checks cannot be used together")
 			}
+			if command.Flags().Changed("layer") && !options.order {
+				return fmt.Errorf("--layer requires --dependency-order")
+			}
 			target, err := deps.ParseTarget(args[0], args[1])
 			if err != nil {
+				return err
+			}
+			if options.order {
+				if options.propagate {
+					return fmt.Errorf("--dependency-order and --propagate cannot be used together; --propagate delegates to deps bump, which recalculates its own release waves")
+				}
+				if target.Ecosystem != deps.EcosystemGo {
+					return fmt.Errorf("--dependency-order is supported only for the go ecosystem; %q references have no module graph", target.Ecosystem)
+				}
+			}
+			if options.layers, err = deps.ParseLayerSelection(options.layer); err != nil {
 				return err
 			}
 			checks, err := quality.ParseChecks(options.checks)
@@ -184,6 +199,8 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect and report without creating worktrees or changing dependency files")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse validated operation worktrees, branches, and open pull requests")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a target lower than an observed semantic version")
+	command.Flags().BoolVar(&options.order, "dependency-order", false, "process repositories in provider-first dependency layers instead of one batch (go only)")
+	command.Flags().StringVar(&options.layer, "layer", "", "restrict --dependency-order to one layer or a range: N, N-M, or N- (default every layer)")
 	command.Flags().BoolVar(&options.propagate, "propagate", false, "delegate this exact Go release event to deps bump waves (requires --fleet)")
 	command.Flags().IntVar(&options.maxWaves, "max-waves", 20, "maximum recalculated dependency waves when --propagate is used")
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 10*time.Second, "provider release polling interval when --propagate is used")
@@ -266,6 +283,7 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 		GoPrivate: options.goPrivate,
 		Commit:    options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
 		ReportDir: options.reportDir,
+		Order:     options.order, Layers: options.layers,
 	}
 }
 

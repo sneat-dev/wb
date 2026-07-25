@@ -299,6 +299,47 @@ record observed and target versions, resolved SHAs, reasons, changed files,
 verification, commits, PR links, CI checks, and merge outcomes. Git remains the
 source of detailed patches; the Markdown report includes the exact diff command.
 
+#### Provider-first ordering across a dependency graph
+
+When a breaking release has to reach dozens of repositories, the order matters.
+A repository nine levels down the graph cannot go green until the repositories
+it depends on have released, so opening every pull request at once produces
+pull requests that no CI run can turn green. `--dependency-order` processes the
+selection in the provider-first layers reported by `wb deps graph` instead of
+one batch:
+
+```sh
+# 1. Read the plan without touching anything.
+wb deps set go github.com/dal-go/dalgo@v0.64.2 \
+  --fleet --dependency-order --dry-run
+
+# 2. Land layer 0, wait for its releases, then continue with the next layer.
+wb deps set go github.com/dal-go/dalgo@v0.64.2 \
+  --fleet --dependency-order --layer 0 --pr
+wb deps set go github.com/dal-go/dalgo@v0.64.2 \
+  --fleet --dependency-order --layer 1 --pr
+```
+
+`--dependency-order` **orders; it does not wait.** WB never polls for a
+published version here — the operator owns the pause between layers, and
+`--layer` (`N`, `N-M`, or `N-`) picks which layer a run may touch. Automatic
+waiting, release observation, and requeuing belong to `wb deps bump`; exact set
+deliberately has no second release loop.
+
+Inside one layer nothing changes: repositories are independent, keep
+`--parallel` concurrency, and complete independently. Across layers the run
+fails closed — a later layer is never started after an earlier layer failed,
+and its repositories are reported as `blocked` naming the layer that failed,
+rather than being cloned and given an unmergeable pull request. Markdown and
+YAML gain a **Dependency order** section recording every layer, its
+repositories, and whether it completed, failed, was blocked, or was not
+selected.
+
+Ordering needs a module graph, so it is Go-only and is rejected for
+`github-actions` and together with `--propagate`. Repositories that require
+each other share one layer and are reported as a cycle rather than being
+dropped.
+
 See the [Exact Dependency Set feature specification](spec/features/dependency-set/README.md)
 for synthetic use cases and acceptance criteria. By default, `deps set` does
 not discover newer releases or recalculate provider-to-consumer release waves.
@@ -380,6 +421,31 @@ wb deps graph --fleet \
 wb deps graph ~/projects/sneat-co/sneat-go \
   --view selections --format svg
 ```
+
+Every report also carries a **Release order**: the provider-first layering of
+the selected repositories, derived from their declared modules and
+requirements. Layer 0 depends on no other selected repository, every later
+layer depends only on earlier ones, and repositories with no internal
+relationship sit in layer 0. It answers "which repositories must release
+first" directly, and it is the same layering `deps set --dependency-order`
+executes:
+
+```sh
+wb deps graph --fleet --match 'sneat-co/*' --format markdown
+```
+
+```text
+## Release order
+
+| Layer | Repositories | Count |
+|---:|---|---:|
+| `00` | `strongo/strongoapp` | `1` |
+| `01` | `sneat-co/sneat-go-core` | `1` |
+```
+
+Repositories that require each other cannot be separated by any order, so they
+share one layer and are listed under the table with their cycle path. Layering
+never fails or drops a repository because of a cycle.
 
 The default report directory is
 `<projects-root>/.wb/reports/deps-graph-go` (override it with `--report-dir`).

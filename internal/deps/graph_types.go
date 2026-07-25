@@ -29,6 +29,7 @@ type Graph struct {
 	BaseRef       string             `json:"base_ref" yaml:"base_ref"`
 	Filters       GraphFilters       `json:"filters" yaml:"filters"`
 	Summary       GraphSummary       `json:"summary" yaml:"summary"`
+	Order         GraphOrder         `json:"order" yaml:"order"`
 	Repositories  []GraphRepository  `json:"repositories" yaml:"repositories"`
 	Modules       []GraphModule      `json:"modules" yaml:"modules"`
 	Requirements  []GraphRequirement `json:"requirements" yaml:"requirements"`
@@ -48,6 +49,29 @@ type GraphSummary struct {
 	ExternalDependencies int `json:"external_dependencies" yaml:"external_dependencies"`
 	Selections           int `json:"selections" yaml:"selections"`
 	AmbiguousProviders   int `json:"ambiguous_providers" yaml:"ambiguous_providers"`
+}
+
+// GraphOrder is the provider-first layering of the selected repositories. It
+// answers "which repositories must be released first" from the same canonical
+// evidence as every projection, without a second manifest scan.
+type GraphOrder struct {
+	Layers []GraphOrderLayer `json:"layers,omitempty" yaml:"layers,omitempty"`
+	Cycles []GraphOrderCycle `json:"cycles,omitempty" yaml:"cycles,omitempty"`
+}
+
+// GraphOrderLayer lists repositories whose selected internal providers all sit
+// in earlier layers, so the whole layer may be processed as one batch.
+type GraphOrderLayer struct {
+	Index        int      `json:"index" yaml:"index"`
+	Repositories []string `json:"repositories" yaml:"repositories"`
+}
+
+// GraphOrderCycle records repositories that require each other and therefore
+// share one layer, because no release order can separate them.
+type GraphOrderCycle struct {
+	Layer        int      `json:"layer" yaml:"layer"`
+	Repositories []string `json:"repositories" yaml:"repositories"`
+	Path         string   `json:"path" yaml:"path"`
 }
 
 // GraphRepository is a selected repository retained by the filtered graph.

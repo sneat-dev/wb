@@ -146,112 +146,11 @@ func graphProjectionLevels(projection GraphProjection) map[string]int {
 	for _, edge := range projection.Edges {
 		adjacency[edge.From] = append(adjacency[edge.From], edge.To)
 	}
-	for node := range adjacency {
-		sort.Strings(adjacency[node])
-	}
-	index := 0
-	indexes := map[string]int{}
-	lowLink := map[string]int{}
-	onStack := map[string]bool{}
-	var stack []string
-	var components [][]string
-	var connect func(string)
-	connect = func(node string) {
-		indexes[node] = index
-		lowLink[node] = index
-		index++
-		stack = append(stack, node)
-		onStack[node] = true
-		for _, next := range adjacency[node] {
-			if _, visited := indexes[next]; !visited {
-				connect(next)
-				if lowLink[next] < lowLink[node] {
-					lowLink[node] = lowLink[next]
-				}
-			} else if onStack[next] && indexes[next] < lowLink[node] {
-				lowLink[node] = indexes[next]
-			}
-		}
-		if lowLink[node] != indexes[node] {
-			return
-		}
-		var component []string
-		for {
-			last := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			onStack[last] = false
-			component = append(component, last)
-			if last == node {
-				break
-			}
-		}
-		sort.Strings(component)
-		components = append(components, component)
-	}
-	nodeIDs := make([]string, 0, len(adjacency))
-	for node := range adjacency {
-		nodeIDs = append(nodeIDs, node)
-	}
-	sort.Strings(nodeIDs)
-	for _, node := range nodeIDs {
-		if _, visited := indexes[node]; !visited {
-			connect(node)
+	levels := map[string]int{}
+	for _, component := range topologicalLayers(adjacency) {
+		for _, node := range component.nodes {
+			levels[node] = component.level
 		}
 	}
-	componentByNode := map[string]int{}
-	for component, nodes := range components {
-		for _, node := range nodes {
-			componentByNode[node] = component
-		}
-	}
-	componentEdges := map[int]map[int]bool{}
-	indegree := make([]int, len(components))
-	for from, nextNodes := range adjacency {
-		fromComponent := componentByNode[from]
-		for _, to := range nextNodes {
-			toComponent := componentByNode[to]
-			if fromComponent == toComponent {
-				continue
-			}
-			if componentEdges[fromComponent] == nil {
-				componentEdges[fromComponent] = map[int]bool{}
-			}
-			if !componentEdges[fromComponent][toComponent] {
-				componentEdges[fromComponent][toComponent] = true
-				indegree[toComponent]++
-			}
-		}
-	}
-	levels := make([]int, len(components))
-	var ready []int
-	for component := range components {
-		if indegree[component] == 0 {
-			ready = append(ready, component)
-		}
-	}
-	sort.Ints(ready)
-	for len(ready) > 0 {
-		component := ready[0]
-		ready = ready[1:]
-		var targets []int
-		for target := range componentEdges[component] {
-			targets = append(targets, target)
-		}
-		sort.Ints(targets)
-		for _, target := range targets {
-			if levels[target] < levels[component]+1 {
-				levels[target] = levels[component] + 1
-			}
-			indegree[target]--
-			if indegree[target] == 0 {
-				ready = append(ready, target)
-				sort.Ints(ready)
-			}
-		}
-	}
-	result := map[string]int{}
-	for node, component := range componentByNode {
-		result[node] = levels[component]
-	}
-	return result
+	return levels
 }
