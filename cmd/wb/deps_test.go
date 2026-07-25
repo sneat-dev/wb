@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/deps"
@@ -23,7 +25,7 @@ func TestGitHubSlugSupportsSSHAndHTTPS(t *testing.T) {
 func TestDepsCommandExposesCumulativeLifecycleFlags(t *testing.T) {
 	t.Parallel()
 	command := newDepsSetCmd()
-	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll"} {
+	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll", "dependency-order", "layer"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("deps set is missing --%s", name)
 		}
@@ -54,6 +56,30 @@ func TestDepsCommandIncludesGraphViewsAndBrowserReportFlags(t *testing.T) {
 	for _, name := range []string{"fleet", "match", "regex", "ref", "parallel", "dependency", "view", "format", "report-dir", "open"} {
 		if graph.Flags().Lookup(name) == nil {
 			t.Errorf("deps graph is missing --%s", name)
+		}
+	}
+}
+
+func TestDepsSetRejectsUnusableDependencyOrderCombinations(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		args    []string
+		message string
+	}{
+		{args: []string{"go", "example.com/a@v1.0.0", "--layer", "0"}, message: "--layer requires --dependency-order"},
+		{args: []string{"github-actions", "acme/cicd@v1.0.0", "--dependency-order"}, message: "only for the go ecosystem"},
+		{args: []string{"go", "example.com/a@v1.0.0", "--dependency-order", "--propagate", "--fleet"}, message: "cannot be used together"},
+		{args: []string{"go", "example.com/a@v1.0.0", "--dependency-order", "--layer", "two"}, message: "invalid layer selection"},
+	}
+	for _, test := range tests {
+		command := newDepsSetCmd()
+		command.SetArgs(test.args)
+		command.SetOut(io.Discard)
+		command.SetErr(io.Discard)
+		command.SilenceUsage = true
+		err := command.Execute()
+		if err == nil || !strings.Contains(err.Error(), test.message) {
+			t.Errorf("deps set %v error = %v, want %q", test.args, err, test.message)
 		}
 	}
 }

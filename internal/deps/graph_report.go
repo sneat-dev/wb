@@ -28,6 +28,7 @@ func (graph Graph) Markdown() string {
 	if len(graph.Filters.Dependencies) > 0 {
 		fmt.Fprintf(&output, "- Dependency filters: `%s`\n", strings.Join(graph.Filters.Dependencies, "`, `"))
 	}
+	output.WriteString(graph.Order.Markdown())
 	output.WriteString("\n## Requirement evidence\n\n")
 	output.WriteString("| Dependency | Version | Consumer repository | Consumer module | Manifest | Kind | Provider repository | Code graph |\n")
 	output.WriteString("|---|---|---|---|---|---|---|---|\n")

@@ -114,6 +114,47 @@ MUST require fleet scope. It MUST be rejected for ecosystems without a module
 dependency graph, including `github-actions`. Exact set and bump MUST share one
 repository lifecycle engine.
 
+#### REQ: opt-in-dependency-order
+
+`--dependency-order` MUST process the selected repositories in the
+provider-first layers of [Dependency Graph](../dependency-graph/README.md)
+instead of one batch. The layering MUST come from what the selected checkouts
+declare — their own module paths and requirements — never from repository
+names, organizations, or directory layout. It MUST be rejected for ecosystems
+without a module graph, including `github-actions`, and MUST be rejected
+together with `--propagate`, which owns release-event waves.
+
+Ordering MUST NOT wait for a release. A layer boundary is a *sequencing*
+boundary, not a publication one: WB orders the work and reports the boundary,
+and the operator decides when the next layer may start. Waiting for published
+provider versions and requeuing dependants remains exclusively
+[Dependency Bump Waves](../dependency-bump-waves/README.md); exact set MUST NOT
+grow a second release-observation loop.
+
+Without `--dependency-order`, WB MUST behave exactly as it does today: one
+batch, no graph scan, and no layer plan in the reports.
+
+#### REQ: layers-fail-closed-downstream
+
+Layers MUST execute in ascending order, and a later layer MUST NOT start after
+an earlier layer failed. This does not weaken
+`dependency-set#req:complete-independent-results`: repositories inside one
+layer are independent of each other and MUST keep `--parallel` concurrency and
+complete independently, whereas a repository in a later layer is by
+construction *not* independent of a failed provider layer. Repositories in
+unstarted layers MUST be reported as blocked, naming the layer that failed,
+rather than receiving a pull request no CI run can turn green.
+
+#### REQ: operator-driven-layer-selection
+
+`--layer` MUST restrict an ordered run to one layer (`N`), a closed range
+(`N-M`), or every layer from one index onwards (`N-`), so an operator can land
+layer 0, wait for its releases, and continue with layer 1 using the same
+command. It MUST require `--dependency-order`. Layers outside the selection
+MUST be reported as not selected and MUST NOT be inspected or cloned. Markdown
+and YAML MUST record the requested selection, every layer, its repositories,
+and whether it completed, failed, was blocked, or was not selected.
+
 ### Worktrees, verification, and publication
 
 #### REQ: isolated-canonical-checkouts
@@ -234,6 +275,36 @@ any inherited Go privacy settings. `go get`, `go mod tidy`, and final module
 inspection fetch directly through the configured Git credential helper. No
 token appears in WB flags, worktrees, reports, or logs.
 
+### UC: a breaking release is rolled out one layer at a time
+
+A fictional `example.org/dal` release breaks its API, and fifty-six selected
+repositories form nine provider-first levels. Opening every pull request at
+once would pin a version the deepest providers have not released yet, so those
+pull requests could never go green. The operator first reads the plan:
+
+```text
+wb deps set go example.org/dal@v0.64.2 --fleet --dependency-order --dry-run
+```
+
+The report lists layers `00` to `08` with their repositories. The operator then
+lands one layer, waits for its releases, and continues:
+
+```text
+wb deps set go example.org/dal@v0.64.2 --fleet --dependency-order --layer 0 --pr
+wb deps set go example.org/dal@v0.64.2 --fleet --dependency-order --layer 1 --pr
+```
+
+Layers `01` to `08` are reported as not selected during the first run. WB never
+polls for a release; the operator owns the pause between layers.
+
+### UC: a failed provider layer blocks only its dependants
+
+The fictional layer `02` contains three repositories and one fails local
+verification. Its two independent siblings still complete, and the run exits
+non-zero. Layers `03` and above are reported as blocked, naming layer `02`, and
+none of their repositories is cloned, inspected, or given a pull request.
+`--resume` continues after the verification failure is fixed.
+
 ### UC: CI failure is resumed without duplicate PRs
 
 Three fictional repositories are changed. Two PRs pass and merge while one
@@ -297,8 +368,22 @@ dependants span several release layers
 wave report, and allows observed consumer releases to become later dependency
 events without running a second exact-set propagation implementation.
 
+### AC: dependency-order-sequences-without-waiting
+
+**Requirements:** dependency-set#req:opt-in-dependency-order, dependency-set#req:layers-fail-closed-downstream, dependency-set#req:operator-driven-layer-selection, dependency-set#req:deterministic-dual-report
+
+**Given** a selected fleet whose alphabetical order disagrees with its declared
+module dependencies, and a run that requests one layer
+**When** the operator uses `--dependency-order --layer N`
+**Then** WB derives the layering from the declared modules, processes only that
+layer, reports every other layer as not selected without inspecting it, records
+the layer plan and selection in Markdown and YAML, and returns without waiting
+for any release; a failing layer leaves later layers blocked and unstarted.
+
 ## Open Questions
 
+- Should `--dependency-order` eventually offer a supervised wait between
+  layers, or does that belong exclusively to `deps bump` release waves?
 - Should `--add` be one cross-ecosystem flag or require adapter-specific data
   such as a reusable-workflow path and a Go direct-versus-indirect choice?
 - Should a future npm adapter interpret `--allow-downgrade` from the declared

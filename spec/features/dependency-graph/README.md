@@ -92,6 +92,18 @@ registry-latest unless a registry query supplied that evidence. The renderer
 MAY identify the highest comparable version observed in this fleet and MUST
 label that state as fleet-relative.
 
+#### REQ: canonical-release-order
+
+The canonical model MUST carry the provider-first layering of the selected
+repositories, derived from internal provider-to-consumer evidence alone. Layer
+0 MUST require no other selected repository, and every later layer MUST require
+only earlier layers. Repositories that require each other MUST share one layer
+and MUST be reported as a named cycle, because no order can separate them; the
+layering MUST NOT fail, hang, or drop a repository. Selected repositories with
+no internal provider or consumer MUST appear in layer 0 rather than
+disappearing. The layering MUST be present in every deterministic report format
+so an operator, a script, and the SVG layout all read the same order.
+
 #### REQ: stable-projection-identity
 
 Every projected node and edge MUST have a deterministic identifier derived
@@ -246,6 +258,20 @@ multiple versions, indirect requirements, and a repository cycle
 **When** each graph view is generated
 **Then** all views derive from one sorted evidence model, preserve consistent
 counts, display the expected relationships, and retain every manifest source.
+
+### AC: release-order-is-layered-and-names-cycles
+
+**Requirements:** dependency-graph#req:canonical-release-order, dependency-graph#req:canonical-evidence-model, dependency-graph#req:deterministic-report-set
+
+**Given** a selected fleet spans many provider-first levels, includes a
+requirement that skips several levels, a wide fan-out onto one shared module, a
+repository with no internal relationship, and two mutually dependent
+repositories
+**When** the canonical graph is built
+**Then** every repository is placed in the deepest layer any provider chain
+justifies, the unrelated repository is in layer 0, the mutually dependent
+repositories share one layer and are reported with their cycle path, and the
+same layering appears in every report format.
 
 ### AC: deterministic-accessible-browser-report
 

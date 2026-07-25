@@ -175,6 +175,7 @@ func graphFromGoFleet(discovered goFleetGraph, selected []Repository, ref string
 		InternalRequirements: internal, ExternalDependencies: len(externalDependencies), Selections: len(selections),
 		AmbiguousProviders: len(ambiguousProviders),
 	}
+	graph.Order = graph.RepositoryOrder()
 	return graph
 }
 

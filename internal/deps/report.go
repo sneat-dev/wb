@@ -19,6 +19,7 @@ func (report Report) Markdown() string {
 	fmt.Fprintf(&output, "- Status: `%s`\n", report.Status)
 	fmt.Fprintf(&output, "- Base ref: `%s`\n", report.BaseRef)
 	fmt.Fprintf(&output, "- Parallelism: `%d`\n\n", report.Parallel)
+	output.WriteString(report.Order.Markdown())
 	output.WriteString("## Repository index\n\n")
 	output.WriteString("| Repository | Status | Reason | Changed | Commit | PR | Merged |\n")
 	output.WriteString("|---|---|---|---:|---|---|---|\n")

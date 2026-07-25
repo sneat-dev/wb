@@ -81,6 +81,13 @@ type Options struct {
 	PR        bool
 	Merge     bool
 	ReportDir string
+	// Order sequences repositories in provider-first dependency layers derived
+	// from the selected repositories' own module declarations and requirements,
+	// instead of processing the whole selection as one batch.
+	Order bool
+	// Layers restricts an ordered run to one layer or a contiguous range so an
+	// operator can land one layer before starting the next.
+	Layers LayerSelection
 
 	// ResolveGitHubRef is injectable for hermetic adapter tests.
 	ResolveGitHubRef func(context.Context, string, string) (string, error)
@@ -96,7 +103,23 @@ type Report struct {
 	BaseRef       string             `yaml:"base_ref"`
 	Verification  []quality.Check    `yaml:"verification,omitempty"`
 	Parallel      int                `yaml:"parallel"`
+	Order         *OrderReport       `yaml:"order,omitempty"`
 	Repositories  []RepositoryReport `yaml:"repositories"`
+}
+
+// OrderReport records the provider-first layer plan an ordered run followed.
+type OrderReport struct {
+	Selection string             `yaml:"selection"`
+	Layers    []OrderLayerReport `yaml:"layers"`
+	Cycles    []GraphOrderCycle  `yaml:"cycles,omitempty"`
+}
+
+// OrderLayerReport records one layer and how this run treated it: `completed`,
+// `failed`, `blocked` by an earlier failed layer, or `not_selected`.
+type OrderLayerReport struct {
+	Index        int      `yaml:"index"`
+	Repositories []string `yaml:"repositories"`
+	Status       string   `yaml:"status"`
 }
 
 // RepositoryReport records one selected repository and every external stage.

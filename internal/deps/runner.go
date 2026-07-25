@@ -30,13 +30,23 @@ func Run(ctx context.Context, target Target, repositories []Repository, options 
 		target.Resolved = target.Version
 	}
 	handler := exactSetHandler{adapter: adapter, target: target, options: options}
-	results, runErr := orchestrate.Run(ctx, repositories, handler, lifecycle)
 	report := Report{
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "completed", Target: target,
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, Parallel: lifecycle.Parallel,
 	}
 	if lifecycle.Verify {
 		report.Verification = append(report.Verification, lifecycle.Checks...)
+	}
+	var results []orchestrate.Result[[]Decision]
+	var runErr error
+	if options.Order {
+		order, err := orderForRepositories(ctx, repositories, target, lifecycle)
+		if err != nil {
+			return Report{}, err
+		}
+		results, report.Order, runErr = runOrderedLayers(ctx, order, repositories, handler, lifecycle, options.Layers)
+	} else {
+		results, runErr = orchestrate.Run(ctx, repositories, handler, lifecycle)
 	}
 	for _, result := range results {
 		report.Repositories = append(report.Repositories, repositoryReportFromResult(result))
