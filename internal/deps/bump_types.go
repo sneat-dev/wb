@@ -113,8 +113,8 @@ type ReleaseEventRefresh struct {
 // a Go propagation campaign even though its configured remote ref was
 // unavailable. Repositories containing any local go.mod remain hard blockers.
 type GraphDiscoverySkip struct {
-	Repository string `yaml:"repository"`
-	Reason     string `yaml:"reason"`
+	Repository string `json:"repository" yaml:"repository"`
+	Reason     string `json:"reason" yaml:"reason"`
 }
 
 // ReleaseObservation prevents the wave engine from inventing provider versions.

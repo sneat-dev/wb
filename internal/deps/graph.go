@@ -29,7 +29,11 @@ func BuildGraph(ctx context.Context, repositories []Repository, options GraphOpt
 	if err != nil {
 		return Graph{}, err
 	}
-	discovered, err := discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{}, nil)
+	// Same policy as the bump path: a repository that fails inspection and is
+	// provably not a Go repository must not abort a fleet-wide Go graph. Without
+	// this, one website without origin/main empties the whole graph, which is how
+	// `wb deps graph --fleet` came to exit 1 with no output at all.
+	discovered, err := discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, nil)
 	if err != nil {
 		return Graph{}, err
 	}
@@ -56,6 +60,7 @@ func normalizeGraphDependencies(values []string) ([]string, error) {
 
 func graphFromGoFleet(discovered goFleetGraph, selected []Repository, ref string, filters []string) Graph {
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemGo, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
+	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true
