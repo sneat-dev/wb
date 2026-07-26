@@ -43,6 +43,8 @@ wb check [path] [flags]      # run a named local CI-equivalent check profile
 wb status [path] [flags]     # inspect every local repo by default, or one path
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task>    # create a feature branch in a central linked worktree
+wb worktree list [task]      # inspect local WB task worktrees
+wb worktree cleanup <task>   # plan or apply safe merged-task cleanup
 ```
 
 ### Persistent flags
@@ -81,6 +83,29 @@ accepts a clean canonical base checkout for synchronization, or a non-base
 linked worktree in the central hierarchy for development. It rejects feature
 branches and local changes in canonical clones, detached HEADs, and linked
 worktrees stored elsewhere.
+
+Inspect active task worktrees without contacting GitHub:
+
+```sh
+wb worktree list
+wb worktree list bots-e2e --github
+```
+
+After every PR in a coordinated task has merged, plan cleanup first:
+
+```sh
+wb worktree cleanup bots-e2e
+wb worktree cleanup bots-e2e --apply
+wb worktree cleanup bots-e2e --apply --remote
+```
+
+Cleanup is a dry run by default. It removes nothing unless every repository in
+the task is clean, unlocked, and has a merged GitHub PR for the expected base
+whose recorded head is the current branch tip. The default 24-hour safety
+window is configurable with `--older-than`; `--apply` writes an audit report
+below `<projects-root>/.wb/reports/worktree-cleanup/` before removing exact
+worktree and local branch refs. `--remote` is separate and deletes only an
+unchanged remote branch using force-with-lease.
 
 Enable the built-in guard in a repository or global WB hooks policy, then let
 WB install the shims:
