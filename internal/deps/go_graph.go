@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,6 +20,7 @@ type goFleetGraph struct {
 	moduleDeclarations map[string][]goFleetModule
 	requirements       map[string][]goFleetRequirement
 	repositoryModules  map[string][]string
+	discoverySkips     []GraphDiscoverySkip
 }
 
 type goFleetModule struct {
@@ -41,7 +44,11 @@ type graphDiscoveryProgress struct {
 	LastRepository        string
 }
 
-func discoverGoFleetGraph(ctx context.Context, repositories []Repository, options orchestrate.Options, onProgress func(graphDiscoveryProgress)) (goFleetGraph, error) {
+type goGraphDiscoveryPolicy struct {
+	SkipFailedNonGo bool
+}
+
+func discoverGoFleetGraph(ctx context.Context, repositories []Repository, options orchestrate.Options, policy goGraphDiscoveryPolicy, onProgress func(graphDiscoveryProgress)) (goFleetGraph, error) {
 	graph := goFleetGraph{
 		modules: map[string]goFleetModule{}, moduleDeclarations: map[string][]goFleetModule{}, requirements: map[string][]goFleetRequirement{},
 		repositoryModules: map[string][]string{},
@@ -52,6 +59,7 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	results := make([]repositoryGraph, len(repositories))
 	errorsByRepository := make([]error, len(repositories))
+	skipsByRepository := make([]*GraphDiscoverySkip, len(repositories))
 	workers := options.Parallel
 	if workers > len(repositories) {
 		workers = len(repositories)
@@ -98,13 +106,13 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 						canonical = filepath.Join(options.GitHubDir, owner, name)
 					}
 					if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
-						errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
+						errorsByRepository[index], skipsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
 						return
 					}
 					result, err := inspectRepositoryGoGraph(ctx, repository.Slug, canonical, "origin/"+options.Ref, options)
 					results[index] = result
 					if err != nil {
-						errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
+						errorsByRepository[index], skipsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
 					}
 				}()
 			}
@@ -115,15 +123,6 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	close(jobs)
 	group.Wait()
-	var discoveryErrors []error
-	for _, err := range errorsByRepository {
-		if err != nil {
-			discoveryErrors = append(discoveryErrors, err)
-		}
-	}
-	if len(discoveryErrors) > 0 {
-		return graph, errors.Join(discoveryErrors...)
-	}
 	for _, result := range results {
 		for _, module := range result.modules {
 			graph.moduleDeclarations[module.Path] = append(graph.moduleDeclarations[module.Path], module)
@@ -138,6 +137,18 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 			graph.requirements[requirement.Dependency] = append(graph.requirements[requirement.Dependency], requirement)
 		}
 	}
+	var discoveryErrors []error
+	for index, err := range errorsByRepository {
+		if err != nil {
+			discoveryErrors = append(discoveryErrors, err)
+		}
+		if skipsByRepository[index] != nil {
+			graph.discoverySkips = append(graph.discoverySkips, *skipsByRepository[index])
+		}
+	}
+	sort.Slice(graph.discoverySkips, func(i, j int) bool {
+		return graph.discoverySkips[i].Repository < graph.discoverySkips[j].Repository
+	})
 	for repository := range graph.repositoryModules {
 		sort.Strings(graph.repositoryModules[repository])
 	}
@@ -162,7 +173,54 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 			graph.modules[module] = canonical
 		}
 	}
-	return graph, nil
+	return graph, errors.Join(discoveryErrors...)
+}
+
+func classifyGoGraphDiscoveryFailure(repository, canonical string, cause error, policy goGraphDiscoveryPolicy) (error, *GraphDiscoverySkip) {
+	wrapped := fmt.Errorf("%s: %w", repository, cause)
+	if !policy.SkipFailedNonGo {
+		return wrapped, nil
+	}
+	hasGoManifest, inspectErr := repositoryContainsLocalGoManifest(canonical)
+	if inspectErr != nil {
+		return errors.Join(wrapped, fmt.Errorf("%s: cannot prove failed repository is irrelevant to Go propagation: %w", repository, inspectErr)), nil
+	}
+	if hasGoManifest {
+		return wrapped, nil
+	}
+	// A missing remote ref in a website must not abort an otherwise unrelated
+	// Go campaign. We only take this Actions-saving path after a local scan
+	// proves that the repository contains no usable Go manifest.
+	return nil, &GraphDiscoverySkip{
+		Repository: repository,
+		Reason:     fmt.Sprintf("remote Go graph inspection failed, but the local repository contains no go.mod: %v", cause),
+	}
+}
+
+func repositoryContainsLocalGoManifest(root string) (bool, error) {
+	if _, err := os.Stat(root); err != nil {
+		return false, err
+	}
+	found := errors.New("go.mod found")
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && path != root {
+			switch entry.Name() {
+			case ".git", ".wb", ".worktrees", "node_modules", "vendor":
+				return filepath.SkipDir
+			}
+		}
+		if !entry.IsDir() && entry.Name() == "go.mod" && !ignoredManifestPath(filepath.ToSlash(path)) {
+			return found
+		}
+		return nil
+	})
+	if errors.Is(err, found) {
+		return true, nil
+	}
+	return false, err
 }
 
 func canonicalGoModuleDeclaration(module string, declarations []goFleetModule) (goFleetModule, bool) {
@@ -267,17 +325,159 @@ func (graph goFleetGraph) repositoriesForEvents(events []ReleaseEvent) map[strin
 	return result
 }
 
-func (graph goFleetGraph) affectedModules(events []ReleaseEvent) map[string]map[string]bool {
-	result := map[string]map[string]bool{}
-	for _, event := range events {
+// coalescedRepositoriesForEvents selects only the earliest pending
+// provider-first layer. A repository that directly consumes the seed and also
+// consumes an intermediate provider is assigned the longer path, so it waits
+// and receives all releases in one PR and one GitHub Actions build.
+func (graph goFleetGraph) coalescedRepositoriesForEvents(seedEvents, events []ReleaseEvent) (map[string][]Target, []string) {
+	allTargets := graph.repositoriesForEvents(events)
+	if len(allTargets) == 0 {
+		return nil, nil
+	}
+	adjacency := graph.repositoryAdjacency()
+	roots := map[string]bool{}
+	for _, event := range seedEvents {
 		for _, requirement := range graph.requirements[event.Dependency] {
-			if requirement.Version == event.Version {
+			roots[requirement.Repository] = true
+		}
+	}
+	reachable := map[string]bool{}
+	var visit func(string)
+	visit = func(repository string) {
+		if reachable[repository] {
+			return
+		}
+		reachable[repository] = true
+		for _, consumer := range adjacency[repository] {
+			visit(consumer)
+		}
+	}
+	for repository := range roots {
+		visit(repository)
+	}
+	restricted := map[string][]string{}
+	for repository := range reachable {
+		for _, consumer := range adjacency[repository] {
+			if reachable[consumer] {
+				restricted[repository] = append(restricted[repository], consumer)
+			}
+		}
+		if _, exists := restricted[repository]; !exists {
+			restricted[repository] = nil
+		}
+	}
+	levels := map[string]int{}
+	for _, component := range topologicalLayers(restricted) {
+		for _, repository := range component.nodes {
+			levels[repository] = component.level
+		}
+	}
+	firstLevel := int(^uint(0) >> 1)
+	for repository := range allTargets {
+		level, exists := levels[repository]
+		if !exists {
+			level = 0
+		}
+		if level < firstLevel {
+			firstLevel = level
+		}
+	}
+	selected := map[string][]Target{}
+	var deferred []string
+	for repository, targets := range allTargets {
+		level, exists := levels[repository]
+		if !exists {
+			level = 0
+		}
+		if level == firstLevel {
+			selected[repository] = targets
+		} else {
+			deferred = append(deferred, repository)
+		}
+	}
+	sort.Strings(deferred)
+	return selected, deferred
+}
+
+func (graph goFleetGraph) repositoryAdjacency() map[string][]string {
+	sets := map[string]map[string]bool{}
+	for dependency, requirements := range graph.requirements {
+		provider, exists := graph.modules[dependency]
+		if !exists {
+			continue
+		}
+		if sets[provider.Repository] == nil {
+			sets[provider.Repository] = map[string]bool{}
+		}
+		for _, requirement := range requirements {
+			if provider.Repository == requirement.Repository {
 				continue
 			}
-			if result[requirement.Repository] == nil {
-				result[requirement.Repository] = map[string]bool{}
+			if sets[requirement.Repository] == nil {
+				sets[requirement.Repository] = map[string]bool{}
 			}
-			result[requirement.Repository][requirement.ConsumerModule] = true
+			sets[provider.Repository][requirement.Repository] = true
+		}
+	}
+	adjacency := make(map[string][]string, len(sets))
+	for repository, consumers := range sets {
+		for consumer := range consumers {
+			adjacency[repository] = append(adjacency[repository], consumer)
+		}
+		sort.Strings(adjacency[repository])
+	}
+	return adjacency
+}
+
+// pendingCarriersBlockTargets reports whether an unpublished, already-current
+// provider is upstream of this selected batch. Independent repositories may
+// still build while WB waits; only downstream CI is held back for coalescing.
+func (graph goFleetGraph) pendingCarriersBlockTargets(carriers []ReleaseObservation, targets map[string][]Target) bool {
+	if len(targets) == 0 {
+		return true
+	}
+	adjacency := graph.repositoryAdjacency()
+	for _, carrier := range carriers {
+		if carrier.Status == "released" && carrier.After != "" {
+			continue
+		}
+		visited := map[string]bool{}
+		var reachesTarget func(string) bool
+		reachesTarget = func(repository string) bool {
+			if visited[repository] {
+				return false
+			}
+			visited[repository] = true
+			if repository != carrier.Repository && len(targets[repository]) > 0 {
+				return true
+			}
+			for _, consumer := range adjacency[repository] {
+				if reachesTarget(consumer) {
+					return true
+				}
+			}
+			return false
+		}
+		if reachesTarget(carrier.Repository) {
+			return true
+		}
+	}
+	return false
+}
+
+func (graph goFleetGraph) affectedModules(targetsByRepository map[string][]Target) map[string]map[string]bool {
+	result := map[string]map[string]bool{}
+	for repository, targets := range targetsByRepository {
+		for _, target := range targets {
+			for _, requirement := range graph.requirements[target.Dependency] {
+				if requirement.Repository != repository || requirement.Version == target.Version {
+					continue
+				}
+				if result[repository] == nil {
+					result[repository] = map[string]bool{}
+				}
+				result[repository][requirement.ConsumerModule] = true
+			}
 		}
 	}
 	return result

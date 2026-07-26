@@ -25,7 +25,7 @@ func TestGitHubSlugSupportsSSHAndHTTPS(t *testing.T) {
 func TestDepsCommandExposesCumulativeLifecycleFlags(t *testing.T) {
 	t.Parallel()
 	command := newDepsSetCmd()
-	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll", "dependency-order", "layer"} {
+	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll", "refresh-after", "dependency-order", "layer"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("deps set is missing --%s", name)
 		}
@@ -39,7 +39,7 @@ func TestDepsCommandIncludesBumpWithWaveLifecycleFlags(t *testing.T) {
 	if err != nil || bump == command {
 		t.Fatalf("find bump: command=%q, error=%v", bump.Name(), err)
 	}
-	for _, name := range []string{"changed", "fleet", "parallel", "max-waves", "release-poll", "resume", "commit", "push", "pr", "merge"} {
+	for _, name := range []string{"changed", "fleet", "parallel", "max-waves", "release-poll", "refresh-after", "resume", "commit", "push", "pr", "merge"} {
 		if bump.Flags().Lookup(name) == nil {
 			t.Errorf("deps bump is missing --%s", name)
 		}
