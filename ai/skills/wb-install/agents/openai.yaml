@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Install"
+  short_description: "Install and verify the required WB build"
+  default_prompt: "Use $wb-install to install and verify the WB build required by this task."

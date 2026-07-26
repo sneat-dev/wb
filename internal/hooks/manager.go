@@ -36,6 +36,9 @@ type ApplyOptions struct {
 	RepoPath     string
 	ConfigPath   string
 	WBExecutable string
+	// ProjectsRoot is persisted in every shim so hooks keep the same checkout
+	// policy when WB was invoked with a non-default --projects-root.
+	ProjectsRoot string
 	Repair       bool
 	Force        bool
 	Now          func() time.Time
@@ -87,12 +90,20 @@ func expectedHookNames(policy Policy) []string {
 	return result
 }
 
-func shimContent(executable, hook, explicitConfig string) string {
-	return "#!/bin/sh\nset -eu\n\n" + shimManagedSection(executable, hook, explicitConfig)
+func shimContent(executable, hook, explicitConfig, projectsRoot string) string {
+	return "#!/bin/sh\nset -eu\n\n" + shimManagedSection(executable, hook, explicitConfig, projectsRoot)
 }
 
-func shimManagedSection(executable, hook, explicitConfig string) string {
-	args := []string{shellQuote(executable), "hooks", "run"}
+func shimManagedSection(executable, hook, explicitConfig, projectsRoot string) string {
+	args := []string{shellQuote(executable)}
+	if projectsRoot != "" {
+		// A hook starts in the repository, outside the command that installed
+		// it, so it cannot recover a caller's non-default projects root.
+		// Embedding the absolute install-time root keeps worktree guards
+		// consistent at checkout, commit, and push.
+		args = append(args, "--projects-root", shellQuote(projectsRoot))
+	}
+	args = append(args, "hooks", "run")
 	if explicitConfig != "" {
 		args = append(args, "--config", shellQuote(expandPath(explicitConfig)))
 	}
@@ -110,10 +121,25 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
+func absoluteProjectsRoot(projectsRoot string) (string, error) {
+	if projectsRoot == "" {
+		return "", nil
+	}
+	absolute, err := filepath.Abs(expandPath(projectsRoot))
+	if err != nil {
+		return "", fmt.Errorf("resolve projects root: %w", err)
+	}
+	return filepath.Clean(absolute), nil
+}
+
 // Check validates config, core.hooksPath, generated shims, and executability
 // without changing repository state.
-func Check(repoPath, configPath, wbExecutable string) (CheckReport, error) {
+func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport, error) {
 	policy, err := LoadPolicy(repoPath, configPath)
+	if err != nil {
+		return CheckReport{}, err
+	}
+	projectsRoot, err = absoluteProjectsRoot(projectsRoot)
 	if err != nil {
 		return CheckReport{}, err
 	}
@@ -152,7 +178,7 @@ func Check(repoPath, configPath, wbExecutable string) (CheckReport, error) {
 			report.Findings = append(report.Findings, Finding{Code: "hook-missing", Message: fmt.Sprintf("managed %s hook is missing", name), Path: path})
 			continue
 		}
-		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath)
+		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath, projectsRoot)
 		actual, managed, valid := extractManagedSection(string(data))
 		if !managed || !valid || actual != expected {
 			report.Findings = append(report.Findings, Finding{Code: "hook-stale", Message: fmt.Sprintf("managed %s hook differs from the expected shim", name), Path: path})
@@ -194,6 +220,10 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	if err != nil {
 		return ApplyResult{}, err
 	}
+	options.ProjectsRoot, err = absoluteProjectsRoot(options.ProjectsRoot)
+	if err != nil {
+		return ApplyResult{}, err
+	}
 	managed, err := managedPath(policy.RepoRoot)
 	if err != nil {
 		return ApplyResult{}, err
@@ -224,8 +254,8 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	names := expectedHookNames(policy)
 	for _, name := range names {
 		path := filepath.Join(managed, name)
-		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath)
-		content := shimContent(options.WBExecutable, name, policy.ExplicitPath)
+		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot)
+		content := shimContent(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot)
 		if existing, readErr := os.ReadFile(path); readErr == nil {
 			if !isManagedContent(string(existing)) {
 				if !options.Force {
@@ -262,7 +292,7 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		}
 		result.Actions = append(result.Actions, "configured core.hooksPath="+managed)
 	}
-	report, err := Check(policy.RepoRoot, options.ConfigPath, options.WBExecutable)
+	report, err := Check(policy.RepoRoot, options.ConfigPath, options.WBExecutable, options.ProjectsRoot)
 	if err != nil {
 		return ApplyResult{}, err
 	}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Fleet"
+  short_description: "Sync, inspect, and verify repository fleets"
+  default_prompt: "Use $wb-fleet to choose the smallest WB fleet command for this inspection or verification."

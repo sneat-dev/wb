@@ -19,13 +19,13 @@ go install github.com/sneat-dev/wb/cmd/wb@latest
 
 A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 
-## Agent skill
+## Agent skills
 
-The portable [`wb-worktrees` Agent Skill](ai/skills/wb-worktrees/SKILL.md)
-teaches Codex, Claude Code, and other Agent Skills clients to create branches
-through WB instead of changing a canonical clone. The same `SKILL.md` is the
-source for every harness. Claude Code distribution metadata is intentionally
-thin and points back to `ai/skills/`; no second copy of the workflow exists.
+The portable [WB Agent Skills](ai/README.md) teach Codex, Claude Code, and other
+Agent Skills clients when and how to use every public WB command. Thin command
+skills defer detailed flags until needed; workflow skills compose safe code
+changes and dependency campaigns without making agents rediscover the process.
+Every harness reads the same `ai/skills/*/SKILL.md` files.
 
 ## Commands
 
@@ -882,6 +882,9 @@ unmanaged active hook. `repair --force` preserves hooks at an old configured
 path and backs up any unmanaged collision inside WB's directory before replacing
 it. `check` (alias `validate`) detects missing, stale, unexpected, or
 non-executable shims; `--json` makes its result consumable by CI or Backstage.
+Managed shims also preserve the absolute `--projects-root` used at installation,
+so worktree guards remain correct when Git invokes them from a non-default
+projects hierarchy.
 
 #### Hook policy, detection, and composable profiles
 

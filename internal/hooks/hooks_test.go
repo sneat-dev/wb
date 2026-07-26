@@ -286,7 +286,10 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
 	executable := "/opt/wb test/bin/wb"
-	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	projectsRoot := "/tmp/projects root"
+	result, err := Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: executable, ProjectsRoot: projectsRoot,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +310,8 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), managedStartMarker) || !strings.Contains(string(data), managedEndMarker) ||
-		!strings.Contains(string(data), "'/opt/wb test/bin/wb' hooks run 'pre-commit' -- \"$@\"") || strings.Contains(string(data), "exec ") {
+		!strings.Contains(string(data), "'/opt/wb test/bin/wb' --projects-root '/tmp/projects root' hooks run 'pre-commit' -- \"$@\"") ||
+		strings.Contains(string(data), "exec ") {
 		t.Fatalf("unexpected shim:\n%s", data)
 	}
 	info, _ := os.Stat(preCommit)
@@ -321,15 +325,17 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 
 	mustWrite(t, preCommit, strings.Replace(string(data), executable, "/old/wb", 1))
 	stale := filepath.Join(result.Report.ManagedPath, "commit-msg")
-	mustWrite(t, stale, shimContent(executable, "commit-msg", ""))
-	report, err := Check(repo, "", executable)
+	mustWrite(t, stale, shimContent(executable, "commit-msg", "", projectsRoot))
+	report, err := Check(repo, "", executable, projectsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !hasFinding(report.Findings, "hook-stale") || !hasFinding(report.Findings, "hook-unexpected") {
 		t.Fatalf("drift findings = %#v", report.Findings)
 	}
-	repaired, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable, Repair: true})
+	repaired, err := Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: executable, ProjectsRoot: projectsRoot, Repair: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,6 +344,34 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale managed hook still exists: %v", err)
+	}
+}
+
+func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	relativeRoot := filepath.Join(".", "projects root")
+	absoluteRoot, err := filepath.Abs(relativeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: "/opt/wb", ProjectsRoot: relativeRoot,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit, err := os.ReadFile(filepath.Join(result.Report.ManagedPath, "pre-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := "'/opt/wb' --projects-root " + shellQuote(absoluteRoot) + " hooks run 'pre-commit'"
+	if !strings.Contains(string(preCommit), expected) {
+		t.Fatalf("managed hook does not preserve the absolute projects root %q:\n%s", absoluteRoot, preCommit)
+	}
+	if report, checkErr := Check(repo, "", "/opt/wb", relativeRoot); checkErr != nil || len(report.Findings) != 0 {
+		t.Fatalf("relative projects root should check cleanly: report = %#v, error = %v", report, checkErr)
 	}
 }
 
@@ -355,7 +389,7 @@ func TestRepairPreservesUserSectionsOutsideManagedDelimiter(t *testing.T) {
 	}
 	withUserSections := strings.Replace(string(installed), "#!/bin/sh\nset -eu\n\n", "#!/bin/sh\nset -eu\necho before\n", 1) + "echo after\n"
 	mustWrite(t, prePush, withUserSections)
-	if report, checkErr := Check(repo, "", "/old/wb"); checkErr != nil || len(report.Findings) != 0 {
+	if report, checkErr := Check(repo, "", "/old/wb", ""); checkErr != nil || len(report.Findings) != 0 {
 		t.Fatalf("user sections should not cause drift: report = %#v, error = %v", report, checkErr)
 	}
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB CI"
+  short_description: "Audit repository CI and artifact policies"
+  default_prompt: "Use $wb-ci to audit CI policy for this repository or fleet."
