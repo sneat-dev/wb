@@ -1,0 +1,19 @@
+{
+  "name": "wb",
+  "description": "Safe Git branch creation and isolated worktree workflows for WB",
+  "author": {
+    "name": "Sneat.dev"
+  },
+  "homepage": "https://wb.sneat.dev",
+  "repository": "https://github.com/sneat-dev/wb",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "worktrees",
+    "branches",
+    "agents"
+  ],
+  "skills": [
+    "./ai/skills/wb-worktrees"
+  ]
+}

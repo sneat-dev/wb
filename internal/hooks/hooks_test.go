@@ -144,6 +144,59 @@ func TestLoadPolicyDoesNotAutoDetectProfilesUntilEnabled(t *testing.T) {
 	}
 }
 
+func TestWorktreeProfileIsExplicitAndCoversCheckoutCommitAndPush(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
+
+	policy, err := LoadPolicy(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.ActiveProfiles) != 1 || policy.ActiveProfiles[0].Name != "worktree" ||
+		policy.ActiveProfiles[0].Reason != "included by policy" {
+		t.Fatalf("active profiles = %#v", policy.ActiveProfiles)
+	}
+	for _, hook := range []string{"post-checkout", "pre-commit", "pre-push"} {
+		blocks := hookBlocks(policy, hook)
+		if len(blocks) == 0 || blocks[len(blocks)-1].ID != "worktree/"+hook {
+			t.Fatalf("%s blocks = %#v", hook, blocks)
+		}
+	}
+}
+
+func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
+	logPath := filepath.Join(t.TempDir(), "wb.log")
+	fakeWB := filepath.Join(t.TempDir(), "wb")
+	mustWriteExecutable(t, fakeWB, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WB_TEST_LOG\"\n")
+	t.Setenv("WB_TEST_LOG", logPath)
+	projects := filepath.Join(t.TempDir(), "projects")
+
+	result, err := Run(RunOptions{
+		RepoPath: repo, Hook: "post-checkout",
+		Args: []string{"old", "new", "1"}, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+		WBExecutable: fakeWB, ProjectsRoot: projects,
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("run result = %#v, error = %v", result, err)
+	}
+	output, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--projects-root " + projects + " worktree guard --quiet " + repo
+	if got := strings.TrimSpace(string(output)); got != want {
+		t.Fatalf("guard invocation = %q, want %q", got, want)
+	}
+}
+
 func TestLoadPolicyCustomProductProfileAndBuiltInOverride(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

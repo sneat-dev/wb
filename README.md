@@ -19,6 +19,14 @@ go install github.com/sneat-dev/wb/cmd/wb@latest
 
 A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
 
+## Agent skill
+
+The portable [`wb-worktrees` Agent Skill](ai/skills/wb-worktrees/SKILL.md)
+teaches Codex, Claude Code, and other Agent Skills clients to create branches
+through WB instead of changing a canonical clone. The same `SKILL.md` is the
+source for every harness. Claude Code distribution metadata is intentionally
+thin and points back to `ai/skills/`; no second copy of the workflow exists.
+
 ## Commands
 
 ```
@@ -34,6 +42,7 @@ wb verify [path] [flags]     # run conventional lint, test, and build checks
 wb check [path] [flags]      # run a named local CI-equivalent check profile
 wb status [path] [flags]     # inspect every local repo by default, or one path
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
+wb worktree create <task>    # create a feature branch in a central linked worktree
 ```
 
 ### Persistent flags
@@ -43,6 +52,56 @@ wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Gi
 | `--projects-root P` | `~/projects` | Root dir holding `{org}/{repo}` clones. |
 | `--filter S` | — | Only process repos whose `org/name` contains `S`. |
 | `--org O` | — | Query an additional GitHub owner (repeatable). **Not used by `sync`** — see below. |
+
+### `wb worktree` — isolated feature branches
+
+Keep canonical clones at `<projects-root>/<owner>/<repository>` clean and on
+`main`. Create every feature branch in WB's shared worktree hierarchy:
+
+```sh
+# From any checkout of sneat-bots; owner/repository is derived from origin.
+wb worktree create bots-e2e
+
+# Create coordinated branches for a cross-repository change.
+wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go
+
+# Override the default codex/<task> branch or resume an existing exact checkout.
+wb worktree create bots-e2e sneat-co/sneat-bots \
+  --branch agent/bots-e2e --resume
+```
+
+Before branching, WB requires every canonical clone to be clean and checked
+out on the selected base (`main` by default), then runs
+`git pull --ff-only --no-tags origin <base>`. Worktrees are created at
+`<projects-root>/.wb/worktrees/<task>/<owner>/<repository>`. Existing branches
+and worktrees are rejected unless `--resume` is explicit.
+
+`wb worktree guard [path]` is the policy check used by agents and Git hooks. It
+accepts a clean canonical base checkout for synchronization, or a non-base
+linked worktree in the central hierarchy for development. It rejects feature
+branches and local changes in canonical clones, detached HEADs, and linked
+worktrees stored elsewhere.
+
+Enable the built-in guard in a repository or global WB hooks policy, then let
+WB install the shims:
+
+```yaml
+version: 1
+profiles:
+  include:
+    - worktree
+```
+
+```sh
+wb hooks install .
+```
+
+The profile runs the same `wb worktree guard` policy at `post-checkout`,
+`pre-commit`, and `pre-push`. Git has no pre-checkout hook: when an agent
+checks out a feature branch in a canonical clone, `post-checkout` makes that
+Git command fail with recovery instructions, but the agent must still switch
+the canonical clone back to `main`. The commit and push guards are the hard
+boundary that prevents unsafe work from progressing.
 
 ### `wb sync`
 

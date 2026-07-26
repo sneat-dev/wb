@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	BuiltinGoPreCommit  = "builtin:go-pre-commit"
-	BuiltinGoPrePush    = "builtin:go-pre-push"
-	BuiltinNodePrePush  = "builtin:node-pre-push"
-	defaultProfileOrder = 200
+	BuiltinGoPreCommit   = "builtin:go-pre-commit"
+	BuiltinGoPrePush     = "builtin:go-pre-push"
+	BuiltinNodePrePush   = "builtin:node-pre-push"
+	BuiltinWorktreeGuard = "builtin:worktree-guard"
+	defaultProfileOrder  = 200
 )
 
 // ProfilesConfig controls automatic detection and profile composition. Each
@@ -75,6 +76,15 @@ func builtinProfileDefinitions() map[string]ProfileDefinition {
 			Detection: ProfileDetection{AllFiles: []string{"package.json"}},
 			Hooks: map[string]ResolvedHook{
 				"pre-push": builtinProfileHook("pre-push", BuiltinNodePrePush, "node"),
+			},
+		},
+		"worktree": {
+			Name:  "worktree",
+			Order: 10,
+			Hooks: map[string]ResolvedHook{
+				"post-checkout": builtinProfileHook("post-checkout", BuiltinWorktreeGuard, "worktree"),
+				"pre-commit":    builtinProfileHook("pre-commit", BuiltinWorktreeGuard, "worktree"),
+				"pre-push":      builtinProfileHook("pre-push", BuiltinWorktreeGuard, "worktree"),
 			},
 		},
 	}

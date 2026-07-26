@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Worktrees"
+  short_description: "Create safe branches in central WB worktrees"
+  default_prompt: "Use $wb-worktrees to create an isolated feature branch without modifying a canonical clone."
