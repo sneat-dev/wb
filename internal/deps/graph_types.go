@@ -33,6 +33,10 @@ type Graph struct {
 	Repositories  []GraphRepository  `json:"repositories" yaml:"repositories"`
 	Modules       []GraphModule      `json:"modules" yaml:"modules"`
 	Requirements  []GraphRequirement `json:"requirements" yaml:"requirements"`
+	// DiscoverySkips lists repositories excluded from the walk rather than
+	// inspected. It belongs to the graph rather than to a log line so that no
+	// output format can present a partial fleet as a complete one.
+	DiscoverySkips []GraphDiscoverySkip `json:"discovery_skips,omitempty" yaml:"discovery_skips,omitempty"`
 }
 
 // GraphFilters records evidence filters applied after repository discovery.
