@@ -106,13 +106,13 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 						canonical = filepath.Join(options.GitHubDir, owner, name)
 					}
 					if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
-						errorsByRepository[index], skipsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
+						skipsByRepository[index], errorsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
 						return
 					}
 					result, err := inspectRepositoryGoGraph(ctx, repository.Slug, canonical, "origin/"+options.Ref, options)
 					results[index] = result
 					if err != nil {
-						errorsByRepository[index], skipsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
+						skipsByRepository[index], errorsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
 					}
 				}()
 			}
@@ -176,25 +176,25 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	return graph, errors.Join(discoveryErrors...)
 }
 
-func classifyGoGraphDiscoveryFailure(repository, canonical string, cause error, policy goGraphDiscoveryPolicy) (error, *GraphDiscoverySkip) {
+func classifyGoGraphDiscoveryFailure(repository, canonical string, cause error, policy goGraphDiscoveryPolicy) (*GraphDiscoverySkip, error) {
 	wrapped := fmt.Errorf("%s: %w", repository, cause)
 	if !policy.SkipFailedNonGo {
-		return wrapped, nil
+		return nil, wrapped
 	}
 	hasGoManifest, inspectErr := repositoryContainsLocalGoManifest(canonical)
 	if inspectErr != nil {
-		return errors.Join(wrapped, fmt.Errorf("%s: cannot prove failed repository is irrelevant to Go propagation: %w", repository, inspectErr)), nil
+		return nil, errors.Join(wrapped, fmt.Errorf("%s: cannot prove failed repository is irrelevant to Go propagation: %w", repository, inspectErr))
 	}
 	if hasGoManifest {
-		return wrapped, nil
+		return nil, wrapped
 	}
 	// A missing remote ref in a website must not abort an otherwise unrelated
 	// Go campaign. We only take this Actions-saving path after a local scan
 	// proves that the repository contains no usable Go manifest.
-	return nil, &GraphDiscoverySkip{
+	return &GraphDiscoverySkip{
 		Repository: repository,
 		Reason:     fmt.Sprintf("remote Go graph inspection failed, but the local repository contains no go.mod: %v", cause),
-	}
+	}, nil
 }
 
 func repositoryContainsLocalGoManifest(root string) (bool, error) {

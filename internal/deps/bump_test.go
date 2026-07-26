@@ -231,16 +231,16 @@ func TestGoGraphDiscoveryFailureSkipsOnlyProvenNonGoRepository(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "package.json"), "{}\n")
 	cause := errors.New("origin/main is unavailable")
-	err, skip := classifyGoGraphDiscoveryFailure("acme/website", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
+	skip, err := classifyGoGraphDiscoveryFailure("acme/website", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
 	if err != nil || skip == nil || skip.Repository != "acme/website" {
 		t.Fatalf("non-Go classification: error=%v skip=%+v", err, skip)
 	}
-	err, skip = classifyGoGraphDiscoveryFailure("acme/website", root, cause, goGraphDiscoveryPolicy{})
+	skip, err = classifyGoGraphDiscoveryFailure("acme/website", root, cause, goGraphDiscoveryPolicy{})
 	if err == nil || skip != nil {
 		t.Fatalf("strict graph classification: error=%v skip=%+v", err, skip)
 	}
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/relevant\n\ngo 1.24\n")
-	err, skip = classifyGoGraphDiscoveryFailure("acme/service", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
+	skip, err = classifyGoGraphDiscoveryFailure("acme/service", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
 	if err == nil || skip != nil || !strings.Contains(err.Error(), cause.Error()) {
 		t.Fatalf("Go classification: error=%v skip=%+v", err, skip)
 	}
