@@ -15,14 +15,16 @@ import (
 )
 
 type RunOptions struct {
-	RepoPath   string
-	ConfigPath string
-	Hook       string
-	Args       []string
-	Stdin      io.Reader
-	Stdout     io.Writer
-	Stderr     io.Writer
-	Now        func() time.Time
+	RepoPath     string
+	ConfigPath   string
+	Hook         string
+	Args         []string
+	Stdin        io.Reader
+	Stdout       io.Writer
+	Stderr       io.Writer
+	Now          func() time.Time
+	WBExecutable string
+	ProjectsRoot string
 }
 
 type RunResult struct {
@@ -156,6 +158,10 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 	cmd.Stdin = options.Stdin
 	cmd.Stdout = options.Stdout
 	cmd.Stderr = options.Stderr
+	wbExecutable := options.WBExecutable
+	if wbExecutable == "" {
+		wbExecutable, _ = os.Executable()
+	}
 	cmd.Env = append(os.Environ(),
 		"WB_HOOK="+block.Hook.Name,
 		"WB_PROFILE="+block.Profile,
@@ -166,6 +172,8 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 		"WB_BRANCH="+context.branch,
 		"WB_HOOKS_CONFIG="+block.Hook.ConfigPath,
 		"WB_HOOK_METRICS_PATH="+policy.Metrics.Path,
+		"WB_EXECUTABLE="+wbExecutable,
+		"WB_PROJECTS_ROOT="+options.ProjectsRoot,
 	)
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError

@@ -333,13 +333,15 @@ func newHooksRunCmd() *cobra.Command {
 		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := hooks.Run(hooks.RunOptions{
-				RepoPath:   ".",
-				ConfigPath: configPath,
-				Hook:       args[0],
-				Args:       args[1:],
-				Stdin:      cmd.InOrStdin(),
-				Stdout:     cmd.OutOrStdout(),
-				Stderr:     cmd.ErrOrStderr(),
+				RepoPath:     ".",
+				ConfigPath:   configPath,
+				Hook:         args[0],
+				Args:         args[1:],
+				Stdin:        cmd.InOrStdin(),
+				Stdout:       cmd.OutOrStdout(),
+				Stderr:       cmd.ErrOrStderr(),
+				WBExecutable: hookExecutable(),
+				ProjectsRoot: projectsRoot,
 			})
 			if result.MetricsError != nil {
 				// A metrics warning must never turn a successful Git hook into a

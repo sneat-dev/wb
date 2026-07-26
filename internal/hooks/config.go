@@ -331,6 +331,13 @@ run_if_present() {
 run_if_present lint
 run_if_present test
 `, true
+	case BuiltinWorktreeGuard:
+		return `#!/bin/sh
+set -eu
+: "${WB_EXECUTABLE:?WB_EXECUTABLE is required for the worktree guard}"
+: "${WB_PROJECTS_ROOT:?WB_PROJECTS_ROOT is required for the worktree guard}"
+exec "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" worktree guard --quiet "$WB_REPO_ROOT"
+`, true
 	default:
 		return "", false
 	}
