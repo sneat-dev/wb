@@ -16,6 +16,8 @@ Compose the low-level skills; do not restate their command details.
    pre-push path.
 6. Push once per meaningful revision and let the managed pre-push hook run.
 7. Open or update PRs, wait for required checks, and merge in dependency order.
+8. After every coordinated PR merges, use `$wb-worktrees` to inspect the
+   cleanup dry run, then apply safe task cleanup.
 
 Keep read-only sibling repositories on clean, freshly synchronized canonical
 `main`. If a sibling needs any modification, include it in the task's WB

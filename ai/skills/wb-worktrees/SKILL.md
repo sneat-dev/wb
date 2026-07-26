@@ -1,6 +1,6 @@
 ---
 name: wb-worktrees
-description: Use WB to guard a checkout or create and resume isolated feature worktrees. Use before editing a repository, creating a branch, coordinating one task across repositories, or recovering from an unsafe checkout.
+description: Use WB to guard, create, resume, inspect, or safely clean isolated feature worktrees. Use before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout.
 ---
 
 # WB worktrees
@@ -16,6 +16,8 @@ Make feature changes only below:
 
 - Read [create.md](references/create.md) to start or resume a task.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
+- Read [lifecycle.md](references/lifecycle.md) to inspect tasks or clean merged
+  worktrees and branches.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.
 
 ## Fast path
@@ -24,6 +26,7 @@ Make feature changes only below:
 wb worktree guard .
 wb worktree create <task> --branch <prefix>/<task> <owner>/<repository>
 wb worktree guard <printed-worktree-path>
+wb worktree list <task>
 ```
 
 Use `codex/`, `claude/`, or the active harness's required prefix. Use one task
