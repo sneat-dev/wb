@@ -404,7 +404,7 @@ for synthetic use cases and acceptance criteria. By default, `deps set` does
 not discover newer releases or recalculate provider-to-consumer release waves.
 For an exact Go target, `--propagate --fleet` delegates to `deps bump` with one
 initial release event; `--max-waves` and `--release-poll` tune that delegated
-campaign.
+campaign, and `--refresh-after` controls stale-event registry rechecks.
 
 ### `wb deps bump` — published-version propagation waves
 
@@ -430,12 +430,23 @@ a release event for the next wave. `deps bump` also accepts multiple initial
 several providers together.
 
 Each wave rebuilds the graph from `origin/<ref>` and changes direct consumers
-whose requirements are stale. Independent repositories share the same typed
+whose requirements are stale. WB assigns an affected repository to its
+longest provider path and starts only the earliest pending layer. For example,
+if Sneat-Go consumes both Dalgo and Sneat-Bots, it waits for the Sneat-Bots
+release and receives both versions in one PR and one CI build instead of being
+built once per provider. Deferred repositories are named in the report.
+Independent repositories share the same typed
 clone/worktree/verification/commit/PR/CI lifecycle used by `deps set`. After
 green PRs merge, WB captures an actual newer registry version before touching
 downstream repositories; it never invents the next version. If a release is
 not visible before `--timeout`, the report remains `awaiting_release` and
 `--resume` continues from the persisted pre-merge baseline.
+
+A campaign can wait long enough for a still newer provider version to appear.
+Before starting downstream work, WB rechecks accumulated release events older
+than `--refresh-after` (default `5m`). A newer registry version replaces the
+stale event and the wave is replanned before any worktree or CI run is created;
+`--refresh-after=0` disables these inexpensive rechecks.
 
 A second sweep can traverse repositories that were already updated before the
 campaign: WB requires both a current `origin/<ref>` manifest and a published
@@ -443,6 +454,12 @@ module whose downloaded `go.mod` contains the seed versions. This evidence
 turns the existing consumer release into the next event. Relevant
 cross-repository dependency cycles fail before any worktree is created because
 they need a separate coordinated-release protocol.
+
+Fleet bump discovery tolerates a broken remote ref only when a recursive local
+scan can prove that the repository has no `go.mod`. Such non-Go skips are
+audited. A repository containing any Go manifest—or one whose local contents
+cannot be inspected—remains a hard blocker, so a relevant service is never
+silently omitted.
 
 Without publication flags, the first changed wave stays in local worktrees.
 `--commit`, `--push`, `--pr`, and `--merge` are cumulative just as for

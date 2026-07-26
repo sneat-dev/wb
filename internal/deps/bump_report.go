@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -35,11 +36,32 @@ func (report BumpReport) Markdown() string {
 	for _, event := range report.SeedEvents {
 		fmt.Fprintf(&output, "- `%s@%s` — `%s`\n", event.Dependency, event.Version, event.Source)
 	}
+	if len(report.DiscoverySkips) > 0 {
+		output.WriteString("\n## Skipped discovery failures\n\n")
+		output.WriteString("These repositories were skipped only after a local scan proved that they contain no Go manifest:\n\n")
+		for _, skip := range report.DiscoverySkips {
+			fmt.Fprintf(&output, "- `%s` — %s\n", skip.Repository, skip.Reason)
+		}
+	}
 	for _, wave := range report.Waves {
 		fmt.Fprintf(&output, "\n## Wave %d — `%s`\n\n", wave.Index, wave.Status)
 		output.WriteString("Events:\n\n")
 		for _, event := range wave.Events {
 			fmt.Fprintf(&output, "- `%s@%s` — `%s`\n", event.Dependency, event.Version, event.Source)
+		}
+		if len(wave.Refreshes) > 0 {
+			output.WriteString("\n### Stale-event registry checks\n\n")
+			output.WriteString("| Dependency | Before | After | Checked | Reason |\n")
+			output.WriteString("|---|---|---|---|---|\n")
+			for _, refresh := range wave.Refreshes {
+				fmt.Fprintf(&output, "| `%s` | `%s` | `%s` | `%s` | %s |\n",
+					refresh.Dependency, refresh.Before, refresh.After, refresh.CheckedAt.Format(time.RFC3339), escapeTable(refresh.Reason))
+			}
+		}
+		if len(wave.DeferredRepositories) > 0 {
+			output.WriteString("\n### Deferred to coalesce releases\n\n")
+			output.WriteString("No worktree or CI run was started for these later provider-path repositories: ")
+			fmt.Fprintf(&output, "`%s`.\n", strings.Join(wave.DeferredRepositories, "`, `"))
 		}
 		output.WriteString("\n| Repository | Status | Reason | Changed | Commit | PR | Merged |\n")
 		output.WriteString("|---|---|---|---:|---|---|---|\n")

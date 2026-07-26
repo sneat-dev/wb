@@ -126,14 +126,123 @@ func TestRunBumpSecondSweepTraversesExistingPublishedConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != "planned" || len(report.Waves) != 2 {
+	if report.Status != "planned" || len(report.Waves) != 1 {
 		t.Fatalf("report = %+v", report)
 	}
 	if release := report.Waves[0].Releases[0]; release.Module != "example.com/adapter" || release.After != "v0.2.1" || release.Status != "released" {
 		t.Fatalf("existing release = %+v", release)
 	}
-	if repository := report.Waves[1].Repositories[0]; repository.Repository != "acme/consumer" || repository.Status != "planned" {
+	if repository := report.Waves[0].Repositories[0]; repository.Repository != "acme/consumer" || repository.Status != "planned" {
 		t.Fatalf("downstream repository = %+v", repository)
+	}
+}
+
+func TestRunBumpDefersDiamondSinkToAvoidDuplicateCI(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n"),
+		newBumpRepository(t, root, githubDir, "bots", "module example.com/bots\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n"),
+		newBumpRepository(t, root, githubDir, "go", "module example.com/go\n\ngo 1.24\n\nrequire (\n\texample.com/provider v0.1.0\n\texample.com/bots v0.1.0\n)\n"),
+	}
+	report, err := RunBump(context.Background(), []ReleaseEvent{{
+		Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit",
+	}}, repositories, BumpOptions{
+		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 2, DryRun: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wave := report.Waves[0]
+	if len(wave.Repositories) != 1 || wave.Repositories[0].Repository != "acme/bots" {
+		t.Fatalf("first wave repositories = %+v", wave.Repositories)
+	}
+	if len(wave.DeferredRepositories) != 1 || wave.DeferredRepositories[0] != "acme/go" {
+		t.Fatalf("deferred repositories = %v", wave.DeferredRepositories)
+	}
+	if markdown := report.Markdown(); !strings.Contains(markdown, "No worktree or CI run was started") {
+		t.Fatalf("coalescing decision is missing from Markdown:\n%s", markdown)
+	}
+}
+
+func TestGoFleetGraphCoalescesAllReleasesIntoDiamondSink(t *testing.T) {
+	t.Parallel()
+	graph := goFleetGraph{
+		modules: map[string]goFleetModule{
+			"example.com/provider": {Path: "example.com/provider", Repository: "acme/provider"},
+			"example.com/bots":     {Path: "example.com/bots", Repository: "acme/bots"},
+			"example.com/go":       {Path: "example.com/go", Repository: "acme/go"},
+		},
+		requirements: map[string][]goFleetRequirement{
+			"example.com/provider": {
+				{Dependency: "example.com/provider", Version: "v0.2.0", ConsumerModule: "example.com/bots", Repository: "acme/bots"},
+				{Dependency: "example.com/provider", Version: "v0.1.0", ConsumerModule: "example.com/go", Repository: "acme/go"},
+			},
+			"example.com/bots": {
+				{Dependency: "example.com/bots", Version: "v0.1.0", ConsumerModule: "example.com/go", Repository: "acme/go"},
+			},
+		},
+	}
+	seed := []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}}
+	active := append(append([]ReleaseEvent(nil), seed...), ReleaseEvent{Dependency: "example.com/bots", Version: "v0.3.0"})
+	targets, deferred := graph.coalescedRepositoriesForEvents(seed, active)
+	if len(deferred) != 0 || len(targets) != 1 || len(targets["acme/go"]) != 2 {
+		t.Fatalf("targets = %+v, deferred = %v", targets, deferred)
+	}
+	if targets["acme/go"][0].Dependency != "example.com/bots" || targets["acme/go"][1].Dependency != "example.com/provider" {
+		t.Fatalf("aggregate targets = %+v", targets["acme/go"])
+	}
+}
+
+func TestRefreshStaleReleaseEventsUsesNewestVersionBeforeCI(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	events, refreshes, err := refreshStaleReleaseEvents(context.Background(), []ReleaseEvent{
+		{Dependency: "example.com/stale", Version: "v1.2.0", Source: "observed_release", CheckedAt: now.Add(-10 * time.Minute)},
+		{Dependency: "example.com/fresh", Version: "v2.0.0", Source: "observed_release", CheckedAt: now.Add(-time.Minute)},
+	}, BumpOptions{
+		RefreshAfter: 5 * time.Minute,
+		Now:          func() time.Time { return now },
+		LatestGoVersion: func(_ context.Context, module string) (string, error) {
+			calls++
+			if module != "example.com/stale" {
+				t.Fatalf("unexpected refresh for %s", module)
+			}
+			return "v1.3.0", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(refreshes) != 1 {
+		t.Fatalf("calls = %d, refreshes = %+v", calls, refreshes)
+	}
+	if events[1].Dependency != "example.com/stale" || events[1].Version != "v1.3.0" || events[1].Source != "refreshed_latest" {
+		t.Fatalf("events = %+v", events)
+	}
+	if refreshes[0].Before != "v1.2.0" || refreshes[0].After != "v1.3.0" || !strings.Contains(refreshes[0].Reason, "before downstream") {
+		t.Fatalf("refresh = %+v", refreshes[0])
+	}
+}
+
+func TestGoGraphDiscoveryFailureSkipsOnlyProvenNonGoRepository(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "package.json"), "{}\n")
+	cause := errors.New("origin/main is unavailable")
+	skip, err := classifyGoGraphDiscoveryFailure("acme/website", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
+	if err != nil || skip == nil || skip.Repository != "acme/website" {
+		t.Fatalf("non-Go classification: error=%v skip=%+v", err, skip)
+	}
+	skip, err = classifyGoGraphDiscoveryFailure("acme/website", root, cause, goGraphDiscoveryPolicy{})
+	if err == nil || skip != nil {
+		t.Fatalf("strict graph classification: error=%v skip=%+v", err, skip)
+	}
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/relevant\n\ngo 1.24\n")
+	skip, err = classifyGoGraphDiscoveryFailure("acme/service", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
+	if err == nil || skip != nil || !strings.Contains(err.Error(), cause.Error()) {
+		t.Fatalf("Go classification: error=%v skip=%+v", err, skip)
 	}
 }
 
@@ -218,6 +327,26 @@ func TestRunBumpResumesPersistedReleaseBaseline(t *testing.T) {
 	}
 }
 
+func TestRunBumpAllowsFixpointScanAfterMaxMutationWave(t *testing.T) {
+	t.Parallel()
+	seed := []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}
+	previous := BumpReport{
+		SchemaVersion: 1, Operation: BumpOperationID(seed), Status: "running",
+		Ecosystem: EcosystemGo, SeedEvents: seed, BaseRef: "main",
+		Waves: []BumpWaveReport{{Index: 1, Status: "completed", Events: seed}},
+	}
+	report, err := RunBump(context.Background(), seed, nil, BumpOptions{
+		Options:  Options{GitHubDir: t.TempDir(), Ref: "main", Resume: true},
+		Previous: &previous, MaxWaves: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Phase != BumpPhaseCompleted {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
 func TestRunBumpReturnsPersistenceFailureBeforeDiscovery(t *testing.T) {
 	t.Parallel()
 	want := errors.New("disk full")
@@ -245,8 +374,15 @@ func TestBumpReportRoundTrip(t *testing.T) {
 	report := BumpReport{
 		SchemaVersion: 1, Operation: "deps-bump-go-test", Status: "awaiting_release", Phase: BumpPhaseAwaitingRelease, Ecosystem: EcosystemGo,
 		SeedEvents: []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}},
-		BaseRef:    "main", Progress: BumpProgress{Wave: 1, RepositoriesTotal: 3, RepositoriesCompleted: 2, LastRepository: "acme/adapter"}, Waves: []BumpWaveReport{{
+		BaseRef:    "main", Progress: BumpProgress{Wave: 1, RepositoriesTotal: 3, RepositoriesCompleted: 2, LastRepository: "acme/adapter"},
+		DiscoverySkips: []GraphDiscoverySkip{{Repository: "acme/website", Reason: "no go.mod"}},
+		Waves: []BumpWaveReport{{
 			Index: 1, Status: "awaiting_release",
+			DeferredRepositories: []string{"acme/app"},
+			Refreshes: []ReleaseEventRefresh{{
+				Dependency: "example.com/provider", Before: "v0.2.0", After: "v0.3.0", CheckedAt: time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC),
+				Reason: "newer release substituted before downstream worktree and CI creation",
+			}},
 			Releases: []ReleaseObservation{{Module: "example.com/adapter", Before: "v0.4.0", Status: "awaiting_release"}},
 		}},
 	}
@@ -265,7 +401,10 @@ func TestBumpReportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(markdown), "Release evidence") || !strings.Contains(string(markdown), "example.com/adapter") || !strings.Contains(string(markdown), "Phase: `awaiting_release`") || !strings.Contains(string(markdown), "repositories `2/3`") {
+	if !strings.Contains(string(markdown), "Release evidence") || !strings.Contains(string(markdown), "example.com/adapter") ||
+		!strings.Contains(string(markdown), "Phase: `awaiting_release`") || !strings.Contains(string(markdown), "repositories `2/3`") ||
+		!strings.Contains(string(markdown), "Skipped discovery failures") || !strings.Contains(string(markdown), "Stale-event registry checks") ||
+		!strings.Contains(string(markdown), "Deferred to coalesce releases") {
 		t.Fatalf("unexpected Markdown:\n%s", markdown)
 	}
 }

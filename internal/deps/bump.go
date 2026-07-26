@@ -56,7 +56,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	if err := persistBumpReport(options, report); err != nil {
 		return report, err
 	}
-	for waveIndex := startWave; waveIndex <= options.MaxWaves; waveIndex++ {
+	for waveIndex := startWave; ; waveIndex++ {
 		report.Phase = BumpPhaseDiscoveringGraph
 		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(repositories)}
 		if err := persistBumpReport(options, report); err != nil {
@@ -64,7 +64,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		}
 		var progressMu sync.Mutex
 		var progressErr error
-		graph, err := discoverGoFleetGraph(ctx, repositories, lifecycle, func(progress graphDiscoveryProgress) {
+		graph, err := discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, func(progress graphDiscoveryProgress) {
 			progressMu.Lock()
 			defer progressMu.Unlock()
 			if progressErr != nil {
@@ -78,6 +78,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			}
 			progressErr = persistBumpReport(options, report)
 		})
+		report.DiscoverySkips = mergeGraphDiscoverySkips(report.DiscoverySkips, graph.discoverySkips)
 		if progressErr != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, progressErr)
@@ -90,7 +91,13 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
 		}
-		if err := graph.validateAcyclicPropagation(events); err != nil {
+		var refreshes []ReleaseEventRefresh
+		events, refreshes, err = refreshStaleReleaseEvents(ctx, events, options)
+		if err != nil {
+			report.Status = "failed"
+			return report, persistBumpFailure(options, report, err)
+		}
+		if err := graph.validateAcyclicPropagation(report.SeedEvents); err != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
 		}
@@ -99,46 +106,54 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			return report, err
 		}
 		carriers, carrierErr := discoverExistingReleaseCarriers(ctx, graph, events, options)
-		targetsByRepository := graph.repositoriesForEvents(events)
-		if len(targetsByRepository) == 0 {
-			if len(carriers) > 0 {
-				wave := BumpWaveReport{Index: waveIndex, Status: "completed", Events: append([]ReleaseEvent(nil), events...), Releases: carriers}
-				if lifecycle.DryRun {
-					if carrierErr != nil {
-						wave.Status = "planned"
-						report.Waves = append(report.Waves, wave)
-						report.Status = "planned"
-						report.Phase = BumpPhasePlanned
-						if persistErr := persistBumpReport(options, report); persistErr != nil {
-							return report, persistErr
-						}
-						return report, nil
-					}
-					report.Waves = append(report.Waves, wave)
-					events = releaseEventsFromObservations(carriers)
-					if len(events) > 0 {
-						continue
-					}
-				}
-				if carrierErr != nil {
-					carriers, carrierErr = resumeReleaseObservations(ctx, carriers, options)
-					wave.Releases = carriers
-				}
-				if carrierErr != nil {
-					wave.Status = "awaiting_release"
-					report.Waves = append(report.Waves, wave)
-					report.Status = "awaiting_release"
-					report.Phase = BumpPhaseAwaitingRelease
-					return report, persistBumpFailure(options, report, carrierErr)
-				}
+		events = mergeReleaseEvents(events, releaseEventsFromObservations(carriers))
+		targetsByRepository, deferred := graph.coalescedRepositoriesForEvents(report.SeedEvents, events)
+		if waveIndex > options.MaxWaves && (carrierErr != nil || len(targetsByRepository) > 0) {
+			report.Status = "failed"
+			return report, persistBumpFailure(options, report, fmt.Errorf("dependency bump exceeded --max-waves=%d", options.MaxWaves))
+		}
+
+		// Do not start a downstream PR while a provider whose main branch is
+		// already current is still unpublished. Waiting here lets that release
+		// join the same downstream PR and avoids an otherwise guaranteed second
+		// GitHub Actions run.
+		if carrierErr != nil && graph.pendingCarriersBlockTargets(carriers, targetsByRepository) {
+			wave := BumpWaveReport{
+				Index: waveIndex, Status: "awaiting_release", Events: append([]ReleaseEvent(nil), events...),
+				Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
+			}
+			if lifecycle.DryRun {
+				wave.Status = "planned"
 				report.Waves = append(report.Waves, wave)
-				events = releaseEventsFromObservations(carriers)
+				report.Status = "planned"
+				report.Phase = BumpPhasePlanned
 				if persistErr := persistBumpReport(options, report); persistErr != nil {
 					return report, persistErr
 				}
-				if len(events) > 0 {
-					continue
-				}
+				return report, nil
+			}
+			carriers, carrierErr = resumeReleaseObservations(ctx, carriers, options)
+			wave.Releases = carriers
+			events = mergeReleaseEvents(events, releaseEventsFromObservations(carriers))
+			if carrierErr != nil {
+				report.Waves = append(report.Waves, wave)
+				report.Status = "awaiting_release"
+				report.Phase = BumpPhaseAwaitingRelease
+				return report, persistBumpFailure(options, report, carrierErr)
+			}
+			wave.Status = "completed"
+			report.Waves = append(report.Waves, wave)
+			if persistErr := persistBumpReport(options, report); persistErr != nil {
+				return report, persistErr
+			}
+			continue
+		}
+		if len(targetsByRepository) == 0 {
+			if len(refreshes) > 0 || len(carriers) > 0 {
+				report.Waves = append(report.Waves, BumpWaveReport{
+					Index: waveIndex, Status: "completed", Events: append([]ReleaseEvent(nil), events...),
+					Refreshes: refreshes, Releases: carriers,
+				})
 			}
 			report.Status = "completed"
 			report.Phase = BumpPhaseCompleted
@@ -147,9 +162,12 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			}
 			return report, nil
 		}
-		wave := BumpWaveReport{Index: waveIndex, Status: "running", Events: append([]ReleaseEvent(nil), events...), Releases: carriers}
+		wave := BumpWaveReport{
+			Index: waveIndex, Status: "running", Events: append([]ReleaseEvent(nil), events...),
+			Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
+		}
 		affectedRepositories := selectWaveRepositories(repositories, targetsByRepository)
-		affectedModules := graph.affectedModules(events)
+		affectedModules := graph.affectedModules(targetsByRepository)
 		baselines := map[string]ReleaseObservation{}
 		if lifecycle.Merge {
 			baselines, err = captureReleaseBaselines(ctx, graph, affectedModules, options)
@@ -220,18 +238,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr
 		}
-		events = releaseEventsFromObservations(waveReport.Releases)
-		if len(events) == 0 {
-			report.Status = "completed"
-			report.Phase = BumpPhaseCompleted
-			if persistErr := persistBumpReport(options, report); persistErr != nil {
-				return report, persistErr
-			}
-			return report, nil
-		}
+		events = mergeReleaseEvents(events, releaseEventsFromObservations(waveReport.Releases))
 	}
-	report.Status = "failed"
-	return report, persistBumpFailure(options, report, fmt.Errorf("dependency bump exceeded --max-waves=%d", options.MaxWaves))
 }
 
 func resumeBumpReport(ctx context.Context, empty BumpReport, seedEvents []ReleaseEvent, options BumpOptions) (BumpReport, []ReleaseEvent, int, error) {
@@ -263,22 +271,25 @@ func resumeBumpReport(ctx context.Context, empty BumpReport, seedEvents []Releas
 			return previous, nil, last.Index, persistBumpFailure(options, previous, err)
 		}
 		last.Status = "completed"
-		events := releaseEventsFromObservations(observations)
-		if len(events) == 0 {
-			previous.Status = "completed"
-		}
+		events := accumulatedBumpEvents(seedEvents, previous.Waves)
 		return previous, events, last.Index + 1, persistBumpReport(options, previous)
 	case "completed":
-		events := releaseEventsFromObservations(last.Releases)
-		if len(events) == 0 {
-			previous.Status = "completed"
-		}
+		events := accumulatedBumpEvents(seedEvents, previous.Waves)
 		return previous, events, last.Index + 1, nil
 	default:
-		events := append([]ReleaseEvent(nil), last.Events...)
+		events := accumulatedBumpEvents(seedEvents, previous.Waves[:lastIndex])
+		events = mergeReleaseEvents(events, last.Events)
 		previous.Waves = previous.Waves[:lastIndex]
 		return previous, events, last.Index, nil
 	}
+}
+
+func accumulatedBumpEvents(seedEvents []ReleaseEvent, waves []BumpWaveReport) []ReleaseEvent {
+	events := mergeReleaseEvents(seedEvents)
+	for _, wave := range waves {
+		events = mergeReleaseEvents(events, wave.Events, releaseEventsFromObservations(wave.Releases))
+	}
+	return events
 }
 
 func sameReleaseEvents(left, right []ReleaseEvent) bool {
@@ -291,6 +302,67 @@ func sameReleaseEvents(left, right []ReleaseEvent) bool {
 		}
 	}
 	return true
+}
+
+func bumpNow(options BumpOptions) time.Time {
+	if options.Now != nil {
+		return options.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, options BumpOptions) ([]ReleaseEvent, []ReleaseEventRefresh, error) {
+	events = append([]ReleaseEvent(nil), events...)
+	if options.RefreshAfter == 0 {
+		return events, nil, nil
+	}
+	now := bumpNow(options)
+	var refreshes []ReleaseEventRefresh
+	for index := range events {
+		event := &events[index]
+		if event.CheckedAt.IsZero() {
+			event.CheckedAt = now
+			continue
+		}
+		if now.Sub(event.CheckedAt) < options.RefreshAfter {
+			continue
+		}
+		latest, err := latestGoVersion(ctx, event.Dependency, options)
+		if err != nil {
+			return events, refreshes, fmt.Errorf("refresh stale release event %s@%s: %w", event.Dependency, event.Version, err)
+		}
+		if !semver.IsValid(latest) {
+			return events, refreshes, fmt.Errorf("refresh stale release event %s@%s: registry returned invalid version %q", event.Dependency, event.Version, latest)
+		}
+		refresh := ReleaseEventRefresh{
+			Dependency: event.Dependency, Before: event.Version, After: event.Version, CheckedAt: now,
+			Reason: "registry recheck found no newer release; accumulated event retained",
+		}
+		if semver.Compare(latest, event.Version) > 0 {
+			event.Version = latest
+			event.Source = "refreshed_latest"
+			refresh.After = latest
+			refresh.Reason = "newer release substituted before downstream worktree and CI creation"
+		}
+		event.CheckedAt = now
+		refreshes = append(refreshes, refresh)
+	}
+	return mergeReleaseEvents(events), refreshes, nil
+}
+
+func mergeGraphDiscoverySkips(groups ...[]GraphDiscoverySkip) []GraphDiscoverySkip {
+	byRepository := map[string]GraphDiscoverySkip{}
+	for _, group := range groups {
+		for _, skip := range group {
+			byRepository[skip.Repository] = skip
+		}
+	}
+	result := make([]GraphDiscoverySkip, 0, len(byRepository))
+	for _, skip := range byRepository {
+		result = append(result, skip)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Repository < result[j].Repository })
+	return result
 }
 
 func resumeReleaseObservations(ctx context.Context, previous []ReleaseObservation, options BumpOptions) ([]ReleaseObservation, error) {
@@ -340,6 +412,7 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("at least one --changed module@version event is required")
 	}
 	byDependency := map[string]ReleaseEvent{}
+	now := bumpNow(options)
 	for _, event := range events {
 		event.Dependency = strings.TrimSpace(event.Dependency)
 		event.Version = strings.TrimSpace(event.Version)
@@ -352,10 +425,15 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 		if event.Source == "" {
 			event.Source = "explicit"
 		}
+		if event.CheckedAt.IsZero() {
+			event.CheckedAt = now
+		}
 		if previous, exists := byDependency[event.Dependency]; exists && previous.Version != event.Version {
 			return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("conflicting changed versions for %s: %s and %s", event.Dependency, previous.Version, event.Version)
 		}
-		byDependency[event.Dependency] = event
+		if previous, exists := byDependency[event.Dependency]; !exists || event.CheckedAt.After(previous.CheckedAt) {
+			byDependency[event.Dependency] = event
+		}
 	}
 	events = events[:0]
 	for _, event := range byDependency {
@@ -373,6 +451,9 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 	}
 	if options.PollInterval < 0 {
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("release poll interval must not be negative")
+	}
+	if options.RefreshAfter < 0 {
+		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("release refresh interval must not be negative")
 	}
 	operation := BumpOperationID(events)
 	normalized, lifecycle, err := normalizeOptions(options.Options, operation)
@@ -526,7 +607,10 @@ func captureReleaseBaselines(ctx context.Context, graph goFleetGraph, affected m
 				continue
 			}
 			version, err := latestGoVersion(ctx, module, options)
-			observation := ReleaseObservation{Module: module, Repository: repository, Before: version, Source: "go list -m " + module + "@latest", Status: "baseline", RequireNewer: true}
+			observation := ReleaseObservation{
+				Module: module, Repository: repository, Before: version, Source: "go list -m " + module + "@latest",
+				Status: "baseline", RequireNewer: true, CheckedAt: bumpNow(options),
+			}
 			if err != nil {
 				observation.Status = "failed"
 				observation.Reason = err.Error()
@@ -602,7 +686,7 @@ func discoverExistingReleaseCarriers(ctx context.Context, graph goFleetGraph, ev
 				release, err := latestPublishedGoRelease(ctx, module, options)
 				observation := ReleaseObservation{
 					Module: module, Repository: repositoryByModule[module], Source: release.Source,
-					ExpectedRequirements: cloneStringMap(expected), Status: "awaiting_release",
+					ExpectedRequirements: cloneStringMap(expected), Status: "awaiting_release", CheckedAt: bumpNow(options),
 				}
 				if observation.Source == "" {
 					observation.Source = "go mod download " + module + "@latest"
@@ -698,6 +782,7 @@ func waitForPublishedGoRequirements(ctx context.Context, baseline ReleaseObserva
 	}
 	for {
 		release, err := latestPublishedGoRelease(ctx, baseline.Module, options)
+		observation.CheckedAt = bumpNow(options)
 		if err != nil {
 			observation.Status = "failed"
 			observation.Reason = err.Error()
@@ -773,6 +858,7 @@ func waitForGoRelease(ctx context.Context, baseline ReleaseObservation, options 
 	}
 	for {
 		version, err := latestGoVersion(ctx, baseline.Module, options)
+		observation.CheckedAt = bumpNow(options)
 		if err != nil {
 			observation.Status = "failed"
 			observation.Reason = err.Error()
@@ -803,7 +889,9 @@ func releaseEventsFromObservations(observations []ReleaseObservation) []ReleaseE
 			if len(observation.ExpectedRequirements) > 0 && !observation.RequireNewer {
 				source = "existing_release"
 			}
-			events = append(events, ReleaseEvent{Dependency: observation.Module, Version: observation.After, Source: source})
+			events = append(events, ReleaseEvent{
+				Dependency: observation.Module, Version: observation.After, Source: source, CheckedAt: observation.CheckedAt,
+			})
 		}
 	}
 	return mergeReleaseEvents(events)
@@ -815,6 +903,8 @@ func mergeReleaseEvents(groups ...[]ReleaseEvent) []ReleaseEvent {
 		for _, event := range events {
 			previous, exists := byDependency[event.Dependency]
 			if !exists || semver.Compare(event.Version, previous.Version) > 0 {
+				byDependency[event.Dependency] = event
+			} else if event.Version == previous.Version && event.CheckedAt.After(previous.CheckedAt) {
 				byDependency[event.Dependency] = event
 			}
 		}
@@ -854,6 +944,9 @@ func mergeReleaseObservations(groups ...[]ReleaseObservation) []ReleaseObservati
 				previous.After = observation.After
 				previous.Status = observation.Status
 				previous.Reason = observation.Reason
+			}
+			if observation.CheckedAt.After(previous.CheckedAt) {
+				previous.CheckedAt = observation.CheckedAt
 			}
 			byModule[observation.Module] = previous
 		}

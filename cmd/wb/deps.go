@@ -24,7 +24,7 @@ type depsSetOptions struct {
 	commit, push, pr, merge, order                             bool
 	match, regex, ref, checks, format, reportDir, layer        string
 	parallel, retry, maxWaves                                  int
-	timeout, releasePoll                                       time.Duration
+	timeout, releasePoll, refreshAfter                         time.Duration
 	goPrivate                                                  []string
 	layers                                                     deps.LayerSelection
 }
@@ -204,6 +204,7 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.propagate, "propagate", false, "delegate this exact Go release event to deps bump waves (requires --fleet)")
 	command.Flags().IntVar(&options.maxWaves, "max-waves", 20, "maximum recalculated dependency waves when --propagate is used")
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 10*time.Second, "provider release polling interval when --propagate is used")
+	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before a downstream build when --propagate is used (0 disables)")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
 	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "explicitly skip local verification")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check and CI wait (0 disables)")
@@ -258,6 +259,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().IntVar(&options.parallel, "parallel", 1, "maximum repositories or release observations to process concurrently")
 	command.Flags().IntVar(&options.maxWaves, "max-waves", 20, "maximum recalculated dependency waves")
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 10*time.Second, "interval between provider release observations")
+	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before starting a downstream build (0 disables)")
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect the first wave without creating worktrees or changing dependency files")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse validated wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
@@ -309,7 +311,7 @@ func runDepsBump(command *cobra.Command, events []deps.ReleaseEvent, repositorie
 		reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", operation)
 	}
 	bumpOptions := deps.BumpOptions{
-		Options: lifecycle, MaxWaves: options.maxWaves, PollInterval: options.releasePoll,
+		Options: lifecycle, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
 		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	if options.resume {

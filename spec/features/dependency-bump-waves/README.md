@@ -69,6 +69,31 @@ event versions. A current source manifest by itself is insufficient. This
 allows a second campaign sweep to reach stale transitive dependants without
 inventing a release.
 
+For every affected repository, WB MUST use the longest provider path from the
+seed events and MUST start only the earliest pending layer. If a downstream
+repository directly consumes a seed and also consumes an intermediate
+provider, it MUST wait for the intermediate release so every currently known
+version is applied in one PR and one CI build. The report MUST name repositories
+deferred for this coalescing decision.
+
+#### REQ: stale-event-refresh-before-ci
+
+Before creating a downstream worktree or CI-producing PR, WB MUST recheck an
+accumulated release event whose last registry check is at least
+`--refresh-after` old. When a newer semantic version exists, WB MUST substitute
+it and replan before mutation. The default threshold MUST be finite and the
+operator MUST be able to disable rechecks with `--refresh-after=0`. Reports and
+resume state MUST persist the checked time, old version, selected version, and
+reason so the avoided obsolete build is auditable.
+
+#### REQ: relevance-aware-discovery-failures
+
+A fleet bump MAY skip a repository whose canonical fetch or remote-ref
+inspection fails only when a recursive local scan proves that it contains no
+non-ignored `go.mod`. The skip and original failure MUST be audited. A
+repository with any Go manifest, a repository that cannot be scanned, or a
+strict `wb deps graph` request MUST remain a hard failure.
+
 #### REQ: bounded-wave-parallelism
 
 Independent repositories in one wave MAY execute concurrently up to
@@ -244,6 +269,23 @@ bump downloads the published adapter `go.mod`, records both pieces of evidence,
 turns `adapter v0.7.1` into the next event, and plans the facade update. It does
 not skip the facade merely because the direct adapter needs no new source edit.
 
+### UC: diamond dependency produces one downstream CI build
+
+The fictional API directly requires both `data/record` and an adapter that also
+requires `data/record`. The record release makes both manifests stale. WB puts
+the adapter on the shorter provider path, defers the API, observes the adapter
+release, then gives the API one aggregate PR containing both new versions. No
+API worktree or GitHub Actions run is created for the intermediate state.
+
+### UC: long release wait discovers a newer version
+
+An adapter release event was checked ten minutes ago while another provider
+was still publishing. With the default `--refresh-after=5m`, WB queries
+`adapter@latest` immediately before planning the shared downstream consumer.
+If a newer adapter version is now available, WB substitutes it and creates only
+the final consumer PR. With `--refresh-after=0`, the explicit older event is
+retained.
+
 ## Interaction with Other Features
 
 [Dependency Drift](../dependency-drift/README.md) supplies convergence evidence
@@ -256,13 +298,14 @@ migrations that also trigger dependency waves.
 
 ### AC: released-provider-requeues-dependants
 
-**Requirements:** dependency-bump-waves#req:changed-release-input, dependency-bump-waves#req:provider-first-recalculated-waves, dependency-bump-waves#req:bounded-wave-parallelism, dependency-bump-waves#req:shared-typed-lifecycle-engine, dependency-bump-waves#req:release-event-propagation
+**Requirements:** dependency-bump-waves#req:changed-release-input, dependency-bump-waves#req:provider-first-recalculated-waves, dependency-bump-waves#req:stale-event-refresh-before-ci, dependency-bump-waves#req:relevance-aware-discovery-failures, dependency-bump-waves#req:bounded-wave-parallelism, dependency-bump-waves#req:shared-typed-lifecycle-engine, dependency-bump-waves#req:release-event-propagation
 
 **Given** a fictional provider release has two independent adapters and a
 consumer that depends on both
 **When** a bump campaign publishes the provider and adapters
-**Then** WB recalculates the graph after each release, requeues the consumer
-with published versions, and reaches a fixpoint without a temporary replace.
+**Then** WB recalculates the graph after each release, gives the consumer one
+aggregate PR with the newest checked provider versions, and reaches a fixpoint
+without a temporary replace or duplicate consumer CI build.
 
 ### AC: dirty-clone-and-red-ci-are-safe
 
