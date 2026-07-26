@@ -1,142 +1,40 @@
 ---
 name: wb-worktrees
-description: Create or resume Git feature branches through the WB CLI in isolated central worktrees while keeping canonical clones clean and current. Use before creating a branch, starting code changes, coordinating the same task across repositories, moving development out of a canonical clone, or checking whether an agent is allowed to edit the current checkout.
-metadata:
-  author: sneat-dev
-  version: "1.0"
+description: Use WB to guard a checkout or create and resume isolated feature worktrees. Use before editing a repository, creating a branch, coordinating one task across repositories, or recovering from an unsafe checkout.
 ---
 
 # WB worktrees
 
-Requires Git and a WB build that provides `wb worktree create` and
-`wb worktree guard`.
+Keep canonical clones clean, on `main`, and available for synchronization.
+Make feature changes only below:
 
-Keep `<projects-root>/<owner>/<repository>` as the canonical clone: clean,
-checked out on `main`, and synchronized with `origin/main`. Do feature work
-only in a linked checkout created below:
-
-```text
+```txt
 <projects-root>/.wb/worktrees/<task>/<owner>/<repository>
 ```
 
-Use WB for branch creation and policy checks. Do not substitute raw
-`git switch -c`, `git checkout -b`, or `git worktree add`.
+## Route
 
-## Before changing files
+- Read [create.md](references/create.md) to start or resume a task.
+- Read [guard.md](references/guard.md) to validate or recover a checkout.
+- Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.
 
-1. Verify the required WB surface:
-
-   ```sh
-   wb worktree --help
-   ```
-
-   If it is unavailable, stop and ask for WB to be installed or updated.
-   Never fall back to changing branches in the canonical clone.
-
-2. Inspect the current checkout:
-
-   ```sh
-   wb worktree guard .
-   git status --short --branch
-   ```
-
-   A passing canonical checkout is safe for synchronization and inspection,
-   not for editing. A passing linked checkout is safe for feature work.
-
-3. Choose a short task slug that is stable across all participating
-   repositories. Use a harness-specific branch prefix:
-
-   - Codex: `codex/<task>`
-   - Claude Code: `claude/<task>`
-   - Other or unknown harness: `agent/<task>`
-
-4. Create the checkout. From a repository, WB can derive its `owner/name`
-   from `origin`:
-
-   ```sh
-   wb worktree create <task> --branch <prefix>/<task>
-   ```
-
-   For a coordinated change, create every checkout in one command:
-
-   ```sh
-   wb worktree create <task> \
-     --branch <prefix>/<task> \
-     sneat-co/sneat-bots sneat-co/sneat-go
-   ```
-
-   WB refuses to branch until every canonical clone is clean, on `main`, and
-   updated from `origin/main` with a fast-forward-only pull.
-
-5. Change directory to the exact worktree path printed by WB and verify it
-   before editing:
-
-   ```sh
-   wb worktree guard <printed-worktree-path>
-   git -C <printed-worktree-path> status --short --branch
-   ```
-
-## Existing work
-
-Use `--resume` only when continuing the exact task and branch:
+## Fast path
 
 ```sh
-wb worktree create <task> \
-  --branch <prefix>/<task> \
-  --resume \
-  <owner>/<repository>
+wb worktree guard .
+wb worktree create <task> --branch <prefix>/<task> <owner>/<repository>
+wb worktree guard <printed-worktree-path>
 ```
 
-Before resuming, inspect the reported path and branch. WB validates that the
-existing checkout belongs to the expected canonical clone and refuses to
-silently reuse a different branch. Preserve all existing changes.
+Use `codex/`, `claude/`, or the active harness's required prefix. Use one task
+slug and one creation command for a coordinated multi-repository change.
 
-## Unsafe canonical state
+WB fast-forward pulls canonical `main` before branching. If a repository only
+supplies read-only integration-test input, its clean, freshly synchronized
+canonical checkout may be used. Create a worktree as soon as that repository
+needs a modification.
 
-If WB reports that a canonical clone is dirty or on a feature branch:
-
-- Do not reset, clean, stash, switch, or overwrite it automatically.
-- Inspect and report the exact state to the user.
-- If the changes belong to the current task, move them only with an explicit,
-  preservation-safe plan.
-- If another task or person owns the changes, leave them untouched.
-
-## Hooks
-
-Check that WB-managed hooks are installed:
-
-```sh
-wb hooks check .
-```
-
-When the repository policy includes the built-in `worktree` profile, use WB
-to install or repair it:
-
-```sh
-wb hooks install .
-```
-
-The profile checks `post-checkout`, `pre-commit`, and `pre-push`. Git has no
-pre-checkout hook, so a rejected `post-checkout` means the branch switch
-already occurred: stop, preserve any work, and return the canonical clone to
-`main`. Never treat the failed checkout command as proof that nothing changed.
-
-## Cross-repository testing
-
-Create worktrees for every repository that needs modifications. A read-only
-sibling used only for integration testing may remain the clean canonical
-`main` checkout after WB or the test runner synchronizes it. If the sibling
-needs even one file change, create it under the same task operation instead.
-
-Keep one task slug across paired pull requests so their local paths and
-branches are easy to correlate.
-
-## Non-negotiable rules
-
-- Never develop directly in a canonical clone.
-- Never create a feature branch by changing the canonical clone's branch.
-- Never bypass a WB guard or hook with `--no-verify`.
-- Never force-remove a worktree that contains changes.
-- Never guess that an existing branch is safe to resume.
-- Leave completed worktrees in place until their owner explicitly requests
-  cleanup.
+Never substitute `git switch -c`, `git checkout -b`, or `git worktree add`.
+Never reset, clean, stash, bypass hooks, or overwrite work to satisfy a guard.
+If a WB command fails, inspect state before retrying; a hook may reject an
+operation after Git has already changed state.

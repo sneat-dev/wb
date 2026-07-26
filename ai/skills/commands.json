@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "commands": {
+    "version": [
+      "wb-install"
+    ],
+    "sync": [
+      "wb-fleet"
+    ],
+    "run": [
+      "wb-run"
+    ],
+    "migrate": [
+      "wb-migrate"
+    ],
+    "deps": [
+      "wb-deps",
+      "wb-dependency-campaign"
+    ],
+    "ci": [
+      "wb-ci"
+    ],
+    "hooks": [
+      "wb-hooks"
+    ],
+    "coverage": [
+      "wb-fleet"
+    ],
+    "verify": [
+      "wb-fleet"
+    ],
+    "check": [
+      "wb-fleet"
+    ],
+    "status": [
+      "wb-fleet"
+    ],
+    "worktree": [
+      "wb-worktrees",
+      "wb-change"
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Change"
+  short_description: "Deliver safe single- or multi-repo changes"
+  default_prompt: "Use $wb-change to start and deliver this change in isolated WB worktrees."

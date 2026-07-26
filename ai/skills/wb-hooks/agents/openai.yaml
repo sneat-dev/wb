@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Hooks"
+  short_description: "Manage and diagnose fleet-standard Git hooks"
+  default_prompt: "Use $wb-hooks to install, check, repair, or inspect WB-managed Git hooks."

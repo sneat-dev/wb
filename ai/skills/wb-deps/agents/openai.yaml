@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Dependencies"
+  short_description: "Inspect and propagate dependencies across repos"
+  default_prompt: "Use $wb-deps to inspect or update dependencies with the smallest safe WB operation."

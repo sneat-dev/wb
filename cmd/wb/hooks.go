@@ -57,6 +57,7 @@ func newHooksInstallCmd(repair bool) *cobra.Command {
 				RepoPath:     repoPath,
 				ConfigPath:   configPath,
 				WBExecutable: hookExecutable(),
+				ProjectsRoot: projectsRoot,
 				Repair:       repair,
 				Force:        force,
 			})
@@ -105,7 +106,7 @@ func newHooksCheckCmd() *cobra.Command {
 				}
 				return checkHooksFleet(cmd, configPath, jsonOut)
 			}
-			report, err := hooks.Check(argumentOrCurrent(args), configPath, hookExecutable())
+			report, err := hooks.Check(argumentOrCurrent(args), configPath, hookExecutable(), projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -143,6 +144,7 @@ func applyHooksFleet(cmd *cobra.Command, configPath string, repair, force bool) 
 			RepoPath:     repo.Path,
 			ConfigPath:   configPath,
 			WBExecutable: hookExecutable(),
+			ProjectsRoot: projectsRoot,
 			Repair:       repair,
 			Force:        force,
 		})
@@ -188,7 +190,7 @@ func checkHooksFleet(cmd *cobra.Command, configPath string, jsonOut bool) error 
 	results := make([]fleetHooksCheck, 0, len(repos))
 	problems := 0
 	for _, repo := range repos {
-		report, checkErr := hooks.Check(repo.Path, configPath, hookExecutable())
+		report, checkErr := hooks.Check(repo.Path, configPath, hookExecutable(), projectsRoot)
 		entry := fleetHooksCheck{Repository: repo.Slug()}
 		if checkErr != nil {
 			entry.Error = checkErr.Error()

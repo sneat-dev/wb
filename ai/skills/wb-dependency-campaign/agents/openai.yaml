@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Dependency Campaign"
+  short_description: "Ship dependency waves with minimal CI builds"
+  default_prompt: "Use $wb-dependency-campaign to propagate this release with the fewest safe CI builds."

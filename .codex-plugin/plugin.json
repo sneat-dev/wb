@@ -1,0 +1,38 @@
+{
+  "name": "wb",
+  "version": "1.0.0",
+  "description": "Token-efficient WB CLI operations and safe multi-repository workflows",
+  "author": {
+    "name": "Sneat.dev",
+    "url": "https://sneat.dev"
+  },
+  "homepage": "https://wb.sneat.dev",
+  "repository": "https://github.com/sneat-dev/wb",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "worktrees",
+    "dependencies",
+    "ci",
+    "fleet",
+    "agents"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WB",
+    "shortDescription": "Operate repository fleets with fewer agent tokens.",
+    "longDescription": "Use the WB CLI for isolated worktrees, fleet hooks, dependency waves, CI audits, migrations, reusable recipes, and repository verification.",
+    "developerName": "Sneat.dev",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://wb.sneat.dev",
+    "defaultPrompt": [
+      "Create a safe WB worktree for this change.",
+      "Propagate these releases with minimal CI builds.",
+      "Run the smallest WB fleet check for this task."
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Migrations"
+  short_description: "Plan and execute declarative source migrations"
+  default_prompt: "Use $wb-migrate to plan, apply, or resume this declarative migration safely."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Recipes"
+  short_description: "Run reusable fleet changes safely and efficiently"
+  default_prompt: "Use $wb-run to preview or apply the appropriate reusable fleet recipe."
