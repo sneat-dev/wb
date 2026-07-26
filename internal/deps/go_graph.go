@@ -18,6 +18,16 @@ type goFleetGraph struct {
 	moduleDeclarations map[string][]goFleetModule
 	requirements       map[string][]goFleetRequirement
 	repositoryModules  map[string][]string
+	// skipped records repositories excluded from the walk rather than inspected.
+	// A shrunken fleet must never look like a complete one, so every exclusion is
+	// reported to the caller instead of being dropped.
+	skipped []goFleetSkip
+}
+
+// goFleetSkip is a repository the walk deliberately did not inspect.
+type goFleetSkip struct {
+	Repository string
+	Reason     string
 }
 
 type goFleetModule struct {
@@ -52,6 +62,7 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	results := make([]repositoryGraph, len(repositories))
 	errorsByRepository := make([]error, len(repositories))
+	skipsByRepository := make([]*goFleetSkip, len(repositories))
 	workers := options.Parallel
 	if workers > len(repositories) {
 		workers = len(repositories)
@@ -98,6 +109,20 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 						canonical = filepath.Join(options.GitHubDir, owner, name)
 					}
 					if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
+						// A repository without the base ref is not a broken
+						// repository. Fleets legitimately contain empty repos,
+						// repos still on master, and repos that do not carry the
+						// ref under inspection. Failing the walk for one of those
+						// discards every other repository's result, so skip it and
+						// report it instead.
+						var refNotFound *orchestrate.RefNotFoundError
+						if errors.As(err, &refNotFound) {
+							skipsByRepository[index] = &goFleetSkip{
+								Repository: repository.Slug,
+								Reason:     fmt.Sprintf("no origin/%s", refNotFound.Ref),
+							}
+							return
+						}
 						errorsByRepository[index] = fmt.Errorf("%s: %w", repository.Slug, err)
 						return
 					}
@@ -123,6 +148,11 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	}
 	if len(discoveryErrors) > 0 {
 		return graph, errors.Join(discoveryErrors...)
+	}
+	for _, skip := range skipsByRepository {
+		if skip != nil {
+			graph.skipped = append(graph.skipped, *skip)
+		}
 	}
 	for _, result := range results {
 		for _, module := range result.modules {

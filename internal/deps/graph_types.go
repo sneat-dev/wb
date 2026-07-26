@@ -33,6 +33,16 @@ type Graph struct {
 	Repositories  []GraphRepository  `json:"repositories" yaml:"repositories"`
 	Modules       []GraphModule      `json:"modules" yaml:"modules"`
 	Requirements  []GraphRequirement `json:"requirements" yaml:"requirements"`
+	// Skipped lists repositories that were not inspected. It is part of the
+	// graph, not a log line, so no output format can present a partial fleet as
+	// a complete one.
+	Skipped []GraphSkip `json:"skipped,omitempty" yaml:"skipped,omitempty"`
+}
+
+// GraphSkip records a repository excluded from the walk rather than inspected.
+type GraphSkip struct {
+	Repository string `json:"repository" yaml:"repository"`
+	Reason     string `json:"reason" yaml:"reason"`
 }
 
 // GraphFilters records evidence filters applied after repository discovery.

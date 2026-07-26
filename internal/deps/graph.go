@@ -56,6 +56,9 @@ func normalizeGraphDependencies(values []string) ([]string, error) {
 
 func graphFromGoFleet(discovered goFleetGraph, selected []Repository, ref string, filters []string) Graph {
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemGo, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
+	for _, skip := range discovered.skipped {
+		graph.Skipped = append(graph.Skipped, GraphSkip{Repository: skip.Repository, Reason: skip.Reason})
+	}
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true

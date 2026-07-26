@@ -230,8 +230,28 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	return nil
 }
 
+// RefNotFoundError reports that a repository has no commit for the configured
+// base ref. It is returned as a distinct type because it is routinely not a
+// failure: a fleet contains empty repositories, repositories still on master,
+// and repositories that simply do not participate in the ref being inspected.
+// Callers that walk many repositories should skip these and report them, rather
+// than letting one unrelated repository fail the whole walk.
+type RefNotFoundError struct {
+	Repository string
+	Ref        string
+	Err        error
+}
+
+func (e *RefNotFoundError) Error() string {
+	return fmt.Sprintf("%s does not contain origin/%s: %v", e.Repository, e.Ref, e.Err)
+}
+
+func (e *RefNotFoundError) Unwrap() error { return e.Err }
+
 // EnsureCanonical clones a missing repository, fetches origin, and verifies
 // the configured base ref without checking out or modifying the canonical tree.
+// A missing base ref is reported as *RefNotFoundError so callers can distinguish
+// "this repository does not have the ref" from "this repository is broken".
 func EnsureCanonical(ctx context.Context, repository Repository, canonical string, options Options) error {
 	if _, err := os.Stat(canonical); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
@@ -251,7 +271,7 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 		return err
 	}
 	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+options.Ref+"^{commit}"); err != nil {
-		return fmt.Errorf("%s does not contain origin/%s: %w", repository.Slug, options.Ref, err)
+		return &RefNotFoundError{Repository: repository.Slug, Ref: options.Ref, Err: err}
 	}
 	return nil
 }
