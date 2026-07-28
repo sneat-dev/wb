@@ -11,7 +11,8 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	for _, wanted := range []string{
 		"canonical clone must be clean",
 		"pulls",
-		".wb/worktrees/<task>/<owner>/<repository>",
+		"<wb-home>/worktrees/<task>/<owner>/<repository>",
+		"WB_HOME",
 		"--resume",
 	} {
 		if !strings.Contains(command.Long, wanted) {

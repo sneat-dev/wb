@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
@@ -24,7 +26,7 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 		t.Fatalf("results = %#v", results)
 	}
 	result := results[0]
-	wantWorktree := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "issue-123", "acme", "app")
+	wantWorktree := filepath.Join(fixture.home, "worktrees", "issue-123", "acme", "app")
 	if result.WorktreeDir != wantWorktree || result.Branch != "codex/issue-123" || result.Action != "created" {
 		t.Fatalf("result = %#v", result)
 	}
@@ -146,11 +148,23 @@ type gitFixture struct {
 	projectsRoot string
 	canonical    string
 	remote       string
+	// home is this fixture's resolved WB_HOME (see wbhome.Root), the root
+	// under which Create/Guard/List/Cleanup place worktrees — no longer a
+	// subdirectory of projectsRoot.
+	home string
 }
 
 func newGitFixture(t *testing.T) *gitFixture {
 	t.Helper()
 	root := t.TempDir()
+	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
+	// projectsRoot has no legacy .wb, so wbhome.Root falls through to the real
+	// ~/.wb — a hermetic test must never write there. Scoping it per fixture,
+	// not per package, also keeps each test's worktree root unique even when
+	// two tests reuse the same operation name, matching this suite's existing
+	// per-fixture isolation.
+	home := filepath.Join(root, ".wb")
+	t.Setenv(wbhome.EnvOverride, home)
 	remote := filepath.Join(root, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
 	projectsRoot := filepath.Join(root, "projects")
@@ -175,7 +189,15 @@ func newGitFixture(t *testing.T) *gitFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &gitFixture{projectsRoot: projectsRoot, canonical: canonical, remote: remote}
+	// home's own ".wb" leaf doesn't exist until something creates a worktree,
+	// so resolve the root that does exist and rejoin — matching wbhome.Root's
+	// own resolution (see resolveAbs) for a path that isn't there yet.
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home = filepath.Join(resolvedRoot, ".wb")
+	return &gitFixture{projectsRoot: projectsRoot, canonical: canonical, remote: remote, home: home}
 }
 
 func (fixture *gitFixture) pushRemoteCommit(t *testing.T, message string) {

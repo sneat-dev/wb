@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestBumpOperationIDIsIndependentOfEventOrder(t *testing.T) {
@@ -301,7 +303,12 @@ func TestValidateGoWaveSelectionsDetectsLaterTargetConflict(t *testing.T) {
 }
 
 func TestRunBumpResumesPersistedReleaseBaseline(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): this test drives a real (non-DryRun) orchestrate.Run,
+	// which needs WB_HOME scoped to this test's own temp dir so it can't
+	// collide with, or leak into, anything else — and t.Setenv cannot be used
+	// safely once a test is parallel, since parallel siblings would then read
+	// and overwrite the same process-global env var concurrently.
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	seed := []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}
 	previous := BumpReport{
 		SchemaVersion: 1, Operation: BumpOperationID(seed), Status: "awaiting_release",
@@ -328,7 +335,12 @@ func TestRunBumpResumesPersistedReleaseBaseline(t *testing.T) {
 }
 
 func TestRunBumpAllowsFixpointScanAfterMaxMutationWave(t *testing.T) {
-	t.Parallel()
+	// Not t.Parallel(): this test drives a real (non-DryRun) orchestrate.Run,
+	// which needs WB_HOME scoped to this test's own temp dir so it can't
+	// collide with, or leak into, anything else — and t.Setenv cannot be used
+	// safely once a test is parallel, since parallel siblings would then read
+	// and overwrite the same process-global env var concurrently.
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
 	seed := []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}
 	previous := BumpReport{
 		SchemaVersion: 1, Operation: BumpOperationID(seed), Status: "running",

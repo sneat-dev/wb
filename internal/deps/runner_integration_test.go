@@ -8,10 +8,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty(t *testing.T) {
 	fixture := t.TempDir()
+	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
+	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
+	// ~/.wb; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, ".wb"))
 	seed := filepath.Join(fixture, "seed")
 	remote := filepath.Join(fixture, "remote.git")
 	githubDir := filepath.Join(fixture, "projects")
@@ -74,6 +80,10 @@ func TestNormalizeOptionsMakesPublicationFlagsCumulative(t *testing.T) {
 
 func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 	fixture := t.TempDir()
+	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
+	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
+	// ~/.wb; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, ".wb"))
 	seed := filepath.Join(fixture, "seed")
 	remote := filepath.Join(fixture, "remote.git")
 	githubDir := filepath.Join(fixture, "projects")
@@ -107,6 +117,10 @@ func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 
 func TestRunCommitsVerifiedOperationWithoutPushing(t *testing.T) {
 	fixture := t.TempDir()
+	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
+	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
+	// ~/.wb; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(fixture, ".wb"))
 	seed := filepath.Join(fixture, "seed")
 	remote := filepath.Join(fixture, "remote.git")
 	githubDir := filepath.Join(fixture, "projects")

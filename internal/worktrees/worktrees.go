@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 var safeSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -82,7 +83,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		}
 	}
 
-	operationRoot := filepath.Join(normalized.ProjectsRoot, ".wb", "worktrees", normalized.Operation)
+	home, err := wbhome.Root(normalized.ProjectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	operationRoot := filepath.Join(home, "worktrees", normalized.Operation)
 	lock, err := acquireLock(operationRoot)
 	if err != nil {
 		return nil, err
@@ -187,7 +192,11 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
 	}
 
-	worktreesRoot := filepath.Join(projectsRoot, ".wb", "worktrees")
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return GuardResult{}, err
+	}
+	worktreesRoot := filepath.Join(home, "worktrees")
 	result := GuardResult{Path: root, Branch: branch, WorktreesRoot: worktreesRoot}
 	if gitDir == commonDir {
 		result.Kind = "canonical"
@@ -485,8 +494,8 @@ func worktreeCoordinates(worktreesRoot, root string) (operation, owner, name str
 	parts := strings.Split(filepath.ToSlash(relative), "/")
 	if len(parts) != 3 || !safeSegment.MatchString(parts[0]) || parts[0] == "." || parts[0] == ".." {
 		return "", "", "", fmt.Errorf(
-			"linked worktree %s must be at <projects-root>/.wb/worktrees/<task>/<owner>/<repository>; recreate it with `wb worktree create`",
-			root,
+			"linked worktree %s must be at %s/<task>/<owner>/<repository> (WB's current .wb/worktrees root); recreate it with `wb worktree create`",
+			root, worktreesRoot,
 		)
 	}
 	owner, name, err = splitRepository(parts[1] + "/" + parts[2])
