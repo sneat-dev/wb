@@ -33,7 +33,8 @@ or AI reviewer about the actual diff.
 
 An apply campaign MUST clone missing repositories to
 `<github-dir>/<org>/<repo>` and MUST create or resume a dedicated worktree at
-`<github-dir>/.wb/worktrees/<migration>/<org>/<repo>`. It MUST NOT check out,
+`<wb-home>/worktrees/<migration>/<org>/<repo>` (normally
+`~/.wb/worktrees/...`). It MUST NOT check out,
 reset, or edit the canonical clone, including when that clone is dirty.
 
 #### REQ: recoverable-resume

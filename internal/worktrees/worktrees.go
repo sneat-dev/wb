@@ -52,6 +52,19 @@ type GuardResult struct {
 	WorktreesRoot string `json:"worktrees_root"`
 	Branch        string `json:"branch"`
 	Kind          string `json:"kind"`
+	Transient     bool   `json:"transient,omitempty"`
+}
+
+// managedWorktreeLocation is the shared, boundary-aware interpretation of a
+// linked checkout below one supported WB layout. The historic direct form
+// <task>/<repository> is intentionally supported alongside the current
+// <task>/<owner>/<repository> form.
+type managedWorktreeLocation struct {
+	Layout     wbhome.Layout
+	Task       string
+	Owner      string
+	Repository string
+	Worktree   string
 }
 
 type createPlan struct {
@@ -188,18 +201,11 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if err != nil {
 		return GuardResult{}, err
 	}
-	if branch == "" {
-		return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
-	}
-
-	home, err := wbhome.Root(projectsRoot)
-	if err != nil {
-		return GuardResult{}, err
-	}
-	worktreesRoot := filepath.Join(home, "worktrees")
-	result := GuardResult{Path: root, Branch: branch, WorktreesRoot: worktreesRoot}
 	if gitDir == commonDir {
-		result.Kind = "canonical"
+		if branch == "" {
+			return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
+		}
+		result := GuardResult{Path: root, Branch: branch, Kind: "canonical"}
 		result.CanonicalDir = root
 		if _, _, err := canonicalCoordinates(projectsRoot, root); err != nil {
 			return GuardResult{}, err
@@ -223,13 +229,19 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		return result, nil
 	}
 
-	result.Kind = "linked"
-	operation, owner, name, err := worktreeCoordinates(worktreesRoot, root)
+	resolution, err := wbhome.Resolve(projectsRoot)
 	if err != nil {
 		return GuardResult{}, err
 	}
-	_ = operation
-	canonical := filepath.Join(projectsRoot, owner, name)
+	location, err := locateManagedWorktree(ctx, projectsRoot, root, resolution.Read)
+	if err != nil {
+		return GuardResult{}, err
+	}
+	result := GuardResult{
+		Path: root, Branch: branch, WorktreesRoot: location.Layout.WorktreesRoot,
+		Kind: "linked",
+	}
+	canonical := filepath.Join(projectsRoot, location.Owner, location.Repository)
 	result.CanonicalDir = canonical
 	expectedCommon := filepath.Join(canonical, ".git")
 	resolvedExpected, err := filepath.EvalSymlinks(expectedCommon)
@@ -239,13 +251,80 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if filepath.Clean(commonDir) != filepath.Clean(expectedCommon) {
 		return GuardResult{}, fmt.Errorf(
 			"linked worktree %s is stored under %s but belongs to a different canonical clone (%s)",
-			root, worktreesRoot, commonDir,
+			root, location.Layout.WorktreesRoot, commonDir,
 		)
+	}
+	if branch == "" {
+		if !rebaseInProgress(gitDir) {
+			return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
+		}
+		result.Transient = true
+		return result, nil
 	}
 	if branch == base {
 		return GuardResult{}, fmt.Errorf("linked worktree %s is on protected base branch %q; use a feature branch", root, base)
 	}
 	return result, nil
+}
+
+func locateManagedWorktree(
+	ctx context.Context,
+	projectsRoot, root string,
+	layouts []wbhome.Layout,
+) (managedWorktreeLocation, error) {
+	for _, layout := range layouts {
+		relative, err := filepath.Rel(layout.WorktreesRoot, root)
+		if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+			continue
+		}
+		parts := strings.Split(filepath.ToSlash(relative), "/")
+		location := managedWorktreeLocation{Layout: layout, Worktree: root}
+		switch len(parts) {
+		case 3:
+			if !validSafeSegment(parts[0]) {
+				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
+			}
+			owner, repository, splitErr := splitRepository(parts[1] + "/" + parts[2])
+			if splitErr != nil {
+				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
+			}
+			location.Task, location.Owner, location.Repository = parts[0], owner, repository
+			return location, nil
+		case 2:
+			if !validSafeSegment(parts[0]) || !validSafeSegment(parts[1]) {
+				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
+			}
+			_, commonDir, directoriesErr := gitDirectories(ctx, root)
+			if directoriesErr != nil {
+				return managedWorktreeLocation{}, fmt.Errorf("derive legacy direct worktree identity for %s: %w", root, directoriesErr)
+			}
+			canonical := filepath.Dir(commonDir)
+			if resolved, resolveErr := filepath.EvalSymlinks(canonical); resolveErr == nil {
+				canonical = resolved
+			}
+			owner, repository, coordinatesErr := canonicalCoordinates(projectsRoot, canonical)
+			if coordinatesErr != nil || repository != parts[1] {
+				return managedWorktreeLocation{}, fmt.Errorf("legacy direct worktree %s has path repository %q but canonical clone %s", root, parts[1], canonical)
+			}
+			location.Task, location.Owner, location.Repository = parts[0], owner, repository
+			return location, nil
+		}
+	}
+	return managedWorktreeLocation{}, fmt.Errorf("linked worktree %s must be below a resolver-recognized .wb/worktrees hierarchy at <task>/<owner>/<repository> or legacy <task>/<repository>; recreate it with `wb worktree create`", root)
+}
+
+func invalidManagedWorktreePath(root, worktreesRoot string) error {
+	return fmt.Errorf("linked worktree %s must be at %s/<task>/<owner>/<repository> or legacy %s/<task>/<repository>", root, worktreesRoot, worktreesRoot)
+}
+
+func rebaseInProgress(gitDir string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		info, err := os.Stat(filepath.Join(gitDir, name))
+		if err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // OriginSlug returns the owner/repository identity of path's origin remote.
@@ -484,22 +563,6 @@ func canonicalCoordinates(projectsRoot, root string) (owner, name string, err er
 		return "", "", fmt.Errorf("canonical clone %s must be at <projects-root>/<owner>/<repository>", root)
 	}
 	return splitRepository(strings.Join(parts, "/"))
-}
-
-func worktreeCoordinates(worktreesRoot, root string) (operation, owner, name string, err error) {
-	relative, err := filepath.Rel(worktreesRoot, root)
-	if err != nil {
-		return "", "", "", err
-	}
-	parts := strings.Split(filepath.ToSlash(relative), "/")
-	if len(parts) != 3 || !safeSegment.MatchString(parts[0]) || parts[0] == "." || parts[0] == ".." {
-		return "", "", "", fmt.Errorf(
-			"linked worktree %s must be at %s/<task>/<owner>/<repository> (WB's current .wb/worktrees root); recreate it with `wb worktree create`",
-			root, worktreesRoot,
-		)
-	}
-	owner, name, err = splitRepository(parts[1] + "/" + parts[2])
-	return parts[0], owner, name, err
 }
 
 func git(ctx context.Context, dir string, args ...string) (string, error) {

@@ -197,6 +197,80 @@ func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
 	}
 }
 
+func TestManagedShimPersistsWBHomeAndRefreshesPriorReleaseShim(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
+	projects := filepath.Join(t.TempDir(), "projects")
+	home := filepath.Join(t.TempDir(), "explicit-home")
+	resolvedHomeParent, err := filepath.EvalSymlinks(filepath.Dir(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedHome := filepath.Join(resolvedHomeParent, filepath.Base(home))
+	logPath := filepath.Join(t.TempDir(), "wb.log")
+	fakeWB := filepath.Join(t.TempDir(), "wb")
+	mustWriteExecutable(t, fakeWB, "#!/bin/sh\nprintf '%s|%s\\n' \"$WB_HOME\" \"$*\" >> \"$WB_TEST_LOG\"\n")
+	t.Setenv("WB_TEST_LOG", logPath)
+	t.Setenv("WB_HOME", home)
+
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: fakeWB, ProjectsRoot: projects}); err != nil {
+		t.Fatal(err)
+	}
+	managed, err := managedPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This is the prior release's managed section: it stores the projects root
+	// but did not store WB_HOME.
+	for _, hook := range []string{"post-checkout", "pre-commit", "pre-push"} {
+		if err := writeExecutable(filepath.Join(managed, hook), []byte(shimContent(fakeWB, hook, "", projects, "", false))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshed, err := RefreshManagedShims(repo, "", fakeWB, projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed {
+		t.Fatal("prior-release shim was not refreshed")
+	}
+	if report, err := Check(repo, "", fakeWB, projects); err != nil || len(report.Findings) != 0 {
+		t.Fatalf("refreshed hook report = %#v, %v", report, err)
+	}
+	shim, err := os.ReadFile(filepath.Join(managed, "pre-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shim), "export WB_HOME='"+resolvedHome+"'") {
+		t.Fatalf("refreshed shim does not persist WB_HOME:\n%s", shim)
+	}
+	command := exec.Command(filepath.Join(managed, "pre-commit"))
+	command.Dir = repo
+	command.Env = append(os.Environ(), "WB_TEST_LOG="+logPath, "WB_HOME=wrong-home")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("run persisted shim: %v\n%s", err, output)
+	}
+	output, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(string(output)), resolvedHome+"|--projects-root "+projects+" hooks run pre-commit --"; got != want {
+		t.Fatalf("persisted shim invocation = %q, want %q", got, want)
+	}
+}
+
+func TestApplyRejectsTransientGoRunExecutable(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	transient := filepath.Join(t.TempDir(), "go-build123456", "exe", "wb")
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: transient}); err == nil || !strings.Contains(err.Error(), "transient go run executable") {
+		t.Fatalf("transient executable error = %v", err)
+	}
+}
+
 func TestLoadPolicyCustomProductProfileAndBuiltInOverride(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -325,7 +399,7 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 
 	mustWrite(t, preCommit, strings.Replace(string(data), executable, "/old/wb", 1))
 	stale := filepath.Join(result.Report.ManagedPath, "commit-msg")
-	mustWrite(t, stale, shimContent(executable, "commit-msg", "", projectsRoot))
+	mustWrite(t, stale, shimContent(executable, "commit-msg", "", projectsRoot, "", false))
 	report, err := Check(repo, "", executable, projectsRoot)
 	if err != nil {
 		t.Fatal(err)

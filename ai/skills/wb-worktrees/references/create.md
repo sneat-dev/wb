@@ -39,6 +39,11 @@ wb --projects-root <root> worktree create <task> \
 
 Use the exact paths WB prints. Do not reconstruct or relocate them.
 
+By default the printed path is below `~/.wb/worktrees`. A populated historic
+`<projects-root>/.wb` is never a create target. If an old managed hook exists,
+WB refreshes its home semantics before creation or fails before creating a
+mixed-layout checkout.
+
 ## Resume
 
 Use `--resume` only when the open work belongs to this exact task and branch:

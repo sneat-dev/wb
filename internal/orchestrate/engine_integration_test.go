@@ -180,7 +180,14 @@ exit 2
 	t.Setenv("WB_CHECK_STATE", state)
 
 	result := Result[string]{WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1"}
-	if err := waitAndMerge(context.Background(), Options{Timeout: time.Second, CheckPollInterval: time.Millisecond}, &result); err != nil {
+	// This exercises retry semantics, not a process-start SLA. Under the full
+	// suite's parallel package load, a shell process can be scheduled late
+	// enough to hit a short artificial boundary before it runs at all. The
+	// outer context keeps a broken fixture bounded without conflating scheduler
+	// delay with the merge policy being tested.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := waitAndMerge(ctx, Options{Timeout: 30 * time.Second, CheckPollInterval: time.Millisecond}, &result); err != nil {
 		t.Fatal(err)
 	}
 	if !result.Merged || result.Status != "merged" || len(result.Checks) != 1 || result.Checks[0].Bucket != "pass" {

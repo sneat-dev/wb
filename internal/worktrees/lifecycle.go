@@ -41,6 +41,7 @@ type ListResult struct {
 	Repository        string       `json:"repository"`
 	CanonicalDir      string       `json:"canonical_dir"`
 	WorktreeDir       string       `json:"worktree_dir"`
+	WorktreesRoot     string       `json:"worktrees_root"`
 	Branch            string       `json:"branch"`
 	Base              string       `json:"base"`
 	HeadSHA           string       `json:"head_sha"`
@@ -51,6 +52,23 @@ type ListResult struct {
 	LastCommit        time.Time    `json:"last_commit"`
 	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
 	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
+}
+
+// ListDiagnostic describes a malformed task-layout candidate that was skipped
+// without hiding valid sibling worktrees. It is intentionally separate from
+// ListResult so cleanup can never mistake an unvalidated path for a safe
+// linked checkout.
+type ListDiagnostic struct {
+	Task    string `json:"task,omitempty"`
+	Path    string `json:"path"`
+	Message string `json:"message"`
+}
+
+// ListOutcome preserves the valid local inventory while exposing every
+// deterministic malformed-candidate diagnostic encountered during scanning.
+type ListOutcome struct {
+	Results     []ListResult     `json:"results"`
+	Diagnostics []ListDiagnostic `json:"diagnostics,omitempty"`
 }
 
 // CleanupOptions controls planning and removal of merged WB tasks.
@@ -103,86 +121,146 @@ type githubPullRequest struct {
 }
 
 // List inspects real Git worktrees. It stays local unless GitHub is requested.
+// Callers that present diagnostics should use ListWithDiagnostics.
 func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
+	outcome, err := ListWithDiagnostics(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Results, nil
+}
+
+// ListWithDiagnostics inventories every resolver-recognized layout. It never
+// descends below a Git root, which prevents ordinary repository directories
+// such as .claude, .github, source, and generated trees from being re-read as
+// task-level repositories.
+func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
 	projectsRoot, task, base, err := normalizeListOptions(options)
 	if err != nil {
-		return nil, err
+		return ListOutcome{}, err
 	}
-	home, err := wbhome.Root(projectsRoot)
+	resolution, err := wbhome.Resolve(projectsRoot)
 	if err != nil {
-		return nil, err
+		return ListOutcome{}, err
 	}
-	worktreesRoot := filepath.Join(home, "worktrees")
-	taskEntries, err := os.ReadDir(worktreesRoot)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+	outcome := ListOutcome{}
+	for _, layout := range resolution.Read {
+		results, diagnostics, listErr := listLayout(ctx, projectsRoot, layout, task, base, options.GitHub)
+		if listErr != nil {
+			return ListOutcome{}, listErr
+		}
+		outcome.Results = append(outcome.Results, results...)
+		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read worktree tasks: %w", err)
-	}
+	sort.Slice(outcome.Results, func(i, j int) bool {
+		if outcome.Results[i].Task == outcome.Results[j].Task {
+			if outcome.Results[i].Repository == outcome.Results[j].Repository {
+				return outcome.Results[i].WorktreeDir < outcome.Results[j].WorktreeDir
+			}
+			return outcome.Results[i].Repository < outcome.Results[j].Repository
+		}
+		return outcome.Results[i].Task < outcome.Results[j].Task
+	})
+	sort.Slice(outcome.Diagnostics, func(i, j int) bool {
+		if outcome.Diagnostics[i].Task == outcome.Diagnostics[j].Task {
+			return outcome.Diagnostics[i].Path < outcome.Diagnostics[j].Path
+		}
+		return outcome.Diagnostics[i].Task < outcome.Diagnostics[j].Task
+	})
+	return outcome, nil
+}
 
+func listLayout(
+	ctx context.Context,
+	projectsRoot string,
+	layout wbhome.Layout,
+	task, base string,
+	withGitHub bool,
+) ([]ListResult, []ListDiagnostic, error) {
+	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
+	}
 	results := make([]ListResult, 0)
+	diagnostics := make([]ListDiagnostic, 0)
 	for _, taskEntry := range taskEntries {
 		if !taskEntry.IsDir() || (task != "" && taskEntry.Name() != task) {
 			continue
 		}
 		if !validSafeSegment(taskEntry.Name()) {
-			return nil, fmt.Errorf("invalid task directory below %s: %s", worktreesRoot, taskEntry.Name())
+			diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), filepath.Join(layout.WorktreesRoot, taskEntry.Name()), "invalid task directory name"))
+			continue
 		}
-		taskRoot := filepath.Join(worktreesRoot, taskEntry.Name())
+		taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
 		_, lockErr := os.Stat(filepath.Join(taskRoot, ".lock"))
 		locked := lockErr == nil
 		if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
-			return nil, fmt.Errorf("inspect task lock: %w", lockErr)
+			return nil, nil, fmt.Errorf("inspect task lock %s: %w", taskRoot, lockErr)
 		}
-		owners, err := os.ReadDir(taskRoot)
-		if err != nil {
-			return nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), err)
+		entries, readErr := os.ReadDir(taskRoot)
+		if readErr != nil {
+			return nil, nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), readErr)
 		}
-		for _, ownerEntry := range owners {
-			if !ownerEntry.IsDir() {
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == ".lock" {
 				continue
 			}
-			if !validSafeSegment(ownerEntry.Name()) {
-				return nil, fmt.Errorf("invalid owner directory in task %s: %s", taskEntry.Name(), ownerEntry.Name())
+			candidate := filepath.Join(taskRoot, entry.Name())
+			if isGitRoot(ctx, candidate) {
+				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, withGitHub, locked)
+				if inspectErr != nil {
+					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, inspectErr.Error()))
+					continue
+				}
+				results = append(results, result)
+				// A repository boundary is terminal. Never inspect its source or
+				// tool directories as candidate repositories.
+				continue
 			}
-			ownerRoot := filepath.Join(taskRoot, ownerEntry.Name())
-			repositories, err := os.ReadDir(ownerRoot)
-			if err != nil {
-				return nil, fmt.Errorf("read task owner %s/%s: %w", taskEntry.Name(), ownerEntry.Name(), err)
+			if !validSafeSegment(entry.Name()) {
+				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, "invalid owner or legacy repository directory name"))
+				continue
 			}
-			for _, repositoryEntry := range repositories {
+			nested, nestedErr := os.ReadDir(candidate)
+			if nestedErr != nil {
+				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, fmt.Sprintf("read candidate directory: %v", nestedErr)))
+				continue
+			}
+			for _, repositoryEntry := range nested {
 				if !repositoryEntry.IsDir() {
 					continue
 				}
+				repositoryPath := filepath.Join(candidate, repositoryEntry.Name())
 				if !validSafeSegment(repositoryEntry.Name()) {
-					return nil, fmt.Errorf("invalid repository directory in task %s: %s", taskEntry.Name(), repositoryEntry.Name())
+					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "invalid repository directory name"))
+					continue
 				}
-				result, err := inspectLifecycleWorktree(
-					ctx,
-					projectsRoot,
-					worktreesRoot,
-					taskEntry.Name(),
-					ownerEntry.Name(),
-					repositoryEntry.Name(),
-					base,
-					options.GitHub,
-					locked,
-				)
-				if err != nil {
-					return nil, err
+				if !isGitRoot(ctx, repositoryPath) {
+					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root"))
+					continue
+				}
+				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, withGitHub, locked)
+				if inspectErr != nil {
+					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, inspectErr.Error()))
+					continue
 				}
 				results = append(results, result)
 			}
 		}
 	}
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].Task == results[j].Task {
-			return results[i].Repository < results[j].Repository
-		}
-		return results[i].Task < results[j].Task
-	})
-	return results, nil
+	return results, diagnostics, nil
+}
+
+func listDiagnostic(task, path, message string) ListDiagnostic {
+	return ListDiagnostic{Task: task, Path: path, Message: message}
+}
+
+func isGitRoot(ctx context.Context, path string) bool {
+	root, err := git(ctx, path, "rev-parse", "--show-toplevel")
+	return err == nil && filepath.Clean(root) == filepath.Clean(path)
 }
 
 // Cleanup plans or applies cleanup for one task or every safely merged task.
@@ -193,16 +271,15 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
-	home, err := wbhome.Root(normalized.ProjectsRoot)
+	resolution, err := wbhome.Resolve(normalized.ProjectsRoot)
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
-	worktreesRoot := filepath.Join(home, "worktrees")
 	now := normalized.Now()
 	if normalized.ReportDir == "" && normalized.Apply {
-		normalized.ReportDir = DefaultCleanupReportDir(home, now)
+		normalized.ReportDir = DefaultCleanupReportDir(resolution.Write.Home, now)
 	}
-	listed, err := List(ctx, ListOptions{
+	listed, err := ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot: normalized.ProjectsRoot,
 		Task:         normalized.Task,
 		Base:         normalized.Base,
@@ -211,12 +288,16 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
-	if normalized.Task != "" && len(listed) == 0 {
+	if len(listed.Diagnostics) > 0 {
+		first := listed.Diagnostics[0]
+		return CleanupOutcome{}, fmt.Errorf("refusing cleanup while managed-worktree inventory has malformed candidate %s: %s", first.Path, first.Message)
+	}
+	if normalized.Task != "" && len(listed.Results) == 0 {
 		return CleanupOutcome{}, fmt.Errorf("WB worktree task %q was not found", normalized.Task)
 	}
 
-	results := make([]CleanupResult, len(listed))
-	for index, entry := range listed {
+	results := make([]CleanupResult, len(listed.Results))
+	for index, entry := range listed.Results {
 		eligible, reason := cleanupEligibility(entry, normalized.OlderThan, now)
 		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
 	}
@@ -243,7 +324,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// Hold the same per-task lock used by worktree creation across the complete
 	// recheck-and-remove sequence. Without this lock, a resume or second cleanup
 	// could start after the plan observed an unlocked task but before deletion.
-	locks, err := acquireCleanupLocks(worktreesRoot, outcome.Results)
+	locks, err := acquireCleanupLocks(outcome.Results)
 	if err != nil {
 		return fail(err)
 	}
@@ -253,17 +334,12 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		if !outcome.Results[index].Eligible {
 			continue
 		}
-		parts := strings.Split(outcome.Results[index].Repository, "/")
-		if len(parts) != 2 {
-			return fail(fmt.Errorf("invalid cleanup repository %q", outcome.Results[index].Repository))
-		}
 		refreshed, err := inspectLifecycleWorktree(
 			ctx,
 			normalized.ProjectsRoot,
-			worktreesRoot,
+			wbhome.Layout{WorktreesRoot: outcome.Results[index].WorktreesRoot},
 			outcome.Results[index].Task,
-			parts[0],
-			parts[1],
+			outcome.Results[index].WorktreeDir,
 			normalized.Base,
 			true,
 			false, // The task is locked by this cleanup operation.
@@ -295,7 +371,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	releaseCleanupLocks(locks)
 	locks = nil
-	removeEmptyTaskDirectories(worktreesRoot, outcome.Results)
+	removeEmptyTaskDirectories(outcome.Results)
 	if normalized.ReportDir != "" {
 		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results)
 		if err != nil {
@@ -375,12 +451,11 @@ func validSafeSegment(value string) bool {
 
 func inspectLifecycleWorktree(
 	ctx context.Context,
-	projectsRoot, worktreesRoot, task, owner, repository, base string,
+	projectsRoot string,
+	layout wbhome.Layout,
+	task, worktree, base string,
 	withGitHub, locked bool,
 ) (ListResult, error) {
-	slug := owner + "/" + repository
-	canonical := filepath.Join(projectsRoot, owner, repository)
-	worktree := filepath.Join(worktreesRoot, task, owner, repository)
 	root, err := git(ctx, worktree, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ListResult{}, fmt.Errorf("inspect %s: %w", worktree, err)
@@ -388,6 +463,15 @@ func inspectLifecycleWorktree(
 	if filepath.Clean(root) != filepath.Clean(worktree) {
 		return ListResult{}, fmt.Errorf("WB worktree %s has Git root %s", worktree, root)
 	}
+	location, err := locateManagedWorktree(ctx, projectsRoot, worktree, []wbhome.Layout{layout})
+	if err != nil {
+		return ListResult{}, err
+	}
+	if location.Task != task {
+		return ListResult{}, fmt.Errorf("WB worktree %s belongs to task %q, not %q", worktree, location.Task, task)
+	}
+	slug := location.Owner + "/" + location.Repository
+	canonical := filepath.Join(projectsRoot, location.Owner, location.Repository)
 	_, commonDir, err := gitDirectories(ctx, worktree)
 	if err != nil {
 		return ListResult{}, err
@@ -428,7 +512,8 @@ func inspectLifecycleWorktree(
 	}
 	result := ListResult{
 		Task: task, Repository: slug, CanonicalDir: canonical, WorktreeDir: worktree,
-		Branch: branch, Base: base, HeadSHA: head,
+		WorktreesRoot: layout.WorktreesRoot,
+		Branch:        branch, Base: base, HeadSHA: head,
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked, LastCommit: lastCommit,
 	}
 	if withGitHub {
@@ -556,15 +641,16 @@ func blockUnsafeTasks(results []CleanupResult) {
 	}
 }
 
-func acquireCleanupLocks(worktreesRoot string, results []CleanupResult) ([]operationLock, error) {
+func acquireCleanupLocks(results []CleanupResult) ([]operationLock, error) {
 	locks := make([]operationLock, 0)
 	seen := map[string]bool{}
 	for _, result := range results {
-		if !result.Eligible || seen[result.Task] {
+		key := result.WorktreesRoot + "\x00" + result.Task
+		if !result.Eligible || seen[key] {
 			continue
 		}
-		seen[result.Task] = true
-		taskRoot := filepath.Join(worktreesRoot, result.Task)
+		seen[key] = true
+		taskRoot := filepath.Join(result.WorktreesRoot, result.Task)
 		lock, err := acquireLock(taskRoot)
 		if err != nil {
 			releaseCleanupLocks(locks)
@@ -590,18 +676,17 @@ func deleteRemoteBranch(ctx context.Context, entry ListResult) error {
 	return nil
 }
 
-func removeEmptyTaskDirectories(worktreesRoot string, results []CleanupResult) {
+func removeEmptyTaskDirectories(results []CleanupResult) {
 	tasks := map[string]bool{}
 	for _, result := range results {
 		if !result.Applied {
 			continue
 		}
-		parts := strings.Split(result.Repository, "/")
-		if len(parts) != 2 {
-			continue
-		}
-		taskRoot := filepath.Join(worktreesRoot, result.Task)
-		_ = os.Remove(filepath.Join(taskRoot, parts[0]))
+		taskRoot := filepath.Join(result.WorktreesRoot, result.Task)
+		// Current worktrees leave an empty owner directory; legacy direct
+		// worktrees have the task directory as their immediate parent. Both
+		// removals are best-effort and refuse non-empty sibling worktrees.
+		_ = os.Remove(filepath.Dir(result.WorktreeDir))
 		tasks[taskRoot] = true
 	}
 	for taskRoot := range tasks {

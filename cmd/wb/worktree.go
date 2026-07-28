@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -37,9 +40,10 @@ worktree at:
 
   <wb-home>/worktrees/<task>/<owner>/<repository>
 
-<wb-home> is ~/.wb by default. Set $WB_HOME to use a different directory. An
-existing installation with a populated <projects-root>/.wb keeps using that
-location instead, so no worktree already in progress is stranded by upgrading.
+<wb-home> is ~/.wb by default. Set $WB_HOME to use a different directory.
+New work never silently falls back to <projects-root>/.wb; when WB_HOME is not
+explicit, existing legacy worktrees there remain guardable, listable, and
+cleanable during migration.
 
 If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
@@ -53,6 +57,9 @@ unless --resume is explicit.`,
 					return fmt.Errorf("derive current repository: %w", err)
 				}
 				repositories = []string{repository}
+			}
+			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
+				return err
 			}
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
 				ProjectsRoot: projectsRoot,
@@ -91,6 +98,23 @@ unless --resume is explicit.`,
 	return command
 }
 
+func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
+	for _, repository := range repositories {
+		parts := strings.Split(repository, "/")
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			// Create will return the canonical validation error; do not build an
+			// accidental path before it has a chance to do so.
+			continue
+		}
+		canonical := filepath.Join(projectsRoot, parts[0], parts[1])
+		_, err := hooks.RefreshManagedShims(canonical, "", hookExecutable(), projectsRoot)
+		if err != nil {
+			return fmt.Errorf("verify hooks for %s before creating a worktree: %w", repository, err)
+		}
+	}
+	return nil
+}
+
 func newWorktreeGuardCmd() *cobra.Command {
 	var base, format string
 	var quiet bool
@@ -121,7 +145,11 @@ for how <wb-home> is resolved).`,
 			}
 			switch format {
 			case "text":
-				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s\n", result.Kind, result.Path, result.Branch)
+				checkout := result.Branch
+				if result.Transient {
+					checkout = "detached HEAD (active rebase)"
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s\n", result.Kind, result.Path, checkout)
 				return err
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -155,7 +183,7 @@ exact-head merged pull request evidence used by worktree cleanup.`,
 			if len(args) == 1 {
 				task = args[0]
 			}
-			results, err := worktrees.List(command.Context(), worktrees.ListOptions{
+			outcome, err := worktrees.ListWithDiagnostics(command.Context(), worktrees.ListOptions{
 				ProjectsRoot: projectsRoot,
 				Task:         task,
 				Base:         base,
@@ -164,13 +192,18 @@ exact-head merged pull request evidence used by worktree cleanup.`,
 			if err != nil {
 				return err
 			}
+			for _, diagnostic := range outcome.Diagnostics {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "warning: task %s candidate %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message); err != nil {
+					return err
+				}
+			}
 			switch format {
 			case "text":
-				return printWorktreeList(command, results)
+				return printWorktreeList(command, outcome.Results)
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(results)
+				return encoder.Encode(outcome.Results)
 			default:
 				return fmt.Errorf("unsupported format %q; use text or json", format)
 			}

@@ -49,6 +49,40 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 }
 
+func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *testing.T) {
+	fixture := newDefaultHomeGitFixture(t)
+	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "legacy", "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/legacy", legacy, "main")
+
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "new-home",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := created[0].WorktreeDir, filepath.Join(fixture.home, "worktrees", "new-home", "acme", "app"); got != want {
+		t.Fatalf("new worktree = %q, want authoritative default-home path %q", got, want)
+	}
+	if strings.HasPrefix(created[0].WorktreeDir, filepath.Join(fixture.projectsRoot, ".wb")) {
+		t.Fatalf("new worktree silently reused legacy home: %s", created[0].WorktreeDir)
+	}
+	guarded, err := Guard(context.Background(), legacy, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil {
+		t.Fatalf("legacy linked worktree was stranded: %v", err)
+	}
+	if got, want := guarded.WorktreesRoot, filepath.Join(fixture.projectsRoot, ".wb", "worktrees"); got != want {
+		t.Fatalf("legacy guard root = %q, want %q", got, want)
+	}
+	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("listed worktrees = %#v, want new + legacy", listed)
+	}
+}
+
 func TestCreateRefusesUnsafeCanonicalClone(t *testing.T) {
 	tests := []struct {
 		name string
@@ -144,6 +178,64 @@ func TestGuardRejectsLinkedWorktreeOutsideCentralHierarchy(t *testing.T) {
 	}
 }
 
+func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
+	for _, mode := range []struct {
+		name  string
+		args  []string
+		state string
+	}{
+		{name: "merge backend", args: []string{"rebase", "origin/main"}, state: "rebase-merge"},
+		{name: "apply backend", args: []string{"rebase", "--apply", "origin/main"}, state: "rebase-apply"},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "rebase"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			worktree := created[0].WorktreeDir
+			if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("feature\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitTest(t, worktree, "add", "README.md")
+			gitTest(t, worktree, "commit", "-m", "feature change")
+			if err := os.WriteFile(filepath.Join(fixture.canonical, "README.md"), []byte("main\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitTest(t, fixture.canonical, "add", "README.md")
+			gitTest(t, fixture.canonical, "commit", "-m", "main change")
+			gitTest(t, fixture.canonical, "push", "origin", "main")
+			gitTest(t, worktree, "fetch", "origin", "main")
+			if output, err := gitTestRun(worktree, mode.args...); err == nil {
+				t.Fatalf("git %s unexpectedly succeeded: %s", strings.Join(mode.args, " "), output)
+			}
+			gitDir := gitTestOutput(t, worktree, "rev-parse", "--absolute-git-dir")
+			if info, err := os.Stat(filepath.Join(gitDir, mode.state)); err != nil || !info.IsDir() {
+				t.Fatalf("expected active %s state: %v", mode.state, err)
+			}
+			guarded, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+			if err != nil || !guarded.Transient || guarded.Kind != "linked" {
+				t.Fatalf("guard during %s = %#v, %v", mode.state, guarded, err)
+			}
+			if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("resolved\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			gitTest(t, worktree, "add", "README.md")
+			if output, err := gitTestRunEnv(worktree, []string{"GIT_EDITOR=true"}, "rebase", "--continue"); err != nil {
+				t.Fatalf("finish rebase: %v\n%s", err, output)
+			}
+			guarded, err = Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+			if err != nil || guarded.Transient || guarded.Branch != "codex/rebase" {
+				t.Fatalf("guard after rebase = %#v, %v", guarded, err)
+			}
+			gitTest(t, worktree, "checkout", "--detach", "HEAD")
+			if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+				t.Fatalf("arbitrary detached guard error = %v", err)
+			}
+		})
+	}
+}
+
 type gitFixture struct {
 	projectsRoot string
 	canonical    string
@@ -165,6 +257,25 @@ func newGitFixture(t *testing.T) *gitFixture {
 	// per-fixture isolation.
 	home := filepath.Join(root, ".wb")
 	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvMigrationCompat, "")
+	return newGitFixtureAt(t, root, home)
+}
+
+func newDefaultHomeGitFixture(t *testing.T) *gitFixture {
+	t.Helper()
+	root := t.TempDir()
+	homeParent := filepath.Join(root, "home")
+	if err := os.MkdirAll(homeParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, "")
+	t.Setenv(wbhome.EnvMigrationCompat, "")
+	t.Setenv("HOME", homeParent)
+	return newGitFixtureAt(t, root, filepath.Join(homeParent, ".wb"))
+}
+
+func newGitFixtureAt(t *testing.T, root, home string) *gitFixture {
+	t.Helper()
 	remote := filepath.Join(root, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
 	projectsRoot := filepath.Join(root, "projects")
@@ -192,11 +303,11 @@ func newGitFixture(t *testing.T) *gitFixture {
 	// home's own ".wb" leaf doesn't exist until something creates a worktree,
 	// so resolve the root that does exist and rejoin — matching wbhome.Root's
 	// own resolution (see resolveAbs) for a path that isn't there yet.
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	homeParent, err := filepath.EvalSymlinks(filepath.Dir(home))
 	if err != nil {
 		t.Fatal(err)
 	}
-	home = filepath.Join(resolvedRoot, ".wb")
+	home = filepath.Join(homeParent, filepath.Base(home))
 	return &gitFixture{projectsRoot: projectsRoot, canonical: canonical, remote: remote, home: home}
 }
 
@@ -236,6 +347,19 @@ func gitTest(t *testing.T, dir string, args ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
+}
+
+func gitTestRun(dir string, args ...string) (string, error) {
+	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
+
+func gitTestRunEnv(dir string, environment []string, args ...string) (string, error) {
+	command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	command.Env = append(os.Environ(), environment...)
+	output, err := command.CombinedOutput()
+	return string(output), err
 }
 
 func gitTestOutput(t *testing.T, dir string, args ...string) string {

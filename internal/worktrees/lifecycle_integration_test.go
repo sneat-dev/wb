@@ -40,6 +40,76 @@ func TestListDefaultsToOfflineRealGitData(t *testing.T) {
 	}
 }
 
+func TestListStopsAtLegacyDirectRepositoryRootsAndRetainsValidSiblings(t *testing.T) {
+	fixture := newDefaultHomeGitFixture(t)
+	legacyRoot := filepath.Join(fixture.projectsRoot, ".wb", "worktrees")
+	direct := filepath.Join(legacyRoot, "ci-gates", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/ci-gates", direct, "main")
+	for _, directory := range []string{
+		filepath.Join(direct, ".claude"),
+		filepath.Join(direct, ".github", "workflows"),
+		filepath.Join(direct, "source", "generated"),
+		filepath.Join(legacyRoot, "ci-gates", "acme", "broken"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	outcome, err := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "ci-gates"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || outcome.Results[0].WorktreeDir != direct || outcome.Results[0].Repository != "acme/app" {
+		t.Fatalf("valid direct-root inventory = %#v", outcome.Results)
+	}
+	if len(outcome.Diagnostics) != 1 || outcome.Diagnostics[0].Path != filepath.Join(legacyRoot, "ci-gates", "acme", "broken") {
+		t.Fatalf("diagnostics = %#v, want only malformed sibling", outcome.Diagnostics)
+	}
+	for _, diagnostic := range outcome.Diagnostics {
+		if strings.Contains(diagnostic.Path, ".claude") || strings.Contains(diagnostic.Path, ".github") || strings.Contains(diagnostic.Path, "source") {
+			t.Fatalf("scanner descended below Git root: %#v", outcome.Diagnostics)
+		}
+	}
+}
+
+func TestCleanupLegacyLayoutWritesAuditToAuthoritativeDefaultHome(t *testing.T) {
+	fixture := newDefaultHomeGitFixture(t)
+	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "cleanup-legacy", "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/cleanup-legacy", legacy, "main")
+	if err := os.WriteFile(filepath.Join(legacy, "feature.txt"), []byte("legacy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, legacy, "add", "feature.txt")
+	gitTest(t, legacy, "commit", "-m", "legacy feature")
+	head := gitTestOutput(t, legacy, "rev-parse", "HEAD")
+	gitTest(t, legacy, "push", "-u", "origin", "codex/cleanup-legacy")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/cleanup-legacy", "-m", "merge legacy feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-legacy",
+		Apply:        true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("legacy cleanup = %#v", outcome)
+	}
+	if !strings.HasPrefix(outcome.ReportPath, filepath.Join(fixture.home, "reports")+string(filepath.Separator)) {
+		t.Fatalf("cleanup report = %q, want authoritative default-home report", outcome.ReportPath)
+	}
+	if _, statErr := os.Stat(legacy); !os.IsNotExist(statErr) {
+		t.Fatalf("legacy worktree remains after cleanup: %v", statErr)
+	}
+}
+
 func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-real")
 	installMergedPullRequestFixture(t, head, mergedAt)

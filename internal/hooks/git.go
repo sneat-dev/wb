@@ -44,7 +44,7 @@ func gitCommonDir(repoRoot string) (string, error) {
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(repoRoot, dir)
 	}
-	return filepath.Clean(dir), nil
+	return resolveGitPath(dir), nil
 }
 
 func currentHooksPath(repoRoot string) (string, error) {
@@ -59,7 +59,15 @@ func currentHooksPath(repoRoot string) (string, error) {
 	if !filepath.IsAbs(value) {
 		value = filepath.Join(repoRoot, value)
 	}
-	return filepath.Clean(value), nil
+	return resolveGitPath(value), nil
+}
+
+func resolveGitPath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 func setHooksPath(repoRoot, path string) error {

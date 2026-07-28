@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 const (
@@ -39,9 +41,16 @@ type ApplyOptions struct {
 	// ProjectsRoot is persisted in every shim so hooks keep the same checkout
 	// policy when WB was invoked with a non-default --projects-root.
 	ProjectsRoot string
-	Repair       bool
-	Force        bool
-	Now          func() time.Time
+	// WBHome is persisted in every shim so hooks preserve an explicit WB_HOME
+	// and do not recreate mixed-home state after a later shell invocation.
+	WBHome string
+	// WBHomeAllowsLegacy marks a shim installed from the normal default layout.
+	// Such a shim pins its default write home but must still guard legacy linked
+	// worktrees until migration completes.
+	WBHomeAllowsLegacy bool
+	Repair             bool
+	Force              bool
+	Now                func() time.Time
 }
 
 type ApplyResult struct {
@@ -90,11 +99,11 @@ func expectedHookNames(policy Policy) []string {
 	return result
 }
 
-func shimContent(executable, hook, explicitConfig, projectsRoot string) string {
-	return "#!/bin/sh\nset -eu\n\n" + shimManagedSection(executable, hook, explicitConfig, projectsRoot)
+func shimContent(executable, hook, explicitConfig, projectsRoot, wbHome string, wbHomeAllowsLegacy bool) string {
+	return "#!/bin/sh\nset -eu\n\n" + shimManagedSection(executable, hook, explicitConfig, projectsRoot, wbHome, wbHomeAllowsLegacy)
 }
 
-func shimManagedSection(executable, hook, explicitConfig, projectsRoot string) string {
+func shimManagedSection(executable, hook, explicitConfig, projectsRoot, wbHome string, wbHomeAllowsLegacy bool) string {
 	args := []string{shellQuote(executable)}
 	if projectsRoot != "" {
 		// A hook starts in the repository, outside the command that installed
@@ -108,7 +117,15 @@ func shimManagedSection(executable, hook, explicitConfig, projectsRoot string) s
 		args = append(args, "--config", shellQuote(expandPath(explicitConfig)))
 	}
 	args = append(args, shellQuote(hook), "--", `"$@"`)
+	homeExport := ""
+	if wbHome != "" {
+		homeExport = "export WB_HOME=" + shellQuote(wbHome) + "\n"
+		if wbHomeAllowsLegacy {
+			homeExport += "export " + wbhome.EnvMigrationCompat + "='default'\n"
+		}
+	}
 	return managedStartMarker + "\n" +
+		homeExport +
 		strings.Join(args, " ") + "\n" +
 		"_wb_hook_status=$?\n" +
 		"if [ \"$_wb_hook_status\" -ne 0 ]; then\n" +
@@ -140,6 +157,10 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		return CheckReport{}, err
 	}
 	projectsRoot, err = absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return CheckReport{}, err
+	}
+	wbHome, wbHomeAllowsLegacy, err := resolvedWBHome(projectsRoot)
 	if err != nil {
 		return CheckReport{}, err
 	}
@@ -178,7 +199,7 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 			report.Findings = append(report.Findings, Finding{Code: "hook-missing", Message: fmt.Sprintf("managed %s hook is missing", name), Path: path})
 			continue
 		}
-		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath, projectsRoot)
+		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath, projectsRoot, wbHome, wbHomeAllowsLegacy)
 		actual, managed, valid := extractManagedSection(string(data))
 		if !managed || !valid || actual != expected {
 			report.Findings = append(report.Findings, Finding{Code: "hook-stale", Message: fmt.Sprintf("managed %s hook differs from the expected shim", name), Path: path})
@@ -216,6 +237,9 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 // Apply installs or repairs WB's local shims. It never overwrites unmanaged
 // hook files unless Force is set, and forced replacements are backed up.
 func Apply(options ApplyOptions) (ApplyResult, error) {
+	if err := requireDurableWBExecutable(options.WBExecutable); err != nil {
+		return ApplyResult{}, err
+	}
 	policy, err := LoadPolicy(options.RepoPath, options.ConfigPath)
 	if err != nil {
 		return ApplyResult{}, err
@@ -223,6 +247,12 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	options.ProjectsRoot, err = absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
 		return ApplyResult{}, err
+	}
+	if options.WBHome == "" {
+		options.WBHome, options.WBHomeAllowsLegacy, err = resolvedWBHome(options.ProjectsRoot)
+		if err != nil {
+			return ApplyResult{}, err
+		}
 	}
 	managed, err := managedPath(policy.RepoRoot)
 	if err != nil {
@@ -254,8 +284,8 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	names := expectedHookNames(policy)
 	for _, name := range names {
 		path := filepath.Join(managed, name)
-		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot)
-		content := shimContent(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot)
+		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
+		content := shimContent(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
 		if existing, readErr := os.ReadFile(path); readErr == nil {
 			if !isManagedContent(string(existing)) {
 				if !options.Force {
@@ -298,6 +328,76 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	}
 	result.Report = report
 	return result, nil
+}
+
+func requireDurableWBExecutable(executable string) error {
+	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(executable)))
+	if strings.Contains(clean, "/go-build") && strings.Contains(clean, "/exe/") {
+		return fmt.Errorf("refusing to install hooks from transient go run executable %s; build or install a durable wb binary first", executable)
+	}
+	return nil
+}
+
+// RefreshManagedShims upgrades an already-managed hook installation before a
+// command creates a new worktree. It deliberately leaves repositories without
+// WB-managed hooks alone; a conflicting or malformed managed installation
+// fails the caller before it can create a split-layout checkout.
+func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string) (bool, error) {
+	policy, err := LoadPolicy(repoPath, configPath)
+	if err != nil {
+		return false, err
+	}
+	projectsRoot, err = absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return false, err
+	}
+	managed, err := managedPath(policy.RepoRoot)
+	if err != nil {
+		return false, err
+	}
+	current, err := currentHooksPath(policy.RepoRoot)
+	if err != nil {
+		return false, err
+	}
+	if current != managed {
+		return false, nil
+	}
+	wbHome, wbHomeAllowsLegacy, err := resolvedWBHome(projectsRoot)
+	if err != nil {
+		return false, err
+	}
+	for _, name := range expectedHookNames(policy) {
+		data, readErr := os.ReadFile(filepath.Join(managed, name))
+		if readErr != nil {
+			return false, fmt.Errorf("read managed hook %s before worktree creation: %w", name, readErr)
+		}
+		actual, isManaged, valid := extractManagedSection(string(data))
+		if !isManaged || !valid {
+			return false, fmt.Errorf("managed hook %s is malformed; run `wb hooks repair` before creating a worktree", name)
+		}
+		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath, projectsRoot, wbHome, wbHomeAllowsLegacy)
+		if actual != expected {
+			if _, applyErr := Apply(ApplyOptions{
+				RepoPath: policy.RepoRoot, ConfigPath: configPath, WBExecutable: wbExecutable,
+				ProjectsRoot: projectsRoot, WBHome: wbHome, WBHomeAllowsLegacy: wbHomeAllowsLegacy, Repair: true,
+			}); applyErr != nil {
+				return false, fmt.Errorf("refresh incompatible managed hooks before creating a worktree: %w", applyErr)
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func resolvedWBHome(projectsRoot string) (string, bool, error) {
+	if projectsRoot == "" {
+		return "", false, nil
+	}
+	resolution, err := wbhome.Resolve(projectsRoot)
+	if err != nil {
+		return "", false, err
+	}
+	return resolution.Write.Home, !resolution.Explicit, nil
 }
 
 func writeExecutable(path string, content []byte) error {
