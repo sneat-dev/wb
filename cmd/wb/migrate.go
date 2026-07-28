@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/migrate"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func newMigrateCmd() *cobra.Command {
@@ -149,7 +150,12 @@ func runHierarchicalMigration(specPath string, roots []string, options hierarchi
 	}
 	reportDir := options.reportDir
 	if reportDir == "" {
-		reportDir = filepath.Join(githubDir, ".wb", "reports", spec.ID)
+		home, err := wbhome.Root(githubDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		reportDir = filepath.Join(home, "reports", spec.ID)
 	}
 	report, runErr := migrate.RunCampaign(spec, roots[0], migrate.CampaignOptions{
 		GitHubDir: githubDir, Ref: options.ref, ModuleRefs: refs, Apply: options.apply,

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // Run executes a typed mutation over independent repositories. It completes
@@ -153,7 +154,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = assessment.Reason
 		return nil
 	}
-	worktree := filepath.Join(options.GitHubDir, ".wb", "worktrees", options.Operation, owner, name)
+	home, err := wbhome.Root(options.GitHubDir)
+	if err != nil {
+		return failResult(result, err)
+	}
+	worktree := filepath.Join(home, "worktrees", options.Operation, owner, name)
 	result.WorktreeDir = worktree
 	result.Branch = options.Branch
 	if err := prepareWorktree(ctx, canonical, worktree, options.Branch, base, options); err != nil {
@@ -444,7 +449,11 @@ type OperationLock struct{ path string }
 
 // AcquireOperationLock creates an exclusive lock below the operation root.
 func AcquireOperationLock(githubDir, operation string) (OperationLock, error) {
-	directory := filepath.Join(githubDir, ".wb", "worktrees", operation)
+	home, err := wbhome.Root(githubDir)
+	if err != nil {
+		return OperationLock{}, err
+	}
+	directory := filepath.Join(home, "worktrees", operation)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return OperationLock{}, err
 	}

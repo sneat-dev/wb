@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestCampaignUsesIsolatedWorktreesAndCanResumeAndClean(t *testing.T) {
@@ -366,6 +368,10 @@ func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 	t.Setenv("GIT_COMMITTER_NAME", "WB Test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "wb@example.test")
 	root := t.TempDir()
+	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
+	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
+	// ~/.wb; a hermetic test must not write there.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "github", ".wb"))
 	remotes := filepath.Join(root, "remotes")
 	providerSource := filepath.Join(root, "source", "provider")
 	consumerSource := filepath.Join(root, "source", "consumer")

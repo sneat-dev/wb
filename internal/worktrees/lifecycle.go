@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // ListOptions selects WB-managed task worktrees and optional GitHub PR state.
@@ -107,7 +108,11 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	worktreesRoot := filepath.Join(projectsRoot, ".wb", "worktrees")
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	worktreesRoot := filepath.Join(home, "worktrees")
 	taskEntries, err := os.ReadDir(worktreesRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -156,6 +161,7 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 				result, err := inspectLifecycleWorktree(
 					ctx,
 					projectsRoot,
+					worktreesRoot,
 					taskEntry.Name(),
 					ownerEntry.Name(),
 					repositoryEntry.Name(),
@@ -187,9 +193,14 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	home, err := wbhome.Root(normalized.ProjectsRoot)
+	if err != nil {
+		return CleanupOutcome{}, err
+	}
+	worktreesRoot := filepath.Join(home, "worktrees")
 	now := normalized.Now()
 	if normalized.ReportDir == "" && normalized.Apply {
-		normalized.ReportDir = DefaultCleanupReportDir(normalized.ProjectsRoot, now)
+		normalized.ReportDir = DefaultCleanupReportDir(home, now)
 	}
 	listed, err := List(ctx, ListOptions{
 		ProjectsRoot: normalized.ProjectsRoot,
@@ -232,7 +243,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// Hold the same per-task lock used by worktree creation across the complete
 	// recheck-and-remove sequence. Without this lock, a resume or second cleanup
 	// could start after the plan observed an unlocked task but before deletion.
-	locks, err := acquireCleanupLocks(normalized.ProjectsRoot, outcome.Results)
+	locks, err := acquireCleanupLocks(worktreesRoot, outcome.Results)
 	if err != nil {
 		return fail(err)
 	}
@@ -249,6 +260,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		refreshed, err := inspectLifecycleWorktree(
 			ctx,
 			normalized.ProjectsRoot,
+			worktreesRoot,
 			outcome.Results[index].Task,
 			parts[0],
 			parts[1],
@@ -283,7 +295,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	releaseCleanupLocks(locks)
 	locks = nil
-	removeEmptyTaskDirectories(normalized.ProjectsRoot, outcome.Results)
+	removeEmptyTaskDirectories(worktreesRoot, outcome.Results)
 	if normalized.ReportDir != "" {
 		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results)
 		if err != nil {
@@ -346,11 +358,11 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 	return options, nil
 }
 
-// DefaultCleanupReportDir returns the durable audit directory for one apply.
-func DefaultCleanupReportDir(projectsRoot string, now time.Time) string {
+// DefaultCleanupReportDir returns the durable audit directory for one apply,
+// below the already-resolved WB home directory (see wbhome.Root).
+func DefaultCleanupReportDir(home string, now time.Time) string {
 	return filepath.Join(
-		projectsRoot,
-		".wb",
+		home,
 		"reports",
 		"worktree-cleanup",
 		now.UTC().Format("20060102T150405.000000000Z"),
@@ -363,12 +375,12 @@ func validSafeSegment(value string) bool {
 
 func inspectLifecycleWorktree(
 	ctx context.Context,
-	projectsRoot, task, owner, repository, base string,
+	projectsRoot, worktreesRoot, task, owner, repository, base string,
 	withGitHub, locked bool,
 ) (ListResult, error) {
 	slug := owner + "/" + repository
 	canonical := filepath.Join(projectsRoot, owner, repository)
-	worktree := filepath.Join(projectsRoot, ".wb", "worktrees", task, owner, repository)
+	worktree := filepath.Join(worktreesRoot, task, owner, repository)
 	root, err := git(ctx, worktree, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ListResult{}, fmt.Errorf("inspect %s: %w", worktree, err)
@@ -544,7 +556,7 @@ func blockUnsafeTasks(results []CleanupResult) {
 	}
 }
 
-func acquireCleanupLocks(projectsRoot string, results []CleanupResult) ([]operationLock, error) {
+func acquireCleanupLocks(worktreesRoot string, results []CleanupResult) ([]operationLock, error) {
 	locks := make([]operationLock, 0)
 	seen := map[string]bool{}
 	for _, result := range results {
@@ -552,7 +564,7 @@ func acquireCleanupLocks(projectsRoot string, results []CleanupResult) ([]operat
 			continue
 		}
 		seen[result.Task] = true
-		taskRoot := filepath.Join(projectsRoot, ".wb", "worktrees", result.Task)
+		taskRoot := filepath.Join(worktreesRoot, result.Task)
 		lock, err := acquireLock(taskRoot)
 		if err != nil {
 			releaseCleanupLocks(locks)
@@ -578,7 +590,7 @@ func deleteRemoteBranch(ctx context.Context, entry ListResult) error {
 	return nil
 }
 
-func removeEmptyTaskDirectories(projectsRoot string, results []CleanupResult) {
+func removeEmptyTaskDirectories(worktreesRoot string, results []CleanupResult) {
 	tasks := map[string]bool{}
 	for _, result := range results {
 		if !result.Applied {
@@ -588,7 +600,7 @@ func removeEmptyTaskDirectories(projectsRoot string, results []CleanupResult) {
 		if len(parts) != 2 {
 			continue
 		}
-		taskRoot := filepath.Join(projectsRoot, ".wb", "worktrees", result.Task)
+		taskRoot := filepath.Join(worktreesRoot, result.Task)
 		_ = os.Remove(filepath.Join(taskRoot, parts[0]))
 		tasks[taskRoot] = true
 	}

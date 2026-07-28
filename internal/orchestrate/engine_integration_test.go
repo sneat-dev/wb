@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 type textHandler struct{}
@@ -195,6 +197,12 @@ type engineFixture struct {
 func newEngineFixture(t *testing.T) engineFixture {
 	t.Helper()
 	root := t.TempDir()
+	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
+	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
+	// ~/.wb. Scoping it per fixture, not shared package-wide, also keeps this
+	// test's worktree root unique from the other tests in this file that reuse
+	// the same "dependency-test" operation name.
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
 	seed := filepath.Join(root, "seed")
 	remote := filepath.Join(root, "remote.git")
 	githubDir := filepath.Join(root, "projects")

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/quality"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 type depsSetOptions struct {
@@ -88,7 +89,11 @@ func newDepsGraphCmd() *cobra.Command {
 			}
 			reportDirectory := options.reportDir
 			if reportDirectory == "" {
-				reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", "deps-graph-go")
+				home, err := wbhome.Root(projectsRoot)
+				if err != nil {
+					return err
+				}
+				reportDirectory = filepath.Join(home, "reports", "deps-graph-go")
 			}
 			paths, err := deps.WriteGraphReports(reportDirectory, graph, view)
 			if err != nil {
@@ -178,7 +183,11 @@ func newDepsSetCmd() *cobra.Command {
 			report, runErr := deps.Run(context.Background(), target, repositories, lifecycle)
 			reportDirectory := options.reportDir
 			if reportDirectory == "" && report.Operation != "" {
-				reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", report.Operation)
+				home, homeErr := wbhome.Root(projectsRoot)
+				if homeErr != nil {
+					return homeErr
+				}
+				reportDirectory = filepath.Join(home, "reports", report.Operation)
 			}
 			if reportDirectory != "" {
 				if err := deps.WriteReports(reportDirectory, report); err != nil {
@@ -308,7 +317,11 @@ func runDepsBump(command *cobra.Command, events []deps.ReleaseEvent, repositorie
 	operation := deps.BumpOperationID(events)
 	reportDirectory := options.reportDir
 	if reportDirectory == "" {
-		reportDirectory = filepath.Join(projectsRoot, ".wb", "reports", operation)
+		home, err := wbhome.Root(projectsRoot)
+		if err != nil {
+			return err
+		}
+		reportDirectory = filepath.Join(home, "reports", operation)
 	}
 	bumpOptions := deps.BumpOptions{
 		Options: lifecycle, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,

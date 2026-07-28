@@ -28,14 +28,18 @@ func newWorktreeCreateCmd() *cobra.Command {
 	var resume bool
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
-		Short: "Create feature branches below <projects-root>/.wb/worktrees",
+		Short: "Create feature branches below WB's home worktrees directory",
 		Long: `Create one isolated feature worktree per repository.
 
 The canonical clone must be clean and checked out on the base branch. WB pulls
 that branch from origin with --ff-only before branching, then creates each
 worktree at:
 
-  <projects-root>/.wb/worktrees/<task>/<owner>/<repository>
+  <wb-home>/worktrees/<task>/<owner>/<repository>
+
+<wb-home> is ~/.wb by default. Set $WB_HOME to use a different directory. An
+existing installation with a populated <projects-root>/.wb keeps using that
+location instead, so no worktree already in progress is stranded by upgrading.
 
 If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
@@ -97,7 +101,8 @@ func newWorktreeGuardCmd() *cobra.Command {
 
 A canonical clone is valid only when it is clean and on the base branch. A
 linked checkout is valid only when it uses a non-base branch and lives at
-<projects-root>/.wb/worktrees/<task>/<owner>/<repository>.`,
+<wb-home>/worktrees/<task>/<owner>/<repository> (see 'wb worktree create --help'
+for how <wb-home> is resolved).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			path := "."
@@ -139,7 +144,8 @@ func newWorktreeListCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "list [task]",
 		Short: "List WB-managed task worktrees and their lifecycle state",
-		Long: `List linked worktrees below <projects-root>/.wb/worktrees.
+		Long: `List linked worktrees below <wb-home>/worktrees (see
+'wb worktree create --help' for how <wb-home> is resolved).
 
 The default report uses only local Git data. Pass --github to include open and
 exact-head merged pull request evidence used by worktree cleanup.`,
@@ -257,7 +263,7 @@ branch with force-with-lease protection.`,
 	command.Flags().BoolVar(&apply, "apply", false, "remove eligible worktrees and local branches")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "also delete an unchanged remote branch when applying")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum age of a merged pull request (0 disables)")
-	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <projects-root>/.wb/reports/worktree-cleanup/<timestamp>)")
+	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <wb-home>/reports/worktree-cleanup/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

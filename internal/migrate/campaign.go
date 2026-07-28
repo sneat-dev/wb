@@ -22,6 +22,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/encode"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // Verification selects the built-in, non-arbitrary checks a hierarchical Go
@@ -336,7 +337,11 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 		}
 		repo := repositories[repository]
 		if repo == nil {
-			worktree := filepath.Join(options.GitHubDir, ".wb", "worktrees", slug(spec.ID), owner, name)
+			home, err := wbhome.Root(options.GitHubDir)
+			if err != nil {
+				return nil, err
+			}
+			worktree := filepath.Join(home, "worktrees", slug(spec.ID), owner, name)
 			repo = &campaignRepository{
 				repository: repository,
 				owner:      owner,
@@ -405,7 +410,11 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 	if err != nil {
 		return "", err
 	}
-	worktree := filepath.Join(options.GitHubDir, ".wb", "worktrees", slug(spec.ID), owner, name)
+	home, err := wbhome.Root(options.GitHubDir)
+	if err != nil {
+		return "", err
+	}
+	worktree := filepath.Join(home, "worktrees", slug(spec.ID), owner, name)
 	if _, err := os.Stat(worktree); os.IsNotExist(err) {
 		return sourceRoot, nil
 	} else if err != nil {
@@ -1244,7 +1253,11 @@ type campaignLock struct {
 }
 
 func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
-	dir := filepath.Join(githubDir, ".wb", "worktrees", slug(migrationID))
+	home, err := wbhome.Root(githubDir)
+	if err != nil {
+		return campaignLock{}, err
+	}
+	dir := filepath.Join(home, "worktrees", slug(migrationID))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return campaignLock{}, err
 	}
@@ -1276,7 +1289,11 @@ func (l campaignLock) release() {
 // migration. It never removes canonical clones, branches, reports, or a
 // worktree with uncommitted changes.
 func CleanupCampaignWorktrees(githubDir, migrationID string) ([]string, error) {
-	root, err := filepath.Abs(filepath.Join(githubDir, ".wb", "worktrees", slug(migrationID)))
+	home, err := wbhome.Root(githubDir)
+	if err != nil {
+		return nil, err
+	}
+	root, err := filepath.Abs(filepath.Join(home, "worktrees", slug(migrationID)))
 	if err != nil {
 		return nil, err
 	}
