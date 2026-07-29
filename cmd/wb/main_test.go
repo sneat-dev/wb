@@ -13,6 +13,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
+		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == hooks.SecureHooksGitHelperArgument {
 		os.Exit(hooks.RunSecureHooksGitHelper(os.Args[2:]))
 	}

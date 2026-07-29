@@ -72,6 +72,10 @@ type ApplyOptions struct {
 	// beforeHooksPathConfiguration is a test-only seam after the final
 	// repository validation and before the descriptor-anchored Git child runs.
 	beforeHooksPathConfiguration func()
+	// afterHooksPathConfigurationAuthorization is a test-only seam after the
+	// final validation and before the child consumes the retained common Git
+	// directory descriptor. It proves a late .git swap cannot redirect config.
+	afterHooksPathConfigurationAuthorization func()
 }
 
 type ApplyResult struct {
@@ -401,7 +405,10 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		if err := managedDirectory.validate(); err != nil {
 			return ApplyResult{}, err
 		}
-		if err := setHooksPathAt(managedDirectory.repo, managed); err != nil {
+		if options.afterHooksPathConfigurationAuthorization != nil {
+			options.afterHooksPathConfigurationAuthorization()
+		}
+		if err := setHooksPathAt(managedDirectory.repo, managedDirectory.common, managed); err != nil {
 			return ApplyResult{}, err
 		}
 		result.Actions = append(result.Actions, "configured core.hooksPath="+managed)

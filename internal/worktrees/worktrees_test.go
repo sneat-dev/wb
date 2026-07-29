@@ -14,6 +14,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == SecureCleanupGitHelperArgument {
+		os.Exit(RunSecureCleanupGitHelper(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
 		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
 	}
@@ -401,6 +404,139 @@ func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
 	}
 	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
 		t.Fatalf("late destination left feature branch: exists=%t err=%v", exists, branchErr)
+	}
+}
+
+func TestCreateRefusesLateStagedCheckoutSubstitutionWithoutPublishingIt(t *testing.T) {
+	fixture := newGitFixture(t)
+	operation := "late-checkout-substitution"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	parkedCheckout := filepath.Join(t.TempDir(), "parked-checkout")
+	foreign := "foreign staged checkout\n"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureCheckoutAuthorization: func() {
+			checkout := filepath.Join(testStageRoot(t, operationRoot), "checkout")
+			if renameErr := os.Rename(checkout, parkedCheckout); renameErr != nil {
+				t.Fatalf("park authorized checkout: %v", renameErr)
+			}
+			if mkdirErr := os.Mkdir(checkout, 0o755); mkdirErr != nil {
+				t.Fatalf("replace checkout directory: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(filepath.Join(checkout, "keep.txt"), []byte(foreign), 0o600); writeErr != nil {
+				t.Fatalf("write replacement checkout sentinel: %v", writeErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "publish secure worktree") {
+		t.Fatalf("late checkout substitution error = %v", err)
+	}
+	checkout := filepath.Join(testStageRoot(t, operationRoot), "checkout")
+	content, readErr := os.ReadFile(filepath.Join(checkout, "keep.txt"))
+	if readErr != nil || string(content) != foreign {
+		t.Fatalf("late staged checkout replacement was not preserved: content=%q err=%v", content, readErr)
+	}
+	if _, statErr := os.Stat(parkedCheckout); statErr != nil {
+		t.Fatalf("original checkout was deleted after substitution: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(operationRoot, "acme", "app")); !os.IsNotExist(statErr) {
+		t.Fatalf("late staged checkout was published: %v", statErr)
+	}
+}
+
+func TestCreateRefusesLatePublishedWorktreeSubstitutionBeforeRepair(t *testing.T) {
+	fixture := newGitFixture(t)
+	operation := "late-published-substitution"
+	finalPath := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
+	parkedWorktree := filepath.Join(t.TempDir(), "parked-worktree")
+	foreign := "foreign published worktree\n"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterPublishedWorktreeAuthorization: func() {
+			if renameErr := os.Rename(finalPath, parkedWorktree); renameErr != nil {
+				t.Fatalf("park authorized final worktree: %v", renameErr)
+			}
+			if mkdirErr := os.Mkdir(finalPath, 0o755); mkdirErr != nil {
+				t.Fatalf("replace final worktree: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(filepath.Join(finalPath, "keep.txt"), []byte(foreign), 0o600); writeErr != nil {
+				t.Fatalf("write replacement final sentinel: %v", writeErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "repair published worktree metadata") {
+		t.Fatalf("late published worktree substitution error = %v", err)
+	}
+	content, readErr := os.ReadFile(filepath.Join(finalPath, "keep.txt"))
+	if readErr != nil || string(content) != foreign {
+		t.Fatalf("late final worktree replacement was not preserved: content=%q err=%v", content, readErr)
+	}
+	if _, statErr := os.Stat(parkedWorktree); statErr != nil {
+		t.Fatalf("original final worktree was deleted after substitution: %v", statErr)
+	}
+}
+
+func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
+	directoryPath := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
+		directoryPath = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(directoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	lock, err := acquireLockAt(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := "successor lock\n"
+	lock.beforeRelease = func() {
+		temporary, createErr := os.CreateTemp(directoryPath, ".lock-replacement-*")
+		if createErr != nil {
+			t.Fatalf("create replacement lock: %v", createErr)
+		}
+		temporaryPath := temporary.Name()
+		if _, writeErr := temporary.WriteString(replacement); writeErr != nil {
+			_ = temporary.Close()
+			t.Fatalf("write replacement lock: %v", writeErr)
+		}
+		if closeErr := temporary.Close(); closeErr != nil {
+			t.Fatalf("close replacement lock: %v", closeErr)
+		}
+		if renameErr := os.Rename(temporaryPath, filepath.Join(directoryPath, ".lock")); renameErr != nil {
+			t.Fatalf("replace operation lock after authorization: %v", renameErr)
+		}
+	}
+	lock.release()
+	content, readErr := os.ReadFile(filepath.Join(directoryPath, ".lock"))
+	if readErr != nil || string(content) != replacement {
+		t.Fatalf("late lock replacement was removed: content=%q err=%v", content, readErr)
+	}
+	if _, acquireErr := acquireLockAt(directory); acquireErr == nil {
+		t.Fatal("late lock replacement no longer blocks a second operation")
+	}
+}
+
+func TestRetiredStageCapacityIsBounded(t *testing.T) {
+	operationRoot := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
+		operationRoot = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(operationRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	for index := 0; index < maxRetiredStageDirectories; index++ {
+		if err := os.Mkdir(filepath.Join(operationRoot, fmt.Sprintf(".wb-retired-stage-%03d", index)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ensureRetiredStageCapacity(directory); err == nil || !strings.Contains(err.Error(), "refusing unbounded accumulation") {
+		t.Fatalf("retired-stage capacity error = %v", err)
 	}
 }
 

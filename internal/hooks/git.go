@@ -96,9 +96,9 @@ func resolveGitPath(path string) string {
 // setHooksPathAt runs the config update from the retained repository directory
 // descriptor. Git's lexical -C form would re-resolve a swapped repo pathname
 // after hooks have already been validated and installed.
-func setHooksPathAt(repo *os.File, path string) error {
-	if repo == nil {
-		return fmt.Errorf("repository descriptor is unavailable")
+func setHooksPathAt(repo, common *os.File, path string) error {
+	if repo == nil || common == nil {
+		return fmt.Errorf("repository or Git common-directory descriptor is unavailable")
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -114,7 +114,7 @@ func setHooksPathAt(repo *os.File, path string) error {
 	}
 	cmd := exec.Command(executable, SecureHooksGitHelperArgument, path, gitExecutable)
 	cmd.Env = console.Env()
-	cmd.ExtraFiles = []*os.File{repo}
+	cmd.ExtraFiles = []*os.File{repo, common}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git config core.hooksPath through retained repository: %w: %s", err, strings.TrimSpace(string(out)))
@@ -137,11 +137,17 @@ func RunSecureHooksGitHelper(args []string) int {
 		return 1
 	}
 	defer func() { _ = repo.Close() }()
-	if err := unix.Fchdir(int(repo.Fd())); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure hooks helper: enter inherited repository directory: %v\n", err)
+	common := os.NewFile(uintptr(4), "wb-hooks-common-directory")
+	if common == nil {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure hooks helper: inherited Git common directory is unavailable")
 		return 1
 	}
-	cmd := exec.Command(args[1], "config", "--local", "core.hooksPath", args[0])
+	defer func() { _ = common.Close() }()
+	if err := unix.Fchdir(int(common.Fd())); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure hooks helper: enter inherited Git common directory: %v\n", err)
+		return 1
+	}
+	cmd := exec.Command(args[1], "--git-dir=.", "config", "--local", "core.hooksPath", args[0])
 	cmd.Env = console.Env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

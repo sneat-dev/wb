@@ -725,11 +725,39 @@ func TestSetHooksPathAtUsesRetainedRepositoryDescriptor(t *testing.T) {
 	if err := os.Rename(repo, movedRepo); err != nil {
 		t.Fatal(err)
 	}
-	if err := setHooksPathAt(directory.repo, managed); err != nil {
+	if err := setHooksPathAt(directory.repo, directory.common, managed); err != nil {
 		t.Fatal(err)
 	}
 	if got := git(t, movedRepo, "config", "--local", "--get", "core.hooksPath"); got != managed {
 		t.Fatalf("descriptor-anchored core.hooksPath = %q, want %q", got, managed)
+	}
+}
+
+func TestApplyUsesRetainedCommonDirectoryAfterFinalGitAuthorization(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	gitDirectory := filepath.Join(repo, ".git")
+	movedGitDirectory := filepath.Join(t.TempDir(), "moved-git")
+	_, err := Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: testWBExecutable(t, "wb"),
+		afterHooksPathConfigurationAuthorization: func() {
+			if renameErr := os.Rename(gitDirectory, movedGitDirectory); renameErr != nil {
+				t.Fatalf("move Git directory after final authorization: %v", renameErr)
+			}
+			if mkdirErr := os.Mkdir(gitDirectory, 0o755); mkdirErr != nil {
+				t.Fatalf("replace Git directory after final authorization: %v", mkdirErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "git common directory path changed") {
+		t.Fatalf("late common-directory swap Apply error = %v", err)
+	}
+	managed := filepath.Join(gitDirectory, "wb-hooks")
+	if _, statErr := os.Stat(filepath.Join(gitDirectory, "config")); !os.IsNotExist(statErr) {
+		t.Fatalf("replacement Git directory received config mutation: %v", statErr)
+	}
+	if got := git(t, filepath.Dir(movedGitDirectory), "--git-dir="+movedGitDirectory, "config", "--local", "--get", "core.hooksPath"); got != managed {
+		t.Fatalf("retained common directory core.hooksPath = %q, want %q", got, managed)
 	}
 }
 

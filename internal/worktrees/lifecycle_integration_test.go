@@ -371,6 +371,78 @@ func TestCleanupReauthorizesBeforeRemoteBranchDeletion(t *testing.T) {
 	}
 }
 
+func TestCleanupChildRefusesWorktreeSwapAfterFinalGitAuthorization(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-child-authorization")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	movedWorktree := result.WorktreeDir + "-moved"
+	external := t.TempDir()
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-child-authorization",
+		Apply:        true,
+		DeleteRemote: true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupGitAuthorization: func(operation string) {
+			if operation != "delete remote branch" {
+				return
+			}
+			if renameErr := os.Rename(result.WorktreeDir, movedWorktree); renameErr != nil {
+				t.Fatalf("move worktree after final Git authorization: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, result.WorktreeDir); symlinkErr != nil {
+				t.Fatalf("substitute worktree after final Git authorization: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "worktree path changed before Git operation") {
+		t.Fatalf("late cleanup Git authorization error = %v", err)
+	}
+	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != head {
+		t.Fatalf("late worktree swap deleted remote branch: got %q want %q", got, head)
+	}
+	if _, statErr := os.Stat(movedWorktree); statErr != nil {
+		t.Fatalf("late worktree swap removed moved checkout: %v", statErr)
+	}
+}
+
+func TestCleanupUsesRetainedCanonicalRepositoryAfterFinalAuthorization(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-canonical-authorization")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	movedCanonical := fixture.canonical + "-moved"
+	external := t.TempDir()
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-canonical-authorization",
+		Apply:        true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupGitAuthorization: func(operation string) {
+			if operation != "remove worktree" {
+				return
+			}
+			if renameErr := os.Rename(fixture.canonical, movedCanonical); renameErr != nil {
+				t.Fatalf("move canonical repository after final authorization: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, fixture.canonical); symlinkErr != nil {
+				t.Fatalf("substitute canonical repository after final authorization: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "canonical repository path changed before Git operation") {
+		t.Fatalf("descriptor-anchored canonical cleanup error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, ".git")); !os.IsNotExist(statErr) {
+		t.Fatalf("replacement canonical repository was mutated: %v", statErr)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("canonical substitution removed worktree despite refusal: %v", statErr)
+	}
+	if !gitRefExists(movedCanonical, "refs/heads/"+result.Branch) {
+		t.Fatal("canonical substitution deleted feature branch despite refusal")
+	}
+}
+
 func TestCleanupRefusesTaskSwapBeforeLockWithoutMutatingExternalTarget(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-lock-swap")
 	installMergedPullRequestFixture(t, head, mergedAt)

@@ -66,6 +66,14 @@ type CreateOptions struct {
 	// its last lexical owner-path check and immediately before atomic publish.
 	// It proves publication never clobbers a destination created in that gap.
 	afterSecureDestinationValidation func()
+	// afterSecureCheckoutAuthorization is a test-only seam after the exact
+	// staged checkout inode has been authorized and immediately before publish.
+	// It proves a late checkout substitution is restored rather than published.
+	afterSecureCheckoutAuthorization func()
+	// afterPublishedWorktreeAuthorization is a test-only seam after the final
+	// worktree inode is authorized and before descriptor-anchored Git repair.
+	// It proves a late final-path substitution cannot receive Git mutation.
+	afterPublishedWorktreeAuthorization func()
 	// afterWorktreeRepair is a test-only seam after Git repairs registration but
 	// before WB accepts the published checkout. It proves the final ownership
 	// and registration checks reject a path swapped during repair.
@@ -244,6 +252,8 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.afterSecureStageValidation,
 				normalized.afterSecureStageVerification,
 				normalized.afterSecureDestinationValidation,
+				normalized.afterSecureCheckoutAuthorization,
+				normalized.afterPublishedWorktreeAuthorization,
 				normalized.afterWorktreeRepair,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
@@ -1030,6 +1040,8 @@ func addWorktreeAtSecureDestination(
 	afterStageValidation func(),
 	afterStageVerification func(),
 	afterDestinationValidation func(),
+	afterCheckoutAuthorization func(),
+	afterPublishedAuthorization func(),
 	afterRepair func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
@@ -1064,16 +1076,20 @@ func addWorktreeAtSecureDestination(
 	if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 		return err
 	}
+	if err := ensureRetiredStageCapacity(operationDirectory); err != nil {
+		return err
+	}
 	stageName, err := makeSecureStageDirectory(operationFD)
 	if err != nil {
 		return fmt.Errorf("create secure worktree staging directory: %w", err)
 	}
 	var stageIdentity secureDirectoryIdentity
 	stageIdentityKnown := false
+	preserveStageReplacement := false
 	// Install cleanup before opening or wrapping the stage descriptor. A
 	// failure in either step must not strand a private stage directory.
 	defer func() {
-		if stageIdentityKnown {
+		if stageIdentityKnown && !preserveStageReplacement {
 			_ = quarantineStageDirectoryByIdentityAt(operationDirectory, stageIdentity)
 		}
 	}()
@@ -1097,12 +1113,17 @@ func addWorktreeAtSecureDestination(
 	}
 	defer func() { _ = stageDirectory.Close() }()
 	defer func() {
-		_ = quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory)
+		if !preserveStageReplacement {
+			_ = quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory)
+		}
 	}()
-	rollback := func(creationErr error, finalPath string) error {
+	rollback := func(creationErr error, finalPath string, checkoutDirectory *os.File) error {
+		if checkoutDirectory != nil && !directoryEntryStillMatches(stageDirectory, "checkout", checkoutDirectory) {
+			preserveStageReplacement = true
+		}
 		cleanupCtx, cancel := rollbackContext(ctx)
 		defer cancel()
-		if cleanupErr := rollbackCreatedWorktree(cleanupCtx, canonical, stageDirectory, registrationsBefore, finalPath, branch, expectedBranchTip); cleanupErr != nil {
+		if cleanupErr := rollbackCreatedWorktree(cleanupCtx, canonical, stageDirectory, checkoutDirectory, registrationsBefore, finalPath, branch, expectedBranchTip); cleanupErr != nil {
 			return fmt.Errorf("%w; rollback incomplete worktree creation: %v", creationErr, cleanupErr)
 		}
 		return creationErr
@@ -1111,60 +1132,78 @@ func addWorktreeAtSecureDestination(
 		beforeAdd()
 	}
 	if !directoryStillMatches(stageRoot, stageDirectory) {
-		return rollback(fmt.Errorf("secure staging directory path changed during creation; refusing redirected checkout"), "")
+		return rollback(fmt.Errorf("secure staging directory path changed during creation; refusing redirected checkout"), "", nil)
 	}
 	if afterStageValidation != nil {
 		afterStageValidation()
 	}
 	if err := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, base, branchExists); err != nil {
-		return rollback(fmt.Errorf("create staged worktree: %w", err), "")
+		return rollback(fmt.Errorf("create staged worktree: %w", err), "", nil)
 	}
+	checkoutFD, err := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return rollback(fmt.Errorf("open staged worktree checkout: %w", err), "", nil)
+	}
+	checkoutDirectory := os.NewFile(uintptr(checkoutFD), "wb-worktree-staged-checkout")
+	if checkoutDirectory == nil {
+		_ = unix.Close(checkoutFD)
+		return rollback(fmt.Errorf("wrap staged worktree checkout"), "", nil)
+	}
+	defer func() { _ = checkoutDirectory.Close() }()
 	if afterStagedAdd != nil {
 		if err := afterStagedAdd(); err != nil {
-			return rollback(fmt.Errorf("create staged worktree: %w", err), "")
+			return rollback(fmt.Errorf("create staged worktree: %w", err), "", checkoutDirectory)
 		}
 	}
 	if err := verifySecureStageDirectory(ctx, stageDirectory, trustedOperationRoot); err != nil {
-		return rollback(fmt.Errorf("verify secure staging directory before publish: %w", err), "")
+		return rollback(fmt.Errorf("verify secure staging directory before publish: %w", err), "", checkoutDirectory)
 	}
 	if afterStageVerification != nil {
 		afterStageVerification()
 	}
 	ownerPath := filepath.Join(operationRoot, owner)
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
-		return rollback(fmt.Errorf("secure worktree owner path changed during creation; refusing redirected checkout"), "")
+		return rollback(fmt.Errorf("secure worktree owner path changed during creation; refusing redirected checkout"), "", checkoutDirectory)
 	}
 	if afterDestinationValidation != nil {
 		afterDestinationValidation()
 	}
-	if err := renameNoReplace(stageFD, "checkout", ownerFD, repository); err != nil {
-		return rollback(fmt.Errorf("publish secure worktree: %w", err), "")
-	}
-	finalPath := filepath.Join(ownerPath, repository)
-	rollbackPublished := func(creationErr error) error {
-		if rollbackErr := renameNoReplace(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
-			return rollback(fmt.Errorf("%w; roll back published checkout: %v", creationErr, rollbackErr), finalPath)
-		}
-		return rollback(creationErr, finalPath)
-	}
-	finalFD, err := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	finalDirectory, err := moveExpectedDirectoryNoReplace(stageDirectory, "checkout", ownerDirectory, repository, checkoutDirectory, afterCheckoutAuthorization)
 	if err != nil {
-		return rollbackPublished(fmt.Errorf("open published worktree: %w", err))
-	}
-	finalDirectory := os.NewFile(uintptr(finalFD), "wb-worktree-final")
-	if finalDirectory == nil {
-		_ = unix.Close(finalFD)
-		return rollbackPublished(fmt.Errorf("wrap published worktree"))
+		return rollback(fmt.Errorf("publish secure worktree: %w", err), "", checkoutDirectory)
 	}
 	defer func() { _ = finalDirectory.Close() }()
+	finalPath := filepath.Join(ownerPath, repository)
+	rollbackPublished := func(creationErr error) error {
+		stagedDirectory, rollbackErr := moveExpectedDirectoryNoReplace(ownerDirectory, repository, stageDirectory, "checkout", finalDirectory, nil)
+		if rollbackErr != nil {
+			return rollback(fmt.Errorf("%w; roll back published checkout: %v", creationErr, rollbackErr), finalPath, nil)
+		}
+		defer func() { _ = stagedDirectory.Close() }()
+		return rollback(creationErr, finalPath, stagedDirectory)
+	}
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		return rollbackPublished(fmt.Errorf("secure worktree owner path changed after publish; refusing redirected checkout"))
+	}
+	if !directoryStillMatches(finalPath, finalDirectory) {
+		return rollbackPublished(fmt.Errorf("published worktree path changed before repair; refusing redirected checkout"))
 	}
 	var repairErr error
 	if beforeRepair != nil {
 		repairErr = beforeRepair()
 	} else {
-		_, repairErr = git(ctx, canonical, "worktree", "repair", finalPath)
+		canonicalDirectory, openErr := openAbsoluteDirectoryNoFollow(canonical, false)
+		if openErr != nil {
+			return rollbackPublished(fmt.Errorf("open canonical repository for secure worktree repair: %w", openErr))
+		}
+		defer func() { _ = canonicalDirectory.Close() }()
+		if !directoryStillMatches(canonical, canonicalDirectory) {
+			return rollbackPublished(fmt.Errorf("canonical repository path changed before worktree repair; refusing redirected Git mutation"))
+		}
+		if afterPublishedAuthorization != nil {
+			afterPublishedAuthorization()
+		}
+		repairErr = runSecureCleanupGitHelper(ctx, canonicalDirectory, finalDirectory, canonical, finalPath, "worktree", "repair", finalPath)
 	}
 	if repairErr != nil {
 		return rollbackPublished(fmt.Errorf("repair published worktree metadata: %w", repairErr))
@@ -1228,9 +1267,8 @@ func worktreeAddArguments(canonical, branch, base string, branchExists bool) []s
 }
 
 const (
-	secureStageCheckArgument   = "--check"
-	secureStageCleanupArgument = "--cleanup"
-	secureStagePathArgument    = "--path"
+	secureStageCheckArgument = "--check"
+	secureStagePathArgument  = "--path"
 )
 
 func runSecureStageHelper(ctx context.Context, stageDirectory *os.File, args ...string) ([]byte, error) {
@@ -1270,18 +1308,6 @@ func secureDirectoryPath(ctx context.Context, directory *os.File) (string, error
 		return "", fmt.Errorf("held directory path is not absolute: %q", path)
 	}
 	return path, nil
-}
-
-func cleanupSecureStageCheckout(ctx context.Context, stageDirectory *os.File) error {
-	output, err := runSecureStageHelper(ctx, stageDirectory, secureStageCleanupArgument)
-	if err == nil {
-		return nil
-	}
-	detail := strings.TrimSpace(string(output))
-	if detail == "" {
-		detail = err.Error()
-	}
-	return fmt.Errorf("remove secure staging checkout through descriptor: %s", detail)
 }
 
 // RunSecureStageGitHelper is the child-side half of a secure worktree add.
@@ -1324,16 +1350,6 @@ func RunSecureStageGitHelper(args []string) int {
 			return 1
 		}
 		return verifySecureStageContainment(args[1])
-	case secureStageCleanupArgument:
-		if len(args) != 1 {
-			_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid cleanup arguments")
-			return 1
-		}
-		if err := os.RemoveAll("checkout"); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: remove staging checkout: %v\n", err)
-			return 1
-		}
-		return 0
 	}
 	if len(args) < 3 || !filepath.IsAbs(args[1]) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid Git handoff arguments")
@@ -1486,6 +1502,32 @@ func makeSecureStageDirectory(parentFD int) (string, error) {
 	return "", fmt.Errorf("create collision-free secure staging directory")
 }
 
+const maxRetiredStageDirectories = 256
+
+// ensureRetiredStageCapacity bounds the intentionally preserved stage
+// quarantines. WB never path-deletes a retired directory because a later
+// replacement could otherwise be removed; reaching the bound requires an
+// explicit operator maintenance decision instead of unbounded disk growth.
+func ensureRetiredStageCapacity(operationDirectory *os.File) error {
+	if _, err := operationDirectory.Seek(0, 0); err != nil {
+		return fmt.Errorf("rewind secure staging parent for maintenance: %w", err)
+	}
+	entries, err := operationDirectory.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("read secure staging parent for maintenance: %w", err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".wb-retired-stage-") {
+			count++
+		}
+	}
+	if count >= maxRetiredStageDirectories {
+		return fmt.Errorf("secure worktree operation has %d retired staging directories; refusing unbounded accumulation until they are reviewed", count)
+	}
+	return nil
+}
+
 func openOrCreateNoFollowDirectory(parentFD int, name string) (int, error) {
 	if err := unix.Mkdirat(parentFD, name, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
 		return -1, fmt.Errorf("create secure worktree directory %s: %w", name, err)
@@ -1522,6 +1564,67 @@ func directoryStillMatches(path string, directory *os.File) bool {
 	}
 	held, err := directory.Stat()
 	return err == nil && os.SameFile(current, held)
+}
+
+func directoryEntryStillMatches(parent *os.File, name string, directory *os.File) bool {
+	if parent == nil || directory == nil {
+		return false
+	}
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	candidate := os.NewFile(uintptr(fd), "wb-worktree-entry-check")
+	if candidate == nil {
+		_ = unix.Close(fd)
+		return false
+	}
+	defer func() { _ = candidate.Close() }()
+	expected, expectedErr := directory.Stat()
+	actual, actualErr := candidate.Stat()
+	return expectedErr == nil && actualErr == nil && os.SameFile(expected, actual)
+}
+
+// moveExpectedDirectoryNoReplace moves a retained directory entry without
+// replacing a destination. It reopens the destination and compares its inode
+// with the retained descriptor; a source swapped in the final validation gap
+// is restored with no-clobber semantics instead of being published or removed.
+func moveExpectedDirectoryNoReplace(
+	fromDirectory *os.File,
+	fromName string,
+	toDirectory *os.File,
+	toName string,
+	expected *os.File,
+	afterAuthorization func(),
+) (*os.File, error) {
+	if !directoryEntryStillMatches(fromDirectory, fromName, expected) {
+		return nil, fmt.Errorf("directory entry %s changed after inspection; refusing mutation", fromName)
+	}
+	if afterAuthorization != nil {
+		afterAuthorization()
+	}
+	if err := renameNoReplace(int(fromDirectory.Fd()), fromName, int(toDirectory.Fd()), toName); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Openat(int(toDirectory.Fd()), toName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open moved directory %s: %w", toName, err)
+	}
+	moved := os.NewFile(uintptr(fd), "wb-worktree-moved-directory")
+	if moved == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap moved directory %s", toName)
+	}
+	expectedInfo, expectedErr := expected.Stat()
+	movedInfo, movedErr := moved.Stat()
+	if expectedErr == nil && movedErr == nil && os.SameFile(expectedInfo, movedInfo) {
+		return moved, nil
+	}
+	_ = moved.Close()
+	if restoreErr := renameNoReplace(int(toDirectory.Fd()), toName, int(fromDirectory.Fd()), fromName); restoreErr != nil {
+		return nil, fmt.Errorf("directory entry %s changed after inspection; preserve replacement: %v", fromName, restoreErr)
+	}
+	return nil, fmt.Errorf("directory entry %s changed after inspection; refusing mutation", fromName)
 }
 
 type secureDirectoryIdentity struct {
@@ -1635,21 +1738,24 @@ func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) 
 	return context.WithTimeout(context.WithoutCancel(ctx), rollbackCleanupTimeout)
 }
 
-// rollbackCreatedWorktree makes every creation failure converge on the same
-// state: no checkout under the held staging descriptor, no newly-created Git
-// worktree registration, and no branch created by this attempt. The stage
-// directory might have been renamed outside its original parent, so cleanup
-// must never rediscover it through a mutable pathname.
+// rollbackCreatedWorktree makes every creation failure converge on no active
+// checkout under the held staging descriptor, no newly-created Git worktree
+// registration, and no branch created by this attempt. The exact checkout is
+// first moved into an inert retirement name; pathname deletion is deliberately
+// avoided because it could remove a replacement inserted after authorization.
 func rollbackCreatedWorktree(
 	ctx context.Context,
 	canonical string,
 	stageDirectory *os.File,
+	checkoutDirectory *os.File,
 	registrationsBefore map[string]bool,
 	finalPath, branch, expectedBranchTip string,
 ) error {
 	var failures []error
-	if err := cleanupSecureStageCheckout(ctx, stageDirectory); err != nil {
-		failures = append(failures, err)
+	if checkoutDirectory != nil {
+		if err := quarantineSecureStageCheckout(stageDirectory, checkoutDirectory); err != nil {
+			failures = append(failures, err)
+		}
 	}
 	if _, err := git(ctx, canonical, "worktree", "prune", "--expire", "now"); err != nil {
 		failures = append(failures, fmt.Errorf("prune incomplete worktree registration: %w", err))
@@ -1673,6 +1779,26 @@ func rollbackCreatedWorktree(
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func quarantineSecureStageCheckout(stageDirectory, checkoutDirectory *os.File) error {
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return fmt.Errorf("generate staged checkout quarantine name: %w", err)
+		}
+		name := fmt.Sprintf(".wb-retired-checkout-%x", token[:])
+		moved, err := moveExpectedDirectoryNoReplace(stageDirectory, "checkout", stageDirectory, name, checkoutDirectory, nil)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("quarantine staged checkout: %w", err)
+		}
+		_ = moved.Close()
+		return nil
+	}
+	return fmt.Errorf("create collision-free staged checkout quarantine name")
 }
 
 func registeredWorktreePaths(ctx context.Context, canonical string) (map[string]bool, error) {
@@ -1727,7 +1853,15 @@ func deleteCreatedBranch(ctx context.Context, canonical, branch, expectedTip str
 }
 
 type operationLock struct {
-	releaseFn func()
+	directory     *os.File
+	file          *os.File
+	identity      managedLockIdentity
+	beforeRelease func()
+}
+
+type managedLockIdentity struct {
+	device uint64
+	inode  uint64
 }
 
 // acquireLockAt is the descriptor-relative form used while creating a new
@@ -1744,25 +1878,75 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 	file := os.NewFile(uintptr(fd), "wb-worktree-operation-lock")
 	if file == nil {
 		_ = unix.Close(fd)
-		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
 		return operationLock{}, fmt.Errorf("wrap secure worktree operation lock")
 	}
-	if _, err := fmt.Fprintf(file, "pid=%d\n", os.Getpid()); err != nil {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
 		_ = file.Close()
-		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
+		return operationLock{}, fmt.Errorf("inspect secure worktree operation lock: %w", err)
+	}
+	lock := operationLock{
+		directory: operationDirectory,
+		file:      file,
+		identity:  managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)},
+	}
+	if _, err := fmt.Fprintf(file, "pid=%d\n", os.Getpid()); err != nil {
+		lock.release()
 		return operationLock{}, err
 	}
-	if err := file.Close(); err != nil {
-		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
+	if err := file.Sync(); err != nil {
+		lock.release()
 		return operationLock{}, err
 	}
-	return operationLock{releaseFn: func() {
-		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
-	}}, nil
+	return lock, nil
 }
 
 func (lock operationLock) release() {
-	if lock.releaseFn != nil {
-		lock.releaseFn()
+	if lock.file == nil || lock.directory == nil {
+		return
 	}
+	defer func() { _ = lock.file.Close() }()
+	if !lockEntryStillMatches(lock.directory, ".lock", lock.identity) {
+		return
+	}
+	if lock.beforeRelease != nil {
+		lock.beforeRelease()
+	}
+	_ = quarantineLockEntry(lock.directory, lock.identity)
+}
+
+func lockEntryStillMatches(directory *os.File, name string, expected managedLockIdentity) bool {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(int(directory.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return false
+	}
+	return stat.Mode&unix.S_IFMT == unix.S_IFREG && uint64(stat.Dev) == expected.device && uint64(stat.Ino) == expected.inode
+}
+
+// quarantineLockEntry retires the exact lock inode. It never unlinks `.lock`,
+// so a successor created after the final authorization cannot be deleted by a
+// previous operation finishing late.
+func quarantineLockEntry(directory *os.File, expected managedLockIdentity) error {
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return err
+		}
+		name := fmt.Sprintf(".wb-retired-lock-%x", token[:])
+		err := renameNoReplace(int(directory.Fd()), ".lock", int(directory.Fd()), name)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if lockEntryStillMatches(directory, name, expected) {
+			return nil
+		}
+		if restoreErr := renameNoReplace(int(directory.Fd()), name, int(directory.Fd()), ".lock"); restoreErr != nil {
+			return fmt.Errorf("secure worktree operation lock changed before release; preserve replacement: %v", restoreErr)
+		}
+		return fmt.Errorf("secure worktree operation lock changed before release")
+	}
+	return fmt.Errorf("create collision-free retired lock name")
 }
