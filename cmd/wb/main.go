@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
@@ -98,6 +99,9 @@ func newRootCmd() *cobra.Command {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
+		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 

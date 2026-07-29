@@ -493,6 +493,28 @@ func TestRefreshManagedShimsRepairsNonExecutableShim(t *testing.T) {
 	}
 }
 
+func TestRefreshManagedShimsRefusesLexicallyConfiguredSymlinkedManagedDirectory(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	managed, err := managedPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "sentinel.txt")
+	mustWrite(t, sentinel, "outside\n")
+	if err := os.Symlink(external, managed); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "config", "--local", "core.hooksPath", managed)
+	if _, err := RefreshManagedShims(repo, "", testWBExecutable(t, "wb"), ""); err == nil || !strings.Contains(err.Error(), "symlinked managed hooks directory") {
+		t.Fatalf("symlinked lexical managed refresh error = %v", err)
+	}
+	if content := mustReadFile(t, sentinel); content != "outside\n" {
+		t.Fatalf("refresh mutated external managed-directory target: %q", content)
+	}
+}
+
 func TestLoadPolicyCustomProductProfileAndBuiltInOverride(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

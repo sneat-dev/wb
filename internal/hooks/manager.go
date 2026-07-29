@@ -457,6 +457,18 @@ func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string
 	if err != nil {
 		return false, err
 	}
+	configured, err := configuredHooksPath(policy.RepoRoot)
+	if err != nil {
+		return false, err
+	}
+	// Validate the lexical WB-managed location before resolving the configured
+	// path. Otherwise .git/wb-hooks -> /outside resolves away from `managed`,
+	// looks unmanaged, and incorrectly takes the no-op early return below.
+	if configured != "" && filepath.Clean(configured) == filepath.Clean(managed) {
+		if err := validateManagedHooksDirectory(managed); err != nil {
+			return false, err
+		}
+	}
 	current, err := currentHooksPath(policy.RepoRoot)
 	if err != nil {
 		return false, err

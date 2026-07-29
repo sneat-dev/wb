@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,13 @@ import (
 
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
+		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
 
 func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
@@ -125,6 +133,134 @@ func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
 	if strings.Contains(registered, outside) || strings.Contains(registered, movedOwner) {
 		t.Fatalf("owner-swap left an external or moved worktree registration:\n%s", registered)
+	}
+}
+
+func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	operation := "stage-swap"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	stageRoot := ""
+	parkedStage := ""
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		beforeSecureWorktreeAdd: func() {
+			entries, readErr := os.ReadDir(operationRoot)
+			if readErr != nil {
+				t.Fatalf("read staging parent: %v", readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+					stageRoot = filepath.Join(operationRoot, entry.Name())
+					break
+				}
+			}
+			if stageRoot == "" {
+				t.Fatal("secure staging directory was not created")
+			}
+			parkedStage = filepath.Join(operationRoot, "parked-trusted-stage")
+			if renameErr := os.Rename(stageRoot, parkedStage); renameErr != nil {
+				t.Fatalf("park secure staging directory: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
+				t.Fatalf("substitute secure staging directory: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "secure staging directory path changed") {
+		t.Fatalf("stage-swap Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "checkout")); !os.IsNotExist(statErr) {
+		t.Fatalf("stage swap created external checkout: %v", statErr)
+	}
+	assertFailedCreateRolledBack(t, fixture, operation)
+	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("substituted stage path remains: %v", statErr)
+	}
+	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
+		t.Fatalf("parked trusted stage remains: %v", statErr)
+	}
+}
+
+func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	operation := "stage-swap-after-validation"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	stageRoot := ""
+	parkedStage := ""
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureStageValidation: func() {
+			entries, readErr := os.ReadDir(operationRoot)
+			if readErr != nil {
+				t.Fatalf("read staging parent: %v", readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+					stageRoot = filepath.Join(operationRoot, entry.Name())
+					break
+				}
+			}
+			if stageRoot == "" {
+				t.Fatal("secure staging directory was not created")
+			}
+			parkedStage = filepath.Join(operationRoot, "parked-trusted-stage")
+			if renameErr := os.Rename(stageRoot, parkedStage); renameErr != nil {
+				t.Fatalf("park validated staging directory: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
+				t.Fatalf("substitute validated staging directory: %v", symlinkErr)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create after validated stage swap: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Create results = %#v", results)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "checkout")); !os.IsNotExist(statErr) {
+		t.Fatalf("post-validation stage swap created external checkout: %v", statErr)
+	}
+	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("substituted stage path remains: %v", statErr)
+	}
+	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
+		t.Fatalf("parked trusted stage remains: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) || strings.Contains(registered, parkedStage) {
+		t.Fatalf("post-validation stage swap left external or parked registration:\n%s", registered)
+	}
+	if !strings.Contains(registered, results[0].WorktreeDir) {
+		t.Fatalf("post-validation stage swap did not register published worktree %s:\n%s", results[0].WorktreeDir, registered)
+	}
+	if got := gitTestOutput(t, results[0].WorktreeDir, "branch", "--show-current"); got != "codex/"+operation {
+		t.Fatalf("post-validation stage swap branch = %q", got)
+	}
+}
+
+func TestCreateRejectsWhitespaceEquivalentRepositoryBeforeMutation(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := Create(context.Background(), []string{"acme/app", " acme/app "}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "whitespace-duplicate",
+	})
+	if err == nil || !strings.Contains(err.Error(), "surrounding whitespace") {
+		t.Fatalf("whitespace-equivalent Create error = %v", err)
+	}
+	if _, statErr := os.Stat(fixture.home); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid slug created WB home before rejection: %v", statErr)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/whitespace-duplicate"); branchErr != nil || exists {
+		t.Fatalf("invalid slug created feature branch: exists=%t err=%v", exists, branchErr)
+	}
+	if status := gitTestOutput(t, fixture.canonical, "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("invalid slug mutated canonical clone: %q", status)
 	}
 }
 
@@ -376,6 +512,87 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 				t.Fatalf("arbitrary detached guard error = %v", err)
 			}
 		})
+	}
+}
+
+func TestGuardAllowsLongRealRebaseHistory(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "long-rebase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	for index := 0; index < 64; index++ {
+		name := fmt.Sprintf("feature-%03d.txt", index)
+		if err := os.WriteFile(filepath.Join(worktree, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, worktree, "add", name)
+		gitTest(t, worktree, "commit", "-m", "feature "+name)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("feature conflict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "README.md")
+	gitTest(t, worktree, "commit", "-m", "conflicting feature tail")
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "README.md"), []byte("main conflict\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "README.md")
+	gitTest(t, fixture.canonical, "commit", "-m", "conflicting main tail")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	gitTest(t, worktree, "fetch", "origin", "main")
+	if output, rebaseErr := gitTestRun(worktree, "rebase", "origin/main"); rebaseErr == nil {
+		t.Fatalf("long rebase unexpectedly succeeded: %s", output)
+	}
+	guarded, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil || !guarded.Transient {
+		t.Fatalf("guard during long rebase = %#v, %v", guarded, err)
+	}
+}
+
+func TestGuardAllowsInteractiveRebaseAmend(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "interactive-amend"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "feature.txt")
+	gitTest(t, worktree, "commit", "-m", "interactive feature")
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "main.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "main.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "advance main")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	gitTest(t, worktree, "fetch", "origin", "main")
+	sequenceEditor := filepath.Join(t.TempDir(), "sequence-editor")
+	if err := os.WriteFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^pick /edit /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, rebaseErr := gitTestRunEnv(worktree, []string{"GIT_SEQUENCE_EDITOR=" + sequenceEditor}, "rebase", "-i", "origin/main"); rebaseErr != nil {
+		t.Fatalf("start interactive edit rebase: %v\n%s", rebaseErr, output)
+	}
+	if guarded, guardErr := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); guardErr != nil || !guarded.Transient {
+		t.Fatalf("guard before interactive amend = %#v, %v", guarded, guardErr)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "amended.txt"), []byte("amended\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "amended.txt")
+	gitTest(t, worktree, "commit", "--amend", "--no-edit")
+	if subject := gitTestOutput(t, worktree, "reflog", "show", "--format=%gs", "-1", "HEAD"); !strings.HasPrefix(subject, "commit (amend): ") {
+		t.Fatalf("interactive amend reflog subject = %q", subject)
+	}
+	if guarded, guardErr := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); guardErr != nil || !guarded.Transient {
+		t.Fatalf("guard after interactive amend = %#v, %v", guarded, guardErr)
+	}
+	if output, continueErr := gitTestRunEnv(worktree, []string{"GIT_EDITOR=true"}, "rebase", "--continue"); continueErr != nil {
+		t.Fatalf("finish interactive amend rebase: %v\n%s", continueErr, output)
 	}
 }
 

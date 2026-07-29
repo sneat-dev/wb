@@ -52,6 +52,18 @@ func gitCommonDir(repoRoot string) (string, error) {
 }
 
 func currentHooksPath(repoRoot string) (string, error) {
+	path, err := configuredHooksPath(repoRoot)
+	if err != nil || path == "" {
+		return path, err
+	}
+	return resolveGitPath(path), nil
+}
+
+// configuredHooksPath preserves the lexical core.hooksPath spelling that Git
+// stores. Installers use this before resolving symlinks so a configured
+// .git/wb-hooks symlink cannot be misclassified as an unrelated external
+// hooks directory and skipped by a safety check.
+func configuredHooksPath(repoRoot string) (string, error) {
 	value, err := gitOutput(repoRoot, "config", "--local", "--get", "core.hooksPath")
 	if err != nil {
 		// git config exits 1 when the key is absent.
@@ -63,7 +75,7 @@ func currentHooksPath(repoRoot string) (string, error) {
 	if !filepath.IsAbs(value) {
 		value = filepath.Join(repoRoot, value)
 	}
-	return resolveGitPath(value), nil
+	return filepath.Clean(value), nil
 }
 
 func resolveGitPath(path string) string {
