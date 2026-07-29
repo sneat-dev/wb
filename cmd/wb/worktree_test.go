@@ -133,7 +133,7 @@ func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.
 	}
 }
 
-func TestWorktreeCreateRejectsDuplicateBeforeRefreshingManagedHook(t *testing.T) {
+func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
 	canonical := filepath.Join(projects, "acme", "app")
@@ -163,10 +163,10 @@ func TestWorktreeCreateRejectsDuplicateBeforeRefreshingManagedHook(t *testing.T)
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "duplicate", "acme/app", "acme/app"}, &stdout, &stderr); code == exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "duplicate", "acme/app", "ACME/app"}, &stdout, &stderr); code == exitOK {
 		t.Fatalf("duplicate create unexpectedly succeeded: stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "was supplied more than once") {
+	if !strings.Contains(stderr.String(), "duplicates case-insensitive identity") {
 		t.Fatalf("duplicate rejection = %s", stderr.String())
 	}
 	after, err := os.ReadFile(preCommit)

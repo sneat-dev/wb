@@ -136,6 +136,42 @@ func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsOwnerSwapAfterWorktreeRepair(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	operation := "owner-swap-after-repair"
+	ownerPath := filepath.Join(fixture.home, "worktrees", operation, "acme")
+	movedOwner := ownerPath + "-moved"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterWorktreeRepair: func() {
+			if renameErr := os.Rename(ownerPath, movedOwner); renameErr != nil {
+				t.Fatalf("move owner after repair: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, ownerPath); symlinkErr != nil {
+				t.Fatalf("substitute owner after repair: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "owner path changed during repair") {
+		t.Fatalf("owner-swap-after-repair Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "app")); !os.IsNotExist(statErr) {
+		t.Fatalf("owner swap after repair created external checkout: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedOwner, "app")); !os.IsNotExist(statErr) {
+		t.Fatalf("owner swap after repair left moved checkout: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) || strings.Contains(registered, movedOwner) {
+		t.Fatalf("owner swap after repair left registration:\n%s", registered)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+		t.Fatalf("owner swap after repair left feature branch: exists=%t err=%v", exists, branchErr)
+	}
+}
+
 func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) {
 	fixture := newGitFixture(t)
 	outside := t.TempDir()
@@ -454,6 +490,24 @@ func TestCreateRollsBackPartialStagedWorktreeFailure(t *testing.T) {
 		t.Fatalf("partial staged Create error = %v", err)
 	}
 	assertFailedCreateRolledBack(t, fixture, "partial-add")
+}
+
+func TestCreateRollsBackWhenContextIsCancelledAfterStagedAdd(t *testing.T) {
+	fixture := newGitFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := Create(ctx, []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cancelled-after-add",
+		afterStagedWorktreeAdd: func() error {
+			cancel()
+			return errors.New("simulated cancellation after staged add")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "simulated cancellation after staged add") {
+		t.Fatalf("cancelled Create error = %v", err)
+	}
+	assertFailedCreateRolledBack(t, fixture, "cancelled-after-add")
 }
 
 func TestCreateRollsBackWhenPublishedWorktreeRepairFails(t *testing.T) {

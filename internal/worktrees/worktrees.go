@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -48,6 +49,10 @@ type CreateOptions struct {
 	// descriptor-relative publish. It exercises the final unavoidable rename
 	// window without exposing the seam to production callers.
 	afterSecureStageVerification func()
+	// afterWorktreeRepair is a test-only seam after Git repairs registration but
+	// before WB accepts the published checkout. It proves the final ownership
+	// and registration checks reject a path swapped during repair.
+	afterWorktreeRepair func()
 	// afterStagedWorktreeAdd and beforeWorktreeRepair are test-only failure
 	// seams. They model Git reporting an error after checkout creation, so the
 	// rollback invariants are exercised without platform-specific hook tricks.
@@ -195,6 +200,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.beforeSecureWorktreeAdd,
 				normalized.afterSecureStageValidation,
 				normalized.afterSecureStageVerification,
+				normalized.afterWorktreeRepair,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
 			); err != nil {
@@ -224,6 +230,14 @@ func ValidateRepositories(repositories []string) ([]string, error) {
 		if normalized[index] == normalized[index-1] {
 			return nil, fmt.Errorf("repository %q was supplied more than once", normalized[index])
 		}
+	}
+	identities := make(map[string]string, len(normalized))
+	for _, repository := range normalized {
+		identity := strings.ToLower(repository) // validated slugs are ASCII.
+		if original, exists := identities[identity]; exists {
+			return nil, fmt.Errorf("repository %q duplicates case-insensitive identity %q", repository, original)
+		}
+		identities[identity] = repository
 	}
 	return normalized, nil
 }
@@ -965,6 +979,7 @@ func addWorktreeAtSecureDestination(
 	beforeAdd func(),
 	afterStageValidation func(),
 	afterStageVerification func(),
+	afterRepair func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
 ) error {
@@ -1027,7 +1042,9 @@ func addWorktreeAtSecureDestination(
 		_ = removeStageSymlink(stageRoot)
 	}()
 	rollback := func(creationErr error, finalPath string) error {
-		if cleanupErr := rollbackCreatedWorktree(ctx, canonical, stageDirectory, registrationsBefore, finalPath, branch, expectedBranchTip); cleanupErr != nil {
+		cleanupCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		if cleanupErr := rollbackCreatedWorktree(cleanupCtx, canonical, stageDirectory, registrationsBefore, finalPath, branch, expectedBranchTip); cleanupErr != nil {
 			return fmt.Errorf("%w; rollback incomplete worktree creation: %v", creationErr, cleanupErr)
 		}
 		return creationErr
@@ -1063,11 +1080,24 @@ func addWorktreeAtSecureDestination(
 		return rollback(fmt.Errorf("publish secure worktree: %w", err), "")
 	}
 	finalPath := filepath.Join(ownerPath, repository)
-	if !directoryStillMatches(ownerPath, ownerDirectory) {
+	rollbackPublished := func(creationErr error) error {
 		if rollbackErr := unix.Renameat(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
-			return fmt.Errorf("secure worktree owner path changed after publish; rollback failed: %w", rollbackErr)
+			return rollback(fmt.Errorf("%w; roll back published checkout: %v", creationErr, rollbackErr), finalPath)
 		}
-		return rollback(fmt.Errorf("secure worktree owner path changed after publish; refusing redirected checkout"), "")
+		return rollback(creationErr, finalPath)
+	}
+	finalFD, err := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return rollbackPublished(fmt.Errorf("open published worktree: %w", err))
+	}
+	finalDirectory := os.NewFile(uintptr(finalFD), "wb-worktree-final")
+	if finalDirectory == nil {
+		_ = unix.Close(finalFD)
+		return rollbackPublished(fmt.Errorf("wrap published worktree"))
+	}
+	defer func() { _ = finalDirectory.Close() }()
+	if !directoryStillMatches(ownerPath, ownerDirectory) {
+		return rollbackPublished(fmt.Errorf("secure worktree owner path changed after publish; refusing redirected checkout"))
 	}
 	var repairErr error
 	if beforeRepair != nil {
@@ -1076,10 +1106,13 @@ func addWorktreeAtSecureDestination(
 		_, repairErr = git(ctx, canonical, "worktree", "repair", finalPath)
 	}
 	if repairErr != nil {
-		if rollbackErr := unix.Renameat(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
-			return fmt.Errorf("repair published worktree metadata: %v; roll back published checkout: %w", repairErr, rollbackErr)
-		}
-		return rollback(fmt.Errorf("repair published worktree metadata: %w", repairErr), finalPath)
+		return rollbackPublished(fmt.Errorf("repair published worktree metadata: %w", repairErr))
+	}
+	if afterRepair != nil {
+		afterRepair()
+	}
+	if err := verifyPublishedWorktree(ctx, canonical, registrationsBefore, ownerPath, ownerDirectory, finalPath, finalDirectory, branch); err != nil {
+		return rollbackPublished(fmt.Errorf("verify published worktree after repair: %w", err))
 	}
 	return nil
 }
@@ -1280,6 +1313,47 @@ func verifySecureStageContainment(trustedOperationRoot string) int {
 	return 0
 }
 
+func verifyPublishedWorktree(
+	ctx context.Context,
+	canonical string,
+	registrationsBefore map[string]bool,
+	ownerPath string,
+	ownerDirectory *os.File,
+	finalPath string,
+	finalDirectory *os.File,
+	branch string,
+) error {
+	if !directoryStillMatches(ownerPath, ownerDirectory) {
+		return fmt.Errorf("secure worktree owner path changed during repair")
+	}
+	if !directoryStillMatches(finalPath, finalDirectory) {
+		return fmt.Errorf("published worktree path changed during repair")
+	}
+	registered, err := registeredWorktreePaths(ctx, canonical)
+	if err != nil {
+		return err
+	}
+	if len(registered) != len(registrationsBefore)+1 {
+		return fmt.Errorf("worktree registrations changed unexpectedly during repair")
+	}
+	for path := range registrationsBefore {
+		if !registered[path] {
+			return fmt.Errorf("existing worktree registration disappeared during repair: %s", path)
+		}
+	}
+	if !registered[filepath.Clean(finalPath)] {
+		return fmt.Errorf("published worktree is not registered at %s", finalPath)
+	}
+	registeredBranch, err := registeredWorktreeBranch(ctx, canonical, finalPath)
+	if err != nil {
+		return err
+	}
+	if registeredBranch != "refs/heads/"+branch {
+		return fmt.Errorf("published worktree registration branch is %q, want refs/heads/%s", registeredBranch, branch)
+	}
+	return nil
+}
+
 func openNoFollowDirectory(path string) (int, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -1366,6 +1440,12 @@ func removeStageSymlink(path string) error {
 	return nil
 }
 
+const rollbackCleanupTimeout = 30 * time.Second
+
+func rollbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), rollbackCleanupTimeout)
+}
+
 // rollbackCreatedWorktree makes every creation failure converge on the same
 // state: no checkout under the held staging descriptor, no newly-created Git
 // worktree registration, and no branch created by this attempt. The stage
@@ -1378,31 +1458,32 @@ func rollbackCreatedWorktree(
 	registrationsBefore map[string]bool,
 	finalPath, branch, expectedBranchTip string,
 ) error {
+	var failures []error
 	if err := cleanupSecureStageCheckout(ctx, stageDirectory); err != nil {
-		return err
+		failures = append(failures, err)
 	}
 	if _, err := git(ctx, canonical, "worktree", "prune", "--expire", "now"); err != nil {
-		return fmt.Errorf("prune incomplete worktree registration: %w", err)
+		failures = append(failures, fmt.Errorf("prune incomplete worktree registration: %w", err))
 	}
 	registered, err := registeredWorktreePaths(ctx, canonical)
 	if err != nil {
-		return err
-	}
-	for path := range registered {
-		if !registrationsBefore[path] {
-			return fmt.Errorf("incomplete worktree remains registered at %s", path)
+		failures = append(failures, err)
+	} else {
+		for path := range registered {
+			if !registrationsBefore[path] {
+				failures = append(failures, fmt.Errorf("incomplete worktree remains registered at %s", path))
+			}
+		}
+		if finalPath != "" && registered[filepath.Clean(finalPath)] {
+			failures = append(failures, fmt.Errorf("incomplete worktree remains registered at %s", finalPath))
 		}
 	}
-	if finalPath != "" && registered[filepath.Clean(finalPath)] {
-		return fmt.Errorf("incomplete worktree remains registered at %s", finalPath)
+	if expectedBranchTip != "" {
+		if err := deleteCreatedBranch(ctx, canonical, branch, expectedBranchTip); err != nil {
+			failures = append(failures, err)
+		}
 	}
-	if expectedBranchTip == "" {
-		return nil
-	}
-	if err := deleteCreatedBranch(ctx, canonical, branch, expectedBranchTip); err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(failures...)
 }
 
 func registeredWorktreePaths(ctx context.Context, canonical string) (map[string]bool, error) {
@@ -1417,6 +1498,25 @@ func registeredWorktreePaths(ctx context.Context, canonical string) (map[string]
 		}
 	}
 	return paths, nil
+}
+
+func registeredWorktreeBranch(ctx context.Context, canonical, wantedPath string) (string, error) {
+	output, err := git(ctx, canonical, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("list worktree registrations: %w", err)
+	}
+	wantedPath = filepath.Clean(wantedPath)
+	currentPath := ""
+	for _, line := range strings.Split(output, "\n") {
+		if path, found := strings.CutPrefix(line, "worktree "); found {
+			currentPath = filepath.Clean(path)
+			continue
+		}
+		if branch, found := strings.CutPrefix(line, "branch "); found && currentPath == wantedPath {
+			return branch, nil
+		}
+	}
+	return "", fmt.Errorf("worktree registration %s has no branch", wantedPath)
 }
 
 func deleteCreatedBranch(ctx context.Context, canonical, branch, expectedTip string) error {
