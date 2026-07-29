@@ -3,6 +3,7 @@ package wbhome
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -139,6 +140,50 @@ func TestAmbientMigrationMarkerCannotWeakenExplicitHome(t *testing.T) {
 	}
 	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != explicit {
 		t.Fatalf("explicit home resolution = %#v, want only the explicit home", resolution)
+	}
+}
+
+func TestRootSeedsReadmeInHomeDirectory(t *testing.T) {
+	t.Setenv(EnvOverride, "")
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	root, err := Root(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("expected README.md seeded in WB home: %v", err)
+	}
+	if !strings.Contains(string(contents), "https://sneat.dev/workbench") {
+		t.Fatalf("README.md missing workbench link, got: %s", contents)
+	}
+}
+
+func TestRootDoesNotOverwriteExistingReadme(t *testing.T) {
+	t.Setenv(EnvOverride, "")
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	root, err := Root(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readmePath := filepath.Join(root, "README.md")
+	custom := []byte("these are my own notes\n")
+	if err := os.WriteFile(readmePath, custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Root(projectsRoot); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(custom) {
+		t.Fatalf("README.md was overwritten: got %q, want preserved %q", got, custom)
 	}
 }
 

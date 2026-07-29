@@ -76,12 +76,50 @@ func Resolve(projectsRoot string) (Resolution, error) {
 
 // Root resolves WB's authoritative write home. It remains for callers that
 // only create state; worktree migration-aware callers must use Resolve.
+//
+// Every such caller is about to create state below this directory, so Root
+// ensures the directory itself exists and carries a README before returning
+// it — the home directory stays self-documenting no matter which command
+// creates it first.
 func Root(projectsRoot string) (string, error) {
 	resolution, err := Resolve(projectsRoot)
 	if err != nil {
 		return "", err
 	}
-	return resolution.Write.Home, nil
+	home := resolution.Write.Home
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return "", fmt.Errorf("create WB home %s: %w", home, err)
+	}
+	if err := writeReadme(home); err != nil {
+		return "", err
+	}
+	return home, nil
+}
+
+// readmeContent explains what this directory is to anyone who stumbles into
+// it outside of WB itself.
+const readmeContent = `# WB home
+
+This directory holds WB's shared state: task worktrees, operation locks, and
+command reports. WB manages its own layout below here — it's safe to delete
+whenever no WB command is running, since WB recreates whatever it needs.
+
+Learn more about the WB CLI at https://sneat.dev/workbench.
+`
+
+// writeReadme seeds home with a README.md the first time WB creates it. An
+// existing README — including one an operator customised — is left alone.
+func writeReadme(home string) error {
+	path := filepath.Join(home, "README.md")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect WB home README %s: %w", path, err)
+	}
+	if err := os.WriteFile(path, []byte(readmeContent), 0o644); err != nil {
+		return fmt.Errorf("write WB home README %s: %w", path, err)
+	}
+	return nil
 }
 
 func writeHome() (home string, explicit bool, err error) {
