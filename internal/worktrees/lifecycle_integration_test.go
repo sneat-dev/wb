@@ -443,6 +443,43 @@ func TestCleanupUsesRetainedCanonicalRepositoryAfterFinalAuthorization(t *testin
 	}
 }
 
+func TestCleanupPreservesOwnerReplacementAfterFinalAuthorization(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-owner-double-swap")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	parent := filepath.Dir(result.WorktreeDir)
+	parkedParent := parent + "-parked"
+	replacement := "successor owner\n"
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-owner-double-swap",
+		Apply:        true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupParentAuthorization: func(path string) {
+			if path != parent {
+				t.Fatalf("authorized parent = %s, want %s", path, parent)
+			}
+			if renameErr := os.Rename(parent, parkedParent); renameErr != nil {
+				t.Fatalf("park authorized owner directory: %v", renameErr)
+			}
+			if mkdirErr := os.Mkdir(parent, 0o755); mkdirErr != nil {
+				t.Fatalf("replace owner directory: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(filepath.Join(parent, "keep.txt"), []byte(replacement), 0o600); writeErr != nil {
+				t.Fatalf("write replacement owner sentinel: %v", writeErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "retire empty cleanup worktree parent") {
+		t.Fatalf("owner replacement cleanup error = %v", err)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(parent, "keep.txt")); readErr != nil || string(content) != replacement {
+		t.Fatalf("owner replacement was removed: content=%q err=%v", content, readErr)
+	}
+	if _, statErr := os.Stat(parkedParent); statErr != nil {
+		t.Fatalf("original owner directory was removed after replacement: %v", statErr)
+	}
+}
+
 func TestCleanupRefusesTaskSwapBeforeLockWithoutMutatingExternalTarget(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-lock-swap")
 	installMergedPullRequestFixture(t, head, mergedAt)

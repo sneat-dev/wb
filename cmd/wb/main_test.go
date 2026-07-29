@@ -22,6 +22,12 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageGitHelperArgument {
 		os.Exit(worktrees.RunSecureStageGitHelper(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCanonicalGitHelperArgument {
+		os.Exit(worktrees.RunSecureCanonicalGitHelper(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureStageCanonicalGitHelperArgument {
+		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
+	}
 	os.Exit(m.Run())
 }
 

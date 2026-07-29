@@ -20,6 +20,12 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
 		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == SecureCanonicalGitHelperArgument {
+		os.Exit(RunSecureCanonicalGitHelper(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == SecureStageCanonicalGitHelperArgument {
+		os.Exit(RunSecureStageCanonicalGitHelper(os.Args[2:]))
+	}
 	os.Exit(m.Run())
 }
 
@@ -520,7 +526,7 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 	}
 }
 
-func TestRetiredStageCapacityIsBounded(t *testing.T) {
+func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
 	operationRoot := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
 		operationRoot = resolved
@@ -530,13 +536,214 @@ func TestRetiredStageCapacityIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = directory.Close() }()
-	for index := 0; index < maxRetiredStageDirectories; index++ {
-		if err := os.Mkdir(filepath.Join(operationRoot, fmt.Sprintf(".wb-retired-stage-%03d", index)), 0o700); err != nil {
+	retiredName := ".wb-retired-stage-empty"
+	if err := os.Mkdir(filepath.Join(operationRoot, retiredName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name, err := makeSecureStageDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(name, ".wb-stage-") {
+		t.Fatalf("claimed stage name = %q", name)
+	}
+	if _, statErr := os.Stat(filepath.Join(operationRoot, retiredName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("retired name should be atomically claimed, stat err = %v", statErr)
+	}
+	if info, statErr := os.Stat(filepath.Join(operationRoot, name)); statErr != nil || !info.IsDir() {
+		t.Fatalf("claimed stage is unavailable: info=%v err=%v", info, statErr)
+	}
+}
+
+func TestSecureStagePoolSkipsReplacementAndDoesNotCapExhaustedEntries(t *testing.T) {
+	operationRoot := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
+		operationRoot = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(operationRoot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	for index := 0; index < 300; index++ {
+		name := fmt.Sprintf(".wb-retired-stage-busy-%03d", index)
+		if err := os.Mkdir(filepath.Join(operationRoot, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(operationRoot, name, "keep"), []byte("do not reap\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := ensureRetiredStageCapacity(directory); err == nil || !strings.Contains(err.Error(), "refusing unbounded accumulation") {
-		t.Fatalf("retired-stage capacity error = %v", err)
+	replacement := filepath.Join(operationRoot, ".wb-retired-stage-replacement")
+	if err := os.WriteFile(replacement, []byte("successor\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name, err := makeSecureStageDirectory(directory)
+	if err != nil {
+		t.Fatalf("exhausted retired pool must create a fresh stage, got %v", err)
+	}
+	if content, readErr := os.ReadFile(replacement); readErr != nil || string(content) != "successor\n" {
+		t.Fatalf("retirement-name replacement was changed: content=%q err=%v", content, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(operationRoot, ".wb-retired-stage-busy-299", "keep")); statErr != nil {
+		t.Fatalf("busy retirement was reaped: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(operationRoot, name)); statErr != nil {
+		t.Fatalf("fresh secure stage missing: %v", statErr)
+	}
+}
+
+func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
+	directoryPath := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
+		directoryPath = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(directoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	first, err := acquireLockAt(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.release()
+	second, err := acquireLockAt(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.release()
+	entries, err := os.ReadDir(directoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-retired-lock-") {
+			retired++
+		}
+	}
+	if retired != 1 {
+		t.Fatalf("retired locks = %d, want one reusable entry", retired)
+	}
+}
+
+func TestCreatePreservesDoubleSwapAcrossSecureCheckoutPublish(t *testing.T) {
+	fixture := newGitFixture(t)
+	operation := "checkout-double-swap"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	stageRoot := ""
+	parkedOriginal := filepath.Join(t.TempDir(), "parked-original-checkout")
+	firstForeign := "first foreign checkout\n"
+	secondForeign := "second foreign checkout\n"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureCheckoutAuthorization: func() {
+			entries, readErr := os.ReadDir(operationRoot)
+			if readErr != nil {
+				t.Fatalf("read operation root: %v", readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+					stageRoot = filepath.Join(operationRoot, entry.Name())
+					break
+				}
+			}
+			if stageRoot == "" {
+				t.Fatal("secure stage was not found")
+			}
+			checkout := filepath.Join(stageRoot, "checkout")
+			if renameErr := os.Rename(checkout, parkedOriginal); renameErr != nil {
+				t.Fatalf("park original checkout: %v", renameErr)
+			}
+			if mkdirErr := os.Mkdir(checkout, 0o755); mkdirErr != nil {
+				t.Fatalf("create first replacement: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(filepath.Join(checkout, "keep.txt"), []byte(firstForeign), 0o600); writeErr != nil {
+				t.Fatalf("write first replacement: %v", writeErr)
+			}
+		},
+		afterSecureCheckoutMove: func() {
+			checkout := filepath.Join(stageRoot, "checkout")
+			if mkdirErr := os.Mkdir(checkout, 0o755); mkdirErr != nil {
+				t.Fatalf("create second replacement: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(filepath.Join(checkout, "keep.txt"), []byte(secondForeign), 0o600); writeErr != nil {
+				t.Fatalf("write second replacement: %v", writeErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous replacement state") {
+		t.Fatalf("double-swap creation error = %v", err)
+	}
+	final := filepath.Join(operationRoot, "acme", "app")
+	if content, readErr := os.ReadFile(filepath.Join(final, "keep.txt")); readErr != nil || string(content) != firstForeign {
+		t.Fatalf("first replacement was not preserved at destination: content=%q err=%v", content, readErr)
+	}
+	if content, readErr := os.ReadFile(filepath.Join(stageRoot, "checkout", "keep.txt")); readErr != nil || string(content) != secondForeign {
+		t.Fatalf("second replacement was not preserved at source: content=%q err=%v", content, readErr)
+	}
+	if _, statErr := os.Stat(parkedOriginal); statErr != nil {
+		t.Fatalf("original checkout was retired after ambiguous publish: %v", statErr)
+	}
+}
+
+func TestCreateChildRefusesCanonicalGitDirectorySwapAfterAuthorization(t *testing.T) {
+	fixture := newGitFixture(t)
+	parkedGit := fixture.canonical + ".git-parked"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "canonical-git-swap",
+		afterCanonicalGitAuthorization: func() {
+			if renameErr := os.Rename(filepath.Join(fixture.canonical, ".git"), parkedGit); renameErr != nil {
+				t.Fatalf("park canonical Git directory after authorization: %v", renameErr)
+			}
+			if mkdirErr := os.Mkdir(filepath.Join(fixture.canonical, ".git"), 0o755); mkdirErr != nil {
+				t.Fatalf("replace canonical Git directory: %v", mkdirErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "canonical Git directory changed before Git operation") {
+		t.Fatalf("canonical Git swap error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.canonical, ".git", "HEAD")); !os.IsNotExist(statErr) {
+		t.Fatalf("replacement canonical Git directory was mutated: %v", statErr)
+	}
+	if _, statErr := os.Stat(parkedGit); statErr != nil {
+		t.Fatalf("original canonical Git directory was removed: %v", statErr)
+	}
+}
+
+func TestCreateUsesHeldCanonicalRootAfterAuthorizationSwap(t *testing.T) {
+	fixture := newGitFixture(t)
+	movedCanonical := fixture.canonical + "-parked"
+	external := t.TempDir()
+	called := false
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "canonical-root-swap",
+		afterCanonicalGitAuthorization: func() {
+			if called {
+				return
+			}
+			called = true
+			if renameErr := os.Rename(fixture.canonical, movedCanonical); renameErr != nil {
+				t.Fatalf("park canonical root after authorization: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, fixture.canonical); symlinkErr != nil {
+				t.Fatalf("replace canonical root after authorization: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not the root of its canonical clone") {
+		t.Fatalf("canonical root swap error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, ".git")); !os.IsNotExist(statErr) {
+		t.Fatalf("replacement canonical root was mutated: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedCanonical, ".git")); statErr != nil {
+		t.Fatalf("held canonical root was removed: %v", statErr)
 	}
 }
 
