@@ -121,7 +121,10 @@ func shimManagedSection(executable, hook, explicitConfig, projectsRoot, wbHome s
 	if wbHome != "" {
 		homeExport = "export WB_HOME=" + shellQuote(wbHome) + "\n"
 		if wbHomeAllowsLegacy {
-			homeExport += "export " + wbhome.EnvMigrationCompat + "='default'\n"
+			// Pin the compatibility marker to the same resolved default home as
+			// WB_HOME. A generic marker could leak from an ordinary shell and
+			// accidentally make an explicit alternate home read legacy state.
+			homeExport += "export " + wbhome.EnvMigrationCompat + "=" + shellQuote(wbHome) + "\n"
 		}
 	}
 	return managedStartMarker + "\n" +
@@ -152,6 +155,15 @@ func absoluteProjectsRoot(projectsRoot string) (string, error) {
 // Check validates config, core.hooksPath, generated shims, and executability
 // without changing repository state.
 func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport, error) {
+	// Apply stores the resolved executable target in a shim. Resolve it here
+	// too when possible so `hooks check` compares the same dispatcher even if
+	// the caller reached the current binary through a symlinked path such as
+	// macOS's /var temporary directory.
+	if absolute, absErr := filepath.Abs(strings.TrimSpace(wbExecutable)); absErr == nil {
+		if resolved, resolveErr := filepath.EvalSymlinks(filepath.Clean(absolute)); resolveErr == nil {
+			wbExecutable = filepath.Clean(resolved)
+		}
+	}
 	policy, err := LoadPolicy(repoPath, configPath)
 	if err != nil {
 		return CheckReport{}, err
@@ -237,7 +249,9 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 // Apply installs or repairs WB's local shims. It never overwrites unmanaged
 // hook files unless Force is set, and forced replacements are backed up.
 func Apply(options ApplyOptions) (ApplyResult, error) {
-	if err := requireDurableWBExecutable(options.WBExecutable); err != nil {
+	var err error
+	options.WBExecutable, err = durableWBExecutable(options.WBExecutable)
+	if err != nil {
 		return ApplyResult{}, err
 	}
 	policy, err := LoadPolicy(options.RepoPath, options.ConfigPath)
@@ -330,12 +344,57 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	return result, nil
 }
 
-func requireDurableWBExecutable(executable string) error {
-	clean := filepath.ToSlash(filepath.Clean(strings.TrimSpace(executable)))
-	if strings.Contains(clean, "/go-build") && strings.Contains(clean, "/exe/") {
-		return fmt.Errorf("refusing to install hooks from transient go run executable %s; build or install a durable wb binary first", executable)
+func durableWBExecutable(executable string) (string, error) {
+	provided := strings.TrimSpace(executable)
+	if provided == "" {
+		return "", fmt.Errorf("refusing to install hooks without a WB executable")
 	}
-	return nil
+	absolute, err := filepath.Abs(provided)
+	if err != nil {
+		return "", fmt.Errorf("resolve WB executable %s: %w", executable, err)
+	}
+	absolute = filepath.Clean(absolute)
+	if isTransientGoRunPath(absolute) {
+		return "", transientExecutableError(executable)
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("resolve WB executable %s: %w", executable, err)
+	}
+	resolved = filepath.Clean(resolved)
+	if isTransientGoRunPath(resolved) {
+		return "", transientExecutableError(executable)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("inspect WB executable %s: %w", executable, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("WB executable %s must be a regular file", executable)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("WB executable %s is not executable", executable)
+	}
+	return resolved, nil
+}
+
+func transientExecutableError(executable string) error {
+	return fmt.Errorf("refusing to install hooks from transient go run executable %s; build or install a durable wb binary first", executable)
+}
+
+func isTransientGoRunPath(path string) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(path)), "/")
+	for index, part := range parts {
+		if !strings.HasPrefix(part, "go-build") {
+			continue
+		}
+		for _, descendant := range parts[index+1:] {
+			if descendant == "exe" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // RefreshManagedShims upgrades an already-managed hook installation before a
@@ -343,6 +402,11 @@ func requireDurableWBExecutable(executable string) error {
 // WB-managed hooks alone; a conflicting or malformed managed installation
 // fails the caller before it can create a split-layout checkout.
 func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string) (bool, error) {
+	var err error
+	wbExecutable, err = durableWBExecutable(wbExecutable)
+	if err != nil {
+		return false, err
+	}
 	policy, err := LoadPolicy(repoPath, configPath)
 	if err != nil {
 		return false, err
@@ -367,7 +431,8 @@ func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string
 		return false, err
 	}
 	for _, name := range expectedHookNames(policy) {
-		data, readErr := os.ReadFile(filepath.Join(managed, name))
+		path := filepath.Join(managed, name)
+		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return false, fmt.Errorf("read managed hook %s before worktree creation: %w", name, readErr)
 		}
@@ -376,7 +441,11 @@ func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string
 			return false, fmt.Errorf("managed hook %s is malformed; run `wb hooks repair` before creating a worktree", name)
 		}
 		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath, projectsRoot, wbHome, wbHomeAllowsLegacy)
-		if actual != expected {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return false, fmt.Errorf("inspect managed hook %s before worktree creation: %w", name, statErr)
+		}
+		if actual != expected || info.Mode().Perm()&0o111 == 0 {
 			if _, applyErr := Apply(ApplyOptions{
 				RepoPath: policy.RepoRoot, ConfigPath: configPath, WBExecutable: wbExecutable,
 				ProjectsRoot: projectsRoot, WBHome: wbHome, WBHomeAllowsLegacy: wbHomeAllowsLegacy, Repair: true,

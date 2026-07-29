@@ -63,7 +63,7 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(refreshed), "export WB_HOME='"+filepath.Join(resolvedHome, ".wb")+"'") ||
-		!strings.Contains(string(refreshed), "WB_HOME_MIGRATION_COMPAT='default'") {
+		!strings.Contains(string(refreshed), "WB_HOME_MIGRATION_COMPAT='"+filepath.Join(resolvedHome, ".wb")+"'") {
 		checked := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "hooks", "check", canonical)
 		t.Fatalf("candidate did not refresh previous-release hook home:\n%s\ncheck exit=%d stdout=%s stderr=%s", refreshed, checked.exitCode, checked.stdout, checked.stderr)
 	}

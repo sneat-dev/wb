@@ -100,7 +100,10 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
-	operationRoot := filepath.Join(home, "worktrees", normalized.Operation)
+	operationRoot, err := prepareOperationRoot(home, normalized.Operation)
+	if err != nil {
+		return nil, err
+	}
 	lock, err := acquireLock(operationRoot)
 	if err != nil {
 		return nil, err
@@ -117,7 +120,10 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if err := synchronizeCanonical(ctx, canonical, repository, normalized.Base); err != nil {
 			return nil, err
 		}
-		worktree := filepath.Join(operationRoot, owner, name)
+		worktree, err := prepareWorktreeDestination(home, normalized.Operation, owner, name)
+		if err != nil {
+			return nil, err
+		}
 		plan := createPlan{result: CreateResult{
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
 			Branch: normalized.Branch, Base: normalized.Base,
@@ -156,8 +162,16 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	results := make([]CreateResult, 0, len(plans))
 	for _, plan := range plans {
 		if !plan.resumed {
-			if err := os.MkdirAll(filepath.Dir(plan.result.WorktreeDir), 0o755); err != nil {
-				return results, fmt.Errorf("create worktree parent: %w", err)
+			owner, name, splitErr := splitRepository(plan.result.Repository)
+			if splitErr != nil {
+				return results, splitErr
+			}
+			worktree, destinationErr := prepareWorktreeDestination(home, normalized.Operation, owner, name)
+			if destinationErr != nil {
+				return results, destinationErr
+			}
+			if filepath.Clean(worktree) != filepath.Clean(plan.result.WorktreeDir) {
+				return results, fmt.Errorf("worktree destination changed before creation: %s", plan.result.WorktreeDir)
 			}
 			args := []string{"worktree", "add", "--quiet"}
 			if plan.branchExists {
@@ -318,13 +332,69 @@ func invalidManagedWorktreePath(root, worktreesRoot string) error {
 }
 
 func rebaseInProgress(gitDir string) bool {
-	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		info, err := os.Stat(filepath.Join(gitDir, name))
-		if err == nil && info.IsDir() {
-			return true
+	return coherentRebaseState(filepath.Join(gitDir, "rebase-merge"), []string{
+		"head-name", "orig-head", "onto", "git-rebase-todo.backup", "end", "msgnum",
+	}, true) || coherentRebaseState(filepath.Join(gitDir, "rebase-apply"), []string{
+		"head-name", "orig-head", "onto", "next", "last", "rebasing", "original-commit", "patch",
+	}, false)
+}
+
+// coherentRebaseState accepts only the non-symlinked state Git leaves while a
+// rebase is actually paused. A detached HEAD plus an empty or fabricated
+// rebase-* directory is not a safe exception to the worktree policy.
+func coherentRebaseState(directory string, required []string, merge bool) bool {
+	info, err := os.Lstat(directory)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return false
+	}
+	values := map[string]string{}
+	for _, name := range required {
+		path := filepath.Join(directory, name)
+		file, readErr := os.Lstat(path)
+		if readErr != nil || file.Mode()&os.ModeSymlink != 0 || !file.Mode().IsRegular() {
+			return false
+		}
+		if name == "patch" || name == "rebasing" {
+			continue
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil || strings.TrimSpace(string(content)) == "" {
+			return false
+		}
+		values[name] = strings.TrimSpace(string(content))
+	}
+	if !strings.HasPrefix(values["head-name"], "refs/heads/") ||
+		!isGitObjectID(values["orig-head"]) || !isGitObjectID(values["onto"]) {
+		return false
+	}
+	if merge {
+		return positiveDecimal(values["end"]) && positiveDecimal(values["msgnum"])
+	}
+	return positiveDecimal(values["next"]) && positiveDecimal(values["last"])
+}
+
+func isGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+func positiveDecimal(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return strings.TrimLeft(value, "0") != ""
 }
 
 // OriginSlug returns the owner/repository identity of path's origin remote.
@@ -579,11 +649,115 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// prepareOperationRoot creates the fixed WB hierarchy one component at a
+// time. os.MkdirAll would follow a pre-existing task or owner symlink; that
+// could direct a worktree add outside WB_HOME before Git has a chance to
+// validate anything.
+func prepareOperationRoot(home, operation string) (string, error) {
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return "", fmt.Errorf("create WB home %s: %w", home, err)
+	}
+	if err := ensureManagedDirectory(home, home); err != nil {
+		return "", err
+	}
+	worktreesRoot := filepath.Join(home, "worktrees")
+	if err := ensureManagedDirectory(home, worktreesRoot); err != nil {
+		return "", err
+	}
+	operationRoot := filepath.Join(worktreesRoot, operation)
+	if err := ensureManagedDirectory(home, operationRoot); err != nil {
+		return "", err
+	}
+	return operationRoot, nil
+}
+
+// prepareWorktreeDestination rejects symlinked hierarchy components and proves
+// the resolved parent and eventual destination stay below the resolved WB
+// home before Git mutates the filesystem.
+func prepareWorktreeDestination(home, operation, owner, repository string) (string, error) {
+	operationRoot := filepath.Join(home, "worktrees", operation)
+	if err := ensureManagedDirectory(home, operationRoot); err != nil {
+		return "", err
+	}
+	ownerRoot := filepath.Join(operationRoot, owner)
+	if err := ensureManagedDirectory(home, ownerRoot); err != nil {
+		return "", err
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve WB home %s: %w", home, err)
+	}
+	resolvedOwner, err := filepath.EvalSymlinks(ownerRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree parent %s: %w", ownerRoot, err)
+	}
+	worktree := filepath.Join(ownerRoot, repository)
+	if !pathWithin(resolvedHome, filepath.Join(resolvedOwner, repository)) {
+		return "", fmt.Errorf("worktree destination %s resolves outside WB home %s", worktree, home)
+	}
+	info, err := os.Lstat(worktree)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("refusing symlinked worktree destination %s", worktree)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("worktree destination is not a directory: %s", worktree)
+		}
+		resolvedWorktree, resolveErr := filepath.EvalSymlinks(worktree)
+		if resolveErr != nil || !pathWithin(resolvedHome, resolvedWorktree) {
+			return "", fmt.Errorf("worktree destination %s resolves outside WB home %s", worktree, home)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect worktree destination %s: %w", worktree, err)
+	}
+	return worktree, nil
+}
+
+func ensureManagedDirectory(home, directory string) error {
+	info, err := os.Lstat(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkdirErr := os.Mkdir(directory, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return fmt.Errorf("create managed worktree directory %s: %w", directory, mkdirErr)
+		}
+		info, err = os.Lstat(directory)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect managed worktree directory %s: %w", directory, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlinked managed worktree directory %s", directory)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("managed worktree path is not a directory: %s", directory)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return fmt.Errorf("resolve WB home %s: %w", home, err)
+	}
+	resolvedDirectory, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return fmt.Errorf("resolve managed worktree directory %s: %w", directory, err)
+	}
+	if !pathWithin(resolvedHome, resolvedDirectory) {
+		return fmt.Errorf("managed worktree directory %s resolves outside WB home %s", directory, home)
+	}
+	return nil
+}
+
+func pathWithin(root, path string) bool {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
 type operationLock struct{ path string }
 
 func acquireLock(operationRoot string) (operationLock, error) {
-	if err := os.MkdirAll(operationRoot, 0o755); err != nil {
-		return operationLock{}, err
+	info, err := os.Lstat(operationRoot)
+	if err != nil {
+		return operationLock{}, fmt.Errorf("inspect worktree operation directory %s: %w", operationRoot, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return operationLock{}, fmt.Errorf("worktree operation directory is not a real directory: %s", operationRoot)
 	}
 	path := filepath.Join(operationRoot, ".lock")
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)

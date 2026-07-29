@@ -271,6 +271,78 @@ func TestApplyRejectsTransientGoRunExecutable(t *testing.T) {
 	}
 }
 
+func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
+	root := t.TempDir()
+	nonExecutable := filepath.Join(root, "not-executable")
+	mustWrite(t, nonExecutable, "#!/bin/sh\nexit 0\n")
+	directory := filepath.Join(root, "directory")
+	mustMkdirAll(t, directory)
+	dangling := filepath.Join(root, "dangling")
+	if err := os.Symlink(filepath.Join(root, "missing-target"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	transientTarget := filepath.Join(root, "go-build999", "b001", "exe", "wb")
+	mustMkdirAll(t, filepath.Dir(transientTarget))
+	mustWriteExecutable(t, transientTarget, "#!/bin/sh\nexit 0\n")
+	transientLink := filepath.Join(root, "wb-link")
+	if err := os.Symlink(transientTarget, transientLink); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name       string
+		executable string
+		want       string
+	}{
+		{name: "missing", executable: filepath.Join(root, "missing"), want: "resolve WB executable"},
+		{name: "directory", executable: directory, want: "regular file"},
+		{name: "not executable", executable: nonExecutable, want: "not executable"},
+		{name: "dangling symlink", executable: dangling, want: "resolve WB executable"},
+		{name: "direct transient path", executable: transientTarget, want: "transient go run executable"},
+		{name: "symlink to transient path", executable: transientLink, want: "transient go run executable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := durableWBExecutable(test.executable); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("durableWBExecutable(%q) error = %v, want %q", test.executable, err, test.want)
+			}
+		})
+	}
+}
+
+func TestRefreshManagedShimsRepairsNonExecutableShim(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable}); err != nil {
+		t.Fatal(err)
+	}
+	managed, err := managedPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(managed, "pre-commit")
+	if err := os.Chmod(preCommit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := RefreshManagedShims(repo, "", executable, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !refreshed {
+		t.Fatal("non-executable managed shim was not refreshed")
+	}
+	info, err := os.Stat(preCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("refreshed shim is not executable: %v", info.Mode())
+	}
+	if report, checkErr := Check(repo, "", executable, ""); checkErr != nil || len(report.Findings) != 0 {
+		t.Fatalf("refreshed hook report = %#v, %v", report, checkErr)
+	}
+}
+
 func TestLoadPolicyCustomProductProfileAndBuiltInOverride(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -359,7 +431,7 @@ func TestLoadPolicyRejectsInvalidProfileDefinitions(t *testing.T) {
 func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	executable := "/opt/wb test/bin/wb"
+	executable := testWBExecutable(t, "wb test")
 	projectsRoot := "/tmp/projects root"
 	result, err := Apply(ApplyOptions{
 		RepoPath: repo, WBExecutable: executable, ProjectsRoot: projectsRoot,
@@ -384,7 +456,7 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), managedStartMarker) || !strings.Contains(string(data), managedEndMarker) ||
-		!strings.Contains(string(data), "'/opt/wb test/bin/wb' --projects-root '/tmp/projects root' hooks run 'pre-commit' -- \"$@\"") ||
+		!strings.Contains(string(data), shellQuote(executable)+" --projects-root '/tmp/projects root' hooks run 'pre-commit' -- \"$@\"") ||
 		strings.Contains(string(data), "exec ") {
 		t.Fatalf("unexpected shim:\n%s", data)
 	}
@@ -424,6 +496,7 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
 	relativeRoot := filepath.Join(".", "projects root")
 	absoluteRoot, err := filepath.Abs(relativeRoot)
 	if err != nil {
@@ -431,7 +504,7 @@ func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
 	}
 
 	result, err := Apply(ApplyOptions{
-		RepoPath: repo, WBExecutable: "/opt/wb", ProjectsRoot: relativeRoot,
+		RepoPath: repo, WBExecutable: executable, ProjectsRoot: relativeRoot,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -440,11 +513,11 @@ func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := "'/opt/wb' --projects-root " + shellQuote(absoluteRoot) + " hooks run 'pre-commit'"
+	expected := shellQuote(executable) + " --projects-root " + shellQuote(absoluteRoot) + " hooks run 'pre-commit'"
 	if !strings.Contains(string(preCommit), expected) {
 		t.Fatalf("managed hook does not preserve the absolute projects root %q:\n%s", absoluteRoot, preCommit)
 	}
-	if report, checkErr := Check(repo, "", "/opt/wb", relativeRoot); checkErr != nil || len(report.Findings) != 0 {
+	if report, checkErr := Check(repo, "", executable, relativeRoot); checkErr != nil || len(report.Findings) != 0 {
 		t.Fatalf("relative projects root should check cleanly: report = %#v, error = %v", report, checkErr)
 	}
 }
@@ -452,7 +525,9 @@ func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
 func TestRepairPreservesUserSectionsOutsideManagedDelimiter(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "/old/wb"})
+	oldExecutable := testWBExecutable(t, "old-wb")
+	newExecutable := testWBExecutable(t, "new-wb")
+	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: oldExecutable})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,11 +538,11 @@ func TestRepairPreservesUserSectionsOutsideManagedDelimiter(t *testing.T) {
 	}
 	withUserSections := strings.Replace(string(installed), "#!/bin/sh\nset -eu\n\n", "#!/bin/sh\nset -eu\necho before\n", 1) + "echo after\n"
 	mustWrite(t, prePush, withUserSections)
-	if report, checkErr := Check(repo, "", "/old/wb", ""); checkErr != nil || len(report.Findings) != 0 {
+	if report, checkErr := Check(repo, "", oldExecutable, ""); checkErr != nil || len(report.Findings) != 0 {
 		t.Fatalf("user sections should not cause drift: report = %#v, error = %v", report, checkErr)
 	}
 
-	repaired, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "/new/wb", Repair: true})
+	repaired, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: newExecutable, Repair: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,12 +553,12 @@ func TestRepairPreservesUserSectionsOutsideManagedDelimiter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, wanted := range []string{"set -eu", "echo before", "echo after", "'/new/wb' hooks run 'pre-push'"} {
+	for _, wanted := range []string{"set -eu", "echo before", "echo after", shellQuote(newExecutable) + " hooks run 'pre-push'"} {
 		if !strings.Contains(string(prePushData), wanted) {
 			t.Fatalf("repaired pre-push lost %q:\n%s", wanted, prePushData)
 		}
 	}
-	if strings.Contains(string(prePushData), "/old/wb") {
+	if strings.Contains(string(prePushData), oldExecutable) {
 		t.Fatalf("old managed dispatcher remains:\n%s", prePushData)
 	}
 }
@@ -491,12 +566,13 @@ func TestRepairPreservesUserSectionsOutsideManagedDelimiter(t *testing.T) {
 func TestRepairRemovingHookPreservesOuterUserCommands(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
 	configDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, configDir)
 	mustWrite(t, filepath.Join(configDir, "commit-msg.sh"), "#!/bin/sh\nexit 0\n")
 	configPath := filepath.Join(configDir, "hooks.yaml")
 	mustWrite(t, configPath, "version: 1\nhooks:\n  commit-msg:\n    template: commit-msg.sh\nmetrics:\n  enabled: false\n")
-	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "/opt/wb"})
+	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +584,7 @@ func TestRepairRemovingHookPreservesOuterUserCommands(t *testing.T) {
 	mustWrite(t, commitMsg, string(data)+"echo keep-user-command\n")
 	mustWrite(t, configPath, "version: 1\nhooks:\n  commit-msg:\n    disabled: true\nmetrics:\n  enabled: false\n")
 
-	repaired, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "/opt/wb", Repair: true})
+	repaired, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable, Repair: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,15 +603,16 @@ func TestRepairRemovingHookPreservesOuterUserCommands(t *testing.T) {
 func TestApplyProtectsConflictingHooksAndForceBacksUp(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
 	legacy := filepath.Join(repo, ".git-hooks")
 	mustMkdirAll(t, legacy)
 	mustWrite(t, filepath.Join(legacy, "pre-commit"), "#!/bin/sh\necho legacy\n")
 	git(t, repo, "config", "--local", "core.hooksPath", ".git-hooks")
 
-	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "wb"}); err == nil || !strings.Contains(err.Error(), "migrate those hooks") {
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable}); err == nil || !strings.Contains(err.Error(), "migrate those hooks") {
 		t.Fatalf("conflict error = %v", err)
 	}
-	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "wb", Repair: true, Force: true})
+	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable, Repair: true, Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,11 +625,11 @@ func TestApplyProtectsConflictingHooksAndForceBacksUp(t *testing.T) {
 
 	unmanaged := filepath.Join(result.Report.ManagedPath, "pre-commit")
 	mustWrite(t, unmanaged, "#!/bin/sh\necho unmanaged\n")
-	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "wb", Repair: true}); err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged hook") {
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable, Repair: true}); err == nil || !strings.Contains(err.Error(), "refusing to overwrite unmanaged hook") {
 		t.Fatalf("unmanaged collision error = %v", err)
 	}
 	now := time.Date(2026, 7, 20, 12, 34, 56, 0, time.UTC)
-	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "wb", Repair: true, Force: true, Now: func() time.Time { return now }}); err != nil {
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable, Repair: true, Force: true, Now: func() time.Time { return now }}); err != nil {
 		t.Fatal(err)
 	}
 	backup := unmanaged + ".wb-backup-20260720T123456Z"
@@ -873,6 +950,17 @@ func mustMkdirAll(t *testing.T, path string) {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testWBExecutable(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	mustWriteExecutable(t, path, "#!/bin/sh\nexit 0\n")
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func hasFinding(findings []Finding, code string) bool {

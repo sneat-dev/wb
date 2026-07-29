@@ -49,6 +49,55 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(*testing.T, *gitFixture, string)
+	}{
+		{
+			name: "task",
+			setup: func(t *testing.T, fixture *gitFixture, outside string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(fixture.home, "worktrees"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(fixture.home, "worktrees", "escape")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "owner",
+			setup: func(t *testing.T, fixture *gitFixture, outside string) {
+				t.Helper()
+				ownerParent := filepath.Join(fixture.home, "worktrees", "escape")
+				if err := os.MkdirAll(ownerParent, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filepath.Join(ownerParent, "acme")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			outside := t.TempDir()
+			test.setup(t, fixture, outside)
+			_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "escape",
+			})
+			if err == nil || !strings.Contains(err.Error(), "symlinked") {
+				t.Fatalf("Create symlink guard error = %v", err)
+			}
+			if entries, readErr := os.ReadDir(outside); readErr != nil || len(entries) != 0 {
+				t.Fatalf("outside target was mutated: entries=%v, error=%v", entries, readErr)
+			}
+		})
+	}
+}
+
 func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "legacy", "acme", "app")
@@ -233,6 +282,45 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 				t.Fatalf("arbitrary detached guard error = %v", err)
 			}
 		})
+	}
+}
+
+func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "fabricated-rebase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	gitTest(t, worktree, "checkout", "--detach", "HEAD")
+	gitDir := gitTestOutput(t, worktree, "rev-parse", "--absolute-git-dir")
+	state := filepath.Join(gitDir, "rebase-merge")
+	if err := os.MkdirAll(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("empty rebase state guard error = %v", err)
+	}
+	for name, content := range map[string]string{
+		"head-name":              "refs/heads/codex/fabricated-rebase\n",
+		"orig-head":              strings.Repeat("a", 40) + "\n",
+		"onto":                   strings.Repeat("b", 40) + "\n",
+		"git-rebase-todo.backup": "pick deadbeef synthetic\n",
+		"end":                    "1\n",
+		"msgnum":                 "1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(state, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Remove(filepath.Join(state, "onto")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(t.TempDir(), "onto"), filepath.Join(state, "onto")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("symlinked rebase state guard error = %v", err)
 	}
 }
 

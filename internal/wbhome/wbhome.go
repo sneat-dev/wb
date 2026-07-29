@@ -23,9 +23,9 @@ import (
 const EnvOverride = "WB_HOME"
 
 // EnvMigrationCompat is written only by a managed hook that pinned the normal
-// default home at installation time. It keeps legacy linked worktrees visible
-// to that hook during the default-layout migration without weakening an
-// explicitly chosen WB_HOME in an ordinary shell.
+// default home at installation time. Its value must be that resolved default
+// home, rather than a generic boolean. This lets the resolver distinguish the
+// one migration-compatible hook context from an arbitrary explicit WB_HOME.
 const EnvMigrationCompat = "WB_HOME_MIGRATION_COMPAT"
 
 // Layout is one supported on-disk WB state layout. Home is the parent of its
@@ -87,7 +87,14 @@ func Root(projectsRoot string) (string, error) {
 func writeHome() (home string, explicit bool, err error) {
 	if override := strings.TrimSpace(os.Getenv(EnvOverride)); override != "" {
 		root, resolveErr := resolveAbs(override)
-		return root, strings.TrimSpace(os.Getenv(EnvMigrationCompat)) != "default", resolveErr
+		if resolveErr != nil {
+			return "", true, resolveErr
+		}
+		// A generic ambient marker must never make an explicitly selected home
+		// migration-compatible. Managed shims pin both WB_HOME and this marker
+		// to the exact, resolved default location. Only that exact pairing is
+		// allowed to discover the legacy layout.
+		return root, !isPinnedDefaultHome(root), nil
 	}
 	userHome, err := os.UserHomeDir()
 	if err != nil {
@@ -95,6 +102,23 @@ func writeHome() (home string, explicit bool, err error) {
 	}
 	root, err := resolveAbs(filepath.Join(userHome, ".wb"))
 	return root, false, err
+}
+
+func isPinnedDefaultHome(home string) bool {
+	marker := strings.TrimSpace(os.Getenv(EnvMigrationCompat))
+	if marker == "" {
+		return false
+	}
+	pinned, err := resolveAbs(marker)
+	if err != nil || filepath.Clean(pinned) != filepath.Clean(home) {
+		return false
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	defaultHome, err := resolveAbs(filepath.Join(userHome, ".wb"))
+	return err == nil && filepath.Clean(home) == filepath.Clean(defaultHome)
 }
 
 func newLayout(home string, legacy bool) Layout {

@@ -187,7 +187,7 @@ func listLayout(
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
 	for _, taskEntry := range taskEntries {
-		if !taskEntry.IsDir() || (task != "" && taskEntry.Name() != task) {
+		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || (task != "" && taskEntry.Name() != task) {
 			continue
 		}
 		if !validSafeSegment(taskEntry.Name()) {
@@ -205,7 +205,7 @@ func listLayout(
 			return nil, nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), readErr)
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || entry.Name() == ".lock" {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 				continue
 			}
 			candidate := filepath.Join(taskRoot, entry.Name())
@@ -230,7 +230,7 @@ func listLayout(
 				continue
 			}
 			for _, repositoryEntry := range nested {
-				if !repositoryEntry.IsDir() {
+				if !repositoryEntry.IsDir() || strings.HasPrefix(repositoryEntry.Name(), ".") {
 					continue
 				}
 				repositoryPath := filepath.Join(candidate, repositoryEntry.Name())

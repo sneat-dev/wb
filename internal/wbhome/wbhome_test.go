@@ -101,6 +101,7 @@ func TestRootEnvOverrideWinsOverLegacy(t *testing.T) {
 
 func TestPinnedDefaultHookHomeKeepsLegacyLayoutReadable(t *testing.T) {
 	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
 	projectsRoot := resolvedTempDir(t)
 	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "in-flight")
 	if err := os.MkdirAll(legacy, 0o755); err != nil {
@@ -108,13 +109,36 @@ func TestPinnedDefaultHookHomeKeepsLegacyLayoutReadable(t *testing.T) {
 	}
 	pinned := filepath.Join(home, ".wb")
 	t.Setenv(EnvOverride, pinned)
-	t.Setenv(EnvMigrationCompat, "default")
+	t.Setenv(EnvMigrationCompat, pinned)
 	resolution, err := Resolve(projectsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resolution.Explicit || len(resolution.Read) != 2 || resolution.Read[0].Home != pinned || !resolution.Read[1].Legacy {
 		t.Fatalf("pinned default resolution = %#v, want default write + legacy read", resolution)
+	}
+}
+
+func TestAmbientMigrationMarkerCannotWeakenExplicitHome(t *testing.T) {
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "in-flight")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(resolvedTempDir(t), "isolated-home")
+	t.Setenv(EnvOverride, explicit)
+	// This is the prior release's generic marker. It may be ambient in a
+	// caller's shell but must not turn a non-default explicit home into a
+	// migration-compatible one.
+	t.Setenv(EnvMigrationCompat, "default")
+	resolution, err := Resolve(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != explicit {
+		t.Fatalf("explicit home resolution = %#v, want only the explicit home", resolution)
 	}
 }
 

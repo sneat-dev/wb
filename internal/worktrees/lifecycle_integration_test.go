@@ -73,6 +73,42 @@ func TestListStopsAtLegacyDirectRepositoryRootsAndRetainsValidSiblings(t *testin
 	}
 }
 
+func TestListIgnoresDotDirectoriesAtEveryManagedHierarchyLevel(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "dot-directories",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskRoot := filepath.Join(fixture.home, "worktrees", "dot-directories")
+	for _, directory := range []string{
+		filepath.Join(fixture.home, "worktrees", ".metadata"),
+		filepath.Join(taskRoot, ".claude"),
+		filepath.Join(taskRoot, "acme", ".github"),
+		filepath.Join(created[0].WorktreeDir, ".tooling"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	outcome, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "dot-directories",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || outcome.Results[0].WorktreeDir != created[0].WorktreeDir {
+		t.Fatalf("dot-directory inventory = %#v", outcome.Results)
+	}
+	if len(outcome.Diagnostics) != 0 {
+		t.Fatalf("dot directories must not block cleanup: %#v", outcome.Diagnostics)
+	}
+}
+
 func TestCleanupLegacyLayoutWritesAuditToAuthoritativeDefaultHome(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "cleanup-legacy", "acme", "app")
