@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -99,14 +97,16 @@ unless --resume is explicit.`,
 }
 
 func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
+	canonicalRepositories := make([]string, 0, len(repositories))
 	for _, repository := range repositories {
-		parts := strings.Split(repository, "/")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			// Create will return the canonical validation error; do not build an
-			// accidental path before it has a chance to do so.
-			continue
+		canonical, err := worktrees.CanonicalRepositoryPath(projectsRoot, repository)
+		if err != nil {
+			return err
 		}
-		canonical := filepath.Join(projectsRoot, parts[0], parts[1])
+		canonicalRepositories = append(canonicalRepositories, canonical)
+	}
+	for index, repository := range repositories {
+		canonical := canonicalRepositories[index]
 		_, err := hooks.RefreshManagedShims(canonical, "", hookExecutable(), projectsRoot)
 		if err != nil {
 			return fmt.Errorf("verify hooks for %s before creating a worktree: %w", repository, err)

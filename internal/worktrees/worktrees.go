@@ -127,11 +127,10 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 
 	plans := make([]createPlan, 0, len(repositories))
 	for _, repository := range repositories {
-		owner, name, err := splitRepository(repository)
+		owner, name, canonical, err := canonicalRepositoryPath(normalized.ProjectsRoot, repository)
 		if err != nil {
 			return nil, err
 		}
-		canonical := filepath.Join(normalized.ProjectsRoot, owner, name)
 		if err := synchronizeCanonical(ctx, canonical, repository, normalized.Base); err != nil {
 			return nil, err
 		}
@@ -406,13 +405,13 @@ func coherentRebaseState(ctx context.Context, root, directory string, required [
 		return false
 	}
 	if merge {
-		return coherentMergeRebaseTodo(ctx, root, directory, values["git-rebase-todo.backup"], values["msgnum"], values["end"]) && gitRecognizesRebase(ctx, root)
+		return coherentMergeRebaseTodo(ctx, root, directory, values["git-rebase-todo.backup"], values["msgnum"], values["end"]) && gitRecognizesRebase(ctx, root, values["onto"])
 	}
 	if !isGitObjectID(values["original-commit"]) || !gitCommitExists(ctx, root, values["original-commit"]) || !positiveDecimal(values["next"]) || !positiveDecimal(values["last"]) || !decimalAtMost(values["next"], values["last"]) {
 		return false
 	}
 	patch, err := os.ReadFile(filepath.Join(directory, "patch"))
-	return err == nil && strings.TrimSpace(string(patch)) != "" && gitRecognizesRebase(ctx, root)
+	return err == nil && strings.TrimSpace(string(patch)) != "" && gitRecognizesRebase(ctx, root, values["onto"])
 }
 
 func coherentMergeRebaseTodo(ctx context.Context, root, directory, backup, messageNumber, end string) bool {
@@ -486,9 +485,35 @@ func gitReferenceExists(ctx context.Context, root, reference string) bool {
 	return err == nil
 }
 
-func gitRecognizesRebase(ctx context.Context, root string) bool {
+func gitRecognizesRebase(ctx context.Context, root, onto string) bool {
 	_, err := git(ctx, root, "rebase", "--show-current-patch")
-	return err == nil
+	return err == nil && reflogShowsActiveRebase(ctx, root, onto)
+}
+
+// reflogShowsActiveRebase requires evidence outside the mutable rebase-* state
+// directory. Git records a contiguous run of "rebase (...)" HEAD reflog
+// entries when it detaches HEAD for a rebase; its start entry lands at the
+// exact commit named by the rebase's onto file. A fabricated directory can
+// make `git rebase --show-current-patch` succeed, but cannot satisfy this
+// relationship without also forging Git's reflog history.
+func reflogShowsActiveRebase(ctx context.Context, root, onto string) bool {
+	output, err := git(ctx, root, "reflog", "show", "--format=%H%x00%gs", "-64", "HEAD")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(output, "\n") {
+		commit, subject, found := strings.Cut(line, "\x00")
+		if !found {
+			return false
+		}
+		if strings.HasPrefix(subject, "rebase (start): checkout ") {
+			return commit == onto
+		}
+		if !strings.HasPrefix(subject, "rebase (") {
+			return false
+		}
+	}
+	return false
 }
 
 func positiveDecimal(value string) bool {
@@ -593,6 +618,28 @@ func splitRepository(repository string) (owner, name string, err error) {
 		return "", "", fmt.Errorf("repository %q must be owner/name using safe path segments", repository)
 	}
 	return parts[0], parts[1], nil
+}
+
+// CanonicalRepositoryPath validates one owner/repository slug with the same
+// strict parser used by Create, then returns its canonical-clone path below
+// projectsRoot. Callers that perform work before Create (for example managed
+// hook refresh) must use this resolver rather than constructing a path from
+// user-supplied segments themselves.
+func CanonicalRepositoryPath(projectsRoot, repository string) (string, error) {
+	root, err := absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	_, _, canonical, err := canonicalRepositoryPath(root, repository)
+	return canonical, err
+}
+
+func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, canonical string, err error) {
+	owner, name, err = splitRepository(repository)
+	if err != nil {
+		return "", "", "", err
+	}
+	return owner, name, filepath.Join(projectsRoot, owner, name), nil
 }
 
 func synchronizeCanonical(ctx context.Context, canonical, repository, base string) error {

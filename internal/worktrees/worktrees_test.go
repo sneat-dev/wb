@@ -427,6 +427,52 @@ func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 	}
 }
 
+func TestGuardRejectsForgedRebaseStateWithRealGitObjects(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "forged-real-rebase"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "forged.txt"), []byte("feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "forged.txt")
+	gitTest(t, worktree, "commit", "-m", "feature used by forged rebase")
+	originalHead := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	onto := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	gitTest(t, worktree, "checkout", "--detach", onto)
+
+	gitDir := gitTestOutput(t, worktree, "rev-parse", "--absolute-git-dir")
+	state := filepath.Join(gitDir, "rebase-merge")
+	if err := os.MkdirAll(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"head-name":              "refs/heads/codex/forged-real-rebase\n",
+		"orig-head":              originalHead + "\n",
+		"onto":                   onto + "\n",
+		"git-rebase-todo.backup": "pick " + originalHead + " feature used by forged rebase\n",
+		"git-rebase-todo":        "pick " + originalHead + " feature used by forged rebase\n",
+		"end":                    "1\n",
+		"msgnum":                 "1\n",
+	} {
+		if err := os.WriteFile(filepath.Join(state, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// `git rebase --show-current-patch` also consults REBASE_HEAD. Supplying
+	// this real commit object makes Git's state-only check accept the forged
+	// directory, which is why Guard must additionally require reflog evidence.
+	gitTest(t, worktree, "update-ref", "REBASE_HEAD", originalHead)
+	if output, err := gitTestRun(worktree, "rebase", "--show-current-patch"); err != nil {
+		t.Fatalf("Git did not recognize fully forged rebase state: %v\n%s", err, output)
+	}
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("fully forged real-object rebase state guard error = %v", err)
+	}
+}
+
 type gitFixture struct {
 	projectsRoot string
 	canonical    string
