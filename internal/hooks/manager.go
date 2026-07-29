@@ -539,14 +539,34 @@ func validateManagedHooksDirectory(managed string) error {
 }
 
 func writeExecutable(path string, content []byte) error {
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, content, 0o755); err != nil {
+	directory := filepath.Dir(path)
+	if err := validateManagedHooksDirectory(directory); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temporary hook for %s: %w", path, err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o755); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("chmod temporary hook %s: %w", path, err)
+	}
+	if _, err := temporary.Write(content); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("write hook %s: %w", path, err)
 	}
-	if err := os.Chmod(temporary, 0o755); err != nil {
-		return fmt.Errorf("chmod hook %s: %w", path, err)
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary hook %s: %w", path, err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	// Recheck immediately before activation. CreateTemp owns an unpredictable
+	// name in this validated directory, so a planted <hook>.tmp symlink cannot
+	// redirect either the write or the final atomic replacement.
+	if err := validateManagedHooksDirectory(directory); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
 		return fmt.Errorf("activate hook %s: %w", path, err)
 	}
 	return nil

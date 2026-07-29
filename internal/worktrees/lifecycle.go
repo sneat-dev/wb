@@ -205,7 +205,7 @@ func listLayout(
 			return nil, nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), readErr)
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+			if !entry.IsDir() {
 				continue
 			}
 			candidate := filepath.Join(taskRoot, entry.Name())
@@ -220,6 +220,13 @@ func listLayout(
 				// tool directories as candidate repositories.
 				continue
 			}
+			// Metadata directories are not candidate owners or legacy repository
+			// names, but a valid registered worktree itself may intentionally
+			// start with a dot. Detect the Git boundary before ignoring ordinary
+			// dot directories.
+			if strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
 			if !validSafeSegment(entry.Name()) {
 				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, "invalid owner or legacy repository directory name"))
 				continue
@@ -230,24 +237,27 @@ func listLayout(
 				continue
 			}
 			for _, repositoryEntry := range nested {
-				if !repositoryEntry.IsDir() || strings.HasPrefix(repositoryEntry.Name(), ".") {
+				if !repositoryEntry.IsDir() {
 					continue
 				}
 				repositoryPath := filepath.Join(candidate, repositoryEntry.Name())
+				if isGitRoot(ctx, repositoryPath) {
+					result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, withGitHub, locked)
+					if inspectErr != nil {
+						diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, inspectErr.Error()))
+						continue
+					}
+					results = append(results, result)
+					continue
+				}
+				if strings.HasPrefix(repositoryEntry.Name(), ".") {
+					continue
+				}
 				if !validSafeSegment(repositoryEntry.Name()) {
 					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "invalid repository directory name"))
 					continue
 				}
-				if !isGitRoot(ctx, repositoryPath) {
-					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root"))
-					continue
-				}
-				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, withGitHub, locked)
-				if inspectErr != nil {
-					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, inspectErr.Error()))
-					continue
-				}
-				results = append(results, result)
+				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root"))
 			}
 		}
 	}

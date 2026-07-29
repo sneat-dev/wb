@@ -402,6 +402,42 @@ func TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation(t *te
 	}
 }
 
+func TestApplyDoesNotFollowPlantedPredictableHookTempSymlink(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	managed, err := managedPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "outside.txt")
+	mustWrite(t, external, "outside\n")
+	if err := os.Symlink(external, filepath.Join(managed, "pre-commit.tmp")); err != nil {
+		t.Fatal(err)
+	}
+	executable := testWBExecutable(t, "wb")
+	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := mustReadFile(t, external); content != "outside\n" {
+		t.Fatalf("planted external temp target was mutated: %q", content)
+	}
+	preCommit := filepath.Join(managed, "pre-commit")
+	info, err := os.Lstat(preCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		t.Fatalf("installed pre-commit hook is not a regular file: %v", info.Mode())
+	}
+	if report, checkErr := Check(repo, "", executable, ""); checkErr != nil || len(report.Findings) != 0 || len(result.Report.Findings) != 0 {
+		t.Fatalf("post-install hook report = %#v, result = %#v, error = %v", report, result.Report, checkErr)
+	}
+}
+
 func TestRefreshManagedShimsRepairsNonExecutableShim(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

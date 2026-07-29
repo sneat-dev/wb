@@ -9,6 +9,7 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/mod v0.38.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -43,7 +44,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zclconf/go-cty v1.16.3 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.25.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 )

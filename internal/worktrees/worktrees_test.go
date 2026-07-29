@@ -98,6 +98,35 @@ func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
 	}
 }
 
+func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	ownerPath := filepath.Join(fixture.home, "worktrees", "owner-swap", "acme")
+	movedOwner := ownerPath + "-moved"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "owner-swap",
+		beforeSecureWorktreeAdd: func() {
+			if err := os.Rename(ownerPath, movedOwner); err != nil {
+				t.Fatalf("move owner during secure-add regression: %v", err)
+			}
+			if err := os.Symlink(outside, ownerPath); err != nil {
+				t.Fatalf("swap owner for external symlink during secure-add regression: %v", err)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "owner path changed") {
+		t.Fatalf("owner-swap Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, "app")); !os.IsNotExist(statErr) {
+		t.Fatalf("external target received a worktree: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) || strings.Contains(registered, movedOwner) {
+		t.Fatalf("owner-swap left an external or moved worktree registration:\n%s", registered)
+	}
+}
+
 func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "legacy", "acme", "app")
@@ -312,6 +341,12 @@ func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(state, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("incomplete merge rebase state guard error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "git-rebase-todo"), []byte("pick deadbeef synthetic\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(state, "onto")); err != nil {
 		t.Fatal(err)

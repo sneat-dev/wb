@@ -109,6 +109,52 @@ func TestListIgnoresDotDirectoriesAtEveryManagedHierarchyLevel(t *testing.T) {
 	}
 }
 
+func TestListAndCleanupRegisteredHiddenWorktree(t *testing.T) {
+	fixture := newGitFixture(t)
+	hidden := filepath.Join(fixture.home, "worktrees", "hidden-worktree", "acme", ".hidden-repo")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/hidden-worktree", hidden, "main")
+	if err := os.WriteFile(filepath.Join(hidden, "hidden.txt"), []byte("hidden\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, hidden, "add", "hidden.txt")
+	gitTest(t, hidden, "commit", "-m", "hidden feature")
+	head := gitTestOutput(t, hidden, "rev-parse", "HEAD")
+	gitTest(t, hidden, "push", "-u", "origin", "codex/hidden-worktree")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/hidden-worktree", "-m", "merge hidden feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "hidden-worktree",
+		GitHub:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Results) != 1 || listed.Results[0].WorktreeDir != hidden || listed.Results[0].Repository != "acme/app" || len(listed.Diagnostics) != 0 {
+		t.Fatalf("hidden worktree inventory = %#v", listed)
+	}
+
+	cleaned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "hidden-worktree",
+		Apply:        true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaned.Results) != 1 || !cleaned.Results[0].Applied {
+		t.Fatalf("hidden worktree cleanup = %#v", cleaned)
+	}
+	if _, err := os.Stat(hidden); !os.IsNotExist(err) {
+		t.Fatalf("hidden worktree remains after cleanup: %v", err)
+	}
+}
+
 func TestCleanupLegacyLayoutWritesAuditToAuthoritativeDefaultHome(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "cleanup-legacy", "acme", "app")
