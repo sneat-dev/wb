@@ -19,7 +19,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var safeSegment = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var (
+	safeSegment           = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	safeRepositorySegment = regexp.MustCompile(`^[.A-Za-z0-9][A-Za-z0-9._-]*$`)
+)
 
 // CreateOptions controls one coordinated worktree creation operation.
 type CreateOptions struct {
@@ -32,6 +35,11 @@ type CreateOptions struct {
 	// race regression. It is deliberately unexported, so production callers
 	// cannot influence the creation flow.
 	beforeSecureWorktreeAdd func()
+	// afterStagedWorktreeAdd and beforeWorktreeRepair are test-only failure
+	// seams. They model Git reporting an error after checkout creation, so the
+	// rollback invariants are exercised without platform-specific hook tricks.
+	afterStagedWorktreeAdd func() error
+	beforeWorktreeRepair   func() error
 }
 
 // CreateResult identifies the isolated checkout prepared for one repository.
@@ -179,6 +187,8 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				plan.result.Base,
 				plan.branchExists,
 				normalized.beforeSecureWorktreeAdd,
+				normalized.afterStagedWorktreeAdd,
+				normalized.beforeWorktreeRepair,
 			); err != nil {
 				return results, err
 			}
@@ -269,7 +279,7 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		)
 	}
 	if branch == "" {
-		if !rebaseInProgress(gitDir) {
+		if !rebaseInProgress(ctx, root, gitDir) {
 			return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
 		}
 		result.Transient = true
@@ -310,21 +320,24 @@ func locateManagedWorktree(
 			// A regular repository path must agree with its canonical clone. A
 			// dot-prefixed registered directory is a supported hidden alias; its
 			// canonical identity remains authoritative.
-			if validSafeSegment(parts[2]) {
-				if repository != parts[2] {
-					return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path repository %q but canonical clone repository %q", root, parts[2], repository)
-				}
-			} else if !strings.HasPrefix(parts[2], ".") {
+			if !validRepositorySegment(parts[2]) {
 				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
+			}
+			// A dot-prefixed Git root may be a registered hidden alias for an
+			// ordinary canonical repository. When it is the canonical repository
+			// name itself (for example acme/.github), the identities naturally
+			// agree. Ordinary names must always match exactly.
+			if !strings.HasPrefix(parts[2], ".") && repository != parts[2] {
+				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path repository %q but canonical clone repository %q", root, parts[2], repository)
 			}
 			location.Task, location.Owner, location.Repository = parts[0], owner, repository
 			return location, nil
 		case 2:
-			if !validSafeSegment(parts[0]) || (!validSafeSegment(parts[1]) && !strings.HasPrefix(parts[1], ".")) {
+			if !validSafeSegment(parts[0]) || !validRepositorySegment(parts[1]) {
 				return managedWorktreeLocation{}, invalidManagedWorktreePath(root, layout.WorktreesRoot)
 			}
 			owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
-			if coordinatesErr != nil || (validSafeSegment(parts[1]) && repository != parts[1]) {
+			if coordinatesErr != nil || (!strings.HasPrefix(parts[1], ".") && repository != parts[1]) {
 				return managedWorktreeLocation{}, fmt.Errorf("legacy direct worktree %s has path repository %q but canonical clone identity %s/%s", root, parts[1], owner, repository)
 			}
 			location.Task, location.Owner, location.Repository = parts[0], owner, repository
@@ -354,10 +367,10 @@ func invalidManagedWorktreePath(root, worktreesRoot string) error {
 	return fmt.Errorf("linked worktree %s must be at %s/<task>/<owner>/<repository> or legacy %s/<task>/<repository>", root, worktreesRoot, worktreesRoot)
 }
 
-func rebaseInProgress(gitDir string) bool {
-	return coherentRebaseState(filepath.Join(gitDir, "rebase-merge"), []string{
+func rebaseInProgress(ctx context.Context, root, gitDir string) bool {
+	return coherentRebaseState(ctx, root, filepath.Join(gitDir, "rebase-merge"), []string{
 		"head-name", "orig-head", "onto", "git-rebase-todo", "git-rebase-todo.backup", "end", "msgnum",
-	}, true) || coherentRebaseState(filepath.Join(gitDir, "rebase-apply"), []string{
+	}, true) || coherentRebaseState(ctx, root, filepath.Join(gitDir, "rebase-apply"), []string{
 		"head-name", "orig-head", "onto", "next", "last", "rebasing", "original-commit", "patch",
 	}, false)
 }
@@ -365,7 +378,7 @@ func rebaseInProgress(gitDir string) bool {
 // coherentRebaseState accepts only the non-symlinked state Git leaves while a
 // rebase is actually paused. A detached HEAD plus an empty or fabricated
 // rebase-* directory is not a safe exception to the worktree policy.
-func coherentRebaseState(directory string, required []string, merge bool) bool {
+func coherentRebaseState(ctx context.Context, root, directory string, required []string, merge bool) bool {
 	info, err := os.Lstat(directory)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return false
@@ -387,21 +400,23 @@ func coherentRebaseState(directory string, required []string, merge bool) bool {
 		values[name] = strings.TrimSpace(string(content))
 	}
 	if !strings.HasPrefix(values["head-name"], "refs/heads/") ||
-		!isGitObjectID(values["orig-head"]) || !isGitObjectID(values["onto"]) {
+		!isGitObjectID(values["orig-head"]) || !isGitObjectID(values["onto"]) ||
+		!gitCommitExists(ctx, root, values["orig-head"]) || !gitCommitExists(ctx, root, values["onto"]) ||
+		!gitReferenceExists(ctx, root, values["head-name"]) {
 		return false
 	}
 	if merge {
-		return coherentMergeRebaseTodo(directory, values["git-rebase-todo.backup"], values["msgnum"], values["end"])
+		return coherentMergeRebaseTodo(ctx, root, directory, values["git-rebase-todo.backup"], values["msgnum"], values["end"]) && gitRecognizesRebase(ctx, root)
 	}
-	if !isGitObjectID(values["original-commit"]) || !positiveDecimal(values["next"]) || !positiveDecimal(values["last"]) || !decimalAtMost(values["next"], values["last"]) {
+	if !isGitObjectID(values["original-commit"]) || !gitCommitExists(ctx, root, values["original-commit"]) || !positiveDecimal(values["next"]) || !positiveDecimal(values["last"]) || !decimalAtMost(values["next"], values["last"]) {
 		return false
 	}
 	patch, err := os.ReadFile(filepath.Join(directory, "patch"))
-	return err == nil && strings.TrimSpace(string(patch)) != ""
+	return err == nil && strings.TrimSpace(string(patch)) != "" && gitRecognizesRebase(ctx, root)
 }
 
-func coherentMergeRebaseTodo(directory, backup, messageNumber, end string) bool {
-	if !positiveDecimal(messageNumber) || !positiveDecimal(end) || !decimalAtMost(messageNumber, end) || !rebaseTodoHasAction(backup) {
+func coherentMergeRebaseTodo(ctx context.Context, root, directory, backup, messageNumber, end string) bool {
+	if !positiveDecimal(messageNumber) || !positiveDecimal(end) || !decimalAtMost(messageNumber, end) || !rebaseTodoHasResolvableCommit(ctx, root, backup) {
 		return false
 	}
 	todo, err := os.ReadFile(filepath.Join(directory, "git-rebase-todo"))
@@ -411,21 +426,30 @@ func coherentMergeRebaseTodo(directory, backup, messageNumber, end string) bool 
 	// Git leaves the active todo file empty after it has selected the final
 	// commit, but it must still exist for `git rebase --continue` to resume the
 	// state. Before that final step it must name at least one actionable entry.
-	return rebaseTodoHasAction(string(todo)) || strings.TrimSpace(messageNumber) == strings.TrimSpace(end)
+	return rebaseTodoHasResolvableCommit(ctx, root, string(todo)) || strings.TrimSpace(messageNumber) == strings.TrimSpace(end)
 }
 
-func rebaseTodoHasAction(todo string) bool {
+func rebaseTodoHasResolvableCommit(ctx context.Context, root, todo string) bool {
+	foundCommit := false
 	for _, line := range strings.Split(todo, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
 		}
 		switch fields[0] {
-		case "pick", "reword", "edit", "squash", "fixup", "exec", "break", "drop", "label", "reset", "merge", "update-ref":
-			return true
+		case "pick", "reword", "edit", "squash", "fixup", "drop":
+			if len(fields) < 2 || !isGitRevisionID(fields[1]) || !gitCommitExists(ctx, root, fields[1]) {
+				return false
+			}
+			foundCommit = true
+		case "exec", "break", "label", "reset", "merge", "update-ref":
+			// These are valid rebase commands but do not necessarily reference
+			// an object. A coherent todo still has at least one real commit.
+		default:
+			return false
 		}
 	}
-	return false
+	return foundCommit
 }
 
 func isGitObjectID(value string) bool {
@@ -438,6 +462,33 @@ func isGitObjectID(value string) bool {
 		}
 	}
 	return true
+}
+
+func isGitRevisionID(value string) bool {
+	if len(value) < 4 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func gitCommitExists(ctx context.Context, root, revision string) bool {
+	_, err := git(ctx, root, "rev-parse", "--verify", "--quiet", revision+"^{commit}")
+	return err == nil
+}
+
+func gitReferenceExists(ctx context.Context, root, reference string) bool {
+	_, err := git(ctx, root, "show-ref", "--verify", "--quiet", reference)
+	return err == nil
+}
+
+func gitRecognizesRebase(ctx context.Context, root string) bool {
+	_, err := git(ctx, root, "rebase", "--show-current-patch")
+	return err == nil
 }
 
 func positiveDecimal(value string) bool {
@@ -537,7 +588,7 @@ func absoluteProjectsRoot(root string) (string, error) {
 
 func splitRepository(repository string) (owner, name string, err error) {
 	parts := strings.Split(strings.TrimSpace(repository), "/")
-	if len(parts) != 2 || !safeSegment.MatchString(parts[0]) || !safeSegment.MatchString(parts[1]) ||
+	if len(parts) != 2 || !safeSegment.MatchString(parts[0]) || !safeRepositorySegment.MatchString(parts[1]) ||
 		parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." {
 		return "", "", fmt.Errorf("repository %q must be owner/name using safe path segments", repository)
 	}
@@ -828,7 +879,17 @@ func addWorktreeAtSecureDestination(
 	canonical, operationRoot, owner, repository, branch, base string,
 	branchExists bool,
 	beforeAdd func(),
+	afterStagedAdd func() error,
+	beforeRepair func() error,
 ) error {
+	expectedBranchTip := ""
+	if !branchExists {
+		var err error
+		expectedBranchTip, err = git(ctx, canonical, "rev-parse", "origin/"+base)
+		if err != nil {
+			return fmt.Errorf("resolve feature branch base origin/%s: %w", base, err)
+		}
+	}
 	operationFD, err := openNoFollowDirectory(operationRoot)
 	if err != nil {
 		return err
@@ -858,6 +919,12 @@ func addWorktreeAtSecureDestination(
 	}
 	defer func() { _ = unix.Close(stageFD) }()
 	stageTarget := filepath.Join(stageRoot, "checkout")
+	rollback := func(creationErr error, finalPath string) error {
+		if cleanupErr := rollbackCreatedWorktree(ctx, canonical, stageTarget, finalPath, branch, expectedBranchTip); cleanupErr != nil {
+			return fmt.Errorf("%w; rollback incomplete worktree creation: %v", creationErr, cleanupErr)
+		}
+		return creationErr
+	}
 	if beforeAdd != nil {
 		beforeAdd()
 	}
@@ -868,33 +935,38 @@ func addWorktreeAtSecureDestination(
 		args = append(args, "-b", branch, stageTarget, "origin/"+base)
 	}
 	if _, err := git(ctx, canonical, args...); err != nil {
-		return err
+		return rollback(fmt.Errorf("create staged worktree: %w", err), "")
+	}
+	if afterStagedAdd != nil {
+		if err := afterStagedAdd(); err != nil {
+			return rollback(fmt.Errorf("create staged worktree: %w", err), "")
+		}
 	}
 	ownerPath := filepath.Join(operationRoot, owner)
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
-		if cleanupErr := removeStagedWorktree(ctx, canonical, stageTarget); cleanupErr != nil {
-			return fmt.Errorf("secure worktree owner path changed during creation; cleanup failed: %w", cleanupErr)
-		}
-		return fmt.Errorf("secure worktree owner path changed during creation; refusing redirected checkout")
+		return rollback(fmt.Errorf("secure worktree owner path changed during creation; refusing redirected checkout"), "")
 	}
 	if err := unix.Renameat(stageFD, "checkout", ownerFD, repository); err != nil {
-		if cleanupErr := removeStagedWorktree(ctx, canonical, stageTarget); cleanupErr != nil {
-			return fmt.Errorf("publish secure worktree: %v; cleanup failed: %w", err, cleanupErr)
-		}
-		return fmt.Errorf("publish secure worktree: %w", err)
+		return rollback(fmt.Errorf("publish secure worktree: %w", err), "")
 	}
 	finalPath := filepath.Join(ownerPath, repository)
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		if rollbackErr := unix.Renameat(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
 			return fmt.Errorf("secure worktree owner path changed after publish; rollback failed: %w", rollbackErr)
 		}
-		if cleanupErr := removeStagedWorktree(ctx, canonical, stageTarget); cleanupErr != nil {
-			return fmt.Errorf("secure worktree owner path changed after publish; cleanup failed: %w", cleanupErr)
-		}
-		return fmt.Errorf("secure worktree owner path changed after publish; refusing redirected checkout")
+		return rollback(fmt.Errorf("secure worktree owner path changed after publish; refusing redirected checkout"), "")
 	}
-	if _, err := git(ctx, canonical, "worktree", "repair", finalPath); err != nil {
-		return fmt.Errorf("repair published worktree metadata: %w", err)
+	var repairErr error
+	if beforeRepair != nil {
+		repairErr = beforeRepair()
+	} else {
+		_, repairErr = git(ctx, canonical, "worktree", "repair", finalPath)
+	}
+	if repairErr != nil {
+		if rollbackErr := unix.Renameat(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
+			return fmt.Errorf("repair published worktree metadata: %v; roll back published checkout: %w", repairErr, rollbackErr)
+		}
+		return rollback(fmt.Errorf("repair published worktree metadata: %w", repairErr), finalPath)
 	}
 	return nil
 }
@@ -941,11 +1013,95 @@ func directoryStillMatches(path string, directory *os.File) bool {
 	return err == nil && os.SameFile(current, held)
 }
 
-func removeStagedWorktree(ctx context.Context, canonical, target string) error {
-	if _, err := git(ctx, canonical, "worktree", "remove", "--force", target); err == nil {
+// rollbackCreatedWorktree makes every creation failure converge on the same
+// state: no staging checkout, no Git worktree registration, and no branch
+// created by this attempt. finalPath is supplied only after a failed metadata
+// repair; the checkout has already been moved back through held descriptors,
+// so it is used solely to prove Git did not retain a stale registration.
+func rollbackCreatedWorktree(ctx context.Context, canonical, stageTarget, finalPath, branch, expectedBranchTip string) error {
+	registered, err := registeredWorktreePaths(ctx, canonical)
+	if err != nil {
+		return err
+	}
+	stageTarget = filepath.Clean(stageTarget)
+	if registered[stageTarget] {
+		// The explicit removal handles normal partial checkouts. If Git itself
+		// reported a failed add after writing only part of its state, the safe
+		// filesystem cleanup and prune below finish the same rollback.
+		_, _ = git(ctx, canonical, "worktree", "remove", "--force", stageTarget)
+	}
+	if err := removeStagingCheckout(stageTarget); err != nil {
+		return err
+	}
+	if _, err := git(ctx, canonical, "worktree", "prune", "--expire", "now"); err != nil {
+		return fmt.Errorf("prune incomplete worktree registration: %w", err)
+	}
+	registered, err = registeredWorktreePaths(ctx, canonical)
+	if err != nil {
+		return err
+	}
+	for _, path := range []string{stageTarget, finalPath} {
+		if path != "" && registered[filepath.Clean(path)] {
+			return fmt.Errorf("incomplete worktree remains registered at %s", path)
+		}
+	}
+	if expectedBranchTip == "" {
 		return nil
-	} else if _, pruneErr := git(ctx, canonical, "worktree", "prune", "--expire", "now"); pruneErr != nil {
-		return fmt.Errorf("remove staged worktree: %v; prune registration: %w", err, pruneErr)
+	}
+	if err := deleteCreatedBranch(ctx, canonical, branch, expectedBranchTip); err != nil {
+		return err
+	}
+	return nil
+}
+
+func registeredWorktreePaths(ctx context.Context, canonical string) (map[string]bool, error) {
+	output, err := git(ctx, canonical, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, fmt.Errorf("list worktree registrations: %w", err)
+	}
+	paths := map[string]bool{}
+	for _, line := range strings.Split(output, "\n") {
+		if path, found := strings.CutPrefix(line, "worktree "); found {
+			paths[filepath.Clean(path)] = true
+		}
+	}
+	return paths, nil
+}
+
+func removeStagingCheckout(target string) error {
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect incomplete staging checkout %s: %w", target, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(target); err != nil {
+			return fmt.Errorf("remove incomplete staging symlink %s: %w", target, err)
+		}
+		return nil
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return fmt.Errorf("remove incomplete staging checkout %s: %w", target, err)
+	}
+	return nil
+}
+
+func deleteCreatedBranch(ctx context.Context, canonical, branch, expectedTip string) error {
+	exists, err := localBranchExists(ctx, canonical, branch)
+	if err != nil || !exists {
+		return err
+	}
+	tip, err := git(ctx, canonical, "rev-parse", "refs/heads/"+branch)
+	if err != nil {
+		return fmt.Errorf("resolve incomplete branch %q: %w", branch, err)
+	}
+	if tip != expectedTip {
+		return fmt.Errorf("refusing to delete incomplete branch %q: it moved from expected base %s to %s", branch, expectedTip, tip)
+	}
+	if _, err := git(ctx, canonical, "update-ref", "-d", "refs/heads/"+branch, tip); err != nil {
+		return fmt.Errorf("delete incomplete branch %q: %w", branch, err)
 	}
 	return nil
 }

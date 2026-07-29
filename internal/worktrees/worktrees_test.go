@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,6 +125,70 @@ func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
 	if strings.Contains(registered, outside) || strings.Contains(registered, movedOwner) {
 		t.Fatalf("owner-swap left an external or moved worktree registration:\n%s", registered)
+	}
+}
+
+func TestCreateRollsBackPartialStagedWorktreeFailure(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "partial-add",
+		afterStagedWorktreeAdd: func() error {
+			// Model a post-checkout hook or other Git-side failure reported after
+			// Git has created the linked checkout and branch.
+			return errors.New("simulated post-checkout failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "simulated post-checkout failure") {
+		t.Fatalf("partial staged Create error = %v", err)
+	}
+	assertFailedCreateRolledBack(t, fixture, "partial-add")
+}
+
+func TestCreateRollsBackWhenPublishedWorktreeRepairFails(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "repair-failure",
+		beforeWorktreeRepair: func() error {
+			return errors.New("simulated worktree repair failure")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "simulated worktree repair failure") {
+		t.Fatalf("repair-failure Create error = %v", err)
+	}
+	assertFailedCreateRolledBack(t, fixture, "repair-failure")
+}
+
+func assertFailedCreateRolledBack(t *testing.T, fixture *gitFixture, operation string) {
+	t.Helper()
+	worktree := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
+	if _, err := os.Lstat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("failed creation left worktree %s: %v", worktree, err)
+	}
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	entries, err := os.ReadDir(operationRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+			t.Fatalf("failed creation leaked staging directory %s", entry.Name())
+		}
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, operationRoot) {
+		t.Fatalf("failed creation left worktree registration:\n%s", registered)
+	}
+	if exists, err := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); err != nil || exists {
+		t.Fatalf("failed creation left feature branch: exists=%t err=%v", exists, err)
+	}
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: operation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Results) != 0 || len(listed.Diagnostics) != 0 {
+		t.Fatalf("failed creation remained inventory-visible: %#v", listed)
 	}
 }
 
@@ -348,6 +413,9 @@ func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "git-rebase-todo"), []byte("pick deadbeef synthetic\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("complete fabricated merge rebase state guard error = %v", err)
+	}
 	if err := os.Remove(filepath.Join(state, "onto")); err != nil {
 		t.Fatal(err)
 	}
@@ -370,6 +438,10 @@ type gitFixture struct {
 }
 
 func newGitFixture(t *testing.T) *gitFixture {
+	return newGitFixtureForRepository(t, "app")
+}
+
+func newGitFixtureForRepository(t *testing.T, repository string) *gitFixture {
 	t.Helper()
 	root := t.TempDir()
 	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
@@ -381,7 +453,7 @@ func newGitFixture(t *testing.T) *gitFixture {
 	home := filepath.Join(root, ".wb")
 	t.Setenv(wbhome.EnvOverride, home)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
-	return newGitFixtureAt(t, root, home)
+	return newGitFixtureAtRepository(t, root, home, repository)
 }
 
 func newDefaultHomeGitFixture(t *testing.T) *gitFixture {
@@ -398,11 +470,15 @@ func newDefaultHomeGitFixture(t *testing.T) *gitFixture {
 }
 
 func newGitFixtureAt(t *testing.T, root, home string) *gitFixture {
+	return newGitFixtureAtRepository(t, root, home, "app")
+}
+
+func newGitFixtureAtRepository(t *testing.T, root, home, repository string) *gitFixture {
 	t.Helper()
 	remote := filepath.Join(root, "remote.git")
 	gitTest(t, root, "init", "--bare", "--initial-branch=main", remote)
 	projectsRoot := filepath.Join(root, "projects")
-	canonical := filepath.Join(projectsRoot, "acme", "app")
+	canonical := filepath.Join(projectsRoot, "acme", repository)
 	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
 		t.Fatal(err)
 	}

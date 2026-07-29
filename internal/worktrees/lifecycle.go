@@ -459,6 +459,10 @@ func validSafeSegment(value string) bool {
 	return safeSegment.MatchString(value) && value != "." && value != ".."
 }
 
+func validRepositorySegment(value string) bool {
+	return safeRepositorySegment.MatchString(value) && value != "." && value != ".."
+}
+
 func inspectLifecycleWorktree(
 	ctx context.Context,
 	projectsRoot string,

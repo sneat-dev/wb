@@ -402,6 +402,27 @@ func TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation(t *te
 	}
 }
 
+func TestApplyRefusesSymlinkedGitCommonDirectoryWithoutExternalMutation(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	gitDirectory := filepath.Join(repo, ".git")
+	external := filepath.Join(t.TempDir(), "external-git")
+	if err := os.Rename(gitDirectory, external); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, gitDirectory); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: testWBExecutable(t, "wb")})
+	if err == nil || !strings.Contains(err.Error(), "symlinked Git common directory") {
+		t.Fatalf("symlinked Git common directory install error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, "wb-hooks")); !os.IsNotExist(statErr) {
+		t.Fatalf("external Git directory received managed hooks: %v", statErr)
+	}
+}
+
 func TestApplyDoesNotFollowPlantedPredictableHookTempSymlink(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

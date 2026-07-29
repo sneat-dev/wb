@@ -44,7 +44,11 @@ func gitCommonDir(repoRoot string) (string, error) {
 	if !filepath.IsAbs(dir) {
 		dir = filepath.Join(repoRoot, dir)
 	}
-	return resolveGitPath(dir), nil
+	// Preserve the path Git reported. Callers that are about to create managed
+	// files must inspect this pathname before resolving it: resolving first
+	// would hide a canonical clone whose .git directory is a symlink and could
+	// make WB write hook files outside the repository.
+	return filepath.Clean(dir), nil
 }
 
 func currentHooksPath(repoRoot string) (string, error) {

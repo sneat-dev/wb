@@ -155,6 +155,61 @@ func TestListAndCleanupRegisteredHiddenWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
+	fixture := newGitFixtureForRepository(t, ".github")
+	created, err := Create(context.Background(), []string{"acme/.github"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "dot-repository",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 || created[0].WorktreeDir != filepath.Join(fixture.home, "worktrees", "dot-repository", "acme", ".github") {
+		t.Fatalf("dot-prefixed repository creation = %#v", created)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "feature.txt"), []byte("dot repository\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "feature.txt")
+	gitTest(t, worktree, "commit", "-m", "dot repository feature")
+	head := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	gitTest(t, worktree, "push", "-u", "origin", "codex/dot-repository")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/dot-repository", "-m", "merge dot repository feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "dot-repository",
+		GitHub:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Results) != 1 || listed.Results[0].Repository != "acme/.github" || listed.Results[0].WorktreeDir != worktree || len(listed.Diagnostics) != 0 {
+		t.Fatalf("dot-prefixed repository inventory = %#v", listed)
+	}
+
+	cleaned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "dot-repository",
+		Apply:        true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaned.Results) != 1 || !cleaned.Results[0].Applied {
+		t.Fatalf("dot-prefixed repository cleanup = %#v", cleaned)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("dot-prefixed worktree remains after cleanup: %v", err)
+	}
+}
+
 func TestCleanupLegacyLayoutWritesAuditToAuthoritativeDefaultHome(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "cleanup-legacy", "acme", "app")
