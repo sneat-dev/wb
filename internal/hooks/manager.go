@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,6 +63,16 @@ func managedPath(repoRoot string) (string, error) {
 	common, err := gitCommonDir(repoRoot)
 	if err != nil {
 		return "", err
+	}
+	info, err := os.Lstat(common)
+	if err != nil {
+		return "", fmt.Errorf("inspect Git common directory %s: %w", common, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing symlinked Git common directory %s", common)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("git common directory is not a directory: %s", common)
 	}
 	return filepath.Join(common, "wb-hooks"), nil
 }
@@ -155,14 +166,12 @@ func absoluteProjectsRoot(projectsRoot string) (string, error) {
 // Check validates config, core.hooksPath, generated shims, and executability
 // without changing repository state.
 func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport, error) {
-	// Apply stores the resolved executable target in a shim. Resolve it here
-	// too when possible so `hooks check` compares the same dispatcher even if
-	// the caller reached the current binary through a symlinked path such as
-	// macOS's /var temporary directory.
-	if absolute, absErr := filepath.Abs(strings.TrimSpace(wbExecutable)); absErr == nil {
-		if resolved, resolveErr := filepath.EvalSymlinks(filepath.Clean(absolute)); resolveErr == nil {
-			wbExecutable = filepath.Clean(resolved)
-		}
+	// The shim intentionally retains a stable launcher (for example
+	// /opt/homebrew/bin/wb) instead of the version-specific target of that
+	// launcher symlink. Normalise only its spelling here so `hooks check`
+	// compares the same durable entry point that Apply recorded.
+	if launcher, normalizeErr := normalizedWBLauncher(wbExecutable); normalizeErr == nil {
+		wbExecutable = launcher
 	}
 	policy, err := LoadPolicy(repoPath, configPath)
 	if err != nil {
@@ -192,6 +201,12 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 	}
 	if policy.Metrics.Enabled {
 		report.MetricsPath = policy.Metrics.Path
+	}
+	if err := validateManagedHooksDirectory(managed); err != nil {
+		report.Findings = append(report.Findings, Finding{
+			Code: "managed-hooks-path", Message: err.Error(), Path: managed,
+		})
+		return report, nil
 	}
 	current, err := currentHooksPath(policy.RepoRoot)
 	if err != nil {
@@ -288,8 +303,8 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 			return ApplyResult{}, fmt.Errorf("active hooks already exist in Git's default hook directory (%s); migrate them into WB templates, then run `wb hooks repair --force`", strings.Join(active, ", "))
 		}
 	}
-	if err := os.MkdirAll(managed, 0o755); err != nil {
-		return ApplyResult{}, fmt.Errorf("create managed hooks directory: %w", err)
+	if err := ensureManagedHooksDirectory(managed); err != nil {
+		return ApplyResult{}, err
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -297,6 +312,9 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{}
 	names := expectedHookNames(policy)
 	for _, name := range names {
+		if err := ensureManagedHooksDirectory(managed); err != nil {
+			return ApplyResult{}, err
+		}
 		path := filepath.Join(managed, name)
 		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
 		content := shimContent(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
@@ -326,6 +344,9 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		result.Actions = append(result.Actions, "installed "+name)
 	}
 	if options.Repair {
+		if err := ensureManagedHooksDirectory(managed); err != nil {
+			return ApplyResult{}, err
+		}
 		if err := removeStaleManagedHooks(managed, names, &result.Actions); err != nil {
 			return ApplyResult{}, err
 		}
@@ -336,28 +357,33 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		}
 		result.Actions = append(result.Actions, "configured core.hooksPath="+managed)
 	}
+	if err := ensureManagedHooksDirectory(managed); err != nil {
+		return ApplyResult{}, err
+	}
 	report, err := Check(policy.RepoRoot, options.ConfigPath, options.WBExecutable, options.ProjectsRoot)
 	if err != nil {
 		return ApplyResult{}, err
+	}
+	if len(report.Findings) > 0 {
+		return ApplyResult{}, fmt.Errorf("managed hooks remain unhealthy after installation: %d finding(s); run `wb hooks check` for details", len(report.Findings))
 	}
 	result.Report = report
 	return result, nil
 }
 
 func durableWBExecutable(executable string) (string, error) {
-	provided := strings.TrimSpace(executable)
-	if provided == "" {
-		return "", fmt.Errorf("refusing to install hooks without a WB executable")
-	}
-	absolute, err := filepath.Abs(provided)
+	launcher, err := normalizedWBLauncher(executable)
 	if err != nil {
-		return "", fmt.Errorf("resolve WB executable %s: %w", executable, err)
+		return "", err
 	}
-	absolute = filepath.Clean(absolute)
-	if isTransientGoRunPath(absolute) {
+	if isTransientGoRunPath(launcher) {
 		return "", transientExecutableError(executable)
 	}
-	resolved, err := filepath.EvalSymlinks(absolute)
+	// Validate the final target, but retain the normalised launcher path in
+	// generated shims. Package-manager launchers intentionally retarget on
+	// upgrade; persisting the resolved Caskroom path would strand hooks on the
+	// old release until a manual repair.
+	resolved, err := filepath.EvalSymlinks(launcher)
 	if err != nil {
 		return "", fmt.Errorf("resolve WB executable %s: %w", executable, err)
 	}
@@ -375,7 +401,19 @@ func durableWBExecutable(executable string) (string, error) {
 	if info.Mode().Perm()&0o111 == 0 {
 		return "", fmt.Errorf("WB executable %s is not executable", executable)
 	}
-	return resolved, nil
+	return launcher, nil
+}
+
+func normalizedWBLauncher(executable string) (string, error) {
+	provided := strings.TrimSpace(executable)
+	if provided == "" {
+		return "", fmt.Errorf("refusing to install hooks without a WB executable")
+	}
+	absolute, err := filepath.Abs(provided)
+	if err != nil {
+		return "", fmt.Errorf("resolve WB executable %s: %w", executable, err)
+	}
+	return filepath.Clean(absolute), nil
 }
 
 func transientExecutableError(executable string) error {
@@ -426,6 +464,9 @@ func RefreshManagedShims(repoPath, configPath, wbExecutable, projectsRoot string
 	if current != managed {
 		return false, nil
 	}
+	if err := validateManagedHooksDirectory(managed); err != nil {
+		return false, err
+	}
 	wbHome, wbHomeAllowsLegacy, err := resolvedWBHome(projectsRoot)
 	if err != nil {
 		return false, err
@@ -467,6 +508,34 @@ func resolvedWBHome(projectsRoot string) (string, bool, error) {
 		return "", false, err
 	}
 	return resolution.Write.Home, !resolution.Explicit, nil
+}
+
+// ensureManagedHooksDirectory creates only the final WB-owned directory and
+// refuses a symlink in its place. os.MkdirAll would silently follow
+// .git/wb-hooks -> /somewhere/else and make an install mutate that external
+// target while reporting a successful local hook setup.
+func ensureManagedHooksDirectory(managed string) error {
+	_, err := os.Lstat(managed)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkdirErr := os.Mkdir(managed, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return fmt.Errorf("create managed hooks directory %s: %w", managed, mkdirErr)
+		}
+	}
+	return validateManagedHooksDirectory(managed)
+}
+
+func validateManagedHooksDirectory(managed string) error {
+	info, err := os.Lstat(managed)
+	if err != nil {
+		return fmt.Errorf("inspect managed hooks directory %s: %w", managed, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing symlinked managed hooks directory %s", managed)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("managed hooks path is not a directory: %s", managed)
+	}
+	return nil
 }
 
 func writeExecutable(path string, content []byte) error {

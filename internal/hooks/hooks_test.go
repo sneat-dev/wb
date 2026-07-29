@@ -309,6 +309,99 @@ func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
 	}
 }
 
+func TestApplyRetainsStableLauncherAcrossRetarget(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	root := t.TempDir()
+	launcherDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(launcherDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "launcher.log")
+	t.Setenv("WB_TEST_LOG", logPath)
+	releaseV1 := filepath.Join(root, "Caskroom", "wb", "1.0.0", "wb")
+	releaseV2 := filepath.Join(root, "Caskroom", "wb", "1.1.0", "wb")
+	for version, release := range map[string]string{"v1": releaseV1, "v2": releaseV2} {
+		if err := os.MkdirAll(filepath.Dir(release), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		mustWriteExecutable(t, release, "#!/bin/sh\nprintf '%s\\n' '"+version+"' >> \"$WB_TEST_LOG\"\n")
+	}
+	launcher := filepath.Join(launcherDir, "wb")
+	if err := os.Symlink(releaseV1, launcher); err != nil {
+		t.Fatal(err)
+	}
+	absLauncher, err := filepath.Abs(launcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	absLauncher = filepath.Clean(absLauncher)
+
+	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(result.Report.ManagedPath, "pre-commit")
+	shim, err := os.ReadFile(preCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shim), shellQuote(absLauncher)+" hooks run 'pre-commit'") || strings.Contains(string(shim), releaseV1) {
+		t.Fatalf("shim did not retain stable launcher:\n%s", shim)
+	}
+
+	if err := os.Remove(launcher); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(releaseV2, launcher); err != nil {
+		t.Fatal(err)
+	}
+	if report, checkErr := Check(repo, "", launcher, ""); checkErr != nil || len(report.Findings) != 0 {
+		t.Fatalf("retargeted launcher check = %#v, %v", report, checkErr)
+	}
+	command := exec.Command(preCommit)
+	command.Dir = repo
+	command.Env = os.Environ()
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("run retargeted managed hook: %v\n%s", runErr, output)
+	}
+	if got := strings.TrimSpace(mustReadFile(t, logPath)); got != "v2" {
+		t.Fatalf("retargeted hook launcher = %q, want v2", got)
+	}
+}
+
+func TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	managed, err := managedPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "keep.txt")
+	mustWrite(t, sentinel, "outside\n")
+	if err := os.Symlink(external, managed); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Apply(ApplyOptions{RepoPath: repo, WBExecutable: testWBExecutable(t, "wb")})
+	if err == nil || !strings.Contains(err.Error(), "symlinked managed hooks directory") {
+		t.Fatalf("symlinked managed directory install error = %v", err)
+	}
+	if report, checkErr := Check(repo, "", testWBExecutable(t, "check-wb"), ""); checkErr != nil || !hasFinding(report.Findings, "managed-hooks-path") {
+		t.Fatalf("symlinked managed directory check = %#v, %v", report, checkErr)
+	}
+	entries, err := os.ReadDir(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "keep.txt" {
+		t.Fatalf("external target was mutated: %v", entries)
+	}
+	if content := mustReadFile(t, sentinel); content != "outside\n" {
+		t.Fatalf("external sentinel changed: %q", content)
+	}
+}
+
 func TestRefreshManagedShimsRepairsNonExecutableShim(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -943,6 +1036,15 @@ func mustWrite(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func mustReadFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(content)
 }
 
 func mustMkdirAll(t *testing.T, path string) {
