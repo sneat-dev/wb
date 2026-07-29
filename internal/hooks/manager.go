@@ -65,6 +65,13 @@ type ApplyOptions struct {
 	// afterManagedHookRead is a test-only seam between reading one hook and
 	// its later replace, backup, or stale-hook removal.
 	afterManagedHookRead func(name string)
+	// afterManagedHookAuthorization is a test-only seam after the final hook
+	// identity check and immediately before an atomic descriptor-relative
+	// mutation. It proves a late replacement is never clobbered.
+	afterManagedHookAuthorization func(name string)
+	// beforeHooksPathConfiguration is a test-only seam after the final
+	// repository validation and before the descriptor-anchored Git child runs.
+	beforeHooksPathConfiguration func()
 }
 
 type ApplyResult struct {
@@ -338,6 +345,7 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		}
 		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
 		content := shimContent(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
+		needsWrite := true
 		existing, readErr := readManagedHook(managedDirectory.directory, name)
 		expectedIdentity := absentManagedHookIdentity()
 		if readErr == nil {
@@ -350,7 +358,7 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 					return ApplyResult{}, fmt.Errorf("refusing to overwrite unmanaged hook %s; run repair with --force to back it up", filepath.Join(managed, name))
 				}
 				backupName := name + ".wb-backup-" + options.Now().UTC().Format("20060102T150405Z")
-				if err := backupManagedHook(managedDirectory, name, backupName, existing.identity); err != nil {
+				if err := backupManagedHook(managedDirectory, name, backupName, existing.identity, options.afterManagedHookAuthorization); err != nil {
 					return ApplyResult{}, err
 				}
 				expectedIdentity = absentManagedHookIdentity()
@@ -361,25 +369,39 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 					return ApplyResult{}, fmt.Errorf("update managed hook %s: %w", filepath.Join(managed, name), err)
 				}
 				content = updated
+				if updated == string(existing.content) && existing.mode.Perm()&0o111 != 0 {
+					needsWrite = false
+				}
 			}
 		} else if !os.IsNotExist(readErr) {
 			return ApplyResult{}, fmt.Errorf("read managed hook %s: %w", filepath.Join(managed, name), readErr)
 		}
-		if err := writeExecutableAt(managedDirectory, name, []byte(content), expectedIdentity); err != nil {
-			return ApplyResult{}, err
+		if needsWrite {
+			if err := writeExecutableAt(managedDirectory, name, []byte(content), expectedIdentity, options.afterManagedHookAuthorization); err != nil {
+				return ApplyResult{}, err
+			}
+			result.Actions = append(result.Actions, "installed "+name)
 		}
-		result.Actions = append(result.Actions, "installed "+name)
 	}
 	if options.Repair {
 		if err := managedDirectory.validate(); err != nil {
 			return ApplyResult{}, err
 		}
-		if err := removeStaleManagedHooksAt(managedDirectory, names, &result.Actions, options.afterManagedHookRead); err != nil {
+		if err := removeStaleManagedHooksAt(managedDirectory, names, &result.Actions, options.afterManagedHookRead, options.afterManagedHookAuthorization); err != nil {
 			return ApplyResult{}, err
 		}
 	}
 	if current != managed {
-		if err := setHooksPath(policy.RepoRoot, managed); err != nil {
+		if err := managedDirectory.validate(); err != nil {
+			return ApplyResult{}, err
+		}
+		if options.beforeHooksPathConfiguration != nil {
+			options.beforeHooksPathConfiguration()
+		}
+		if err := managedDirectory.validate(); err != nil {
+			return ApplyResult{}, err
+		}
+		if err := setHooksPathAt(managedDirectory.repo, managed); err != nil {
 			return ApplyResult{}, err
 		}
 		result.Actions = append(result.Actions, "configured core.hooksPath="+managed)
@@ -571,6 +593,7 @@ type managedHookIdentity struct {
 type managedHookSnapshot struct {
 	content  []byte
 	identity managedHookIdentity
+	mode     os.FileMode
 }
 
 func absentManagedHookIdentity() managedHookIdentity { return managedHookIdentity{} }
@@ -751,7 +774,7 @@ func writeExecutable(path string, content []byte) error {
 	if err != nil {
 		return err
 	}
-	return writeExecutableAt(directory, filepath.Base(path), content, identity)
+	return writeExecutableAt(directory, filepath.Base(path), content, identity, nil)
 }
 
 func managedHookIdentityAt(directory *os.File, name string) (managedHookIdentity, error) {
@@ -788,6 +811,75 @@ func verifyManagedHookIdentity(managed managedHooksDirectory, name string, expec
 	return nil
 }
 
+// managedHookQuarantineName generates an ignored, collision-resistant name
+// for a verified hook that must be moved out of the active hook namespace.
+// The subsequent rename is still no-replace: randomness avoids accidental
+// collisions while the syscall supplies the security guarantee.
+func managedHookQuarantineName(name string) (string, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("generate managed hook quarantine name for %s: %w", name, err)
+	}
+	return fmt.Sprintf("%s.wb-backup-%x", name, token[:]), nil
+}
+
+// moveExpectedManagedHookNoReplace quarantines one inspected hook without ever
+// replacing its destination. It checks the moved inode as well as the source:
+// if an actor substituted the source between validation and rename, WB restores
+// that substituted file with a no-clobber rename and refuses the mutation.
+func moveExpectedManagedHookNoReplace(managed managedHooksDirectory, name, destination string, expected managedHookIdentity, afterAuthorization func(name string)) error {
+	if !expected.exists {
+		return fmt.Errorf("cannot quarantine absent managed hook %s", name)
+	}
+	if err := verifyManagedHookIdentity(managed, name, expected); err != nil {
+		return err
+	}
+	if err := verifyManagedHookIdentity(managed, destination, absentManagedHookIdentity()); err != nil {
+		return fmt.Errorf("verify managed hook quarantine destination %s: %w", destination, err)
+	}
+	if afterAuthorization != nil {
+		afterAuthorization(name)
+	}
+	if err := renameNoReplace(int(managed.directory.Fd()), name, int(managed.directory.Fd()), destination); err != nil {
+		return err
+	}
+	actual, err := managedHookIdentityAt(managed.directory, destination)
+	if err != nil {
+		return fmt.Errorf("inspect quarantined managed hook %s: %w", name, err)
+	}
+	if actual == expected {
+		return nil
+	}
+	if restoreErr := renameNoReplace(int(managed.directory.Fd()), destination, int(managed.directory.Fd()), name); restoreErr != nil {
+		return fmt.Errorf("managed hook %s changed after inspection; preserve substituted hook: %v", name, restoreErr)
+	}
+	return fmt.Errorf("managed hook %s changed after inspection; refusing mutation", name)
+}
+
+// quarantineManagedHook moves an existing expected hook aside before an
+// activation. The original remains as a `.wb-backup-*` artifact rather than
+// being unlinked by pathname later, so a post-validation replacement cannot be
+// deleted by cleanup or activation.
+func quarantineManagedHook(managed managedHooksDirectory, name string, expected managedHookIdentity, afterAuthorization func(name string)) (string, error) {
+	if !expected.exists {
+		if err := verifyManagedHookIdentity(managed, name, expected); err != nil {
+			return "", err
+		}
+		if afterAuthorization != nil {
+			afterAuthorization(name)
+		}
+		return "", nil
+	}
+	quarantineName, err := managedHookQuarantineName(name)
+	if err != nil {
+		return "", err
+	}
+	if err := moveExpectedManagedHookNoReplace(managed, name, quarantineName, expected, afterAuthorization); err != nil {
+		return "", err
+	}
+	return quarantineName, nil
+}
+
 func readManagedHook(directory *os.File, name string) (managedHookSnapshot, error) {
 	if filepath.Base(name) != name || name == "." || name == "" {
 		return managedHookSnapshot{}, fmt.Errorf("invalid managed hook name %q", name)
@@ -817,15 +909,12 @@ func readManagedHook(directory *os.File, name string) (managedHookSnapshot, erro
 	if err != nil {
 		return managedHookSnapshot{}, err
 	}
-	return managedHookSnapshot{content: content, identity: managedHookIdentity{exists: true, device: uint64(stat.Dev), inode: uint64(stat.Ino)}}, nil
+	return managedHookSnapshot{content: content, identity: managedHookIdentity{exists: true, device: uint64(stat.Dev), inode: uint64(stat.Ino)}, mode: info.Mode()}, nil
 }
 
-func writeExecutableAt(managed managedHooksDirectory, name string, content []byte, expected managedHookIdentity) error {
+func writeExecutableAt(managed managedHooksDirectory, name string, content []byte, expected managedHookIdentity, afterAuthorization func(name string)) error {
 	if filepath.Base(name) != name || name == "." || name == "" {
 		return fmt.Errorf("invalid managed hook name %q", name)
-	}
-	if err := verifyManagedHookIdentity(managed, name, expected); err != nil {
-		return err
 	}
 	var temporaryName string
 	var file *os.File
@@ -852,7 +941,22 @@ func writeExecutableAt(managed managedHooksDirectory, name string, content []byt
 	if file == nil {
 		return fmt.Errorf("create collision-free temporary hook for %s", name)
 	}
-	defer func() { _ = unix.Unlinkat(int(managed.directory.Fd()), temporaryName, 0) }()
+	var temporaryStat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &temporaryStat); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("inspect temporary hook %s: %w", name, err)
+	}
+	temporaryIdentity := managedHookIdentity{exists: true, device: uint64(temporaryStat.Dev), inode: uint64(temporaryStat.Ino)}
+	temporaryPublished := false
+	defer func() {
+		if !temporaryPublished {
+			// Never unlink a random temporary pathname: an actor that observed it
+			// could replace it after an identity check. Quarantine WB's inode (or
+			// preserve the replacement) with the same no-clobber protocol used for
+			// active hooks.
+			_, _ = quarantineManagedHook(managed, temporaryName, temporaryIdentity, nil)
+		}
+	}()
 	if err := unix.Fchmod(int(file.Fd()), 0o755); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("chmod temporary hook %s: %w", name, err)
@@ -864,29 +968,30 @@ func writeExecutableAt(managed managedHooksDirectory, name string, content []byt
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close temporary hook %s: %w", name, err)
 	}
-	if err := verifyManagedHookIdentity(managed, name, expected); err != nil {
+	parkedName, err := quarantineManagedHook(managed, name, expected, afterAuthorization)
+	if err != nil {
 		return err
 	}
-	if err := unix.Renameat(int(managed.directory.Fd()), temporaryName, int(managed.directory.Fd()), name); err != nil {
+	if err := renameNoReplace(int(managed.directory.Fd()), temporaryName, int(managed.directory.Fd()), name); err != nil {
+		if parkedName != "" {
+			if restoreErr := renameNoReplace(int(managed.directory.Fd()), parkedName, int(managed.directory.Fd()), name); restoreErr != nil {
+				return fmt.Errorf("activate hook %s: %w; preserve quarantined hook %s: %v", name, err, parkedName, restoreErr)
+			}
+		}
 		return fmt.Errorf("activate hook %s: %w", name, err)
 	}
+	temporaryPublished = true
 	return nil
 }
 
-func backupManagedHook(managed managedHooksDirectory, name, backupName string, expected managedHookIdentity) error {
-	if err := verifyManagedHookIdentity(managed, name, expected); err != nil {
-		return err
-	}
-	if err := verifyManagedHookIdentity(managed, backupName, absentManagedHookIdentity()); err != nil {
-		return fmt.Errorf("verify managed hook backup destination %s: %w", backupName, err)
-	}
-	if err := unix.Renameat(int(managed.directory.Fd()), name, int(managed.directory.Fd()), backupName); err != nil {
+func backupManagedHook(managed managedHooksDirectory, name, backupName string, expected managedHookIdentity, afterAuthorization func(name string)) error {
+	if err := moveExpectedManagedHookNoReplace(managed, name, backupName, expected, afterAuthorization); err != nil {
 		return fmt.Errorf("back up managed hook %s: %w", name, err)
 	}
 	return nil
 }
 
-func removeStaleManagedHooksAt(managed managedHooksDirectory, expectedNames []string, actions *[]string, afterRead func(name string)) error {
+func removeStaleManagedHooksAt(managed managedHooksDirectory, expectedNames []string, actions *[]string, afterRead func(name string), afterAuthorization func(name string)) error {
 	expected := map[string]bool{}
 	for _, name := range expectedNames {
 		expected[name] = true
@@ -917,19 +1022,20 @@ func removeStaleManagedHooksAt(managed managedHooksDirectory, expectedNames []st
 			return fmt.Errorf("remove stale managed section from %s: %w", entry.Name(), err)
 		}
 		if hasUserHookContent(withoutManaged) {
-			if err := writeExecutableAt(managed, entry.Name(), []byte(withoutManaged), snapshot.identity); err != nil {
+			if err := writeExecutableAt(managed, entry.Name(), []byte(withoutManaged), snapshot.identity, afterAuthorization); err != nil {
 				return err
 			}
 			*actions = append(*actions, "removed stale WB section from "+entry.Name()+" and preserved user commands")
 			continue
 		}
-		if err := verifyManagedHookIdentity(managed, entry.Name(), snapshot.identity); err != nil {
+		backupName, err := managedHookQuarantineName(entry.Name())
+		if err != nil {
 			return err
 		}
-		if err := unix.Unlinkat(int(managed.directory.Fd()), entry.Name(), 0); err != nil {
-			return fmt.Errorf("remove stale managed hook %s: %w", entry.Name(), err)
+		if err := moveExpectedManagedHookNoReplace(managed, entry.Name(), backupName, snapshot.identity, afterAuthorization); err != nil {
+			return fmt.Errorf("quarantine stale managed hook %s: %w", entry.Name(), err)
 		}
-		*actions = append(*actions, "removed stale managed hook "+entry.Name())
+		*actions = append(*actions, "quarantined stale managed hook "+entry.Name())
 	}
 	return nil
 }

@@ -90,6 +90,10 @@ type CleanupOptions struct {
 	// before Git removes a worktree. It proves the held descriptor identity is
 	// reauthorized immediately before destructive removal.
 	beforeCleanupWorktreeRemoval func(worktree string)
+	// beforeCleanupNetworkBranchOperation is a test-only seam after cleanup's
+	// final pre-network authorization. It proves a substituted worktree blocks
+	// the optional remote-branch deletion as well as local removal.
+	beforeCleanupNetworkBranchOperation func(worktree string)
 }
 
 // CleanupResult records one repository's cleanup decision and outcome.
@@ -488,11 +492,26 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			return fail(err)
 		}
 		if normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
+			if err := worktree.validate(); err != nil {
+				worktree.close()
+				return fail(err)
+			}
+			if normalized.beforeCleanupNetworkBranchOperation != nil {
+				normalized.beforeCleanupNetworkBranchOperation(refreshed.WorktreeDir)
+			}
+			if err := worktree.validate(); err != nil {
+				worktree.close()
+				return fail(err)
+			}
 			if err := deleteRemoteBranch(ctx, refreshed); err != nil {
 				worktree.close()
 				return fail(err)
 			}
 			outcome.Results[index].RemoteDeleted = true
+		}
+		if err := worktree.validate(); err != nil {
+			worktree.close()
+			return fail(err)
 		}
 		if _, err := git(ctx, refreshed.CanonicalDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
 			worktree.close()
@@ -513,12 +532,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		worktree.close()
 		outcome.Results[index].Applied = true
 	}
-	releaseCleanupLocks(locks)
-	if err := removeEmptyTaskDirectories(locks, outcome.Results); err != nil {
-		return fail(err)
-	}
-	closeCleanupTaskHandles(locks)
-	locks = nil
+	// Keep the now-empty task root while its descriptor lock is live. Removing
+	// it after releasing that lock creates an ABA window where a concurrent
+	// create can make a new, unreachable task directory at the same pathname.
+	// Future creation reuses this harmless empty root under its normal lock.
 	if normalized.ReportDir != "" {
 		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results)
 		if err != nil {
@@ -943,31 +960,6 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		return nil, err
 	}
 	return handle, nil
-}
-
-func removeEmptyTaskDirectories(locks []*cleanupTaskHandle, results []CleanupResult) error {
-	appliedByTask := map[string]bool{}
-	blockedByTask := map[string]bool{}
-	for _, result := range results {
-		key := cleanupTaskKey(result.WorktreesRoot, result.Task)
-		if result.Applied {
-			appliedByTask[key] = true
-		} else {
-			blockedByTask[key] = true
-		}
-	}
-	for _, handle := range locks {
-		if !appliedByTask[handle.key] || blockedByTask[handle.key] {
-			continue
-		}
-		if err := handle.validate(); err != nil {
-			return err
-		}
-		if err := unix.Unlinkat(int(handle.worktrees.Fd()), handle.taskName, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ENOTEMPTY) {
-			return fmt.Errorf("remove empty cleanup task %s: %w", handle.taskName, err)
-		}
-	}
-	return nil
 }
 
 func writeCleanupReport(

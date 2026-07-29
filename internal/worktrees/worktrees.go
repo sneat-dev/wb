@@ -62,6 +62,10 @@ type CreateOptions struct {
 	// descriptor-relative publish. It exercises the final unavoidable rename
 	// window without exposing the seam to production callers.
 	afterSecureStageVerification func()
+	// afterSecureDestinationValidation is a test-only seam after WB has made
+	// its last lexical owner-path check and immediately before atomic publish.
+	// It proves publication never clobbers a destination created in that gap.
+	afterSecureDestinationValidation func()
 	// afterWorktreeRepair is a test-only seam after Git repairs registration but
 	// before WB accepts the published checkout. It proves the final ownership
 	// and registration checks reject a path swapped during repair.
@@ -239,6 +243,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.afterSecureStageDirectoryCreated,
 				normalized.afterSecureStageValidation,
 				normalized.afterSecureStageVerification,
+				normalized.afterSecureDestinationValidation,
 				normalized.afterWorktreeRepair,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
@@ -1024,6 +1029,7 @@ func addWorktreeAtSecureDestination(
 	afterStageDirectoryCreated func(),
 	afterStageValidation func(),
 	afterStageVerification func(),
+	afterDestinationValidation func(),
 	afterRepair func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
@@ -1068,10 +1074,8 @@ func addWorktreeAtSecureDestination(
 	// failure in either step must not strand a private stage directory.
 	defer func() {
 		if stageIdentityKnown {
-			_ = removeEmptyStageDirectoryByIdentityAt(operationDirectory, stageIdentity)
+			_ = quarantineStageDirectoryByIdentityAt(operationDirectory, stageIdentity)
 		}
-		_ = unix.Unlinkat(operationFD, stageName, 0)
-		_ = unix.Unlinkat(operationFD, stageName, unix.AT_REMOVEDIR)
 	}()
 	stageIdentity, err = secureDirectoryIdentityAt(operationFD, stageName)
 	if err != nil {
@@ -1093,7 +1097,7 @@ func addWorktreeAtSecureDestination(
 	}
 	defer func() { _ = stageDirectory.Close() }()
 	defer func() {
-		_ = removeEmptyMatchingStageDirectoryAt(operationDirectory, stageDirectory)
+		_ = quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory)
 	}()
 	rollback := func(creationErr error, finalPath string) error {
 		cleanupCtx, cancel := rollbackContext(ctx)
@@ -1130,12 +1134,15 @@ func addWorktreeAtSecureDestination(
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		return rollback(fmt.Errorf("secure worktree owner path changed during creation; refusing redirected checkout"), "")
 	}
-	if err := unix.Renameat(stageFD, "checkout", ownerFD, repository); err != nil {
+	if afterDestinationValidation != nil {
+		afterDestinationValidation()
+	}
+	if err := renameNoReplace(stageFD, "checkout", ownerFD, repository); err != nil {
 		return rollback(fmt.Errorf("publish secure worktree: %w", err), "")
 	}
 	finalPath := filepath.Join(ownerPath, repository)
 	rollbackPublished := func(creationErr error) error {
-		if rollbackErr := unix.Renameat(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
+		if rollbackErr := renameNoReplace(ownerFD, repository, stageFD, "checkout"); rollbackErr != nil {
 			return rollback(fmt.Errorf("%w; roll back published checkout: %v", creationErr, rollbackErr), finalPath)
 		}
 		return rollback(creationErr, finalPath)
@@ -1533,7 +1540,13 @@ func secureDirectoryIdentityAt(parentFD int, name string) (secureDirectoryIdenti
 	return secureDirectoryIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
 }
 
-func removeEmptyStageDirectoryByIdentityAt(operationDirectory *os.File, wanted secureDirectoryIdentity) error {
+// quarantineStageDirectoryByIdentityAt moves the WB-created stage out of its
+// active namespace without unlinking a pathname. POSIX has no unlink-by-inode
+// primitive; a verify-then-rmdir sequence could therefore remove a later
+// replacement. The retired directory is intentionally left for a future safe
+// maintenance pass rather than risking data loss under an attacker-controlled
+// replacement.
+func quarantineStageDirectoryByIdentityAt(operationDirectory *os.File, wanted secureDirectoryIdentity) error {
 	if _, err := operationDirectory.Seek(0, 0); err != nil {
 		return fmt.Errorf("rewind secure staging parent: %w", err)
 	}
@@ -1549,19 +1562,21 @@ func removeEmptyStageDirectoryByIdentityAt(operationDirectory *os.File, wanted s
 		if wanted.device != uint64(stat.Dev) || wanted.inode != uint64(stat.Ino) {
 			continue
 		}
-		if err := unix.Unlinkat(int(operationDirectory.Fd()), entry.Name(), unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
-			return fmt.Errorf("remove empty secure staging directory %s: %w", entry.Name(), err)
-		}
-		return nil
+		return quarantineStageDirectoryAt(operationDirectory, entry.Name(), wanted)
 	}
 	return nil
 }
 
-func removeEmptyMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.File) error {
+func quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.File) error {
 	held, err := stageDirectory.Stat()
 	if err != nil {
 		return fmt.Errorf("inspect held staging directory: %w", err)
 	}
+	var heldStat unix.Stat_t
+	if err := unix.Fstat(int(stageDirectory.Fd()), &heldStat); err != nil {
+		return fmt.Errorf("inspect held staging directory identity: %w", err)
+	}
+	expected := secureDirectoryIdentity{device: uint64(heldStat.Dev), inode: uint64(heldStat.Ino)}
 	if _, err := operationDirectory.Seek(0, 0); err != nil {
 		return fmt.Errorf("rewind secure staging parent: %w", err)
 	}
@@ -1582,13 +1597,36 @@ func removeEmptyMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.
 		info, statErr := candidate.Stat()
 		_ = candidate.Close()
 		if statErr == nil && os.SameFile(held, info) {
-			if err := unix.Unlinkat(int(operationDirectory.Fd()), entry.Name(), unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
-				return fmt.Errorf("remove empty secure staging directory %s: %w", entry.Name(), err)
-			}
-			return nil
+			return quarantineStageDirectoryAt(operationDirectory, entry.Name(), expected)
 		}
 	}
 	return nil
+}
+
+func quarantineStageDirectoryAt(operationDirectory *os.File, name string, expected secureDirectoryIdentity) error {
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return fmt.Errorf("generate secure staging quarantine name: %w", err)
+		}
+		quarantineName := fmt.Sprintf(".wb-retired-stage-%x", token[:])
+		err := renameNoReplace(int(operationDirectory.Fd()), name, int(operationDirectory.Fd()), quarantineName)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("quarantine secure staging directory %s: %w", name, err)
+		}
+		actual, inspectErr := secureDirectoryIdentityAt(int(operationDirectory.Fd()), quarantineName)
+		if inspectErr == nil && actual == expected {
+			return nil
+		}
+		if restoreErr := renameNoReplace(int(operationDirectory.Fd()), quarantineName, int(operationDirectory.Fd()), name); restoreErr != nil {
+			return fmt.Errorf("secure staging directory %s changed before quarantine; preserve replacement: %v", name, restoreErr)
+		}
+		return fmt.Errorf("secure staging directory %s changed before quarantine; refusing removal", name)
+	}
+	return fmt.Errorf("create collision-free secure staging quarantine name")
 }
 
 const rollbackCleanupTimeout = 30 * time.Second

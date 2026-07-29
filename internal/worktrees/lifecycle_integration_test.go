@@ -325,11 +325,49 @@ func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	if _, err := os.Stat(result.WorktreeDir); !os.IsNotExist(err) {
 		t.Fatalf("worktree still exists after cleanup: %v", err)
 	}
+	if info, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "cleanup-real")); statErr != nil || !info.IsDir() {
+		t.Fatalf("empty cleanup task root was not retained safely: info=%v err=%v", info, statErr)
+	}
 	if gitRefExists(fixture.canonical, "refs/heads/"+result.Branch) {
 		t.Fatal("local branch still exists after cleanup")
 	}
 	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != "" {
 		t.Fatalf("remote branch still exists after cleanup: %s", got)
+	}
+}
+
+func TestCleanupReauthorizesBeforeRemoteBranchDeletion(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-network-reauthorization")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	movedWorktree := result.WorktreeDir + "-moved"
+	external := t.TempDir()
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-network-reauthorization",
+		Apply:        true,
+		DeleteRemote: true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeCleanupNetworkBranchOperation: func(worktree string) {
+			if worktree != result.WorktreeDir {
+				return
+			}
+			if renameErr := os.Rename(worktree, movedWorktree); renameErr != nil {
+				t.Fatalf("move cleanup worktree before remote deletion: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, worktree); symlinkErr != nil {
+				t.Fatalf("substitute cleanup worktree before remote deletion: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cleanup worktree path changed") {
+		t.Fatalf("cleanup network reauthorization error = %v", err)
+	}
+	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != head {
+		t.Fatalf("late worktree swap deleted remote branch: got %q want %q", got, head)
+	}
+	if _, statErr := os.Stat(movedWorktree); statErr != nil {
+		t.Fatalf("late worktree swap removed moved checkout: %v", statErr)
 	}
 }
 

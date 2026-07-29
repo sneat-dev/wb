@@ -301,8 +301,8 @@ func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) 
 		t.Fatalf("stage swap created external checkout: %v", statErr)
 	}
 	assertFailedCreateRolledBack(t, fixture, operation)
-	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
-		t.Fatalf("substituted stage path remains: %v", statErr)
+	if info, statErr := os.Lstat(stageRoot); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("substituted stage path was not preserved as a symlink: info=%v err=%v", info, statErr)
 	}
 	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
 		t.Fatalf("parked trusted stage remains: %v", statErr)
@@ -344,13 +344,63 @@ func TestCreateCleansStageWhenOpeningItFails(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
+	replacementFound := false
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".wb-stage-") {
-			t.Fatalf("stage artifact remains after Openat failure: %s", entry.Name())
+			replacementFound = true
+			if entry.IsDir() {
+				t.Fatalf("replacement stage entry is unexpectedly a directory: %s", entry.Name())
+			}
+			content, readErr := os.ReadFile(filepath.Join(operationRoot, entry.Name()))
+			if readErr != nil {
+				t.Fatalf("read replacement stage: %v", readErr)
+			}
+			if string(content) != "not a directory\n" {
+				t.Fatalf("replacement stage content = %q", content)
+			}
 		}
+	}
+	if !replacementFound {
+		t.Fatal("substituted stage entry was removed")
 	}
 	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
 		t.Fatalf("parked stage artifact remains after Openat failure: %v", statErr)
+	}
+}
+
+func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
+	fixture := newGitFixture(t)
+	operation := "late-destination"
+	destination := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
+	foreign := "foreign destination\n"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureDestinationValidation: func() {
+			if mkdirErr := os.Mkdir(destination, 0o755); mkdirErr != nil {
+				t.Fatalf("create late destination: %v", mkdirErr)
+			}
+			if writeErr := os.WriteFile(filepath.Join(destination, "keep.txt"), []byte(foreign), 0o600); writeErr != nil {
+				t.Fatalf("write late destination sentinel: %v", writeErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "publish secure worktree") {
+		t.Fatalf("late destination Create error = %v", err)
+	}
+	content, readErr := os.ReadFile(filepath.Join(destination, "keep.txt"))
+	if readErr != nil {
+		t.Fatalf("read late destination sentinel: %v", readErr)
+	}
+	if string(content) != foreign {
+		t.Fatalf("late destination was clobbered: %q", content)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, destination) {
+		t.Fatalf("late destination left worktree registration:\n%s", registered)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+		t.Fatalf("late destination left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
 
@@ -396,8 +446,8 @@ func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(outside, "checkout")); !os.IsNotExist(statErr) {
 		t.Fatalf("post-validation stage swap created external checkout: %v", statErr)
 	}
-	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
-		t.Fatalf("substituted stage path remains: %v", statErr)
+	if info, statErr := os.Lstat(stageRoot); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("substituted stage path was not preserved as a symlink: info=%v err=%v", info, statErr)
 	}
 	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
 		t.Fatalf("parked trusted stage remains: %v", statErr)
@@ -441,8 +491,8 @@ func TestCreateRejectsStageRootMovedOutsideOperationAfterValidation(t *testing.T
 		t.Fatalf("external stage move created checkout outside WB home: %v", statErr)
 	}
 	assertFailedCreateRolledBack(t, fixture, operation)
-	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
-		t.Fatalf("substituted stage path remains: %v", statErr)
+	if info, statErr := os.Lstat(stageRoot); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("substituted stage path was not preserved as a symlink: info=%v err=%v", info, statErr)
 	}
 	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
 	if strings.Contains(registered, outside) {
@@ -479,8 +529,8 @@ func TestCreatePublishesAfterExternalStageMoveFollowingFinalVerification(t *test
 	if _, statErr := os.Stat(filepath.Join(parkedStage, "checkout")); !os.IsNotExist(statErr) {
 		t.Fatalf("external stage move left checkout outside WB home: %v", statErr)
 	}
-	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
-		t.Fatalf("substituted stage path remains: %v", statErr)
+	if info, statErr := os.Lstat(stageRoot); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("substituted stage path was not preserved as a symlink: info=%v err=%v", info, statErr)
 	}
 	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
 	if strings.Contains(registered, outside) || !strings.Contains(registered, results[0].WorktreeDir) {
@@ -518,8 +568,8 @@ func TestCreateRollsBackExternalStageAfterPublishedRepairFailure(t *testing.T) {
 		t.Fatalf("external stage repair failure left checkout outside WB home: %v", statErr)
 	}
 	assertFailedCreateRolledBack(t, fixture, operation)
-	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
-		t.Fatalf("substituted stage path remains: %v", statErr)
+	if info, statErr := os.Lstat(stageRoot); statErr != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("substituted stage path was not preserved as a symlink: info=%v err=%v", info, statErr)
 	}
 	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
 	if strings.Contains(registered, outside) {
@@ -671,7 +721,14 @@ func assertFailedCreateRolledBack(t *testing.T, fixture *gitFixture, operation s
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+		if !strings.HasPrefix(entry.Name(), ".wb-stage-") {
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			t.Fatalf("inspect staging entry %s: %v", entry.Name(), statErr)
+		}
+		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			t.Fatalf("failed creation leaked staging directory %s", entry.Name())
 		}
 	}

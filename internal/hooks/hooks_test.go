@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == SecureHooksGitHelperArgument {
+		os.Exit(RunSecureHooksGitHelper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
+
 func TestLoadPolicyLayersGlobalAndRepositoryTemplates(t *testing.T) {
 	repo := initRepo(t)
 	configHome := t.TempDir()
@@ -554,6 +561,33 @@ func TestApplyRefusesManagedHookReplacementAfterRead(t *testing.T) {
 	}
 }
 
+func TestApplyRefusesManagedHookReplacementAfterFinalAuthorization(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	oldExecutable := testWBExecutable(t, "old-wb")
+	newExecutable := testWBExecutable(t, "new-wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: oldExecutable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	replacement := "#!/bin/sh\necho replacement-after-final-check\n"
+	_, err = Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: newExecutable,
+		afterManagedHookAuthorization: func(name string) {
+			if name == "pre-commit" {
+				replaceTestFile(t, preCommit, replacement)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after inspection") {
+		t.Fatalf("managed hook late-authorization replacement error = %v", err)
+	}
+	if content := mustReadFile(t, preCommit); content != replacement {
+		t.Fatalf("late replacement hook was overwritten: %q", content)
+	}
+}
+
 func TestApplyRefusesUnmanagedHookReplacementAfterReadBeforeBackup(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -586,6 +620,38 @@ func TestApplyRefusesUnmanagedHookReplacementAfterReadBeforeBackup(t *testing.T)
 	}
 }
 
+func TestApplyRefusesUnmanagedHookReplacementAfterFinalAuthorizationBeforeBackup(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	mustWrite(t, preCommit, "#!/bin/sh\necho unmanaged-original\n")
+	replacement := "#!/bin/sh\necho unmanaged-replacement-after-final-check\n"
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	_, err = Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: executable, Force: true, Now: func() time.Time { return now },
+		afterManagedHookAuthorization: func(name string) {
+			if name == "pre-commit" {
+				replaceTestFile(t, preCommit, replacement)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after inspection") {
+		t.Fatalf("unmanaged hook late-authorization backup error = %v", err)
+	}
+	if content := mustReadFile(t, preCommit); content != replacement {
+		t.Fatalf("late replacement unmanaged hook was overwritten: %q", content)
+	}
+	backup := preCommit + ".wb-backup-20260729T120000Z"
+	if _, statErr := os.Stat(backup); !os.IsNotExist(statErr) {
+		t.Fatalf("backup created from late replacement hook: %v", statErr)
+	}
+}
+
 func TestRepairRefusesStaleHookReplacementAfterReadBeforeRemoval(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -610,6 +676,60 @@ func TestRepairRefusesStaleHookReplacementAfterReadBeforeRemoval(t *testing.T) {
 	}
 	if content := mustReadFile(t, stale); content != replacement {
 		t.Fatalf("replacement stale hook was removed: %q", content)
+	}
+}
+
+func TestRepairRefusesStaleHookReplacementAfterFinalAuthorization(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(installed.Report.ManagedPath, "commit-msg")
+	mustWrite(t, stale, shimContent(executable, "commit-msg", "", "", "", false))
+	replacement := "#!/bin/sh\necho stale-replacement-after-final-check\n"
+	_, err = Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: executable, Repair: true,
+		afterManagedHookAuthorization: func(name string) {
+			if name == "commit-msg" {
+				replaceTestFile(t, stale, replacement)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after inspection") {
+		t.Fatalf("stale hook late-authorization removal error = %v", err)
+	}
+	if content := mustReadFile(t, stale); content != replacement {
+		t.Fatalf("late replacement stale hook was removed: %q", content)
+	}
+}
+
+func TestSetHooksPathAtUsesRetainedRepositoryDescriptor(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	managed, err := managedPath(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(managed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := openManagedHooksDirectory(repo, managed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer directory.close()
+	movedRepo := filepath.Join(t.TempDir(), "moved-repo")
+	if err := os.Rename(repo, movedRepo); err != nil {
+		t.Fatal(err)
+	}
+	if err := setHooksPathAt(directory.repo, managed); err != nil {
+		t.Fatal(err)
+	}
+	if got := git(t, movedRepo, "config", "--local", "--get", "core.hooksPath"); got != managed {
+		t.Fatalf("descriptor-anchored core.hooksPath = %q, want %q", got, managed)
 	}
 }
 
