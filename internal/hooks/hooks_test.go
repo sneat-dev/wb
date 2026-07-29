@@ -423,6 +423,41 @@ func TestApplyRefusesSymlinkedGitCommonDirectoryWithoutExternalMutation(t *testi
 	}
 }
 
+func TestApplyRefusesGitCommonDirectoryAncestorSwapWithoutExternalMutation(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	gitDirectory := filepath.Join(repo, ".git")
+	movedGitDirectory := filepath.Join(t.TempDir(), "moved-git")
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "keep.txt")
+	mustWrite(t, sentinel, "outside\n")
+
+	_, err := Apply(ApplyOptions{
+		RepoPath:     repo,
+		WBExecutable: testWBExecutable(t, "wb"),
+		afterManagedHooksValidation: func() {
+			if renameErr := os.Rename(gitDirectory, movedGitDirectory); renameErr != nil {
+				t.Fatalf("move Git common directory during hook regression: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, gitDirectory); symlinkErr != nil {
+				t.Fatalf("substitute Git common directory during hook regression: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Git common directory path changed") {
+		t.Fatalf("ancestor-swapped Git common directory install error = %v", err)
+	}
+	if content := mustReadFile(t, sentinel); content != "outside\n" {
+		t.Fatalf("external sentinel changed: %q", content)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, "wb-hooks")); !os.IsNotExist(statErr) {
+		t.Fatalf("external Git directory received managed hooks: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedGitDirectory, "wb-hooks", "pre-commit")); !os.IsNotExist(statErr) {
+		t.Fatalf("moved Git directory received a hook after the failed operation: %v", statErr)
+	}
+}
+
 func TestApplyDoesNotFollowPlantedPredictableHookTempSymlink(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

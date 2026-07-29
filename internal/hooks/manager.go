@@ -1,8 +1,10 @@
 package hooks
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -52,6 +55,9 @@ type ApplyOptions struct {
 	Repair             bool
 	Force              bool
 	Now                func() time.Time
+	// afterManagedHooksValidation is a test-only seam for ancestor-swap
+	// regressions. Production callers cannot influence managed-hook mutation.
+	afterManagedHooksValidation func()
 }
 
 type ApplyResult struct {
@@ -303,7 +309,15 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 			return ApplyResult{}, fmt.Errorf("active hooks already exist in Git's default hook directory (%s); migrate them into WB templates, then run `wb hooks repair --force`", strings.Join(active, ", "))
 		}
 	}
-	if err := ensureManagedHooksDirectory(managed); err != nil {
+	managedDirectory, err := openManagedHooksDirectory(managed)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	defer managedDirectory.close()
+	if options.afterManagedHooksValidation != nil {
+		options.afterManagedHooksValidation()
+	}
+	if err := managedDirectory.validate(); err != nil {
 		return ApplyResult{}, err
 	}
 	if options.Now == nil {
@@ -312,42 +326,41 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 	result := ApplyResult{}
 	names := expectedHookNames(policy)
 	for _, name := range names {
-		if err := ensureManagedHooksDirectory(managed); err != nil {
+		if err := managedDirectory.validate(); err != nil {
 			return ApplyResult{}, err
 		}
-		path := filepath.Join(managed, name)
 		expectedSection := shimManagedSection(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
 		content := shimContent(options.WBExecutable, name, policy.ExplicitPath, options.ProjectsRoot, options.WBHome, options.WBHomeAllowsLegacy)
-		if existing, readErr := os.ReadFile(path); readErr == nil {
+		if existing, readErr := readManagedHook(managedDirectory.directory, name); readErr == nil {
 			if !isManagedContent(string(existing)) {
 				if !options.Force {
-					return ApplyResult{}, fmt.Errorf("refusing to overwrite unmanaged hook %s; run repair with --force to back it up", path)
+					return ApplyResult{}, fmt.Errorf("refusing to overwrite unmanaged hook %s; run repair with --force to back it up", filepath.Join(managed, name))
 				}
-				backup := path + ".wb-backup-" + options.Now().UTC().Format("20060102T150405Z")
-				if err := os.Rename(path, backup); err != nil {
-					return ApplyResult{}, fmt.Errorf("back up unmanaged hook %s: %w", path, err)
+				backupName := name + ".wb-backup-" + options.Now().UTC().Format("20060102T150405Z")
+				if err := backupManagedHook(managedDirectory, name, backupName); err != nil {
+					return ApplyResult{}, err
 				}
-				result.Actions = append(result.Actions, "backed up "+path+" to "+backup)
+				result.Actions = append(result.Actions, "backed up "+filepath.Join(managed, name)+" to "+filepath.Join(managed, backupName))
 			} else {
 				updated, err := replaceManagedSection(string(existing), expectedSection)
 				if err != nil {
-					return ApplyResult{}, fmt.Errorf("update managed hook %s: %w", path, err)
+					return ApplyResult{}, fmt.Errorf("update managed hook %s: %w", filepath.Join(managed, name), err)
 				}
 				content = updated
 			}
 		} else if !os.IsNotExist(readErr) {
-			return ApplyResult{}, fmt.Errorf("read managed hook %s: %w", path, readErr)
+			return ApplyResult{}, fmt.Errorf("read managed hook %s: %w", filepath.Join(managed, name), readErr)
 		}
-		if err := writeExecutable(path, []byte(content)); err != nil {
+		if err := writeExecutableAt(managedDirectory, name, []byte(content)); err != nil {
 			return ApplyResult{}, err
 		}
 		result.Actions = append(result.Actions, "installed "+name)
 	}
 	if options.Repair {
-		if err := ensureManagedHooksDirectory(managed); err != nil {
+		if err := managedDirectory.validate(); err != nil {
 			return ApplyResult{}, err
 		}
-		if err := removeStaleManagedHooks(managed, names, &result.Actions); err != nil {
+		if err := removeStaleManagedHooksAt(managedDirectory, names, &result.Actions); err != nil {
 			return ApplyResult{}, err
 		}
 	}
@@ -357,7 +370,7 @@ func Apply(options ApplyOptions) (ApplyResult, error) {
 		}
 		result.Actions = append(result.Actions, "configured core.hooksPath="+managed)
 	}
-	if err := ensureManagedHooksDirectory(managed); err != nil {
+	if err := managedDirectory.validate(); err != nil {
 		return ApplyResult{}, err
 	}
 	report, err := Check(policy.RepoRoot, options.ConfigPath, options.WBExecutable, options.ProjectsRoot)
@@ -522,18 +535,99 @@ func resolvedWBHome(projectsRoot string) (string, bool, error) {
 	return resolution.Write.Home, !resolution.Explicit, nil
 }
 
-// ensureManagedHooksDirectory creates only the final WB-owned directory and
-// refuses a symlink in its place. os.MkdirAll would silently follow
-// .git/wb-hooks -> /somewhere/else and make an install mutate that external
-// target while reporting a successful local hook setup.
-func ensureManagedHooksDirectory(managed string) error {
-	_, err := os.Lstat(managed)
-	if errors.Is(err, os.ErrNotExist) {
-		if mkdirErr := os.Mkdir(managed, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
-			return fmt.Errorf("create managed hooks directory %s: %w", managed, mkdirErr)
-		}
+// managedHooksDirectory keeps both the Git common-directory and WB-owned
+// hooks-directory descriptors open while Apply mutates hook files. The
+// lexical paths remain only for diagnostics and identity checks; writes,
+// renames, and removals use the held descriptors.
+type managedHooksDirectory struct {
+	path       string
+	commonPath string
+	common     *os.File
+	directory  *os.File
+}
+
+func openManagedHooksDirectory(managed string) (managedHooksDirectory, error) {
+	commonPath := filepath.Dir(managed)
+	commonFD, err := unix.Open(commonPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return managedHooksDirectory{}, fmt.Errorf("open Git common directory %s without following links: %w", commonPath, err)
 	}
-	return validateManagedHooksDirectory(managed)
+	common := os.NewFile(uintptr(commonFD), "wb-hooks-common")
+	if common == nil {
+		_ = unix.Close(commonFD)
+		return managedHooksDirectory{}, fmt.Errorf("wrap Git common directory %s", commonPath)
+	}
+	result := managedHooksDirectory{path: managed, commonPath: commonPath, common: common}
+	if err := unix.Mkdirat(commonFD, filepath.Base(managed), 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
+		result.close()
+		return managedHooksDirectory{}, fmt.Errorf("create managed hooks directory %s: %w", managed, err)
+	}
+	// Keep the established diagnostic for a planted wb-hooks symlink. The
+	// descriptor-relative open below is still authoritative for mutation.
+	if err := validateManagedHooksDirectory(managed); err != nil {
+		result.close()
+		return managedHooksDirectory{}, err
+	}
+	directoryFD, err := unix.Openat(commonFD, filepath.Base(managed), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		result.close()
+		return managedHooksDirectory{}, fmt.Errorf("open managed hooks directory %s without following links: %w", managed, err)
+	}
+	result.directory = os.NewFile(uintptr(directoryFD), "wb-hooks-managed")
+	if result.directory == nil {
+		_ = unix.Close(directoryFD)
+		result.close()
+		return managedHooksDirectory{}, fmt.Errorf("wrap managed hooks directory %s", managed)
+	}
+	if err := result.validate(); err != nil {
+		result.close()
+		return managedHooksDirectory{}, err
+	}
+	return result, nil
+}
+
+func (managed managedHooksDirectory) close() {
+	if managed.directory != nil {
+		_ = managed.directory.Close()
+	}
+	if managed.common != nil {
+		_ = managed.common.Close()
+	}
+}
+
+func (managed managedHooksDirectory) validate() error {
+	if !managedDirectoryPathMatches(managed.commonPath, managed.common) {
+		return fmt.Errorf("Git common directory path changed while managing hooks: %s", managed.commonPath)
+	}
+	if !managedDirectoryPathMatches(managed.path, managed.directory) {
+		return fmt.Errorf("managed hooks directory path changed while managing hooks: %s", managed.path)
+	}
+	return nil
+}
+
+func managedDirectoryPathMatches(path string, directory *os.File) bool {
+	if directory == nil {
+		return false
+	}
+	current, err := os.Lstat(path)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.IsDir() {
+		return false
+	}
+	held, err := directory.Stat()
+	return err == nil && os.SameFile(current, held)
+}
+
+// ensureManagedHooksDirectory creates only the final WB-owned directory and
+// refuses a symlink in its place. It is retained for package-local callers;
+// Apply keeps descriptors open through every mutation via
+// openManagedHooksDirectory.
+func ensureManagedHooksDirectory(managed string) error {
+	directory, err := openManagedHooksDirectory(managed)
+	if err != nil {
+		return err
+	}
+	directory.close()
+	return nil
 }
 
 func validateManagedHooksDirectory(managed string) error {
@@ -551,45 +645,122 @@ func validateManagedHooksDirectory(managed string) error {
 }
 
 func writeExecutable(path string, content []byte) error {
-	directory := filepath.Dir(path)
-	if err := validateManagedHooksDirectory(directory); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+".tmp-*")
+	directory, err := openManagedHooksDirectory(filepath.Dir(path))
 	if err != nil {
-		return fmt.Errorf("create temporary hook for %s: %w", path, err)
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := temporary.Chmod(0o755); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("chmod temporary hook %s: %w", path, err)
-	}
-	if _, err := temporary.Write(content); err != nil {
-		_ = temporary.Close()
-		return fmt.Errorf("write hook %s: %w", path, err)
-	}
-	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close temporary hook %s: %w", path, err)
-	}
-	// Recheck immediately before activation. CreateTemp owns an unpredictable
-	// name in this validated directory, so a planted <hook>.tmp symlink cannot
-	// redirect either the write or the final atomic replacement.
-	if err := validateManagedHooksDirectory(directory); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return fmt.Errorf("activate hook %s: %w", path, err)
+	defer directory.close()
+	return writeExecutableAt(directory, filepath.Base(path), content)
+}
+
+func readManagedHook(directory *os.File, name string) ([]byte, error) {
+	if filepath.Base(name) != name || name == "." || name == "" {
+		return nil, fmt.Errorf("invalid managed hook name %q", name)
+	}
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), "wb-managed-hook")
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap managed hook %s", name)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("managed hook %s is not a regular file", name)
+	}
+	return io.ReadAll(file)
+}
+
+func writeExecutableAt(managed managedHooksDirectory, name string, content []byte) error {
+	if filepath.Base(name) != name || name == "." || name == "" {
+		return fmt.Errorf("invalid managed hook name %q", name)
+	}
+	if err := managed.validate(); err != nil {
+		return err
+	}
+	var temporaryName string
+	var file *os.File
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return fmt.Errorf("generate temporary hook name for %s: %w", name, err)
+		}
+		temporaryName = fmt.Sprintf(".%s.wb-tmp-%x", name, token[:])
+		fd, err := unix.Openat(int(managed.directory.Fd()), temporaryName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o755)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("create temporary hook for %s: %w", name, err)
+		}
+		file = os.NewFile(uintptr(fd), "wb-managed-hook-temp")
+		if file == nil {
+			_ = unix.Close(fd)
+			return fmt.Errorf("wrap temporary hook for %s", name)
+		}
+		break
+	}
+	if file == nil {
+		return fmt.Errorf("create collision-free temporary hook for %s", name)
+	}
+	defer func() { _ = unix.Unlinkat(int(managed.directory.Fd()), temporaryName, 0) }()
+	if err := unix.Fchmod(int(file.Fd()), 0o755); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("chmod temporary hook %s: %w", name, err)
+	}
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write hook %s: %w", name, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close temporary hook %s: %w", name, err)
+	}
+	if err := managed.validate(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(int(managed.directory.Fd()), temporaryName, int(managed.directory.Fd()), name); err != nil {
+		return fmt.Errorf("activate hook %s: %w", name, err)
+	}
+	return nil
+}
+
+func backupManagedHook(managed managedHooksDirectory, name, backupName string) error {
+	if err := managed.validate(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(int(managed.directory.Fd()), name, int(managed.directory.Fd()), backupName); err != nil {
+		return fmt.Errorf("back up managed hook %s: %w", name, err)
 	}
 	return nil
 }
 
 func removeStaleManagedHooks(managed string, expectedNames []string, actions *[]string) error {
+	directory, err := openManagedHooksDirectory(managed)
+	if err != nil {
+		return err
+	}
+	defer directory.close()
+	return removeStaleManagedHooksAt(directory, expectedNames, actions)
+}
+
+func removeStaleManagedHooksAt(managed managedHooksDirectory, expectedNames []string, actions *[]string) error {
 	expected := map[string]bool{}
 	for _, name := range expectedNames {
 		expected[name] = true
 	}
-	entries, err := os.ReadDir(managed)
+	if err := managed.validate(); err != nil {
+		return err
+	}
+	if _, err := managed.directory.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind managed hooks directory: %w", err)
+	}
+	entries, err := managed.directory.ReadDir(-1)
 	if err != nil {
 		return err
 	}
@@ -597,24 +768,26 @@ func removeStaleManagedHooks(managed string, expectedNames []string, actions *[]
 		if entry.IsDir() || expected[entry.Name()] || strings.Contains(entry.Name(), ".wb-backup-") {
 			continue
 		}
-		path := filepath.Join(managed, entry.Name())
-		data, _ := os.ReadFile(path)
+		data, _ := readManagedHook(managed.directory, entry.Name())
 		if !isManagedContent(string(data)) {
 			continue
 		}
 		withoutManaged, err := removeManagedSection(string(data))
 		if err != nil {
-			return fmt.Errorf("remove stale managed section from %s: %w", path, err)
+			return fmt.Errorf("remove stale managed section from %s: %w", entry.Name(), err)
 		}
 		if hasUserHookContent(withoutManaged) {
-			if err := writeExecutable(path, []byte(withoutManaged)); err != nil {
+			if err := writeExecutableAt(managed, entry.Name(), []byte(withoutManaged)); err != nil {
 				return err
 			}
 			*actions = append(*actions, "removed stale WB section from "+entry.Name()+" and preserved user commands")
 			continue
 		}
-		if err := os.Remove(path); err != nil {
+		if err := managed.validate(); err != nil {
 			return err
+		}
+		if err := unix.Unlinkat(int(managed.directory.Fd()), entry.Name(), 0); err != nil {
+			return fmt.Errorf("remove stale managed hook %s: %w", entry.Name(), err)
 		}
 		*actions = append(*actions, "removed stale managed hook "+entry.Name())
 	}

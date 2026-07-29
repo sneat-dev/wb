@@ -5,6 +5,7 @@ package worktrees
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -41,6 +42,10 @@ type CreateOptions struct {
 	// race regression. It is deliberately unexported, so production callers
 	// cannot influence the creation flow.
 	beforeSecureWorktreeAdd func()
+	// afterOperationRootPrepared is a test-only seam after WB has opened the
+	// operation descriptor but before planning creates or inspects owner paths.
+	// It proves a swapped worktrees ancestor cannot redirect that phase.
+	afterOperationRootPrepared func()
 	// afterSecureStageValidation is a test-only seam for the narrow interval
 	// between validating the staging pathname and handing its held descriptor
 	// to Git. It proves a later pathname substitution cannot redirect Git.
@@ -106,6 +111,14 @@ type createPlan struct {
 	resumed      bool
 }
 
+// preparedOperationRoot keeps the operation directory descriptor alive from
+// hierarchy creation through locking and worktree publication. Its Path is
+// only the user-facing/result spelling; filesystem mutation uses Directory.
+type preparedOperationRoot struct {
+	Path      string
+	Directory *os.File
+}
+
 // Create synchronizes each clean canonical base branch with origin, then
 // creates (or explicitly resumes) the corresponding isolated worktree.
 //
@@ -127,15 +140,19 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
-	operationRoot, err := prepareOperationRoot(home, normalized.Operation)
+	operation, err := prepareOperationRoot(home, normalized.Operation)
 	if err != nil {
 		return nil, err
 	}
-	lock, err := acquireLock(operationRoot)
+	defer func() { _ = operation.Directory.Close() }()
+	lock, err := acquireLockAt(operation.Directory)
 	if err != nil {
 		return nil, err
 	}
 	defer lock.release()
+	if normalized.afterOperationRootPrepared != nil {
+		normalized.afterOperationRootPrepared()
+	}
 
 	plans := make([]createPlan, 0, len(repositories))
 	for _, repository := range repositories {
@@ -146,7 +163,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if err := synchronizeCanonical(ctx, canonical, repository, normalized.Base); err != nil {
 			return nil, err
 		}
-		worktree, err := prepareWorktreeDestination(home, normalized.Operation, owner, name)
+		worktree, exists, err := prepareWorktreeDestination(operation.Path, operation.Directory, owner, name)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +171,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
 			Branch: normalized.Branch, Base: normalized.Base,
 		}}
-		if _, err := os.Stat(worktree); err == nil {
+		if exists {
 			if !normalized.Resume {
 				return nil, fmt.Errorf("worktree already exists: %s (use --resume or choose another operation)", worktree)
 			}
@@ -163,8 +180,6 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			}
 			plan.resumed = true
 			plan.result.Action = "resumed"
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("inspect worktree %s: %w", worktree, err)
 		} else {
 			plan.branchExists, err = localBranchExists(ctx, canonical, normalized.Branch)
 			if err != nil {
@@ -191,7 +206,8 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			if err := addWorktreeAtSecureDestination(
 				ctx,
 				plan.result.CanonicalDir,
-				operationRoot,
+				operation.Path,
+				operation.Directory,
 				plan.owner,
 				plan.repository,
 				plan.result.Branch,
@@ -870,95 +886,86 @@ func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, a
 // time. os.MkdirAll would follow a pre-existing task or owner symlink; that
 // could direct a worktree add outside WB_HOME before Git has a chance to
 // validate anything.
-func prepareOperationRoot(home, operation string) (string, error) {
+func prepareOperationRoot(home, operation string) (preparedOperationRoot, error) {
 	if err := os.MkdirAll(home, 0o755); err != nil {
-		return "", fmt.Errorf("create WB home %s: %w", home, err)
+		return preparedOperationRoot{}, fmt.Errorf("create WB home %s: %w", home, err)
 	}
-	if err := ensureManagedDirectory(home, home); err != nil {
-		return "", err
+	homeFD, err := openNoFollowDirectory(home)
+	if err != nil {
+		return preparedOperationRoot{}, err
 	}
-	worktreesRoot := filepath.Join(home, "worktrees")
-	if err := ensureManagedDirectory(home, worktreesRoot); err != nil {
-		return "", err
+	defer func() { _ = unix.Close(homeFD) }()
+	worktreesFD, err := openOrCreateNoFollowDirectory(homeFD, "worktrees")
+	if err != nil {
+		return preparedOperationRoot{}, err
 	}
-	operationRoot := filepath.Join(worktreesRoot, operation)
-	if err := ensureManagedDirectory(home, operationRoot); err != nil {
-		return "", err
+	defer func() { _ = unix.Close(worktreesFD) }()
+	operationFD, err := openOrCreateNoFollowDirectory(worktreesFD, operation)
+	if err != nil {
+		return preparedOperationRoot{}, err
 	}
-	return operationRoot, nil
+	operationDirectory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
+	if operationDirectory == nil {
+		_ = unix.Close(operationFD)
+		return preparedOperationRoot{}, fmt.Errorf("wrap secure worktree operation directory")
+	}
+	return preparedOperationRoot{
+		Path:      filepath.Join(home, "worktrees", operation),
+		Directory: operationDirectory,
+	}, nil
 }
 
-// prepareWorktreeDestination rejects symlinked hierarchy components and proves
-// the resolved parent and eventual destination stay below the resolved WB
-// home before Git mutates the filesystem.
-func prepareWorktreeDestination(home, operation, owner, repository string) (string, error) {
-	operationRoot := filepath.Join(home, "worktrees", operation)
-	if err := ensureManagedDirectory(home, operationRoot); err != nil {
-		return "", err
+// prepareWorktreeDestination walks from the held operation descriptor. It
+// never calls MkdirAll, Stat, or EvalSymlinks on the mutable WB hierarchy.
+// The returned path is display/result text only; descriptor-relative add owns
+// the real destination mutation.
+func prepareWorktreeDestination(operationRoot string, operationDirectory *os.File, owner, repository string) (string, bool, error) {
+	if !directoryStillMatches(operationRoot, operationDirectory) {
+		return "", false, fmt.Errorf("secure worktree operation path changed before planning; refusing redirected checkout")
 	}
-	ownerRoot := filepath.Join(operationRoot, owner)
-	if err := ensureManagedDirectory(home, ownerRoot); err != nil {
-		return "", err
-	}
-	resolvedHome, err := filepath.EvalSymlinks(home)
+	ownerFD, err := openOrCreateNoFollowDirectory(int(operationDirectory.Fd()), owner)
 	if err != nil {
-		return "", fmt.Errorf("resolve WB home %s: %w", home, err)
+		return "", false, err
 	}
-	resolvedOwner, err := filepath.EvalSymlinks(ownerRoot)
-	if err != nil {
-		return "", fmt.Errorf("resolve worktree parent %s: %w", ownerRoot, err)
+	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-worktree-owner-plan")
+	if ownerDirectory == nil {
+		_ = unix.Close(ownerFD)
+		return "", false, fmt.Errorf("wrap secure worktree owner directory %s", owner)
 	}
-	worktree := filepath.Join(ownerRoot, repository)
-	if !pathWithin(resolvedHome, filepath.Join(resolvedOwner, repository)) {
-		return "", fmt.Errorf("worktree destination %s resolves outside WB home %s", worktree, home)
+	defer func() { _ = ownerDirectory.Close() }()
+	ownerPath := filepath.Join(operationRoot, owner)
+	if !directoryStillMatches(ownerPath, ownerDirectory) {
+		return "", false, fmt.Errorf("secure worktree owner path changed before planning; refusing redirected checkout")
 	}
-	info, err := os.Lstat(worktree)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("refusing symlinked worktree destination %s", worktree)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("worktree destination is not a directory: %s", worktree)
-		}
-		resolvedWorktree, resolveErr := filepath.EvalSymlinks(worktree)
-		if resolveErr != nil || !pathWithin(resolvedHome, resolvedWorktree) {
-			return "", fmt.Errorf("worktree destination %s resolves outside WB home %s", worktree, home)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("inspect worktree destination %s: %w", worktree, err)
-	}
-	return worktree, nil
-}
-
-func ensureManagedDirectory(home, directory string) error {
-	info, err := os.Lstat(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		if mkdirErr := os.Mkdir(directory, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
-			return fmt.Errorf("create managed worktree directory %s: %w", directory, mkdirErr)
-		}
-		info, err = os.Lstat(directory)
+	worktree := filepath.Join(ownerPath, repository)
+	fd, err := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return worktree, false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("inspect managed worktree directory %s: %w", directory, err)
+		var info unix.Stat_t
+		if statErr := unix.Fstatat(ownerFD, repository, &info, unix.AT_SYMLINK_NOFOLLOW); statErr == nil && info.Mode&unix.S_IFMT == unix.S_IFLNK {
+			return "", false, fmt.Errorf("refusing symlinked worktree destination %s", worktree)
+		}
+		return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing symlinked managed worktree directory %s", directory)
+	destination := os.NewFile(uintptr(fd), "wb-worktree-destination-plan")
+	if destination == nil {
+		_ = unix.Close(fd)
+		return "", false, fmt.Errorf("wrap secure worktree destination %s", worktree)
+	}
+	defer func() { _ = destination.Close() }()
+	info, err := destination.Stat()
+	if err != nil {
+		return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("managed worktree path is not a directory: %s", directory)
+		return "", false, fmt.Errorf("worktree destination is not a directory: %s", worktree)
 	}
-	resolvedHome, err := filepath.EvalSymlinks(home)
-	if err != nil {
-		return fmt.Errorf("resolve WB home %s: %w", home, err)
+	if !directoryStillMatches(worktree, destination) {
+		return "", false, fmt.Errorf("secure worktree destination path changed before planning; refusing redirected checkout")
 	}
-	resolvedDirectory, err := filepath.EvalSymlinks(directory)
-	if err != nil {
-		return fmt.Errorf("resolve managed worktree directory %s: %w", directory, err)
-	}
-	if !pathWithin(resolvedHome, resolvedDirectory) {
-		return fmt.Errorf("managed worktree directory %s resolves outside WB home %s", directory, home)
-	}
-	return nil
+	return worktree, true, nil
 }
 
 func pathWithin(root, path string) bool {
@@ -974,7 +981,9 @@ func pathWithin(root, path string) bool {
 // detected escape is rolled back through the held stage descriptor.
 func addWorktreeAtSecureDestination(
 	ctx context.Context,
-	canonical, operationRoot, owner, repository, branch, base string,
+	canonical, operationRoot string,
+	operationDirectory *os.File,
+	owner, repository, branch, base string,
 	branchExists bool,
 	beforeAdd func(),
 	afterStageValidation func(),
@@ -991,16 +1000,7 @@ func addWorktreeAtSecureDestination(
 			return fmt.Errorf("resolve feature branch base origin/%s: %w", base, err)
 		}
 	}
-	operationFD, err := openNoFollowDirectory(operationRoot)
-	if err != nil {
-		return err
-	}
-	operationDirectory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
-	if operationDirectory == nil {
-		_ = unix.Close(operationFD)
-		return fmt.Errorf("wrap secure worktree operation directory")
-	}
-	defer func() { _ = operationDirectory.Close() }()
+	operationFD := int(operationDirectory.Fd())
 	trustedOperationRoot, err := secureDirectoryPath(ctx, operationDirectory)
 	if err != nil {
 		return fmt.Errorf("resolve secure worktree operation directory: %w", err)
@@ -1022,14 +1022,14 @@ func addWorktreeAtSecureDestination(
 	if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 		return err
 	}
-	stageRoot, err := os.MkdirTemp(operationRoot, ".wb-stage-")
+	stageName, err := makeSecureStageDirectory(operationFD)
 	if err != nil {
 		return fmt.Errorf("create secure worktree staging directory: %w", err)
 	}
-	defer func() { _ = os.Remove(stageRoot) }()
-	stageFD, err := openNoFollowDirectory(stageRoot)
+	stageRoot := filepath.Join(operationRoot, stageName)
+	stageFD, err := unix.Openat(operationFD, stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("open secure worktree staging directory: %w", err)
 	}
 	stageDirectory := os.NewFile(uintptr(stageFD), "wb-worktree-stage")
 	if stageDirectory == nil {
@@ -1038,8 +1038,9 @@ func addWorktreeAtSecureDestination(
 	}
 	defer func() { _ = stageDirectory.Close() }()
 	defer func() {
-		_ = removeEmptyMatchingStageDirectory(operationRoot, stageDirectory)
-		_ = removeStageSymlink(stageRoot)
+		_ = removeEmptyMatchingStageDirectoryAt(operationDirectory, stageDirectory)
+		_ = unix.Unlinkat(operationFD, stageName, 0)
+		_ = unix.Unlinkat(operationFD, stageName, unix.AT_REMOVEDIR)
 	}()
 	rollback := func(creationErr error, finalPath string) error {
 		cleanupCtx, cancel := rollbackContext(ctx)
@@ -1362,12 +1363,32 @@ func openNoFollowDirectory(path string) (int, error) {
 	return fd, nil
 }
 
+func makeSecureStageDirectory(parentFD int) (string, error) {
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return "", fmt.Errorf("generate staging directory name: %w", err)
+		}
+		name := fmt.Sprintf(".wb-stage-%x", token[:])
+		if err := unix.Mkdirat(parentFD, name, 0o700); err == nil {
+			return name, nil
+		} else if !errors.Is(err, unix.EEXIST) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("create collision-free secure staging directory")
+}
+
 func openOrCreateNoFollowDirectory(parentFD int, name string) (int, error) {
 	if err := unix.Mkdirat(parentFD, name, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
 		return -1, fmt.Errorf("create secure worktree directory %s: %w", name, err)
 	}
 	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
+		var info unix.Stat_t
+		if statErr := unix.Fstatat(parentFD, name, &info, unix.AT_SYMLINK_NOFOLLOW); statErr == nil && info.Mode&unix.S_IFMT == unix.S_IFLNK {
+			return -1, fmt.Errorf("refusing symlinked secure worktree directory %s", name)
+		}
 		return -1, fmt.Errorf("open secure worktree directory %s: %w", name, err)
 	}
 	return fd, nil
@@ -1396,46 +1417,36 @@ func directoryStillMatches(path string, directory *os.File) bool {
 	return err == nil && os.SameFile(current, held)
 }
 
-func matchingStageDirectoryPath(operationRoot string, stageDirectory *os.File) (string, error) {
+func removeEmptyMatchingStageDirectoryAt(operationDirectory, stageDirectory *os.File) error {
 	held, err := stageDirectory.Stat()
 	if err != nil {
-		return "", fmt.Errorf("inspect held staging directory: %w", err)
+		return fmt.Errorf("inspect held staging directory: %w", err)
 	}
-	entries, err := os.ReadDir(operationRoot)
+	if _, err := operationDirectory.Seek(0, 0); err != nil {
+		return fmt.Errorf("rewind secure staging parent: %w", err)
+	}
+	entries, err := operationDirectory.ReadDir(-1)
 	if err != nil {
-		return "", fmt.Errorf("read staging parent %s: %w", operationRoot, err)
+		return fmt.Errorf("read secure staging parent: %w", err)
 	}
 	for _, entry := range entries {
-		candidate := filepath.Join(operationRoot, entry.Name())
-		info, statErr := os.Lstat(candidate)
-		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		fd, openErr := unix.Openat(int(operationDirectory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if openErr != nil {
 			continue
 		}
-		if os.SameFile(held, info) {
-			return candidate, nil
+		candidate := os.NewFile(uintptr(fd), "wb-worktree-stage-cleanup")
+		if candidate == nil {
+			_ = unix.Close(fd)
+			continue
 		}
-	}
-	return "", fmt.Errorf("held staging directory is no longer reachable below %s", operationRoot)
-}
-
-func removeEmptyMatchingStageDirectory(operationRoot string, stageDirectory *os.File) error {
-	stagePath, err := matchingStageDirectoryPath(operationRoot, stageDirectory)
-	if err != nil {
-		return nil // It was already removed or deliberately parked without a path.
-	}
-	if err := os.Remove(stagePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove empty secure staging directory %s: %w", stagePath, err)
-	}
-	return nil
-}
-
-func removeStageSymlink(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) || err != nil || info.Mode()&os.ModeSymlink == 0 {
-		return nil
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("remove substituted staging symlink %s: %w", path, err)
+		info, statErr := candidate.Stat()
+		_ = candidate.Close()
+		if statErr == nil && os.SameFile(held, info) {
+			if err := unix.Unlinkat(int(operationDirectory.Fd()), entry.Name(), unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+				return fmt.Errorf("remove empty secure staging directory %s: %w", entry.Name(), err)
+			}
+			return nil
+		}
 	}
 	return nil
 }
@@ -1537,7 +1548,10 @@ func deleteCreatedBranch(ctx context.Context, canonical, branch, expectedTip str
 	return nil
 }
 
-type operationLock struct{ path string }
+type operationLock struct {
+	path      string
+	releaseFn func()
+}
 
 func acquireLock(operationRoot string) (operationLock, error) {
 	info, err := os.Lstat(operationRoot)
@@ -1567,6 +1581,41 @@ func acquireLock(operationRoot string) (operationLock, error) {
 	return operationLock{path: path}, nil
 }
 
+// acquireLockAt is the descriptor-relative form used while creating a new
+// operation. It never follows a worktrees or task ancestor that was swapped
+// after the operation directory was opened.
+func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
+	fd, err := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if errors.Is(err, unix.EEXIST) {
+			return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
+		}
+		return operationLock{}, fmt.Errorf("acquire secure worktree operation lock: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), "wb-worktree-operation-lock")
+	if file == nil {
+		_ = unix.Close(fd)
+		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
+		return operationLock{}, fmt.Errorf("wrap secure worktree operation lock")
+	}
+	if _, err := fmt.Fprintf(file, "pid=%d\n", os.Getpid()); err != nil {
+		_ = file.Close()
+		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
+		return operationLock{}, err
+	}
+	if err := file.Close(); err != nil {
+		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
+		return operationLock{}, err
+	}
+	return operationLock{releaseFn: func() {
+		_ = unix.Unlinkat(int(operationDirectory.Fd()), ".lock", 0)
+	}}, nil
+}
+
 func (lock operationLock) release() {
+	if lock.releaseFn != nil {
+		lock.releaseFn()
+		return
+	}
 	_ = os.Remove(lock.path)
 }

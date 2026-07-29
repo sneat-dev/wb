@@ -136,6 +136,72 @@ func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 	}
 }
 
+func TestCreateDoesNotFollowWorktreesAncestorSwapDuringSecureAdd(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	worktreesPath := filepath.Join(fixture.home, "worktrees")
+	movedWorktrees := worktreesPath + "-moved"
+	operation := "worktrees-ancestor-swap"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		beforeSecureWorktreeAdd: func() {
+			if renameErr := os.Rename(worktreesPath, movedWorktrees); renameErr != nil {
+				t.Fatalf("move worktrees ancestor during secure-add regression: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, worktreesPath); symlinkErr != nil {
+				t.Fatalf("substitute worktrees ancestor during secure-add regression: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "secure staging directory path changed") {
+		t.Fatalf("worktrees-ancestor-swap Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outside, operation, "acme", "app")); !os.IsNotExist(statErr) {
+		t.Fatalf("worktrees ancestor swap created external checkout: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) || strings.Contains(registered, movedWorktrees) {
+		t.Fatalf("worktrees ancestor swap left registration:\n%s", registered)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+		t.Fatalf("worktrees ancestor swap left feature branch: exists=%t err=%v", exists, branchErr)
+	}
+}
+
+func TestCreateDoesNotFollowWorktreesAncestorSwapBeforePlanning(t *testing.T) {
+	fixture := newGitFixture(t)
+	external := t.TempDir()
+	worktreesPath := filepath.Join(fixture.home, "worktrees")
+	movedWorktrees := worktreesPath + "-moved"
+	operation := "worktrees-ancestor-plan-swap"
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterOperationRootPrepared: func() {
+			if renameErr := os.Rename(worktreesPath, movedWorktrees); renameErr != nil {
+				t.Fatalf("move worktrees ancestor before planning regression: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, worktreesPath); symlinkErr != nil {
+				t.Fatalf("substitute worktrees ancestor before planning regression: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "operation path changed before planning") {
+		t.Fatalf("worktrees-ancestor-plan-swap Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, operation)); !os.IsNotExist(statErr) {
+		t.Fatalf("worktrees ancestor swap created an external operation path: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, external) || strings.Contains(registered, movedWorktrees) {
+		t.Fatalf("worktrees ancestor plan swap left registration:\n%s", registered)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+		t.Fatalf("worktrees ancestor plan swap left feature branch: exists=%t err=%v", exists, branchErr)
+	}
+}
+
 func TestCreateRejectsOwnerSwapAfterWorktreeRepair(t *testing.T) {
 	fixture := newGitFixture(t)
 	outside := t.TempDir()
