@@ -14,6 +14,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"golang.org/x/sys/unix"
 )
 
 // ListOptions selects WB-managed task worktrees and optional GitHub PR state.
@@ -82,6 +83,13 @@ type CleanupOptions struct {
 	OlderThan    time.Duration
 	ReportDir    string
 	Now          func() time.Time
+	// beforeCleanupLocks is a test-only seam before cleanup opens and locks
+	// task directories. It exercises substituted task hierarchy rejection.
+	beforeCleanupLocks func()
+	// beforeCleanupWorktreeRemoval is a test-only seam after reinspection and
+	// before Git removes a worktree. It proves the held descriptor identity is
+	// reauthorized immediately before destructive removal.
+	beforeCleanupWorktreeRemoval func(worktree string)
 }
 
 // CleanupResult records one repository's cleanup decision and outcome.
@@ -109,6 +117,83 @@ type cleanupReport struct {
 	DeleteRemote bool            `json:"delete_remote"`
 	OlderThan    string          `json:"older_than"`
 	Results      []CleanupResult `json:"results"`
+}
+
+type cleanupTaskHandle struct {
+	key           string
+	worktreesPath string
+	taskPath      string
+	taskName      string
+	worktrees     *os.File
+	task          *os.File
+	lock          operationLock
+}
+
+func (handle *cleanupTaskHandle) validate() error {
+	if !directoryStillMatches(handle.worktreesPath, handle.worktrees) {
+		return fmt.Errorf("cleanup worktrees root path changed: %s", handle.worktreesPath)
+	}
+	if !directoryStillMatches(handle.taskPath, handle.task) {
+		return fmt.Errorf("cleanup task path changed: %s", handle.taskPath)
+	}
+	return nil
+}
+
+func (handle *cleanupTaskHandle) close() {
+	if handle.task != nil {
+		_ = handle.task.Close()
+	}
+	if handle.worktrees != nil {
+		_ = handle.worktrees.Close()
+	}
+}
+
+type cleanupWorktreeHandle struct {
+	task         *cleanupTaskHandle
+	parentPath   string
+	parentName   string
+	parent       *os.File
+	closeParent  bool
+	worktreePath string
+	worktree     *os.File
+}
+
+func (handle *cleanupWorktreeHandle) validate() error {
+	if err := handle.task.validate(); err != nil {
+		return err
+	}
+	if !directoryStillMatches(handle.parentPath, handle.parent) {
+		return fmt.Errorf("cleanup worktree parent path changed: %s", handle.parentPath)
+	}
+	if !directoryStillMatches(handle.worktreePath, handle.worktree) {
+		return fmt.Errorf("cleanup worktree path changed: %s", handle.worktreePath)
+	}
+	return nil
+}
+
+func (handle *cleanupWorktreeHandle) removeEmptyParent() error {
+	if !handle.closeParent {
+		return nil // Legacy <task>/<repository> layout has no owner directory.
+	}
+	if err := handle.task.validate(); err != nil {
+		return err
+	}
+	if !directoryStillMatches(handle.parentPath, handle.parent) {
+		return fmt.Errorf("cleanup worktree parent path changed before removal: %s", handle.parentPath)
+	}
+	if err := unix.Unlinkat(int(handle.task.task.Fd()), handle.parentName, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ENOTEMPTY) {
+		return fmt.Errorf("remove empty cleanup worktree parent %s: %w", handle.parentName, err)
+	}
+	return nil
+}
+
+func (handle *cleanupWorktreeHandle) close() {
+	if handle.worktree != nil {
+		_ = handle.worktree.Close()
+	}
+	if handle.closeParent && handle.parent != nil {
+		_ = handle.parent.Close()
+	}
 }
 
 type githubPullRequest struct {
@@ -334,15 +419,33 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// Hold the same per-task lock used by worktree creation across the complete
 	// recheck-and-remove sequence. Without this lock, a resume or second cleanup
 	// could start after the plan observed an unlocked task but before deletion.
+	if normalized.beforeCleanupLocks != nil {
+		normalized.beforeCleanupLocks()
+	}
 	locks, err := acquireCleanupLocks(outcome.Results)
 	if err != nil {
 		return fail(err)
 	}
-	defer func() { releaseCleanupLocks(locks) }()
+	defer func() {
+		releaseCleanupLocks(locks)
+		closeCleanupTaskHandles(locks)
+	}()
 
 	for index := range outcome.Results {
 		if !outcome.Results[index].Eligible {
 			continue
+		}
+		task, err := cleanupTaskForResult(locks, outcome.Results[index])
+		if err != nil {
+			return fail(err)
+		}
+		worktree, err := openCleanupWorktree(task, outcome.Results[index])
+		if err != nil {
+			return fail(err)
+		}
+		if err := worktree.validate(); err != nil {
+			worktree.close()
+			return fail(err)
 		}
 		refreshed, err := inspectLifecycleWorktree(
 			ctx,
@@ -355,33 +458,67 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			false, // The task is locked by this cleanup operation.
 		)
 		if err != nil {
+			worktree.close()
+			return fail(err)
+		}
+		if err := worktree.validate(); err != nil {
+			worktree.close()
 			return fail(err)
 		}
 		eligible, reason := cleanupEligibility(refreshed, normalized.OlderThan, now)
 		if !eligible {
+			worktree.close()
 			return fail(fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason))
 		}
 		if refreshed.HeadSHA != outcome.Results[index].HeadSHA {
+			worktree.close()
 			return fail(fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository))
 		}
 		outcome.Results[index].ListResult = refreshed
+		if normalized.beforeCleanupWorktreeRemoval != nil {
+			normalized.beforeCleanupWorktreeRemoval(refreshed.WorktreeDir)
+		}
+		// Git's worktree-remove command requires the registered lexical path
+		// (it rejects descriptor aliases such as /dev/fd/N). Reauthorize that
+		// spelling against the retained task/owner/worktree descriptors at the
+		// last possible point; any substitution conservatively aborts before Git
+		// can remove a checkout or its registration.
+		if err := worktree.validate(); err != nil {
+			worktree.close()
+			return fail(err)
+		}
 		if normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
 			if err := deleteRemoteBranch(ctx, refreshed); err != nil {
+				worktree.close()
 				return fail(err)
 			}
 			outcome.Results[index].RemoteDeleted = true
 		}
 		if _, err := git(ctx, refreshed.CanonicalDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
+			worktree.close()
 			return fail(fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, err))
 		}
+		if err := task.validate(); err != nil {
+			worktree.close()
+			return fail(err)
+		}
 		if _, err := git(ctx, refreshed.CanonicalDir, "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
+			worktree.close()
 			return fail(fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
 		}
+		if err := worktree.removeEmptyParent(); err != nil {
+			worktree.close()
+			return fail(err)
+		}
+		worktree.close()
 		outcome.Results[index].Applied = true
 	}
 	releaseCleanupLocks(locks)
+	if err := removeEmptyTaskDirectories(locks, outcome.Results); err != nil {
+		return fail(err)
+	}
+	closeCleanupTaskHandles(locks)
 	locks = nil
-	removeEmptyTaskDirectories(outcome.Results)
 	if normalized.ReportDir != "" {
 		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results)
 		if err != nil {
@@ -655,29 +792,86 @@ func blockUnsafeTasks(results []CleanupResult) {
 	}
 }
 
-func acquireCleanupLocks(results []CleanupResult) ([]operationLock, error) {
-	locks := make([]operationLock, 0)
+func cleanupTaskKey(worktreesRoot, task string) string {
+	return filepath.Clean(worktreesRoot) + "\x00" + task
+}
+
+func acquireCleanupLocks(results []CleanupResult) ([]*cleanupTaskHandle, error) {
+	locks := make([]*cleanupTaskHandle, 0)
 	seen := map[string]bool{}
 	for _, result := range results {
-		key := result.WorktreesRoot + "\x00" + result.Task
+		key := cleanupTaskKey(result.WorktreesRoot, result.Task)
 		if !result.Eligible || seen[key] {
 			continue
 		}
 		seen[key] = true
-		taskRoot := filepath.Join(result.WorktreesRoot, result.Task)
-		lock, err := acquireLock(taskRoot)
+		worktrees, err := openAbsoluteDirectoryNoFollow(result.WorktreesRoot, false)
 		if err != nil {
 			releaseCleanupLocks(locks)
+			closeCleanupTaskHandles(locks)
+			return nil, fmt.Errorf("open cleanup worktrees root %s: %w", result.WorktreesRoot, err)
+		}
+		taskFD, err := unix.Openat(int(worktrees.Fd()), result.Task, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			_ = worktrees.Close()
+			releaseCleanupLocks(locks)
+			closeCleanupTaskHandles(locks)
+			return nil, fmt.Errorf("open cleanup task %s without following links: %w", result.Task, err)
+		}
+		task := os.NewFile(uintptr(taskFD), "wb-cleanup-task")
+		if task == nil {
+			_ = unix.Close(taskFD)
+			_ = worktrees.Close()
+			releaseCleanupLocks(locks)
+			closeCleanupTaskHandles(locks)
+			return nil, fmt.Errorf("wrap cleanup task %s", result.Task)
+		}
+		handle := &cleanupTaskHandle{
+			key:           key,
+			worktreesPath: result.WorktreesRoot,
+			taskPath:      filepath.Join(result.WorktreesRoot, result.Task),
+			taskName:      result.Task,
+			worktrees:     worktrees,
+			task:          task,
+		}
+		if err := handle.validate(); err != nil {
+			handle.close()
+			releaseCleanupLocks(locks)
+			closeCleanupTaskHandles(locks)
+			return nil, err
+		}
+		lock, err := acquireLockAt(task)
+		if err != nil {
+			handle.close()
+			releaseCleanupLocks(locks)
+			closeCleanupTaskHandles(locks)
 			return nil, fmt.Errorf("lock cleanup task %s: %w", result.Task, err)
 		}
-		locks = append(locks, lock)
+		handle.lock = lock
+		locks = append(locks, handle)
 	}
 	return locks, nil
 }
 
-func releaseCleanupLocks(locks []operationLock) {
+func cleanupTaskForResult(locks []*cleanupTaskHandle, result CleanupResult) (*cleanupTaskHandle, error) {
+	key := cleanupTaskKey(result.WorktreesRoot, result.Task)
+	for _, handle := range locks {
+		if handle.key == key {
+			return handle, nil
+		}
+	}
+	return nil, fmt.Errorf("missing held cleanup task for %s", result.Task)
+}
+
+func releaseCleanupLocks(locks []*cleanupTaskHandle) {
 	for index := len(locks) - 1; index >= 0; index-- {
-		locks[index].release()
+		locks[index].lock.release()
+	}
+}
+
+func closeCleanupTaskHandles(locks []*cleanupTaskHandle) {
+	for index := len(locks) - 1; index >= 0; index-- {
+		locks[index].close()
 	}
 }
 
@@ -690,22 +884,90 @@ func deleteRemoteBranch(ctx context.Context, entry ListResult) error {
 	return nil
 }
 
-func removeEmptyTaskDirectories(results []CleanupResult) {
-	tasks := map[string]bool{}
+func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanupWorktreeHandle, error) {
+	if err := task.validate(); err != nil {
+		return nil, err
+	}
+	relative, err := filepath.Rel(task.taskPath, result.WorktreeDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve cleanup worktree relative path: %w", err)
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) == 0 || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
+		return nil, fmt.Errorf("cleanup worktree %s is outside held task %s", result.WorktreeDir, task.taskPath)
+	}
+	handle := &cleanupWorktreeHandle{task: task, worktreePath: result.WorktreeDir}
+	var repository string
+	switch len(parts) {
+	case 1:
+		if !validRepositorySegment(parts[0]) {
+			return nil, fmt.Errorf("invalid cleanup repository directory %q", parts[0])
+		}
+		repository = parts[0]
+		handle.parent = task.task
+		handle.parentPath = task.taskPath
+	case 2:
+		if !validSafeSegment(parts[0]) || !validRepositorySegment(parts[1]) {
+			return nil, fmt.Errorf("invalid cleanup worktree hierarchy %s", relative)
+		}
+		parentFD, err := unix.Openat(int(task.task.Fd()), parts[0], unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			return nil, fmt.Errorf("open cleanup worktree parent %s without following links: %w", parts[0], err)
+		}
+		parent := os.NewFile(uintptr(parentFD), "wb-cleanup-worktree-parent")
+		if parent == nil {
+			_ = unix.Close(parentFD)
+			return nil, fmt.Errorf("wrap cleanup worktree parent %s", parts[0])
+		}
+		handle.parent = parent
+		handle.parentPath = filepath.Join(task.taskPath, parts[0])
+		handle.parentName = parts[0]
+		handle.closeParent = true
+		repository = parts[1]
+	default:
+		return nil, fmt.Errorf("cleanup worktree %s has unsupported hierarchy", result.WorktreeDir)
+	}
+	worktreeFD, err := unix.Openat(int(handle.parent.Fd()), repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		handle.close()
+		return nil, fmt.Errorf("open cleanup worktree %s without following links: %w", result.WorktreeDir, err)
+	}
+	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-worktree")
+	if handle.worktree == nil {
+		_ = unix.Close(worktreeFD)
+		handle.close()
+		return nil, fmt.Errorf("wrap cleanup worktree %s", result.WorktreeDir)
+	}
+	if err := handle.validate(); err != nil {
+		handle.close()
+		return nil, err
+	}
+	return handle, nil
+}
+
+func removeEmptyTaskDirectories(locks []*cleanupTaskHandle, results []CleanupResult) error {
+	appliedByTask := map[string]bool{}
+	blockedByTask := map[string]bool{}
 	for _, result := range results {
-		if !result.Applied {
+		key := cleanupTaskKey(result.WorktreesRoot, result.Task)
+		if result.Applied {
+			appliedByTask[key] = true
+		} else {
+			blockedByTask[key] = true
+		}
+	}
+	for _, handle := range locks {
+		if !appliedByTask[handle.key] || blockedByTask[handle.key] {
 			continue
 		}
-		taskRoot := filepath.Join(result.WorktreesRoot, result.Task)
-		// Current worktrees leave an empty owner directory; legacy direct
-		// worktrees have the task directory as their immediate parent. Both
-		// removals are best-effort and refuse non-empty sibling worktrees.
-		_ = os.Remove(filepath.Dir(result.WorktreeDir))
-		tasks[taskRoot] = true
+		if err := handle.validate(); err != nil {
+			return err
+		}
+		if err := unix.Unlinkat(int(handle.worktrees.Fd()), handle.taskName, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ENOTEMPTY) {
+			return fmt.Errorf("remove empty cleanup task %s: %w", handle.taskName, err)
+		}
 	}
-	for taskRoot := range tasks {
-		_ = os.Remove(taskRoot)
-	}
+	return nil
 }
 
 func writeCleanupReport(

@@ -444,7 +444,7 @@ func TestApplyRefusesGitCommonDirectoryAncestorSwapWithoutExternalMutation(t *te
 			}
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "Git common directory path changed") {
+	if err == nil || !strings.Contains(err.Error(), "git common directory path changed") {
 		t.Fatalf("ancestor-swapped Git common directory install error = %v", err)
 	}
 	if content := mustReadFile(t, sentinel); content != "outside\n" {
@@ -455,6 +455,161 @@ func TestApplyRefusesGitCommonDirectoryAncestorSwapWithoutExternalMutation(t *te
 	}
 	if _, statErr := os.Stat(filepath.Join(movedGitDirectory, "wb-hooks", "pre-commit")); !os.IsNotExist(statErr) {
 		t.Fatalf("moved Git directory received a hook after the failed operation: %v", statErr)
+	}
+}
+
+func TestApplyRefusesGitCommonAncestorSwapBeforeFirstCommonDirectoryOpen(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	gitDirectory := filepath.Join(repo, ".git")
+	movedGitDirectory := filepath.Join(t.TempDir(), "moved-git")
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "keep.txt")
+	mustWrite(t, sentinel, "outside\n")
+
+	_, err := Apply(ApplyOptions{
+		RepoPath:     repo,
+		WBExecutable: testWBExecutable(t, "wb"),
+		afterManagedHooksPathValidation: func() {
+			if renameErr := os.Rename(gitDirectory, movedGitDirectory); renameErr != nil {
+				t.Fatalf("move Git common directory before first open: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, gitDirectory); symlinkErr != nil {
+				t.Fatalf("substitute Git common directory before first open: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "open Git common directory") {
+		t.Fatalf("pre-open Git common ancestor swap error = %v", err)
+	}
+	if content := mustReadFile(t, sentinel); content != "outside\n" {
+		t.Fatalf("external sentinel changed: %q", content)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, "wb-hooks")); !os.IsNotExist(statErr) {
+		t.Fatalf("external Git directory received managed hooks: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedGitDirectory, "wb-hooks")); !os.IsNotExist(statErr) {
+		t.Fatalf("moved Git directory received managed hooks: %v", statErr)
+	}
+}
+
+func TestApplyRefusesRepositoryAncestorSwapBeforeFirstCommonDirectoryOpen(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	movedRepo := filepath.Join(t.TempDir(), "moved-repo")
+	external := t.TempDir()
+	sentinel := filepath.Join(external, "keep.txt")
+	mustWrite(t, sentinel, "outside\n")
+
+	_, err := Apply(ApplyOptions{
+		RepoPath:     repo,
+		WBExecutable: testWBExecutable(t, "wb"),
+		afterManagedHooksPathValidation: func() {
+			if renameErr := os.Rename(repo, movedRepo); renameErr != nil {
+				t.Fatalf("move repository before first common open: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, repo); symlinkErr != nil {
+				t.Fatalf("substitute repository before first common open: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "open Git common directory") {
+		t.Fatalf("pre-open repository ancestor swap error = %v", err)
+	}
+	if content := mustReadFile(t, sentinel); content != "outside\n" {
+		t.Fatalf("external sentinel changed: %q", content)
+	}
+	if _, statErr := os.Stat(filepath.Join(external, ".git", "wb-hooks")); !os.IsNotExist(statErr) {
+		t.Fatalf("external repository target received managed hooks: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedRepo, ".git", "wb-hooks")); !os.IsNotExist(statErr) {
+		t.Fatalf("moved repository received managed hooks: %v", statErr)
+	}
+}
+
+func TestApplyRefusesManagedHookReplacementAfterRead(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	oldExecutable := testWBExecutable(t, "old-wb")
+	newExecutable := testWBExecutable(t, "new-wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: oldExecutable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	replacement := "#!/bin/sh\necho replacement\n"
+	_, err = Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: newExecutable,
+		afterManagedHookRead: func(name string) {
+			if name == "pre-commit" {
+				replaceTestFile(t, preCommit, replacement)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after inspection") {
+		t.Fatalf("managed hook replacement error = %v", err)
+	}
+	if content := mustReadFile(t, preCommit); content != replacement {
+		t.Fatalf("replacement hook was overwritten: %q", content)
+	}
+}
+
+func TestApplyRefusesUnmanagedHookReplacementAfterReadBeforeBackup(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	replaceTestFile(t, preCommit, "#!/bin/sh\necho unmanaged-original\n")
+	replacement := "#!/bin/sh\necho unmanaged-replacement\n"
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	_, err = Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: executable, Force: true, Now: func() time.Time { return now },
+		afterManagedHookRead: func(name string) {
+			if name == "pre-commit" {
+				replaceTestFile(t, preCommit, replacement)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after inspection") {
+		t.Fatalf("unmanaged hook backup replacement error = %v", err)
+	}
+	if content := mustReadFile(t, preCommit); content != replacement {
+		t.Fatalf("replacement unmanaged hook was overwritten: %q", content)
+	}
+	backup := preCommit + ".wb-backup-20260729T120000Z"
+	if _, statErr := os.Stat(backup); !os.IsNotExist(statErr) {
+		t.Fatalf("backup created from replacement hook: %v", statErr)
+	}
+}
+
+func TestRepairRefusesStaleHookReplacementAfterReadBeforeRemoval(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	executable := testWBExecutable(t, "wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(installed.Report.ManagedPath, "commit-msg")
+	mustWrite(t, stale, shimContent(executable, "commit-msg", "", "", "", false))
+	replacement := "#!/bin/sh\necho stale-replacement\n"
+	_, err = Apply(ApplyOptions{
+		RepoPath: repo, WBExecutable: executable, Repair: true,
+		afterManagedHookRead: func(name string) {
+			if name == "commit-msg" {
+				replaceTestFile(t, stale, replacement)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed after inspection") {
+		t.Fatalf("stale hook removal replacement error = %v", err)
+	}
+	if content := mustReadFile(t, stale); content != replacement {
+		t.Fatalf("replacement stale hook was removed: %q", content)
 	}
 }
 
@@ -1148,6 +1303,26 @@ func git(t *testing.T, dir string, args ...string) string {
 func mustWrite(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func replaceTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".hook-replacement-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if _, err := temporary.WriteString(content); err != nil {
+		_ = temporary.Close()
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
 		t.Fatal(err)
 	}
 }

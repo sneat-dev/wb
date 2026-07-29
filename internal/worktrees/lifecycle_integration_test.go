@@ -333,6 +333,78 @@ func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	}
 }
 
+func TestCleanupRefusesTaskSwapBeforeLockWithoutMutatingExternalTarget(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-lock-swap")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	taskRoot := filepath.Join(fixture.home, "worktrees", "cleanup-lock-swap")
+	movedTaskRoot := taskRoot + "-moved"
+	external := t.TempDir()
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-lock-swap",
+		Apply:        true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeCleanupLocks: func() {
+			if renameErr := os.Rename(taskRoot, movedTaskRoot); renameErr != nil {
+				t.Fatalf("move cleanup task before lock: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, taskRoot); symlinkErr != nil {
+				t.Fatalf("substitute cleanup task before lock: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "open cleanup task") {
+		t.Fatalf("cleanup task-swap-before-lock error = %v", err)
+	}
+	if entries, readErr := os.ReadDir(external); readErr != nil || len(entries) != 0 {
+		t.Fatalf("external cleanup task target was mutated: entries=%v err=%v", entries, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(movedTaskRoot, "acme", "app")); statErr != nil {
+		t.Fatalf("moved cleanup worktree was removed: %v", statErr)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/"+result.Branch) {
+		t.Fatal("cleanup task-swap-before-lock removed feature branch")
+	}
+}
+
+func TestCleanupRefusesWorktreeSwapBeforeRemovalWithoutMutatingExternalTarget(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-removal-swap")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	movedWorktree := result.WorktreeDir + "-moved"
+	external := t.TempDir()
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-removal-swap",
+		Apply:        true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeCleanupWorktreeRemoval: func(worktree string) {
+			if worktree != result.WorktreeDir {
+				return
+			}
+			if renameErr := os.Rename(worktree, movedWorktree); renameErr != nil {
+				t.Fatalf("move cleanup worktree before removal: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(external, worktree); symlinkErr != nil {
+				t.Fatalf("substitute cleanup worktree before removal: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "cleanup worktree path changed") {
+		t.Fatalf("cleanup worktree-swap-before-removal error = %v", err)
+	}
+	if entries, readErr := os.ReadDir(external); readErr != nil || len(entries) != 0 {
+		t.Fatalf("external cleanup worktree target was mutated: entries=%v err=%v", entries, readErr)
+	}
+	if _, statErr := os.Stat(movedWorktree); statErr != nil {
+		t.Fatalf("moved cleanup worktree was removed: %v", statErr)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/"+result.Branch) {
+		t.Fatal("cleanup worktree-swap-before-removal removed feature branch")
+	}
+}
+
 func TestCleanupPreservesDirtyRealWorktree(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-dirty")
 	installMergedPullRequestFixture(t, head, mergedAt)

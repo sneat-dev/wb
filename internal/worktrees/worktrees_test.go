@@ -58,6 +58,29 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 }
 
+func TestCreateDoesNotFollowSubstitutedWBHomeBeforeInitialOpen(t *testing.T) {
+	fixture := newGitFixture(t)
+	external := t.TempDir()
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "home-before-open-swap",
+		beforeHomeDirectoryOpen: func() {
+			if symlinkErr := os.Symlink(external, fixture.home); symlinkErr != nil {
+				t.Fatalf("substitute WB home before initial open: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("substituted WB home Create error = %v", err)
+	}
+	if entries, readErr := os.ReadDir(external); readErr != nil || len(entries) != 0 {
+		t.Fatalf("substituted WB home mutated external target: entries=%v err=%v", entries, readErr)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/home-before-open-swap"); branchErr != nil || exists {
+		t.Fatalf("substituted WB home left feature branch: exists=%t err=%v", exists, branchErr)
+	}
+}
+
 func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -283,6 +306,51 @@ func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) 
 	}
 	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
 		t.Fatalf("parked trusted stage remains: %v", statErr)
+	}
+}
+
+func TestCreateCleansStageWhenOpeningItFails(t *testing.T) {
+	fixture := newGitFixture(t)
+	operation := "stage-open-failure"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	parkedStage := filepath.Join(operationRoot, "parked-stage-before-open")
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureStageDirectoryCreated: func() {
+			entries, readErr := os.ReadDir(operationRoot)
+			if readErr != nil {
+				t.Fatalf("read newly-created stage: %v", readErr)
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+					stagePath := filepath.Join(operationRoot, entry.Name())
+					if renameErr := os.Rename(stagePath, parkedStage); renameErr != nil {
+						t.Fatalf("park newly-created stage before open: %v", renameErr)
+					}
+					if writeErr := os.WriteFile(stagePath, []byte("not a directory\n"), 0o600); writeErr != nil {
+						t.Fatalf("replace stage with regular file: %v", writeErr)
+					}
+					return
+				}
+			}
+			t.Fatal("secure staging directory was not created")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "open secure worktree staging directory") {
+		t.Fatalf("stage-open failure Create error = %v", err)
+	}
+	entries, readErr := os.ReadDir(operationRoot)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+			t.Fatalf("stage artifact remains after Openat failure: %s", entry.Name())
+		}
+	}
+	if _, statErr := os.Lstat(parkedStage); !os.IsNotExist(statErr) {
+		t.Fatalf("parked stage artifact remains after Openat failure: %v", statErr)
 	}
 }
 
