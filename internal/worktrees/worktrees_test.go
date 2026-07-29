@@ -244,6 +244,181 @@ func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsStageRootMovedOutsideOperationAfterValidation(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	operation := "stage-outside-after-validation"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	stageRoot := ""
+	parkedStage := filepath.Join(outside, "parked-trusted-stage")
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureStageValidation: func() {
+			stageRoot = testStageRoot(t, operationRoot)
+			if renameErr := os.Rename(stageRoot, parkedStage); renameErr != nil {
+				t.Fatalf("move validated staging directory outside operation: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
+				t.Fatalf("substitute validated staging directory: %v", symlinkErr)
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "outside trusted operation root") {
+		t.Fatalf("external stage move Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(parkedStage, "checkout")); !os.IsNotExist(statErr) {
+		t.Fatalf("external stage move created checkout outside WB home: %v", statErr)
+	}
+	assertFailedCreateRolledBack(t, fixture, operation)
+	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("substituted stage path remains: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) {
+		t.Fatalf("external stage move left registration:\n%s", registered)
+	}
+}
+
+func TestCreatePublishesAfterExternalStageMoveFollowingFinalVerification(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	operation := "stage-outside-publish"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	stageRoot := ""
+	parkedStage := filepath.Join(outside, "parked-trusted-stage")
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureStageVerification: func() {
+			stageRoot = testStageRoot(t, operationRoot)
+			if renameErr := os.Rename(stageRoot, parkedStage); renameErr != nil {
+				t.Fatalf("move verified staging directory outside operation: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
+				t.Fatalf("substitute verified staging directory: %v", symlinkErr)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create after final external stage move: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Create results = %#v", results)
+	}
+	if _, statErr := os.Stat(filepath.Join(parkedStage, "checkout")); !os.IsNotExist(statErr) {
+		t.Fatalf("external stage move left checkout outside WB home: %v", statErr)
+	}
+	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("substituted stage path remains: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) || !strings.Contains(registered, results[0].WorktreeDir) {
+		t.Fatalf("external stage move registration =\n%s", registered)
+	}
+}
+
+func TestCreateRollsBackExternalStageAfterPublishedRepairFailure(t *testing.T) {
+	fixture := newGitFixture(t)
+	outside := t.TempDir()
+	operation := "stage-outside-repair-failure"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	stageRoot := ""
+	parkedStage := filepath.Join(outside, "parked-trusted-stage")
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureStageVerification: func() {
+			stageRoot = testStageRoot(t, operationRoot)
+			if renameErr := os.Rename(stageRoot, parkedStage); renameErr != nil {
+				t.Fatalf("move verified staging directory outside operation: %v", renameErr)
+			}
+			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
+				t.Fatalf("substitute verified staging directory: %v", symlinkErr)
+			}
+		},
+		beforeWorktreeRepair: func() error {
+			return errors.New("simulated repair failure after external stage move")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "simulated repair failure") {
+		t.Fatalf("external stage repair failure Create error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(parkedStage, "checkout")); !os.IsNotExist(statErr) {
+		t.Fatalf("external stage repair failure left checkout outside WB home: %v", statErr)
+	}
+	assertFailedCreateRolledBack(t, fixture, operation)
+	if _, statErr := os.Lstat(stageRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("substituted stage path remains: %v", statErr)
+	}
+	registered := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+	if strings.Contains(registered, outside) {
+		t.Fatalf("external stage repair failure left registration:\n%s", registered)
+	}
+}
+
+func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
+	fixture := newGitFixture(t)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDirectory := t.TempDir()
+	trustedGit := filepath.Join(workingDirectory, "git")
+	if err := os.WriteFile(trustedGit, []byte("#!/bin/sh\nexec \"$WB_TEST_REAL_GIT\" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+	t.Setenv("PATH", ".")
+	t.Setenv("GODEBUG", "execerrdot=0")
+	t.Setenv("WB_TEST_REAL_GIT", realGit)
+	operation := "stage-path-git"
+	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+	fakeWasRun := filepath.Join(workingDirectory, "stage-git-ran")
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    operation,
+		afterSecureStageValidation: func() {
+			fakeGit := filepath.Join(testStageRoot(t, operationRoot), "git")
+			contents := "#!/bin/sh\ntouch \"" + fakeWasRun + "\"\nexit 99\n"
+			if writeErr := os.WriteFile(fakeGit, []byte(contents), 0o755); writeErr != nil {
+				t.Fatalf("write staged fake git: %v", writeErr)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create with PATH=. and staged fake git: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Create results = %#v", results)
+	}
+	if _, statErr := os.Stat(fakeWasRun); !os.IsNotExist(statErr) {
+		t.Fatalf("staged fake git ran: %v", statErr)
+	}
+}
+
+func testStageRoot(t *testing.T, operationRoot string) string {
+	t.Helper()
+	entries, err := os.ReadDir(operationRoot)
+	if err != nil {
+		t.Fatalf("read staging parent: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-stage-") {
+			return filepath.Join(operationRoot, entry.Name())
+		}
+	}
+	t.Fatal("secure staging directory was not created")
+	return ""
+}
+
 func TestCreateRejectsWhitespaceEquivalentRepositoryBeforeMutation(t *testing.T) {
 	fixture := newGitFixture(t)
 	_, err := Create(context.Background(), []string{"acme/app", " acme/app "}, CreateOptions{
@@ -570,8 +745,9 @@ func TestGuardAllowsInteractiveRebaseAmend(t *testing.T) {
 	gitTest(t, fixture.canonical, "commit", "-m", "advance main")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 	gitTest(t, worktree, "fetch", "origin", "main")
+	gitTest(t, worktree, "config", "rebase.abbreviateCommands", "true")
 	sequenceEditor := filepath.Join(t.TempDir(), "sequence-editor")
-	if err := os.WriteFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^pick /edit /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(sequenceEditor, []byte("#!/bin/sh\nsed 's/^p /e /' \"$1\" > \"$1.wb\" && mv \"$1.wb\" \"$1\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if output, rebaseErr := gitTestRunEnv(worktree, []string{"GIT_SEQUENCE_EDITOR=" + sequenceEditor}, "rebase", "-i", "origin/main"); rebaseErr != nil {

@@ -132,3 +132,55 @@ func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.
 		}
 	}
 }
+
+func TestWorktreeCreateRejectsDuplicateBeforeRefreshingManagedHook(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	canonical := filepath.Join(projects, "acme", "app")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	command := exec.Command("git", "-C", canonical, "init", "-b", "main")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("init canonical: %v\n%s", err, output)
+	}
+	if _, err := hooks.Apply(hooks.ApplyOptions{
+		RepoPath: canonical, WBExecutable: hookExecutable(), ProjectsRoot: projects,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(canonical, ".git", "wb-hooks", "pre-commit")
+	if err := os.Chmod(preCommit, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(preCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "duplicate", "acme/app", "acme/app"}, &stdout, &stderr); code == exitOK {
+		t.Fatalf("duplicate create unexpectedly succeeded: stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "was supplied more than once") {
+		t.Fatalf("duplicate rejection = %s", stderr.String())
+	}
+	after, err := os.ReadFile(preCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("duplicate input refreshed managed hook")
+	}
+	info, err := os.Stat(preCommit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("duplicate input refreshed managed hook mode to %o", info.Mode().Perm())
+	}
+}

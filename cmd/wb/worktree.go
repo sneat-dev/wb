@@ -56,6 +56,11 @@ unless --resume is explicit.`,
 				}
 				repositories = []string{repository}
 			}
+			var err error
+			repositories, err = worktrees.ValidateRepositories(repositories)
+			if err != nil {
+				return err
+			}
 			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
 				return err
 			}

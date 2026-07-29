@@ -44,6 +44,10 @@ type CreateOptions struct {
 	// between validating the staging pathname and handing its held descriptor
 	// to Git. It proves a later pathname substitution cannot redirect Git.
 	afterSecureStageValidation func()
+	// afterSecureStageVerification is a test-only seam immediately before the
+	// descriptor-relative publish. It exercises the final unavoidable rename
+	// window without exposing the seam to production callers.
+	afterSecureStageVerification func()
 	// afterStagedWorktreeAdd and beforeWorktreeRepair are test-only failure
 	// seams. They model Git reporting an error after checkout creation, so the
 	// rollback invariants are exercised without platform-specific hook tricks.
@@ -109,20 +113,9 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
-	if len(repositories) == 0 {
-		return nil, fmt.Errorf("at least one owner/repository is required")
-	}
-	repositories = append([]string(nil), repositories...)
-	for _, repository := range repositories {
-		if _, _, err := splitRepository(repository); err != nil {
-			return nil, err
-		}
-	}
-	sort.Strings(repositories)
-	for index := 1; index < len(repositories); index++ {
-		if repositories[index] == repositories[index-1] {
-			return nil, fmt.Errorf("repository %q was supplied more than once", repositories[index])
-		}
+	repositories, err = ValidateRepositories(repositories)
+	if err != nil {
+		return nil, err
 	}
 
 	home, err := wbhome.Root(normalized.ProjectsRoot)
@@ -201,6 +194,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				plan.branchExists,
 				normalized.beforeSecureWorktreeAdd,
 				normalized.afterSecureStageValidation,
+				normalized.afterSecureStageVerification,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
 			); err != nil {
@@ -210,6 +204,28 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		results = append(results, plan.result)
 	}
 	return results, nil
+}
+
+// ValidateRepositories rejects unsafe and duplicate repository coordinates
+// before callers mutate canonical clones, hooks, or WB home. It also returns a
+// sorted copy so every later phase has deterministic order.
+func ValidateRepositories(repositories []string) ([]string, error) {
+	if len(repositories) == 0 {
+		return nil, fmt.Errorf("at least one owner/repository is required")
+	}
+	normalized := append([]string(nil), repositories...)
+	for _, repository := range normalized {
+		if _, _, err := splitRepository(repository); err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(normalized)
+	for index := 1; index < len(normalized); index++ {
+		if normalized[index] == normalized[index-1] {
+			return nil, fmt.Errorf("repository %q was supplied more than once", normalized[index])
+		}
+	}
+	return normalized, nil
 }
 
 // Guard verifies that path is either a clean canonical checkout of the base
@@ -451,12 +467,12 @@ func rebaseTodoHasResolvableCommit(ctx context.Context, root, todo string) bool 
 			continue
 		}
 		switch fields[0] {
-		case "pick", "reword", "edit", "squash", "fixup", "drop":
+		case "pick", "p", "reword", "r", "edit", "e", "squash", "s", "fixup", "f", "drop", "d":
 			if len(fields) < 2 || !isGitRevisionID(fields[1]) || !gitCommitExists(ctx, root, fields[1]) {
 				return false
 			}
 			foundCommit = true
-		case "exec", "break", "label", "reset", "merge", "update-ref":
+		case "exec", "x", "break", "b", "label", "l", "reset", "t", "merge", "m", "update-ref", "u":
 			// These are valid rebase commands but do not necessarily reference
 			// an object. A coherent todo still has at least one real commit.
 		default:
@@ -938,15 +954,17 @@ func pathWithin(root, path string) bool {
 
 // addWorktreeAtSecureDestination asks Git to create the checkout beneath a
 // fresh private staging directory, then publishes it with renameat between
-// O_NOFOLLOW directory descriptors. A concurrent rename of <task>/<owner>
-// therefore cannot redirect Git's checkout or worktree registration outside
-// WB_HOME.
+// O_NOFOLLOW directory descriptors. The child helper checks that the held
+// stage remains under the original operation directory before and after Git;
+// a later rename cannot redirect descriptor-relative publication, and a
+// detected escape is rolled back through the held stage descriptor.
 func addWorktreeAtSecureDestination(
 	ctx context.Context,
 	canonical, operationRoot, owner, repository, branch, base string,
 	branchExists bool,
 	beforeAdd func(),
 	afterStageValidation func(),
+	afterStageVerification func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
 ) error {
@@ -962,7 +980,20 @@ func addWorktreeAtSecureDestination(
 	if err != nil {
 		return err
 	}
-	defer func() { _ = unix.Close(operationFD) }()
+	operationDirectory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
+	if operationDirectory == nil {
+		_ = unix.Close(operationFD)
+		return fmt.Errorf("wrap secure worktree operation directory")
+	}
+	defer func() { _ = operationDirectory.Close() }()
+	trustedOperationRoot, err := secureDirectoryPath(ctx, operationDirectory)
+	if err != nil {
+		return fmt.Errorf("resolve secure worktree operation directory: %w", err)
+	}
+	registrationsBefore, err := registeredWorktreePaths(ctx, canonical)
+	if err != nil {
+		return err
+	}
 	ownerFD, err := openOrCreateNoFollowDirectory(operationFD, owner)
 	if err != nil {
 		return err
@@ -996,11 +1027,7 @@ func addWorktreeAtSecureDestination(
 		_ = removeStageSymlink(stageRoot)
 	}()
 	rollback := func(creationErr error, finalPath string) error {
-		stageTarget, targetErr := stageCheckoutPath(operationRoot, stageDirectory)
-		if targetErr != nil {
-			return fmt.Errorf("%w; locate secure staging checkout for rollback: %v", creationErr, targetErr)
-		}
-		if cleanupErr := rollbackCreatedWorktree(ctx, canonical, stageTarget, finalPath, branch, expectedBranchTip); cleanupErr != nil {
+		if cleanupErr := rollbackCreatedWorktree(ctx, canonical, stageDirectory, registrationsBefore, finalPath, branch, expectedBranchTip); cleanupErr != nil {
 			return fmt.Errorf("%w; rollback incomplete worktree creation: %v", creationErr, cleanupErr)
 		}
 		return creationErr
@@ -1014,13 +1041,19 @@ func addWorktreeAtSecureDestination(
 	if afterStageValidation != nil {
 		afterStageValidation()
 	}
-	if err := gitWorktreeAddFromStageDirectory(ctx, canonical, stageDirectory, branch, base, branchExists); err != nil {
+	if err := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, base, branchExists); err != nil {
 		return rollback(fmt.Errorf("create staged worktree: %w", err), "")
 	}
 	if afterStagedAdd != nil {
 		if err := afterStagedAdd(); err != nil {
 			return rollback(fmt.Errorf("create staged worktree: %w", err), "")
 		}
+	}
+	if err := verifySecureStageDirectory(ctx, stageDirectory, trustedOperationRoot); err != nil {
+		return rollback(fmt.Errorf("verify secure staging directory before publish: %w", err), "")
+	}
+	if afterStageVerification != nil {
+		afterStageVerification()
 	}
 	ownerPath := filepath.Join(operationRoot, owner)
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
@@ -1058,33 +1091,103 @@ func addWorktreeAtSecureDestination(
 // cannot observe or use a changed current working directory.
 func gitWorktreeAddFromStageDirectory(
 	ctx context.Context,
-	canonical string,
+	canonical, trustedOperationRoot string,
 	stageDirectory *os.File,
 	branch, base string,
 	branchExists bool,
 ) error {
-	executable, err := os.Executable()
+	gitExecutable, err := trustedGitExecutable()
 	if err != nil {
-		return fmt.Errorf("locate WB secure staging helper: %w", err)
+		return err
 	}
+	output, err := runSecureStageHelper(ctx, stageDirectory, append([]string{trustedOperationRoot, gitExecutable}, worktreeAddArguments(canonical, branch, base, branchExists)...)...)
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return fmt.Errorf("git worktree add in secure staging directory: %s", detail)
+	}
+	return nil
+}
+
+func trustedGitExecutable() (string, error) {
+	gitExecutable, err := exec.LookPath("git")
+	if err != nil {
+		return "", fmt.Errorf("locate Git before secure staging handoff: %w", err)
+	}
+	gitExecutable, err = filepath.Abs(gitExecutable)
+	if err != nil {
+		return "", fmt.Errorf("make Git path absolute before secure staging handoff: %w", err)
+	}
+	return gitExecutable, nil
+}
+
+func worktreeAddArguments(canonical, branch, base string, branchExists bool) []string {
 	args := []string{"--git-dir=" + filepath.Join(canonical, ".git"), "worktree", "add", "--quiet"}
 	if branchExists {
 		args = append(args, "checkout", branch)
 	} else {
 		args = append(args, "-b", branch, "checkout", "origin/"+base)
 	}
+	return args
+}
+
+const (
+	secureStageCheckArgument   = "--check"
+	secureStageCleanupArgument = "--cleanup"
+	secureStagePathArgument    = "--path"
+)
+
+func runSecureStageHelper(ctx context.Context, stageDirectory *os.File, args ...string) ([]byte, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("locate WB secure staging helper: %w", err)
+	}
 	command := exec.CommandContext(ctx, executable, append([]string{SecureStageGitHelperArgument}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{stageDirectory}
-	output, err := command.CombinedOutput()
+	return command.CombinedOutput()
+}
+
+func verifySecureStageDirectory(ctx context.Context, stageDirectory *os.File, trustedOperationRoot string) error {
+	output, err := runSecureStageHelper(ctx, stageDirectory, secureStageCheckArgument, trustedOperationRoot)
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("secure staging directory escaped its operation root: %s", detail)
+}
+
+func secureDirectoryPath(ctx context.Context, directory *os.File) (string, error) {
+	output, err := runSecureStageHelper(ctx, directory, secureStagePathArgument)
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
 			detail = err.Error()
 		}
-		return fmt.Errorf("git %s in secure staging directory: %s", strings.Join(args, " "), detail)
+		return "", fmt.Errorf("derive held directory path: %s", detail)
 	}
-	return nil
+	path := filepath.Clean(strings.TrimSpace(string(output)))
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("held directory path is not absolute: %q", path)
+	}
+	return path, nil
+}
+
+func cleanupSecureStageCheckout(ctx context.Context, stageDirectory *os.File) error {
+	output, err := runSecureStageHelper(ctx, stageDirectory, secureStageCleanupArgument)
+	if err == nil {
+		return nil
+	}
+	detail := strings.TrimSpace(string(output))
+	if detail == "" {
+		detail = err.Error()
+	}
+	return fmt.Errorf("remove secure staging checkout through descriptor: %s", detail)
 }
 
 // RunSecureStageGitHelper is the child-side half of a secure worktree add.
@@ -1104,14 +1207,55 @@ func RunSecureStageGitHelper(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: enter inherited stage directory: %v\n", err)
 		return 1
 	}
-	command := exec.Command("git", args...)
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: missing operation")
+		return 1
+	}
+	switch args[0] {
+	case secureStagePathArgument:
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid path arguments")
+			return 1
+		}
+		path, err := os.Getwd()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: determine held directory: %v\n", err)
+			return 1
+		}
+		_, _ = fmt.Fprintln(os.Stdout, filepath.Clean(path))
+		return 0
+	case secureStageCheckArgument:
+		if len(args) != 2 {
+			_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid containment check arguments")
+			return 1
+		}
+		return verifySecureStageContainment(args[1])
+	case secureStageCleanupArgument:
+		if len(args) != 1 {
+			_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid cleanup arguments")
+			return 1
+		}
+		if err := os.RemoveAll("checkout"); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: remove staging checkout: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) < 3 || !filepath.IsAbs(args[1]) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure stage helper: invalid Git handoff arguments")
+		return 1
+	}
+	if code := verifySecureStageContainment(args[0]); code != 0 {
+		return code
+	}
+	command := exec.Command(args[1], args[2:]...)
 	command.Env = console.Env()
 	output, err := command.CombinedOutput()
 	if len(output) > 0 {
 		_, _ = os.Stderr.Write(output)
 	}
 	if err == nil {
-		return 0
+		return verifySecureStageContainment(args[0])
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
@@ -1119,6 +1263,21 @@ func RunSecureStageGitHelper(args []string) int {
 	}
 	_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: run git: %v\n", err)
 	return 1
+}
+
+func verifySecureStageContainment(trustedOperationRoot string) int {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: determine staging directory: %v\n", err)
+		return 1
+	}
+	workingDirectory = filepath.Clean(workingDirectory)
+	trustedOperationRoot = filepath.Clean(trustedOperationRoot)
+	if workingDirectory == trustedOperationRoot || !pathWithin(trustedOperationRoot, workingDirectory) {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure stage helper: staging directory %s is outside trusted operation root %s\n", workingDirectory, trustedOperationRoot)
+		return 1
+	}
+	return 0
 }
 
 func openNoFollowDirectory(path string) (int, error) {
@@ -1161,14 +1320,6 @@ func directoryStillMatches(path string, directory *os.File) bool {
 	}
 	held, err := directory.Stat()
 	return err == nil && os.SameFile(current, held)
-}
-
-func stageCheckoutPath(operationRoot string, stageDirectory *os.File) (string, error) {
-	stagePath, err := matchingStageDirectoryPath(operationRoot, stageDirectory)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(stagePath, "checkout"), nil
 }
 
 func matchingStageDirectoryPath(operationRoot string, stageDirectory *os.File) (string, error) {
@@ -1216,36 +1367,34 @@ func removeStageSymlink(path string) error {
 }
 
 // rollbackCreatedWorktree makes every creation failure converge on the same
-// state: no staging checkout, no Git worktree registration, and no branch
-// created by this attempt. finalPath is supplied only after a failed metadata
-// repair; the checkout has already been moved back through held descriptors,
-// so it is used solely to prove Git did not retain a stale registration.
-func rollbackCreatedWorktree(ctx context.Context, canonical, stageTarget, finalPath, branch, expectedBranchTip string) error {
-	registered, err := registeredWorktreePaths(ctx, canonical)
-	if err != nil {
-		return err
-	}
-	stageTarget = filepath.Clean(stageTarget)
-	if registered[stageTarget] {
-		// The explicit removal handles normal partial checkouts. If Git itself
-		// reported a failed add after writing only part of its state, the safe
-		// filesystem cleanup and prune below finish the same rollback.
-		_, _ = git(ctx, canonical, "worktree", "remove", "--force", stageTarget)
-	}
-	if err := removeStagingCheckout(stageTarget); err != nil {
+// state: no checkout under the held staging descriptor, no newly-created Git
+// worktree registration, and no branch created by this attempt. The stage
+// directory might have been renamed outside its original parent, so cleanup
+// must never rediscover it through a mutable pathname.
+func rollbackCreatedWorktree(
+	ctx context.Context,
+	canonical string,
+	stageDirectory *os.File,
+	registrationsBefore map[string]bool,
+	finalPath, branch, expectedBranchTip string,
+) error {
+	if err := cleanupSecureStageCheckout(ctx, stageDirectory); err != nil {
 		return err
 	}
 	if _, err := git(ctx, canonical, "worktree", "prune", "--expire", "now"); err != nil {
 		return fmt.Errorf("prune incomplete worktree registration: %w", err)
 	}
-	registered, err = registeredWorktreePaths(ctx, canonical)
+	registered, err := registeredWorktreePaths(ctx, canonical)
 	if err != nil {
 		return err
 	}
-	for _, path := range []string{stageTarget, finalPath} {
-		if path != "" && registered[filepath.Clean(path)] {
+	for path := range registered {
+		if !registrationsBefore[path] {
 			return fmt.Errorf("incomplete worktree remains registered at %s", path)
 		}
+	}
+	if finalPath != "" && registered[filepath.Clean(finalPath)] {
+		return fmt.Errorf("incomplete worktree remains registered at %s", finalPath)
 	}
 	if expectedBranchTip == "" {
 		return nil
@@ -1268,26 +1417,6 @@ func registeredWorktreePaths(ctx context.Context, canonical string) (map[string]
 		}
 	}
 	return paths, nil
-}
-
-func removeStagingCheckout(target string) error {
-	info, err := os.Lstat(target)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect incomplete staging checkout %s: %w", target, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		if err := os.Remove(target); err != nil {
-			return fmt.Errorf("remove incomplete staging symlink %s: %w", target, err)
-		}
-		return nil
-	}
-	if err := os.RemoveAll(target); err != nil {
-		return fmt.Errorf("remove incomplete staging checkout %s: %w", target, err)
-	}
-	return nil
 }
 
 func deleteCreatedBranch(ctx context.Context, canonical, branch, expectedTip string) error {
