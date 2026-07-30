@@ -628,6 +628,64 @@ func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
 	}
 }
 
+func TestOperationLockClaimNeverMutatesHardLinkedRetirement(t *testing.T) {
+	directoryPath := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
+		directoryPath = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(directoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	external := filepath.Join(t.TempDir(), "important.txt")
+	const wanted = "do not overwrite this file\n"
+	if err := os.WriteFile(external, []byte(wanted), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	retired := filepath.Join(directoryPath, ".wb-retired-lock-hardlink")
+	if err := os.Link(external, retired); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := acquireLockAt(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content, readErr := os.ReadFile(external); readErr != nil || string(content) != wanted {
+		lock.release()
+		t.Fatalf("claim mutated hard-linked external file: content=%q err=%v", content, readErr)
+	}
+	lock.release()
+	if _, statErr := os.Lstat(retired); statErr != nil {
+		t.Fatalf("hard-linked retirement was claimed or removed: %v", statErr)
+	}
+	if content, readErr := os.ReadFile(external); readErr != nil || string(content) != wanted {
+		t.Fatalf("release mutated hard-linked external file: content=%q err=%v", content, readErr)
+	}
+}
+
+func TestGitEnvironmentUsesOnlyScopedGitAndTemporaryDirectories(t *testing.T) {
+	t.Setenv("GIT_DIR", "/ambient/git")
+	t.Setenv("GIT_WORK_TREE", "/ambient/worktree")
+	t.Setenv("TMPDIR", "/ambient/tmp")
+	environment := gitEnvironmentWithHeldGitDir("/retained/tmp")
+	values := map[string]string{}
+	for _, entry := range environment {
+		key, value, found := strings.Cut(entry, "=")
+		if !found {
+			continue
+		}
+		_, scoped := map[string]bool{"GIT_DIR": true, "GIT_WORK_TREE": true, "TMPDIR": true}[key]
+		if _, duplicate := values[key]; scoped && duplicate {
+			t.Fatalf("scoped environment has duplicate %s entries: %#v", key, environment)
+		}
+		values[key] = value
+	}
+	if values["GIT_DIR"] != "." || values["GIT_WORK_TREE"] != ".." || values["TMPDIR"] != "/retained/tmp" {
+		t.Fatalf("scoped Git environment = %#v", values)
+	}
+}
+
 func TestCreatePreservesDoubleSwapAcrossSecureCheckoutPublish(t *testing.T) {
 	fixture := newGitFixture(t)
 	operation := "checkout-double-swap"

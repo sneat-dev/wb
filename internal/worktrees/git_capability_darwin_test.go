@@ -1,0 +1,248 @@
+//go:build darwin
+
+package worktrees
+
+import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSecureCanonicalCapabilityDeniesGitDirectoryMoveAfterFinalCheck(t *testing.T) {
+	fixture := newGitFixture(t)
+	canonical, err := openCanonicalRepository(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+	external := t.TempDir()
+	ready := filepath.Join(fixture.canonical, "sandbox-ready")
+	release := filepath.Join(fixture.canonical, "sandbox-release")
+	script := filepath.Join(t.TempDir(), "wait-for-swap.sh")
+	content := "#!/bin/sh\n" +
+		": > " + shellQuote(ready) + "\n" +
+		"while [ ! -f " + shellQuote(release) + " ]; do sleep 0.01; done\n" +
+		"exec /usr/bin/git \"$@\"\n"
+	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], SecureCanonicalGitHelperArgument, fixture.canonical, script, "config", "--local", "wb.capability", "must-not-write")
+	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			t.Fatal("sandboxed Git did not reach the post-validation barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	heldGit := filepath.Join(external, "held-git")
+	if err := os.Rename(filepath.Join(fixture.canonical, ".git"), heldGit); err != nil {
+		_ = command.Process.Kill()
+		t.Fatalf("move canonical Git directory after final validation: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(external, "replacement-git"), filepath.Join(fixture.canonical, ".git")); err != nil {
+		_ = command.Process.Kill()
+		t.Fatalf("replace canonical Git directory after final validation: %v", err)
+	}
+	if err := os.WriteFile(release, []byte("go\n"), 0o600); err != nil {
+		_ = command.Process.Kill()
+		t.Fatal(err)
+	}
+	err = command.Wait()
+	if err == nil || !strings.Contains(output.String(), "Operation not permitted") {
+		t.Fatalf("post-validation canonical Git move result: err=%v output=%s", err, output.String())
+	}
+	value, readErr := gitConfigValue(heldGit, "wb.capability")
+	if readErr == nil || value != "" {
+		t.Fatalf("moved Git directory was mutated: value=%q err=%v", value, readErr)
+	}
+}
+
+func TestSecureStageCapabilityDeniesStageMoveAfterFinalCheck(t *testing.T) {
+	fixture := newGitFixture(t)
+	canonical, err := openCanonicalRepository(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+	operationRoot := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
+		operationRoot = resolved
+	}
+	stagePath := filepath.Join(operationRoot, "stage")
+	if err := os.Mkdir(stagePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := openAbsoluteDirectoryNoFollow(stagePath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stage.Close() }()
+	// The stage is deliberately not authorized to write the broader operation
+	// root. Use the retained canonical resource for this test-only barrier.
+	ready := filepath.Join(fixture.canonical, "sandbox-ready")
+	release := filepath.Join(fixture.canonical, "sandbox-release")
+	script := filepath.Join(t.TempDir(), "wait-for-stage-swap.sh")
+	content := "#!/bin/sh\n" +
+		": > " + shellQuote(ready) + "\n" +
+		"while [ ! -f " + shellQuote(release) + " ]; do sleep 0.01; done\n" +
+		"exec /usr/bin/git \"$@\"\n"
+	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], SecureStageCanonicalGitHelperArgument, operationRoot, fixture.canonical, script, "codex/sandbox-stage", "main", "0")
+	command.ExtraFiles = []*os.File{stage, canonical.root, canonical.common}
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = command.Process.Kill()
+			t.Fatal("sandboxed Git did not reach the staged post-validation barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	external := t.TempDir()
+	if err := os.Rename(stagePath, filepath.Join(external, "held-stage")); err != nil {
+		_ = command.Process.Kill()
+		t.Fatalf("move held stage after final validation: %v", err)
+	}
+	replacement := filepath.Join(external, "replacement-stage")
+	if err := os.Mkdir(replacement, 0o755); err != nil {
+		_ = command.Process.Kill()
+		t.Fatal(err)
+	}
+	if err := os.Symlink(replacement, stagePath); err != nil {
+		_ = command.Process.Kill()
+		t.Fatalf("replace stage after final validation: %v", err)
+	}
+	if err := os.WriteFile(release, []byte("go\n"), 0o600); err != nil {
+		_ = command.Process.Kill()
+		t.Fatal(err)
+	}
+	err = command.Wait()
+	if err == nil || !strings.Contains(output.String(), "Operation not permitted") {
+		t.Fatalf("post-validation stage move result: err=%v output=%s", err, output.String())
+	}
+	if _, err := os.Stat(filepath.Join(replacement, "checkout")); !os.IsNotExist(err) {
+		t.Fatalf("stage replacement received a checkout: %v", err)
+	}
+}
+
+func TestSecureStageCapabilityDeniesBroaderOperationRootWrites(t *testing.T) {
+	fixture := newGitFixture(t)
+	canonical, err := openCanonicalRepository(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+	operationRoot := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
+		operationRoot = resolved
+	}
+	stagePath := filepath.Join(operationRoot, "stage")
+	if err := os.Mkdir(stagePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stage, err := openAbsoluteDirectoryNoFollow(stagePath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stage.Close() }()
+	broaderWrite := filepath.Join(operationRoot, "must-not-write")
+	script := filepath.Join(t.TempDir(), "deny-operation-root-write.sh")
+	content := "#!/bin/sh\n" +
+		"if : > " + shellQuote(broaderWrite) + " 2>/dev/null; then\n" +
+		"  echo 'unexpected operation-root write' >&2\n" +
+		"  exit 99\n" +
+		"fi\n" +
+		"exec " + shellQuote(mustTrustedGitExecutable(t)) + " \"$@\"\n"
+	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], SecureStageCanonicalGitHelperArgument, operationRoot, fixture.canonical, script, "codex/sandbox-root", "main", "0")
+	command.ExtraFiles = []*os.File{stage, canonical.root, canonical.common}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("staged Git should succeed after refusing broader-root write: %v\n%s", err, output)
+	}
+	if _, err := os.Lstat(broaderWrite); !os.IsNotExist(err) {
+		t.Fatalf("Git sandbox wrote outside its retained stage: %v", err)
+	}
+	checkout := filepath.Join(stagePath, "checkout")
+	if _, err := os.Stat(checkout); err != nil {
+		t.Fatalf("staged checkout was not created: %v", err)
+	}
+}
+
+func TestDarwinCapabilityParentGuardRejectsRootSwapBeforeProfileStart(t *testing.T) {
+	container := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(container); resolveErr == nil {
+		container = resolved
+	}
+	rootPath := filepath.Join(container, "capability-root")
+	if err := os.Mkdir(rootPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := openAbsoluteDirectoryNoFollow(rootPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	capability, err := newGitFilesystemCapability(gitFilesystemCapabilityRoot{path: rootPath, directory: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guards, err := lockDarwinCapabilityParents(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restoreDarwinCapabilityParents(guards)
+	external := t.TempDir()
+	if err := os.Rename(rootPath, filepath.Join(external, "replacement")); err == nil {
+		t.Fatal("capability root was swapped before sandbox profile start")
+	}
+	if !directoryStillMatches(rootPath, root) {
+		t.Fatal("parent guard did not preserve the retained capability root")
+	}
+}
+
+func mustTrustedGitExecutable(t *testing.T) string {
+	t.Helper()
+	executable, err := trustedGitExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return executable
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func gitConfigValue(gitDirectory, key string) (string, error) {
+	command := exec.Command("/usr/bin/git", "--git-dir="+gitDirectory, "config", "--local", "--get", key)
+	output, err := command.Output()
+	return strings.TrimSpace(string(output)), err
+}

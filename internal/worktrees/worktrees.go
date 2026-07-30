@@ -262,6 +262,9 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err != nil {
 		return nil, err
 	}
+	if err := requireGitFilesystemCapability(); err != nil {
+		return nil, err
+	}
 
 	home, err := wbhome.Root(normalized.ProjectsRoot)
 	if err != nil {
@@ -1053,6 +1056,12 @@ func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, a
 	return strings.TrimSpace(string(output)), nil
 }
 
+const sandboxTempDirectoryWarning = "git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead\n"
+
+func trimSecureGitOutput(output []byte) string {
+	return strings.TrimSpace(strings.ReplaceAll(string(output), sandboxTempDirectoryWarning, ""))
+}
+
 func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...string) (string, error) {
 	if err := canonical.authorizeForGit(); err != nil {
 		return "", err
@@ -1065,7 +1074,7 @@ func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...s
 	if err != nil {
 		return "", err
 	}
-	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, gitExecutable}, args...)...)
+	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 	output, err := command.CombinedOutput()
@@ -1076,7 +1085,7 @@ func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...s
 		}
 		return "", fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
 	}
-	return strings.TrimSpace(string(output)), nil
+	return trimSecureGitOutput(output), nil
 }
 
 // RunSecureCanonicalGitHelper runs Git from the inherited canonical root only
@@ -1084,7 +1093,7 @@ func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...s
 // directory descriptor. This prevents Git's own discovery from treating a
 // substituted `.git` pathname as authority.
 func RunSecureCanonicalGitHelper(args []string) int {
-	if len(args) < 1 {
+	if len(args) < 2 || !filepath.IsAbs(args[0]) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: missing Git executable")
 		return 1
 	}
@@ -1114,26 +1123,35 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: enter inherited Git directory: %v\n", err)
 		return 1
 	}
-	command := exec.Command(args[0], args[1:]...)
-	// Start inside the held `.git` descriptor and use only relative names from
-	// that descriptor. A lexical `.git` replacement at the canonical root can
-	// therefore never become Git's repository authority.
-	command.Env = gitEnvironmentWithHeldGitDir()
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if err := command.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode()
-		}
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: run Git: %v\n", err)
+	if !directoryStillMatches(args[0], root) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: canonical repository path changed before Git operation")
 		return 1
 	}
-	return 0
+	capability, err := newGitFilesystemCapability(gitFilesystemCapabilityRoot{path: args[0], directory: root})
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: %v\n", err)
+		return 1
+	}
+	return runGitWithFilesystemCapability(capability, args[1], args[2:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
 }
 
-func gitEnvironmentWithHeldGitDir() []string {
-	return append(console.Env(), "GIT_DIR=.", "GIT_WORK_TREE=..")
+// gitEnvironmentWithHeldGitDir makes Git use the inherited `.git` descriptor
+// and routes helper/Git temporary files into an already-authorized resource.
+// A platform sandbox must never inherit an ambient system temporary directory.
+func gitEnvironmentWithHeldGitDir(temporaryRoot string) []string {
+	base := console.Env()
+	environment := make([]string, 0, len(base)+3)
+	for _, entry := range base {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			switch key {
+			case "GIT_DIR", "GIT_WORK_TREE", "TMPDIR":
+				continue
+			}
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment, "GIT_DIR=.", "GIT_WORK_TREE=..", "TMPDIR="+temporaryRoot)
 }
 
 // prepareOperationRoot creates the fixed WB hierarchy one component at a
@@ -1424,7 +1442,7 @@ func addWorktreeAtSecureDestination(
 		if afterPublishedAuthorization != nil {
 			afterPublishedAuthorization()
 		}
-		repairErr = runSecureCleanupGitHelper(ctx, canonical, finalDirectory, finalPath, "worktree", "repair", finalPath)
+		repairErr = runSecureCleanupGitHelper(ctx, canonical, ownerDirectory, finalDirectory, ownerPath, finalPath, "worktree", "repair", finalPath)
 	}
 	if repairErr != nil {
 		return rollbackPublished(fmt.Errorf("repair published worktree metadata: %w", repairErr))
@@ -1470,15 +1488,7 @@ func gitWorktreeAddFromStageDirectory(
 }
 
 func trustedGitExecutable() (string, error) {
-	gitExecutable, err := exec.LookPath("git")
-	if err != nil {
-		return "", fmt.Errorf("locate Git before secure staging handoff: %w", err)
-	}
-	gitExecutable, err = filepath.Abs(gitExecutable)
-	if err != nil {
-		return "", fmt.Errorf("make Git path absolute before secure staging handoff: %w", err)
-	}
-	return gitExecutable, nil
+	return platformTrustedGitExecutable()
 }
 
 func worktreeAddArguments(checkout, branch, base string, branchExists bool) []string {
@@ -1522,7 +1532,7 @@ func runSecureStageCanonicalGitHelper(
 	if branchExists {
 		exists = "1"
 	}
-	command := exec.CommandContext(ctx, executable, SecureStageCanonicalGitHelperArgument, trustedOperationRoot, gitExecutable, branch, base, exists)
+	command := exec.CommandContext(ctx, executable, SecureStageCanonicalGitHelperArgument, trustedOperationRoot, canonical.path, gitExecutable, branch, base, exists)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{stageDirectory, canonical.root, canonical.common}
 	return command.CombinedOutput()
@@ -1627,7 +1637,7 @@ func RunSecureStageGitHelper(args []string) int {
 // inherited stage passes containment; Git itself receives the inherited `.git`
 // directory through GIT_DIR instead of resolving a lexical canonical path.
 func RunSecureStageCanonicalGitHelper(args []string) int {
-	if len(args) != 5 || !filepath.IsAbs(args[0]) || args[4] != "0" && args[4] != "1" {
+	if len(args) != 6 || !filepath.IsAbs(args[0]) || !filepath.IsAbs(args[1]) || args[5] != "0" && args[5] != "1" {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: invalid arguments")
 		return 1
 	}
@@ -1666,7 +1676,7 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: enter inherited canonical root: %v\n", err)
 		return 1
 	}
-	if !directoryEntryStillMatches(canonical, ".git", common) {
+	if !directoryStillMatches(args[1], canonical) || !directoryEntryStillMatches(canonical, ".git", common) {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure staged canonical helper: canonical Git directory changed before Git operation")
 		return 1
 	}
@@ -1674,24 +1684,18 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: enter inherited Git directory: %v\n", err)
 		return 1
 	}
-	gitArgs := worktreeAddArguments(filepath.Join(filepath.Clean(stagePath), "checkout"), args[2], args[3], args[4] == "1")
-	command := exec.Command(args[1], gitArgs...)
-	command.Env = gitEnvironmentWithHeldGitDir()
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if err := command.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode()
-		}
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: run Git: %v\n", err)
+	gitArgs := worktreeAddArguments(filepath.Join(filepath.Clean(stagePath), "checkout"), args[3], args[4], args[5] == "1")
+	// Git needs to write only inside the retained stage (including its scoped
+	// TMPDIR), never elsewhere in the operation root.
+	capability, err := newGitFilesystemCapability(
+		gitFilesystemCapabilityRoot{path: stagePath, directory: stage},
+		gitFilesystemCapabilityRoot{path: args[1], directory: canonical},
+	)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: %v\n", err)
 		return 1
 	}
-	if err := unix.Fchdir(int(stage.Fd())); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: reenter inherited stage: %v\n", err)
-		return 1
-	}
-	return verifySecureStageContainment(args[0])
+	return runGitWithFilesystemCapability(capability, args[2], gitArgs, gitEnvironmentWithHeldGitDir(stagePath))
 }
 
 func verifySecureStageContainment(trustedOperationRoot string) int {
@@ -2305,7 +2309,7 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 		return operationLock{}, err
 	}
 	if !reused {
-		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
 		if openErr != nil {
 			if errors.Is(openErr, unix.EEXIST) {
 				return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
@@ -2318,14 +2322,6 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 			return operationLock{}, fmt.Errorf("wrap secure worktree operation lock")
 		}
 	}
-	if err := file.Truncate(0); err != nil {
-		_ = file.Close()
-		return operationLock{}, fmt.Errorf("reset secure worktree operation lock: %w", err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		_ = file.Close()
-		return operationLock{}, fmt.Errorf("rewind secure worktree operation lock: %w", err)
-	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
 		_ = file.Close()
@@ -2335,14 +2331,6 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 		directory: operationDirectory,
 		file:      file,
 		identity:  managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)},
-	}
-	if _, err := fmt.Fprintf(file, "pid=%d\n", os.Getpid()); err != nil {
-		lock.release()
-		return operationLock{}, err
-	}
-	if err := file.Sync(); err != nil {
-		lock.release()
-		return operationLock{}, err
 	}
 	return lock, nil
 }
@@ -2359,7 +2347,7 @@ func claimRetiredLock(directory *os.File) (*os.File, bool, error) {
 		if !strings.HasPrefix(entry.Name(), ".wb-retired-lock-") {
 			continue
 		}
-		fd, openErr := unix.Openat(int(directory.Fd()), entry.Name(), unix.O_RDWR|unix.O_NOFOLLOW, 0)
+		fd, openErr := unix.Openat(int(directory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 		if openErr != nil {
 			continue
 		}
@@ -2368,7 +2356,7 @@ func claimRetiredLock(directory *os.File) (*os.File, bool, error) {
 			_ = unix.Close(fd)
 			continue
 		}
-		identity, identityErr := lockIdentity(retired)
+		identity, identityErr := exclusivelyOwnedLockIdentity(retired)
 		if identityErr != nil {
 			_ = retired.Close()
 			continue
@@ -2428,6 +2416,28 @@ func lockIdentity(file *os.File) (managedLockIdentity, error) {
 	return managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
 }
 
+// exclusivelyOwnedLockIdentity accepts only a retirement WB could have made
+// itself. A lock is created with one directory entry and a rename preserves
+// that count. In particular, never claim a hard-linked lookalike: even though
+// lock acquisition is read-only, leaving an unowned entry untouched keeps the
+// namespace and the external file fully outside WB's lifecycle.
+func exclusivelyOwnedLockIdentity(file *os.File) (managedLockIdentity, error) {
+	if file == nil {
+		return managedLockIdentity{}, fmt.Errorf("lock descriptor is unavailable")
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		return managedLockIdentity{}, err
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		return managedLockIdentity{}, fmt.Errorf("lock descriptor is not a regular file")
+	}
+	if stat.Nlink != 1 {
+		return managedLockIdentity{}, fmt.Errorf("lock retirement has %d links", stat.Nlink)
+	}
+	return managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)}, nil
+}
+
 func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expected managedLockIdentity) (*os.File, error) {
 	if !lockEntryStillMatches(directory, fromName, expected) {
 		return nil, fmt.Errorf("%w: operation lock %s changed before move", errDirectoryMoveIdentityChanged, fromName)
@@ -2435,7 +2445,7 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 	if err := renameNoReplace(int(directory.Fd()), fromName, int(directory.Fd()), toName); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDWR|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open moved operation lock %s: %w", toName, err)
 	}

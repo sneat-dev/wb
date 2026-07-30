@@ -469,7 +469,7 @@ func TestCleanupPreservesOwnerReplacementAfterFinalAuthorization(t *testing.T) {
 			}
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "retire empty cleanup worktree parent") {
+	if err == nil || !strings.Contains(err.Error(), "cleanup worktree parent path changed") {
 		t.Fatalf("owner replacement cleanup error = %v", err)
 	}
 	if content, readErr := os.ReadFile(filepath.Join(parent, "keep.txt")); readErr != nil || string(content) != replacement {
@@ -477,6 +477,76 @@ func TestCleanupPreservesOwnerReplacementAfterFinalAuthorization(t *testing.T) {
 	}
 	if _, statErr := os.Stat(parkedParent); statErr != nil {
 		t.Fatalf("original owner directory was removed after replacement: %v", statErr)
+	}
+}
+
+func TestCleanupDryRunWithExplicitReportDirDoesNotMutate(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-dry-run-report")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	reportDir := filepath.Join(t.TempDir(), "report")
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-dry-run-report",
+		ReportDir:    reportDir,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.ReportPath != "" {
+		t.Fatalf("dry-run unexpectedly wrote report %q", outcome.ReportPath)
+	}
+	if _, err := os.Stat(reportDir); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created report directory: %v", err)
+	}
+	if _, err := os.Stat(result.WorktreeDir); err != nil {
+		t.Fatalf("dry-run removed worktree: %v", err)
+	}
+}
+
+func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
+	fixture := newGitFixture(t)
+	first, firstHead, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-a")
+	second, secondHead, _ := prepareMergedTaskInFixture(t, fixture, "cleanup-b")
+	installMergedPullRequestFixtures(t, []string{firstHead, secondHead}, mergedAt)
+
+	secondTaskPath := filepath.Join(fixture.home, "worktrees", "cleanup-b")
+	probedSecondTask := false
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		AllMerged:    true,
+		Apply:        true,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeCleanupWorktreeRemoval: func(path string) {
+			if path != first.WorktreeDir || probedSecondTask {
+				return
+			}
+			probedSecondTask = true
+			secondTask, openErr := openAbsoluteDirectoryNoFollow(secondTaskPath, false)
+			if openErr != nil {
+				t.Fatalf("open next cleanup task while first is active: %v", openErr)
+			}
+			defer func() { _ = secondTask.Close() }()
+			lock, lockErr := acquireLockAt(secondTask)
+			if lockErr != nil {
+				t.Fatalf("next cleanup task was locked before it was processed: %v", lockErr)
+			}
+			lock.release()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probedSecondTask {
+		t.Fatal("cleanup did not process the first task")
+	}
+	if len(outcome.Results) != 2 || !outcome.Results[0].Applied || !outcome.Results[1].Applied {
+		t.Fatalf("all-merged cleanup outcome = %#v", outcome)
+	}
+	for _, path := range []string{first.WorktreeDir, second.WorktreeDir} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("cleaned worktree remains at %s: %v", path, statErr)
+		}
 	}
 }
 
@@ -618,6 +688,12 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 func prepareMergedTask(t *testing.T, task string) (*gitFixture, CreateResult, string, time.Time) {
 	t.Helper()
 	fixture := newGitFixture(t)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, task)
+	return fixture, result, head, mergedAt
+}
+
+func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) (CreateResult, string, time.Time) {
+	t.Helper()
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    task,
@@ -635,10 +711,14 @@ func prepareMergedTask(t *testing.T, task string) (*gitFixture, CreateResult, st
 	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
 	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
-	return fixture, result, head, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	return result, head, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 }
 
 func installMergedPullRequestFixture(t *testing.T, head string, mergedAt time.Time) {
+	installMergedPullRequestFixtures(t, []string{head}, mergedAt)
+}
+
+func installMergedPullRequestFixtures(t *testing.T, heads []string, mergedAt time.Time) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
@@ -648,13 +728,27 @@ if [ "$1 $2" != "pr list" ]; then
     echo "unexpected gh command: $*" >&2
     exit 2
 fi
-printf '[{"number":17,"url":"https://github.com/acme/app/pull/17","state":"MERGED","mergedAt":"%s","headRefOid":"%s","baseRefName":"main"}]\n' "$WB_TEST_MERGED_AT" "$WB_TEST_HEAD"
+printf '%s\n' "$WB_TEST_MERGED_PULLS"
 `
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("WB_TEST_HEAD", head)
-	t.Setenv("WB_TEST_MERGED_AT", mergedAt.Format(time.RFC3339))
+	pulls := make([]map[string]any, 0, len(heads))
+	for index, head := range heads {
+		pulls = append(pulls, map[string]any{
+			"number":      index + 17,
+			"url":         "https://github.com/acme/app/pull/" + string(rune('A'+index)),
+			"state":       "MERGED",
+			"mergedAt":    mergedAt.Format(time.RFC3339),
+			"headRefOid":  head,
+			"baseRefName": "main",
+		})
+	}
+	payload, err := json.Marshal(pulls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

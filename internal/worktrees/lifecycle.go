@@ -133,10 +133,8 @@ type cleanupReport struct {
 }
 
 type cleanupTaskHandle struct {
-	key           string
 	worktreesPath string
 	taskPath      string
-	taskName      string
 	worktrees     *os.File
 	task          *os.File
 	lock          operationLock
@@ -197,11 +195,13 @@ func (handle *cleanupWorktreeHandle) removeEmptyParent(afterAuthorization func(s
 	if afterAuthorization != nil {
 		afterAuthorization(handle.parentPath)
 	}
-	retired, err := quarantineDirectoryEntry(handle.task.task, handle.parentName, handle.parent, ".wb-retired-owner-")
-	if err != nil {
-		return fmt.Errorf("retire empty cleanup worktree parent %s: %w", handle.parentName, err)
+	// Keep an empty owner directory in place. It is a harmless, reusable
+	// destination for the next worktree and avoids both verify-then-unlink and
+	// an ever-growing owner-retirement namespace. Reauthorize once more after
+	// the test seam so a replacement is surfaced, never removed or retired.
+	if !directoryStillMatches(handle.parentPath, handle.parent) {
+		return fmt.Errorf("cleanup worktree parent path changed before retention: %s", handle.parentPath)
 	}
-	_ = retired.Close()
 	return nil
 }
 
@@ -388,6 +388,13 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	// The report is a mutation too. Probe the platform capability before
+	// creating its default directory or making any other apply-time change.
+	if normalized.Apply {
+		if err := requireGitFilesystemCapability(); err != nil {
+			return CleanupOutcome{}, err
+		}
+	}
 	now := normalized.Now()
 	if normalized.ReportDir == "" && normalized.Apply {
 		normalized.ReportDir = DefaultCleanupReportDir(resolution.Write.Home, now)
@@ -416,7 +423,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	blockUnsafeTasks(results)
 	outcome := CleanupOutcome{Results: results}
-	if normalized.ReportDir != "" {
+	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
+	// artifacts are created only for an apply attempt, after the platform
+	// capability preflight has succeeded.
+	if normalized.Apply && normalized.ReportDir != "" {
 		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results)
 		if err != nil {
 			return outcome, err
@@ -434,154 +444,165 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		}
 		return outcome, cleanupErr
 	}
-	// Hold the same per-task lock used by worktree creation across the complete
-	// recheck-and-remove sequence. Without this lock, a resume or second cleanup
-	// could start after the plan observed an unlocked task but before deletion.
+	// Hold the same per-task lock used by worktree creation across that task's
+	// complete recheck-and-remove sequence. Complete one task, close all of its
+	// retained descriptors, then move to the next: an --all-merged run must not
+	// retain every task's lock and file descriptors for its entire duration.
 	if normalized.beforeCleanupLocks != nil {
 		normalized.beforeCleanupLocks()
 	}
-	locks, err := acquireCleanupLocks(outcome.Results)
-	if err != nil {
-		return fail(err)
-	}
-	defer func() {
-		releaseCleanupLocks(locks)
-		closeCleanupTaskHandles(locks)
-	}()
-
-	for index := range outcome.Results {
-		if !outcome.Results[index].Eligible {
+	completedTasks := make(map[string]bool)
+	for taskIndex := range outcome.Results {
+		first := outcome.Results[taskIndex]
+		taskKey := cleanupTaskKey(first.WorktreesRoot, first.Task)
+		if !first.Eligible || completedTasks[taskKey] {
 			continue
 		}
-		task, err := cleanupTaskForResult(locks, outcome.Results[index])
+		completedTasks[taskKey] = true
+		task, err := acquireCleanupTask(first)
 		if err != nil {
 			return fail(err)
 		}
-		worktree, err := openCleanupWorktree(task, outcome.Results[index])
-		if err != nil {
-			return fail(err)
-		}
-		if err := worktree.validate(); err != nil {
-			worktree.close()
-			return fail(err)
-		}
-		refreshed, err := inspectLifecycleWorktree(
-			ctx,
-			normalized.ProjectsRoot,
-			wbhome.Layout{WorktreesRoot: outcome.Results[index].WorktreesRoot},
-			outcome.Results[index].Task,
-			outcome.Results[index].WorktreeDir,
-			normalized.Base,
-			true,
-			false, // The task is locked by this cleanup operation.
-		)
-		if err != nil {
-			worktree.close()
-			return fail(err)
-		}
-		if err := worktree.validate(); err != nil {
-			worktree.close()
-			return fail(err)
-		}
-		eligible, reason := cleanupEligibility(refreshed, normalized.OlderThan, now)
-		if !eligible {
-			worktree.close()
-			return fail(fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason))
-		}
-		if refreshed.HeadSHA != outcome.Results[index].HeadSHA {
-			worktree.close()
-			return fail(fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository))
-		}
-		outcome.Results[index].ListResult = refreshed
-		canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
-		if err != nil {
-			worktree.close()
-			return fail(fmt.Errorf("open cleanup canonical repository %s: %w", refreshed.CanonicalDir, err))
-		}
-		canonicalClosed := false
-		closeCanonical := func() {
-			if canonicalClosed {
-				return
-			}
-			canonicalClosed = true
-			canonical.close()
-		}
-		if err := canonical.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(fmt.Errorf("cleanup canonical repository changed before Git operations: %w", err))
-		}
-		if normalized.beforeCleanupWorktreeRemoval != nil {
-			normalized.beforeCleanupWorktreeRemoval(refreshed.WorktreeDir)
-		}
-		// Git's worktree-remove command requires the registered lexical path
-		// (it rejects descriptor aliases such as /dev/fd/N). Reauthorize that
-		// spelling against the retained task/owner/worktree descriptors at the
-		// last possible point; any substitution conservatively aborts before Git
-		// can remove a checkout or its registration.
-		if err := worktree.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(err)
-		}
-		if normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
-			if err := worktree.validate(); err != nil {
-				closeCanonical()
+		cleanupOutcome, cleanupErr := func() (CleanupOutcome, error) {
+			defer func() {
+				task.lock.release()
+				task.close()
+			}()
+			for index := range outcome.Results {
+				if !outcome.Results[index].Eligible || cleanupTaskKey(outcome.Results[index].WorktreesRoot, outcome.Results[index].Task) != taskKey {
+					continue
+				}
+				worktree, err := openCleanupWorktree(task, outcome.Results[index])
+				if err != nil {
+					return fail(err)
+				}
+				if err := worktree.validate(); err != nil {
+					worktree.close()
+					return fail(err)
+				}
+				refreshed, err := inspectLifecycleWorktree(
+					ctx,
+					normalized.ProjectsRoot,
+					wbhome.Layout{WorktreesRoot: outcome.Results[index].WorktreesRoot},
+					outcome.Results[index].Task,
+					outcome.Results[index].WorktreeDir,
+					normalized.Base,
+					true,
+					false, // The task is locked by this cleanup operation.
+				)
+				if err != nil {
+					worktree.close()
+					return fail(err)
+				}
+				if err := worktree.validate(); err != nil {
+					worktree.close()
+					return fail(err)
+				}
+				eligible, reason := cleanupEligibility(refreshed, normalized.OlderThan, now)
+				if !eligible {
+					worktree.close()
+					return fail(fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason))
+				}
+				if refreshed.HeadSHA != outcome.Results[index].HeadSHA {
+					worktree.close()
+					return fail(fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository))
+				}
+				outcome.Results[index].ListResult = refreshed
+				canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
+				if err != nil {
+					worktree.close()
+					return fail(fmt.Errorf("open cleanup canonical repository %s: %w", refreshed.CanonicalDir, err))
+				}
+				canonicalClosed := false
+				closeCanonical := func() {
+					if canonicalClosed {
+						return
+					}
+					canonicalClosed = true
+					canonical.close()
+				}
+				if err := canonical.validate(); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(fmt.Errorf("cleanup canonical repository changed before Git operations: %w", err))
+				}
+				if normalized.beforeCleanupWorktreeRemoval != nil {
+					normalized.beforeCleanupWorktreeRemoval(refreshed.WorktreeDir)
+				}
+				// Git's worktree-remove command requires the registered lexical path
+				// (it rejects descriptor aliases such as /dev/fd/N). Reauthorize that
+				// spelling against the retained task/owner/worktree descriptors at the
+				// last possible point; any substitution conservatively aborts before Git
+				// can remove a checkout or its registration.
+				if err := worktree.validate(); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
+				if normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
+					if err := worktree.validate(); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(err)
+					}
+					if normalized.beforeCleanupNetworkBranchOperation != nil {
+						normalized.beforeCleanupNetworkBranchOperation(refreshed.WorktreeDir)
+					}
+					if err := worktree.validate(); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(err)
+					}
+					if normalized.afterCleanupGitAuthorization != nil {
+						normalized.afterCleanupGitAuthorization("delete remote branch")
+					}
+					if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.HeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(fmt.Errorf("delete remote branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
+					}
+					outcome.Results[index].RemoteDeleted = true
+				}
+				if err := worktree.validate(); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
+				if normalized.afterCleanupGitAuthorization != nil {
+					normalized.afterCleanupGitAuthorization("remove worktree")
+				}
+				if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, err))
+				}
+				if err := task.validate(); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
+				if normalized.afterCleanupGitAuthorization != nil {
+					normalized.afterCleanupGitAuthorization("delete local branch")
+				}
+				if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
+				}
+				if err := worktree.removeEmptyParent(normalized.afterCleanupParentAuthorization); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
 				worktree.close()
-				return fail(err)
-			}
-			if normalized.beforeCleanupNetworkBranchOperation != nil {
-				normalized.beforeCleanupNetworkBranchOperation(refreshed.WorktreeDir)
-			}
-			if err := worktree.validate(); err != nil {
 				closeCanonical()
-				worktree.close()
-				return fail(err)
+				outcome.Results[index].Applied = true
 			}
-			if normalized.afterCleanupGitAuthorization != nil {
-				normalized.afterCleanupGitAuthorization("delete remote branch")
-			}
-			if err := runSecureCleanupGitHelper(ctx, canonical, worktree.worktree, refreshed.WorktreeDir, "push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.HeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
-				closeCanonical()
-				worktree.close()
-				return fail(fmt.Errorf("delete remote branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
-			}
-			outcome.Results[index].RemoteDeleted = true
+			return outcome, nil
+		}()
+		if cleanupErr != nil {
+			return cleanupOutcome, cleanupErr
 		}
-		if err := worktree.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(err)
-		}
-		if normalized.afterCleanupGitAuthorization != nil {
-			normalized.afterCleanupGitAuthorization("remove worktree")
-		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, worktree.worktree, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, err))
-		}
-		if err := task.validate(); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(err)
-		}
-		if normalized.afterCleanupGitAuthorization != nil {
-			normalized.afterCleanupGitAuthorization("delete local branch")
-		}
-		if err := runSecureCleanupGitHelper(ctx, canonical, nil, "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
-		}
-		if err := worktree.removeEmptyParent(normalized.afterCleanupParentAuthorization); err != nil {
-			closeCanonical()
-			worktree.close()
-			return fail(err)
-		}
-		worktree.close()
-		closeCanonical()
-		outcome.Results[index].Applied = true
 	}
 	// Keep the now-empty task root while its descriptor lock is live. Removing
 	// it after releasing that lock creates an ABA window where a concurrent
@@ -864,90 +885,46 @@ func cleanupTaskKey(worktreesRoot, task string) string {
 	return filepath.Clean(worktreesRoot) + "\x00" + task
 }
 
-func acquireCleanupLocks(results []CleanupResult) ([]*cleanupTaskHandle, error) {
-	locks := make([]*cleanupTaskHandle, 0)
-	seen := map[string]bool{}
-	for _, result := range results {
-		key := cleanupTaskKey(result.WorktreesRoot, result.Task)
-		if !result.Eligible || seen[key] {
-			continue
-		}
-		seen[key] = true
-		worktrees, err := openAbsoluteDirectoryNoFollow(result.WorktreesRoot, false)
-		if err != nil {
-			releaseCleanupLocks(locks)
-			closeCleanupTaskHandles(locks)
-			return nil, fmt.Errorf("open cleanup worktrees root %s: %w", result.WorktreesRoot, err)
-		}
-		taskFD, err := unix.Openat(int(worktrees.Fd()), result.Task, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-		if err != nil {
-			_ = worktrees.Close()
-			releaseCleanupLocks(locks)
-			closeCleanupTaskHandles(locks)
-			return nil, fmt.Errorf("open cleanup task %s without following links: %w", result.Task, err)
-		}
-		task := os.NewFile(uintptr(taskFD), "wb-cleanup-task")
-		if task == nil {
-			_ = unix.Close(taskFD)
-			_ = worktrees.Close()
-			releaseCleanupLocks(locks)
-			closeCleanupTaskHandles(locks)
-			return nil, fmt.Errorf("wrap cleanup task %s", result.Task)
-		}
-		handle := &cleanupTaskHandle{
-			key:           key,
-			worktreesPath: result.WorktreesRoot,
-			taskPath:      filepath.Join(result.WorktreesRoot, result.Task),
-			taskName:      result.Task,
-			worktrees:     worktrees,
-			task:          task,
-		}
-		if err := handle.validate(); err != nil {
-			handle.close()
-			releaseCleanupLocks(locks)
-			closeCleanupTaskHandles(locks)
-			return nil, err
-		}
-		lock, err := acquireLockAt(task)
-		if err != nil {
-			handle.close()
-			releaseCleanupLocks(locks)
-			closeCleanupTaskHandles(locks)
-			return nil, fmt.Errorf("lock cleanup task %s: %w", result.Task, err)
-		}
-		handle.lock = lock
-		locks = append(locks, handle)
+func acquireCleanupTask(result CleanupResult) (*cleanupTaskHandle, error) {
+	worktrees, err := openAbsoluteDirectoryNoFollow(result.WorktreesRoot, false)
+	if err != nil {
+		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", result.WorktreesRoot, err)
 	}
-	return locks, nil
-}
-
-func cleanupTaskForResult(locks []*cleanupTaskHandle, result CleanupResult) (*cleanupTaskHandle, error) {
-	key := cleanupTaskKey(result.WorktreesRoot, result.Task)
-	for _, handle := range locks {
-		if handle.key == key {
-			return handle, nil
-		}
+	taskFD, err := unix.Openat(int(worktrees.Fd()), result.Task, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		_ = worktrees.Close()
+		return nil, fmt.Errorf("open cleanup task %s without following links: %w", result.Task, err)
 	}
-	return nil, fmt.Errorf("missing held cleanup task for %s", result.Task)
-}
-
-func releaseCleanupLocks(locks []*cleanupTaskHandle) {
-	for index := len(locks) - 1; index >= 0; index-- {
-		locks[index].lock.release()
+	task := os.NewFile(uintptr(taskFD), "wb-cleanup-task")
+	if task == nil {
+		_ = unix.Close(taskFD)
+		_ = worktrees.Close()
+		return nil, fmt.Errorf("wrap cleanup task %s", result.Task)
 	}
-}
-
-func closeCleanupTaskHandles(locks []*cleanupTaskHandle) {
-	for index := len(locks) - 1; index >= 0; index-- {
-		locks[index].close()
+	handle := &cleanupTaskHandle{
+		worktreesPath: result.WorktreesRoot,
+		taskPath:      filepath.Join(result.WorktreesRoot, result.Task),
+		worktrees:     worktrees,
+		task:          task,
 	}
+	if err := handle.validate(); err != nil {
+		handle.close()
+		return nil, err
+	}
+	lock, err := acquireLockAt(task)
+	if err != nil {
+		handle.close()
+		return nil, fmt.Errorf("lock cleanup task %s: %w", result.Task, err)
+	}
+	handle.lock = lock
+	return handle, nil
 }
 
 // SecureCleanupGitHelperArgument selects the private WB child process that
 // runs cleanup Git commands from retained canonical and worktree descriptors.
 const SecureCleanupGitHelperArgument = "--wb-internal-cleanup-git"
 
-func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalRepository, worktreeDirectory *os.File, worktreePath string, gitArgs ...string) error {
+func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalRepository, worktreeParent, worktreeDirectory *os.File, worktreeParentPath, worktreePath string, gitArgs ...string) error {
 	if canonical == nil || canonical.root == nil || canonical.common == nil {
 		return fmt.Errorf("cleanup canonical repository descriptor is unavailable")
 	}
@@ -962,12 +939,15 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 	if err != nil {
 		return err
 	}
-	arguments := append([]string{SecureCleanupGitHelperArgument, canonical.path, worktreePath, gitExecutable}, gitArgs...)
+	arguments := append([]string{SecureCleanupGitHelperArgument, canonical.path, worktreePath, worktreeParentPath, gitExecutable}, gitArgs...)
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 	if worktreeDirectory != nil {
-		command.ExtraFiles = append(command.ExtraFiles, worktreeDirectory)
+		if worktreeParent == nil || worktreeParentPath == "" {
+			return fmt.Errorf("cleanup worktree parent descriptor is unavailable")
+		}
+		command.ExtraFiles = append(command.ExtraFiles, worktreeParent, worktreeDirectory)
 	}
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -978,11 +958,11 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 
 // RunSecureCleanupGitHelper is the child half of descriptor-anchored cleanup
 // Git operations. FD 3 is the canonical repository, FD 4 is its held `.git`
-// directory, and FD 5 is supplied for operations that still target a lexical
-// worktree path. Both canonical descriptors and the optional worktree are
-// reauthorized immediately before Git executes.
+// directory, FD 5 is the held worktree parent, and FD 6 is the target
+// worktree. Both canonical descriptors and the optional parent/worktree pair
+// are reauthorized immediately before Git executes.
 func RunSecureCleanupGitHelper(args []string) int {
-	if len(args) < 4 {
+	if len(args) < 5 {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: missing worktree path or Git command")
 		return 1
 	}
@@ -1012,31 +992,37 @@ func RunSecureCleanupGitHelper(args []string) int {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: enter inherited canonical Git directory: %v\n", err)
 		return 1
 	}
+	var parent *os.File
 	if args[1] != "" {
-		worktree := os.NewFile(uintptr(5), "wb-cleanup-worktree")
-		if worktree == nil {
+		parent = os.NewFile(uintptr(5), "wb-cleanup-worktree-parent")
+		worktree := os.NewFile(uintptr(6), "wb-cleanup-worktree")
+		if parent == nil || worktree == nil {
+			if parent != nil {
+				_ = parent.Close()
+			}
+			if worktree != nil {
+				_ = worktree.Close()
+			}
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited worktree is unavailable")
 			return 1
 		}
+		defer func() { _ = parent.Close() }()
 		defer func() { _ = worktree.Close() }()
-		if !directoryStillMatches(args[1], worktree) {
+		if !directoryStillMatches(args[2], parent) || !directoryStillMatches(args[1], worktree) {
 			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: worktree path changed before Git operation")
 			return 1
 		}
 	}
-	command := exec.Command(args[2], args[3:]...)
-	command.Env = gitEnvironmentWithHeldGitDir()
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	if err := command.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.ExitCode()
-		}
-		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: run Git: %v\n", err)
+	writeRoots := []gitFilesystemCapabilityRoot{{path: args[0], directory: canonical}}
+	if args[1] != "" {
+		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[2], directory: parent})
+	}
+	capability, err := newGitFilesystemCapability(writeRoots...)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: %v\n", err)
 		return 1
 	}
-	return 0
+	return runGitWithFilesystemCapability(capability, args[3], args[4:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
 }
 
 func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanupWorktreeHandle, error) {
