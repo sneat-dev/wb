@@ -61,8 +61,11 @@ func newDepsGraphCmd() *cobra.Command {
 			if options.fleet && len(args) == 1 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
-			if options.ecosystem != string(deps.EcosystemGo) {
-				return fmt.Errorf("dependency graph currently supports only the go ecosystem")
+			ecosystem := deps.Ecosystem(options.ecosystem)
+			switch ecosystem {
+			case deps.EcosystemGo, deps.EcosystemNPM:
+			default:
+				return fmt.Errorf("dependency graph currently supports only the go and npm ecosystems")
 			}
 			view, err := deps.ParseGraphView(options.view)
 			if err != nil {
@@ -80,7 +83,7 @@ func newDepsGraphCmd() *cobra.Command {
 				return err
 			}
 			graph, err := deps.BuildGraph(command.Context(), repositories, deps.GraphOptions{
-				Ecosystem: deps.EcosystemGo, GitHubDir: projectsRoot, Ref: options.ref,
+				Ecosystem: ecosystem, GitHubDir: projectsRoot, Ref: options.ref,
 				Parallel: options.parallel, Timeout: options.timeout, Retry: options.retry,
 				Dependencies: options.dependencies,
 			})
@@ -93,7 +96,7 @@ func newDepsGraphCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				reportDirectory = filepath.Join(home, "reports", "deps-graph-go")
+				reportDirectory = filepath.Join(home, "reports", "deps-graph-"+options.ecosystem)
 			}
 			paths, err := deps.WriteGraphReports(reportDirectory, graph, view)
 			if err != nil {
@@ -114,7 +117,7 @@ func newDepsGraphCmd() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVar(&options.ecosystem, "ecosystem", string(deps.EcosystemGo), "manifest ecosystem (currently go)")
+	command.Flags().StringVar(&options.ecosystem, "ecosystem", string(deps.EcosystemGo), "manifest ecosystem: go or npm")
 	command.Flags().BoolVar(&options.fleet, "fleet", false, "reconcile and inspect selected local and owned GitHub repositories")
 	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. dal-go/*")
 	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
@@ -178,7 +181,7 @@ func newDepsSetCmd() *cobra.Command {
 					return fmt.Errorf("--propagate is supported only for the go ecosystem; it delegates to deps bump")
 				}
 				events := []deps.ReleaseEvent{{Dependency: target.Dependency, Version: target.Version, Source: "exact_set"}}
-				return runDepsBump(command, events, repositories, options, lifecycle)
+				return runDepsBump(command, deps.EcosystemGo, events, repositories, options, lifecycle)
 			}
 			report, runErr := deps.Run(context.Background(), target, repositories, lifecycle)
 			reportDirectory := options.reportDir
@@ -236,8 +239,11 @@ func newDepsBumpCmd() *cobra.Command {
 		Short: "Propagate published dependency versions through recalculated waves",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if args[0] != string(deps.EcosystemGo) {
-				return fmt.Errorf("dependency waves currently support only the go ecosystem")
+			ecosystem := deps.Ecosystem(args[0])
+			switch ecosystem {
+			case deps.EcosystemGo, deps.EcosystemNPM:
+			default:
+				return fmt.Errorf("dependency waves currently support only the go and npm ecosystems")
 			}
 			if !options.fleet {
 				return fmt.Errorf("deps bump requires --fleet")
@@ -245,7 +251,7 @@ func newDepsBumpCmd() *cobra.Command {
 			if options.noVerify && command.Flags().Changed("checks") {
 				return fmt.Errorf("--no-verify and --checks cannot be used together")
 			}
-			events, err := parseReleaseEvents(changed)
+			events, err := parseReleaseEvents(ecosystem, changed)
 			if err != nil {
 				return err
 			}
@@ -257,7 +263,7 @@ func newDepsBumpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runDepsBump(command, events, repositories, options, dependencyOptions(options, checks))
+			return runDepsBump(command, ecosystem, events, repositories, options, dependencyOptions(options, checks))
 		},
 	}
 	command.Flags().StringArrayVar(&changed, "changed", nil, "published module@version release event (repeatable)")
@@ -298,13 +304,13 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 	}
 }
 
-func parseReleaseEvents(values []string) ([]deps.ReleaseEvent, error) {
+func parseReleaseEvents(ecosystem deps.Ecosystem, values []string) ([]deps.ReleaseEvent, error) {
 	if len(values) == 0 {
 		return nil, fmt.Errorf("at least one --changed module@version event is required")
 	}
 	events := make([]deps.ReleaseEvent, 0, len(values))
 	for _, value := range values {
-		target, err := deps.ParseTarget(string(deps.EcosystemGo), value)
+		target, err := deps.ParseTarget(string(ecosystem), value)
 		if err != nil {
 			return nil, err
 		}
@@ -313,8 +319,8 @@ func parseReleaseEvents(values []string) ([]deps.ReleaseEvent, error) {
 	return events, nil
 }
 
-func runDepsBump(command *cobra.Command, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
-	operation := deps.BumpOperationID(events)
+func runDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
+	operation := deps.BumpOperationIDFor(ecosystem, events)
 	reportDirectory := options.reportDir
 	if reportDirectory == "" {
 		home, err := wbhome.Root(projectsRoot)
@@ -324,7 +330,7 @@ func runDepsBump(command *cobra.Command, events []deps.ReleaseEvent, repositorie
 		reportDirectory = filepath.Join(home, "reports", operation)
 	}
 	bumpOptions := deps.BumpOptions{
-		Options: lifecycle, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
+		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
 		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	if options.resume {

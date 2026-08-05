@@ -86,11 +86,43 @@ func TestDepsSetRejectsUnusableDependencyOrderCombinations(t *testing.T) {
 
 func TestParseReleaseEventsPreservesMultipleExactSeeds(t *testing.T) {
 	t.Parallel()
-	events, err := parseReleaseEvents([]string{"example.com/a@v0.2.0", "example.com/b@v1.3.0"})
+	events, err := parseReleaseEvents(deps.EcosystemGo, []string{"example.com/a@v0.2.0", "example.com/b@v1.3.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(events) != 2 || events[0] != (deps.ReleaseEvent{Dependency: "example.com/a", Version: "v0.2.0", Source: "explicit"}) {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestParseReleaseEventsSupportsScopedNpmPackages(t *testing.T) {
+	t.Parallel()
+	events, err := parseReleaseEvents(deps.EcosystemNPM, []string{"@sneat/core@2.3.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0] != (deps.ReleaseEvent{Dependency: "@sneat/core", Version: "2.3.1", Source: "explicit"}) {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestDepsGraphAndBumpAcceptNpmEcosystem(t *testing.T) {
+	t.Parallel()
+	graph := newDepsGraphCmd()
+	graph.SetArgs([]string{"--ecosystem", "cobol", "--fleet"})
+	graph.SetOut(io.Discard)
+	graph.SetErr(io.Discard)
+	graph.SilenceUsage = true
+	if err := graph.Execute(); err == nil || !strings.Contains(err.Error(), "go and npm ecosystems") {
+		t.Fatalf("deps graph --ecosystem cobol error = %v, want a go/npm ecosystem rejection", err)
+	}
+
+	bump := newDepsBumpCmd()
+	bump.SetArgs([]string{"cobol", "--fleet", "--changed", "example.com/a@v1.0.0"})
+	bump.SetOut(io.Discard)
+	bump.SetErr(io.Discard)
+	bump.SilenceUsage = true
+	if err := bump.Execute(); err == nil || !strings.Contains(err.Error(), "go and npm ecosystems") {
+		t.Fatalf("deps bump cobol error = %v, want a go/npm ecosystem rejection", err)
 	}
 }

@@ -21,6 +21,7 @@ type Ecosystem string
 const (
 	EcosystemGitHubActions Ecosystem = "github-actions"
 	EcosystemGo            Ecosystem = "go"
+	EcosystemNPM           Ecosystem = "npm"
 )
 
 // Target is the exact dependency identity and version requested by the user.
@@ -35,9 +36,9 @@ type Target struct {
 func ParseTarget(ecosystem, value string) (Target, error) {
 	target := Target{Ecosystem: Ecosystem(strings.TrimSpace(ecosystem))}
 	switch target.Ecosystem {
-	case EcosystemGitHubActions, EcosystemGo:
+	case EcosystemGitHubActions, EcosystemGo, EcosystemNPM:
 	default:
-		return Target{}, fmt.Errorf("unsupported dependency ecosystem %q (want github-actions or go)", ecosystem)
+		return Target{}, fmt.Errorf("unsupported dependency ecosystem %q (want github-actions, go, or npm)", ecosystem)
 	}
 	at := strings.LastIndex(value, "@")
 	if at <= 0 || at == len(value)-1 {

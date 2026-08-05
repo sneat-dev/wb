@@ -3,6 +3,7 @@ package deps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,27 @@ func TestBumpOperationIDIsIndependentOfEventOrder(t *testing.T) {
 	right := []ReleaseEvent{left[1], left[0]}
 	if BumpOperationID(left) != BumpOperationID(right) {
 		t.Fatalf("operation IDs differ: %s != %s", BumpOperationID(left), BumpOperationID(right))
+	}
+}
+
+func TestBumpOperationIDForUsesTheEcosystemPrefixAndBumpOperationIDStaysGoOnly(t *testing.T) {
+	t.Parallel()
+	events := []ReleaseEvent{{Dependency: "@sneat/core", Version: "1.2.3"}}
+	goID := BumpOperationIDFor(EcosystemGo, events)
+	npmID := BumpOperationIDFor(EcosystemNPM, events)
+	if !strings.HasPrefix(goID, "deps-bump-go-") {
+		t.Fatalf("go operation id = %q", goID)
+	}
+	if !strings.HasPrefix(npmID, "deps-bump-npm-") {
+		t.Fatalf("npm operation id = %q", npmID)
+	}
+	if goID == npmID {
+		t.Fatalf("go and npm campaigns for the same events must not collide: %s", goID)
+	}
+	// BumpOperationID (no ecosystem parameter) is the pre-npm public API;
+	// every existing caller must keep getting exactly the Go-prefixed id.
+	if BumpOperationID(events) != goID {
+		t.Fatalf("BumpOperationID(events) = %q, want %q", BumpOperationID(events), goID)
 	}
 }
 
@@ -248,6 +270,79 @@ func TestGoGraphDiscoveryFailureSkipsOnlyProvenNonGoRepository(t *testing.T) {
 	}
 }
 
+// TestGoGraphDiscoveryFailureSkipsUnreadableCloneRegardlessOfGoManifest pins
+// the production bug that motivated this: a 132-repository `wb deps bump go
+// --fleet` run aborted outright because one local clone
+// (sneat-co/sneat-payments) had no 'origin' remote configured, and
+// `git fetch --quiet origin` failed with "fatal: 'origin' does not appear to
+// be a git repository". Unlike a ref that is merely unavailable on an
+// otherwise healthy clone, an unreadable/remote-less clone cannot be
+// inspected at all, so it must be skipped (and reported) even when it
+// contains a go.mod — continuing to hard-fail every other repository over
+// one clone that needs manual repair helps no one.
+func TestGoGraphDiscoveryFailureSkipsUnreadableCloneRegardlessOfGoManifest(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/payments\n\ngo 1.24\n")
+	cause := fmt.Errorf("git fetch --quiet origin: exit status 128: fatal: 'origin' does not appear to be a git repository")
+	skip, err := classifyGoGraphDiscoveryFailure("sneat-co/sneat-payments", root, cause, goGraphDiscoveryPolicy{SkipFailedNonGo: true})
+	if err != nil || skip == nil || skip.Repository != "sneat-co/sneat-payments" {
+		t.Fatalf("unreadable clone classification: error=%v skip=%+v", err, skip)
+	}
+	if !strings.Contains(skip.Reason, "unreadable") {
+		t.Fatalf("skip reason = %q, want it to explain the clone is unreadable", skip.Reason)
+	}
+	// Strict mode (no policy relief at all) must still fail loudly — the
+	// unreadable-clone relief is gated behind SkipFailedNonGo exactly like
+	// the existing manifest-based relief is.
+	skip, err = classifyGoGraphDiscoveryFailure("sneat-co/sneat-payments", root, cause, goGraphDiscoveryPolicy{})
+	if err == nil || skip != nil {
+		t.Fatalf("strict classification of an unreadable clone: error=%v skip=%+v", err, skip)
+	}
+}
+
+func TestNpmGraphDiscoveryFailureSkipsUnreadableCloneRegardlessOfPackageJSON(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "package.json"), `{"name": "@sneat/payments", "version": "1.0.0"}`+"\n")
+	cause := fmt.Errorf("git fetch --quiet origin: exit status 128: fatal: 'origin' does not appear to be a git repository")
+	skip, err := classifyNpmGraphDiscoveryFailure("sneat-co/sneat-payments", root, cause, npmGraphDiscoveryPolicy{SkipFailedNonNPM: true})
+	if err != nil || skip == nil || skip.Repository != "sneat-co/sneat-payments" {
+		t.Fatalf("unreadable clone classification: error=%v skip=%+v", err, skip)
+	}
+	if !strings.Contains(skip.Reason, "unreadable") {
+		t.Fatalf("skip reason = %q, want it to explain the clone is unreadable", skip.Reason)
+	}
+	skip, err = classifyNpmGraphDiscoveryFailure("sneat-co/sneat-payments", root, cause, npmGraphDiscoveryPolicy{})
+	if err == nil || skip != nil {
+		t.Fatalf("strict classification of an unreadable clone: error=%v skip=%+v", err, skip)
+	}
+}
+
+func TestLooksLikeUnreadableCloneMatchesKnownGitFatalErrorsOnly(t *testing.T) {
+	t.Parallel()
+	unreadable := []error{
+		fmt.Errorf("git fetch --quiet origin: exit status 128: fatal: 'origin' does not appear to be a git repository"),
+		fmt.Errorf("git status: exit status 128: fatal: not a git repository (or any of the parent directories): .git"),
+		fmt.Errorf("git fetch --quiet origin: exit status 128: fatal: No such remote 'origin'"),
+	}
+	for _, cause := range unreadable {
+		if !looksLikeUnreadableClone(cause) {
+			t.Errorf("looksLikeUnreadableClone(%q) = false, want true", cause)
+		}
+	}
+	readable := []error{
+		nil,
+		errors.New("origin/main is unavailable"),
+		fmt.Errorf("acme/consumer does not contain origin/main: exit status 128: fatal: Needed a single revision"),
+	}
+	for _, cause := range readable {
+		if looksLikeUnreadableClone(cause) {
+			t.Errorf("looksLikeUnreadableClone(%v) = true, want false", cause)
+		}
+	}
+}
+
 func TestGoFleetGraphRejectsRelevantCrossRepositoryCycle(t *testing.T) {
 	t.Parallel()
 	graph := goFleetGraph{
@@ -418,6 +513,48 @@ func TestBumpReportRoundTrip(t *testing.T) {
 		!strings.Contains(string(markdown), "Skipped discovery failures") || !strings.Contains(string(markdown), "Stale-event registry checks") ||
 		!strings.Contains(string(markdown), "Deferred to coalesce releases") {
 		t.Fatalf("unexpected Markdown:\n%s", markdown)
+	}
+}
+
+// TestRunBumpSurvivesUnreadableCloneAcrossFleet reproduces the exact
+// production incident that motivated this fix: `wb deps bump go --fleet`
+// aborted a 132-repository campaign because one local clone had no 'origin'
+// remote configured. The other repositories in the fleet must still be
+// planned; the broken one must show up as a discovery skip, not silently
+// vanish.
+func TestRunBumpSurvivesUnreadableCloneAcrossFleet(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	adapter := newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n")
+	provider := newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n")
+	brokenCanonical := filepath.Join(githubDir, "acme", "payments")
+	writeTestFile(t, filepath.Join(brokenCanonical, "go.mod"), "module example.com/payments\n\ngo 1.24\n")
+	runTestGit(t, brokenCanonical, "init", "-b", "main")
+	runTestGit(t, brokenCanonical, "config", "user.name", "WB Test")
+	runTestGit(t, brokenCanonical, "config", "user.email", "wb@example.test")
+	runTestGit(t, brokenCanonical, "add", "-A")
+	runTestGit(t, brokenCanonical, "commit", "-m", "initial")
+	// Deliberately no 'origin' remote configured on acme/payments.
+
+	report, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}},
+		[]Repository{provider, adapter, {Slug: "acme/payments", Path: brokenCanonical}},
+		BumpOptions{Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 2, DryRun: true}},
+	)
+	if err != nil {
+		t.Fatalf("one unreadable clone must not abort the whole fleet bump: %v", err)
+	}
+	if report.Status != "planned" || len(report.Waves) != 1 || len(report.Waves[0].Repositories) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if repository := report.Waves[0].Repositories[0]; repository.Repository != "acme/adapter" || repository.Status != "planned" {
+		t.Fatalf("wave repository = %+v", repository)
+	}
+	if len(report.DiscoverySkips) != 1 || report.DiscoverySkips[0].Repository != "acme/payments" {
+		t.Fatalf("discovery skips = %+v, want acme/payments skipped and reported", report.DiscoverySkips)
+	}
+	if !strings.Contains(report.DiscoverySkips[0].Reason, "unreadable") {
+		t.Fatalf("skip reason = %q, want it to explain the clone is unreadable", report.DiscoverySkips[0].Reason)
 	}
 }
 
