@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/list"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/sneat-dev/wb/internal/fleetsync"
 )
@@ -91,11 +91,11 @@ func (m ResultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m ResultsModel) View() string {
+func (m ResultsModel) View() tea.View {
 	if m.showDetail {
-		return detailView(m.selected)
+		return tea.NewView(detailView(m.selected))
 	}
-	return m.list.View()
+	return tea.NewView(m.list.View())
 }
 
 // detailView renders the full status breakdown for one result.
