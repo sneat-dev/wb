@@ -22,6 +22,10 @@ type ReleaseEvent struct {
 // BumpOptions adds wave and release discovery policy to shared lifecycle options.
 type BumpOptions struct {
 	Options
+	// Ecosystem selects which fleet graph and adapter the wave engine uses.
+	// The zero value defaults to EcosystemGo for backward compatibility with
+	// every caller that predates npm support.
+	Ecosystem    Ecosystem
 	MaxWaves     int
 	PollInterval time.Duration
 	RefreshAfter time.Duration
@@ -35,6 +39,12 @@ type BumpOptions struct {
 	// LatestGoRelease is injectable for graph traversal through modules that
 	// were updated and published before this campaign started.
 	LatestGoRelease func(context.Context, string) (PublishedGoRelease, error)
+	// LatestNpmVersion is the npm-ecosystem analogue of LatestGoVersion.
+	LatestNpmVersion func(context.Context, string) (string, error)
+	// LatestNpmRelease is the npm-ecosystem analogue of LatestGoRelease. It
+	// reuses PublishedGoRelease's shape (version, requirements, source) since
+	// nothing about that shape is actually Go-specific.
+	LatestNpmRelease func(context.Context, string) (PublishedGoRelease, error)
 }
 
 // PublishedGoRelease is immutable registry evidence used to carry an event
@@ -109,9 +119,14 @@ type ReleaseEventRefresh struct {
 	Reason     string    `yaml:"reason"`
 }
 
-// GraphDiscoverySkip records a repository that could be proven irrelevant to
-// a Go propagation campaign even though its configured remote ref was
-// unavailable. Repositories containing any local go.mod remain hard blockers.
+// GraphDiscoverySkip records a repository whose discovery failed but was not
+// treated as a fatal error: either its configured remote ref was unavailable
+// and a local scan proved it irrelevant to the ecosystem being propagated
+// (no go.mod / no package.json), or its local clone itself was unreadable
+// (no usable git remote) and needs manual repair before WB can act on it —
+// in that second case the repository may still be relevant, but continuing
+// to hard-fail an otherwise healthy fleet campaign over one broken clone
+// helps no one, so it is skipped and reported here instead.
 type GraphDiscoverySkip struct {
 	Repository string `json:"repository" yaml:"repository"`
 	Reason     string `json:"reason" yaml:"reason"`

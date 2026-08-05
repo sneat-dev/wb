@@ -38,7 +38,7 @@ func (report BumpReport) Markdown() string {
 	}
 	if len(report.DiscoverySkips) > 0 {
 		output.WriteString("\n## Skipped discovery failures\n\n")
-		output.WriteString("These repositories were skipped only after a local scan proved that they contain no Go manifest:\n\n")
+		output.WriteString("Each repository below failed discovery but was not treated as fatal: either a local scan proved it carries no relevant manifest, or its local clone was unreadable and needs manual repair. Neither case was silently dropped:\n\n")
 		for _, skip := range report.DiscoverySkips {
 			fmt.Fprintf(&output, "- `%s` — %s\n", skip.Repository, skip.Reason)
 		}
