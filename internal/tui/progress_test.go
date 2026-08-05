@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
@@ -44,7 +44,7 @@ func TestProgressModelInFlightBounded(t *testing.T) {
 		updated, _ := m.Update(RepoStarted{Org: "acme", Name: fmt.Sprintf("repo%d", i)})
 		m = updated.(ProgressModel)
 	}
-	view := m.View()
+	view := m.View().Content
 	if got := strings.Count(view, "…"); got != 2 {
 		t.Errorf("live-tail rows in view = %d, want 2 (bounded by maxInFlight)", got)
 	}
@@ -64,7 +64,7 @@ func TestProgressModelSyncDoneQuits(t *testing.T) {
 
 func TestProgressModelCtrlCQuits(t *testing.T) {
 	m := NewProgressModel(nil, 4)
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = updated.(ProgressModel)
 	if !m.quitting {
 		t.Error("expected quitting=true after ctrl+c")

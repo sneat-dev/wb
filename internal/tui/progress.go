@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/progress"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/progress"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/sneat-dev/wb/internal/fleetsync"
 )
@@ -57,10 +57,10 @@ func NewProgressModel(orgTotal map[string]int, maxInFlight int) ProgressModel {
 	sort.Strings(orgs)
 	bars := make(map[string]progress.Model, len(orgs))
 	for _, org := range orgs {
-		bars[org] = progress.New(progress.WithDefaultGradient())
+		bars[org] = progress.New(progress.WithDefaultBlend())
 	}
 	return ProgressModel{
-		overall:     progress.New(progress.WithDefaultGradient()),
+		overall:     progress.New(progress.WithDefaultBlend()),
 		orgBars:     bars,
 		orgOrder:    orgs,
 		orgTotal:    orgTotal,
@@ -101,9 +101,9 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m ProgressModel) View() string {
+func (m ProgressModel) View() tea.View {
 	if m.quitting {
-		return ""
+		return tea.NewView("")
 	}
 	var b strings.Builder
 	pct := 0.0
@@ -127,5 +127,5 @@ func (m ProgressModel) View() string {
 	for _, f := range shown {
 		fmt.Fprintf(&b, "%s\n", dimStyle.Render("  … "+f.org+"/"+f.name))
 	}
-	return b.String()
+	return tea.NewView(b.String())
 }

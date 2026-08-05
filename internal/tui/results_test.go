@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/fleetsync"
@@ -52,17 +52,17 @@ func TestResultsModelEnterShowsDetailAndEscReturns(t *testing.T) {
 	}
 	m := NewResultsModel(results)
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(ResultsModel)
 	if !m.showDetail {
 		t.Fatal("expected showDetail=true after enter")
 	}
-	view := m.View()
+	view := m.View().Content
 	if !strings.Contains(view, "a/broken") || !strings.Contains(view, "f.txt") {
 		t.Fatalf("detail view missing expected content: %q", view)
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(ResultsModel)
 	if m.showDetail {
 		t.Fatal("expected showDetail=false after esc")
