@@ -794,7 +794,7 @@ func TestCreateUsesHeldCanonicalRootAfterAuthorizationSwap(t *testing.T) {
 			}
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "not the root of its canonical clone") {
+	if err == nil || !strings.Contains(err.Error(), "canonical repository path changed before Git operation") {
 		t.Fatalf("canonical root swap error = %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(external, ".git")); !os.IsNotExist(statErr) {

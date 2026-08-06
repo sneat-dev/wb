@@ -94,6 +94,11 @@ func TestSecureStageCapabilityDeniesStageMoveAfterFinalCheck(t *testing.T) {
 	defer func() { _ = stage.Close() }()
 	// The stage is deliberately not authorized to write the broader operation
 	// root. Use the retained canonical resource for this test-only barrier.
+	//
+	// lockDarwinCapabilityParents strips the stage parent's write bit for the
+	// whole sandboxed Git call, so the rename below never succeeds — the swap
+	// this test simulates is denied earlier than Git's own sandbox profile
+	// would have had a chance to see it.
 	ready := filepath.Join(fixture.canonical, "sandbox-ready")
 	release := filepath.Join(fixture.canonical, "sandbox-release")
 	script := filepath.Join(t.TempDir(), "wait-for-stage-swap.sh")
@@ -124,29 +129,22 @@ func TestSecureStageCapabilityDeniesStageMoveAfterFinalCheck(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	external := t.TempDir()
-	if err := os.Rename(stagePath, filepath.Join(external, "held-stage")); err != nil {
+	if err := os.Rename(stagePath, filepath.Join(external, "held-stage")); err == nil {
 		_ = command.Process.Kill()
-		t.Fatalf("move held stage after final validation: %v", err)
-	}
-	replacement := filepath.Join(external, "replacement-stage")
-	if err := os.Mkdir(replacement, 0o755); err != nil {
+		t.Fatal("expected the frozen stage parent to deny moving the stage after final validation")
+	} else if !os.IsPermission(err) {
 		_ = command.Process.Kill()
-		t.Fatal(err)
-	}
-	if err := os.Symlink(replacement, stagePath); err != nil {
-		_ = command.Process.Kill()
-		t.Fatalf("replace stage after final validation: %v", err)
+		t.Fatalf("move held stage after final validation: unexpected error: %v", err)
 	}
 	if err := os.WriteFile(release, []byte("go\n"), 0o600); err != nil {
 		_ = command.Process.Kill()
 		t.Fatal(err)
 	}
-	err = command.Wait()
-	if err == nil || !strings.Contains(output.String(), "Operation not permitted") {
-		t.Fatalf("post-validation stage move result: err=%v output=%s", err, output.String())
+	if err := command.Wait(); err != nil {
+		t.Fatalf("Git worktree add against the untouched stage failed: %v, output=%s", err, output.String())
 	}
-	if _, err := os.Stat(filepath.Join(replacement, "checkout")); !os.IsNotExist(err) {
-		t.Fatalf("stage replacement received a checkout: %v", err)
+	if _, err := os.Stat(filepath.Join(stagePath, "checkout")); err != nil {
+		t.Fatalf("expected the untouched stage to receive its checkout: %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,22 @@ func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	if got := remoteBranchForTest(t, fixture.canonical, result.Branch); got != head {
 		t.Fatalf("dry-run remote branch = %q, want %q", got, head)
 	}
+
+	// Deleting the remote branch runs the actual push under WB's sandboxed Git
+	// capability, whose write roots are the canonical repository and the
+	// cleanup worktree's parent — never an arbitrary "origin" URL, since a real
+	// origin is GitHub over the network and never needs local filesystem
+	// authority. This fixture's origin is a local bare repository standing in
+	// for GitHub, so it has to live under an authorized root for this one
+	// push to succeed. The worktree parent is out, since Cleanup's own
+	// managed-worktree inventory rejects any entry there that isn't a Git
+	// worktree root; nest it inside the canonical repository instead, which
+	// carries no such expectation.
+	relocatedRemote := filepath.Join(fixture.canonical, ".wb-test-remote.git")
+	if err := os.Rename(fixture.remote, relocatedRemote); err != nil {
+		t.Fatalf("relocate fixture remote under an authorized cleanup write root: %v", err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", relocatedRemote)
 
 	applied, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -737,7 +754,7 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	for index, head := range heads {
 		pulls = append(pulls, map[string]any{
 			"number":      index + 17,
-			"url":         "https://github.com/acme/app/pull/" + string(rune('A'+index)),
+			"url":         "https://github.com/acme/app/pull/" + strconv.Itoa(index+17),
 			"state":       "MERGED",
 			"mergedAt":    mergedAt.Format(time.RFC3339),
 			"headRefOid":  head,
