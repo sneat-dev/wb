@@ -1334,6 +1334,49 @@ metrics:
 	}
 }
 
+// TestRunClearsInheritedGitDirectoryEnvironmentFromBlockScripts pins a real
+// incident: git invokes hooks with GIT_DIR (and friends) already pinned to
+// the repository that triggered them -- confirmed empirically against a real
+// `git push` (GIT_DIR=.git, resolved relative to the process's own cwd, not
+// whatever directory a later `git -C` targets). wb hooks run must not let
+// that leak into a block's own environment: cmd.Dir already establishes
+// which repository the block operates in, and if the block itself shells
+// out to git elsewhere -- a Go test suite creating its own fixture
+// repositories, for instance, exactly what BuiltinGoPrePush runs -- an
+// inherited GIT_DIR silently redirects those operations at the wrong
+// repository instead of the one the block intended. That's what actually
+// happened: enabling the go profile fleet-wide made wb's own pre-push run
+// `go test ./...`, which runs this package's own git-fixture-heavy test
+// suite, which started failing against wb's own canonical .git because
+// nothing had cleared GIT_DIR first.
+func TestRunClearsInheritedGitDirectoryEnvironmentFromBlockScripts(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, filepath.Join(configDir, "templates"))
+	template := filepath.Join(configDir, "templates", "pre-commit.sh")
+	// Grep for the directory-pinning names specifically, not any GIT_* var:
+	// GIT_EDITOR, GIT_AUTHOR_*, and similar are legitimate to inherit and are
+	// not what this test guards against.
+	mustWrite(t, template, "#!/bin/sh\nenv | grep -E '^GIT_(DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES)=' || true\n")
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nhooks:\n  pre-commit:\n    template: templates/pre-commit.sh\nmetrics:\n  enabled: false\n")
+
+	t.Setenv("GIT_DIR", ".git")
+	t.Setenv("GIT_WORK_TREE", repo)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(repo, ".git", "index"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(repo, ".git"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(repo, ".git", "objects"))
+
+	var stdout bytes.Buffer
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("run result = %#v, error = %v", result, err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("block environment leaked git directory variables:\n%s", stdout.String())
+	}
+}
+
 func TestRunComposedProfilesInOrderAndReplicatesPrePushInput(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -1447,6 +1490,55 @@ func TestBuiltInGoPreCommitChecksOnlyStagedGoFiles(t *testing.T) {
 	result, err = Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("formatted result = %#v, error = %v", result, err)
+	}
+}
+
+// TestBuiltInGoPrePushSkipsRepositoryWithoutGoMod pins a real incident:
+// profiles.include forces a profile on unconditionally — unlike auto
+// detection, it never consults the profile's own Detection rule. A
+// fleet-wide policy naming "go" once, to cover every Go repository it
+// governs, forces it on for every OTHER repository too. Before this test,
+// BuiltinGoPrePush's `go vet ./...` failed outright in a repository with no
+// go.mod ("directory prefix . does not contain main module"), so every push
+// from every non-Go repository under such a policy was blocked.
+func TestBuiltInGoPrePushSkipsRepositoryWithoutGoMod(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("pre-push in a repository with no go.mod should skip cleanly: result = %#v, error = %v", result, err)
+	}
+}
+
+// TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod guards against the
+// skip-without-go.mod fix above neutering the check for repositories that
+// actually are Go modules.
+func TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/hooks-test\n\ngo 1.26\n")
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nfunc main() {}\n")
+	git(t, repo, "add", "go.mod", "main.go")
+	git(t, repo, "commit", "-m", "initial go module")
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("valid Go module pre-push should pass: result = %#v, error = %v", result, err)
+	}
+
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Printf(\"%d\", \"not a number\") }\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "introduce a go vet violation")
+	result, err = Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err == nil || result.ExitCode == 0 {
+		t.Fatalf("a real go vet violation should still block pre-push: result = %#v, error = %v", result, err)
 	}
 }
 
