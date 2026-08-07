@@ -244,11 +244,19 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		report.Findings = append(report.Findings, Finding{Code: "hooks-path", Message: message, Path: current})
 	}
 	// A shim can be perfectly correct text and still enforce outdated policy
-	// if the executable it invokes hasn't been rebuilt since. HEAD's own
-	// commit time is the only baseline available without relying on Go's
-	// automatic VCS build stamping, which does not work from a linked Git
-	// worktree — exactly how a dogfooded, branch-specific wb build is made.
-	headCommitTime, headTimeErr := repositoryHeadCommitTime(policy.RepoRoot)
+	// if the executable it invokes hasn't been rebuilt since. That's only a
+	// meaningful comparison when the checked repository is wb's own source:
+	// its HEAD is the branch a dogfooded, branch-specific wb build is meant to
+	// track. For any other managed repository, wb's own build time has no
+	// relationship to that repository's commit history — comparing them would
+	// flag nearly every real installation, since a stable wb build is almost
+	// always older than the next commit made in an actively developed repo.
+	var headCommitTime time.Time
+	var headTimeErr error
+	checkExecutableStaleness := repositoryIsWBSourceModule(policy.RepoRoot)
+	if checkExecutableStaleness {
+		headCommitTime, headTimeErr = repositoryHeadCommitTime(policy.RepoRoot)
+	}
 	for _, name := range names {
 		path := filepath.Join(managed, name)
 		data, readErr := os.ReadFile(path)
@@ -264,7 +272,7 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o111 == 0 {
 			report.Findings = append(report.Findings, Finding{Code: "hook-not-executable", Message: fmt.Sprintf("managed %s hook is not executable", name), Path: path})
 		}
-		if isManaged && valid && headTimeErr == nil {
+		if checkExecutableStaleness && isManaged && valid && headTimeErr == nil {
 			if executable := executablePathFromManagedSection(actual); executable != "" {
 				if info, statErr := os.Stat(executable); statErr == nil && info.Mode().IsRegular() && info.ModTime().Before(headCommitTime) {
 					report.Findings = append(report.Findings, Finding{
@@ -1117,6 +1125,25 @@ func repositoryHeadCommitTime(repoRoot string) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return time.Parse(time.RFC3339, value)
+}
+
+// wbSourceModulePath is wb's own Go module path.
+const wbSourceModulePath = "github.com/sneat-dev/wb"
+
+// repositoryIsWBSourceModule reports whether repoRoot is wb's own source
+// checkout, the only repository where comparing a wb build's mtime against
+// HEAD's commit time is meaningful.
+func repositoryIsWBSourceModule(repoRoot string) bool {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "go.mod"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if field, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.TrimSpace(field) == wbSourceModulePath
+		}
+	}
+	return false
 }
 
 func replaceManagedSection(content, expectedSection string) (string, error) {

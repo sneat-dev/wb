@@ -1011,7 +1011,7 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 // Check compares the executable's mtime against the repository's own HEAD
 // commit time rather than only diffing shim text.
 func TestCheckFlagsHookExecutableBuiltBeforeHeadCommit(t *testing.T) {
-	repo := initRepo(t)
+	repo := initWBSourceRepo(t)
 	isolateConfig(t)
 	executable := filepath.Join(t.TempDir(), "wb")
 	mustWriteExecutable(t, executable, "#!/bin/sh\nexit 0\n")
@@ -1037,7 +1037,7 @@ func TestCheckFlagsHookExecutableBuiltBeforeHeadCommit(t *testing.T) {
 }
 
 func TestCheckDoesNotFlagHookExecutableBuiltAfterHeadCommit(t *testing.T) {
-	repo := initRepo(t)
+	repo := initWBSourceRepo(t)
 	isolateConfig(t)
 	headTime := commitTime(t, repo)
 	executable := filepath.Join(t.TempDir(), "wb")
@@ -1066,7 +1066,7 @@ func TestCheckDoesNotFlagHookExecutableBuiltAfterHeadCommit(t *testing.T) {
 // produce. The staleness check must still skip silently rather than fail
 // Check or fabricate a finding when there's nothing to stat.
 func TestCheckIgnoresUnresolvableHookExecutable(t *testing.T) {
-	repo := initRepo(t)
+	repo := initWBSourceRepo(t)
 	isolateConfig(t)
 	executable := filepath.Join(t.TempDir(), "wb")
 	mustWriteExecutable(t, executable, "#!/bin/sh\nexit 0\n")
@@ -1083,6 +1083,48 @@ func TestCheckIgnoresUnresolvableHookExecutable(t *testing.T) {
 	if hasFinding(report.Findings, "hook-executable-stale") {
 		t.Fatalf("findings = %#v, want no hook-executable-stale for an unresolvable executable", report.Findings)
 	}
+}
+
+// TestCheckSkipsExecutableStalenessForUnrelatedRepository pins a regression
+// caught by cmd/wb's own upgrade integration test: comparing wb's build time
+// against an arbitrary managed repository's HEAD is only meaningful when
+// that repository is wb's own source (the dogfooding case). Any other
+// managed repository's HEAD advances independently of wb's own release
+// cadence — a stable wb build is almost always older than the next commit
+// made in an actively developed project, so applying the same comparison
+// there would flag nearly every real installation.
+func TestCheckSkipsExecutableStalenessForUnrelatedRepository(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	executable := filepath.Join(t.TempDir(), "wb")
+	mustWriteExecutable(t, executable, "#!/bin/sh\nexit 0\n")
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable}); err != nil {
+		t.Fatal(err)
+	}
+	headTime := commitTime(t, repo)
+	stale := headTime.Add(-time.Hour)
+	if err := os.Chtimes(executable, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Check(repo, "", executable, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinding(report.Findings, "hook-executable-stale") {
+		t.Fatalf("findings = %#v, want no hook-executable-stale for a repository that isn't wb's own source", report.Findings)
+	}
+}
+
+// initWBSourceRepo is initRepo plus a go.mod declaring wb's own module path,
+// the fixture the hook-executable-stale check requires before it compares
+// anything.
+func initWBSourceRepo(t *testing.T) string {
+	t.Helper()
+	repo := initRepo(t)
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module github.com/sneat-dev/wb\n\ngo 1.26\n")
+	git(t, repo, "add", "go.mod")
+	git(t, repo, "commit", "-m", "add go.mod")
+	return repo
 }
 
 func commitTime(t *testing.T, repo string) time.Time {

@@ -33,6 +33,14 @@ const landlockWriteAccess = unix.LANDLOCK_ACCESS_FS_WRITE_FILE |
 	unix.LANDLOCK_ACCESS_FS_REFER |
 	unix.LANDLOCK_ACCESS_FS_TRUNCATE
 
+// landlockDevNullAccess is deliberately narrower than landlockWriteAccess:
+// Git routinely opens /dev/null to discard output, a plain write/truncate on
+// an existing device node, never a create or remove. The macOS sandbox
+// backend grants the equivalent literal allowance for the same reason (see
+// sandboxProfile in git_capability_darwin.go); Landlock needs its own
+// explicit rule because it has no notion of a profile-wide default path.
+const landlockDevNullAccess = unix.LANDLOCK_ACCESS_FS_WRITE_FILE | unix.LANDLOCK_ACCESS_FS_TRUNCATE
+
 func platformGitFilesystemCapabilityAvailable() error {
 	version, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, unix.LANDLOCK_CREATE_RULESET_VERSION)
 	if errno != 0 {
@@ -85,6 +93,15 @@ func restrictWithLandlock(capability gitFilesystemCapability) error {
 		return fmt.Errorf("create Landlock ruleset: %w", errno)
 	}
 	defer func() { _ = unix.Close(int(rulesetFD)) }()
+	devNullFD, err := unix.Open("/dev/null", unix.O_PATH|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("open /dev/null for Landlock rule: %w", err)
+	}
+	defer func() { _ = unix.Close(devNullFD) }()
+	devNullAttr := landlockPathBeneathAttr{allowedAccess: landlockDevNullAccess, parentFD: int32(devNullFD)}
+	if _, _, addErrno := unix.Syscall6(unix.SYS_LANDLOCK_ADD_RULE, rulesetFD, unix.LANDLOCK_RULE_PATH_BENEATH, uintptr(unsafe.Pointer(&devNullAttr)), 0, 0, 0); addErrno != 0 {
+		return fmt.Errorf("allow Landlock /dev/null: %w", addErrno)
+	}
 	for _, root := range capability.writeRoots {
 		// Landlock rules bind the retained directory object. Do not reopen
 		// root.path here: an attacker can replace that spelling after the
