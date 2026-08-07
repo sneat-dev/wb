@@ -347,6 +347,86 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 	}
 }
 
+// TestCheckFlagsHookExecutableBuiltBeforeHeadCommit pins an incident where a
+// managed hook's shim text was perfectly correct — same executable path,
+// same projects root — but that executable was a stale build: it hadn't been
+// rebuilt since several commits landed on the branch it was meant to guard.
+// A stale build enforces outdated policy while looking fully installed, so
+// Check compares the executable's mtime against the repository's own HEAD
+// commit time rather than only diffing shim text.
+func TestCheckFlagsHookExecutableBuiltBeforeHeadCommit(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	headTime := commitTime(t, repo)
+	executable := filepath.Join(t.TempDir(), "wb")
+	mustWrite(t, executable, "#!/bin/sh\nexit 0\n")
+	stale := headTime.Add(-time.Hour)
+	if err := os.Chtimes(executable, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Check(repo, "", executable, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasFinding(report.Findings, "hook-executable-stale") {
+		t.Fatalf("findings = %#v, want hook-executable-stale", report.Findings)
+	}
+}
+
+func TestCheckDoesNotFlagHookExecutableBuiltAfterHeadCommit(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	headTime := commitTime(t, repo)
+	executable := filepath.Join(t.TempDir(), "wb")
+	mustWrite(t, executable, "#!/bin/sh\nexit 0\n")
+	fresh := headTime.Add(time.Hour)
+	if err := os.Chtimes(executable, fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Check(repo, "", executable, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinding(report.Findings, "hook-executable-stale") {
+		t.Fatalf("findings = %#v, want no hook-executable-stale", report.Findings)
+	}
+}
+
+// TestCheckIgnoresUnresolvableHookExecutable pins existing tests' fixtures,
+// which routinely point managed hooks at executable paths that were never
+// created on disk (e.g. "/opt/wb"). The staleness check must skip silently
+// rather than fail Check or fabricate a finding when there's nothing to stat.
+func TestCheckIgnoresUnresolvableHookExecutable(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	if _, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: "/opt/wb-does-not-exist"}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Check(repo, "", "/opt/wb-does-not-exist", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasFinding(report.Findings, "hook-executable-stale") {
+		t.Fatalf("findings = %#v, want no hook-executable-stale for an unresolvable executable", report.Findings)
+	}
+}
+
+func commitTime(t *testing.T, repo string) time.Time {
+	t.Helper()
+	value := git(t, repo, "log", "-1", "--format=%cI")
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatalf("parse HEAD commit time %q: %v", value, err)
+	}
+	return parsed
+}
+
 func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
