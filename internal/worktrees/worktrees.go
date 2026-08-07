@@ -1166,6 +1166,10 @@ func prepareOperationRoot(home, operation string, beforeHomeOpen func()) (prepar
 	if err != nil {
 		return preparedOperationRoot{}, err
 	}
+	if err := wbhome.SeedReadme(home); err != nil {
+		_ = homeDirectory.Close()
+		return preparedOperationRoot{}, err
+	}
 	homeFD := int(homeDirectory.Fd())
 	worktreesFD, err := openOrCreateNoFollowDirectory(homeFD, "worktrees")
 	if err != nil {

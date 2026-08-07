@@ -150,7 +150,7 @@ func runHierarchicalMigration(specPath string, roots []string, options hierarchi
 	}
 	reportDir := options.reportDir
 	if reportDir == "" {
-		home, err := wbhome.Root(githubDir)
+		home, err := wbhome.EnsureRoot(githubDir)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2

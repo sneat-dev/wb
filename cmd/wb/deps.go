@@ -89,7 +89,7 @@ func newDepsGraphCmd() *cobra.Command {
 			}
 			reportDirectory := options.reportDir
 			if reportDirectory == "" {
-				home, err := wbhome.Root(projectsRoot)
+				home, err := wbhome.EnsureRoot(projectsRoot)
 				if err != nil {
 					return err
 				}
@@ -183,7 +183,7 @@ func newDepsSetCmd() *cobra.Command {
 			report, runErr := deps.Run(context.Background(), target, repositories, lifecycle)
 			reportDirectory := options.reportDir
 			if reportDirectory == "" && report.Operation != "" {
-				home, homeErr := wbhome.Root(projectsRoot)
+				home, homeErr := wbhome.EnsureRoot(projectsRoot)
 				if homeErr != nil {
 					return homeErr
 				}
@@ -317,7 +317,7 @@ func runDepsBump(command *cobra.Command, events []deps.ReleaseEvent, repositorie
 	operation := deps.BumpOperationID(events)
 	reportDirectory := options.reportDir
 	if reportDirectory == "" {
-		home, err := wbhome.Root(projectsRoot)
+		home, err := wbhome.EnsureRoot(projectsRoot)
 		if err != nil {
 			return err
 		}

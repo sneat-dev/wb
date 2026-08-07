@@ -77,23 +77,59 @@ func Resolve(projectsRoot string) (Resolution, error) {
 // Root resolves WB's authoritative write home. It remains for callers that
 // only create state; worktree migration-aware callers must use Resolve.
 //
-// Every such caller is about to create state below this directory, so Root
-// ensures the directory itself exists and carries a README before returning
-// it — the home directory stays self-documenting no matter which command
-// creates it first.
+// Root never creates the directory itself: worktrees.Create opens this same
+// path through its own descriptor-anchored, symlink-rejecting check, and
+// that check needs the first, unhardened look at whether anything already
+// sits there. Callers with no hardening of their own should call EnsureRoot
+// instead, so the home directory still stays self-documenting.
 func Root(projectsRoot string) (string, error) {
 	resolution, err := Resolve(projectsRoot)
 	if err != nil {
 		return "", err
 	}
-	home := resolution.Write.Home
-	if err := os.MkdirAll(home, 0o755); err != nil {
-		return "", fmt.Errorf("create WB home %s: %w", home, err)
+	return resolution.Write.Home, nil
+}
+
+// EnsureRoot resolves WB's authoritative write home exactly like Root, then
+// ensures the directory exists and carries a README explaining what it is.
+// Use this for callers about to create state under home with no
+// home-directory hardening of their own; see Root's doc for the one caller
+// that must not.
+func EnsureRoot(projectsRoot string) (string, error) {
+	home, err := Root(projectsRoot)
+	if err != nil {
+		return "", err
 	}
-	if err := writeReadme(home); err != nil {
+	if err := EnsureHome(home); err != nil {
 		return "", err
 	}
 	return home, nil
+}
+
+// EnsureHome creates home (and any missing ancestor, e.g. a projects root a
+// test fixture hasn't created yet) if it doesn't exist — refusing to accept a
+// symlink already planted at that exact path — and seeds it with a README.
+// It does not guard ancestor components against a symlink the way the
+// worktree-create path's descriptor-anchored open does; its callers never had
+// that guarantee before this function existed either.
+func EnsureHome(home string) error {
+	info, err := os.Lstat(home)
+	if errors.Is(err, os.ErrNotExist) {
+		if mkdirErr := os.MkdirAll(home, 0o755); mkdirErr != nil {
+			return fmt.Errorf("create WB home %s: %w", home, mkdirErr)
+		}
+		info, err = os.Lstat(home)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect WB home %s: %w", home, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WB home %s is symlinked; refusing to use it", home)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("WB home path is not a directory: %s", home)
+	}
+	return SeedReadme(home)
 }
 
 // readmeContent explains what this directory is to anyone who stumbles into
@@ -107,9 +143,10 @@ whenever no WB command is running, since WB recreates whatever it needs.
 Learn more about the WB CLI at https://sneat.dev/workbench.
 `
 
-// writeReadme seeds home with a README.md the first time WB creates it. An
+// SeedReadme writes README.md into home if one isn't already there. An
 // existing README — including one an operator customised — is left alone.
-func writeReadme(home string) error {
+// Callers must have already established that home is a real directory.
+func SeedReadme(home string) error {
 	path := filepath.Join(home, "README.md")
 	if _, err := os.Stat(path); err == nil {
 		return nil

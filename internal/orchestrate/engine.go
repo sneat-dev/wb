@@ -154,7 +154,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = assessment.Reason
 		return nil
 	}
-	home, err := wbhome.Root(options.GitHubDir)
+	home, err := wbhome.EnsureRoot(options.GitHubDir)
 	if err != nil {
 		return failResult(result, err)
 	}
@@ -449,7 +449,7 @@ type OperationLock struct{ path string }
 
 // AcquireOperationLock creates an exclusive lock below the operation root.
 func AcquireOperationLock(githubDir, operation string) (OperationLock, error) {
-	home, err := wbhome.Root(githubDir)
+	home, err := wbhome.EnsureRoot(githubDir)
 	if err != nil {
 		return OperationLock{}, err
 	}

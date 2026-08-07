@@ -143,12 +143,12 @@ func TestAmbientMigrationMarkerCannotWeakenExplicitHome(t *testing.T) {
 	}
 }
 
-func TestRootSeedsReadmeInHomeDirectory(t *testing.T) {
+func TestEnsureRootSeedsReadmeInHomeDirectory(t *testing.T) {
 	t.Setenv(EnvOverride, "")
 	home := resolvedTempDir(t)
 	t.Setenv("HOME", home)
 	projectsRoot := resolvedTempDir(t)
-	root, err := Root(projectsRoot)
+	root, err := EnsureRoot(projectsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,12 +161,12 @@ func TestRootSeedsReadmeInHomeDirectory(t *testing.T) {
 	}
 }
 
-func TestRootDoesNotOverwriteExistingReadme(t *testing.T) {
+func TestEnsureRootDoesNotOverwriteExistingReadme(t *testing.T) {
 	t.Setenv(EnvOverride, "")
 	home := resolvedTempDir(t)
 	t.Setenv("HOME", home)
 	projectsRoot := resolvedTempDir(t)
-	root, err := Root(projectsRoot)
+	root, err := EnsureRoot(projectsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestRootDoesNotOverwriteExistingReadme(t *testing.T) {
 	if err := os.WriteFile(readmePath, custom, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Root(projectsRoot); err != nil {
+	if _, err := EnsureRoot(projectsRoot); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(readmePath)
@@ -184,6 +184,41 @@ func TestRootDoesNotOverwriteExistingReadme(t *testing.T) {
 	}
 	if string(got) != string(custom) {
 		t.Fatalf("README.md was overwritten: got %q, want preserved %q", got, custom)
+	}
+}
+
+func TestEnsureHomeRefusesSymlinkedHome(t *testing.T) {
+	dir := resolvedTempDir(t)
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(dir, "linked")
+	if err := os.Symlink(real, linked); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureHome(linked); err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("EnsureHome(symlinked) = %v, want a symlinked-home error", err)
+	}
+}
+
+// TestEnsureRootDoesNotRaceCreateWorktreesOwnHomeOpen pins the ordering bug
+// this fixes: Create's beforeHomeDirectoryOpen test seam (and its real
+// descriptor-anchored, symlink-rejecting open of the same directory) needs
+// WB's home to not exist yet when it runs. Root must stay a pure resolver so
+// that seam still gets the first, unhardened look at the path — only
+// EnsureRoot may create it.
+func TestEnsureRootDoesNotRaceCreateWorktreesOwnHomeOpen(t *testing.T) {
+	t.Setenv(EnvOverride, "")
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	root, err := Root(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("Root() must not create the home directory itself: stat error = %v", statErr)
 	}
 }
 
