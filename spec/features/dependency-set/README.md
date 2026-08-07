@@ -160,7 +160,8 @@ and whether it completed, failed, was blocked, or was not selected.
 #### REQ: isolated-canonical-checkouts
 
 Fleet work MUST fetch the configured remote ref and create a dedicated branch
-and worktree below `<projects-root>/.wb/worktrees/<operation>/<org>/<repo>`.
+and worktree below `<wb-home>/worktrees/<operation>/<org>/<repo>` (normally
+`~/.wb/worktrees/...`).
 Canonical clones MUST remain unchanged even when dirty or on another branch.
 `--ref` MUST select the base ref. `--resume` MUST accept only the expected
 operation branch and preserve completed external actions.

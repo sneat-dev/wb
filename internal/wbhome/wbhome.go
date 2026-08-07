@@ -1,5 +1,5 @@
-// Package wbhome resolves the single directory WB uses to coordinate work
-// across agents and sessions: task worktrees, operation locks, and reports.
+// Package wbhome resolves the directories WB uses to coordinate work across
+// agents and sessions: task worktrees, operation locks, and reports.
 //
 // That directory used to live at <projects-root>/.wb. A recursive tool that
 // doesn't know WB's exclusion rules — a search indexer, backup, an ad-hoc
@@ -22,37 +22,112 @@ import (
 // hermetic; operators use it for unusual layouts.
 const EnvOverride = "WB_HOME"
 
-// Root resolves the directory WB reads and writes its shared state under:
-// worktrees, operation locks, and reports.
+// EnvMigrationCompat is written only by a managed hook that pinned the normal
+// default home at installation time. Its value must be that resolved default
+// home, rather than a generic boolean. This lets the resolver distinguish the
+// one migration-compatible hook context from an arbitrary explicit WB_HOME.
+const EnvMigrationCompat = "WB_HOME_MIGRATION_COMPAT"
+
+// Layout is one supported on-disk WB state layout. Home is the parent of its
+// worktrees, locks, and reports. Legacy is true only for the historic
+// <projects-root>/.wb layout that remains readable during the migration.
+type Layout struct {
+	Home          string
+	WorktreesRoot string
+	Legacy        bool
+}
+
+// Resolution makes the migration policy explicit. Write is the only layout
+// where new state may be created; Read contains Write plus a discovered legacy
+// layout when the default migration path can safely support it.
 //
-// $WB_HOME wins when set. Otherwise, if projectsRoot already has a populated
-// .wb directory, that legacy location is reused: an existing worktree is a
-// live coordination point that another agent or session may depend on right
-// now, and relocating it out from under active work would strand that work
-// with no warning. A fresh install, or this same install once its legacy .wb
-// directory is gone, gets the new default: ~/.wb.
-//
-// The result is always symlink-resolved, matching how the rest of WB resolves
-// projectsRoot. On macOS, a temp directory (and so, in tests, $WB_HOME) lives
-// under /var, itself a symlink to /private/var; git reports worktree paths
-// through the resolved form. An unresolved root here would make WB's own path
-// bookkeeping disagree with what `git rev-parse --show-toplevel` reports for
-// the exact same directory.
-func Root(projectsRoot string) (string, error) {
-	if override := strings.TrimSpace(os.Getenv(EnvOverride)); override != "" {
-		return resolveAbs(override)
-	}
-	if root := strings.TrimSpace(projectsRoot); root != "" {
-		legacy := filepath.Join(root, ".wb")
-		if entries, err := os.ReadDir(legacy); err == nil && len(entries) > 0 {
-			return resolveAbs(legacy)
-		}
-	}
-	home, err := os.UserHomeDir()
+// An explicit WB_HOME is intentionally authoritative: it is commonly used by
+// parallel agents and hermetic tests, neither of which may accidentally scan
+// or mutate a neighbouring projects-root legacy directory.
+type Resolution struct {
+	Write    Layout
+	Read     []Layout
+	Explicit bool
+}
+
+// Resolve returns the write home and every compatible read layout for one
+// projects root. New state always belongs under ~/.wb by default; the legacy
+// projects-root directory is never selected as a silent write fallback.
+func Resolve(projectsRoot string) (Resolution, error) {
+	home, explicit, err := writeHome()
 	if err != nil {
-		return "", fmt.Errorf("resolve user home directory: %w", err)
+		return Resolution{}, err
 	}
-	return resolveAbs(filepath.Join(home, ".wb"))
+	write := newLayout(home, false)
+	resolution := Resolution{Write: write, Read: []Layout{write}, Explicit: explicit}
+	if explicit || strings.TrimSpace(projectsRoot) == "" {
+		return resolution, nil
+	}
+	legacy, err := resolveAbs(filepath.Join(projectsRoot, ".wb"))
+	if err != nil {
+		return Resolution{}, err
+	}
+	if filepath.Clean(legacy) == filepath.Clean(write.Home) || !hasWorktrees(legacy) {
+		return resolution, nil
+	}
+	resolution.Read = append(resolution.Read, newLayout(legacy, true))
+	return resolution, nil
+}
+
+// Root resolves WB's authoritative write home. It remains for callers that
+// only create state; worktree migration-aware callers must use Resolve.
+func Root(projectsRoot string) (string, error) {
+	resolution, err := Resolve(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	return resolution.Write.Home, nil
+}
+
+func writeHome() (home string, explicit bool, err error) {
+	if override := strings.TrimSpace(os.Getenv(EnvOverride)); override != "" {
+		root, resolveErr := resolveAbs(override)
+		if resolveErr != nil {
+			return "", true, resolveErr
+		}
+		// A generic ambient marker must never make an explicitly selected home
+		// migration-compatible. Managed shims pin both WB_HOME and this marker
+		// to the exact, resolved default location. Only that exact pairing is
+		// allowed to discover the legacy layout.
+		return root, !isPinnedDefaultHome(root), nil
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, fmt.Errorf("resolve user home directory: %w", err)
+	}
+	root, err := resolveAbs(filepath.Join(userHome, ".wb"))
+	return root, false, err
+}
+
+func isPinnedDefaultHome(home string) bool {
+	marker := strings.TrimSpace(os.Getenv(EnvMigrationCompat))
+	if marker == "" {
+		return false
+	}
+	pinned, err := resolveAbs(marker)
+	if err != nil || filepath.Clean(pinned) != filepath.Clean(home) {
+		return false
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	defaultHome, err := resolveAbs(filepath.Join(userHome, ".wb"))
+	return err == nil && filepath.Clean(home) == filepath.Clean(defaultHome)
+}
+
+func newLayout(home string, legacy bool) Layout {
+	return Layout{Home: home, WorktreesRoot: filepath.Join(home, "worktrees"), Legacy: legacy}
+}
+
+func hasWorktrees(home string) bool {
+	info, err := os.Stat(filepath.Join(home, "worktrees"))
+	return err == nil && info.IsDir()
 }
 
 // resolveAbs makes path absolute and resolves symlinks in it. WB's home

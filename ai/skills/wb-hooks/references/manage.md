@@ -30,8 +30,14 @@ wb hooks repair . --force
 
 WB backs up unmanaged collisions. Report the backup location.
 
-`install` and `repair` persist the absolute `--projects-root` in managed shims,
-so guards use the same policy when Git invokes them later.
+`install` and `repair` persist the absolute `--projects-root` and resolved WB
+home in managed shims, so guards use the same policy when Git invokes them
+later. A default-home shim keeps legacy worktrees readable during migration;
+an explicitly selected `WB_HOME` remains authoritative.
+
+Do not run `wb hooks install` or `repair` through `go run`: its executable is
+temporary and must never be written into a persistent Git shim. Use an
+installed WB binary or build a durable candidate binary first.
 
 Fleet operations are explicit and local-only:
 

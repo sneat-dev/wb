@@ -6,11 +6,15 @@ description: Use WB to guard, create, resume, inspect, or safely clean isolated 
 # WB worktrees
 
 Keep canonical clones clean, on `main`, and available for synchronization.
-Make feature changes only below:
+Make feature changes only below the authoritative WB home:
 
 ```txt
-<projects-root>/.wb/worktrees/<task>/<owner>/<repository>
+~/.wb/worktrees/<task>/<owner>/<repository>
 ```
+
+Set `WB_HOME` only when an explicit isolated home is intended. New work never
+falls back to `<projects-root>/.wb`; without an explicit override, WB still
+recognizes legacy linked worktrees there during migration.
 
 ## Route
 

@@ -16,7 +16,10 @@ wb worktree list <task> --github
 ```
 
 Do not replace this with recursive Git loops. WB validates that each path is a
-real linked worktree belonging to its expected canonical clone.
+real linked worktree belonging to its expected canonical clone, stops at Git
+repository boundaries, and reports malformed candidates without hiding valid
+siblings. Default-mode inventory includes legacy `<projects-root>/.wb`
+worktrees during migration.
 
 ## Plan cleanup
 
@@ -44,8 +47,8 @@ wb worktree cleanup <task> --apply
 ```
 
 This removes the linked worktree and its exact local branch ref. WB rechecks
-safety immediately before mutation and writes an audit report below
-`<projects-root>/.wb/reports/worktree-cleanup/`.
+safety immediately before mutation and writes an audit report below the
+authoritative WB home, normally `~/.wb/reports/worktree-cleanup/`.
 
 Remote deletion is deliberately separate:
 

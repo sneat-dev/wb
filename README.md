@@ -75,14 +75,19 @@ wb worktree create bots-e2e sneat-co/sneat-bots \
 Before branching, WB requires every canonical clone to be clean and checked
 out on the selected base (`main` by default), then runs
 `git pull --ff-only --no-tags origin <base>`. Worktrees are created at
-`<projects-root>/.wb/worktrees/<task>/<owner>/<repository>`. Existing branches
-and worktrees are rejected unless `--resume` is explicit.
+`~/.wb/worktrees/<task>/<owner>/<repository>` by default. Set `WB_HOME` to an
+explicit alternative. New work never silently falls back to the historic
+`<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
+guards, lists, and cleans linked worktrees there during migration. Existing
+branches and worktrees are rejected unless `--resume` is explicit.
 
 `wb worktree guard [path]` is the policy check used by agents and Git hooks. It
 accepts a clean canonical base checkout for synchronization, or a non-base
-linked worktree in the central hierarchy for development. It rejects feature
-branches and local changes in canonical clones, detached HEADs, and linked
-worktrees stored elsewhere.
+linked worktree in a resolver-recognized hierarchy for development. It rejects
+feature branches and local changes in canonical clones, arbitrary detached
+HEADs, and linked worktrees stored elsewhere. A detached linked checkout is
+allowed only while Git has a real active `rebase-merge` or `rebase-apply`
+state.
 
 Inspect active task worktrees without contacting GitHub:
 
@@ -103,8 +108,8 @@ Cleanup is a dry run by default. It removes nothing unless every repository in
 the task is clean, unlocked, and has a merged GitHub PR for the expected base
 whose recorded head is the current branch tip. The default 24-hour safety
 window is configurable with `--older-than`; `--apply` writes an audit report
-below `<projects-root>/.wb/reports/worktree-cleanup/` before removing exact
-worktree and local branch refs. `--remote` is separate and deletes only an
+below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
+before removing exact worktree and local branch refs. `--remote` is separate and deletes only an
 unchanged remote branch using force-with-lease.
 
 Enable the built-in guard in a repository or global WB hooks policy, then let
@@ -385,7 +390,8 @@ wb deps bump go --fleet \
 
 Canonical clones remain untouched, including dirty clones. WB fetches
 `origin/<ref>` (`main` by default) and creates branches and worktrees below
-`<projects-root>/.wb/worktrees/<operation>/<org>/<repo>`. Without publication
+`<wb-home>/worktrees/<operation>/<org>/<repo>` (normally
+`~/.wb/worktrees/...`). Without publication
 flags, verified changes remain in those local worktrees. `--push` implies
 `--commit`; `--pr` implies push and commit; and `--merge` implies all prior
 stages. Local lint, test, and build checks are enabled by default; use
@@ -399,7 +405,8 @@ skipped. Failing, cancelled, conflicted, checkless, and timed-out PRs remain
 open. `--resume` validates and reuses the expected worktree branch and open PR.
 
 Every run writes `deps-set.md` and `deps-set.yaml` below
-`<projects-root>/.wb/reports/<operation>` (or `--report-dir`). Both formats
+`<wb-home>/reports/<operation>` (or `--report-dir`; normally
+`~/.wb/reports/...`). Both formats
 record observed and target versions, resolved SHAs, reasons, changed files,
 verification, commits, PR links, CI checks, and merge outcomes. Git remains the
 source of detailed patches; the Markdown report includes the exact diff command.
@@ -581,8 +588,9 @@ share one layer and are listed under the table with their cycle path. Layering
 never fails or drops a repository because of a cycle.
 
 The default report directory is
-`<projects-root>/.wb/reports/deps-graph-<ecosystem>` (so `deps-graph-go` or
-`deps-graph-npm`; override it with `--report-dir`). Every run writes:
+`<wb-home>/reports/deps-graph-<ecosystem>` (normally `~/.wb/reports/...`, so
+`deps-graph-go` or `deps-graph-npm`; override it with `--report-dir`). Every
+run writes:
 
 - `deps-graph.md` — compact human and AI evidence index;
 - `deps-graph.yaml` and `deps-graph.json` — deterministic canonical evidence;
@@ -811,7 +819,7 @@ wb migrate examples/migrations/dalgo-record-v1.hcl \
 
 Canonical clones live at `<github-dir>/<org>/<repo>`; `--github-dir` defaults
 to `--projects-root`. The campaign creates its worktrees under
-`<github-dir>/.wb/worktrees/<migration>/<org>/<repo>` from `origin/<ref>`
+`<wb-home>/worktrees/<migration>/<org>/<repo>` from `origin/<ref>`
 (`main` by default). A dirty canonical clone is never checked out, reset, or
 otherwise modified: WB only fetches `origin`, then branches its dedicated
 worktree from the requested remote ref. Missing, resolvable GitHub repositories
@@ -872,7 +880,7 @@ exclusive lock under its migration worktree root, so concurrent runs fail safely
 canonical clones, branches, and reports intact.
 
 Every hierarchical run writes a linked human index and deterministic manifest
-to `<github-dir>/.wb/reports/<migration>/campaign.md` and `campaign.yaml`
+to `<wb-home>/reports/<migration>/campaign.md` and `campaign.yaml`
 (or `--report-dir`). Per-module `migration.md` and `migration.yaml` reports
 are nested beneath that directory. The campaign index lists every
 repository-relative path that differs from its configured base ref, including
@@ -939,9 +947,11 @@ unmanaged active hook. `repair --force` preserves hooks at an old configured
 path and backs up any unmanaged collision inside WB's directory before replacing
 it. `check` (alias `validate`) detects missing, stale, unexpected, or
 non-executable shims; `--json` makes its result consumable by CI or Backstage.
-Managed shims also preserve the absolute `--projects-root` used at installation,
-so worktree guards remain correct when Git invokes them from a non-default
-projects hierarchy.
+Managed shims also preserve the absolute `--projects-root` and resolved WB
+home used at installation, so worktree guards remain correct when Git invokes
+them from a non-default projects hierarchy. A shim installed from the normal
+default home remains migration-compatible with legacy linked worktrees; an
+explicit `WB_HOME` remains isolated.
 
 #### Hook policy, detection, and composable profiles
 

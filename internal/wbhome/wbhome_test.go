@@ -34,7 +34,7 @@ func TestRootDefaultsUnderUserHome(t *testing.T) {
 	}
 }
 
-func TestRootReusesPopulatedLegacyDirectory(t *testing.T) {
+func TestResolveKeepsNewDefaultWriteHomeAndReadsPopulatedLegacyDirectory(t *testing.T) {
 	t.Setenv(EnvOverride, "")
 	home := resolvedTempDir(t)
 	t.Setenv("HOME", home)
@@ -43,13 +43,15 @@ func TestRootReusesPopulatedLegacyDirectory(t *testing.T) {
 	if err := os.MkdirAll(legacy, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	root, err := Root(projectsRoot)
+	resolution, err := Resolve(projectsRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(projectsRoot, ".wb")
-	if root != want {
-		t.Fatalf("Root() = %q, want the legacy directory %q (an in-flight worktree must not be stranded)", root, want)
+	if got, want := resolution.Write.Home, filepath.Join(home, ".wb"); got != want {
+		t.Fatalf("write home = %q, want default %q", got, want)
+	}
+	if len(resolution.Read) != 2 || !resolution.Read[1].Legacy || resolution.Read[1].Home != filepath.Join(projectsRoot, ".wb") {
+		t.Fatalf("compatible layouts = %#v, want default + legacy", resolution.Read)
 	}
 }
 
@@ -87,6 +89,56 @@ func TestRootEnvOverrideWinsOverLegacy(t *testing.T) {
 	}
 	if root != override {
 		t.Fatalf("Root() = %q, want the explicit override %q", root, override)
+	}
+	resolution, err := Resolve(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != override {
+		t.Fatalf("explicit resolution = %#v, want only override", resolution)
+	}
+}
+
+func TestPinnedDefaultHookHomeKeepsLegacyLayoutReadable(t *testing.T) {
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "in-flight")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pinned := filepath.Join(home, ".wb")
+	t.Setenv(EnvOverride, pinned)
+	t.Setenv(EnvMigrationCompat, pinned)
+	resolution, err := Resolve(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.Explicit || len(resolution.Read) != 2 || resolution.Read[0].Home != pinned || !resolution.Read[1].Legacy {
+		t.Fatalf("pinned default resolution = %#v, want default write + legacy read", resolution)
+	}
+}
+
+func TestAmbientMigrationMarkerCannotWeakenExplicitHome(t *testing.T) {
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	legacy := filepath.Join(projectsRoot, ".wb", "worktrees", "in-flight")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(resolvedTempDir(t), "isolated-home")
+	t.Setenv(EnvOverride, explicit)
+	// This is the prior release's generic marker. It may be ambient in a
+	// caller's shell but must not turn a non-default explicit home into a
+	// migration-compatible one.
+	t.Setenv(EnvMigrationCompat, "default")
+	resolution, err := Resolve(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != explicit {
+		t.Fatalf("explicit home resolution = %#v, want only the explicit home", resolution)
 	}
 }
 
