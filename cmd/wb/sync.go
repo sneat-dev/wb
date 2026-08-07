@@ -5,7 +5,7 @@ import (
 	"os"
 	"sync"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/console"

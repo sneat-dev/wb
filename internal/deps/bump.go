@@ -36,7 +36,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	}
 	report := BumpReport{
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
-		Ecosystem: EcosystemGo, SeedEvents: append([]ReleaseEvent(nil), events...),
+		Ecosystem: options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, Parallel: lifecycle.Parallel,
 	}
 	if lifecycle.Verify {
@@ -64,7 +64,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		}
 		var progressMu sync.Mutex
 		var progressErr error
-		graph, err := discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, func(progress graphDiscoveryProgress) {
+		onProgress := func(progress graphDiscoveryProgress) {
 			progressMu.Lock()
 			defer progressMu.Unlock()
 			if progressErr != nil {
@@ -77,8 +77,19 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				LastRepository:        progress.LastRepository,
 			}
 			progressErr = persistBumpReport(options, report)
-		})
-		report.DiscoverySkips = mergeGraphDiscoverySkips(report.DiscoverySkips, graph.discoverySkips)
+		}
+		var graph bumpFleetGraph
+		var err error
+		if options.Ecosystem == EcosystemNPM {
+			var npmGraph npmFleetGraph
+			npmGraph, err = discoverNpmFleetGraph(ctx, repositories, lifecycle, npmGraphDiscoveryPolicy{SkipFailedNonNPM: true}, onProgress)
+			graph = npmGraph
+		} else {
+			var goGraph goFleetGraph
+			goGraph, err = discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, onProgress)
+			graph = goGraph
+		}
+		report.DiscoverySkips = mergeGraphDiscoverySkips(report.DiscoverySkips, graph.Skips())
 		if progressErr != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, progressErr)
@@ -188,8 +199,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		}
 		waveLifecycle := lifecycle
 		waveLifecycle.Operation = fmt.Sprintf("%s-wave-%02d", lifecycle.Operation, waveIndex)
-		waveLifecycle.Branch = fmt.Sprintf("wb/deps/bump-%s-wave-%02d", strings.TrimPrefix(lifecycle.Operation, "deps-bump-go-"), waveIndex)
-		handler := goWaveHandler{targetsByRepository: targetsByRepository, options: options.Options}
+		waveLifecycle.Branch = fmt.Sprintf("wb/deps/bump-%s-wave-%02d", strings.TrimPrefix(lifecycle.Operation, bumpOperationPrefix(options.Ecosystem)), waveIndex)
+		handler := waveHandler{ecosystem: options.Ecosystem, targetsByRepository: targetsByRepository, options: options.Options}
 		results, runErr := orchestrate.Run(ctx, affectedRepositories, handler, waveLifecycle)
 		for _, result := range results {
 			waveReport.Repositories = append(waveReport.Repositories, repositoryReportFromResult(result))
@@ -327,18 +338,18 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 		if now.Sub(event.CheckedAt) < options.RefreshAfter {
 			continue
 		}
-		latest, err := latestGoVersion(ctx, event.Dependency, options)
+		latest, err := latestReleaseVersion(ctx, event.Dependency, options)
 		if err != nil {
 			return events, refreshes, fmt.Errorf("refresh stale release event %s@%s: %w", event.Dependency, event.Version, err)
 		}
-		if !semver.IsValid(latest) {
+		if !universalSemverValid(latest) {
 			return events, refreshes, fmt.Errorf("refresh stale release event %s@%s: registry returned invalid version %q", event.Dependency, event.Version, latest)
 		}
 		refresh := ReleaseEventRefresh{
 			Dependency: event.Dependency, Before: event.Version, After: event.Version, CheckedAt: now,
 			Reason: "registry recheck found no newer release; accumulated event retained",
 		}
-		if semver.Compare(latest, event.Version) > 0 {
+		if universalSemverCompare(latest, event.Version) > 0 {
 			event.Version = latest
 			event.Source = "refreshed_latest"
 			refresh.After = latest
@@ -411,16 +422,28 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 	if len(events) == 0 {
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("at least one --changed module@version event is required")
 	}
+	if options.Ecosystem == "" {
+		options.Ecosystem = EcosystemGo
+	}
+	switch options.Ecosystem {
+	case EcosystemGo, EcosystemNPM:
+	default:
+		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("unsupported dependency ecosystem %q for deps bump (want go or npm)", options.Ecosystem)
+	}
 	byDependency := map[string]ReleaseEvent{}
 	now := bumpNow(options)
 	for _, event := range events {
 		event.Dependency = strings.TrimSpace(event.Dependency)
 		event.Version = strings.TrimSpace(event.Version)
-		if err := modmodule.CheckPath(event.Dependency); err != nil {
+		if options.Ecosystem == EcosystemNPM {
+			if err := validateNpmPackageName(event.Dependency); err != nil {
+				return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("invalid npm package: %w", err)
+			}
+		} else if err := modmodule.CheckPath(event.Dependency); err != nil {
 			return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("invalid Go module %q: %w", event.Dependency, err)
 		}
-		if !semver.IsValid(event.Version) {
-			return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("invalid Go module version %q for %s", event.Version, event.Dependency)
+		if !universalSemverValid(event.Version) {
+			return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("invalid %s version %q for %s", options.Ecosystem, event.Version, event.Dependency)
 		}
 		if event.Source == "" {
 			event.Source = "explicit"
@@ -455,7 +478,7 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 	if options.RefreshAfter < 0 {
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("release refresh interval must not be negative")
 	}
-	operation := BumpOperationID(events)
+	operation := BumpOperationIDFor(options.Ecosystem, events)
 	normalized, lifecycle, err := normalizeOptions(options.Options, operation)
 	if err != nil {
 		return BumpOptions{}, orchestrate.Options{}, nil, err
@@ -467,12 +490,30 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("a previous bump report requires --resume")
 	}
 	options.Options = normalized
-	lifecycle.Branch = "wb/deps/bump-" + strings.TrimPrefix(operation, "deps-bump-go-")
+	lifecycle.Branch = "wb/deps/bump-" + strings.TrimPrefix(operation, bumpOperationPrefix(options.Ecosystem))
 	return options, lifecycle, events, nil
 }
 
-// BumpOperationID returns the stable campaign identity for a sorted seed set.
+// bumpOperationPrefix returns the operation-identity prefix for one
+// ecosystem's campaigns, e.g. "deps-bump-go-" or "deps-bump-npm-".
+func bumpOperationPrefix(ecosystem Ecosystem) string {
+	if ecosystem == "" {
+		ecosystem = EcosystemGo
+	}
+	return "deps-bump-" + string(ecosystem) + "-"
+}
+
+// BumpOperationID returns the stable Go campaign identity for a sorted seed
+// set. Kept for backward compatibility with every caller that predates npm
+// support; new callers that also know the ecosystem should use
+// BumpOperationIDFor.
 func BumpOperationID(events []ReleaseEvent) string {
+	return BumpOperationIDFor(EcosystemGo, events)
+}
+
+// BumpOperationIDFor returns the stable campaign identity for a sorted seed
+// set of release events in the given ecosystem.
+func BumpOperationIDFor(ecosystem Ecosystem, events []ReleaseEvent) string {
 	events = append([]ReleaseEvent(nil), events...)
 	sort.Slice(events, func(i, j int) bool { return events[i].Dependency < events[j].Dependency })
 	var identity strings.Builder
@@ -483,7 +524,7 @@ func BumpOperationID(events []ReleaseEvent) string {
 		identity.WriteByte('\n')
 	}
 	digest := sha256.Sum256([]byte(identity.String()))
-	return "deps-bump-go-" + hex.EncodeToString(digest[:6])
+	return bumpOperationPrefix(ecosystem) + hex.EncodeToString(digest[:6])
 }
 
 func selectWaveRepositories(repositories []Repository, targets map[string][]Target) []Repository {
@@ -497,14 +538,21 @@ func selectWaveRepositories(repositories []Repository, targets map[string][]Targ
 	return selected
 }
 
-type goWaveHandler struct {
+// waveHandler drives one wave's per-repository Inspect/Apply lifecycle
+// through the same adapter deps set already uses (see adapter.go), so a
+// bump wave and an exact set share their manifest-mutation logic exactly.
+// It replaces the former Go-only goWaveHandler; nothing in this type is
+// Go-specific anymore, and every Go-only step below stays gated on
+// handler.ecosystem so Go-adapter behavior is unchanged.
+type waveHandler struct {
+	ecosystem           Ecosystem
 	targetsByRepository map[string][]Target
 	options             Options
 }
 
-func (handler goWaveHandler) Inspect(ctx context.Context, canonical, base string, repository orchestrate.Repository) (orchestrate.Assessment[[]Decision], error) {
+func (handler waveHandler) Inspect(ctx context.Context, canonical, base string, repository orchestrate.Repository) (orchestrate.Assessment[[]Decision], error) {
 	assessment := orchestrate.Assessment[[]Decision]{}
-	adapter := goAdapter{}
+	adapter := adapterFor(handler.ecosystem)
 	for _, target := range handler.targetsByRepository[repository.Slug] {
 		decisions, err := adapter.inspect(ctx, canonical, base, target, handler.options)
 		assessment.Metadata = append(assessment.Metadata, decisions...)
@@ -532,8 +580,8 @@ func (handler goWaveHandler) Inspect(ctx context.Context, canonical, base string
 	return assessment, nil
 }
 
-func (handler goWaveHandler) Apply(ctx context.Context, worktree string, repository orchestrate.Repository) ([]Decision, error) {
-	adapter := goAdapter{}
+func (handler waveHandler) Apply(ctx context.Context, worktree string, repository orchestrate.Repository) ([]Decision, error) {
+	adapter := adapterFor(handler.ecosystem)
 	var decisions []Decision
 	var updateErrors []error
 	for _, target := range handler.targetsByRepository[repository.Slug] {
@@ -543,14 +591,22 @@ func (handler goWaveHandler) Apply(ctx context.Context, worktree string, reposit
 			updateErrors = append(updateErrors, err)
 		}
 	}
-	if validationErrors := validateGoWaveSelections(ctx, worktree, decisions, handler.options); validationErrors != nil {
-		updateErrors = append(updateErrors, validationErrors)
+	// Only Go's module resolution can let a later target silently change an
+	// earlier one (minimal version selection); npm's exact-literal writes
+	// have no equivalent resolver step to re-check.
+	if handler.ecosystem != EcosystemNPM {
+		if validationErrors := validateGoWaveSelections(ctx, worktree, decisions, handler.options); validationErrors != nil {
+			updateErrors = append(updateErrors, validationErrors)
+		}
 	}
 	sortDecisions(decisions)
 	return decisions, errors.Join(updateErrors...)
 }
 
-func (goWaveHandler) ValidatePublishable(_ context.Context, worktree string, _ orchestrate.Repository) error {
+func (handler waveHandler) ValidatePublishable(_ context.Context, worktree string, _ orchestrate.Repository) error {
+	if handler.ecosystem != EcosystemGo && handler.ecosystem != "" {
+		return nil
+	}
 	return validatePublishableGoManifests(worktree)
 }
 
@@ -585,7 +641,7 @@ func validateGoWaveSelections(ctx context.Context, worktree string, decisions []
 	return errors.Join(validationErrors...)
 }
 
-func (handler goWaveHandler) CommitMessage(repository orchestrate.Repository) string {
+func (handler waveHandler) CommitMessage(repository orchestrate.Repository) string {
 	targets := handler.targetsByRepository[repository.Slug]
 	if len(targets) == 1 {
 		return fmt.Sprintf("chore(deps): bump %s to %s", targets[0].Dependency, targets[0].Version)
@@ -593,12 +649,12 @@ func (handler goWaveHandler) CommitMessage(repository orchestrate.Repository) st
 	return "chore(deps): apply dependency release wave"
 }
 
-func (handler goWaveHandler) PullRequest(repository orchestrate.Repository) (string, string) {
+func (handler waveHandler) PullRequest(repository orchestrate.Repository) (string, string) {
 	title := handler.CommitMessage(repository)
-	return title, "Automated by `wb deps bump`. Published provider versions were applied with Go tooling and local verification completed before this pull request was opened."
+	return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling and local verification completed before this pull request was opened.", handler.ecosystem)
 }
 
-func captureReleaseBaselines(ctx context.Context, graph goFleetGraph, affected map[string]map[string]bool, options BumpOptions) (map[string]ReleaseObservation, error) {
+func captureReleaseBaselines(ctx context.Context, graph bumpFleetGraph, affected map[string]map[string]bool, options BumpOptions) (map[string]ReleaseObservation, error) {
 	observations := map[string]ReleaseObservation{}
 	var observationErrors []error
 	for repository, modules := range affected {
@@ -606,9 +662,9 @@ func captureReleaseBaselines(ctx context.Context, graph goFleetGraph, affected m
 			if !graph.hasExternalConsumers(module, repository) {
 				continue
 			}
-			version, err := latestGoVersion(ctx, module, options)
+			version, err := latestReleaseVersion(ctx, module, options)
 			observation := ReleaseObservation{
-				Module: module, Repository: repository, Before: version, Source: "go list -m " + module + "@latest",
+				Module: module, Repository: repository, Before: version, Source: latestVersionCommandDescription(options.Ecosystem, module),
 				Status: "baseline", RequireNewer: true, CheckedAt: bumpNow(options),
 			}
 			if err != nil {
@@ -645,11 +701,11 @@ func mergedReleaseBaselines(results []orchestrate.Result[[]Decision], affected m
 // that origin/main and the module registry already show as updated. Both
 // pieces of evidence are required: a source manifest alone does not prove that
 // dependants can consume a published version.
-func discoverExistingReleaseCarriers(ctx context.Context, graph goFleetGraph, events []ReleaseEvent, options BumpOptions) ([]ReleaseObservation, error) {
+func discoverExistingReleaseCarriers(ctx context.Context, graph bumpFleetGraph, events []ReleaseEvent, options BumpOptions) ([]ReleaseObservation, error) {
 	expectedByModule := map[string]map[string]string{}
 	repositoryByModule := map[string]string{}
 	for _, event := range events {
-		for _, requirement := range graph.requirements[event.Dependency] {
+		for _, requirement := range graph.requirementsForDependency(event.Dependency) {
 			if requirement.Version != event.Version || !graph.hasExternalConsumers(requirement.ConsumerModule, requirement.Repository) {
 				continue
 			}
@@ -683,13 +739,13 @@ func discoverExistingReleaseCarriers(ctx context.Context, graph goFleetGraph, ev
 			for index := range jobs {
 				module := modules[index]
 				expected := expectedByModule[module]
-				release, err := latestPublishedGoRelease(ctx, module, options)
+				release, err := latestPublishedRelease(ctx, module, options)
 				observation := ReleaseObservation{
 					Module: module, Repository: repositoryByModule[module], Source: release.Source,
 					ExpectedRequirements: cloneStringMap(expected), Status: "awaiting_release", CheckedAt: bumpNow(options),
 				}
 				if observation.Source == "" {
-					observation.Source = "go mod download " + module + "@latest"
+					observation.Source = latestPublishedReleaseCommandDescription(options.Ecosystem, module)
 				}
 				if err != nil {
 					observation.Status = "failed"
@@ -781,7 +837,7 @@ func waitForPublishedGoRequirements(ctx context.Context, baseline ReleaseObserva
 		deadline = time.Now().Add(options.Timeout)
 	}
 	for {
-		release, err := latestPublishedGoRelease(ctx, baseline.Module, options)
+		release, err := latestPublishedRelease(ctx, baseline.Module, options)
 		observation.CheckedAt = bumpNow(options)
 		if err != nil {
 			observation.Status = "failed"
@@ -791,9 +847,9 @@ func waitForPublishedGoRequirements(ctx context.Context, baseline ReleaseObserva
 		if release.Source != "" {
 			observation.Source = release.Source
 		}
-		versionReady := baseline.Before == "" || semver.Compare(release.Version, baseline.Before) >= 0
+		versionReady := baseline.Before == "" || universalSemverCompare(release.Version, baseline.Before) >= 0
 		if baseline.RequireNewer && baseline.Before != "" {
-			versionReady = semver.Compare(release.Version, baseline.Before) > 0
+			versionReady = universalSemverCompare(release.Version, baseline.Before) > 0
 		}
 		if requirementsContain(release.Requirements, baseline.ExpectedRequirements) && versionReady {
 			observation.After = release.Version
@@ -830,6 +886,100 @@ func cloneStringMap(input map[string]string) map[string]string {
 	return result
 }
 
+// latestReleaseVersion and latestPublishedRelease dispatch to each
+// ecosystem's own registry lookup. They are the single seam every shared
+// wave-engine helper above (refreshStaleReleaseEvents, captureReleaseBaselines,
+// discoverExistingReleaseCarriers, waitForGoRelease, waitForPublishedGoRequirements)
+// calls through, so none of them need to know which ecosystem is running —
+// exactly like adapterFor is the seam Inspect/Apply call through.
+func latestReleaseVersion(ctx context.Context, module string, options BumpOptions) (string, error) {
+	if options.Ecosystem == EcosystemNPM {
+		return latestNpmVersion(ctx, module, options)
+	}
+	return latestGoVersion(ctx, module, options)
+}
+
+func latestPublishedRelease(ctx context.Context, module string, options BumpOptions) (PublishedGoRelease, error) {
+	if options.Ecosystem == EcosystemNPM {
+		return latestPublishedNpmRelease(ctx, module, options)
+	}
+	return latestPublishedGoRelease(ctx, module, options)
+}
+
+func latestVersionCommandDescription(ecosystem Ecosystem, module string) string {
+	if ecosystem == EcosystemNPM {
+		return "pnpm view " + module + " version"
+	}
+	return "go list -m " + module + "@latest"
+}
+
+func latestPublishedReleaseCommandDescription(ecosystem Ecosystem, module string) string {
+	if ecosystem == EcosystemNPM {
+		return "pnpm view " + module + "@latest dependencies"
+	}
+	return "go mod download " + module + "@latest"
+}
+
+// latestNpmVersion is the npm-ecosystem analogue of latestGoVersion: the
+// published "latest" dist-tag version of a package, via `pnpm view`. pnpm is
+// used rather than npm because every repository this adapter targets is a
+// pnpm workspace (Corepack-pinned pnpm is guaranteed present; a bare `npm`
+// binary is not).
+func latestNpmVersion(ctx context.Context, module string, options BumpOptions) (string, error) {
+	if options.LatestNpmVersion != nil {
+		return options.LatestNpmVersion(ctx, module)
+	}
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "pnpm", "view", module, "version")
+	if err != nil {
+		return "", err
+	}
+	version := strings.TrimSpace(output)
+	if !universalSemverValid(version) {
+		return "", fmt.Errorf("latest npm version for %s is invalid: %q", module, version)
+	}
+	return version, nil
+}
+
+// latestPublishedNpmRelease is the npm-ecosystem analogue of
+// latestPublishedGoRelease: the published "latest" release's own version and
+// dependency requirements, used to let a campaign traverse a consumer that
+// origin/<ref> and the registry both already show as updated without
+// inventing a version WB never observed.
+func latestPublishedNpmRelease(ctx context.Context, module string, options BumpOptions) (PublishedGoRelease, error) {
+	if options.LatestNpmRelease != nil {
+		release, err := options.LatestNpmRelease(ctx, module)
+		if err != nil {
+			return PublishedGoRelease{}, err
+		}
+		if !universalSemverValid(release.Version) {
+			return PublishedGoRelease{}, fmt.Errorf("latest npm version for %s is invalid: %q", module, release.Version)
+		}
+		if release.Source == "" {
+			release.Source = "injected release resolver for " + module
+		}
+		return release, nil
+	}
+	version, err := latestNpmVersion(ctx, module, options)
+	if err != nil {
+		return PublishedGoRelease{}, err
+	}
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "pnpm", "view", module+"@"+version, "dependencies", "--json")
+	if err != nil {
+		return PublishedGoRelease{}, err
+	}
+	requirements := map[string]string{}
+	trimmed := strings.TrimSpace(output)
+	if trimmed != "" && trimmed != "undefined" {
+		if err := json.Unmarshal([]byte(trimmed), &requirements); err != nil {
+			return PublishedGoRelease{}, fmt.Errorf("decode published npm dependencies for %s@%s: %w", module, version, err)
+		}
+	}
+	return PublishedGoRelease{
+		Version: version, Requirements: requirements,
+		Source: "pnpm view " + module + "@" + version + " dependencies",
+	}, nil
+}
+
 func latestGoVersion(ctx context.Context, module string, options BumpOptions) (string, error) {
 	if options.LatestGoVersion != nil {
 		return options.LatestGoVersion(ctx, module)
@@ -857,14 +1007,14 @@ func waitForGoRelease(ctx context.Context, baseline ReleaseObservation, options 
 		deadline = time.Now().Add(options.Timeout)
 	}
 	for {
-		version, err := latestGoVersion(ctx, baseline.Module, options)
+		version, err := latestReleaseVersion(ctx, baseline.Module, options)
 		observation.CheckedAt = bumpNow(options)
 		if err != nil {
 			observation.Status = "failed"
 			observation.Reason = err.Error()
 			return observation, err
 		}
-		if baseline.Before == "" || semver.Compare(version, baseline.Before) > 0 {
+		if baseline.Before == "" || universalSemverCompare(version, baseline.Before) > 0 {
 			observation.After = version
 			observation.Status = "released"
 			observation.Reason = "new published provider version observed after merge"
@@ -902,7 +1052,7 @@ func mergeReleaseEvents(groups ...[]ReleaseEvent) []ReleaseEvent {
 	for _, events := range groups {
 		for _, event := range events {
 			previous, exists := byDependency[event.Dependency]
-			if !exists || semver.Compare(event.Version, previous.Version) > 0 {
+			if !exists || universalSemverCompare(event.Version, previous.Version) > 0 {
 				byDependency[event.Dependency] = event
 			} else if event.Version == previous.Version && event.CheckedAt.After(previous.CheckedAt) {
 				byDependency[event.Dependency] = event

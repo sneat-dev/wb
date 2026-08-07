@@ -34,7 +34,7 @@ wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
-wb deps bump go --changed M@V # propagate published Go releases through dependency waves
+wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
@@ -341,13 +341,34 @@ wb deps set github-actions strongo/cicd@v1.10.5 --fleet \
 # Set an existing Go module requirement with go get and go mod tidy.
 wb deps set go github.com/dal-go/dalgo@v0.63.1 \
   ~/projects/sneat-co/sneat-go
+
+# Set an existing npm/pnpm dependency reference across every package.json and
+# pnpm-workspace.yaml override/catalog entry in a repository.
+wb deps set npm @sneat/core@1.4.0 \
+  ~/projects/sneat-co/sneat-apps
 ```
 
-The initial adapters are `github-actions` and `go`. GitHub Actions tags are
+The adapters are `github-actions`, `go`, and `npm`. GitHub Actions tags are
 resolved once to immutable commit SHAs; WB preserves the action or reusable
 workflow subpath and writes `# <version>` next to the SHA. The Go adapter uses
 official Go tooling rather than implementing module selection itself. A
 semantic downgrade is rejected unless `--allow-downgrade` is explicit.
+
+The npm adapter updates `dependencies`, `devDependencies`,
+`peerDependencies`, and `optionalDependencies` in every `package.json` in a
+repository (workspace members included), and, where present, the
+`overrides:`/`catalog:`/`catalogs:` blocks of `pnpm-workspace.yaml` — the
+version pin pnpm 11 reads instead of the legacy `pnpm.overrides` field in
+`package.json`. After writing an exact version it regenerates every affected
+lockfile with `pnpm install --lockfile-only` (or `npm install
+--package-lock-only` for a plain npm lockfile) and verifies the result with a
+frozen-lockfile probe before reporting success, so a change never lands with
+a lockfile whose recorded config snapshot no longer matches — the exact
+mismatch a skipped regeneration produces as
+`ERR_PNPM_LOCKFILE_CONFIG_MISMATCH` in CI. A repository with more than one
+independent lockfile (for example a nested `landings/` subtree with its own
+`pnpm-workspace.yaml`) has each lockfile scope regenerated and verified
+independently.
 
 #### Private Go modules
 
@@ -440,8 +461,8 @@ campaign, and `--refresh-after` controls stale-event registry rechecks.
 
 ### `wb deps bump` — published-version propagation waves
 
-Use `deps bump` after one or more exact Go module versions have been published
-and their dependants must be moved in provider-first order:
+Use `deps bump` after one or more exact Go module or npm package versions have
+been published and their dependants must be moved in provider-first order:
 
 ```sh
 wb deps bump go \
@@ -452,7 +473,16 @@ wb deps bump go \
 # The same planner with one seed release:
 wb deps set go github.com/dal-go/record@v0.3.0 \
   --fleet --propagate --parallel=2 --merge
+
+# npm/pnpm fleets propagate the same way, waves and all — including every
+# pnpm-workspace.yaml override and every affected lockfile.
+wb deps bump npm \
+  --changed @sneat/core@1.4.0 \
+  --fleet --parallel=2 --merge
 ```
+
+`--propagate` (`deps set --fleet --propagate`) delegates to `deps bump` and is
+Go-only today; `deps bump npm` itself is invoked directly, as above.
 
 `--propagate` is therefore similar to bump limited to one *initial* dependency,
 but the campaign is not limited to that dependency. When an updated consumer
@@ -505,7 +535,9 @@ for synthetic use cases and acceptance criteria.
 
 ### `wb deps graph` — one scan, three dependency views
 
-`deps graph` scans Go module declarations and requirements once, preserves the
+`deps graph` scans one ecosystem's manifests once — Go module declarations
+and requirements by default, or `--ecosystem npm` for `package.json`
+dependency fields and pnpm-workspace.yaml overrides/catalogs — preserves the
 manifest evidence, and derives three views from the same canonical model:
 
 - `--view repos` shows internal provider repository → consumer repository
@@ -556,9 +588,9 @@ share one layer and are listed under the table with their cycle path. Layering
 never fails or drops a repository because of a cycle.
 
 The default report directory is
-`<wb-home>/reports/deps-graph-go` (normally `~/.wb/reports/...`; override it
-with `--report-dir`).
-Every run writes:
+`<wb-home>/reports/deps-graph-<ecosystem>` (normally `~/.wb/reports/...`, so
+`deps-graph-go` or `deps-graph-npm`; override it with `--report-dir`). Every
+run writes:
 
 - `deps-graph.md` — compact human and AI evidence index;
 - `deps-graph.yaml` and `deps-graph.json` — deterministic canonical evidence;

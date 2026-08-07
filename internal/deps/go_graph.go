@@ -181,6 +181,18 @@ func classifyGoGraphDiscoveryFailure(repository, canonical string, cause error, 
 	if !policy.SkipFailedNonGo {
 		return nil, wrapped
 	}
+	// An unreadable/remote-less local clone (no 'origin' configured, or not a
+	// git repository at all) needs manual repair regardless of what it
+	// contains, so it is skipped and reported rather than aborting an
+	// otherwise healthy fleet campaign. This is unconditional — unlike the
+	// manifest check below, it does not matter whether the repository has a
+	// go.mod, because WB cannot inspect origin at all to find out safely.
+	if looksLikeUnreadableClone(cause) {
+		return &GraphDiscoverySkip{
+			Repository: repository,
+			Reason:     fmt.Sprintf("local clone is unreadable (no usable git remote); skipped rather than aborting the fleet — needs manual repair: %v", cause),
+		}, nil
+	}
 	hasGoManifest, inspectErr := repositoryContainsLocalGoManifest(canonical)
 	if inspectErr != nil {
 		return nil, errors.Join(wrapped, fmt.Errorf("%s: cannot prove failed repository is irrelevant to Go propagation: %w", repository, inspectErr))
@@ -579,4 +591,25 @@ func (graph goFleetGraph) validateAcyclicPropagation(events []ReleaseEvent) erro
 		}
 	}
 	return nil
+}
+
+// Skips lists repositories excluded from the walk rather than inspected. It
+// exposes the private discoverySkips field so goFleetGraph can satisfy the
+// ecosystem-neutral bumpFleetGraph interface (see fleet_graph.go); a method
+// cannot share its identifier with a field, hence the capitalized name.
+func (graph goFleetGraph) Skips() []GraphDiscoverySkip { return graph.discoverySkips }
+
+// requirementsForDependency projects every requirement of one module path
+// into the ecosystem-neutral fleetRequirement shape the bump wave engine
+// uses to traverse an already-published consumer without depending on
+// goFleetRequirement directly.
+func (graph goFleetGraph) requirementsForDependency(dependency string) []fleetRequirement {
+	requirements := graph.requirements[dependency]
+	result := make([]fleetRequirement, 0, len(requirements))
+	for _, requirement := range requirements {
+		result = append(result, fleetRequirement{
+			ConsumerModule: requirement.ConsumerModule, Repository: requirement.Repository, Version: requirement.Version,
+		})
+	}
+	return result
 }

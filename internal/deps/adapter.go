@@ -13,6 +13,8 @@ func adapterFor(ecosystem Ecosystem) adapter {
 		return githubActionsAdapter{}
 	case EcosystemGo:
 		return goAdapter{}
+	case EcosystemNPM:
+		return npmAdapter{}
 	default:
 		return nil
 	}
