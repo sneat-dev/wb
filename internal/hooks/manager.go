@@ -171,6 +171,12 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		}
 		report.Findings = append(report.Findings, Finding{Code: "hooks-path", Message: message, Path: current})
 	}
+	// A shim can be perfectly correct text and still enforce outdated policy
+	// if the executable it invokes hasn't been rebuilt since. HEAD's own
+	// commit time is the only baseline available without relying on Go's
+	// automatic VCS build stamping, which does not work from a linked Git
+	// worktree — exactly how a dogfooded, branch-specific wb build is made.
+	headCommitTime, headTimeErr := repositoryHeadCommitTime(policy.RepoRoot)
 	for _, name := range names {
 		path := filepath.Join(managed, name)
 		data, readErr := os.ReadFile(path)
@@ -179,12 +185,26 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 			continue
 		}
 		expected := shimManagedSection(wbExecutable, name, policy.ExplicitPath, projectsRoot)
-		actual, managed, valid := extractManagedSection(string(data))
-		if !managed || !valid || actual != expected {
+		actual, isManaged, valid := extractManagedSection(string(data))
+		if !isManaged || !valid || actual != expected {
 			report.Findings = append(report.Findings, Finding{Code: "hook-stale", Message: fmt.Sprintf("managed %s hook differs from the expected shim", name), Path: path})
 		}
 		if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o111 == 0 {
 			report.Findings = append(report.Findings, Finding{Code: "hook-not-executable", Message: fmt.Sprintf("managed %s hook is not executable", name), Path: path})
+		}
+		if isManaged && valid && headTimeErr == nil {
+			if executable := executablePathFromManagedSection(actual); executable != "" {
+				if info, statErr := os.Stat(executable); statErr == nil && info.Mode().IsRegular() && info.ModTime().Before(headCommitTime) {
+					report.Findings = append(report.Findings, Finding{
+						Code: "hook-executable-stale",
+						Message: fmt.Sprintf(
+							"managed %s hook's executable was built %s, before HEAD was committed at %s — rebuild it to enforce current policy",
+							name, info.ModTime().Format(time.RFC3339), headCommitTime.Format(time.RFC3339),
+						),
+						Path: executable,
+					})
+				}
+			}
 		}
 	}
 	entries, readErr := os.ReadDir(managed)
@@ -369,6 +389,38 @@ func extractManagedSection(content string) (section string, managed, valid bool)
 		return content[start:end], true, true
 	}
 	return "", false, false
+}
+
+// executablePathFromManagedSection extracts the wb executable a generated
+// shim invokes, skipping the start marker and any export lines (a pinned
+// WB_HOME, for example) to reach the actual invocation line.
+func executablePathFromManagedSection(section string) string {
+	for _, line := range strings.Split(section, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == managedStartMarker || strings.HasPrefix(line, "export ") {
+			continue
+		}
+		if !strings.HasPrefix(line, "'") {
+			return ""
+		}
+		if end := strings.Index(line[1:], "'"); end >= 0 {
+			return line[1 : end+1]
+		}
+		return ""
+	}
+	return ""
+}
+
+// repositoryHeadCommitTime reads HEAD's own commit time, the only staleness
+// baseline available without relying on Go's automatic VCS build stamping
+// (which silently omits revision info when building from a linked worktree —
+// exactly how a dogfooded, branch-specific wb build is made).
+func repositoryHeadCommitTime(repoRoot string) (time.Time, error) {
+	value, err := gitOutput(repoRoot, "log", "-1", "--format=%cI")
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Parse(time.RFC3339, value)
 }
 
 func replaceManagedSection(content, expectedSection string) (string, error) {
