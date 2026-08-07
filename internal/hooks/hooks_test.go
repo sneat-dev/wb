@@ -1334,6 +1334,49 @@ metrics:
 	}
 }
 
+// TestRunClearsInheritedGitDirectoryEnvironmentFromBlockScripts pins a real
+// incident: git invokes hooks with GIT_DIR (and friends) already pinned to
+// the repository that triggered them -- confirmed empirically against a real
+// `git push` (GIT_DIR=.git, resolved relative to the process's own cwd, not
+// whatever directory a later `git -C` targets). wb hooks run must not let
+// that leak into a block's own environment: cmd.Dir already establishes
+// which repository the block operates in, and if the block itself shells
+// out to git elsewhere -- a Go test suite creating its own fixture
+// repositories, for instance, exactly what BuiltinGoPrePush runs -- an
+// inherited GIT_DIR silently redirects those operations at the wrong
+// repository instead of the one the block intended. That's what actually
+// happened: enabling the go profile fleet-wide made wb's own pre-push run
+// `go test ./...`, which runs this package's own git-fixture-heavy test
+// suite, which started failing against wb's own canonical .git because
+// nothing had cleared GIT_DIR first.
+func TestRunClearsInheritedGitDirectoryEnvironmentFromBlockScripts(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, filepath.Join(configDir, "templates"))
+	template := filepath.Join(configDir, "templates", "pre-commit.sh")
+	// Grep for the directory-pinning names specifically, not any GIT_* var:
+	// GIT_EDITOR, GIT_AUTHOR_*, and similar are legitimate to inherit and are
+	// not what this test guards against.
+	mustWrite(t, template, "#!/bin/sh\nenv | grep -E '^GIT_(DIR|WORK_TREE|INDEX_FILE|COMMON_DIR|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES)=' || true\n")
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nhooks:\n  pre-commit:\n    template: templates/pre-commit.sh\nmetrics:\n  enabled: false\n")
+
+	t.Setenv("GIT_DIR", ".git")
+	t.Setenv("GIT_WORK_TREE", repo)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(repo, ".git", "index"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(repo, ".git"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(repo, ".git", "objects"))
+
+	var stdout bytes.Buffer
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &stdout, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("run result = %#v, error = %v", result, err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("block environment leaked git directory variables:\n%s", stdout.String())
+	}
+}
+
 func TestRunComposedProfilesInOrderAndReplicatesPrePushInput(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

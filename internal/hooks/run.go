@@ -162,7 +162,7 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 	if wbExecutable == "" {
 		wbExecutable, _ = os.Executable()
 	}
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitDirectoryEnvironmentCleared(os.Environ()),
 		"WB_HOOK="+block.Hook.Name,
 		"WB_PROFILE="+block.Profile,
 		"WB_BLOCK="+block.ID,
@@ -183,6 +183,36 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 		return 2, fmt.Errorf("run %s template %s: %w", block.ID, filepath.Clean(templatePath), err)
 	}
 	return 0, nil
+}
+
+// gitGeneratedEnvironmentVars pins the repository git itself resolved before
+// invoking the hook currently running wb. cmd.Dir already establishes which
+// repository a block's script operates in; these must not also come along,
+// or a block that shells out to git itself -- a test suite creating its own
+// fixture repositories, for instance -- gets silently redirected at
+// whichever repository triggered the outer hook instead of the one it
+// intended. Confirmed empirically: git sets GIT_DIR to a path relative to
+// its own invocation, which then resolves against the wrong repository the
+// moment a block's script or anything it spawns starts from a different cwd.
+var gitGeneratedEnvironmentVars = []string{
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+}
+
+func gitDirectoryEnvironmentCleared(environment []string) []string {
+	cleared := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, found := strings.Cut(entry, "=")
+		if found && contains(gitGeneratedEnvironmentVars, name) {
+			continue
+		}
+		cleared = append(cleared, entry)
+	}
+	return cleared
 }
 
 func contains(values []string, wanted string) bool {
