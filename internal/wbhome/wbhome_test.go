@@ -3,6 +3,7 @@ package wbhome
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -139,6 +140,85 @@ func TestAmbientMigrationMarkerCannotWeakenExplicitHome(t *testing.T) {
 	}
 	if !resolution.Explicit || len(resolution.Read) != 1 || resolution.Read[0].Home != explicit {
 		t.Fatalf("explicit home resolution = %#v, want only the explicit home", resolution)
+	}
+}
+
+func TestEnsureRootSeedsReadmeInHomeDirectory(t *testing.T) {
+	t.Setenv(EnvOverride, "")
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	root, err := EnsureRoot(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(root, "README.md"))
+	if err != nil {
+		t.Fatalf("expected README.md seeded in WB home: %v", err)
+	}
+	if !strings.Contains(string(contents), "https://sneat.dev/workbench") {
+		t.Fatalf("README.md missing workbench link, got: %s", contents)
+	}
+}
+
+func TestEnsureRootDoesNotOverwriteExistingReadme(t *testing.T) {
+	t.Setenv(EnvOverride, "")
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	root, err := EnsureRoot(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readmePath := filepath.Join(root, "README.md")
+	custom := []byte("these are my own notes\n")
+	if err := os.WriteFile(readmePath, custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureRoot(projectsRoot); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(custom) {
+		t.Fatalf("README.md was overwritten: got %q, want preserved %q", got, custom)
+	}
+}
+
+func TestEnsureHomeRefusesSymlinkedHome(t *testing.T) {
+	dir := resolvedTempDir(t)
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(dir, "linked")
+	if err := os.Symlink(real, linked); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureHome(linked); err == nil || !strings.Contains(err.Error(), "symlinked") {
+		t.Fatalf("EnsureHome(symlinked) = %v, want a symlinked-home error", err)
+	}
+}
+
+// TestEnsureRootDoesNotRaceCreateWorktreesOwnHomeOpen pins the ordering bug
+// this fixes: Create's beforeHomeDirectoryOpen test seam (and its real
+// descriptor-anchored, symlink-rejecting open of the same directory) needs
+// WB's home to not exist yet when it runs. Root must stay a pure resolver so
+// that seam still gets the first, unhardened look at the path — only
+// EnsureRoot may create it.
+func TestEnsureRootDoesNotRaceCreateWorktreesOwnHomeOpen(t *testing.T) {
+	t.Setenv(EnvOverride, "")
+	home := resolvedTempDir(t)
+	t.Setenv("HOME", home)
+	projectsRoot := resolvedTempDir(t)
+	root, err := Root(projectsRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
+		t.Fatalf("Root() must not create the home directory itself: stat error = %v", statErr)
 	}
 }
 

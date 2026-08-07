@@ -337,7 +337,7 @@ func planCampaign(spec Spec, sourceRoot string, options CampaignOptions) (*campa
 		}
 		repo := repositories[repository]
 		if repo == nil {
-			home, err := wbhome.Root(options.GitHubDir)
+			home, err := wbhome.EnsureRoot(options.GitHubDir)
 			if err != nil {
 				return nil, err
 			}
@@ -1253,7 +1253,7 @@ type campaignLock struct {
 }
 
 func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
-	home, err := wbhome.Root(githubDir)
+	home, err := wbhome.EnsureRoot(githubDir)
 	if err != nil {
 		return campaignLock{}, err
 	}
