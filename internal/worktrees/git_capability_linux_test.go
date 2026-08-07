@@ -11,16 +11,6 @@ import (
 
 // Landlock restriction is irreversible for a process. Run the assertion in a
 // fresh test binary so the parent suite remains unrestricted.
-//
-// That child is still the coverage-instrumented test binary `go test
-// -coverprofile` built (this package's CI run enables it): at exit it needs
-// to flush its own coverage counters, which under Go's current coverage
-// implementation means writing to a GOCOVERDIR-style directory. Once
-// Landlock is active that write is denied exactly like any other outside an
-// authorized root — collapsing what looks like a passing assertion into a
-// failing process, and taking t.TempDir's own cleanup down with it. Grant
-// the coverage directory as an extra write root before restricting so a
-// coverage-instrumented run doesn't fail underneath a passing test.
 func TestLandlockCapabilityUsesRetainedRootAfterPathSwap(t *testing.T) {
 	if os.Getenv("WB_LANDLOCK_RETAINED_ROOT_CHILD") == "1" {
 		testLandlockCapabilityUsesRetainedRootAfterPathSwap(t)
@@ -30,7 +20,7 @@ func TestLandlockCapabilityUsesRetainedRootAfterPathSwap(t *testing.T) {
 		t.Skipf("Landlock unavailable on this kernel: %v", err)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestLandlockCapabilityUsesRetainedRootAfterPathSwap$")
-	command.Env = append(landlockChildEnv(t), "WB_LANDLOCK_RETAINED_ROOT_CHILD=1")
+	command.Env = append(os.Environ(), "WB_LANDLOCK_RETAINED_ROOT_CHILD=1")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("retained-root Landlock child failed: %v\n%s", err, output)
 	}
@@ -47,12 +37,6 @@ func testLandlockCapabilityUsesRetainedRootAfterPathSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = held.Close() }()
-	roots := []gitFilesystemCapabilityRoot{{path: rootPath, directory: held}}
-	roots = append(roots, landlockCoverageWriteRoots(t)...)
-	capability, err := newGitFilesystemCapability(roots...)
-	if err != nil {
-		t.Fatal(err)
-	}
 	external := t.TempDir()
 	heldPath := filepath.Join(external, "held-root")
 	if err := os.Rename(rootPath, heldPath); err != nil {
@@ -63,6 +47,17 @@ func testLandlockCapabilityUsesRetainedRootAfterPathSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(replacement, rootPath); err != nil {
+		t.Fatal(err)
+	}
+	// Every directory the test itself needs is created above, before this
+	// call — authorizeCoverageScratchDir repoints TMPDIR for the rest of the
+	// process, so anything created after it (nothing here but the coverage
+	// runtime's own exit-time scratch dir) must not overlap replacement,
+	// which deliberately stays unauthorized.
+	roots := []gitFilesystemCapabilityRoot{{path: rootPath, directory: held}}
+	roots = append(roots, authorizeCoverageScratchDir(t)...)
+	capability, err := newGitFilesystemCapability(roots...)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := restrictWithLandlock(capability); err != nil {
@@ -95,7 +90,7 @@ func TestLandlockCapabilityAllowsDevNullWrite(t *testing.T) {
 		t.Skipf("Landlock unavailable on this kernel: %v", err)
 	}
 	command := exec.Command(os.Args[0], "-test.run=^TestLandlockCapabilityAllowsDevNullWrite$")
-	command.Env = append(landlockChildEnv(t), "WB_LANDLOCK_DEVNULL_CHILD=1")
+	command.Env = append(os.Environ(), "WB_LANDLOCK_DEVNULL_CHILD=1")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("dev-null Landlock child failed: %v\n%s", err, output)
 	}
@@ -109,7 +104,7 @@ func testLandlockCapabilityAllowsDevNullWrite(t *testing.T) {
 	}
 	defer func() { _ = held.Close() }()
 	roots := []gitFilesystemCapabilityRoot{{path: rootPath, directory: held}}
-	roots = append(roots, landlockCoverageWriteRoots(t)...)
+	roots = append(roots, authorizeCoverageScratchDir(t)...)
 	capability, err := newGitFilesystemCapability(roots...)
 	if err != nil {
 		t.Fatal(err)
@@ -127,33 +122,33 @@ func testLandlockCapabilityAllowsDevNullWrite(t *testing.T) {
 	}
 }
 
-// landlockChildEnv returns the environment a Landlock-restricting child test
-// process should start from: the parent's environment, plus a GOCOVERDIR
-// pointed at a fresh directory the child can still authorize as one of its
-// own capability write roots (see landlockCoverageWriteRoots) before it
-// restricts itself. Without this, a coverage-instrumented test binary
-// (go test -coverprofile, this package's CI configuration) fails to flush
-// its own counters at exit purely because Landlock denies that write —
-// nothing to do with the assertion the test actually makes.
-func landlockChildEnv(t *testing.T) []string {
+// authorizeCoverageScratchDir exists only for these two tests: both
+// self-exec as a fresh child process before applying Landlock's irreversible
+// restriction, so the "fresh process" is still the coverage-instrumented
+// test binary this package's CI run builds (go test -coverprofile). At exit
+// that binary's coverage runtime needs to write its own counters, which —
+// confirmed on CI, setting GOCOVERDIR did not change this — goes through
+// os.MkdirTemp("", "gocoverdir"), i.e. os.TempDir(), regardless of
+// GOCOVERDIR. Once Landlock is active that write is denied like any other
+// outside an authorized root, collapsing an otherwise-passing assertion into
+// a failing process and taking t.TempDir's own cleanup down with it.
+//
+// This creates a directory dedicated to that scratch write and points
+// TMPDIR at it for the remainder of the process, so the coverage runtime's
+// later os.MkdirTemp call lands somewhere already authorized. Call it only
+// after every directory the test itself needs already exists: t.TempDir and
+// os.MkdirTemp both honor TMPDIR, so anything created after this point —
+// deliberately nothing but the coverage runtime's own exit-time scratch dir
+// — lands under the same authorized directory too.
+func authorizeCoverageScratchDir(t *testing.T) []gitFilesystemCapabilityRoot {
 	t.Helper()
-	coverDir := t.TempDir()
-	return append(os.Environ(), "GOCOVERDIR="+coverDir)
-}
-
-// landlockCoverageWriteRoots authorizes GOCOVERDIR, if the parent set one via
-// landlockChildEnv, as an additional Landlock write root. Returns nil outside
-// a coverage-instrumented run (GOCOVERDIR unset), so a plain `go test`
-// invocation is unaffected.
-func landlockCoverageWriteRoots(t *testing.T) []gitFilesystemCapabilityRoot {
-	t.Helper()
-	coverDir := os.Getenv("GOCOVERDIR")
-	if coverDir == "" {
-		return nil
+	scratch := t.TempDir()
+	if err := os.Setenv("TMPDIR", scratch); err != nil {
+		t.Fatal(err)
 	}
-	held, err := openAbsoluteDirectoryNoFollow(coverDir, false)
+	held, err := openAbsoluteDirectoryNoFollow(scratch, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return []gitFilesystemCapabilityRoot{{path: coverDir, directory: held}}
+	return []gitFilesystemCapabilityRoot{{path: scratch, directory: held}}
 }
