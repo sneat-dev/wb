@@ -1450,6 +1450,55 @@ func TestBuiltInGoPreCommitChecksOnlyStagedGoFiles(t *testing.T) {
 	}
 }
 
+// TestBuiltInGoPrePushSkipsRepositoryWithoutGoMod pins a real incident:
+// profiles.include forces a profile on unconditionally — unlike auto
+// detection, it never consults the profile's own Detection rule. A
+// fleet-wide policy naming "go" once, to cover every Go repository it
+// governs, forces it on for every OTHER repository too. Before this test,
+// BuiltinGoPrePush's `go vet ./...` failed outright in a repository with no
+// go.mod ("directory prefix . does not contain main module"), so every push
+// from every non-Go repository under such a policy was blocked.
+func TestBuiltInGoPrePushSkipsRepositoryWithoutGoMod(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("pre-push in a repository with no go.mod should skip cleanly: result = %#v, error = %v", result, err)
+	}
+}
+
+// TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod guards against the
+// skip-without-go.mod fix above neutering the check for repositories that
+// actually are Go modules.
+func TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/hooks-test\n\ngo 1.26\n")
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nfunc main() {}\n")
+	git(t, repo, "add", "go.mod", "main.go")
+	git(t, repo, "commit", "-m", "initial go module")
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("valid Go module pre-push should pass: result = %#v, error = %v", result, err)
+	}
+
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Printf(\"%d\", \"not a number\") }\n")
+	git(t, repo, "add", "main.go")
+	git(t, repo, "commit", "-m", "introduce a go vet violation")
+	result, err = Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err == nil || result.ExitCode == 0 {
+		t.Fatalf("a real go vet violation should still block pre-push: result = %#v, error = %v", result, err)
+	}
+}
+
 func TestRunMetricsFailureNeverBlocksSuccessfulHook(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)

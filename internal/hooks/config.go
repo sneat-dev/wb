@@ -301,7 +301,13 @@ if [ -n "$unformatted" ]; then
 fi
 `, true
 	case BuiltinGoPrePush:
-		return "#!/bin/sh\nset -eu\ngo vet ./...\ngo test ./...\n", true
+		// profiles.include forces a profile on unconditionally for every
+		// repository a policy governs — it never consults the profile's own
+		// Detection rule the way auto-detection does. A fleet-wide policy
+		// naming "go" once, to cover its Go repositories, forces this on for
+		// every other repository too, so it must tolerate running somewhere
+		// with no go.mod rather than assume Detection already screened it out.
+		return "#!/bin/sh\nset -eu\nif [ ! -f go.mod ]; then\n    exit 0\nfi\ngo vet ./...\ngo test ./...\n", true
 	case BuiltinNodePrePush:
 		return `#!/bin/sh
 set -eu
