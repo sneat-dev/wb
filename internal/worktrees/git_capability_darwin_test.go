@@ -72,6 +72,56 @@ func TestSecureCanonicalCapabilityDeniesGitDirectoryMoveAfterFinalCheck(t *testi
 	}
 }
 
+// TestSecureCanonicalCapabilityAllowsSSHUserIdentityResolution is the
+// regression test for a real production outage: `wb worktree create` failed
+// every canonical `git pull --ff-only` over SSH with OpenSSH's exact
+// "No user exists for uid <n>" error, even though the account running WB
+// unquestionably exists.
+//
+// The cause was the sandbox profile itself, not Git, not SSH configuration,
+// and not the ambient environment (a bare `env -i ... git pull` succeeds).
+// `sandboxProfile` denies everything by default and only re-opens file reads,
+// networking, and a couple of write roots. OpenSSH's very first step in
+// main() is `getpwuid(getuid())`, and on macOS that call is answered by
+// opendirectoryd over Mach IPC — not by reading /etc/passwd, so the
+// already-broad file-read* exception does not cover it. With no mach-lookup
+// exception, that lookup fails inside the sandbox and SSH aborts before it
+// can even locate ~/.ssh, let alone dial out.
+//
+// This test drives the exact seam production uses (a re-exec of this test
+// binary through RunSecureCanonicalGitHelper, sandboxed by the real
+// sandbox-exec profile from sandboxProfile) and substitutes /usr/bin/ssh for
+// the "Git executable" so it exercises the real macOS directory-service
+// mechanism without any network access: `ssh -G` only resolves
+// configuration for the given destination and never dials out, so it stays
+// hermetic while still calling getpwuid() exactly where OpenSSH always does.
+//
+// Every existing canonical-Git test in this suite uses a local file:// remote
+// (see newGitFixture), so none of them ever exercised a getpwuid() call and
+// none could have caught this: arg construction to gitCanonical was never
+// wrong, only the sandbox surrounding the child process was too narrow.
+func TestSecureCanonicalCapabilityAllowsSSHUserIdentityResolution(t *testing.T) {
+	const sshExecutable = "/usr/bin/ssh"
+	if info, err := os.Stat(sshExecutable); err != nil || info.Mode()&0o111 == 0 {
+		t.Skipf("%s is unavailable in this environment: %v", sshExecutable, err)
+	}
+	fixture := newGitFixture(t)
+	canonical, err := openCanonicalRepository(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+	command := exec.Command(os.Args[0], SecureCanonicalGitHelperArgument, fixture.canonical, sshExecutable, "-G", "git@github.com")
+	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed ssh -G failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "No user exists for uid") {
+		t.Fatalf("sandbox blocked the user-identity lookup SSH needs to authenticate: %s", output)
+	}
+}
+
 func TestSecureStageCapabilityDeniesStageMoveAfterFinalCheck(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonical, err := openCanonicalRepository(fixture.canonical)

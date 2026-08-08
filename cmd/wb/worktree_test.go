@@ -184,3 +184,65 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 		t.Fatalf("duplicate input refreshed managed hook mode to %o", info.Mode().Perm())
 	}
 }
+
+// TestWorktreeCreateReportsCanonicalSyncFailureAsFindings is the regression
+// test for a second bug found alongside a real production outage in the
+// canonical `git pull --ff-only` step: the failure was reported to the shell
+// as exit code 0. WB's own documented contract (see rootLongHelp) is that a
+// command which ran and found a real problem exits 1 ("findings"), not 0
+// ("success") — a caller, human or agent, that only checks the exit code
+// would otherwise believe the worktree was created when it was not.
+//
+// This drives the real end-to-end path — worktrees.Create ->
+// synchronizeCanonical -> gitCanonical -> the re-exec'd secure canonical Git
+// helper -> a real sandboxed `git pull` — through run(), the same function
+// main() uses, against a canonical clone whose origin can never fast-forward
+// pull. That makes the pull failure genuine and reproducible without a
+// network dependency, rather than a simulated error return.
+func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	canonical := filepath.Join(projects, "acme", "app")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	runCanonicalGit := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", canonical}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	if output, err := exec.Command("git", "-C", canonical, "init", "-b", "main").CombinedOutput(); err != nil {
+		t.Fatalf("init canonical: %v\n%s", err, output)
+	}
+	runCanonicalGit("config", "user.name", "WB Test")
+	runCanonicalGit("config", "user.email", "wb-test@example.test")
+	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCanonicalGit("add", "README.md")
+	runCanonicalGit("commit", "-m", "initial")
+	// An origin that cannot be fetched from makes `git pull --ff-only` fail for
+	// a real, reproducible reason, without needing SSH or a reachable remote.
+	runCanonicalGit("remote", "add", "origin", filepath.Join(root, "does-not-exist.git"))
+
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", projects, "worktree", "create", "sync-fail", "acme/app", "--non-interactive"}, &stdout, &stderr)
+	if code != exitFindings {
+		t.Fatalf("canonical sync failure exit code = %d, want %d (findings); stdout=%s stderr=%s",
+			code, exitFindings, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "update canonical") {
+		t.Fatalf("stderr does not explain the canonical sync failure: %s", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("a failed create wrote %q to stdout", stdout.String())
+	}
+}

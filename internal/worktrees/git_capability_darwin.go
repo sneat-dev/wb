@@ -142,6 +142,15 @@ func sandboxProfile(writeRoots []gitFilesystemCapabilityRoot) string {
 		"(allow file-read*)",
 		"(allow network*)",
 		"(allow file-write* (literal \"/dev/null\"))",
+		// getpwuid(3) resolves the current user through opendirectoryd over Mach
+		// IPC, not by reading /etc/passwd — file-read* does not cover it. OpenSSH
+		// calls getpwuid() before it can locate ~/.ssh, so without this exception
+		// `(deny default)` makes every SSH remote fail with "No user exists for
+		// uid <n>" although file reads and the network are already wide open.
+		// This grants only that one directory-service lookup, not filesystem or
+		// network authority, so the write confinement below remains the real
+		// security boundary.
+		"(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))",
 	}
 	for _, root := range writeRoots {
 		clauses = append(clauses, "(allow file-write* (subpath "+strconv.Quote(root.path)+"))")
