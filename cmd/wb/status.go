@@ -19,9 +19,10 @@ import (
 func newStatusCmd() *cobra.Command {
 	options := qualityOptions{parallel: 4}
 	var details bool
+	var all bool
 	command := &cobra.Command{
 		Use:   "status [repository-path]",
-		Short: "Report local Git state across all local repositories by default",
+		Short: "Report local Git state for the repositories that need attention",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
@@ -36,6 +37,12 @@ func newStatusCmd() *cobra.Command {
 				return err
 			}
 			report := statusIndex{SchemaVersion: 1, Repositories: runStatusTargets(targets, options.parallel)}
+			// A fleet report is a worklist, so clean checkouts are noise unless
+			// they were asked for. One named repository is a direct question
+			// about that checkout, where "clean" is the answer, not nothing.
+			if options.fleet && !all {
+				report = hideCleanRepositories(report)
+			}
 			if err := writeStatusOutput(report, options.format, options.reportDir, details); err != nil {
 				return err
 			}
@@ -54,12 +61,17 @@ func newStatusCmd() *cobra.Command {
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write status.md and status.yaml to this directory")
 	command.Flags().BoolVar(&details, "details", false, "include individual changed, untracked, conflict, stash, and unpushed entries in Markdown")
+	command.Flags().BoolVar(&all, "all", false, "report clean repositories too; a single repository-path always reports its own status")
 	return command
 }
 
 type statusIndex struct {
-	SchemaVersion int                    `yaml:"schema_version" json:"schema_version"`
-	Repositories  []repositoryStatusInfo `yaml:"repositories" json:"repositories"`
+	SchemaVersion int `yaml:"schema_version" json:"schema_version"`
+	// HiddenClean counts the clean repositories left out of Repositories, so
+	// every consumer of this index can tell a filtered report from a fleet
+	// where nothing was inspected.
+	HiddenClean  int                    `yaml:"hidden_clean,omitempty" json:"hidden_clean,omitempty"`
+	Repositories []repositoryStatusInfo `yaml:"repositories" json:"repositories"`
 }
 
 type repositoryStatusInfo struct {
@@ -101,6 +113,22 @@ func runStatusTargets(targets []qualityTarget, parallel int) []repositoryStatusI
 		}
 	})
 	return reports
+}
+
+// hideCleanRepositories drops the clean rows and records how many were
+// dropped. Errors and attention rows survive, so the exit code and the
+// worklist stay the same whether or not the report was filtered.
+func hideCleanRepositories(report statusIndex) statusIndex {
+	kept := make([]repositoryStatusInfo, 0, len(report.Repositories))
+	for _, repository := range report.Repositories {
+		if repository.Status == "clean" {
+			continue
+		}
+		kept = append(kept, repository)
+	}
+	report.HiddenClean = len(report.Repositories) - len(kept)
+	report.Repositories = kept
+	return report
 }
 
 func statusFailed(report statusIndex) bool {
@@ -151,6 +179,14 @@ func writeStatusOutput(report statusIndex, format, reportDir string, details boo
 func statusMarkdown(report statusIndex, details bool) string {
 	var out strings.Builder
 	out.WriteString("# WB local repository status\n\n")
+	if len(report.Repositories) == 0 && report.HiddenClean > 0 {
+		if report.HiddenClean == 1 {
+			out.WriteString("The inspected repository is clean.\n")
+		} else {
+			fmt.Fprintf(&out, "All %d inspected repositories are clean.\n", report.HiddenClean)
+		}
+		return out.String()
+	}
 	out.WriteString("| Repository | Status | Summary |\n|---|---|---|\n")
 	for _, repository := range report.Repositories {
 		summary := repository.Summary
@@ -165,7 +201,19 @@ func statusMarkdown(report statusIndex, details bool) string {
 			writeStatusDetails(&out, repository)
 		}
 	}
+	if report.HiddenClean > 0 {
+		fmt.Fprintf(&out, "\n%s\n", statusHiddenNote(report.HiddenClean))
+	}
 	return out.String()
+}
+
+// statusHiddenNote keeps the default filter honest: a report that left rows
+// out says so, and says which flag brings them back.
+func statusHiddenNote(count int) string {
+	if count == 1 {
+		return "_1 clean repository hidden; pass `--all` to include it._"
+	}
+	return fmt.Sprintf("_%d clean repositories hidden; pass `--all` to include them._", count)
 }
 
 func writeStatusDetails(out *strings.Builder, repository repositoryStatusInfo) {

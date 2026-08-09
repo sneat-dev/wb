@@ -17,6 +17,12 @@ The command is local and read-only. It reports modified, untracked,
 conflicted, stashed, and unpushed state. Use `--details` only when individual
 entries are needed; concise output saves context.
 
+A fleet run reports only the repositories needing attention and gives the
+number of clean ones as `hidden_clean`; a named repository is always reported,
+clean or not. Reach for `--all` only when the clean repositories are the
+question — listing a whole fleet costs context for rows with nothing to act
+on.
+
 For a durable result:
 
 ```sh
