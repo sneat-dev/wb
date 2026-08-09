@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -700,6 +701,184 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 	if _, err := os.Stat(result.WorktreeDir); err != nil {
 		t.Fatalf("advanced worktree was removed: %v", err)
 	}
+}
+
+// TestCleanupFilterExcludesMismatchedCandidateOutsideSelection is the
+// regression test for the "matchups renamed to competios" defect: a
+// worktree whose on-disk repository-name segment no longer matches its
+// canonical clone (the leftover of a real GitHub repository rename) must not
+// block cleanup of an unrelated, unfiltered task elsewhere in the fleet. The
+// malformed candidate here belongs to a different task and a different
+// canonical repository than --filter selects, so the fix under test is that
+// --filter scopes what gets validated, not merely what gets acted on: the
+// mismatched candidate must never even surface as a diagnostic.
+func TestCleanupFilterExcludesMismatchedCandidateOutsideSelection(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-in-scope")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	stale := createMismatchedWorktree(t, fixture, "cleanup-filter-stale", "acme", "renamed-repo", "old-repo-name")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		AllMerged:    true,
+		Apply:        true,
+		Filter:       "acme/app", // matches only the valid merged task's repository.
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("cleanup outside the malformed candidate's selection must not fail: %v", err)
+	}
+	if len(outcome.Diagnostics) != 0 {
+		t.Fatalf("out-of-filter malformed candidate leaked into diagnostics: %#v", outcome.Diagnostics)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("in-filter task was not cleaned up: %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("in-filter worktree remains after cleanup: %v", statErr)
+	}
+	if _, statErr := os.Stat(stale); statErr != nil {
+		t.Fatalf("out-of-filter malformed worktree was touched: %v", statErr)
+	}
+}
+
+// TestCleanupWarnsAndSkipsMismatchedCandidateInsideSelectionButCompletesOtherTasks
+// covers the two other halves of the same defect: a malformed candidate that
+// IS inside the current --filter selection must surface as a warning
+// (Diagnostics) rather than aborting the command, and the run must still
+// complete cleanup for every other matching, eligible task.
+func TestCleanupWarnsAndSkipsMismatchedCandidateInsideSelectionButCompletesOtherTasks(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-warn-elsewhere")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	stale := createMismatchedWorktree(t, fixture, "cleanup-filter-warn-stale", "acme", "renamed-repo", "old-repo-name")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		AllMerged:    true,
+		Apply:        true,
+		Filter:       "acme", // matches both the valid task and the malformed candidate.
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("cleanup must not abort for an in-scope malformed candidate: %v", err)
+	}
+	if len(outcome.Diagnostics) != 1 {
+		t.Fatalf("in-filter malformed candidate did not surface a warning: %#v", outcome.Diagnostics)
+	}
+	diagnostic := outcome.Diagnostics[0]
+	if diagnostic.Path != stale ||
+		!strings.Contains(diagnostic.Message, `"old-repo-name"`) ||
+		!strings.Contains(diagnostic.Message, `"renamed-repo"`) ||
+		!strings.Contains(diagnostic.Message, "likely cause") {
+		t.Fatalf("malformed candidate diagnostic = %#v, want path/expected-repo/actual-repo/cause", diagnostic)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("the run did not complete cleanup of the remaining, unrelated task: %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("unrelated valid worktree was not cleaned up despite an in-scope warning elsewhere: %v", statErr)
+	}
+	if _, statErr := os.Stat(stale); statErr != nil {
+		t.Fatalf("malformed worktree was touched despite being skipped, not aborted: %v", statErr)
+	}
+}
+
+// TestCleanupBlocksOnlyCoordinatedTaskOfMismatchedCandidate proves that
+// skipping a malformed candidate instead of aborting the whole run does not
+// weaken the existing coordinated-task safety gate: a valid, otherwise
+// mergeable sibling that shares a task with a malformed candidate must still
+// be blocked (not just the malformed entry itself), while a sibling task
+// elsewhere is unaffected.
+func TestCleanupBlocksOnlyCoordinatedTaskOfMismatchedCandidate(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-warn-elsewhere-2")
+	sharedTaskResult, sharedHead, sharedMergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-shared-task")
+	installMergedPullRequestFixtures(t, []string{head, sharedHead}, mergedAt)
+	stale := createMismatchedWorktree(t, fixture, "cleanup-shared-task", "acme", "renamed-repo", "old-repo-name")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		AllMerged:    true,
+		Apply:        true,
+		OlderThan:    0,
+		Now:          func() time.Time { return sharedMergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("cleanup must not abort for a malformed candidate: %v", err)
+	}
+	if len(outcome.Diagnostics) != 1 {
+		t.Fatalf("malformed candidate did not surface a warning: %#v", outcome.Diagnostics)
+	}
+	var sharedTask, otherTask *CleanupResult
+	for index := range outcome.Results {
+		switch outcome.Results[index].Task {
+		case "cleanup-shared-task":
+			sharedTask = &outcome.Results[index]
+		case "cleanup-filter-warn-elsewhere-2":
+			otherTask = &outcome.Results[index]
+		}
+	}
+	if sharedTask == nil || otherTask == nil {
+		t.Fatalf("expected both tasks in outcome: %#v", outcome.Results)
+	}
+	if sharedTask.Eligible || sharedTask.Applied || !strings.Contains(sharedTask.Reason, "malformed candidate") {
+		t.Fatalf("valid sibling of a malformed candidate was not blocked: %#v", sharedTask)
+	}
+	if _, statErr := os.Stat(sharedTaskResult.WorktreeDir); statErr != nil {
+		t.Fatalf("blocked sibling worktree was removed: %v", statErr)
+	}
+	if !otherTask.Applied {
+		t.Fatalf("unrelated task was blocked by a malformed candidate in a different task: %#v", otherTask)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("unrelated task's worktree was not cleaned up: %v", statErr)
+	}
+	if _, statErr := os.Stat(stale); statErr != nil {
+		t.Fatalf("malformed worktree was touched: %v", statErr)
+	}
+}
+
+// TestListDiagnosticForInspectErrorFallsBackToPlainMessageForNonMismatchErrors
+// proves the enriched "likely cause" wording is added only for a
+// RepositoryRenameMismatchError; every other inspectLifecycleWorktree failure
+// (a detached worktree, one still on the base branch, and so on) keeps
+// reporting its own plain message unchanged.
+func TestListDiagnosticForInspectErrorFallsBackToPlainMessageForNonMismatchErrors(t *testing.T) {
+	diagnostic := listDiagnosticForInspectError(
+		"/root/worktrees", "task", "/root/worktrees/task/acme/app", "acme",
+		fmt.Errorf("some other inspection failure"),
+	)
+	if diagnostic.Message != "some other inspection failure" {
+		t.Fatalf("diagnostic message = %q, want the plain error text unchanged", diagnostic.Message)
+	}
+	if diagnostic.Task != "task" || diagnostic.WorktreesRoot != "/root/worktrees" || diagnostic.Path != "/root/worktrees/task/acme/app" {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+}
+
+// createMismatchedWorktree registers a linked worktree of a fresh canonical
+// repository under a repository-name path segment that does not match that
+// canonical repository's real name — precisely what is left behind when a
+// canonical repository is renamed after a worktree for it was created (see
+// RepositoryRenameMismatchError). No push or remote is needed: the mismatch
+// is detected locally, from the worktree's own Git metadata, before any
+// network call.
+func createMismatchedWorktree(t *testing.T, fixture *gitFixture, task, owner, canonicalRepository, pathRepository string) string {
+	t.Helper()
+	canonical := filepath.Join(fixture.projectsRoot, owner, canonicalRepository)
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, canonical, "init", "-b", "main")
+	configureGitUser(t, canonical)
+	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# "+canonicalRepository+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, canonical, "add", "README.md")
+	gitTest(t, canonical, "commit", "-m", "initial")
+	worktree := filepath.Join(fixture.home, "worktrees", task, owner, pathRepository)
+	gitTest(t, canonical, "worktree", "add", "-b", "codex/"+task, worktree, "main")
+	return worktree
 }
 
 func prepareMergedTask(t *testing.T, task string) (*gitFixture, CreateResult, string, time.Time) {

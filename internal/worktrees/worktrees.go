@@ -544,7 +544,9 @@ func locateManagedWorktree(
 			// name itself (for example acme/.github), the identities naturally
 			// agree. Ordinary names must always match exactly.
 			if !strings.HasPrefix(parts[2], ".") && repository != parts[2] {
-				return managedWorktreeLocation{}, fmt.Errorf("worktree %s has path repository %q but canonical clone repository %q", root, parts[2], repository)
+				return managedWorktreeLocation{}, &RepositoryRenameMismatchError{
+					Worktree: root, Owner: owner, PathRepository: parts[2], CanonicalRepository: repository,
+				}
 			}
 			location.Task, location.Owner, location.Repository = parts[0], owner, repository
 			return location, nil
@@ -581,6 +583,29 @@ func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root
 
 func invalidManagedWorktreePath(root, worktreesRoot string) error {
 	return fmt.Errorf("linked worktree %s must be at %s/<task>/<owner>/<repository> or legacy %s/<task>/<repository>", root, worktreesRoot, worktreesRoot)
+}
+
+// RepositoryRenameMismatchError reports a managed worktree whose on-disk
+// <task>/<owner>/<repository> path segment no longer names its canonical
+// clone's current repository — exactly the signature a GitHub repository
+// rename leaves behind on every worktree that predates it. Its Error text is
+// unchanged from the plain fmt.Errorf this replaced, so `wb worktree guard`
+// (which still treats this as a hard, single-checkout rejection) reports the
+// same message as before. List and Cleanup recognize it structurally via
+// errors.As to survive it: this is ordinary history, not corruption, and a
+// stale path segment alone is not evidence that anyone's work is at risk.
+type RepositoryRenameMismatchError struct {
+	Worktree            string
+	Owner               string
+	PathRepository      string
+	CanonicalRepository string
+}
+
+func (mismatch *RepositoryRenameMismatchError) Error() string {
+	return fmt.Sprintf(
+		"worktree %s has path repository %q but canonical clone repository %q",
+		mismatch.Worktree, mismatch.PathRepository, mismatch.CanonicalRepository,
+	)
 }
 
 func rebaseInProgress(ctx context.Context, root, gitDir string) bool {

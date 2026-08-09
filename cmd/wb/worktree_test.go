@@ -61,6 +61,87 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 	}
 }
 
+// TestWorktreeCleanupWarnsOnMalformedCandidateInsteadOfAborting is the CLI-level
+// regression test for the "matchups renamed to competios" defect: a worktree
+// whose on-disk repository-name segment no longer matches its canonical
+// clone's current name (the leftover of a real GitHub repository rename)
+// must not abort `wb worktree cleanup`. It must instead be reported as a
+// clear warning on stderr while the command still exits 0.
+func TestWorktreeCleanupWarnsOnMalformedCandidateInsteadOfAborting(t *testing.T) {
+	root := t.TempDir()
+	projects, _ := setUpMismatchedWorktreeFixture(t, root)
+
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", projects, "worktree", "cleanup", "--all-merged", "--non-interactive"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("cleanup with a malformed candidate must not fail the command: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "warning: cleanup skipped malformed candidate") ||
+		!strings.Contains(stderr.String(), `"old-repo-name"`) ||
+		!strings.Contains(stderr.String(), `"renamed-repo"`) {
+		t.Fatalf("cleanup did not clearly warn about the malformed candidate: stderr=%s", stderr.String())
+	}
+}
+
+// TestWorktreeCleanupFilterExcludesMalformedCandidateOutsideSelection proves
+// the companion half of the same fix: --filter scopes which candidates are
+// even validated, so a malformed candidate that --filter does not select
+// produces no warning at all and cannot affect the run.
+func TestWorktreeCleanupFilterExcludesMalformedCandidateOutsideSelection(t *testing.T) {
+	root := t.TempDir()
+	projects, _ := setUpMismatchedWorktreeFixture(t, root)
+
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", projects, "--filter", "unrelated", "worktree", "cleanup", "--all-merged", "--non-interactive"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("filtered cleanup must not fail: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stderr.String(), "warning:") {
+		t.Fatalf("malformed candidate outside --filter must not be reported at all: stderr=%s", stderr.String())
+	}
+}
+
+// setUpMismatchedWorktreeFixture creates a canonical repository and a linked
+// worktree registered under a repository-name path segment that does not
+// match it — the same shape a GitHub repository rename leaves behind — and
+// points WB_HOME and related XDG state at the given root so the test never
+// touches the real environment. It returns the projects root and WB home.
+func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home string) {
+	t.Helper()
+	projects = filepath.Join(root, "projects")
+	canonical := filepath.Join(projects, "acme", "renamed-repo")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home = filepath.Join(root, "home")
+	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	runGit(canonical, "init", "-b", "main")
+	runGit(canonical, "config", "user.name", "WB Test")
+	runGit(canonical, "config", "user.email", "wb-test@example.test")
+	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# renamed-repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(canonical, "add", "README.md")
+	runGit(canonical, "commit", "-m", "initial")
+	stale := filepath.Join(home, "worktrees", "stale-task", "acme", "old-repo-name")
+	runGit(canonical, "worktree", "add", "-b", "codex/stale-task", stale, "main")
+	return projects, home
+}
+
 func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")

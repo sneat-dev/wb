@@ -22,7 +22,16 @@ type ListOptions struct {
 	ProjectsRoot string
 	Task         string
 	Base         string
-	GitHub       bool
+	// Filter narrows the inventory to candidates whose owner/repository slug
+	// (or, for a candidate that cannot be identified that cleanly, whatever
+	// raw path-derived identity is available) contains this substring — the
+	// same "only repos whose org/name contains this substring" semantics as
+	// the root --filter flag elsewhere in WB. An empty Filter matches
+	// everything, exactly like today. Filtering happens before a candidate's
+	// diagnostic or result is retained, so a candidate outside the selection
+	// can neither appear in the report nor influence it.
+	Filter string
+	GitHub bool
 }
 
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
@@ -58,11 +67,15 @@ type ListResult struct {
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
 // without hiding valid sibling worktrees. It is intentionally separate from
 // ListResult so cleanup can never mistake an unvalidated path for a safe
-// linked checkout.
+// linked checkout. WorktreesRoot is carried alongside Task so a diagnostic
+// can be matched back to the exact coordinated task it belongs to even when
+// more than one resolver-recognized layout is being read at once (see
+// wbhome.Resolve) — Task name alone is not always unique across layouts.
 type ListDiagnostic struct {
-	Task    string `json:"task,omitempty"`
-	Path    string `json:"path"`
-	Message string `json:"message"`
+	Task          string `json:"task,omitempty"`
+	WorktreesRoot string `json:"worktrees_root,omitempty"`
+	Path          string `json:"path"`
+	Message       string `json:"message"`
 }
 
 // ListOutcome preserves the valid local inventory while exposing every
@@ -77,6 +90,11 @@ type CleanupOptions struct {
 	ProjectsRoot string
 	Task         string
 	Base         string
+	// Filter narrows both which candidates are validated and which are acted
+	// on to those whose owner/repository slug contains this substring — see
+	// ListOptions.Filter. An empty Filter matches everything, preserving
+	// today's behavior exactly.
+	Filter       string
 	AllMerged    bool
 	Apply        bool
 	DeleteRemote bool
@@ -116,20 +134,29 @@ type CleanupResult struct {
 
 // CleanupOutcome contains the decisions plus the durable audit report written
 // before any destructive apply.
+//
+// Diagnostics never abort a run. A malformed candidate inside the selection
+// (see CleanupOptions.Filter) is skipped and reported here as a warning, and
+// blocks eligibility only for its own coordinated task — the same
+// all-or-nothing unit blockUnsafeTasks already applies to an unclean, locked,
+// or unmerged sibling. Every other task in the run proceeds normally.
 type CleanupOutcome struct {
-	Results    []CleanupResult `json:"results"`
-	ReportPath string          `json:"report_path,omitempty"`
+	Results     []CleanupResult  `json:"results"`
+	ReportPath  string           `json:"report_path,omitempty"`
+	Diagnostics []ListDiagnostic `json:"diagnostics,omitempty"`
 }
 
 type cleanupReport struct {
-	GeneratedAt  time.Time       `json:"generated_at"`
-	Phase        string          `json:"phase"`
-	Task         string          `json:"task,omitempty"`
-	AllMerged    bool            `json:"all_merged"`
-	Apply        bool            `json:"apply"`
-	DeleteRemote bool            `json:"delete_remote"`
-	OlderThan    string          `json:"older_than"`
-	Results      []CleanupResult `json:"results"`
+	GeneratedAt  time.Time        `json:"generated_at"`
+	Phase        string           `json:"phase"`
+	Task         string           `json:"task,omitempty"`
+	Filter       string           `json:"filter,omitempty"`
+	AllMerged    bool             `json:"all_merged"`
+	Apply        bool             `json:"apply"`
+	DeleteRemote bool             `json:"delete_remote"`
+	OlderThan    string           `json:"older_than"`
+	Results      []CleanupResult  `json:"results"`
+	Diagnostics  []ListDiagnostic `json:"diagnostics,omitempty"`
 }
 
 type cleanupTaskHandle struct {
@@ -238,7 +265,7 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 // such as .claude, .github, source, and generated trees from being re-read as
 // task-level repositories.
 func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
-	projectsRoot, task, base, err := normalizeListOptions(options)
+	projectsRoot, task, base, filter, err := normalizeListOptions(options)
 	if err != nil {
 		return ListOutcome{}, err
 	}
@@ -248,7 +275,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	}
 	outcome := ListOutcome{}
 	for _, layout := range resolution.Read {
-		results, diagnostics, listErr := listLayout(ctx, projectsRoot, layout, task, base, options.GitHub)
+		results, diagnostics, listErr := listLayout(ctx, projectsRoot, layout, task, base, filter, options.GitHub)
 		if listErr != nil {
 			return ListOutcome{}, listErr
 		}
@@ -277,7 +304,7 @@ func listLayout(
 	ctx context.Context,
 	projectsRoot string,
 	layout wbhome.Layout,
-	task, base string,
+	task, base, filter string,
 	withGitHub bool,
 ) ([]ListResult, []ListDiagnostic, error) {
 	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
@@ -294,7 +321,11 @@ func listLayout(
 			continue
 		}
 		if !validSafeSegment(taskEntry.Name()) {
-			diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), filepath.Join(layout.WorktreesRoot, taskEntry.Name()), "invalid task directory name"))
+			// A malformed task directory name carries no repository identity to
+			// weigh against --filter, and the exact-match task argument already
+			// scopes which task directories are even looked at above. Report it
+			// unconditionally rather than guess at scope.
+			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), filepath.Join(layout.WorktreesRoot, taskEntry.Name()), "invalid task directory name"))
 			continue
 		}
 		taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
@@ -315,7 +346,12 @@ func listLayout(
 			if isGitRoot(ctx, candidate) {
 				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, withGitHub, locked)
 				if inspectErr != nil {
-					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, inspectErr.Error()))
+					if filterMatches(filter, inspectErrorFilterCandidates("", candidate, entry.Name(), inspectErr)...) {
+						diagnostics = append(diagnostics, listDiagnosticForInspectError(layout.WorktreesRoot, taskEntry.Name(), candidate, "", inspectErr))
+					}
+					continue
+				}
+				if !filterMatches(filter, result.Repository) {
 					continue
 				}
 				results = append(results, result)
@@ -331,12 +367,16 @@ func listLayout(
 				continue
 			}
 			if !validSafeSegment(entry.Name()) {
-				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, "invalid owner or legacy repository directory name"))
+				if filterMatches(filter, candidate, entry.Name()) {
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), candidate, "invalid owner or legacy repository directory name"))
+				}
 				continue
 			}
 			nested, nestedErr := os.ReadDir(candidate)
 			if nestedErr != nil {
-				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), candidate, fmt.Sprintf("read candidate directory: %v", nestedErr)))
+				if filterMatches(filter, candidate, entry.Name()) {
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), candidate, fmt.Sprintf("read candidate directory: %v", nestedErr)))
+				}
 				continue
 			}
 			for _, repositoryEntry := range nested {
@@ -344,10 +384,16 @@ func listLayout(
 					continue
 				}
 				repositoryPath := filepath.Join(candidate, repositoryEntry.Name())
+				slug := entry.Name() + "/" + repositoryEntry.Name()
 				if isGitRoot(ctx, repositoryPath) {
 					result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, withGitHub, locked)
 					if inspectErr != nil {
-						diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, inspectErr.Error()))
+						if filterMatches(filter, inspectErrorFilterCandidates(entry.Name(), repositoryPath, slug, inspectErr)...) {
+							diagnostics = append(diagnostics, listDiagnosticForInspectError(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, entry.Name(), inspectErr))
+						}
+						continue
+					}
+					if !filterMatches(filter, result.Repository) {
 						continue
 					}
 					results = append(results, result)
@@ -356,19 +402,75 @@ func listLayout(
 				if strings.HasPrefix(repositoryEntry.Name(), ".") {
 					continue
 				}
-				if !validSafeSegment(repositoryEntry.Name()) {
-					diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "invalid repository directory name"))
+				if !filterMatches(filter, repositoryPath, slug) {
 					continue
 				}
-				diagnostics = append(diagnostics, listDiagnostic(taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root"))
+				if !validSafeSegment(repositoryEntry.Name()) {
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "invalid repository directory name"))
+					continue
+				}
+				diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root"))
 			}
 		}
 	}
 	return results, diagnostics, nil
 }
 
-func listDiagnostic(task, path, message string) ListDiagnostic {
-	return ListDiagnostic{Task: task, Path: path, Message: message}
+func listDiagnostic(worktreesRoot, task, path, message string) ListDiagnostic {
+	return ListDiagnostic{Task: task, WorktreesRoot: worktreesRoot, Path: path, Message: message}
+}
+
+// listDiagnosticForInspectError builds the diagnostic for a candidate that
+// failed inspectLifecycleWorktree. A RepositoryRenameMismatchError gets a
+// richer message — the mismatch's own path repository and canonical
+// repository already give the reader "expected repo" and "actual repo"; this
+// adds the path and the likely cause so the warning is actionable without
+// reading source. owner is the on-disk owner directory name when known (the
+// <task>/<owner>/<repository> layout); it is empty for the legacy
+// <task>/<repository> layout, which never produces this mismatch type.
+func listDiagnosticForInspectError(worktreesRoot, task, candidate, owner string, err error) ListDiagnostic {
+	var mismatch *RepositoryRenameMismatchError
+	if errors.As(err, &mismatch) {
+		return listDiagnostic(worktreesRoot, task, candidate, fmt.Sprintf(
+			"%s (likely cause: the canonical repository was renamed from %q to %q after this worktree was created; this is ordinary history, not corruption — wb does not reconcile it automatically, so re-register it with `wb worktree create` under the new name or remove it by hand once you have confirmed its branch is safe to lose)",
+			mismatch.Error(), mismatch.PathRepository, mismatch.CanonicalRepository,
+		))
+	}
+	return listDiagnostic(worktreesRoot, task, candidate, err.Error())
+}
+
+// inspectErrorFilterCandidates lists every identity string worth weighing
+// against --filter for a candidate that failed inspectLifecycleWorktree: the
+// full path and the raw on-disk slug, plus — for a repository rename
+// mismatch specifically — the canonical (current) repository name too, so a
+// filter naming either the old or the new identity reaches the diagnostic.
+// owner is the on-disk owner directory name when known; pass "" for the
+// legacy <task>/<repository> layout, which never produces this mismatch.
+func inspectErrorFilterCandidates(owner, path, slug string, err error) []string {
+	candidates := []string{path, slug}
+	var mismatch *RepositoryRenameMismatchError
+	if owner != "" && errors.As(err, &mismatch) {
+		candidates = append(candidates, owner+"/"+mismatch.CanonicalRepository)
+	}
+	return candidates
+}
+
+// filterMatches reports whether at least one candidate identity string
+// contains filter as a substring. An empty filter always matches, so an
+// unfiltered call sees exactly today's behavior. Candidates may be a full
+// path, a bare repository name, or an "owner/repository" slug — whatever
+// identity is available at the point of the check; a malformed candidate
+// often cannot offer more than that.
+func filterMatches(filter string, candidates ...string) bool {
+	if filter == "" {
+		return true
+	}
+	for _, candidate := range candidates {
+		if candidate != "" && strings.Contains(candidate, filter) {
+			return true
+		}
+	}
+	return false
 }
 
 func isGitRoot(ctx context.Context, path string) bool {
@@ -403,16 +505,20 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		ProjectsRoot: normalized.ProjectsRoot,
 		Task:         normalized.Task,
 		Base:         normalized.Base,
+		Filter:       normalized.Filter,
 		GitHub:       true,
 	})
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
-	if len(listed.Diagnostics) > 0 {
-		first := listed.Diagnostics[0]
-		return CleanupOutcome{}, fmt.Errorf("refusing cleanup while managed-worktree inventory has malformed candidate %s: %s", first.Path, first.Message)
-	}
-	if normalized.Task != "" && len(listed.Results) == 0 {
+	// A malformed candidate never aborts the run — see blockDiagnosedTasks. It
+	// is legitimate history (for example a renamed canonical repository, see
+	// RepositoryRenameMismatchError), not evidence that anyone's work is at
+	// risk, and one unreadable entry anywhere in the fleet must not deadlock
+	// cleanup everywhere else. --filter (and the exact-match task argument
+	// above) already scoped listed.Diagnostics to the current selection, so
+	// every diagnostic here is one the caller asked to see.
+	if normalized.Task != "" && len(listed.Results) == 0 && len(listed.Diagnostics) == 0 {
 		return CleanupOutcome{}, fmt.Errorf("WB worktree task %q was not found", normalized.Task)
 	}
 
@@ -421,13 +527,14 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		eligible, reason := cleanupEligibility(entry, normalized.OlderThan, now)
 		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
 	}
+	blockDiagnosedTasks(results, listed.Diagnostics)
 	blockUnsafeTasks(results)
-	outcome := CleanupOutcome{Results: results}
+	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.
 	if normalized.Apply && normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results)
+		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results, outcome.Diagnostics)
 		if err != nil {
 			return outcome, err
 		}
@@ -438,7 +545,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 
 	fail := func(cleanupErr error) (CleanupOutcome, error) {
 		if normalized.ReportDir != "" {
-			if _, reportErr := writeCleanupReport(normalized, now, "failed", outcome.Results); reportErr != nil {
+			if _, reportErr := writeCleanupReport(normalized, now, "failed", outcome.Results, outcome.Diagnostics); reportErr != nil {
 				return outcome, fmt.Errorf("%w; write failed cleanup report: %v", cleanupErr, reportErr)
 			}
 		}
@@ -609,7 +716,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// create can make a new, unreachable task directory at the same pathname.
 	// Future creation reuses this harmless empty root under its normal lock.
 	if normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results)
+		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results, outcome.Diagnostics)
 		if err != nil {
 			return outcome, err
 		}
@@ -617,30 +724,32 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	return outcome, nil
 }
 
-func normalizeListOptions(options ListOptions) (projectsRoot, task, base string, err error) {
+func normalizeListOptions(options ListOptions) (projectsRoot, task, base, filter string, err error) {
 	projectsRoot, err = absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	task = strings.TrimSpace(options.Task)
 	if task != "" && !validSafeSegment(task) {
-		return "", "", "", fmt.Errorf("task %q must be one safe path segment", task)
+		return "", "", "", "", fmt.Errorf("task %q must be one safe path segment", task)
 	}
 	base = strings.TrimSpace(options.Base)
 	if base == "" {
 		base = "main"
 	}
 	if !validBranch(context.Background(), base) {
-		return "", "", "", fmt.Errorf("invalid base branch %q", base)
+		return "", "", "", "", fmt.Errorf("invalid base branch %q", base)
 	}
-	return projectsRoot, task, base, nil
+	filter = strings.TrimSpace(options.Filter)
+	return projectsRoot, task, base, filter, nil
 }
 
 func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
-	projectsRoot, task, base, err := normalizeListOptions(ListOptions{
+	projectsRoot, task, base, filter, err := normalizeListOptions(ListOptions{
 		ProjectsRoot: options.ProjectsRoot,
 		Task:         options.Task,
 		Base:         options.Base,
+		Filter:       options.Filter,
 	})
 	if err != nil {
 		return CleanupOptions{}, err
@@ -648,6 +757,7 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 	options.ProjectsRoot = projectsRoot
 	options.Task = task
 	options.Base = base
+	options.Filter = filter
 	if options.Task == "" && !options.AllMerged {
 		return CleanupOptions{}, fmt.Errorf("supply one task or use --all-merged")
 	}
@@ -863,6 +973,34 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 		return false, "merged pull request is newer than the cleanup safety window"
 	default:
 		return true, ""
+	}
+}
+
+// blockDiagnosedTasks blocks eligibility only for the coordinated task a
+// malformed candidate belongs to — the same all-or-nothing unit
+// blockUnsafeTasks already applies to an unclean, locked, or unmerged
+// sibling. A malformed candidate itself never becomes a CleanupResult (it
+// isn't a validated ListResult), so without this it would silently sit
+// outside the coordination that is supposed to cover its whole task; every
+// other task, and every other candidate within the current --filter
+// selection, is unaffected.
+func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic) {
+	if len(diagnostics) == 0 {
+		return
+	}
+	reasonByTask := map[string]string{}
+	for _, diagnostic := range diagnostics {
+		key := cleanupTaskKey(diagnostic.WorktreesRoot, diagnostic.Task)
+		if reasonByTask[key] == "" {
+			reasonByTask[key] = diagnostic.Path + ": " + diagnostic.Message
+		}
+	}
+	for index := range results {
+		key := cleanupTaskKey(results[index].WorktreesRoot, results[index].Task)
+		if reason, blocked := reasonByTask[key]; blocked && results[index].Eligible {
+			results[index].Eligible = false
+			results[index].Reason = "coordinated task blocked by malformed candidate " + reason
+		}
 	}
 }
 
@@ -1091,6 +1229,7 @@ func writeCleanupReport(
 	generatedAt time.Time,
 	phase string,
 	results []CleanupResult,
+	diagnostics []ListDiagnostic,
 ) (string, error) {
 	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create cleanup report directory: %w", err)
@@ -1099,11 +1238,13 @@ func writeCleanupReport(
 		GeneratedAt:  generatedAt,
 		Phase:        phase,
 		Task:         options.Task,
+		Filter:       options.Filter,
 		AllMerged:    options.AllMerged,
 		Apply:        options.Apply,
 		DeleteRemote: options.DeleteRemote,
 		OlderThan:    options.OlderThan.String(),
 		Results:      results,
+		Diagnostics:  diagnostics,
 	}
 	content, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

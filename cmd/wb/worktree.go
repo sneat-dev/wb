@@ -192,6 +192,7 @@ exact-head merged pull request evidence used by worktree cleanup.`,
 				ProjectsRoot: projectsRoot,
 				Task:         task,
 				Base:         base,
+				Filter:       filterFlag,
 				GitHub:       github,
 			})
 			if err != nil {
@@ -233,7 +234,13 @@ Cleanup requires every repository in a coordinated task to be clean, unlocked,
 and backed by a merged GitHub pull request whose base and recorded head match
 the current branch. The default is a dry-run plan. --apply removes worktrees
 and exact local branch refs; --remote additionally deletes an unchanged remote
-branch with force-with-lease protection.`,
+branch with force-with-lease protection.
+
+--filter (see the root flag) and a named [task] both narrow which candidates
+are inspected at all, before any of the above safety checks run. A malformed
+candidate outside that selection is invisible to the run. One inside it is
+never fatal: it is reported as a warning and blocks eligibility only for its
+own coordinated task, exactly like an unclean or locked sibling would.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MaximumNArgs(1)(command, args); err != nil {
 				return err
@@ -256,6 +263,7 @@ branch with force-with-lease protection.`,
 				ProjectsRoot: projectsRoot,
 				Task:         task,
 				Base:         base,
+				Filter:       filterFlag,
 				AllMerged:    allMerged,
 				Apply:        apply,
 				DeleteRemote: deleteRemote,
@@ -265,6 +273,11 @@ branch with force-with-lease protection.`,
 			})
 			if err != nil {
 				return err
+			}
+			for _, diagnostic := range outcome.Diagnostics {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "warning: cleanup skipped malformed candidate in task %s: %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message); err != nil {
+					return err
+				}
 			}
 			switch format {
 			case "text":
