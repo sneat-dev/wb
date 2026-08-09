@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,13 +23,25 @@ func TestNewSelfUpdateConfigIdentity(t *testing.T) {
 	if cfg.Repository != "sneat-dev/wb" {
 		t.Errorf("Repository = %q, want %q", cfg.Repository, "sneat-dev/wb")
 	}
-	if got, want := cfg.UndeterminedVersions, []string{"unknown"}; len(got) != 1 || got[0] != want[0] {
-		t.Errorf("UndeterminedVersions = %v, want %v", got, want)
+	// Both spellings of "this build cannot say its version" must be declared,
+	// or the library compares the placeholder as if it were a real version.
+	// "(devel)" is not hypothetical: it is what the Go toolchain stamps into
+	// build.Main.Version for every `go build ./cmd/wb`, and an undeclared
+	// "(devel)" made a locally built wb report an update available FROM a
+	// version that does not exist.
+	for _, want := range []string{"unknown", "(devel)"} {
+		if !slices.Contains(cfg.UndeterminedVersions, want) {
+			t.Errorf("UndeterminedVersions = %v, missing %q", cfg.UndeterminedVersions, want)
+		}
 	}
-	// collectVersion falls back to the literal "unknown" (see version.go);
-	// wb's own placeholder must match that fallback exactly, or a genuinely
-	// unstamped build would report itself as "undetermined" to a human but
-	// compare as a real, sortable version to the library.
+	// A Go pseudo-version is a KNOWN version that sorts below its release, so
+	// it must not be swept into the undetermined set.
+	if slices.Contains(cfg.UndeterminedVersions, "v0.23.3-0.20260809071100-889b6d621f76") {
+		t.Error("a Go pseudo-version must not be treated as undetermined")
+	}
+	// wb's placeholders must match what collectVersion actually produces, or a
+	// genuinely unstamped build reports itself "undetermined" to a human while
+	// comparing as a real, sortable version to the library.
 	if cfg.CurrentVersion != collectVersion().Version {
 		t.Errorf("CurrentVersion = %q, want %q (collectVersion().Version)", cfg.CurrentVersion, collectVersion().Version)
 	}
