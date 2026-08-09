@@ -40,7 +40,7 @@ wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
 wb check [path] [flags]      # run a named local CI-equivalent check profile
-wb status [path] [flags]     # inspect every local repo by default, or one path
+wb status [path] [flags]     # report local repos needing attention (--all for every repo)
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task>    # create a feature branch in a central linked worktree
 wb worktree list [task]      # inspect local WB task worktrees
@@ -308,8 +308,14 @@ need attention?” Run `wb status` with no flags to scan all repositories below
 `--projects-root`; there is intentionally no `--fleet` flag. Supplying a path
 narrows the same command to one checkout.
 
+The answer to that question is a worklist, so a fleet run lists only the
+repositories needing attention and reports the clean ones as a count. `--all`
+lists every inspected repository. Naming a single repository always reports
+that repository, clean or not.
+
 ```sh
 wb status
+wb status --all
 wb status --filter sneat-co/ --match 'sneat-co/*' --parallel=8
 wb status ~/projects/sneat-co/sneat-bots --details --format yaml
 ```
@@ -318,7 +324,8 @@ It reads only local Git state—never fetches, pulls, modifies, commits, or
 pushes—and reports clean, attention, or inspection-error status. Attention
 covers modified, untracked, conflicted, stashed, and unpushed work. Markdown
 defaults to concise summaries; YAML/JSON and `--details` provide individual
-paths and Git entries.
+paths and Git entries, and every format carries the same filtered set plus a
+`hidden_clean` count.
 
 ### `wb deps set` — one exact dependency version
 
