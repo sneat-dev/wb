@@ -45,6 +45,7 @@ wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Gi
 wb worktree create <task>    # create a feature branch in a central linked worktree
 wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task>   # plan or apply safe merged-task cleanup
+wb self-update [flags]       # update the installed wb binary (alias: wb update)
 ```
 
 ### Persistent flags
@@ -1078,6 +1079,49 @@ The broader direction—named build/test spans, cache and machine diagnostics,
 local/CI/deployment correlation, CI-minute savings, and privacy-safe team
 comparisons—is captured in the SpecScore idea
 [`developer-lifecycle-metrics`](spec/ideas/developer-lifecycle-metrics.md).
+
+### `wb self-update` — update the installed binary (alias: `wb update`)
+
+`self-update` is the canonical name because in a CLI whose other verbs act on
+other repositories (`wb sync`, `wb deps`, `wb migrate`), a bare `update` does
+not say *what* gets updated; `wb update` still works as an alias.
+
+```sh
+wb self-update --check                  # report availability only; never modifies
+wb self-update --check --format json    # machine-readable verdict
+wb self-update                          # confirm, then update
+wb self-update --yes                    # skip the confirmation prompt
+wb self-update --version v0.24.0        # install an exact release instead of latest
+wb self-update --version 0.23.2 --allow-downgrade   # roll back
+wb self-update --dry-run --format json  # report what would happen; never modifies
+```
+
+The command first decides how the running binary was installed. A
+Homebrew-managed install (Caskroom or Cellar path, reached through any number
+of symlinks) is never overwritten — self-update prints the exact
+`brew upgrade --cask wb` command instead of touching the binary, under every
+flag combination. A manual install (release archive or `go install`, detected
+by a `go/bin` or `bin/`-suffixed path) downloads the release asset matching
+the host OS/architecture, verifies its sha256 against that release's
+published checksums *before* extracting anything, and swaps it in atomically
+so a failed or interrupted update always leaves the original binary intact
+and runnable. When the install method cannot be confidently classified,
+self-update refuses rather than guessing and points at manual-update options.
+
+`--check` performs the same detection and version comparison without
+downloading or writing anything, for either install method; `--format json`
+emits a single document carrying `current`, `latest`, and a `verdict` of
+`up_to_date`, `update_available`, or `undetermined` — the machine-readable way
+to tell "an update is available" apart from "the release lookup failed" when
+both otherwise report the same exit code. `--version` pins an exact release
+tag (leading `v` optional) instead of the latest stable one; pinning to a
+version older than the running build refuses unless paired with
+`--allow-downgrade`. Replacing the binary always requires confirmation —
+either an interactive `y`, or `--yes` — and refuses outright rather than
+blocking on input when no terminal is attached and `--yes` was not given, so
+scripts and agents driving wb never hang. wb publishes no Windows build, so
+the self-replace path is macOS/Linux only; a Windows host reaching it refuses
+with a clear message instead of attempting a swap it has no asset for.
 
 ## Build from source
 

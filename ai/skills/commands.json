@@ -4,6 +4,9 @@
     "version": [
       "wb-install"
     ],
+    "self-update": [
+      "wb-install"
+    ],
     "sync": [
       "wb-fleet"
     ],
