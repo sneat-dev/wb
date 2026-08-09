@@ -45,6 +45,8 @@ func TestHasVersionFlagRecognisesOnlyRootLevelRequests(t *testing.T) {
 		{[]string{"status", "-v"}, false},    // belongs to the subcommand
 		{[]string{"--", "--version"}, false}, // after the terminator it is an argument
 		{[]string{"deps", "graph", "--version"}, false},
+		{[]string{"self-update", "--version", "v0.24.0"}, false}, // self-update's own --version, not the root's
+		{[]string{"update", "--version", "v0.24.0"}, false},      // same via the alias
 	}
 	for _, test := range tests {
 		if got := hasVersionFlag(test.args); got != test.want {

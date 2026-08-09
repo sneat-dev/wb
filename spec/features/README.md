@@ -16,6 +16,7 @@ format: https://specscore.md/features-index-specification
 | [fleet-status](fleet-status/README.md) | Implementing | A fleet-first read-only index of local Git repository state. |
 | [hierarchical-migration-campaigns](hierarchical-migration-campaigns/README.md) | Implementing | Isolated, reviewable migrations across a Go dependency hierarchy, with an adapter model for other ecosystems. |
 | [worktree-lifecycle](worktree-lifecycle/README.md) | Implementing | Inspect WB task worktrees and safely remove exact merged branches with durable evidence. |
+| [self-update](self-update/README.md) | Implementing | wb self-update (alias update) brings an installed wb binary to the latest release, redirecting Homebrew-managed installs to brew instead of overwriting them. |
 
 ## Open Questions
 

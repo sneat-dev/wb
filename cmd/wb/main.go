@@ -95,6 +95,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newWorktreeCmd())
+	root.AddCommand(newSelfUpdateCmd())
 
 	return root
 }
