@@ -294,3 +294,50 @@ func gitConfigValue(gitDirectory, key string) (string, error) {
 	output, err := command.Output()
 	return strings.TrimSpace(string(output)), err
 }
+
+// An HTTPS remote authenticates through `credential.helper`, and the default
+// helper on macOS is osxkeychain, which reaches the keychain over Mach IPC to
+// SecurityServer — not by reading a file, so `(allow file-read*)` does not
+// cover it. Under `(deny default)` the helper returns nothing, Git falls back
+// to prompting, and prompting is disabled for the canonical sandbox, so the
+// remote fails with "could not read Username for 'https://...'" while the
+// credential is sitting in the keychain.
+//
+// The sibling SSH test above fixed the same class of denial for SSH remotes
+// and could not have caught this one: every fixture in this package uses a
+// local file:// remote, so no test ever ran a credential helper at all. The
+// fleet split cleanly along protocol lines — SSH repos worked, HTTPS repos
+// did not — which is exactly the shape a missing Mach exception produces.
+//
+// This asserts the profile grants the lookup rather than driving a real
+// authentication: it runs the credential helper directly under the same
+// sandbox-exec profile with an input naming no host, so the helper does its
+// keychain setup and exits without a network call and without needing a
+// credential to exist.
+func TestSecureCanonicalCapabilityAllowsKeychainCredentialLookup(t *testing.T) {
+	if !strings.Contains(sandboxProfile(nil), "com.apple.SecurityServer") {
+		t.Fatal("the canonical Git sandbox denies the keychain Mach lookup that credential.helper=osxkeychain needs; every HTTPS remote will fail with \"could not read Username\"")
+	}
+
+	const helper = "/usr/bin/git-credential-osxkeychain"
+	if info, err := os.Stat(helper); err != nil || info.Mode()&0o111 == 0 {
+		t.Skipf("%s is unavailable in this environment: %v", helper, err)
+	}
+	fixture := newGitFixture(t)
+	canonical, err := openCanonicalRepository(fixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer canonical.close()
+
+	command := exec.Command(os.Args[0], SecureCanonicalGitHelperArgument, fixture.canonical, helper, "get")
+	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
+	command.Stdin = strings.NewReader("\n")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("sandboxed credential helper failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "Operation not permitted") {
+		t.Fatalf("sandbox blocked the keychain lookup the credential helper needs: %s", output)
+	}
+}
