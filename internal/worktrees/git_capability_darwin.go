@@ -151,6 +151,21 @@ func sandboxProfile(writeRoots []gitFilesystemCapabilityRoot) string {
 		// network authority, so the write confinement below remains the real
 		// security boundary.
 		"(allow mach-lookup (global-name \"com.apple.system.opendirectoryd.libinfo\"))",
+		// The same failure one layer up: an HTTPS remote authenticates through
+		// `credential.helper`, whose default on macOS is osxkeychain, and that
+		// helper reaches the keychain over Mach IPC to SecurityServer. Denied,
+		// it returns nothing, Git falls back to prompting, and prompting is
+		// disabled here — so every HTTPS remote fails with "could not read
+		// Username for 'https://github.com'" while the credential sits in the
+		// keychain and the network is already wide open. The opendirectoryd
+		// exception above fixed SSH remotes and could not fix these, which is
+		// why part of the fleet worked and part did not.
+		//
+		// This grants the keychain lookup and nothing else. Reads were already
+		// permitted and the write confinement below is still the real security
+		// boundary, so the only new authority is a credential this process
+		// could not otherwise obtain.
+		"(allow mach-lookup (global-name \"com.apple.SecurityServer\"))",
 	}
 	for _, root := range writeRoots {
 		clauses = append(clauses, "(allow file-write* (subpath "+strconv.Quote(root.path)+"))")
