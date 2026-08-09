@@ -8,15 +8,15 @@ format: https://specscore.md/features-index-specification
 
 | Feature | Status | Description |
 |---|---|---|
-| [dependency-bump-waves](dependency-bump-waves/README.md) | Implementing | Recalculate dependency graphs and propagate released versions through verified repository waves. |
-| [dependency-graph](dependency-graph/README.md) | Implementing | Project one dependency-evidence model as repository, dependency, version, SVG, and browser views. |
-| [dependency-drift](dependency-drift/README.md) | Draft | Report divergent, replaced, and outdated dependency selections within one repository or a fleet. |
-| [dependency-set](dependency-set/README.md) | Implementing | Set an existing dependency to one exact version across isolated, verified repository worktrees. |
-| [fleet-quality](fleet-quality/README.md) | Implementing | Coverage measurement and conventional verification over locally cloned repositories. |
-| [fleet-status](fleet-status/README.md) | Implementing | A fleet-first read-only index of local Git repository state. |
-| [hierarchical-migration-campaigns](hierarchical-migration-campaigns/README.md) | Implementing | Isolated, reviewable migrations across a Go dependency hierarchy, with an adapter model for other ecosystems. |
-| [worktree-lifecycle](worktree-lifecycle/README.md) | Implementing | Inspect WB task worktrees and safely remove exact merged branches with durable evidence. |
-| [self-update](self-update/README.md) | Implementing | wb self-update (alias update) brings an installed wb binary to the latest release, redirecting Homebrew-managed installs to brew instead of overwriting them. |
+| [Dependency Bump Waves](dependency-bump-waves/README.md) | Implementing | `wb deps bump` recalculates a dependency graph and propagates newly released |
+| [Dependency Graph](dependency-graph/README.md) | Implementing | `wb deps graph` discovers one canonical dependency-evidence graph and projects |
+| [Dependency Drift](dependency-drift/README.md) | Draft | `wb deps drift` produces a read-only dependency convergence report for one |
+| [Exact Dependency Set](dependency-set/README.md) | Implementing | `wb deps set <ecosystem> <dependency>@<version>` changes existing references |
+| [Fleet Quality](fleet-quality/README.md) | Implementing | WB measures Go test coverage and runs conventional lint, test, and build checks for one repository or a selected fleet of local clones. The commands continue through every selected repository and produce a reviewable Markdown index plus deterministic YAML or JSON for tools. |
+| [Fleet Status](fleet-status/README.md) | Implementing | `wb status` inspects every local repository by default and reports the ones |
+| [Hierarchical Migration Campaigns](hierarchical-migration-campaigns/README.md) | Implementing | WB migrates a dependency hierarchy through dedicated local worktrees, then can |
+| [Worktree Lifecycle](worktree-lifecycle/README.md) | Implementing | `wb worktree` creates, guards, inventories, and safely cleans task worktrees |
+| [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |
 
 ## Open Questions
 

@@ -19,14 +19,23 @@ import (
 // Feature spec that draws this boundary, and REQ: library-provided-behavior
 // in particular.
 
-// selfUpdateUndeterminedVersion is the Config.CurrentVersion value meaning
-// "this build cannot say its own version". wb's version plumbing
-// (collectVersion in version.go) falls back to the literal "unknown", not
-// the library's default placeholder "dev", so it must be declared
-// explicitly (REQ: wb-version-identity). A Go pseudo-version is a known
-// version that sorts below its eventual release, not an undetermined one,
-// and is deliberately not in this set.
-const selfUpdateUndeterminedVersion = "unknown"
+// selfUpdateUndeterminedVersions are the Config.CurrentVersion values meaning
+// "this build cannot say its own version" (REQ: wb-version-identity). wb has
+// two, and neither is the library's default placeholder "dev":
+//
+//   - "unknown" — collectVersion's own final fallback, when neither a
+//     link-time stamp nor module metadata is available.
+//   - "(devel)" — what the Go toolchain stamps into build.Main.Version for a
+//     binary built from a source tree rather than resolved from a module
+//     version, i.e. every `go build ./cmd/wb`. Without it declared, a locally
+//     built wb compares "(devel)" against the latest release as if it were a
+//     real version, and reports an update available from a version that does
+//     not exist.
+//
+// A Go pseudo-version is deliberately NOT in this set: it is a known version
+// that sorts below its eventual release, so "update available" is the right
+// answer for it.
+var selfUpdateUndeterminedVersions = []string{"unknown", "(devel)"}
 
 // selfUpdateHomebrewUpgradeCommand is the exact command printed for a
 // Homebrew-managed install. wb ships as a cask, not a formula, so this must
@@ -52,7 +61,7 @@ func newSelfUpdateConfig() selfupdate.Config {
 		BinaryName:           "wb",
 		Repository:           "sneat-dev/wb",
 		CurrentVersion:       collectVersion().Version,
-		UndeterminedVersions: []string{selfUpdateUndeterminedVersion},
+		UndeterminedVersions: selfUpdateUndeterminedVersions,
 		Managers: []selfupdate.Manager{
 			selfupdate.Homebrew(selfUpdateHomebrewUpgradeCommand),
 		},

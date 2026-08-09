@@ -107,8 +107,12 @@ while wb publishes no Windows build.
 
 wb MUST supply the version `wb version` reports — the link-time `-ldflags` stamp
 of a release build, otherwise the module version and VCS metadata the Go
-toolchain embeds — and MUST declare `unknown` as the string meaning
-undetermined. A Go pseudo-version such as `v0.23.3-0.20260809071100-889b6d621f76`
+toolchain embeds — and MUST declare as undetermined every string that version
+can take when it identifies no release: `unknown`, wb's own final fallback, and
+`(devel)`, what the Go toolchain stamps for a binary built from a source tree
+rather than resolved from a module version. An undeclared placeholder is
+compared as if it were a real version, which reports an update available *from*
+a version that does not exist. A Go pseudo-version such as `v0.23.3-0.20260809071100-889b6d621f76`
 is a known version that sorts below its release, not an undetermined one. The
 post-swap version probe MUST use `version --json`, wb's machine-readable
 spelling.
