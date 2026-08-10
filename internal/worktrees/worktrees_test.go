@@ -174,6 +174,68 @@ func TestCreatePreservesDirtyOffBaseCanonicalState(t *testing.T) {
 	}
 }
 
+// A nested linked worktree is particularly important here: it resembles a
+// live agent checkout under an untracked directory in the canonical clone.
+// Create must neither absorb its contents nor alter its branch, HEAD, index,
+// or working tree while fetching the requested base for the new WB worktree.
+func TestCreateDoesNotTouchNestedWorktreeInsideDirtyCanonical(t *testing.T) {
+	fixture := newGitFixture(t)
+	nested := filepath.Join(fixture.canonical, ".claude", "worktrees", "live-agent")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "agent/live-nested", nested, "HEAD")
+	if err := os.WriteFile(filepath.Join(nested, "live.txt"), []byte("do not absorb\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	canonicalUntracked := filepath.Join(fixture.canonical, "canonical-live.txt")
+	if err := os.WriteFile(canonicalUntracked, []byte("also do not touch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nestedBranchBefore := gitTestOutput(t, nested, "branch", "--show-current")
+	nestedHeadBefore := gitTestOutput(t, nested, "rev-parse", "HEAD")
+	nestedIndexBefore := gitTestOutput(t, nested, "write-tree")
+	nestedStatusBefore := gitTestOutput(t, nested, "status", "--porcelain=v1")
+	canonicalStatusBefore := gitTestOutput(t, fixture.canonical, "status", "--porcelain=v1")
+	fixture.pushRemoteCommit(t, "remote main while nested worktree is live")
+	remoteHead := strings.Fields(gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main"))[0]
+
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "preserve-nested-worktree",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "status", "--porcelain=v1"); got != canonicalStatusBefore {
+		t.Fatalf("canonical status = %q, want %q", got, canonicalStatusBefore)
+	}
+	if contents, readErr := os.ReadFile(canonicalUntracked); readErr != nil || string(contents) != "also do not touch\n" {
+		t.Fatalf("canonical untracked file = %q, err=%v", contents, readErr)
+	}
+	if got := gitTestOutput(t, nested, "branch", "--show-current"); got != nestedBranchBefore {
+		t.Fatalf("nested branch = %q, want %q", got, nestedBranchBefore)
+	}
+	if got := gitTestOutput(t, nested, "rev-parse", "HEAD"); got != nestedHeadBefore {
+		t.Fatalf("nested HEAD = %q, want %q", got, nestedHeadBefore)
+	}
+	if got := gitTestOutput(t, nested, "write-tree"); got != nestedIndexBefore {
+		t.Fatalf("nested index tree = %q, want %q", got, nestedIndexBefore)
+	}
+	if got := gitTestOutput(t, nested, "status", "--porcelain=v1"); got != nestedStatusBefore {
+		t.Fatalf("nested status = %q, want %q", got, nestedStatusBefore)
+	}
+	if contents, readErr := os.ReadFile(filepath.Join(nested, "live.txt")); readErr != nil || string(contents) != "do not absorb\n" {
+		t.Fatalf("nested untracked file = %q, err=%v", contents, readErr)
+	}
+	if got := gitTestOutput(t, results[0].WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("new worktree HEAD = %s, want fetched origin/main %s", got, remoteHead)
+	}
+}
+
 func TestCreateFailsBeforeMutationWhenRequestedOriginBaseCannotBeFetched(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "checkout", "-b", "feat/canonical-in-use")
