@@ -108,10 +108,11 @@ If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
 unless --resume is explicit.
 
-Resume first recovers its registered branch and active Work Log claim. It then
-consults current branch policy. An exact --branch may assert that recovered
-identity. Changing run or agent provenance requires an audited handoff instead
-of silently replacing the claim.
+Resume first recovers its registered branch and active Work Log claim. Current
+naming policy cannot replace that recovered identity; WB consults it only when
+it creates a new checkout. An exact --branch may assert the recovered branch.
+Changing run or agent provenance requires an audited handoff instead of
+silently replacing the claim.
 
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
 into the private Work Log under WB_HOME before any worktree is created; prompt
