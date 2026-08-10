@@ -312,7 +312,35 @@ fi
 		// naming "go" once, to cover its Go repositories, forces this on for
 		// every other repository too, so it must tolerate running somewhere
 		// with no go.mod rather than assume Detection already screened it out.
-		return "#!/bin/sh\nset -eu\nif [ ! -f go.mod ]; then\n    exit 0\nfi\ngo vet ./...\ngo test ./...\n", true
+		return `#!/bin/sh
+set -eu
+if [ ! -f go.mod ]; then
+    exit 0
+fi
+# A pure remote-ref deletion publishes no Go object. Keep the base,
+# worktree-admission, custom-policy, and metrics blocks active, but do not run
+# publication tests that need compiler caches for a deletion-only push.
+if [ ! -t 0 ]; then
+    saw_update=false
+    deletion_only=true
+    while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+        if [ -z "$local_ref$local_sha$remote_ref$remote_sha" ]; then
+            continue
+        fi
+        saw_update=true
+        case "$local_sha" in
+            0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) ;;
+            *) deletion_only=false ;;
+        esac
+    done
+    if [ "$saw_update" = true ] && [ "$deletion_only" = true ]; then
+        echo "WB hook: remote-ref deletion only; Go publication tests are not applicable."
+        exit 0
+    fi
+fi
+go vet ./...
+go test ./...
+`, true
 	case BuiltinNodePrePush:
 		return `#!/bin/sh
 set -eu

@@ -1410,7 +1410,7 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 				t.Fatalf("finish rebase: %v\n%s", err, output)
 			}
 			guarded, err = Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
-			if err != nil || guarded.Transient || guarded.Branch != "feature/rebase" {
+			if err != nil || guarded.Transient || guarded.Branch != created[0].Branch {
 				t.Fatalf("guard after rebase = %#v, %v", guarded, err)
 			}
 			gitTest(t, worktree, "checkout", "--detach", "HEAD")
@@ -1520,7 +1520,7 @@ func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 		t.Fatalf("empty rebase state guard error = %v", err)
 	}
 	for name, content := range map[string]string{
-		"head-name":              "refs/heads/feature/fabricated-rebase\n",
+		"head-name":              "refs/heads/" + created[0].Branch + "\n",
 		"orig-head":              strings.Repeat("a", 40) + "\n",
 		"onto":                   strings.Repeat("b", 40) + "\n",
 		"git-rebase-todo.backup": "pick deadbeef synthetic\n",
@@ -1573,7 +1573,7 @@ func TestGuardRejectsForgedRebaseStateWithRealGitObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{
-		"head-name":              "refs/heads/feature/forged-real-rebase\n",
+		"head-name":              "refs/heads/" + created[0].Branch + "\n",
 		"orig-head":              originalHead + "\n",
 		"onto":                   onto + "\n",
 		"git-rebase-todo.backup": "pick " + originalHead + " feature used by forged rebase\n",

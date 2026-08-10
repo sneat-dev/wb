@@ -174,6 +174,13 @@ func TestWorktreeAdmissionCanBeExplicitlyExcluded(t *testing.T) {
 			}
 		}
 	}
+	report, err := Check(repo, "", os.Args[0], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(report.ExcludedProfiles, []string{"worktree"}) {
+		t.Fatalf("reported policy exclusions = %v, want visible worktree exception", report.ExcludedProfiles)
+	}
 }
 
 func TestWorktreeProfileIsExplicitAndCoversCheckoutCommitAndPush(t *testing.T) {
@@ -1722,6 +1729,62 @@ func TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod(t *testing.T) {
 	result, err = Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
 	if err == nil || result.ExitCode == 0 {
 		t.Fatalf("a real go vet violation should still block pre-push: result = %#v, error = %v", result, err)
+	}
+}
+
+func TestBuiltInGoPrePushSkipsPublicationTestsOnlyForPureRefDeletion(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/hooks-test\n\ngo 1.26\n")
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nfunc main() {}\n")
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
+
+	bin := filepath.Join(t.TempDir(), "bin")
+	mustMkdirAll(t, bin)
+	goLog := filepath.Join(t.TempDir(), "go.log")
+	mustWrite(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf 'called\\n' >> \"$WB_GO_LOG\"\nexit 97\n")
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_GO_LOG", goLog)
+
+	for _, zero := range []string{
+		strings.Repeat("0", 40),
+		strings.Repeat("0", 64),
+	} {
+		result, err := Run(RunOptions{
+			RepoPath: repo,
+			Hook:     "pre-push",
+			Stdin:    strings.NewReader("(delete) " + zero + " refs/heads/task " + strings.Repeat("a", len(zero)) + "\n"),
+			Stdout:   &bytes.Buffer{},
+			Stderr:   &bytes.Buffer{},
+		})
+		if err != nil || result.ExitCode != 0 {
+			t.Fatalf("deletion-only pre-push = %#v, error=%v", result, err)
+		}
+	}
+	if data, err := os.ReadFile(goLog); !os.IsNotExist(err) {
+		t.Fatalf("deletion-only push invoked Go publication checks: data=%q err=%v", data, err)
+	}
+
+	result, err := Run(RunOptions{
+		RepoPath: repo,
+		Hook:     "pre-push",
+		Stdin: strings.NewReader(
+			"(delete) " + strings.Repeat("0", 40) + " refs/heads/old " + strings.Repeat("a", 40) + "\n" +
+				"refs/heads/main " + strings.Repeat("b", 40) + " refs/heads/main " + strings.Repeat("a", 40) + "\n",
+		),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	})
+	if err == nil || result.ExitCode != 97 {
+		t.Fatalf("mixed publication bypassed Go checks: result=%#v error=%v", result, err)
+	}
+	if data, readErr := os.ReadFile(goLog); readErr != nil || string(data) != "called\n" {
+		t.Fatalf("mixed publication did not invoke Go checks exactly once: data=%q err=%v", data, readErr)
 	}
 }
 

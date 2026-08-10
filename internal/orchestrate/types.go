@@ -62,6 +62,16 @@ type RemoteCheck struct {
 	Name   string `json:"name" yaml:"name"`
 	Bucket string `json:"bucket" yaml:"bucket"`
 	Link   string `json:"link,omitempty" yaml:"link,omitempty"`
+	AppID  int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
+}
+
+// RequiredRemoteCheck is GitHub's target-policy expectation. IntegrationID
+// is non-zero when a ruleset pins the context to one GitHub App; direct-push
+// receipts must then observe the matching check-run producer, not merely a
+// same-named legacy status from another actor.
+type RequiredRemoteCheck struct {
+	Name          string `json:"name" yaml:"name"`
+	IntegrationID int64  `json:"integration_id,omitempty" yaml:"integration_id,omitempty"`
 }
 
 // PullRequestWaitOptions identifies exactly one direct-push or pull-request
@@ -90,14 +100,17 @@ const (
 // PullRequestWaitResult is one terminating foreground observation slice.
 // Pending means resume is required, not that the merger is finished.
 type PullRequestWaitResult struct {
-	Status       PullRequestWaitStatus `json:"status" yaml:"status"`
-	Repository   string                `json:"repository" yaml:"repository"`
-	PullRequest  string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
-	Target       string                `json:"target" yaml:"target"`
-	Head         string                `json:"head" yaml:"head"`
-	ObservedHead string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
-	Checks       []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
-	Reason       string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Status                  PullRequestWaitStatus `json:"status" yaml:"status"`
+	Repository              string                `json:"repository" yaml:"repository"`
+	PullRequest             string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	Target                  string                `json:"target" yaml:"target"`
+	Head                    string                `json:"head" yaml:"head"`
+	ObservedHead            string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
+	Checks                  []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
+	RequiredChecks          []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
+	RequiredChecksAuthority string                `json:"required_checks_authority,omitempty" yaml:"required_checks_authority,omitempty"`
+	StableObservations      int                   `json:"stable_observations" yaml:"stable_observations"`
+	Reason                  string                `json:"reason,omitempty" yaml:"reason,omitempty"`
 }
 
 // Result records lifecycle state and typed adapter metadata for one repository.

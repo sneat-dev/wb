@@ -474,9 +474,10 @@ func newWorktreeRenameCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "rename <old-task> <new-task>",
 		Short: "Re-home a task's worktrees under a new task name, keeping their working-tree contents",
-		Long: `Move every repository worktree below <old-task> to <new-task> using
-'git worktree move' — with a plain move plus 'git worktree repair' as a
-verified fallback — so Git's own gitdir pointers never go stale.
+		Long: `Move every repository worktree below <old-task> to <new-task> with a
+descriptor-relative no-replace directory move. WB retains the exact checkout
+identity through 'git worktree repair' and registration verification, so Git's
+own gitdir pointers never go stale and a substituted endpoint is never moved.
 
 Recycling is opt-in. WB refuses to carry arbitrary ignored/untracked state
 into the next effort. Pass --preserve-cache for each repository-relative cache

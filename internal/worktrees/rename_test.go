@@ -386,8 +386,8 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 	if result.NewBranch != "new-task" {
 		t.Fatalf("default new branch = %q, want new-task", result.NewBranch)
 	}
-	if result.Repaired {
-		t.Fatalf("a healthy `git worktree move` must not need repair: %#v", result)
+	if !result.Repaired {
+		t.Fatalf("descriptor-relative relocation must repair Git registration: %#v", result)
 	}
 
 	// The untracked file — node_modules stand-in — must have made the trip.
@@ -528,14 +528,11 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 	}
 }
 
-// TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses is the
-// regression test for the founder's own production incident: a bare
-// filesystem move leaves Git's gitdir pointer stale, and it must never be the
-// first choice. This test forces `git worktree move` itself to refuse — by
-// taking a real Git-level worktree lock, independent of WB's own task
-// `.lock` — so the fallback path (plain move + `git worktree repair`) is the
-// one actually exercised and verified, not merely present as dead code.
-func TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses(t *testing.T) {
+// TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse keeps the
+// founder's production incident covered: Git-level worktree locks make
+// `git worktree move` refuse, but WB's descriptor-relative no-replace move plus
+// held-checkout repair remains safe and leaves Git's registration exact.
+func TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -569,6 +566,153 @@ func TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses(t *testing.T) 
 	}
 	if _, guardErr := Guard(context.Background(), newWorktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); guardErr != nil {
 		t.Fatalf("repaired worktree failed guard: %v", guardErr)
+	}
+}
+
+func TestMoveWorktreeRejectsPostAuthorizationEndpointSubstitution(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		swap   func(t *testing.T, oldPath, newPath string)
+		assert func(t *testing.T, oldPath, newPath, heldPath string)
+	}{
+		{
+			name: "source identity",
+			swap: func(t *testing.T, oldPath, _ string) {
+				t.Helper()
+				if err := os.Rename(oldPath, oldPath+"-held"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(oldPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(oldPath, "replacement"), []byte("hostile\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assert: func(t *testing.T, oldPath, newPath, heldPath string) {
+				t.Helper()
+				if data, err := os.ReadFile(filepath.Join(oldPath, "replacement")); err != nil || string(data) != "hostile\n" {
+					t.Fatalf("source replacement was consumed or changed: data=%q err=%v", data, err)
+				}
+				if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+					t.Fatalf("source replacement escaped to destination: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(heldPath, ".git")); err != nil {
+					t.Fatalf("retained original checkout was not preserved: %v", err)
+				}
+			},
+		},
+		{
+			name: "destination insertion",
+			swap: func(t *testing.T, _, newPath string) {
+				t.Helper()
+				if err := os.Mkdir(newPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(newPath, "replacement"), []byte("hostile\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assert: func(t *testing.T, oldPath, newPath, _ string) {
+				t.Helper()
+				if _, err := os.Stat(filepath.Join(oldPath, ".git")); err != nil {
+					t.Fatalf("source checkout moved despite occupied destination: %v", err)
+				}
+				if data, err := os.ReadFile(filepath.Join(newPath, "replacement")); err != nil || string(data) != "hostile\n" {
+					t.Fatalf("destination replacement was overwritten: data=%q err=%v", data, err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "late-endpoint-source",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldPath := created[0].WorktreeDir
+			newPath := filepath.Join(fixture.home, "worktrees", "late-endpoint-destination", "acme", "app")
+			if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outcome, moveErr := moveWorktree(
+				context.Background(), fixture.canonical, filepath.Join(fixture.home, "worktrees"), oldPath, newPath,
+				worktreeMoveHooks{afterAuthorization: func() { test.swap(t, oldPath, newPath) }},
+			)
+			if moveErr == nil || outcome.Moved {
+				t.Fatalf("post-authorization substitution result = %#v, error=%v", outcome, moveErr)
+			}
+			test.assert(t, oldPath, newPath, oldPath+"-held")
+		})
+	}
+}
+
+func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*RenameOptions)
+		wantError string
+	}{
+		{
+			name: "repair failure",
+			configure: func(options *RenameOptions) {
+				options.beforeWorktreeRepair = func(string) error { return errors.New("injected repair failure") }
+			},
+			wantError: "injected repair failure",
+		},
+		{
+			name: "registration failure",
+			configure: func(options *RenameOptions) {
+				options.beforeWorktreeRegistrationVerify = func(string) error { return errors.New("injected registration failure") }
+			},
+			wantError: "injected registration failure",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "partial-move-source",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := RenameOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				OldTask:      "partial-move-source",
+				NewTask:      "partial-move-destination",
+				DeleteRemote: true,
+				Apply:        true,
+			}
+			test.configure(&options)
+			outcome, renameErr := Rename(context.Background(), options)
+			if renameErr == nil || !strings.Contains(renameErr.Error(), test.wantError) {
+				t.Fatalf("rename error = %v, results=%#v", renameErr, outcome.Results)
+			}
+			if _, err := os.Stat(created[0].WorktreeDir); err != nil {
+				t.Fatalf("partial move was not restored to source: %v", err)
+			}
+			newPath := filepath.Join(fixture.home, "worktrees", "partial-move-destination", "acme", "app")
+			if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+				t.Fatalf("partial move stranded destination checkout: %v", err)
+			}
+			listing := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+			if !strings.Contains(listing, "worktree "+created[0].WorktreeDir) || strings.Contains(listing, "worktree "+newPath) {
+				t.Fatalf("rollback registration is not exact:\n%s", listing)
+			}
+			if _, err := Rename(context.Background(), RenameOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				OldTask:      "partial-move-source",
+				NewTask:      "partial-move-destination",
+				DeleteRemote: true,
+				Apply:        true,
+			}); err != nil {
+				t.Fatalf("partial-move rollback was not retryable: %v", err)
+			}
+		})
 	}
 }
 

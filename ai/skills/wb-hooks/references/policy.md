@@ -54,6 +54,12 @@ Resolve relative templates from the YAML file declaring them. Keep expensive
 E2E work in `pre-push`, not `pre-commit`. Prefer one orchestrating command that
 reuses results over multiple overlapping blocks.
 
+The built-in Go pre-push block skips vet/test only when every update is a
+40- or 64-zero-SHA remote-ref deletion: no Go object is being published. Base,
+worktree, custom, and metrics policy still run. A mixed or ordinary push runs
+the full Go checks. General secure-hook cache and durable metrics authority is
+tracked in WB issue #61; do not treat the deletion rule as that broader fix.
+
 After editing policy:
 
 ```sh

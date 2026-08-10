@@ -278,7 +278,7 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	command := newWorktreeRenameCmd()
 	for _, wanted := range []string{
-		"git worktree move", "git worktree repair", "node_modules",
+		"descriptor-relative", "no-replace", "git worktree repair", "node_modules",
 		"always deleted", "--force", "dry-run",
 	} {
 		if !strings.Contains(command.Long, wanted) {

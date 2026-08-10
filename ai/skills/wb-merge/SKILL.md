@@ -39,7 +39,12 @@ skill, not a branch-prefix convention and not a model profile. Read
    (for example, `wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json`); add
    `--pr <number-or-url>` only to corroborate a PR head. Pending is
    intermediate state only: execute `resume_args` as structured JSON argv (or
-   shell-quote every argument) and rerun until terminal pass or failure.
+   shell-quote every argument) and rerun until terminal pass or failure. A pass
+   records the target's enumerated required-check policy (including a pinned
+   GitHub App for direct-push checks) and an unchanged terminal reread of all
+   checks observed in that bounded window. It does not prove that no optional
+   workflow can register later, so it never replaces the next release-evidence
+   step.
 6. Collect required release evidence before terminalization. Then, for every
    landed task, inspect `wb worktree cleanup <task>` and apply
    `wb worktree cleanup <task> --apply --remote --older-than 0`. WB seals the

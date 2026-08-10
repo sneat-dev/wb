@@ -201,6 +201,9 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"Push the exact target immediately",
 		"remote target SHA",
 		"wb ci wait --repo <owner/repo>",
+		"enumerated required-check policy",
+		"does not prove that no optional",
+		"workflow can register later",
 		"wb worktree cleanup <task> --apply --remote --older-than 0",
 		"Work Log",
 		"TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
@@ -218,7 +221,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"foreground", "shorter than that harness's tool timeout", "Never detach a watcher, use a background process"} {
+	for _, required := range []string{"foreground", "shorter than that harness's tool timeout", "bounded quiescence receipt", "separate release evidence", "Never detach a watcher, use a background process"} {
 		if !strings.Contains(string(polling), required) {
 			t.Errorf("CI polling contract is missing %q", required)
 		}

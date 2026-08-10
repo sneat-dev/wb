@@ -1051,9 +1051,15 @@ Each foreground slice is eight minutes by default and never more than nine.
 Pending and failed results exit `1`; pending JSON includes `resume_args` for
 the same exact identity. Reinvoke those arguments until a terminal result. A
 direct target receipt rejects target-head drift and combines GitHub check runs
-with legacy commit statuses; incomplete pagination fails closed. PR mode also
-rejects source-head or target drift. Do not replace this with a detached or
-long-running shell poller.
+with legacy commit statuses. WB enumerates classic protection and every
+paginated active branch rule; a producer-pinned required context must come
+from that exact GitHub App in direct mode. Missing policy authority, unsupported
+required-workflow names, or incomplete check/status pagination remain pending
+or fail closed. A pass requires two unchanged terminal observations. That is a
+bounded quiescence receipt, not proof that an optional workflow cannot register
+later, so collect separate repository release evidence before cleanup. PR mode
+also rejects source-head or target drift. Do not replace this with a detached
+or long-running shell poller.
 
 ### `wb hooks` — consistent, user-owned Git hooks
 
@@ -1130,7 +1136,12 @@ With `profiles.auto: true`, the built-in detectors currently contribute:
 
 A Go-only repository therefore runs the base and Go blocks, a Node-only
 repository runs the base and Node blocks, and a mixed repository runs all
-relevant blocks. Custom definitions use repository-relative `any_files` and
+relevant blocks. A pure remote-ref deletion has no Go object to publish, so
+the Go block records success without running vet/test; base, worktree, custom,
+and metrics policy still run, and any mixed or non-deletion push runs the full
+Go checks. General deterministic cache and durable metrics write authority for
+secure hook execution remains tracked in [#61](https://github.com/sneat-dev/wb/issues/61).
+Custom definitions use repository-relative `any_files` and
 `all_files` detectors; standard glob patterns are supported. A definition with
 the same name as `go` or `node` overrides selected built-in hooks, so users can
 replace either language template globally. The base block runs first; profiles

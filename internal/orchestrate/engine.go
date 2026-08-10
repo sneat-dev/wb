@@ -393,7 +393,8 @@ func decodePullRequestChecks(pr, output string, commandErr error) ([]RemoteCheck
 	} else if commandErr == nil {
 		return nil, false, fmt.Errorf("decode checks for %s: %w", pr, err)
 	}
-	if strings.Contains(strings.ToLower(output), "no checks reported") {
+	lowerOutput := strings.ToLower(output)
+	if strings.Contains(lowerOutput, "no checks reported") || strings.Contains(lowerOutput, "no required checks reported") {
 		return nil, true, nil
 	}
 	return nil, false, commandErr

@@ -286,6 +286,11 @@ func printHooksCheckDetails(cmd *cobra.Command, report hooks.CheckReport) error 
 			return err
 		}
 	}
+	for _, profile := range report.ExcludedProfiles {
+		if err := writeFormat(out, "  ! profile %s (explicitly excluded by policy)\n", profile); err != nil {
+			return err
+		}
+	}
 	hookNames := make([]string, 0, len(report.HookBlocks))
 	for hookName := range report.HookBlocks {
 		hookNames = append(hookNames, hookName)

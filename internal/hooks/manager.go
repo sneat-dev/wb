@@ -27,15 +27,20 @@ type Finding struct {
 }
 
 type CheckReport struct {
-	RepoRoot       string              `json:"repo_root"`
-	ManagedPath    string              `json:"managed_path"`
-	ConfigPaths    []string            `json:"config_paths,omitempty"`
-	Hooks          []string            `json:"hooks"`
-	ProfilesAuto   bool                `json:"profiles_auto"`
-	ActiveProfiles []ActiveProfile     `json:"active_profiles,omitempty"`
-	HookBlocks     map[string][]string `json:"hook_blocks,omitempty"`
-	MetricsPath    string              `json:"metrics_path,omitempty"`
-	Findings       []Finding           `json:"findings,omitempty"`
+	RepoRoot       string          `json:"repo_root"`
+	ManagedPath    string          `json:"managed_path"`
+	ConfigPaths    []string        `json:"config_paths,omitempty"`
+	Hooks          []string        `json:"hooks"`
+	ProfilesAuto   bool            `json:"profiles_auto"`
+	ActiveProfiles []ActiveProfile `json:"active_profiles,omitempty"`
+	// ExcludedProfiles makes explicit policy exceptions auditable even though
+	// they intentionally contribute no hook blocks. In particular, disabling
+	// the default worktree admission guard must never look like an ordinary
+	// healthy installation with no explanation.
+	ExcludedProfiles []string            `json:"excluded_profiles,omitempty"`
+	HookBlocks       map[string][]string `json:"hook_blocks,omitempty"`
+	MetricsPath      string              `json:"metrics_path,omitempty"`
+	Findings         []Finding           `json:"findings,omitempty"`
 }
 
 type ApplyOptions struct {
@@ -279,13 +284,14 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 	}
 	names := expectedHookNames(policy)
 	report := CheckReport{
-		RepoRoot:       policy.RepoRoot,
-		ManagedPath:    managed,
-		ConfigPaths:    append([]string(nil), policy.ConfigPaths...),
-		Hooks:          names,
-		ProfilesAuto:   policy.ProfilesAuto,
-		ActiveProfiles: append([]ActiveProfile(nil), policy.ActiveProfiles...),
-		HookBlocks:     profileBlockMap(policy),
+		RepoRoot:         policy.RepoRoot,
+		ManagedPath:      managed,
+		ConfigPaths:      append([]string(nil), policy.ConfigPaths...),
+		Hooks:            names,
+		ProfilesAuto:     policy.ProfilesAuto,
+		ActiveProfiles:   append([]ActiveProfile(nil), policy.ActiveProfiles...),
+		ExcludedProfiles: explicitlyExcludedProfiles(policy),
+		HookBlocks:       profileBlockMap(policy),
 	}
 	if policy.Metrics.Enabled {
 		report.MetricsPath = policy.Metrics.Path
@@ -379,6 +385,17 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		return report.Findings[i].Code < report.Findings[j].Code
 	})
 	return report, nil
+}
+
+func explicitlyExcludedProfiles(policy Policy) []string {
+	profiles := make([]string, 0)
+	for name, selected := range policy.ProfileSelections {
+		if !selected {
+			profiles = append(profiles, name)
+		}
+	}
+	sort.Strings(profiles)
+	return profiles
 }
 
 // Apply installs or repairs WB's local shims. It never overwrites unmanaged

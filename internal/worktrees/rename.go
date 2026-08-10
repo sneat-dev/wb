@@ -22,8 +22,8 @@ import (
 // linked-worktree Git mutations used by recycling. It receives retained
 // canonical/common, worktrees-root/worktree, and linked Gitfile/admin-dir
 // descriptors; it reauthorizes all of them immediately before Git, then
-// passes the retained linked Git directory explicitly through GIT_DIR rather
-// than letting Git rediscover mutable worktree/.git metadata.
+// passes the capability-confined linked Git path explicitly through GIT_DIR
+// rather than letting Git rediscover mutable worktree/.git metadata.
 const SecureRenameGitHelperArgument = "--wb-internal-rename-git"
 
 const maxLinkedWorktreeGitFileSize = 64 << 10
@@ -56,6 +56,24 @@ func (linked *linkedWorktreeGitDir) close() {
 }
 
 func runSecureRenameGit(ctx context.Context, canonicalDir, worktreesRoot, worktreePath string, gitArgs ...string) error {
+	worktree, err := openAbsoluteDirectoryNoFollow(worktreePath, false)
+	if err != nil {
+		return fmt.Errorf("open managed worktree for rename Git: %w", err)
+	}
+	defer func() { _ = worktree.Close() }()
+	return runSecureRenameGitWithHeldWorktree(ctx, canonicalDir, worktreesRoot, worktreePath, worktree, gitArgs...)
+}
+
+// runSecureRenameGitWithHeldWorktree uses the supplied checkout descriptor as
+// the work-tree authority. Rename keeps the descriptor returned by renameat
+// open through repair and registration verification, so a replacement at the
+// destination spelling cannot become Git's work tree between those stages.
+func runSecureRenameGitWithHeldWorktree(
+	ctx context.Context,
+	canonicalDir, worktreesRoot, worktreePath string,
+	worktree *os.File,
+	gitArgs ...string,
+) error {
 	canonical, err := openCanonicalRepository(canonicalDir)
 	if err != nil {
 		return err
@@ -69,11 +87,6 @@ func runSecureRenameGit(ctx context.Context, canonicalDir, worktreesRoot, worktr
 		return fmt.Errorf("open managed worktrees root for rename Git: %w", err)
 	}
 	defer func() { _ = parent.Close() }()
-	worktree, err := openAbsoluteDirectoryNoFollow(worktreePath, false)
-	if err != nil {
-		return fmt.Errorf("open managed worktree for rename Git: %w", err)
-	}
-	defer func() { _ = worktree.Close() }()
 	if !directoryStillMatches(worktreesRoot, parent) || !directoryStillMatches(worktreePath, worktree) {
 		return fmt.Errorf("managed rename path changed before Git operation")
 	}
@@ -400,6 +413,15 @@ type RenameOptions struct {
 	// was deleted and before the fresh claim is bound. It proves rollback can
 	// recover a later repository without erasing earlier partial-result evidence.
 	beforeRenameBind func(repository string) error
+	// afterWorktreeMoveAuthorization is a test-only adversarial seam executed
+	// after the retained source identity and both parent descriptors have been
+	// authorized, immediately before the descriptor-relative no-replace move.
+	afterWorktreeMoveAuthorization func(repository string)
+	// beforeWorktreeRepair and beforeWorktreeRegistrationVerify inject failures
+	// after the directory has moved. They prove the typed partial-mutation
+	// outcome drives deterministic rollback instead of stranding the new path.
+	beforeWorktreeRepair             func(repository string) error
+	beforeWorktreeRegistrationVerify func(repository string) error
 }
 
 // RenameResult records one repository's rename decision and outcome.
@@ -468,10 +490,9 @@ type renamePlan struct {
 }
 
 // Rename re-homes every worktree under OldTask (optionally narrowed by
-// Filter) to NewTask. It always uses `git worktree move` — with a plain move
-// plus `git worktree repair` as a verified fallback — because a bare
-// directory move leaves Git's own administrative gitdir pointer stale and
-// `wb worktree guard` (and Git itself) rejects the result.
+// Filter) to NewTask. WB moves the retained checkout identity with a
+// descriptor-relative no-replace rename, repairs Git's administrative gitdir
+// pointer from that held destination, and verifies the final registration.
 func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 	normalized, err := normalizeRenameOptions(options)
 	if err != nil {
@@ -872,12 +893,37 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		return err
 	}
 
-	repaired, err := moveWorktree(ctx, plan.entry.CanonicalDir, plan.entry.WorktreesRoot, plan.entry.WorktreeDir, plan.result.NewWorktreeDir)
+	moveOutcome, err := moveWorktree(
+		ctx,
+		plan.entry.CanonicalDir,
+		plan.entry.WorktreesRoot,
+		plan.entry.WorktreeDir,
+		plan.result.NewWorktreeDir,
+		worktreeMoveHooks{
+			afterAuthorization: func() {
+				if options.afterWorktreeMoveAuthorization != nil {
+					options.afterWorktreeMoveAuthorization(plan.entry.Repository)
+				}
+			},
+			beforeRepair: func() error {
+				if options.beforeWorktreeRepair == nil {
+					return nil
+				}
+				return options.beforeWorktreeRepair(plan.entry.Repository)
+			},
+			beforeRegistrationVerify: func() error {
+				if options.beforeWorktreeRegistrationVerify == nil {
+					return nil
+				}
+				return options.beforeWorktreeRegistrationVerify(plan.entry.Repository)
+			},
+		},
+	)
+	plan.moved = moveOutcome.Moved
+	plan.result.Repaired = moveOutcome.Repaired
 	if err != nil {
 		return err
 	}
-	plan.moved = true
-	plan.result.Repaired = repaired
 	plan.result.PreservedCachePaths = append([]string(nil), options.PreserveCachePaths...)
 
 	if checkoutErr := runSecureRenameGit(ctx, plan.entry.CanonicalDir, plan.entry.WorktreesRoot, plan.result.NewWorktreeDir,
@@ -1100,7 +1146,7 @@ func rollbackRenamePlan(ctx context.Context, home string, plan *renamePlan) erro
 				return fmt.Errorf("restore old branch checkout: %w", err)
 			}
 		}
-		if _, err := moveWorktree(ctx, plan.entry.CanonicalDir, plan.entry.WorktreesRoot, plan.result.NewWorktreeDir, plan.entry.WorktreeDir); err != nil {
+		if _, err := moveWorktree(ctx, plan.entry.CanonicalDir, plan.entry.WorktreesRoot, plan.result.NewWorktreeDir, plan.entry.WorktreeDir, worktreeMoveHooks{}); err != nil {
 			return fmt.Errorf("move failed recycle back to source: %w", err)
 		}
 	}
@@ -1233,83 +1279,123 @@ func verifyRecycleState(ctx context.Context, worktree string, preserve []string)
 	return nil
 }
 
-// moveWorktree relocates a worktree using `git worktree move`, which is the
-// only operation that keeps Git's own gitdir pointer correct: a bare
-// filesystem move leaves `.git/worktrees/<name>/gitdir` in the canonical
-// clone pointing at the old location, so Git and `wb worktree guard` both
-// treat the worktree as prunable/misplaced afterwards. If Git's own move
-// refuses, fall back to a plain move plus `git worktree repair`, then verify
-// the registration either way with `git worktree list`.
-func moveWorktree(ctx context.Context, canonicalDir, worktreesRoot, oldPath, newPath string) (repaired bool, err error) {
-	if moveErr := runSecureRenameGit(ctx, canonicalDir, worktreesRoot, oldPath, "worktree", "move", oldPath, newPath); moveErr != nil {
-		info, statErr := os.Stat(oldPath)
-		switch {
-		case statErr == nil && info.IsDir():
-			if renameErr := moveRenameFallbackDirectory(oldPath, newPath); renameErr != nil {
-				return false, fmt.Errorf("git worktree move failed (%v) and fallback move failed: %w", moveErr, renameErr)
-			}
-		case statErr != nil && errors.Is(statErr, os.ErrNotExist):
-			if _, newStatErr := os.Stat(newPath); newStatErr != nil {
-				return false, fmt.Errorf("git worktree move left neither %s nor %s in place: %w", oldPath, newPath, moveErr)
-			}
-			// Git relocated the directory before failing to update its own
-			// bookkeeping; the repair below still needs to run.
-		default:
-			return false, fmt.Errorf("git worktree move failed (%v) and could not inspect %s: %w", moveErr, oldPath, statErr)
-		}
-		if repairErr := runSecureRenameGit(ctx, canonicalDir, worktreesRoot, newPath, "worktree", "repair", newPath); repairErr != nil {
-			return false, fmt.Errorf("git worktree move failed (%v); repair after fallback move failed: %w", moveErr, repairErr)
-		}
-		repaired = true
-	}
-	if verifyErr := verifyWorktreeRegistered(ctx, canonicalDir, oldPath, newPath); verifyErr != nil {
-		return repaired, verifyErr
-	}
-	return repaired, nil
+type worktreeMoveOutcome struct {
+	Moved    bool
+	Repaired bool
 }
 
-// moveRenameFallbackDirectory is the non-Git fallback for platforms/Git
-// states where `git worktree move` refuses. It is still descriptor-relative:
-// a checked pathname must refer to the held old checkout at the exact instant
-// of the no-replace publish, and a replacement at either endpoint is never
-// overwritten during recovery.
-func moveRenameFallbackDirectory(oldPath, newPath string) error {
+type worktreeMoveHooks struct {
+	afterAuthorization       func()
+	beforeRepair             func() error
+	beforeRegistrationVerify func() error
+}
+
+// moveWorktree binds every stage to one retained checkout identity. Git's
+// `worktree move` accepts mutable path arguments after WB authorizes them, so
+// WB performs the namespace mutation itself with renameat/no-replace, keeps
+// the moved descriptor open, repairs Git from that held destination using
+// `worktree repair .`, and verifies both registration and path identity.
+//
+// The outcome records a successful directory relocation even when repair or
+// verification fails. Callers must use it before handling err so rollback can
+// restore a partial mutation from whichever endpoint now owns the checkout.
+func moveWorktree(
+	ctx context.Context,
+	canonicalDir, worktreesRoot, oldPath, newPath string,
+	hooks worktreeMoveHooks,
+) (outcome worktreeMoveOutcome, err error) {
+	moved, moveErr := moveRenameDirectory(oldPath, newPath, hooks.afterAuthorization)
+	if moved != nil {
+		defer func() { _ = moved.Close() }()
+		outcome.Moved = true
+	}
+	if moveErr != nil {
+		return outcome, fmt.Errorf("descriptor-relative worktree move: %w", moveErr)
+	}
+	if moved == nil {
+		return outcome, fmt.Errorf("descriptor-relative worktree move returned no retained destination")
+	}
+	if hooks.beforeRepair != nil {
+		if err := hooks.beforeRepair(); err != nil {
+			return outcome, fmt.Errorf("before worktree metadata repair: %w", err)
+		}
+	}
+	if repairErr := runSecureRenameGitWithHeldWorktree(
+		ctx, canonicalDir, worktreesRoot, newPath, moved,
+		"worktree", "repair", ".",
+	); repairErr != nil {
+		return outcome, fmt.Errorf("repair Git registration after descriptor-relative worktree move: %w", repairErr)
+	}
+	outcome.Repaired = true
+	if hooks.beforeRegistrationVerify != nil {
+		if err := hooks.beforeRegistrationVerify(); err != nil {
+			return outcome, fmt.Errorf("before worktree registration verification: %w", err)
+		}
+	}
+	if verifyErr := verifyWorktreeRegistered(ctx, canonicalDir, oldPath, newPath, moved); verifyErr != nil {
+		return outcome, verifyErr
+	}
+	return outcome, nil
+}
+
+// moveRenameDirectory is descriptor-relative: a checked pathname must refer
+// to the retained old checkout before authorization, the destination is never
+// overwritten, and the returned descriptor remains the authority after the
+// namespace move. A post-authorization substitution is detected by the
+// helper's post-move identity proof and restored when doing so cannot clobber
+// another actor's entry.
+func moveRenameDirectory(oldPath, newPath string, afterAuthorization func()) (*os.File, error) {
 	oldParent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(oldPath), false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = oldParent.Close() }()
 	newParent, err := openAbsoluteDirectoryNoFollow(filepath.Dir(newPath), false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = newParent.Close() }()
 	oldDirectory, err := openAbsoluteDirectoryNoFollow(oldPath, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer func() { _ = oldDirectory.Close() }()
+	returnOldDirectory := false
+	defer func() {
+		if !returnOldDirectory {
+			_ = oldDirectory.Close()
+		}
+	}()
 	oldParentPath := filepath.Dir(oldPath)
 	newParentPath := filepath.Dir(newPath)
 	if !directoryStillMatches(oldParentPath, oldParent) || !directoryStillMatches(newParentPath, newParent) {
-		return fmt.Errorf("rename fallback parent changed before descriptor-relative move")
+		return nil, fmt.Errorf("rename parent changed before descriptor-relative move")
 	}
 	moved, err := moveExpectedDirectoryNoReplaceAuthorized(oldParent, filepath.Base(oldPath), newParent, filepath.Base(newPath), oldDirectory, func() error {
 		if !directoryStillMatches(oldParentPath, oldParent) || !directoryStillMatches(newParentPath, newParent) ||
 			!directoryEntryStillMatches(oldParent, filepath.Base(oldPath), oldDirectory) {
-			return fmt.Errorf("rename fallback path changed before descriptor-relative move")
+			return fmt.Errorf("rename path changed before descriptor-relative move")
+		}
+		if afterAuthorization != nil {
+			afterAuthorization()
 		}
 		return nil
 	})
-	if moved != nil {
-		_ = moved.Close()
+	if moved == nil && err != nil && directoryEntryStillMatches(newParent, filepath.Base(newPath), oldDirectory) {
+		// The namespace move succeeded but the shared helper could not wrap its
+		// destination descriptor. Preserve the original retained descriptor so
+		// the caller still records Moved and rolls back from the correct endpoint.
+		returnOldDirectory = true
+		return oldDirectory, err
 	}
-	return err
+	return moved, err
 }
 
 // verifyWorktreeRegistered proves the move actually took, straight from
 // Git's own bookkeeping, rather than trusting a zero exit code alone.
-func verifyWorktreeRegistered(ctx context.Context, canonicalDir, oldPath, newPath string) error {
+func verifyWorktreeRegistered(ctx context.Context, canonicalDir, oldPath, newPath string, expected *os.File) error {
+	if expected == nil || !directoryStillMatches(newPath, expected) {
+		return fmt.Errorf("moved worktree identity changed before registration verification: %s", newPath)
+	}
 	canonical, openErr := openCanonicalRepository(canonicalDir)
 	if openErr != nil {
 		return openErr
@@ -1334,6 +1420,9 @@ func verifyWorktreeRegistered(ctx context.Context, canonicalDir, oldPath, newPat
 	}
 	if !found {
 		return fmt.Errorf("worktree registration does not list %s after moving %s", newPath, oldPath)
+	}
+	if !directoryStillMatches(newPath, expected) {
+		return fmt.Errorf("moved worktree identity changed during registration verification: %s", newPath)
 	}
 	return nil
 }

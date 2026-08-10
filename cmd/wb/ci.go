@@ -33,6 +33,7 @@ const (
 )
 
 var exactGitObjectID = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
+var ciWaitShellSafeArg = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
 type ciWaitOutput struct {
 	SchemaVersion int `json:"schema_version"`
@@ -56,9 +57,14 @@ Every invocation is bounded (eight minutes by default, never ten), foreground,
 and terminating. A pending result exits 1 with exact resume arguments; invoke
 those again until checks pass or fail. With --pr, WB re-reads that PR's head
 and target before every check observation. Without --pr, it observes the exact
-direct-push target commit through GitHub check runs. Either mode rejects drift;
-no later commit can inherit a prior head's receipt. This command never starts
-a detached watcher or background loop.`,
+direct-push target commit through GitHub check runs and commit statuses. A pass
+requires GitHub's authoritative required-check policy plus an unchanged
+terminal reread, so the first green snapshot cannot become sole merger
+evidence while suites are still registering. The reread proves bounded
+observed-set quiescence, not that a future optional workflow can never appear;
+collect separate release evidence where the repository requires it. Either
+mode rejects drift; no later commit can inherit a prior head's receipt. This
+command never starts a detached watcher or background loop.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.NoArgs(command, args); err != nil {
 				return err
@@ -122,6 +128,9 @@ func validateCIWaitInputs(repository, pullRequest, target, head string, slice, i
 	if interval <= 0 {
 		return fmt.Errorf("--interval must be positive")
 	}
+	if interval >= slice {
+		return fmt.Errorf("--interval must be shorter than --slice so WB can confirm a stable terminal reread")
+	}
 	return nil
 }
 
@@ -145,10 +154,21 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 		return err
 	}
 	if len(output.ResumeArgs) > 0 {
-		_, err := fmt.Fprintf(command.OutOrStdout(), "resume: %s\n", strings.Join(output.ResumeArgs, " "))
+		quoted := make([]string, 0, len(output.ResumeArgs))
+		for _, argument := range output.ResumeArgs {
+			quoted = append(quoted, shellQuoteCIWaitArg(argument))
+		}
+		_, err := fmt.Fprintf(command.OutOrStdout(), "resume: %s\n", strings.Join(quoted, " "))
 		return err
 	}
 	return nil
+}
+
+func shellQuoteCIWaitArg(value string) string {
+	if ciWaitShellSafeArg.MatchString(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
 func newCIAuditCmd() *cobra.Command {
