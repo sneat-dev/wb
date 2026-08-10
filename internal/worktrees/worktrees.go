@@ -276,9 +276,22 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if strings.TrimSpace(normalized.WorkLog.RunID) == "" {
 		normalized.WorkLog.RunID = "wb-" + time.Now().UTC().Format("20060102T150405.000000000Z")
 	}
+	// Prompt readability, exact bytes, and every identifier used by the private
+	// archive are part of mutation preflight. An existing Run ID is corroborated
+	// before a fetched canonical clone, branch, or linked checkout can change.
+	normalized.WorkLog, err = PrepareWorkLogOptions(normalized.ProjectsRoot, normalized.Operation, normalized.WorkLog)
+	if err != nil {
+		return nil, err
+	}
 
 	home, err := wbhome.Root(normalized.ProjectsRoot)
 	if err != nil {
+		return nil, err
+	}
+	// Bind the coordinated run to the exact snapshotted prompt before worktree
+	// publication. Immutable no-replace storage makes a concurrent conflicting
+	// use of the same Run ID fail here rather than after a checkout exists.
+	if err := reserveOriginalPromptArchive(home, normalized.Operation, normalized.WorkLog); err != nil {
 		return nil, err
 	}
 	operation, err := prepareOperationRoot(home, normalized.Operation, normalized.beforeHomeDirectoryOpen)
@@ -585,6 +598,10 @@ func locateManagedWorktree(
 
 func isWorktreeStagingDirectory(name string) bool {
 	return strings.HasPrefix(name, ".wb-stage-") && len(name) > len(".wb-stage-")
+}
+
+func isRetiredWorktreeStagingDirectory(name string) bool {
+	return strings.HasPrefix(name, ".wb-retired-stage-") && len(name) > len(".wb-retired-stage-")
 }
 
 func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root string) (owner, repository string, err error) {
@@ -1191,6 +1208,22 @@ func gitEnvironmentWithHeldGitDir(temporaryRoot string) []string {
 		environment = append(environment, entry)
 	}
 	return append(environment, "GIT_DIR=.", "GIT_WORK_TREE=..", "TMPDIR="+temporaryRoot)
+}
+
+// gitEnvironmentWithHeldGitDirAndWorkTree keeps GIT_DIR descriptor-relative
+// while making the worktree identity absolute for hooks spawned by Git. A
+// relative GIT_WORK_TREE is resolved again after Git changes a hook's working
+// directory and can make the hook misidentify the canonical checkout as its
+// .git directory.
+func gitEnvironmentWithHeldGitDirAndWorkTree(temporaryRoot, worktree string) []string {
+	environment := gitEnvironmentWithHeldGitDir(temporaryRoot)
+	for index, entry := range environment {
+		if strings.HasPrefix(entry, "GIT_WORK_TREE=") {
+			environment[index] = "GIT_WORK_TREE=" + worktree
+			break
+		}
+	}
+	return environment
 }
 
 // prepareOperationRoot creates the fixed WB hierarchy one component at a
@@ -1888,7 +1921,7 @@ func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err
 		return "", false, fmt.Errorf("read secure staging parent for retirement reap: %w", err)
 	}
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), ".wb-retired-stage-") {
+		if !isRetiredWorktreeStagingDirectory(entry.Name()) {
 			continue
 		}
 		fd, openErr := unix.Openat(int(parent.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
@@ -2080,10 +2113,15 @@ func noFollowChildAbsent(parentFD int, name string) (bool, error) {
 }
 
 func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, prefix string) (*os.File, error) {
+	moved, _, err := quarantineDirectoryEntryNamed(parent, name, expected, prefix)
+	return moved, err
+}
+
+func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.File, prefix string) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
 		var token [16]byte
 		if _, err := rand.Read(token[:]); err != nil {
-			return nil, fmt.Errorf("generate directory retirement name: %w", err)
+			return nil, "", fmt.Errorf("generate directory retirement name: %w", err)
 		}
 		retired := fmt.Sprintf("%s%x", prefix, token[:])
 		moved, err := moveExpectedDirectoryNoReplace(parent, name, parent, retired, expected, nil)
@@ -2094,11 +2132,11 @@ func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, p
 			if moved != nil {
 				_ = moved.Close()
 			}
-			return nil, err
+			return nil, "", err
 		}
-		return moved, nil
+		return moved, retired, nil
 	}
-	return nil, fmt.Errorf("create collision-free directory retirement name")
+	return nil, "", fmt.Errorf("create collision-free directory retirement name")
 }
 
 type secureDirectoryIdentity struct {

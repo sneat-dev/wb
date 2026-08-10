@@ -62,8 +62,11 @@ replaced `projection.json`, append-only `events.jsonl`, and append-only
 `outbox.jsonl`. The journal MUST retain the exact original prompt snapshot,
 source reference, captured-at time, and SHA-256 digest; the prompt is private
 local data and MUST NOT be printed, copied to a source worktree, included in
-normal reports, or sent to Synchestra unless a future explicit encrypted prompt
-transfer contract authorizes it.
+normal reports, generic operational events/projections, a Git fallback/mirror,
+or source Git. A configured Synchestra/server/cloud archive MAY accept it only
+as an explicitly authorized encrypted private sealed payload with declared
+retention. Public state records only its digest and the archive receipt; local
+exact-prompt retention remains mandatory whether or not export is configured.
 
 #### REQ: git-excluded-worktree-projection
 
@@ -193,7 +196,9 @@ model transcript, command output, provider secrets, and absolute local-home
 paths. Handoff summaries and progress messages are user-authored public fields
 and MUST be validated against size limits; callers that need sensitive context
 use the private local journal or an authorized Synchestra message/artifact
-contract.
+contract. An authorized encrypted private prompt archive is a separate sealed
+payload, never a field added to the generic operational envelope or Git mirror;
+only its digest and receipt may enter public state.
 
 ## Dependencies
 
@@ -256,9 +261,6 @@ evidence intact.
 1. Which Synchestra authentication and transport contract should carry the
    backend-agnostic work-log envelope: an extension of Dispatch worker
    mutations, a Session endpoint, or a dedicated work-log resource?
-2. Is encrypted export of the exact private prompt ever required for a
-   cross-machine recovery, and if so which user-controlled key and retention
-   policy authorize it?
 
 ---
 *This document follows the https://specscore.md/feature-specification*

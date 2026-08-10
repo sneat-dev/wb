@@ -46,7 +46,9 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	configureUpgradeGitUser(t, legacy)
 	installPreviousReleaseHooks(t, binary, projects, canonical)
 
-	created := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "create", "upgrade", "acme/app")
+	prompt := filepath.Join(root, "upgrade-original-prompt.txt")
+	mustUpgradeWrite(t, prompt, "upgrade the managed worktree contract\n")
+	created := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "create", "upgrade", "acme/app", "--original-prompt-file", prompt)
 	if created.exitCode != exitOK {
 		t.Fatalf("candidate create failed: %s", created.stderr)
 	}
@@ -120,7 +122,7 @@ set -eu
 printf '[{"number":17,"url":"https://github.com/acme/app/pull/17","state":"MERGED","mergedAt":"2026-07-01T12:00:00Z","headRefOid":"%s","baseRefName":"main"}]\n'
 `, legacyHead))
 	cleanupEnv := append(upgradeEnv, "PATH="+ghDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cleanup := runWBUpgrade(t, binary, cleanupEnv, "--projects-root", projects, "worktree", "cleanup", "legacy", "--apply", "--older-than", "0s")
+	cleanup := runWBUpgrade(t, binary, cleanupEnv, "--projects-root", projects, "worktree", "cleanup", "legacy", "--apply", "--remote", "--older-than", "0s")
 	if cleanup.exitCode != exitOK {
 		t.Fatalf("candidate cleanup failed: %s\n%s", cleanup.stdout, cleanup.stderr)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,21 +28,30 @@ func newWorktreeCmd() *cobra.Command {
 }
 
 func newWorktreeAbortCmd() *cobra.Command {
-	var base, disposition, format string
-	var apply bool
+	var base, disposition, successor, format string
+	var apply, deleteRemote bool
 	command := &cobra.Command{
 		Use:   "abort <task>",
 		Short: "Seal an interrupted task so it can be resumed or explicitly discarded",
 		Long: `Abort is the audited alternative to manually deleting an unfinished worktree.
 It seals each local Work Log and queues an offline-safe outbox event. --apply
-with handoff or not_landed leaves the branch/worktree resumable; --apply with
+with handoff or not_landed transfers one active claim to the required
+--successor while leaving the branch/worktree resumable; --apply with
 discarded removes only clean, unlocked worktrees and their exact local branch
-refs after their archive has been sealed. The default is a dry-run plan.`,
+refs after their archive has been sealed. A discarded apply requires --remote;
+an exact matching remote source branch is then retired with force-with-lease.
+If interruption happens after worktree removal, the same command inspects and
+resumes the durable exact local-branch cleanup backlog.
+The default is a dry-run plan.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base,
-				Disposition: worktrees.AbortDisposition(disposition), Apply: apply,
+				Disposition: worktrees.AbortDisposition(disposition), Successor: successor,
+				DeleteRemote: deleteRemote, Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -67,7 +77,9 @@ refs after their archive has been sealed. The default is a dry-run plan.`,
 	}
 	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
 	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, or discarded")
+	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
 	command.Flags().BoolVar(&apply, "apply", false, "seal Work Logs and apply the selected disposition")
+	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged remote source branch when applying discarded")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -94,9 +106,21 @@ cleanable during migration.
 
 If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
-unless --resume is explicit.`,
+unless --resume is explicit.
+
+--original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
+into the private Work Log under WB_HOME before any worktree is created; prompt
+text never enters the worktree projection, source Git, or normal output.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			workLog := worktrees.WorkLogOptions{
+				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
+				AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
+				RequireOriginalPrompt: true,
+			}
 			repositories := args[1:]
 			if len(repositories) == 0 {
 				repository, err := worktrees.OriginSlug(command.Context(), ".")
@@ -110,6 +134,10 @@ unless --resume is explicit.`,
 			if err != nil {
 				return err
 			}
+			workLog, err = worktrees.PrepareWorkLogOptions(projectsRoot, args[0], workLog)
+			if err != nil {
+				return err
+			}
 			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
 				return err
 			}
@@ -119,10 +147,7 @@ unless --resume is explicit.`,
 				Branch:       branch,
 				Base:         base,
 				Resume:       resume,
-				WorkLog: worktrees.WorkLogOptions{
-					EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
-					AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
-				},
+				WorkLog:      workLog,
 			})
 			if err != nil {
 				return err
@@ -156,7 +181,7 @@ unless --resume is explicit.`,
 	command.Flags().StringVar(&agentID, "agent", "", "agent identity")
 	command.Flags().StringVar(&agentRuntime, "agent-runtime", "", "agent runtime, e.g. codex or claude")
 	command.Flags().StringVar(&model, "model", "", "agent model identifier")
-	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "private file containing the exact original prompt; archived under WB_HOME only")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -194,6 +219,9 @@ linked checkout is valid only when it uses a non-base branch and lives at
 for how <wb-home> is resolved).`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
@@ -236,14 +264,24 @@ func newWorktreeListCmd() *cobra.Command {
 	var github bool
 	command := &cobra.Command{
 		Use:   "list [task]",
-		Short: "List WB-managed task worktrees and their lifecycle state",
-		Long: `List linked worktrees below <wb-home>/worktrees (see
+		Short: "List live WB-managed task worktrees and their lifecycle state",
+		Long: `List live linked checkout inventory below <wb-home>/worktrees (see
 'wb worktree create --help' for how <wb-home> is resolved).
 
 The default report uses only local Git data. Pass --github to include open and
-exact-head merged pull request evidence used by worktree cleanup.`,
+exact fetched origin-target and pull request evidence used by worktree cleanup.
+JSON output is a versioned control-plane envelope containing results,
+diagnostics, and WB lifecycle artifacts so automation cannot miss cleanup
+backlog that is not represented by a live Git worktree. This replaces the
+legacy bare JSON result array; consumers must migrate to the envelope and
+check schema_version.
+Archived Work Logs and the approved seven-day recent-history view are not yet
+joined into this command.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
 			task := ""
 			if len(args) == 1 {
 				task = args[0]
@@ -263,13 +301,18 @@ exact-head merged pull request evidence used by worktree cleanup.`,
 					return err
 				}
 			}
+			for _, artifact := range outcome.Artifacts {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "info: inventory classified WB internal %s as %s: %s\n", artifact.Kind, artifact.State, artifact.Path); err != nil {
+					return err
+				}
+			}
 			switch format {
 			case "text":
 				return printWorktreeList(command, outcome.Results)
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(outcome.Results)
+				return encoder.Encode(outcome)
 			default:
 				return fmt.Errorf("unsupported format %q; use text or json", format)
 			}
@@ -287,14 +330,29 @@ func newWorktreeCleanupCmd() *cobra.Command {
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "cleanup [task]",
-		Short: "Plan or remove clean WB tasks whose exact pull requests merged",
+		Short: "Plan or remove clean WB tasks integrated into the exact origin target",
 		Long: `Plan or apply cleanup of WB-managed task worktrees and local branches.
 
 Cleanup requires every repository in a coordinated task to be clean, unlocked,
-and backed by a merged GitHub pull request whose base and recorded head match
-the current branch. The default is a dry-run plan. --apply removes worktrees
-and exact local branch refs; --remote additionally deletes an unchanged remote
-branch with force-with-lease protection.
+and to have its current branch head integrated into the freshly fetched exact
+origin target. A matching merged GitHub pull request supplies merge-time age
+evidence, but a verified direct push to the target is also eligible. A local
+merge that was not pushed remains awaiting_push. The default is a dry-run plan.
+--apply removes worktrees and exact local branch refs; --remote additionally
+deletes an unchanged remote branch with force-with-lease protection. Durable
+Work Log archive/outbox evidence is written before any remote or local deletion.
+The same named dry-run/apply command inspects and resumes a durable exact-ref
+backlog if interruption happened after a worktree disappeared.
+
+Reserved .wb-stage-* and .wb-retired-stage-* entries are first-class cleanup
+backlog. Apply descriptor-safely archives an exact recognized empty stage
+outside the active task. A non-empty, symlinked, replaced, or invalid stage
+blocks the task and is preserved for audited recovery.
+
+For a specifically named task, the implicit age window is zero and --apply
+requires --remote: definition of done includes retirement of the source remote
+branch as well as the local worktree/branch. --all-merged fleet sweeping keeps
+the 24-hour merged-PR grace window unless --older-than overrides it.
 
 --filter (see the root flag) and a named [task] both narrow which candidates
 are inspected at all, before any of the above safety checks run. A malformed
@@ -314,9 +372,18 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 			return nil
 		},
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
 			task := ""
 			if len(args) == 1 {
 				task = args[0]
+			}
+			if task != "" && !command.Flags().Changed("older-than") {
+				olderThan = 0
+			}
+			if task != "" && apply && !deleteRemote {
+				return fmt.Errorf("named terminal cleanup requires --remote so the retired source branch cannot remain as backlog")
 			}
 			now := time.Now()
 			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
@@ -336,6 +403,12 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 			}
 			for _, diagnostic := range outcome.Diagnostics {
 				if _, err := fmt.Fprintf(command.ErrOrStderr(), "warning: cleanup skipped malformed candidate in task %s: %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message); err != nil {
+					return err
+				}
+			}
+			for _, artifact := range outcome.Artifacts {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "info: cleanup WB internal %s %s: disposition=%s eligible=%t applied=%t reason=%s\n",
+					artifact.Kind, artifact.Path, artifact.Disposition, artifact.Eligible, artifact.Applied, artifact.Reason); err != nil {
 					return err
 				}
 			}
@@ -364,12 +437,17 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 						return nil
 					}
 				}
+				for _, artifact := range outcome.Artifacts {
+					if artifact.Applied {
+						return nil
+					}
+				}
 				return fmt.Errorf("task %q was not removed because it did not satisfy cleanup safety", task)
 			}
 			return nil
 		},
 	}
-	command.Flags().StringVar(&base, "base", "main", "expected pull request base branch")
+	command.Flags().StringVar(&base, "base", "main", "exact origin target branch required to contain the work")
 	command.Flags().BoolVar(&allMerged, "all-merged", false, "select every safely merged WB task")
 	command.Flags().BoolVar(&apply, "apply", false, "remove eligible worktrees and local branches")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "also delete an unchanged remote branch when applying")
@@ -381,7 +459,7 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 
 func newWorktreeRenameCmd() *cobra.Command {
 	var branch, base, reportDir, format string
-	var deleteOldBranch, force, apply bool
+	var force, apply, deleteRemote bool
 	var preserveCachePaths []string
 	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
 	command := &cobra.Command{
@@ -399,16 +477,22 @@ be removed or archived before recycling.
 The branch itself is never recycled. After the move, each repository is
 switched onto a freshly created branch (default codex/<new-task>; override
 with --branch) based on an up-to-date origin/<base>, exactly like
-'wb worktree create'. Pass --delete-old-branch to remove the branch the
-worktree was on; a branch that is not merged into base is refused unless
---force.
+'wb worktree create'. The old local branch is always deleted. Apply requires
+--remote: an existing exact remote source branch is retired with force-with-
+lease after the old Work Log is sealed. A branch that is not integrated into
+origin/<base> is refused; --force is explicit authorization to discard that
+old work, locally and remotely, after its Work Log is sealed.
 
 --filter (see the root flag) narrows which repositories under <old-task> are
 renamed. A malformed candidate, a dirty or locked worktree, or an already
 existing <new-task> blocks the whole (coordinated) rename. The default is a
-dry-run plan; --apply performs the move.`,
+dry-run plan; --apply performs the move and requires --original-prompt-file
+for the new private Work Log.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
 			outcome, err := worktrees.Rename(command.Context(), worktrees.RenameOptions{
 				ProjectsRoot:       projectsRoot,
 				OldTask:            args[0],
@@ -416,12 +500,13 @@ dry-run plan; --apply performs the move.`,
 				Filter:             filterFlag,
 				Branch:             branch,
 				Base:               base,
-				DeleteOldBranch:    deleteOldBranch,
 				Force:              force,
+				DeleteRemote:       deleteRemote,
 				PreserveCachePaths: preserveCachePaths,
 				WorkLog: worktrees.WorkLogOptions{
 					EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
 					AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
+					RequireOriginalPrompt: apply,
 				},
 				Apply:     apply,
 				ReportDir: reportDir,
@@ -466,8 +551,8 @@ dry-run plan; --apply performs the move.`,
 	}
 	command.Flags().StringVar(&branch, "branch", "", "feature branch for the renamed worktree (default codex/<new-task>)")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
-	command.Flags().BoolVar(&deleteOldBranch, "delete-old-branch", false, "delete the branch each worktree was on after a successful move")
-	command.Flags().BoolVar(&force, "force", false, "delete the old branch even if it is not merged into base")
+	command.Flags().BoolVar(&force, "force", false, "explicitly discard an old branch not integrated into origin/base; recycle always deletes the old local branch")
+	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged old remote source branch; required with --apply")
 	command.Flags().StringSliceVar(&preserveCachePaths, "preserve-cache", nil, "repository-relative ignored/untracked cache path allowed to survive recycle (repeatable)")
 	command.Flags().StringVar(&effortID, "effort", "", "new stable Synchestra/WB effort id (default new task)")
 	command.Flags().StringVar(&runID, "run", "", "new agent run id (default generated locally)")
@@ -475,11 +560,20 @@ dry-run plan; --apply performs the move.`,
 	command.Flags().StringVar(&agentID, "agent", "", "agent identity for the new effort")
 	command.Flags().StringVar(&agentRuntime, "agent-runtime", "", "agent runtime, e.g. codex or claude")
 	command.Flags().StringVar(&model, "model", "", "agent model identifier")
-	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "private file containing the new exact original prompt; archived under WB_HOME only")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required with --apply: readable non-empty file containing the new exact prompt; archived under WB_HOME only")
 	command.Flags().BoolVar(&apply, "apply", false, "perform the rename; the default is a dry-run plan")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+func requireOutputFormat(value string, allowed ...string) error {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("unsupported format %q; use %s", value, strings.Join(allowed, " or "))
 }
 
 func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) error {

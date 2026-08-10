@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -154,6 +155,53 @@ func TestListAndCleanupRegisteredHiddenWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(hidden); !os.IsNotExist(err) {
 		t.Fatalf("hidden worktree remains after cleanup: %v", err)
+	}
+}
+
+func TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval(t *testing.T) {
+	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-resume-after-remove")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	injected := errors.New("injected crash after worktree removal")
+	first, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-after-remove",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now:                         func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupWorktreeRemoval: func(string) error { return injected },
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
+	}
+	if len(first.Results) != 1 || !first.Results[0].WorktreeGone || first.Results[0].BranchDeleted || first.Results[0].BacklogID == "" {
+		t.Fatalf("interrupted cleanup result = %#v", first.Results)
+	}
+	if _, statErr := os.Stat(created.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("interrupted cleanup worktree remains: %v", statErr)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || !exists {
+		t.Fatalf("interrupted cleanup branch exists=%t err=%v", exists, branchErr)
+	}
+	if remoteHead, remoteErr := remoteBranchHead(context.Background(), fixture.canonical, created.Branch); remoteErr != nil || remoteHead != "" {
+		t.Fatalf("interrupted cleanup remote head=%q err=%v", remoteHead, remoteErr)
+	}
+
+	resumed, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-after-remove",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Results) != 1 || !resumed.Results[0].Applied || !resumed.Results[0].WorktreeGone || !resumed.Results[0].BranchDeleted || resumed.Results[0].BacklogID == "" {
+		t.Fatalf("resumed cleanup = %#v", resumed.Results)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || exists {
+		t.Fatalf("resumed cleanup branch exists=%t err=%v", exists, branchErr)
+	}
+	var record lifecycleBacklogRecord
+	content, readErr := os.ReadFile(filepath.Join(lifecycleBacklogDirectory(fixture.home), resumed.Results[0].BacklogID+".json"))
+	if readErr != nil || json.Unmarshal(content, &record) != nil || record.Stage != lifecycleStageComplete {
+		t.Fatalf("completed cleanup backlog = %#v read=%v", record, readErr)
 	}
 }
 
@@ -640,6 +688,31 @@ func TestCleanupRefusesWorktreeSwapBeforeRemovalWithoutMutatingExternalTarget(t 
 	}
 }
 
+func TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest(t *testing.T) {
+	fixture, result, head, _ := prepareMergedTask(t, "cleanup-direct-push")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-direct-push",
+		Base:         "main",
+		OlderThan:    24 * time.Hour,
+		Now:          func() time.Time { return time.Date(2026, time.July, 3, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].Applied {
+		t.Fatalf("direct-push cleanup plan = %#v", planned)
+	}
+	if !planned.Results[0].IntegratedAtOrigin || planned.Results[0].RemoteTargetSHA == "" {
+		t.Fatalf("direct-push remote evidence = %#v", planned.Results[0].ListResult)
+	}
+	if planned.Results[0].HeadSHA != head || planned.Results[0].WorktreeDir != result.WorktreeDir {
+		t.Fatalf("direct-push cleanup identity = %#v", planned.Results[0].ListResult)
+	}
+}
+
 func TestCleanupPreservesDirtyRealWorktree(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-dirty")
 	installMergedPullRequestFixture(t, head, mergedAt)
@@ -695,7 +768,7 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(cleanup.Results) != 1 || cleanup.Results[0].Eligible || cleanup.Results[0].Applied ||
-		!strings.Contains(cleanup.Results[0].Reason, "no merged pull request matches") {
+		!strings.Contains(cleanup.Results[0].Reason, "awaiting push") {
 		t.Fatalf("advanced cleanup result = %#v", cleanup)
 	}
 	if _, err := os.Stat(result.WorktreeDir); err != nil {
@@ -739,6 +812,199 @@ func TestCleanupFilterExcludesMismatchedCandidateOutsideSelection(t *testing.T) 
 	}
 	if _, statErr := os.Stat(stale); statErr != nil {
 		t.Fatalf("out-of-filter malformed worktree was touched: %v", statErr)
+	}
+}
+
+func TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository(t *testing.T) {
+	const task = "cleanup-retired-stage"
+	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	if err := os.Mkdir(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         task,
+		Filter:       "acme/app",
+		DeleteRemote: true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible {
+		t.Fatalf("retired stage poisoned selected repository plan: %#v", planned.Results)
+	}
+	var plannedExact *LifecycleArtifact
+	for index := range planned.Artifacts {
+		if planned.Artifacts[index].Path == retired {
+			plannedExact = &planned.Artifacts[index]
+		}
+	}
+	if plannedExact == nil || !plannedExact.Eligible ||
+		plannedExact.State != "quarantined" ||
+		plannedExact.Disposition != "archive_empty_stage" ||
+		plannedExact.Applied {
+		t.Fatalf("retired stage plan = %#v", planned.Artifacts)
+	}
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         task,
+		Filter:       "acme/app",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Results) != 1 || !applied.Results[0].Applied {
+		t.Fatalf("selected repository was not cleaned: %#v", applied.Results)
+	}
+	var appliedExact *LifecycleArtifact
+	for index := range applied.Artifacts {
+		if applied.Artifacts[index].Path == retired {
+			appliedExact = &applied.Artifacts[index]
+		}
+	}
+	if appliedExact == nil || !appliedExact.Applied ||
+		appliedExact.Disposition != "archived_empty_stage" ||
+		appliedExact.ArchivePath == "" {
+		t.Fatalf("retired stage apply = %#v", applied.Artifacts)
+	}
+	if _, statErr := os.Stat(retired); !os.IsNotExist(statErr) {
+		t.Fatalf("retired stage remains in active task: %v", statErr)
+	}
+	if info, statErr := os.Stat(appliedExact.ArchivePath); statErr != nil || !info.IsDir() {
+		t.Fatalf("durable retired-stage archive missing: info=%v err=%v", info, statErr)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("selected worktree remains after terminal cleanup: %v", statErr)
+	}
+}
+
+func TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog(t *testing.T) {
+	const task = "cleanup-retired-stage-backlog"
+	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-nonempty")
+	if err := os.Mkdir(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retired, "evidence"), []byte("preserve\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         task,
+		Filter:       "acme/app",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocking *LifecycleArtifact
+	for index := range outcome.Artifacts {
+		if outcome.Artifacts[index].Path == retired {
+			blocking = &outcome.Artifacts[index]
+		}
+	}
+	if blocking == nil || blocking.Eligible ||
+		blocking.Disposition != "cleanup_backlog" ||
+		!strings.Contains(blocking.Reason, "non-empty") {
+		t.Fatalf("non-empty retired stage was not explicit backlog: %#v", outcome.Artifacts)
+	}
+	if len(outcome.Results) != 1 || outcome.Results[0].Eligible || outcome.Results[0].Applied ||
+		!strings.Contains(outcome.Results[0].Reason, "lifecycle artifact cleanup backlog") {
+		t.Fatalf("non-empty retired stage did not block coordinated task: %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(retired); statErr != nil {
+		t.Fatalf("blocking retired-stage evidence was touched: %v", statErr)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("worktree was removed despite artifact backlog: %v", statErr)
+	}
+}
+
+func TestCleanupArchivesEmptyArtifactOnlyTask(t *testing.T) {
+	fixture := newGitFixture(t)
+	const task = "artifact-only-empty"
+	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	if err := os.MkdirAll(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         task,
+		DeleteRemote: true,
+		OlderThan:    0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 0 || len(planned.Artifacts) != 1 || !planned.Artifacts[0].Eligible {
+		t.Fatalf("artifact-only cleanup plan = %#v", planned)
+	}
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         task,
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Results) != 0 || len(applied.Artifacts) != 1 ||
+		!applied.Artifacts[0].Applied || applied.Artifacts[0].Disposition != "archived_empty_stage" {
+		t.Fatalf("artifact-only cleanup apply = %#v", applied)
+	}
+	if _, statErr := os.Stat(retired); !os.IsNotExist(statErr) {
+		t.Fatalf("artifact-only active backlog remains: %v", statErr)
+	}
+	if info, statErr := os.Stat(applied.Artifacts[0].ArchivePath); statErr != nil || !info.IsDir() {
+		t.Fatalf("artifact-only durable archive missing: info=%v err=%v", info, statErr)
+	}
+}
+
+func TestCleanupKeepsNonEmptyArtifactOnlyTaskAsBlockingBacklog(t *testing.T) {
+	fixture := newGitFixture(t)
+	const task = "artifact-only-nonempty"
+	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	if err := os.MkdirAll(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retired, "recovery-evidence"), []byte("preserve\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         task,
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 0 || len(outcome.Artifacts) != 1 || outcome.Artifacts[0].Eligible ||
+		outcome.Artifacts[0].Applied || outcome.Artifacts[0].Disposition != "cleanup_backlog" {
+		t.Fatalf("non-empty artifact-only cleanup = %#v", outcome)
+	}
+	if _, statErr := os.Stat(filepath.Join(retired, "recovery-evidence")); statErr != nil {
+		t.Fatalf("artifact-only backlog evidence was touched: %v", statErr)
 	}
 }
 

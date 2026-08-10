@@ -391,6 +391,9 @@ func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repos
 		if !matchesDependencyRepository(slug, options.match, expression) {
 			return nil, fmt.Errorf("repository %s does not match selected filters", slug)
 		}
+		if filterFlag != "" && !strings.Contains(slug, filterFlag) {
+			return nil, fmt.Errorf("repository %s does not match --filter %q", slug, filterFlag)
+		}
 		return []deps.Repository{{Slug: slug, Path: absolute, CloneURL: cloneURL}}, nil
 	}
 	selected, err := fleet(projectsRoot, filterFlag, func() []string { return fleetOwners(extraOrgs) })

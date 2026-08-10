@@ -24,7 +24,8 @@ func newSyncCmd() *cobra.Command {
 		Use:   "sync",
 		Short: "Clone/pull/prune local clones to match GitHub (parallel, with a live progress UI)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if code := runSync(projectsRoot, filterFlag, only, workers, dryRun); code != 0 {
+			owners := requestedSyncOwners(cmd, only)
+			if code := runSync(projectsRoot, filterFlag, owners, workers, dryRun); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "one or more repositories failed to sync; each failure is listed after the summary above",
@@ -37,6 +38,18 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().IntVarP(&workers, "workers", "j", 8, "max concurrent git/gh operations")
 	cmd.Flags().StringArrayVarP(&only, "org", "o", nil, "only sync this org (repeatable); default: all your orgs + your own account")
 	return cmd
+}
+
+func requestedSyncOwners(cmd *cobra.Command, only []string) []string {
+	owners := append([]string(nil), only...)
+	// `wb --org acme sync` sets the root repeatable flag, while
+	// `wb sync --org acme` sets sync's command-local restriction. Both
+	// spellings are advertised by Cobra and therefore have identical selection
+	// semantics.
+	if rootOrg := cmd.Root().PersistentFlags().Lookup("org"); rootOrg != nil && rootOrg.Changed {
+		owners = append(owners, extraOrgs...)
+	}
+	return owners
 }
 
 // syncOwners returns only when non-empty (an explicit -o restriction);

@@ -17,8 +17,14 @@ import (
 const SecureHooksGitHelperArgument = "--wb-internal-hooks-git"
 
 func gitOutput(repoPath string, args ...string) (string, error) {
-	commandArgs := append([]string{"-C", repoPath}, args...)
-	cmd := exec.Command("git", commandArgs...)
+	cmd := exec.Command("git", args...)
+	// Run from the requested repository instead of spelling it with `git -C`.
+	// Git invokes hooks with relative GIT_DIR/GIT_WORK_TREE values. `-C` changes
+	// directory *before* resolving those values, so a hook already running from
+	// `.git` would incorrectly resolve GIT_DIR=. as `<repo>/.git/.git`. Setting
+	// the child working directory preserves the invoking Git context and yields
+	// the same behavior for ordinary callers.
+	cmd.Dir = repoPath
 	cmd.Env = console.Env()
 	out, err := cmd.CombinedOutput()
 	if err != nil {

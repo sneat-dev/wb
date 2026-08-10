@@ -1,12 +1,420 @@
 {
-  "version": 1,
-  "extraction_seam": "This WB-local manifest can become a SpecScore capability artifact once command/help/skill schema is shared across products.",
+  "$schema": "https://specscore.md/new/cli-capability-delivery.schema.json",
+  "schema_version": 1,
+  "binary": "wb",
   "capabilities": [
-    {"id":"wb.worktree.create","command":"worktree create","flags":["effort","run","agent","agent-runtime","model","original-prompt-file"],"support":"supported","help_anchor":"wb worktree create --help","skill_file":"ai/skills/wb-worktrees/references/create.md","skill_anchor":"One command covering multiple repositories","test":"TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun","since":"unreleased","notes":"Creates private per-repository claims and a Git-excluded projection."},
-    {"id":"wb.worktree.list","command":"worktree list","flags":["filter","format","github"],"support":"supported","help_anchor":"wb worktree list --help","skill_file":"ai/skills/wb-worktrees/references/lifecycle.md","skill_anchor":"## Inspect","test":"TestListDefaultsToOfflineRealGitData","since":"unreleased","notes":"Active/recent and cleanup-backlog inventory."},
-    {"id":"wb.worktree.cleanup","command":"worktree cleanup","flags":["filter","apply","remote","older-than"],"support":"supported","help_anchor":"wb worktree cleanup --help","skill_file":"ai/skills/wb-worktrees/references/lifecycle.md","skill_anchor":"## Plan cleanup","test":"TestCleanupMergedTaskWithRealGitData","since":"unreleased","notes":"Merged work only; seals Work Log before deletion."},
-    {"id":"wb.worktree.rename","command":"worktree rename","flags":["filter","apply","preserve-cache","effort","run"],"support":"supported","help_anchor":"wb worktree rename --help","skill_file":"ai/skills/wb-worktrees/references/lifecycle.md","skill_anchor":"## Recycle only explicit caches","test":"TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch","since":"unreleased","notes":"Explicit cache allow-list; unknown ignored/untracked state blocks recycle."},
-    {"id":"wb.worktree.abort","command":"worktree abort","flags":["disposition","apply"],"support":"supported","help_anchor":"wb worktree abort --help","skill_file":"ai/skills/wb-worktrees/references/lifecycle.md","skill_anchor":"## Abort instead of abandoning","test":"TestAbortDiscardedUnusedWorktreesIsAudited","since":"unreleased","notes":"Requires handoff, not_landed, or discarded disposition."},
-    {"id":"wb.root.filter","command":"worktree list","flags":["filter"],"support":"command-scoped","help_anchor":"wb --help","skill_file":"ai/skills/wb-worktrees/references/lifecycle.md","skill_anchor":"--format json","test":"TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem","since":"unreleased","notes":"Only inventory/selection commands consume it; unsupported descendants reject it before work starts."}
+    {
+      "id": "wb.check",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb check", "flags": ["--fleet", "--format", "--match", "--parallel", "--profile", "--regex", "--report-dir", "--resume", "--retry", "--timeout"], "modes": ["Runs a named fast, full, or ci local verification profile for one repository or a selected fleet."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb check --help", "contains": ["--profile", "--fleet", "--resume"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/quality.md", "marker": "# Coverage and verification", "examples": ["wb check . --profile ci"]}], "limitation": null},
+        "tests": {"status": "Partial", "references": [{"path": "internal/quality/quality_test.go", "name": "TestProfileTotals", "kind": "unit"}], "limitation": "The executable evidence covers profile construction; not every external-tool and fleet flag combination has an isolated test."}
+      },
+      "notes": "The ci profile also runs SpecScore lint when a repository has a spec directory."
+    },
+    {
+      "id": "wb.ci.audit",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb ci audit", "flags": ["--fleet", "--json", "--strict"], "modes": ["Audits one repository or an explicitly selected local fleet without mutating it."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb ci audit --help", "contains": ["--strict", "--fleet", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-ci/SKILL.md", "marker": "# WB CI", "examples": ["wb ci audit . --strict --json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/ciaudit/audit_test.go", "name": "TestAuditAcceptsCoverageAndVerifiedArtifactPromotion", "kind": "integration"}, {"path": "internal/ciaudit/audit_test.go", "name": "TestAuditReportsMissingThresholdsAndDeployRebuild", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The audit reports CI policy evidence; it does not substitute for running the repository checks."
+    },
+    {
+      "id": "wb.clone-layout.audit",
+      "feature_refs": ["spec/plans/work-log-recovery.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "WB sync creates canonical owner/repository clones, but no read-only layout audit or WB admission guard currently detects a top-level or misowned clone by origin."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No clone-layout audit command is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "The sync skill states the required layout but does not present a nonexistent audit command."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No origin-derived top-level/misowned clone admission fixture exists."}
+      },
+      "notes": "Future enforcement is WB admission plus a read-only audit and hook/skill surfaces; WB cannot intercept arbitrary external git clone commands."
+    },
+    {
+      "id": "wb.coordination.git-fallback",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "WB has a private local outbox, but no Git-repository transport or bidirectional Synchestra fallback is implemented."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No usable Git-fallback command is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills explicitly warn that the local outbox is recovery evidence, not inter-agent Git transport."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No cross-transport failover conformance test exists."}
+      },
+      "notes": "The intended implementation mirrors transport-neutral events into an inGitDB-backed repository and reconciles them when the server returns."
+    },
+    {
+      "id": "wb.coordination.migration-scope",
+      "feature_refs": ["spec/plans/work-log-recovery.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "WB does not yet derive or coordinate migration scopes across live efforts."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No migration-scope coordination syntax is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills identify the missing capability without presenting a usable command."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No overlapping migration-scope fixture exists."}
+      },
+      "notes": "This is distinct from the existing declarative wb migrate command."
+    },
+    {
+      "id": "wb.coordination.plan-overlap",
+      "feature_refs": ["spec/plans/work-log-recovery.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "WB does not yet detect overlapping files, libraries, or intended changes between active plans."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No overlap command or mode is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills identify the coordination gap but provide no fictional command."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No two-agent plan-overlap conformance fixture exists."}
+      },
+      "notes": "Future overlap evidence should be typed and transport-neutral so WB and Synchestra can render the same state."
+    },
+    {
+      "id": "wb.coordination.portable-merger",
+      "feature_refs": ["spec/plans/work-log-recovery.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "No portable merger-agent adapter or integration-batch command is implemented."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No merger-agent command is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills name the planned role only and do not provide an executable example."},
+        "tests": {"status": "Planned", "references": [], "limitation": "The Fair Split Relay cross-harness E2E is not implemented."}
+      },
+      "notes": "The first planned adapters are Codex CLI and Claude Code CLI; desktop automation remains outside the MVP."
+    },
+    {
+      "id": "wb.coordination.refresh-notifications",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "WB has no periodic refresh daemon, target-change notification, or integrate-before-commit command."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No refresh command is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills no longer imply that WB enforces hourly refresh."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No stale-target notification or refresh-policy conformance test exists."}
+      },
+      "notes": "Create and recycle do fetch and pin a fresh base; continuous refresh after creation is separate planned work."
+    },
+    {
+      "id": "wb.coordination.synchestra-fencing",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "Local claim files and locks exist, but no Synchestra-issued distributed lease/fence is enforced."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No distributed claim/fence command is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "The skill preserves the one-writer rule but cannot claim distributed enforcement."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No server/SQLite/Git multi-writer fencing test exists."}
+      },
+      "notes": "The local Hybrid Work Log is designed as a projection and recovery boundary, not a distributed lock service."
+    },
+    {
+      "id": "wb.coverage",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb coverage", "flags": ["--fleet", "--format", "--match", "--parallel", "--regex", "--report-dir", "--resume", "--retry", "--timeout"], "modes": ["Measures statement-weighted Go coverage for one repository or a selected local fleet."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb coverage --help", "contains": ["--fleet", "--format", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/quality.md", "marker": "# Coverage and verification", "examples": ["wb coverage ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/quality/quality_test.go", "name": "TestCoverAggregatesGoStatements", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
+    },
+    {
+      "id": "wb.deps.bump",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb deps bump", "flags": ["--allow-downgrade", "--changed", "--checks", "--commit", "--dry-run", "--fleet", "--format", "--go-private", "--match", "--max-waves", "--merge", "--no-verify", "--parallel", "--pr", "--push", "--ref", "--refresh-after", "--regex", "--release-poll", "--report-dir", "--resume", "--retry", "--timeout"], "modes": ["Propagates published Go or npm release events through dependency-ordered consumer waves."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb deps bump --help", "contains": ["--changed", "--refresh-after", "--merge"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-deps/references/bump.md", "marker": "# Propagate release events", "examples": ["wb deps bump go --fleet --changed example.com/lib@v1.2.3 --dry-run"]}], "limitation": null},
+        "tests": {"status": "Partial", "references": [{"path": "internal/deps/bump_test.go", "name": "TestRunBumpDefersDiamondSinkToAvoidDuplicateCI", "kind": "integration"}, {"path": "internal/deps/bump_test.go", "name": "TestRefreshStaleReleaseEventsUsesNewestVersionBeforeCI", "kind": "integration"}], "limitation": "Core wave ordering and refresh behavior are covered; live GitHub release and merge behavior remains adapter-dependent."}
+      },
+      "notes": "Publication flags are cumulative and resume reuses persisted campaign evidence."
+    },
+    {
+      "id": "wb.deps.graph",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb deps graph", "flags": ["--dependency", "--ecosystem", "--fleet", "--format", "--match", "--open", "--parallel", "--ref", "--regex", "--report-dir", "--retry", "--timeout", "--view"], "modes": ["Builds repository, dependency, or selection projections for one repository or a selected fleet."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb deps graph --help", "contains": ["--dependency", "--view", "--open"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-deps/references/graph.md", "marker": "# Dependency graph", "examples": ["wb deps graph ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/deps/graph_test.go", "name": "TestGraphProjectionsShareCanonicalEvidence", "kind": "unit"}, {"path": "internal/deps/graph_test.go", "name": "TestGraphReportsAreDeterministicAndSelfContained", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Strict discovery errors remain visible rather than producing a silently incomplete rollout graph."
+    },
+    {
+      "id": "wb.deps.set",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb deps set", "flags": ["--allow-downgrade", "--checks", "--commit", "--dependency-order", "--dry-run", "--fleet", "--format", "--go-private", "--layer", "--match", "--max-waves", "--merge", "--no-verify", "--parallel", "--pr", "--propagate", "--push", "--ref", "--refresh-after", "--regex", "--release-poll", "--report-dir", "--resume", "--retry", "--timeout"], "modes": ["Sets an exact existing Go, npm, or GitHub Actions reference in isolated operation worktrees."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb deps set --help", "contains": ["--dry-run", "--dependency-order", "--merge"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-deps/references/set.md", "marker": "# Set an exact dependency", "examples": ["wb deps set go <module>@<version> . --dry-run"]}], "limitation": null},
+        "tests": {"status": "Partial", "references": [{"path": "internal/deps/runner_integration_test.go", "name": "TestRunUsesIsolatedWorktreeWhenCanonicalCloneIsDirty", "kind": "integration"}, {"path": "cmd/wb/deps_test.go", "name": "TestDepsSetRejectsUnusableDependencyOrderCombinations", "kind": "unit"}], "limitation": "Operation isolation and flag contracts are covered; live publication adapters are not exercised in every mode."}
+      },
+      "notes": "Without publication flags, verified changes remain in isolated operation worktrees for review."
+    },
+    {
+      "id": "wb.hooks.check",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb hooks check", "flags": ["--config", "--fleet", "--json"], "modes": ["Checks one repository or an explicitly selected fleet for WB-managed hook drift."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb hooks check --help", "contains": ["--config", "--fleet", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-hooks/SKILL.md", "marker": "## Fast path", "examples": ["wb hooks check ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestApplyCheckAndRepairManagedHooks", "kind": "integration"}, {"path": "cmd/wb/hooks_test.go", "name": "TestApplyAndCheckHooksFleet", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Exit 1 represents drift/findings, while invalid usage exits 2."
+    },
+    {
+      "id": "wb.hooks.install",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb hooks install", "flags": ["--config", "--fleet"], "modes": ["Installs descriptor-safe WB-managed hook shims while preserving authorized unmanaged content."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb hooks install --help", "contains": ["--config", "--fleet"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-hooks/SKILL.md", "marker": "## Fast path", "examples": ["wb hooks install ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestApplyProtectsConflictingHooksAndForceBacksUp", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "A transient go-run executable is rejected so generated shims never retain a disappearing binary path."
+    },
+    {
+      "id": "wb.hooks.metrics",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb hooks metrics", "flags": ["--config", "--days", "--file", "--json", "--repo"], "modes": ["Summarizes bounded local hook event history for one repository selection."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb hooks metrics --help", "contains": ["--days", "--repo", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-hooks/references/metrics.md", "marker": "# Hook metrics", "examples": ["wb hooks metrics ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestAppendReadAndSummarizeMetrics", "kind": "unit"}, {"path": "cmd/wb/hooks_test.go", "name": "TestPrintHookMetricsExplainsPushAttempts", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Push events are explicitly described as attempts because Git has no post-push hook."
+    },
+    {
+      "id": "wb.hooks.repair",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb hooks repair", "flags": ["--config", "--fleet", "--force"], "modes": ["Repairs stale or missing managed shims and audits backups for authorized collisions."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb hooks repair --help", "contains": ["--config", "--fleet", "--force"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-hooks/SKILL.md", "marker": "## Fast path", "examples": ["wb hooks repair ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestRepairPreservesUserSectionsOutsideManagedDelimiter", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestRepairRefusesStaleHookReplacementAfterFinalAuthorization", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Force is an explicit authorization to back up and replace conflicting unmanaged hook state."
+    },
+    {
+      "id": "wb.migrate",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb migrate", "flags": ["--apply", "--check", "--cleanup", "--commit", "--format", "--github-dir", "--hierarchical", "--merge", "--module-ref", "--no-verify", "--parallel", "--pr", "--push", "--ref", "--report-dir", "--resume", "--verify"], "modes": ["Plans or applies a versioned migration to explicit roots, with an optional hierarchical multi-repository campaign."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb migrate --help", "contains": ["--apply", "--hierarchical", "--resume"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-migrate/references/apply.md", "marker": "# Plan and apply a migration", "examples": ["wb migrate <spec.hcl> <root> --apply"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/migrate/migrate_test.go", "name": "TestApplyRefusesStalePlan", "kind": "integration"}, {"path": "internal/migrate/campaign_integration_test.go", "name": "TestCampaignUsesIsolatedWorktreesAndCanResumeAndClean", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
+    },
+    {
+      "id": "wb.root.filter",
+      "feature_refs": ["docs/cli-flag-matrix.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [
+          {"path": "wb check", "flags": ["--filter"], "modes": ["Requires --fleet and filters discovered owner/repository identities; direct mode rejects before RunE."]},
+          {"path": "wb ci audit", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
+          {"path": "wb coverage", "flags": ["--filter"], "modes": ["Requires --fleet and filters discovered owner/repository identities; direct mode rejects before RunE."]},
+          {"path": "wb deps bump", "flags": ["--filter"], "modes": ["Fleet-only command; filters discovered repositories."]},
+          {"path": "wb deps graph", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
+          {"path": "wb deps set", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
+          {"path": "wb hooks check", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
+          {"path": "wb hooks install", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
+          {"path": "wb hooks repair", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
+          {"path": "wb run", "flags": ["--filter"], "modes": ["Filters fleet recipe targets."]},
+          {"path": "wb status", "flags": ["--filter"], "modes": ["Filters the no-path default fleet; a named repository path rejects the root selector before RunE."]},
+          {"path": "wb sync", "flags": ["--filter"], "modes": ["Filters remote/local fleet reconciliation targets."]},
+          {"path": "wb verify", "flags": ["--filter"], "modes": ["Requires --fleet and filters discovered owner/repository identities; direct mode rejects before RunE."]},
+          {"path": "wb worktree cleanup", "flags": ["--filter"], "modes": ["Filters live cleanup candidates before safety evaluation."]},
+          {"path": "wb worktree list", "flags": ["--filter"], "modes": ["Filters live managed-worktree inventory."]},
+          {"path": "wb worktree rename", "flags": ["--filter"], "modes": ["Filters coordinated recycle candidates."]}
+        ], "limitation": null},
+        "help": {"status": "Partial", "anchors": [{"command": "wb --help", "contains": ["--filter", "only repos whose org/name contains this substring"]}], "limitation": "Built-in root help states the selection meaning but the exact descendant matrix remains in docs/cli-flag-matrix.md."},
+        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Inspect", "examples": ["wb --filter acme worktree list --format json"]}], "limitation": "The worktree skill covers its own supported filter surfaces, not every WB fleet command."},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/main_test.go", "name": "TestPersistentFlagMatrix", "kind": "conformance"}, {"path": "cmd/wb/main_test.go", "name": "TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem", "kind": "unit"}, {"path": "cmd/wb/status_test.go", "name": "TestStatusFiltersACleanFleetEndToEnd", "kind": "integration"}, {"path": "cmd/wb/quality_test.go", "name": "TestQualityTargetsSupportsGlobAndRegex", "kind": "unit"}, {"path": "cmd/wb/quality_test.go", "name": "TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The executable matrix also covers --projects-root, --org, and --non-interactive."
+    },
+    {
+      "id": "wb.run",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb run", "flags": ["--apply", "--config", "--list"], "modes": ["Lists, previews, or applies a configured fleet recipe; preview is the default."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb run --help", "contains": ["--apply", "--config", "--list"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-run/SKILL.md", "marker": "# WB run", "examples": ["wb run --list"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/engine_integration_test.go", "name": "TestRunIsolatesDirtyCanonicalClone", "kind": "integration"}, {"path": "internal/orchestrate/engine_integration_test.go", "name": "TestRunDryRunCreatesNoOperationState", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Apply follows recipe publication policy; selection should be narrowed before fleet mutation."
+    },
+    {
+      "id": "wb.self-update",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb self-update", "flags": ["--allow-downgrade", "--check", "--dry-run", "--format", "--version", "--yes"], "modes": ["Checks or atomically replaces a manual installation after checksum verification; Homebrew installs receive upgrade guidance."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb self-update --help", "contains": ["--check", "--dry-run", "--version"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-install/SKILL.md", "marker": "## Updating an already-installed wb", "examples": ["wb self-update --check"]}], "limitation": null},
+        "tests": {"status": "Partial", "references": [{"path": "cmd/wb/selfupdate_test.go", "name": "TestNewSelfUpdateConfigHomebrewOnly", "kind": "unit"}, {"path": "cmd/wb/selfupdate_test.go", "name": "TestSelfUpdateErrorsFailurePermissionNamesPathAndBrew", "kind": "unit"}], "limitation": "Command policy and failure mapping are covered without downloading a live release or replacing the running test binary."}
+      },
+      "notes": "Ambiguous install provenance fails closed instead of guessing which installation to overwrite."
+    },
+    {
+      "id": "wb.status",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb status", "flags": ["--all", "--details", "--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Reports attention-worthy local Git state for one repository or the default local fleet."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb status --help", "contains": ["--details", "--all", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb status <repository-path> --details --format yaml"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/status_test.go", "name": "TestStatusFiltersACleanFleetEndToEnd", "kind": "integration"}, {"path": "cmd/wb/status_test.go", "name": "TestStatusMarkdownReportsAnAllCleanFleet", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Status is local and read-only; it does not imply remote freshness."
+    },
+    {
+      "id": "wb.sync",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb sync", "flags": ["--dry-run", "--org", "--workers"], "modes": ["Clones, fast-forwards, and safely prunes canonical owner/repository clones, with dry-run preview."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb sync --help", "contains": ["--dry-run", "--org", "--workers"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/sync.md", "marker": "# Synchronize canonical clones", "examples": ["wb sync --dry-run"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/fleetsync/fleetsync_test.go", "name": "TestSyncCloneMissing", "kind": "integration"}, {"path": "internal/fleetsync/fleetsync_test.go", "name": "TestSyncSkipDirty", "kind": "integration"}, {"path": "internal/fleetsync/fleetsync_test.go", "name": "TestSyncArchivedRemoveSafeDryRun", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Canonical clones are always resolved under the deterministic owner/repository layout; dirty or unpushed clones are preserved."
+    },
+    {
+      "id": "wb.verify",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb verify", "flags": ["--checks", "--fleet", "--format", "--match", "--parallel", "--regex", "--report-dir", "--resume", "--retry", "--timeout"], "modes": ["Runs selected conventional lint, test, and build checks for one repository or a selected fleet."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb verify --help", "contains": ["--checks", "--fleet", "--resume"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/quality.md", "marker": "# Coverage and verification", "examples": ["wb verify . --checks lint,test,build"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/quality/quality_test.go", "name": "TestVerifyRunsNodeScriptsWithDetectedPackageManager", "kind": "integration"}, {"path": "internal/quality/quality_test.go", "name": "TestRunWithOptionsRetriesAndTimesOut", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The command inspects existing clones and does not fetch, commit, or push."
+    },
+    {
+      "id": "wb.version",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb version", "flags": ["--json"], "modes": ["Prints the WB version, build revision, dirty state, and Go toolchain provenance."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb version --help", "contains": ["--json", "build revision"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-install/SKILL.md", "marker": "# WB install", "examples": ["wb version --json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/cli_smoke_test.go", "name": "TestVersionJSONIsParseable", "kind": "integration"}, {"path": "cmd/wb/main_test.go", "name": "TestVersionAlwaysIdentifiesTheBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The JSON form is intended for provenance checks and automation."
+    },
+    {
+      "id": "wb.worktree.abort",
+      "feature_refs": ["spec/features/work-log/README.md", "spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree abort", "flags": ["--apply", "--base", "--disposition", "--format", "--remote", "--successor"], "modes": ["discarded seals before lease-safe remote and descriptor-safe local exact-ref removal", "handoff/not_landed transfer to exactly one active successor claim", "a durable post-removal backlog resumes exact local-ref retirement after interruption"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree abort --help", "contains": ["--successor", "--remote", "resumable", "discarded"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Abort instead of abandoning", "examples": ["wb worktree abort fair-split --disposition handoff --successor codex-run-2", "wb worktree abort fair-split --disposition discarded --apply --remote"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/abort_test.go", "name": "TestAbortDiscardedUnusedWorktreesIsAudited", "kind": "integration"}, {"path": "internal/worktrees/abort_test.go", "name": "TestAbortDiscardedRetiresExactRemoteBranchOnlyWithExplicitAuthorization", "kind": "integration"}, {"path": "internal/worktrees/abort_test.go", "name": "TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary", "kind": "integration"}, {"path": "internal/worktrees/abort_test.go", "name": "TestAbortNotLandedSealsButRetainsResumableWorktree", "kind": "integration"}, {"path": "internal/worktrees/abort_test.go", "name": "TestAbortDiscardedResumesExactBranchAfterWorktreeRemoval", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Remote Synchestra receipt remains outbox-backed and is not required for local cleanup."
+    },
+    {
+      "id": "wb.worktree.cleanup",
+      "feature_refs": ["spec/features/work-log/README.md", "spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree cleanup", "flags": ["--all-merged", "--apply", "--base", "--format", "--older-than", "--remote", "--report-dir"], "modes": ["Exact fetched origin target proves integration with or without a merged PR", "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement", "Coordinated task preflight and durable seal precede every deletion", "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog", "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree cleanup --help", "contains": ["--all-merged", "--older-than", "--remote", ".wb-retired-stage-*"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Plan cleanup", "examples": ["wb worktree cleanup fair-split", "wb worktree cleanup fair-split --apply --remote --older-than 0"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupMergedTaskWithRealGitData", "kind": "integration"}, {"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest", "kind": "integration"}, {"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval", "kind": "integration"}, {"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository", "kind": "integration"}, {"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog", "kind": "integration"}, {"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupArchivesEmptyArtifactOnlyTask", "kind": "integration"}, {"path": "cmd/wb/worktree_test.go", "name": "TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The age window applies to merged-PR evidence; exact direct-push integration is checked against the fetched remote target."
+    },
+    {
+      "id": "wb.worktree.create",
+      "feature_refs": ["spec/features/work-log/README.md", "spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree create", "flags": ["--agent", "--agent-runtime", "--base", "--branch", "--effort", "--format", "--initiator", "--model", "--original-prompt-file", "--resume", "--run"], "modes": ["One immutable private claim per repository in one shared run", "A readable non-empty exact original prompt is mandatory and its snapshotted bytes/digest are bound before worktree creation", "A reused Run ID rejects different prompt bytes before Git/worktree mutation"]}], "limitation": "A rare storage failure after Git publishes a worktree is reported with durable partial evidence but is not yet transactionally rolled back across all repositories."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree create --help", "contains": ["--original-prompt-file", "--agent-runtime", "without switching or updating"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/create.md", "marker": "One command covering multiple repositories", "examples": ["wb worktree create fair-split acme/app --agent codex-run-1 --agent-runtime codex --original-prompt-file <private-prompt-file>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worklog_test.go", "name": "TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun", "kind": "integration"}, {"path": "internal/worktrees/worklog_test.go", "name": "TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation", "kind": "integration"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation", "kind": "unit"}, {"path": "internal/worktrees/worktrees_test.go", "name": "TestCreateFetchesOriginBaseWithoutChangingCanonicalCheckout", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The projection is an untrusted opaque pointer; the immutable claim and live checkout are corroborated before terminal mutation."
+    },
+    {
+      "id": "wb.worktree.guard",
+      "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree guard", "flags": ["--base", "--format", "--quiet"], "modes": ["Rejects feature work in canonical clones and rejects unsafe or unrecognized linked-checkout state."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree guard --help", "contains": ["--base", "--quiet", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/guard.md", "marker": "# Guard and recover a checkout", "examples": ["wb worktree guard ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worktrees_test.go", "name": "TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone", "kind": "integration"}, {"path": "internal/worktrees/worktrees_test.go", "name": "TestGuardAllowsOnlyRealTransientRebases", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "A passing canonical clone remains read-only for feature work; a passing linked checkout is the writable surface."
+    },
+    {
+      "id": "wb.worktree.list",
+      "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree list", "flags": ["--base", "--format", "--github"], "modes": ["Live managed Git worktrees only", "Optional exact remote target and PR evidence", "Versioned JSON envelope exposes results, diagnostics, and lifecycle-artifact cleanup backlog; it replaces the legacy bare result array"]}], "limitation": "The command does not yet join archived Work Logs into the approved seven-day active/recent/history view."},
+        "help": {"status": "Partial", "anchors": [{"command": "wb worktree list --help", "contains": ["linked checkout", "--github", "--format", "versioned control-plane envelope"]}], "limitation": "Help deliberately labels the current surface as live linked-checkout inventory; archived recent history is not advertised."},
+        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Inspect", "examples": ["wb worktree list fair-split --format json"]}], "limitation": "The skill teaches live inventory and explicitly identifies seven-day Work Log history as planned."},
+        "tests": {"status": "Partial", "references": [{"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestListDefaultsToOfflineRealGitData", "kind": "integration"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeListJSONIncludesArtifactOnlyCleanupBacklog", "kind": "integration"}], "limitation": "No archived/recent-history test exists because that runtime slice is not implemented."}
+      },
+      "notes": "Live inventory remains intentionally narrow; cleanup/abort separately join durable post-removal backlog records for exact retry."
+    },
+    {
+      "id": "wb.worktree.log-journal",
+      "feature_refs": ["spec/features/work-log/README.md", "spec/plans/work-log-recovery.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "Create/cleanup/abort/recycle implement a narrow immutable-claim and terminal recovery slice, but the approved log init/show/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive command group, append-only progress journal, usage model, and seven-day history are not implemented."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No wb worktree log command is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills describe only shipped lifecycle verbs and do not give examples for the planned log command group."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No complete checkpoint/recover/refresh/sync/archive journey test exists."}
+      },
+      "notes": "This row prevents the current Hybrid Work Log vertical slice from being mistaken for the full approved Work Log feature."
+    },
+    {
+      "id": "wb.worktree.prompt-export",
+      "feature_refs": ["spec/features/work-log/README.md", "spec/plans/work-log-recovery.md"],
+      "since": null,
+      "surfaces": {
+        "runtime": {"status": "Planned", "commands": [], "limitation": "WB archives the exact original prompt locally, but no authorized encrypted Synchestra/server/cloud private sealed-payload export with digest, receipt, and retention policy is implemented."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "No private prompt export command or flag is advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills teach local private prompt capture only and provide no export example."},
+        "tests": {"status": "Planned", "references": [], "limitation": "No encryption, authorization, receipt, retention, or public-redaction conformance test exists."}
+      },
+      "notes": "Prompt text must never enter source Git, generic operational events/projections, a Git fallback/mirror, or normal output; public state carries only a digest and authorized receipt."
+    },
+    {
+      "id": "wb.worktree.rename",
+      "feature_refs": ["spec/features/work-log/README.md", "spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree rename", "flags": ["--agent", "--agent-runtime", "--apply", "--base", "--branch", "--effort", "--force", "--format", "--initiator", "--model", "--original-prompt-file", "--preserve-cache", "--remote", "--report-dir", "--run"], "modes": ["All repositories preflight before first mutation", "Normal runtime failure rolls every already-applied repository back for deterministic retry", "Old local and exact remote source branches are mandatory-retired", "Only explicit cache allow-list may survive", "New effort/run/agent metadata binds the reset projection"]}], "limitation": "A process crash between old-claim seal, worktree move, and new-claim projection may require deterministic recovery from the durable terminal/claim records; automatic crash replay is not complete."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree rename --help", "contains": ["always deleted", "--preserve-cache", "--remote", "--apply"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Recycle only explicit caches", "examples": ["wb worktree rename finished-task next-task --preserve-cache node_modules"]}], "limitation": null},
+        "tests": {"status": "Partial", "references": [{"path": "internal/worktrees/rename_test.go", "name": "TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameDeleteOldBranchWithoutForceWhenMerged", "kind": "integration"}], "limitation": "Failure-injection covers normal multi-repository rollback and remote retirement; it does not prove automatic recovery for every process-crash point after terminal seal."}
+      },
+      "notes": "Safe removal remains the default lifecycle path; recycle is explicit and audited."
+    }
   ]
 }

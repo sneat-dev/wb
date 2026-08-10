@@ -66,6 +66,29 @@ Synchestra while WB remains an offline-capable client. Finish by deriving
 seven-day recent/archive state from the journal and documenting the
 no-shared-writer workflow.
 
+## Implementation checkpoint (2026-08-10)
+
+- Implemented and tested in the current WB branch: per-repository immutable
+  claims in a shared Run, opaque Git-excluded projections, private prompt
+  preflight/archive, collision-free terminal/outbox records, exact remote-target
+  cleanup evidence, seal-before-delete ordering, explicit safe recycle, and
+  audited discard or one-successor handoff/not_landed transitions. The shipped
+  projection is `<worktree>/.wb-worklog/recovery.json`; a corroborated one-way
+  migration reads the short-lived `.wb-worklog.json` pointer. Claim identity is
+  portable across machines and Runs because it hashes effort + canonical
+  repository + branch + immutable base, never an absolute worktree or Run ID.
+- Implemented and tested lifecycle recovery: cleanup and discarded abort write
+  a durable private stage before worktree removal; rerunning the same named
+  journey resumes exact local-branch retirement after proving the worktree
+  path/registration and remote branch are absent and the local ref did not move.
+- Partially implemented: live worktree inventory and recycle crash recovery.
+  The capability manifest names their exact limitations; seven-day history and
+  every process-crash replay point remain open.
+- Still planned: the full `wb worktree log` command group, periodic refresh and
+  integration enforcement, Synchestra authoritative sync/replica observation,
+  Git transport fallback, distributed fencing, Portable Merger Agent,
+  plan-overlap/migration-scope detection, and Fair Split Relay E2E.
+
 ## Tasks
 
 ### Task 1: Define the local Effort, Run, and journal contract
@@ -134,8 +157,12 @@ and blocking push/handoff/finalize/merge until required integration resolves.
 **Depends-On:** task-1, task-3
 **Status:** planning
 
-Define a versioned, backend-agnostic Synchestra client interface and envelope
-that identifies Effort/Run/Claim/Event without carrying the private prompt.
+Define a versioned, backend-agnostic Synchestra client interface and generic
+operational envelope that identifies Effort/Run/Claim/Event without carrying
+the private prompt. Separately define an optional, explicitly authorized
+encrypted private sealed-prompt payload with digest, receipt, and retention;
+the generic envelope, source Git, and Git fallback/mirror carry only public
+digest/receipt evidence.
 Implement `sync` as idempotent outbox drain to exactly one authoritative
 endpoint, with acknowledgement watermark, retry classification, and
 server-supplied replica purpose/cursor/health/lag. Test offline accumulation,
@@ -188,9 +215,47 @@ meet merged-PR cleanup evidence. It must require an explicit `handoff`,
 `not_landed`, or `discarded` disposition; seal/archive the Work Log and emit an
 offline-safe outbox event before changing the worktree; and release the claim.
 Handoff and not-landed work remain resumable. Discard must require explicit
-apply, clean/unlocked revalidation, and compare-and-delete of the exact local
-branch after the archive is durable. Exercise the two-unused-storage-worktrees
-shape so aborted claims cannot become untracked branch/worktree debt.
+apply plus remote retirement authorization, clean/unlocked revalidation at the
+removal boundary, force-with-lease deletion of only an exact remote source
+ref, and compare-and-delete of the exact local branch after the archive is
+durable. Persist a resume stage before worktree removal so loss of live
+inventory cannot hide a remaining local ref; exercise an interruption and
+exact retry. Exercise the two-unused-storage-worktrees shape and a concurrent
+writer race so aborted claims cannot become untracked branch/worktree debt or
+lose late local work.
+
+### Task 9: Add portable merger and overlap/migration coordination
+
+**Id:** task-9
+**Verifies:** work-log#ac:exclusive-sequential-handoff, work-log#ac:safe-terminal-retention
+**Depends-On:** task-3, task-5, task-7
+**Status:** planning
+
+Define a transport-neutral Portable Merger Agent contract that can drain a
+compatible batch of task branches through task→feature→main integration and
+prove exact remote-target landing plus zero abandoned worktrees/branches.
+Add typed plan-overlap and migration-scope evidence so two active efforts can
+detect shared files/libraries before duplicating work, select one owner, and
+record audited reuse/handoff decisions. These are planned capability seams:
+there is no current `wb` command, built-in help topic, or executable AI-skill
+example for merger dispatch, overlap detection, or migration-scope claiming.
+The Fair Split Relay is the first required E2E consumer.
+
+### Task 10: Audit and enforce canonical clone layout at WB admission
+
+**Id:** task-10
+**Verifies:** work-log#ac:private-recoverable-effort
+**Depends-On:** task-2
+**Status:** planning
+
+Keep `wb sync` as the only WB creator of canonical
+`<projects-root>/<owner>/<repository>` clones. Add a read-only audit that
+derives owner/repository from each Git origin, detects top-level or misowned
+clones, and prints an exact move/reclone remedy. Make worktree create/guard
+refuse those layouts at WB admission, and expose the same check through help,
+hooks, skills, and executable fixtures. WB cannot intercept an arbitrary
+external `git clone`; that limitation remains explicit. This capability is
+planned and has no current command or skill example.
 
 ## Open Questions
 

@@ -209,8 +209,8 @@ func newCheckCmd() *cobra.Command {
 
 func bindQualityScopeFlags(command *cobra.Command, options *qualityOptions) {
 	command.Flags().BoolVar(&options.fleet, "fleet", false, "process every local repository under --projects-root")
-	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. sneat-co/*")
-	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
+	command.Flags().StringVar(&options.match, "match", "", "fleet-only glob matched against org/repo, e.g. sneat-co/*")
+	command.Flags().StringVar(&options.regex, "regex", "", "fleet-only regular expression matched against org/repo")
 	command.Flags().IntVar(&options.parallel, "parallel", 1, "maximum repositories to process concurrently")
 	command.Flags().DurationVar(&options.timeout, "timeout", 10*time.Minute, "maximum duration per external check (0 disables)")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for each failed external check")
@@ -241,6 +241,12 @@ func qualityTargets(singlePath, root, filter string, options qualityOptions) ([]
 		}
 	}
 	if !options.fleet {
+		if filter != "" {
+			return nil, fmt.Errorf("--filter requires fleet mode for owner/repository selection")
+		}
+		if options.match != "" || options.regex != "" {
+			return nil, fmt.Errorf("--match and --regex require fleet mode because a direct repository path has no guaranteed owner/repository identity")
+		}
 		absolute, err := filepath.Abs(singlePath)
 		if err != nil {
 			return nil, err

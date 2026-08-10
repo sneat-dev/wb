@@ -31,7 +31,13 @@ func TestMain(m *testing.M) {
 
 func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
+	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	fixture.pushRemoteCommit(t, "remote change")
+	remoteHeadFields := strings.Fields(gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main"))
+	if len(remoteHeadFields) != 2 {
+		t.Fatalf("unexpected origin/main response: %q", remoteHeadFields)
+	}
+	remoteHead := remoteHeadFields[0]
 
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -48,14 +54,14 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	if result.WorktreeDir != wantWorktree || result.Branch != "codex/issue-123" || result.Action != "created" {
 		t.Fatalf("result = %#v", result)
 	}
-	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main") {
-		t.Fatalf("canonical HEAD %s did not synchronize with origin/main", got)
+	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != canonicalHeadBefore {
+		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHeadBefore, got)
 	}
 	if got := gitTestOutput(t, result.WorktreeDir, "branch", "--show-current"); got != "codex/issue-123" {
 		t.Fatalf("worktree branch = %q", got)
 	}
-	if got := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD"); got != gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD") {
-		t.Fatal("new worktree was not based on synchronized main")
+	if got := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("new worktree head = %s, want fetched origin/main %s", got, remoteHead)
 	}
 
 	guarded, err := Guard(context.Background(), result.WorktreeDir, GuardOptions{ProjectsRoot: fixture.projectsRoot})
@@ -756,6 +762,20 @@ func TestGitEnvironmentUsesOnlyScopedGitAndTemporaryDirectories(t *testing.T) {
 	}
 }
 
+func TestCleanupGitEnvironmentPinsCanonicalWorkTreeForHooks(t *testing.T) {
+	environment := gitEnvironmentWithHeldGitDirAndWorkTree("/retained/git", "/retained/repository")
+	values := map[string]string{}
+	for _, entry := range environment {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			values[key] = value
+		}
+	}
+	if values["GIT_DIR"] != "." || values["GIT_WORK_TREE"] != "/retained/repository" || values["TMPDIR"] != "/retained/git" {
+		t.Fatalf("cleanup Git environment = %#v", values)
+	}
+}
+
 func TestCreatePreservesDoubleSwapAcrossSecureCheckoutPublish(t *testing.T) {
 	fixture := newGitFixture(t)
 	operation := "checkout-double-swap"
@@ -1268,14 +1288,6 @@ func TestCreateRefusesUnsafeCanonicalClone(t *testing.T) {
 				}
 			},
 			want: "is dirty",
-		},
-		{
-			name: "feature branch",
-			trip: func(t *testing.T, fixture *gitFixture) {
-				t.Helper()
-				gitTest(t, fixture.canonical, "switch", "-c", "feature")
-			},
-			want: `is on "feature"`,
 		},
 	}
 	for _, test := range tests {

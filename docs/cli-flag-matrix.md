@@ -6,20 +6,28 @@ an unsupported combination exits with usage code `2` before the command starts.
 This matrix covers inherited/root flags; command-specific flags are listed by
 their own `wb <command> --help` and remain scoped to that command.
 
-The machine-readable, checked-in capability × help × AI-skill view is
-[`ai/capabilities.json`](../ai/capabilities.json). Its validator resolves every
-advertised command/flag and checks the named skill anchor. The manifest carries
-the planned extraction seam for a shared SpecScore capability artifact.
+The machine-readable, checked-in capability × help × AI-skill × tests view is
+[`ai/capabilities.json`](../ai/capabilities.json). It conforms to the exact
+checked-in SpecScore schema at
+[`ai/cli-capability-delivery.schema.json`](../ai/cli-capability-delivery.schema.json).
+That validation input is digest-pinned to the canonical SpecScore commit and
+its provenance/update contract is documented in [`ai/README.md`](../ai/README.md).
+Its validator resolves every runtime command/flag, renders help anchors, parses
+skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 
 | Command surface | `--projects-root` | `--filter` | `--org` | `--non-interactive` |
 |---|---:|---:|---:|---:|
-| `sync` | yes | yes | command-local owner selector | yes |
+| `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `run` | yes | yes | yes | yes |
 | `migrate` | yes | rejected | rejected | yes |
-| `deps` | yes | yes | yes | yes |
-| `ci` | yes | yes | rejected | yes |
-| `hooks` | yes | yes | rejected | yes |
-| `coverage`, `verify`, `check`, `status` | yes | yes | rejected | yes |
+| `deps graph`, `deps set` | yes | yes | `--fleet` only | yes |
+| `deps bump` | yes | yes | yes (`--fleet` is mandatory) | yes |
+| `ci audit` | `--fleet` only | `--fleet` only | rejected | yes |
+| `hooks install`, `check`, `repair` | yes | `--fleet` only | rejected | yes |
+| hidden `hooks run` | yes | rejected | rejected | yes |
+| `hooks metrics` | rejected | rejected | rejected | yes |
+| `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
+| `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `worktree list`, `cleanup`, `rename` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `abort` | yes | rejected | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
@@ -28,12 +36,16 @@ the planned extraction seam for a shared SpecScore capability artifact.
 
 - `--projects-root` overrides the default `<home>/projects` for the selected
   invocation. `WB_HOME` separately controls WB-managed worktree/journal state;
-  it does not change clone discovery.
-- Root `--org` is consumed only by fleet commands that query extra owners.
-  `sync --org` is a command-local selector and is not the root fleet-owner
-  setting.
-- `--filter` selects only repository identities on the listed fleet/worktree
-  inventory surfaces. It is intentionally rejected for a direct canonical
+  it does not change clone discovery. CI audit, coverage, verify, and check
+  consume it only with `--fleet`; status consumes it only in no-path default
+  fleet mode. Supplying it with a direct repository path is rejected.
+- Root `--org` is consumed only by fleet commands that query owners. For sync,
+  `wb --org acme sync` and `wb sync --org acme` both restrict selection to the
+  named owner; the command-local spelling intentionally shadows the root flag.
+- `--filter` selects repository identities on the listed fleet/worktree
+  inventory surfaces. CI, hook, coverage, verify, and check commands require
+  explicit `--fleet`; status requires its no-path default fleet mode. The flag
+  is intentionally rejected for a direct canonical
   worktree create/guard/abort, where silently skipping the requested repository
   would be unsafe.
 - `--non-interactive` controls the terminal sync UI. `WB_NON_INTERACTIVE=1`
@@ -47,7 +59,7 @@ the planned extraction seam for a shared SpecScore capability artifact.
 
 Run `wb --help`, then `wb <command> --help` for every root command and nested
 subcommand. For each inherited flag, add it to `persistentFlagSupport` only
-when the command consumes it; otherwise the command must reject it. The unit
-test `TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem`
-guards the regression where an agent sees a valid-looking flag but the command
-ignores it.
+when the command consumes it; otherwise the command must reject it. The
+conformance test `TestPersistentFlagMatrix` exercises every root-flag ×
+leaf-command cell; focused negative cases remain in
+`TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem`.

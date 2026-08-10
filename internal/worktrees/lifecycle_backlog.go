@@ -1,0 +1,283 @@
+package worktrees
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"golang.org/x/sys/unix"
+)
+
+const lifecycleBacklogVersion = 1
+
+const (
+	lifecycleStageSealed              = "sealed"
+	lifecycleStageRetiringRemote      = "retiring_remote"
+	lifecycleStageRemoteRetired       = "remote_retired"
+	lifecycleStageRemovingWorktree    = "removing_worktree"
+	lifecycleStageWorktreeRemoved     = "worktree_removed"
+	lifecycleStageRemovingLocalBranch = "removing_local_branch"
+	lifecycleStageComplete            = "complete"
+)
+
+// lifecycleBacklogRecord is the durable, private recovery journal for the
+// narrow destructive interval after a Work Log has been sealed. In
+// particular, `removing_worktree` is persisted before Git removes the linked
+// checkout, so a crash cannot make the remaining exact local branch invisible
+// merely because live worktree inventory no longer finds it.
+type lifecycleBacklogRecord struct {
+	Version       int       `json:"version"`
+	ID            string    `json:"id"`
+	Task          string    `json:"task"`
+	Repository    string    `json:"repository"`
+	ProjectsRoot  string    `json:"projects_root"`
+	CanonicalDir  string    `json:"canonical_dir"`
+	WorktreesRoot string    `json:"worktrees_root"`
+	WorktreeDir   string    `json:"worktree_dir"`
+	Branch        string    `json:"branch"`
+	Base          string    `json:"base"`
+	HeadSHA       string    `json:"head_sha"`
+	Disposition   string    `json:"disposition"`
+	RemoteHeadSHA string    `json:"remote_head_sha,omitempty"`
+	Stage         string    `json:"stage"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func lifecycleBacklogID(result ListResult, disposition string) string {
+	digest := sha256.Sum256([]byte(strings.Join([]string{
+		"wb-lifecycle-backlog-v1", result.Task, result.Repository, result.Branch,
+		result.HeadSHA, result.CanonicalDir, result.WorktreeDir, disposition,
+	}, "\x00")))
+	return hex.EncodeToString(digest[:])
+}
+
+func newLifecycleBacklogRecord(projectsRoot string, result ListResult, disposition string) lifecycleBacklogRecord {
+	now := time.Now().UTC()
+	return lifecycleBacklogRecord{
+		Version: lifecycleBacklogVersion, ID: lifecycleBacklogID(result, disposition),
+		Task: result.Task, Repository: result.Repository, ProjectsRoot: filepath.Clean(projectsRoot),
+		CanonicalDir: result.CanonicalDir, WorktreesRoot: result.WorktreesRoot, WorktreeDir: result.WorktreeDir,
+		Branch: result.Branch, Base: result.Base, HeadSHA: result.HeadSHA, RemoteHeadSHA: result.RemoteHeadSHA,
+		Disposition: disposition, Stage: lifecycleStageSealed, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func lifecycleBacklogDirectory(home string) string {
+	return filepath.Join(home, "reports", "worktree-cleanup", "backlog")
+}
+
+func openLifecycleBacklogDirectory(home string, create bool) (*os.File, error) {
+	homeDirectory, err := openAbsoluteDirectoryNoFollow(home, create)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = homeDirectory.Close() }()
+	current := homeDirectory
+	for _, segment := range []string{"reports", "worktree-cleanup", "backlog"} {
+		next, openErr := openPrivateChild(current, segment, create)
+		if current != homeDirectory {
+			_ = current.Close()
+		}
+		if openErr != nil {
+			return nil, openErr
+		}
+		current = next
+	}
+	return current, nil
+}
+
+func persistLifecycleBacklog(home string, record *lifecycleBacklogRecord, stage string) error {
+	if record == nil {
+		return fmt.Errorf("lifecycle backlog record is unavailable")
+	}
+	record.Stage = stage
+	record.UpdatedAt = time.Now().UTC()
+	if err := validateLifecycleBacklog(*record); err != nil {
+		return err
+	}
+	directory, err := openLifecycleBacklogDirectory(home, true)
+	if err != nil {
+		return fmt.Errorf("open lifecycle backlog: %w", err)
+	}
+	defer func() { _ = directory.Close() }()
+	if err := writeJSONAtomicAt(directory, record.ID+".json", record, 0o600); err != nil {
+		return fmt.Errorf("persist lifecycle backlog %s: %w", record.ID, err)
+	}
+	return nil
+}
+
+func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
+	if record.Version != lifecycleBacklogVersion || !validClaimID(record.ID) || !validSafeSegment(record.Task) {
+		return fmt.Errorf("invalid lifecycle backlog identity")
+	}
+	owner, repository, err := splitRepository(record.Repository)
+	if err != nil {
+		return fmt.Errorf("invalid lifecycle backlog repository: %w", err)
+	}
+	if !filepath.IsAbs(record.ProjectsRoot) || !filepath.IsAbs(record.CanonicalDir) || !filepath.IsAbs(record.WorktreesRoot) || !filepath.IsAbs(record.WorktreeDir) {
+		return fmt.Errorf("lifecycle backlog paths must be absolute")
+	}
+	if filepath.Clean(record.CanonicalDir) != filepath.Join(filepath.Clean(record.ProjectsRoot), owner, repository) {
+		return fmt.Errorf("lifecycle backlog canonical path does not match repository")
+	}
+	relativeWorktree, err := filepath.Rel(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
+	if err != nil {
+		return fmt.Errorf("resolve lifecycle backlog worktree: %w", err)
+	}
+	parts := strings.Split(relativeWorktree, string(filepath.Separator))
+	managedPath := len(parts) == 3 && parts[0] == record.Task && validRepositorySegment(parts[1]) && validRepositorySegment(parts[2])
+	legacyPath := len(parts) == 2 && parts[0] == record.Task && validRepositorySegment(parts[1])
+	// The final on-disk repository segment may legitimately differ from the
+	// canonical slug after a historical repository rename. Inventory already
+	// corroborated the Git common directory; recovery only needs to prove this
+	// private path remained inside the exact managed task hierarchy.
+	if !managedPath && !legacyPath {
+		return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+	}
+	if !validBranch(context.Background(), record.Branch) || !validBranch(context.Background(), record.Base) || !isGitObjectID(record.HeadSHA) {
+		return fmt.Errorf("invalid lifecycle backlog Git identity")
+	}
+	result := ListResult{Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
+		WorktreeDir: record.WorktreeDir, Branch: record.Branch, HeadSHA: record.HeadSHA}
+	if lifecycleBacklogID(result, record.Disposition) != record.ID {
+		return fmt.Errorf("lifecycle backlog ID does not match immutable evidence")
+	}
+	switch record.Disposition {
+	case "removed", string(AbortDiscarded):
+	default:
+		return fmt.Errorf("invalid lifecycle backlog disposition %q", record.Disposition)
+	}
+	switch record.Stage {
+	case lifecycleStageSealed, lifecycleStageRetiringRemote, lifecycleStageRemoteRetired,
+		lifecycleStageRemovingWorktree, lifecycleStageWorktreeRemoved,
+		lifecycleStageRemovingLocalBranch, lifecycleStageComplete:
+	default:
+		return fmt.Errorf("invalid lifecycle backlog stage %q", record.Stage)
+	}
+	return nil
+}
+
+func loadResumableLifecycleBacklog(home, projectsRoot string, worktreesRoots []string, task, filter, disposition string) ([]lifecycleBacklogRecord, error) {
+	directory, err := openLifecycleBacklogDirectory(home, false)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
+	}
+	defer func() { _ = directory.Close() }()
+	entries, err := directory.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
+	}
+	allowedRoots := make(map[string]bool, len(worktreesRoots))
+	for _, root := range worktreesRoots {
+		allowedRoots[filepath.Clean(root)] = true
+	}
+	var records []lifecycleBacklogRecord
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		var record lifecycleBacklogRecord
+		if err := readJSONAt(directory, entry.Name(), &record); err != nil {
+			return nil, fmt.Errorf("decode lifecycle backlog %s: %w", entry.Name(), err)
+		}
+		if err := validateLifecycleBacklog(record); err != nil {
+			return nil, fmt.Errorf("validate lifecycle backlog %s: %w", entry.Name(), err)
+		}
+		if entry.Name() != record.ID+".json" || record.Stage == lifecycleStageComplete || record.Disposition != disposition ||
+			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) || !allowedRoots[filepath.Clean(record.WorktreesRoot)] {
+			continue
+		}
+		if task != "" && record.Task != task || !filterMatches(filter, record.Repository) {
+			continue
+		}
+		switch record.Stage {
+		case lifecycleStageRemovingWorktree, lifecycleStageWorktreeRemoved, lifecycleStageRemovingLocalBranch:
+			if _, statErr := os.Lstat(record.WorktreeDir); statErr == nil {
+				// The destructive command either never ran or refused. Live
+				// inventory remains authoritative and the normal lifecycle path
+				// will recheck it; do not create a duplicate pseudo-result.
+				continue
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("inspect lifecycle backlog worktree %s: %w", record.WorktreeDir, statErr)
+			}
+			records = append(records, record)
+		}
+	}
+	sort.Slice(records, func(left, right int) bool { return records[left].ID < records[right].ID })
+	return records, nil
+}
+
+// resumeLifecycleBacklog finishes only the exact final local-ref deletion.
+// It refuses if the worktree path/registration or remote branch still exists,
+// or if the local ref moved. The private record is therefore a recovery hint,
+// never authority to delete a different checkout or branch.
+func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord) error {
+	if err := validateLifecycleBacklog(*record); err != nil {
+		return err
+	}
+	task, err := acquireCleanupTaskAt(record.WorktreesRoot, record.Task)
+	if err != nil {
+		return fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
+	}
+	defer func() {
+		task.lock.release()
+		task.close()
+	}()
+	canonical, err := openCanonicalRepository(record.CanonicalDir)
+	if err != nil {
+		return err
+	}
+	defer canonical.close()
+	if err := canonical.validate(); err != nil {
+		return err
+	}
+	if remoteHead, err := remoteBranchHead(ctx, record.CanonicalDir, record.Branch); err != nil {
+		return err
+	} else if remoteHead != "" {
+		return fmt.Errorf("resume lifecycle backlog %s: origin/%s still exists at %s", record.ID, record.Branch, remoteHead)
+	}
+	if _, err := os.Lstat(record.WorktreeDir); !errors.Is(err, os.ErrNotExist) {
+		if err == nil {
+			return fmt.Errorf("resume lifecycle backlog %s: worktree path still exists", record.ID)
+		}
+		return err
+	}
+	registrations, err := registeredWorktreePathsCanonical(ctx, canonical)
+	if err != nil {
+		return err
+	}
+	if registrations[filepath.Clean(record.WorktreeDir)] {
+		return fmt.Errorf("resume lifecycle backlog %s: worktree remains registered", record.ID)
+	}
+	exists, err := localBranchExistsCanonical(ctx, canonical, record.Branch)
+	if err != nil {
+		return err
+	}
+	if exists {
+		head, err := gitCanonical(ctx, canonical, "rev-parse", "refs/heads/"+record.Branch)
+		if err != nil {
+			return err
+		}
+		if head != record.HeadSHA {
+			return fmt.Errorf("resume lifecycle backlog %s: branch moved from %s to %s", record.ID, record.HeadSHA, head)
+		}
+		if err := persistLifecycleBacklog(home, record, lifecycleStageRemovingLocalBranch); err != nil {
+			return err
+		}
+		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+record.Branch, record.HeadSHA); err != nil {
+			return fmt.Errorf("resume exact local branch deletion %s: %w", record.Branch, err)
+		}
+	}
+	return persistLifecycleBacklog(home, record, lifecycleStageComplete)
+}

@@ -24,11 +24,38 @@ func TestQualityTargetsSupportsGlobAndRegex(t *testing.T) {
 	if got, want := len(targets), 2; got != want {
 		t.Fatalf("targets = %v, want %d", targets, want)
 	}
+	filtered, err := qualityTargets("", root, "sneat-co/core", qualityOptions{fleet: true, parallel: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered) != 1 || filtered[0].repository != "sneat-co/core" {
+		t.Fatalf("root --filter fleet targets = %#v, want only sneat-co/core", filtered)
+	}
 	if _, err := qualityTargets("", root, "", qualityOptions{fleet: true, regex: "[", parallel: 1}); err == nil {
 		t.Fatal("invalid regex should fail")
 	}
 	if _, err := qualityTargets("", root, "", qualityOptions{fleet: true, match: "[", parallel: 1}); err == nil {
 		t.Fatal("invalid glob should fail")
+	}
+}
+
+func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, test := range []struct {
+		name    string
+		filter  string
+		options qualityOptions
+	}{
+		{name: "root filter", filter: "acme/repo", options: qualityOptions{parallel: 1}},
+		{name: "match", options: qualityOptions{parallel: 1, match: "acme/*"}},
+		{name: "regex", options: qualityOptions{parallel: 1, regex: "^acme/"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := qualityTargets(root, t.TempDir(), test.filter, test.options); err == nil || !strings.Contains(err.Error(), "fleet mode") {
+				t.Fatalf("direct owner/repository selector error = %v", err)
+			}
+		})
 	}
 }
 
