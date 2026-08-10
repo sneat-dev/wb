@@ -18,6 +18,25 @@ type claudePluginManifest struct {
 	Skills []string `json:"skills"`
 }
 
+type capabilityManifest struct {
+	Version        int          `json:"version"`
+	ExtractionSeam string       `json:"extraction_seam"`
+	Capabilities   []capability `json:"capabilities"`
+}
+
+type capability struct {
+	ID          string   `json:"id"`
+	Command     string   `json:"command"`
+	Flags       []string `json:"flags"`
+	Support     string   `json:"support"`
+	HelpAnchor  string   `json:"help_anchor"`
+	SkillFile   string   `json:"skill_file"`
+	SkillAnchor string   `json:"skill_anchor"`
+	Test        string   `json:"test"`
+	Since       string   `json:"since"`
+	Notes       string   `json:"notes"`
+}
+
 func TestAgentSkillsCoverPublicCommands(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	coveragePath := filepath.Join(repoRoot, "ai", "skills", "commands.json")
@@ -61,6 +80,46 @@ func TestAgentSkillsCoverPublicCommands(t *testing.T) {
 	}
 
 	assertClaudeManifestListsAllSkills(t, repoRoot)
+}
+
+// TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne Checked-in
+// contract. It deliberately validates command/flag parsing without executing
+// examples, so a documentation regression cannot mutate a repository.
+func TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	contents, err := os.ReadFile(filepath.Join(repoRoot, "ai", "capabilities.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest capabilityManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != 1 || manifest.ExtractionSeam == "" {
+		t.Fatalf("capability manifest lacks version/extraction seam: %#v", manifest)
+	}
+	seen := map[string]bool{}
+	for _, capability := range manifest.Capabilities {
+		if capability.ID == "" || seen[capability.ID] || capability.Command == "" || capability.Support == "" || capability.HelpAnchor == "" || capability.SkillFile == "" || capability.SkillAnchor == "" || capability.Test == "" || capability.Since == "" || capability.Notes == "" {
+			t.Fatalf("incomplete or duplicate capability: %#v", capability)
+		}
+		seen[capability.ID] = true
+		command := newRootCmd()
+		parts := strings.Fields(capability.Command)
+		found, _, findErr := command.Find(parts)
+		if findErr != nil || found == nil || found.CommandPath() != "wb "+capability.Command {
+			t.Fatalf("%s command %q is not implemented: found=%v err=%v", capability.ID, capability.Command, found, findErr)
+		}
+		for _, flag := range capability.Flags {
+			if found.Flags().Lookup(flag) == nil && found.InheritedFlags().Lookup(flag) == nil {
+				t.Fatalf("%s advertises unavailable flag --%s on %s", capability.ID, flag, capability.Command)
+			}
+		}
+		skill, readErr := os.ReadFile(filepath.Join(repoRoot, capability.SkillFile))
+		if readErr != nil || !strings.Contains(string(skill), capability.SkillAnchor) {
+			t.Fatalf("%s skill anchor %q missing from %s: %v", capability.ID, capability.SkillAnchor, capability.SkillFile, readErr)
+		}
+	}
 }
 
 func assertSkillFiles(t *testing.T, repoRoot, skill string) {

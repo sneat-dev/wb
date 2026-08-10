@@ -85,6 +85,14 @@ explicit alternative. New work never silently falls back to the historic
 guards, lists, and cleans linked worktrees there during migration. Existing
 branches and worktrees are rejected unless `--resume` is explicit.
 
+Every create writes a private Hybrid Work Log under
+`<wb-home>/worklogs/<effort>/runs/<run>/claims/<owner>-<repo>.json`, a small
+Git-excluded `.wb-worklog.json` projection in the worktree, and a typed local
+outbox event. `--agent`, `--agent-runtime`, `--model`, and
+`--original-prompt-file` attach recovery metadata; the prompt file is copied
+only into the private archive. The local journal/outbox remains usable when a
+Synchestra server is down, so server receipt never blocks safe local work.
+
 `wb worktree guard [path]` is the policy check used by agents and Git hooks. It
 accepts a clean canonical base checkout for synchronization, or a non-base
 linked worktree in a resolver-recognized hierarchy for development. It rejects
@@ -115,6 +123,23 @@ window is configurable with `--older-than`; `--apply` writes an audit report
 below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
 before removing exact worktree and local branch refs. `--remote` is separate and deletes only an
 unchanged remote branch using force-with-lease.
+
+`wb worktree rename` is the explicit, audited recycle path. It seals the old
+private Work Log before that worktree's projection disappears, then binds the
+renamed checkout to a fresh effort/run/claim from a newly fetched base. It
+never carries arbitrary local state into the next effort: ignored or untracked
+files block recycle unless each retained cache is named with
+`--preserve-cache node_modules` (repeatable). A feature effort is terminal
+only after merge to `main` and removal or audited recycle of every related
+worktree and branch; a task effort has the same requirement after merge to its
+feature branch. A validated branch is not terminal.
+
+Use `wb worktree abort <task> --disposition handoff|not_landed|discarded` for
+an interrupted or never-started effort that has no merged PR and therefore is
+ineligible for normal cleanup. Its default is a dry-run; `--apply` seals the
+local archive and emits an outbox event. `handoff` and `not_landed` retain a
+resumable branch/worktree; only explicit `discarded --apply` removes a clean,
+unlocked worktree and exact local branch after the archive is durable.
 
 Enable the built-in guard in a repository or global WB hooks policy, then let
 WB install the shims:

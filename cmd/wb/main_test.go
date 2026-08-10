@@ -31,6 +31,29 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "filter-create", args: []string{"--filter", "acme", "worktree", "create", "task", "acme/app"}, want: "--filter is not supported by worktree create"},
+		{name: "org-list", args: []string{"--org", "acme", "worktree", "list"}, want: "--org is not supported by worktree list"},
+		{name: "filter-version", args: []string{"--filter", "acme", "version"}, want: "--filter is not supported by version"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != exitUsage {
+				t.Fatalf("run(%q) exit = %d, stderr=%s", test.args, code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), test.want)
+			}
+		})
+	}
+}
+
 func TestHasVersionFlagRecognisesOnlyRootLevelRequests(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

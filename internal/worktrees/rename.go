@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -15,10 +16,12 @@ import (
 )
 
 // RenameOptions controls re-homing every worktree below one task to a new
-// task name. Recycling a worktree this way — rather than deleting it and
-// running `wb worktree create` again — is the whole point of the verb: it
-// preserves working-tree contents such as node_modules, build caches, and a
-// Python .venv, which are often the expensive part of setting a task up.
+// task name. Recycling is deliberately opt-in and starts from a clean base:
+// by default every untracked and ignored path is discarded before the move.
+// Callers may preserve an explicit, safe cache path (for example
+// "node_modules") when the setup-time saving is worth it. This prevents a
+// previous effort's source, credentials, or generated artefacts leaking into
+// a new effort merely because Git happened to ignore them.
 //
 // The branch itself is never recycled. Every renamed worktree is switched
 // onto a freshly created branch based on an up-to-date Base, matching the
@@ -41,6 +44,11 @@ type RenameOptions struct {
 	// succeeds. An unmerged branch is refused unless Force is set.
 	DeleteOldBranch bool
 	Force           bool
+	// PreserveCachePaths is the allow-list of ignored/untracked paths that may
+	// survive recycle. Empty means no cache survives. Paths are repository
+	// relative, safe, and audited in the rename report.
+	PreserveCachePaths []string
+	WorkLog            WorkLogOptions
 	// Apply performs the rename. The default is a dry-run plan, exactly like
 	// `wb worktree cleanup`.
 	Apply     bool
@@ -50,20 +58,21 @@ type RenameOptions struct {
 
 // RenameResult records one repository's rename decision and outcome.
 type RenameResult struct {
-	OldTask          string `json:"old_task"`
-	NewTask          string `json:"new_task"`
-	Repository       string `json:"repository"`
-	CanonicalDir     string `json:"canonical_dir"`
-	OldWorktreeDir   string `json:"old_worktree_dir"`
-	NewWorktreeDir   string `json:"new_worktree_dir"`
-	OldBranch        string `json:"old_branch"`
-	NewBranch        string `json:"new_branch"`
-	Base             string `json:"base"`
-	Eligible         bool   `json:"eligible"`
-	Applied          bool   `json:"applied"`
-	Repaired         bool   `json:"repaired,omitempty"`
-	OldBranchDeleted bool   `json:"old_branch_deleted"`
-	Reason           string `json:"reason,omitempty"`
+	OldTask             string   `json:"old_task"`
+	NewTask             string   `json:"new_task"`
+	Repository          string   `json:"repository"`
+	CanonicalDir        string   `json:"canonical_dir"`
+	OldWorktreeDir      string   `json:"old_worktree_dir"`
+	NewWorktreeDir      string   `json:"new_worktree_dir"`
+	OldBranch           string   `json:"old_branch"`
+	NewBranch           string   `json:"new_branch"`
+	Base                string   `json:"base"`
+	Eligible            bool     `json:"eligible"`
+	Applied             bool     `json:"applied"`
+	Repaired            bool     `json:"repaired,omitempty"`
+	OldBranchDeleted    bool     `json:"old_branch_deleted"`
+	PreservedCachePaths []string `json:"preserved_cache_paths,omitempty"`
+	Reason              string   `json:"reason,omitempty"`
 }
 
 // RenameOutcome contains the decisions plus the durable audit report written
@@ -78,18 +87,19 @@ type RenameOutcome struct {
 }
 
 type renameReport struct {
-	GeneratedAt     time.Time        `json:"generated_at"`
-	Phase           string           `json:"phase"`
-	OldTask         string           `json:"old_task"`
-	NewTask         string           `json:"new_task"`
-	Filter          string           `json:"filter,omitempty"`
-	Branch          string           `json:"branch,omitempty"`
-	Base            string           `json:"base"`
-	DeleteOldBranch bool             `json:"delete_old_branch"`
-	Force           bool             `json:"force"`
-	Apply           bool             `json:"apply"`
-	Results         []RenameResult   `json:"results"`
-	Diagnostics     []ListDiagnostic `json:"diagnostics,omitempty"`
+	GeneratedAt        time.Time        `json:"generated_at"`
+	Phase              string           `json:"phase"`
+	OldTask            string           `json:"old_task"`
+	NewTask            string           `json:"new_task"`
+	Filter             string           `json:"filter,omitempty"`
+	Branch             string           `json:"branch,omitempty"`
+	Base               string           `json:"base"`
+	DeleteOldBranch    bool             `json:"delete_old_branch"`
+	Force              bool             `json:"force"`
+	PreserveCachePaths []string         `json:"preserve_cache_paths,omitempty"`
+	Apply              bool             `json:"apply"`
+	Results            []RenameResult   `json:"results"`
+	Diagnostics        []ListDiagnostic `json:"diagnostics,omitempty"`
 }
 
 // renamePlan bundles the validated local inventory (entry) with the public
@@ -345,6 +355,12 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 	if refreshed.HeadSHA != plan.entry.HeadSHA {
 		return fmt.Errorf("rename safety changed for %s: branch head moved", refreshed.Repository)
 	}
+	if err := verifyRecycleState(ctx, plan.entry.WorktreeDir, options.PreserveCachePaths); err != nil {
+		return fmt.Errorf("prepare %s for recycle: %w", refreshed.Repository, err)
+	}
+	if err := sealWorkLogForRecycle(filepath.Dir(plan.entry.WorktreesRoot), plan.entry.WorktreeDir, refreshed.HeadSHA, "recycled"); err != nil {
+		return fmt.Errorf("seal previous work log for %s: %w", refreshed.Repository, err)
+	}
 
 	canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
 	if err != nil {
@@ -387,6 +403,7 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		return err
 	}
 	plan.result.Repaired = repaired
+	plan.result.PreservedCachePaths = append([]string(nil), options.PreserveCachePaths...)
 
 	if _, checkoutErr := git(ctx, plan.result.NewWorktreeDir, "checkout", "-b", plan.result.NewBranch, baseRevision); checkoutErr != nil {
 		return fmt.Errorf("check out new branch %s in %s: %w", plan.result.NewBranch, plan.result.NewWorktreeDir, checkoutErr)
@@ -394,6 +411,13 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 
 	if _, guardErr := Guard(ctx, plan.result.NewWorktreeDir, GuardOptions{ProjectsRoot: options.ProjectsRoot, Base: options.Base}); guardErr != nil {
 		return fmt.Errorf("renamed worktree %s failed guard: %w", plan.result.NewWorktreeDir, guardErr)
+	}
+	if _, logErr := recordWorkLog(filepath.Dir(filepath.Dir(newTaskPath)), options.NewTask, CreateResult{
+		Repository: plan.entry.Repository, CanonicalDir: plan.entry.CanonicalDir,
+		WorktreeDir: plan.result.NewWorktreeDir, Branch: plan.result.NewBranch, Base: options.Base,
+		BaseSHA: baseRevision, Action: "recycled",
+	}, options.WorkLog); logErr != nil {
+		return fmt.Errorf("bind recycled worktree to a new work log: %w", logErr)
 	}
 
 	plan.result.Applied = true
@@ -409,6 +433,28 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		if !deleted {
 			plan.result.Reason = reason
 		}
+	}
+	return nil
+}
+
+// verifyRecycleState proves that only explicitly allow-listed cache paths are
+// ignored or untracked. It deliberately refuses rather than deleting unknown
+// files: recycle must never turn a stale agent's local evidence into silent
+// data loss. The caller can archive or remove that state, then retry.
+func verifyRecycleState(ctx context.Context, worktree string, preserve []string) error {
+	args := []string{"clean", "-ndx"}
+	// The projection is reset after the new branch has been created; it is WB
+	// control-plane metadata, not a cache inherited by the new effort.
+	args = append(args, "-e", ".wb-worklog.json")
+	for _, path := range preserve {
+		args = append(args, "-e", path)
+	}
+	remaining, err := git(ctx, worktree, args...)
+	if err != nil {
+		return err
+	}
+	if remaining != "" {
+		return fmt.Errorf("unapproved untracked or ignored state would leak into the new effort: %s; archive/remove it or explicitly preserve a safe cache path", remaining)
 	}
 	return nil
 }
@@ -529,6 +575,11 @@ func normalizeRenameOptions(options RenameOptions) (RenameOptions, error) {
 	if options.Branch == options.Base {
 		return RenameOptions{}, fmt.Errorf("feature branch must differ from base branch %q", options.Base)
 	}
+	cachePaths, err := normalizePreserveCachePaths(options.PreserveCachePaths)
+	if err != nil {
+		return RenameOptions{}, err
+	}
+	options.PreserveCachePaths = cachePaths
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -540,6 +591,33 @@ func normalizeRenameOptions(options RenameOptions) (RenameOptions, error) {
 		options.ReportDir = filepath.Clean(options.ReportDir)
 	}
 	return options, nil
+}
+
+func normalizePreserveCachePaths(paths []string) ([]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(paths))
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = filepath.ToSlash(strings.TrimSpace(path))
+		if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "//") {
+			return nil, fmt.Errorf("preserve cache path %q must be a non-empty repository-relative path", path)
+		}
+		parts := strings.Split(path, "/")
+		for _, part := range parts {
+			if !validSafeSegment(part) || part == "." || part == ".." {
+				return nil, fmt.Errorf("preserve cache path %q contains an unsafe segment", path)
+			}
+		}
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		result = append(result, path)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 // DefaultRenameReportDir returns the durable audit directory for one apply,
@@ -637,7 +715,7 @@ func writeRenameReport(
 	report := renameReport{
 		GeneratedAt: generatedAt, Phase: phase, OldTask: options.OldTask, NewTask: options.NewTask,
 		Filter: options.Filter, Branch: options.Branch, Base: options.Base,
-		DeleteOldBranch: options.DeleteOldBranch, Force: options.Force, Apply: options.Apply,
+		DeleteOldBranch: options.DeleteOldBranch, Force: options.Force, PreserveCachePaths: options.PreserveCachePaths, Apply: options.Apply,
 		Results: results, Diagnostics: diagnostics,
 	}
 	content, err := json.MarshalIndent(report, "", "  ")

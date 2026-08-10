@@ -27,7 +27,11 @@ For one task spanning repositories:
 
 ```sh
 wb worktree create <task> --branch <prefix>/<task> \
-  <owner/repository-a> <owner/repository-b>
+  <owner/repository-a> <owner/repository-b> \
+  --effort <stable-effort-id> --run <agent-run-id> \
+  --initiator <human-or-parent-agent> --agent <agent-id> \
+  --agent-runtime codex|claude --model <model-id> \
+  --original-prompt-file <private-prompt-file>
 ```
 
 With a non-default projects root, put the global option on every call:
@@ -38,6 +42,13 @@ wb --projects-root <root> worktree create <task> \
 ```
 
 Use the exact paths WB prints. Do not reconstruct or relocate them.
+
+One command covering multiple repositories is one Run. WB writes a separate
+immutable claim for each repository below
+`<WB_HOME>/worklogs/<effort>/runs/<run>/claims/`; never emulate this with a
+single hand-written shared JSON file. The original-prompt option copies the
+file into that private archive only. It is intentionally absent from the
+Git-excluded worktree projection and Synchestra outbox.
 
 By default the printed path is below `~/.wb/worktrees`. A populated historic
 `<projects-root>/.wb` is never a create target. If an old managed hook exists,

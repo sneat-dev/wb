@@ -22,12 +22,60 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeListCmd())
 	command.AddCommand(newWorktreeCleanupCmd())
 	command.AddCommand(newWorktreeRenameCmd())
+	command.AddCommand(newWorktreeAbortCmd())
+	return command
+}
+
+func newWorktreeAbortCmd() *cobra.Command {
+	var base, disposition, format string
+	var apply bool
+	command := &cobra.Command{
+		Use:   "abort <task>",
+		Short: "Seal an interrupted task so it can be resumed or explicitly discarded",
+		Long: `Abort is the audited alternative to manually deleting an unfinished worktree.
+It seals each local Work Log and queues an offline-safe outbox event. --apply
+with handoff or not_landed leaves the branch/worktree resumable; --apply with
+discarded removes only clean, unlocked worktrees and their exact local branch
+refs after their archive has been sealed. The default is a dry-run plan.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
+				ProjectsRoot: projectsRoot, Task: args[0], Base: base,
+				Disposition: worktrees.AbortDisposition(disposition), Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(results)
+			}
+			for _, result := range results {
+				state := "would seal"
+				if result.Applied && result.WorktreeGone {
+					state = "sealed and removed"
+				} else if result.Applied {
+					state = "sealed and resumable"
+				}
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s\n", state, result.Repository, result.Disposition); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
+	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, or discarded")
+	command.Flags().BoolVar(&apply, "apply", false, "seal Work Logs and apply the selected disposition")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
 func newWorktreeCreateCmd() *cobra.Command {
 	var branch, base, format string
 	var resume bool
+	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
 		Short: "Create feature branches below WB's home worktrees directory",
@@ -71,6 +119,10 @@ unless --resume is explicit.`,
 				Branch:       branch,
 				Base:         base,
 				Resume:       resume,
+				WorkLog: worktrees.WorkLogOptions{
+					EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
+					AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
+				},
 			})
 			if err != nil {
 				return err
@@ -98,6 +150,13 @@ unless --resume is explicit.`,
 	command.Flags().StringVar(&branch, "branch", "", "feature branch (default codex/<task>)")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
 	command.Flags().BoolVar(&resume, "resume", false, "reuse only the exact expected branch and worktree")
+	command.Flags().StringVar(&effortID, "effort", "", "stable Synchestra/WB effort id (default task)")
+	command.Flags().StringVar(&runID, "run", "", "agent run id (default generated locally)")
+	command.Flags().StringVar(&initiator, "initiator", "", "human or agent that started the effort")
+	command.Flags().StringVar(&agentID, "agent", "", "agent identity")
+	command.Flags().StringVar(&agentRuntime, "agent-runtime", "", "agent runtime, e.g. codex or claude")
+	command.Flags().StringVar(&model, "model", "", "agent model identifier")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "private file containing the exact original prompt; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -323,6 +382,8 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 func newWorktreeRenameCmd() *cobra.Command {
 	var branch, base, reportDir, format string
 	var deleteOldBranch, force, apply bool
+	var preserveCachePaths []string
+	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
 	command := &cobra.Command{
 		Use:   "rename <old-task> <new-task>",
 		Short: "Re-home a task's worktrees under a new task name, keeping their working-tree contents",
@@ -330,9 +391,10 @@ func newWorktreeRenameCmd() *cobra.Command {
 'git worktree move' — with a plain move plus 'git worktree repair' as a
 verified fallback — so Git's own gitdir pointers never go stale.
 
-Renaming preserves working-tree contents such as node_modules, build caches,
-and .venv: it exists so a finished task's worktree can be recycled for the
-next one instead of deleted and recreated from scratch.
+Recycling is opt-in. WB refuses to carry arbitrary ignored/untracked state
+into the next effort. Pass --preserve-cache for each repository-relative cache
+path that may survive (for example node_modules); every other local file must
+be removed or archived before recycling.
 
 The branch itself is never recycled. After the move, each repository is
 switched onto a freshly created branch (default codex/<new-task>; override
@@ -348,16 +410,21 @@ dry-run plan; --apply performs the move.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(command *cobra.Command, args []string) error {
 			outcome, err := worktrees.Rename(command.Context(), worktrees.RenameOptions{
-				ProjectsRoot:    projectsRoot,
-				OldTask:         args[0],
-				NewTask:         args[1],
-				Filter:          filterFlag,
-				Branch:          branch,
-				Base:            base,
-				DeleteOldBranch: deleteOldBranch,
-				Force:           force,
-				Apply:           apply,
-				ReportDir:       reportDir,
+				ProjectsRoot:       projectsRoot,
+				OldTask:            args[0],
+				NewTask:            args[1],
+				Filter:             filterFlag,
+				Branch:             branch,
+				Base:               base,
+				DeleteOldBranch:    deleteOldBranch,
+				Force:              force,
+				PreserveCachePaths: preserveCachePaths,
+				WorkLog: worktrees.WorkLogOptions{
+					EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
+					AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
+				},
+				Apply:     apply,
+				ReportDir: reportDir,
 			})
 			if err != nil {
 				return err
@@ -401,6 +468,14 @@ dry-run plan; --apply performs the move.`,
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
 	command.Flags().BoolVar(&deleteOldBranch, "delete-old-branch", false, "delete the branch each worktree was on after a successful move")
 	command.Flags().BoolVar(&force, "force", false, "delete the old branch even if it is not merged into base")
+	command.Flags().StringSliceVar(&preserveCachePaths, "preserve-cache", nil, "repository-relative ignored/untracked cache path allowed to survive recycle (repeatable)")
+	command.Flags().StringVar(&effortID, "effort", "", "new stable Synchestra/WB effort id (default new task)")
+	command.Flags().StringVar(&runID, "run", "", "new agent run id (default generated locally)")
+	command.Flags().StringVar(&initiator, "initiator", "", "human or agent that started the new effort")
+	command.Flags().StringVar(&agentID, "agent", "", "agent identity for the new effort")
+	command.Flags().StringVar(&agentRuntime, "agent-runtime", "", "agent runtime, e.g. codex or claude")
+	command.Flags().StringVar(&model, "model", "", "agent model identifier")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "private file containing the new exact original prompt; archived under WB_HOME only")
 	command.Flags().BoolVar(&apply, "apply", false, "perform the rename; the default is a dry-run plan")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

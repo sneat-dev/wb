@@ -50,6 +50,7 @@ type CreateOptions struct {
 	Branch       string
 	Base         string
 	Resume       bool
+	WorkLog      WorkLogOptions
 	// beforeHomeDirectoryOpen is a test-only seam before WB opens or creates
 	// its resolved home hierarchy. It proves a substituted WB_HOME leaf cannot
 	// redirect the initial descriptor chain.
@@ -114,7 +115,9 @@ type CreateResult struct {
 	WorktreeDir  string `json:"worktree_dir"`
 	Branch       string `json:"branch"`
 	Base         string `json:"base"`
+	BaseSHA      string `json:"base_sha"`
 	Action       string `json:"action"`
+	WorkLogPath  string `json:"work_log_path,omitempty"`
 }
 
 // GuardOptions defines the local checkout policy checked by hooks and agents.
@@ -267,6 +270,12 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err := requireGitFilesystemCapability(); err != nil {
 		return nil, err
 	}
+	// A coordinated create is one Run claiming several repositories. Generate
+	// its local fallback ID once here, not once per claim, so the durable run
+	// index preserves cardinality and a recovery reader can join all claims.
+	if strings.TrimSpace(normalized.WorkLog.RunID) == "" {
+		normalized.WorkLog.RunID = "wb-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	}
 
 	home, err := wbhome.Root(normalized.ProjectsRoot)
 	if err != nil {
@@ -317,7 +326,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		}
 		plan := createPlan{owner: owner, repository: name, canonical: canonicalHandle, baseRevision: baseRevision, result: CreateResult{
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
-			Branch: normalized.Branch, Base: normalized.Base,
+			Branch: normalized.Branch, Base: normalized.Base, BaseSHA: baseRevision,
 		}}
 		if exists {
 			if !normalized.Resume {
@@ -382,6 +391,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			); err != nil {
 				return results, err
 			}
+		}
+		if logPath, logErr := recordWorkLog(home, normalized.Operation, plan.result, normalized.WorkLog); logErr != nil {
+			return results, fmt.Errorf("record work log for %s: %w", plan.result.Repository, logErr)
+		} else {
+			plan.result.WorkLogPath = logPath
 		}
 		results = append(results, plan.result)
 	}

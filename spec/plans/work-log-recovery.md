@@ -44,6 +44,15 @@ and an offline endpoint merely grows the local outbox.
    cursor/health/lag are visible independently, the journal remains in Recent
    for seven days, and an explicit archive preserves recovery evidence before
    cleanup can remove the worktree.
+5. **End C — Fair Split Relay proves cross-harness coordination.** A Codex CLI
+   task worktree and a Claude Code CLI task worktree receive an ordered cents
+   allocation proposal through Synchestra, exchange typed accept/counter/claim
+   messages, and each Work Log records decision references. Observable good
+   result: both adapters agree on the deterministic €10 allocation Alice €3.34,
+   Bob €3.33, Carol €3.33; task branches integrate into a feature branch, then
+   `main`, and WB reports zero abandoned worktrees/branches (or an explicit
+   audited recycle). Future Copilot and desktop adapters use the same harness
+   protocol; the initial fixture does not automate a desktop UI.
 
 ## Approach
 
@@ -150,6 +159,39 @@ only after the recent window.
 Update WB README and worktree skill with the exclusive-primary/read-only-helper
 and patch-return workflow.
 
+### Task 7: Build the Fair Split Relay cross-agent lifecycle harness
+
+**Id:** task-7
+**Verifies:** work-log#ac:private-recoverable-effort, work-log#ac:exclusive-sequential-handoff, work-log#ac:safe-terminal-retention
+**Depends-On:** task-1, task-2, task-3, task-5, task-6
+**Status:** planning
+
+Create a tiny Go fixture repository and adapter interface that starts two
+isolated task worktrees under one feature effort. The first adapters invoke
+Codex CLI and Claude Code CLI when installed; deterministic fixture adapters
+may stand in only for unavailable binaries and must report that substitution.
+Assert bidirectional typed Synchestra negotiation, ordered integer-cent
+rounding of €10 to Alice 3.34/Bob 3.33/Carol 3.33, Work Log decision-reference
+events, task-to-feature-to-main integration, and a final WB lifecycle audit
+with no unmanaged branch/worktree. Define extension points for Copilot and
+desktop adapters but do not drive desktop UI automation in this slice.
+
+### Task 8: Make aborted effort disposition explicit and auditable
+
+**Id:** task-8
+**Verifies:** work-log#ac:safe-terminal-retention
+**Depends-On:** task-1, task-2, task-3
+**Status:** planning
+
+Add `wb worktree abort` as the only normal escape hatch for work that cannot
+meet merged-PR cleanup evidence. It must require an explicit `handoff`,
+`not_landed`, or `discarded` disposition; seal/archive the Work Log and emit an
+offline-safe outbox event before changing the worktree; and release the claim.
+Handoff and not-landed work remain resumable. Discard must require explicit
+apply, clean/unlocked revalidation, and compare-and-delete of the exact local
+branch after the archive is durable. Exercise the two-unused-storage-worktrees
+shape so aborted claims cannot become untracked branch/worktree debt.
+
 ## Open Questions
 
 1. The Synchestra service contract is being authored concurrently. Before Task
@@ -157,6 +199,9 @@ and patch-return workflow.
    watermarks?
 2. Should seven-day retention be measured from finalization or from successful
    authoritative receipt when a workstation stays offline after finalization?
+3. Which CI environment variables or explicit adapter flags are the stable way
+   to locate Codex CLI and Claude Code CLI without treating a locally installed
+   binary as proof that the other harness executed?
 
 ---
 *This document follows the https://specscore.md/plan-specification*

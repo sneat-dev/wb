@@ -678,6 +678,14 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				if normalized.afterCleanupGitAuthorization != nil {
 					normalized.afterCleanupGitAuthorization("remove worktree")
 				}
+				// Archive the recoverable run record while the projection still
+				// exists. A server receipt is an outbox concern and cannot make a
+				// safely merged local worktree impossible to clean up.
+				if err := sealWorkLogForRecycle(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, "removed"); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, err))
+				}
 				if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
 					closeCanonical()
 					worktree.close()

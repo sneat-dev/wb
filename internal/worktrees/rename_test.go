@@ -9,13 +9,13 @@ import (
 	"time"
 )
 
-// TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch is the
-// core regression test for the verb's whole reason to exist: an untracked
-// file (standing in for node_modules) must survive the move, Git's own
+// TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch proves
+// an explicitly allowed cache (standing in for node_modules) may survive the
+// move, while Git's own
 // bookkeeping (`git worktree list`) must report the new path, and the
 // worktree must land on a freshly created branch that both `wb worktree
 // guard` and Git itself accept.
-func TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch(t *testing.T) {
+func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *testing.T) {
 	fixture := newGitFixture(t)
 	// A real project ignores node_modules; without that, plain `git status`
 	// would call the worktree dirty for the exact directory this verb exists
@@ -45,10 +45,11 @@ func TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch(t *test
 	}
 
 	outcome, err := Rename(context.Background(), RenameOptions{
-		ProjectsRoot: fixture.projectsRoot,
-		OldTask:      "old-task",
-		NewTask:      "new-task",
-		Apply:        true,
+		ProjectsRoot:       fixture.projectsRoot,
+		OldTask:            "old-task",
+		NewTask:            "new-task",
+		PreserveCachePaths: []string{"node_modules"},
+		Apply:              true,
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
