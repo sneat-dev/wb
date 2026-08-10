@@ -142,6 +142,125 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 	return projects, home
 }
 
+func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
+	command := newWorktreeRenameCmd()
+	for _, wanted := range []string{
+		"git worktree move", "git worktree repair", "node_modules",
+		"--delete-old-branch", "--force", "dry-run",
+	} {
+		if !strings.Contains(command.Long, wanted) {
+			t.Errorf("worktree rename help does not mention %q", wanted)
+		}
+	}
+	if err := command.Args(command, []string{"only-one"}); err == nil {
+		t.Fatal("rename must require exactly two positional arguments")
+	}
+	apply := command.Flags().Lookup("apply")
+	if apply == nil || apply.DefValue != "false" {
+		t.Fatalf("--apply default = %#v, want false", apply)
+	}
+	deleteOldBranch := command.Flags().Lookup("delete-old-branch")
+	if deleteOldBranch == nil || deleteOldBranch.DefValue != "false" {
+		t.Fatalf("--delete-old-branch default = %#v, want false", deleteOldBranch)
+	}
+}
+
+// setUpRenameCLIFixture creates a real canonical repository with a working
+// origin remote — `worktree create`'s canonical sync needs one to pull from —
+// and points WB_HOME and related XDG state at an isolated root.
+func setUpRenameCLIFixture(t *testing.T) (projects string) {
+	t.Helper()
+	root := t.TempDir()
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	remote := filepath.Join(root, "remote.git")
+	if output, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare remote: %v\n%s", err, output)
+	}
+	projects = filepath.Join(root, "projects")
+	canonical := filepath.Join(projects, "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("git", "clone", remote, canonical).CombinedOutput(); err != nil {
+		t.Fatalf("clone canonical: %v\n%s", err, output)
+	}
+	runGit(canonical, "config", "user.name", "WB Test")
+	runGit(canonical, "config", "user.email", "wb-test@example.test")
+	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(canonical, "add", "README.md")
+	runGit(canonical, "commit", "-m", "initial")
+	runGit(canonical, "push", "-u", "origin", "main")
+
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+	return projects
+}
+
+// TestWorktreeRenameCLIAppliesMoveAndReportsExitOK drives the whole verb
+// through run(), the same entry point main() uses, proving the cobra wiring
+// (flags, positional args, --apply) actually reaches worktrees.Rename and
+// that a successful rename is reported as exit 0 with the new path on stdout.
+func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-old", "acme/app"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"--projects-root", projects, "worktree", "rename", "cli-old", "cli-new", "--apply", "--non-interactive"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("worktree rename failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "renamed cli-old acme/app ->") {
+		t.Fatalf("rename stdout = %s", stdout.String())
+	}
+	home := os.Getenv(wbhome.EnvOverride)
+	newWorktree := filepath.Join(home, "worktrees", "cli-new", "acme", "app")
+	if info, statErr := os.Stat(newWorktree); statErr != nil || !info.IsDir() {
+		t.Fatalf("renamed worktree missing at %s: %v", newWorktree, statErr)
+	}
+}
+
+// TestWorktreeRenameCLIRefusesDestinationCollisionAsFindings proves a
+// destination collision surfaces as a documented "findings" exit code (1),
+// not success and not a bare usage error, through the same run() entry point.
+func TestWorktreeRenameCLIRefusesDestinationCollisionAsFindings(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "taken", "acme/app"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("seed worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "source", "acme/app"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("source worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"--projects-root", projects, "worktree", "rename", "source", "taken", "--apply", "--non-interactive"}, &stdout, &stderr)
+	if code != exitFindings {
+		t.Fatalf("collision rename exit code = %d, want %d (findings); stdout=%s stderr=%s", code, exitFindings, stdout.String(), stderr.String())
+	}
+}
+
 func TestWorktreeCreateRejectsTraversalBeforeRefreshingExternalHooks(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")

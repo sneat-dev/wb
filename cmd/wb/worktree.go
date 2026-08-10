@@ -21,6 +21,7 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeGuardCmd())
 	command.AddCommand(newWorktreeListCmd())
 	command.AddCommand(newWorktreeCleanupCmd())
+	command.AddCommand(newWorktreeRenameCmd())
 	return command
 }
 
@@ -319,6 +320,93 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 	return command
 }
 
+func newWorktreeRenameCmd() *cobra.Command {
+	var branch, base, reportDir, format string
+	var deleteOldBranch, force, apply bool
+	command := &cobra.Command{
+		Use:   "rename <old-task> <new-task>",
+		Short: "Re-home a task's worktrees under a new task name, keeping their working-tree contents",
+		Long: `Move every repository worktree below <old-task> to <new-task> using
+'git worktree move' — with a plain move plus 'git worktree repair' as a
+verified fallback — so Git's own gitdir pointers never go stale.
+
+Renaming preserves working-tree contents such as node_modules, build caches,
+and .venv: it exists so a finished task's worktree can be recycled for the
+next one instead of deleted and recreated from scratch.
+
+The branch itself is never recycled. After the move, each repository is
+switched onto a freshly created branch (default codex/<new-task>; override
+with --branch) based on an up-to-date origin/<base>, exactly like
+'wb worktree create'. Pass --delete-old-branch to remove the branch the
+worktree was on; a branch that is not merged into base is refused unless
+--force.
+
+--filter (see the root flag) narrows which repositories under <old-task> are
+renamed. A malformed candidate, a dirty or locked worktree, or an already
+existing <new-task> blocks the whole (coordinated) rename. The default is a
+dry-run plan; --apply performs the move.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			outcome, err := worktrees.Rename(command.Context(), worktrees.RenameOptions{
+				ProjectsRoot:    projectsRoot,
+				OldTask:         args[0],
+				NewTask:         args[1],
+				Filter:          filterFlag,
+				Branch:          branch,
+				Base:            base,
+				DeleteOldBranch: deleteOldBranch,
+				Force:           force,
+				Apply:           apply,
+				ReportDir:       reportDir,
+			})
+			if err != nil {
+				return err
+			}
+			for _, diagnostic := range outcome.Diagnostics {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "warning: rename skipped malformed candidate in task %s: %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message); err != nil {
+					return err
+				}
+			}
+			switch format {
+			case "text":
+				if err := printWorktreeRename(command, outcome.Results, apply); err != nil {
+					return err
+				}
+				if outcome.ReportPath != "" {
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "report: %s\n", outcome.ReportPath); err != nil {
+						return err
+					}
+				}
+			case "json":
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				if err := encoder.Encode(outcome); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported format %q; use text or json", format)
+			}
+			if apply {
+				for _, result := range outcome.Results {
+					if result.Applied {
+						return nil
+					}
+				}
+				return fmt.Errorf("task %q was not renamed because it did not satisfy rename safety", args[0])
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&branch, "branch", "", "feature branch for the renamed worktree (default codex/<new-task>)")
+	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
+	command.Flags().BoolVar(&deleteOldBranch, "delete-old-branch", false, "delete the branch each worktree was on after a successful move")
+	command.Flags().BoolVar(&force, "force", false, "delete the old branch even if it is not merged into base")
+	command.Flags().BoolVar(&apply, "apply", false, "perform the rename; the default is a dry-run plan")
+	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
 func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) error {
 	if len(results) == 0 {
 		_, err := fmt.Fprintln(command.OutOrStdout(), "no WB worktrees")
@@ -388,5 +476,41 @@ func printWorktreeCleanup(command *cobra.Command, results []worktrees.CleanupRes
 		return err
 	}
 	_, err := fmt.Fprintf(command.OutOrStdout(), "%d eligible; dry-run only, pass --apply to remove\n", eligible)
+	return err
+}
+
+func printWorktreeRename(command *cobra.Command, results []worktrees.RenameResult, apply bool) error {
+	if len(results) == 0 {
+		_, err := fmt.Fprintln(command.OutOrStdout(), "no WB worktrees matched")
+		return err
+	}
+	eligible, renamed := 0, 0
+	for _, result := range results {
+		switch {
+		case result.Applied:
+			renamed++
+			note := ""
+			if result.OldBranchDeleted {
+				note = " and deleted old branch " + result.OldBranch
+			}
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "renamed %s %s -> %s (%s)%s\n", result.OldTask, result.Repository, result.NewWorktreeDir, result.NewBranch, note); err != nil {
+				return err
+			}
+		case result.Eligible:
+			eligible++
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "would rename %s %s -> %s\n", result.OldTask, result.Repository, result.NewWorktreeDir); err != nil {
+				return err
+			}
+		default:
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "skip %s %s: %s\n", result.OldTask, result.Repository, result.Reason); err != nil {
+				return err
+			}
+		}
+	}
+	if apply {
+		_, err := fmt.Fprintf(command.OutOrStdout(), "%d renamed\n", renamed)
+		return err
+	}
+	_, err := fmt.Fprintf(command.OutOrStdout(), "%d eligible; dry-run only, pass --apply to rename\n", eligible)
 	return err
 }
