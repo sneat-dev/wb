@@ -256,7 +256,11 @@ func TestManagedShimPersistsWBHomeAndRefreshesPriorReleaseShim(t *testing.T) {
 	}
 	command := exec.Command(filepath.Join(managed, "pre-commit"))
 	command.Dir = repo
-	command.Env = append(os.Environ(), "WB_TEST_LOG="+logPath, "WB_HOME=wrong-home")
+	command.Env = hookEnvironment(map[string]string{
+		"WB_EXECUTABLE": fakeWB,
+		"WB_TEST_LOG":   logPath,
+		"WB_HOME":       "wrong-home",
+	})
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("run persisted shim: %v\n%s", err, output)
 	}
@@ -316,7 +320,7 @@ func TestDurableWBExecutableRejectsInvalidOrTransientTargets(t *testing.T) {
 	}
 }
 
-func TestApplyRetainsStableLauncherAcrossRetarget(t *testing.T) {
+func TestApplyResolvesRetargetedLauncherAtRuntime(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
 	root := t.TempDir()
@@ -338,12 +342,6 @@ func TestApplyRetainsStableLauncherAcrossRetarget(t *testing.T) {
 	if err := os.Symlink(releaseV1, launcher); err != nil {
 		t.Fatal(err)
 	}
-	absLauncher, err := filepath.Abs(launcher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	absLauncher = filepath.Clean(absLauncher)
-
 	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: launcher})
 	if err != nil {
 		t.Fatal(err)
@@ -353,8 +351,8 @@ func TestApplyRetainsStableLauncherAcrossRetarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(shim), shellQuote(absLauncher)+" hooks run 'pre-commit'") || strings.Contains(string(shim), releaseV1) {
-		t.Fatalf("shim did not retain stable launcher:\n%s", shim)
+	if strings.Contains(string(shim), launcher) || strings.Contains(string(shim), releaseV1) || !strings.Contains(string(shim), "command -v wb") {
+		t.Fatalf("shim persisted an install path instead of a runtime resolver:\n%s", shim)
 	}
 
 	if err := os.Remove(launcher); err != nil {
@@ -368,13 +366,148 @@ func TestApplyRetainsStableLauncherAcrossRetarget(t *testing.T) {
 	}
 	command := exec.Command(preCommit)
 	command.Dir = repo
-	command.Env = os.Environ()
+	command.Env = hookEnvironment(map[string]string{
+		"PATH":        launcherDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"WB_TEST_LOG": logPath,
+	}, "WB_EXECUTABLE")
 	if output, runErr := command.CombinedOutput(); runErr != nil {
 		t.Fatalf("run retargeted managed hook: %v\n%s", runErr, output)
 	}
 	if got := strings.TrimSpace(mustReadFile(t, logPath)); got != "v2" {
 		t.Fatalf("retargeted hook launcher = %q, want v2", got)
 	}
+}
+
+func TestManagedHookResolvesWBAtRuntimeAfterInstallerDisappears(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	root := t.TempDir()
+	binA := filepath.Join(root, "bin-a")
+	binB := filepath.Join(root, "bin with space")
+	if err := os.MkdirAll(binA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	installer := filepath.Join(binA, "wb")
+	mustWriteExecutable(t, installer, "#!/bin/sh\nexit 0\n")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: installer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	shim := mustReadFile(t, preCommit)
+	if strings.Contains(shim, installer) || !strings.Contains(shim, "command -v wb") {
+		t.Fatalf("managed hook froze the installer instead of resolving WB at runtime:\n%s", shim)
+	}
+	if err := os.Remove(installer); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(root, "runtime.log")
+	runtimeWB := filepath.Join(binB, "wb")
+	mustWriteExecutable(t, runtimeWB, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WB_TEST_LOG\"\n")
+	command := exec.Command(preCommit)
+	command.Dir = repo
+	command.Env = hookEnvironment(map[string]string{
+		"PATH":        binB + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"WB_TEST_LOG": logPath,
+	}, "WB_EXECUTABLE")
+	if output, runErr := command.CombinedOutput(); runErr != nil {
+		t.Fatalf("runtime-resolved hook failed after installer removal: %v\n%s", runErr, output)
+	}
+	if got, want := strings.TrimSpace(mustReadFile(t, logPath)), "hooks run pre-commit --"; got != want {
+		t.Fatalf("runtime-resolved invocation = %q, want %q", got, want)
+	}
+}
+
+func TestManagedHookRejectsUnsafeRuntimeWBExecutables(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	root := t.TempDir()
+	installer := filepath.Join(root, "installed-wb")
+	mustWriteExecutable(t, installer, "#!/bin/sh\nexit 0\n")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: installer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	repositoryWB := filepath.Join(repo, "tools", "wb")
+	if err := os.MkdirAll(filepath.Dir(repositoryWB), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteExecutable(t, repositoryWB, "#!/bin/sh\nexit 0\n")
+	outsideLink := filepath.Join(root, "linked-wb")
+	if err := os.Symlink(repositoryWB, outsideLink); err != nil {
+		t.Fatal(err)
+	}
+	nonExecutable := filepath.Join(root, "non-executable-wb")
+	mustWrite(t, nonExecutable, "#!/bin/sh\nexit 0\n")
+
+	for _, test := range []struct {
+		name       string
+		executable string
+		want       string
+	}{
+		{name: "relative override", executable: "wb", want: "must be an absolute path"},
+		{name: "repository local", executable: repositoryWB, want: "repository-local"},
+		{name: "symlink into repository", executable: outsideLink, want: "repository-local"},
+		{name: "directory", executable: root, want: "regular file"},
+		{name: "non executable", executable: nonExecutable, want: "not executable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := exec.Command(preCommit)
+			command.Dir = repo
+			command.Env = hookEnvironment(map[string]string{
+				"PATH":          os.Getenv("PATH"),
+				"WB_EXECUTABLE": test.executable,
+			})
+			output, runErr := command.CombinedOutput()
+			if runErr == nil || !strings.Contains(string(output), test.want) {
+				t.Fatalf("unsafe resolver result = %v, output=%q, want %q", runErr, output, test.want)
+			}
+		})
+	}
+
+	t.Run("missing from PATH", func(t *testing.T) {
+		gitExecutable, lookErr := exec.LookPath("git")
+		if lookErr != nil {
+			t.Fatal(lookErr)
+		}
+		bin := t.TempDir()
+		if err := os.Symlink(gitExecutable, filepath.Join(bin, "git")); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(preCommit)
+		command.Dir = repo
+		command.Env = hookEnvironment(map[string]string{"PATH": bin}, "WB_EXECUTABLE")
+		output, runErr := command.CombinedOutput()
+		if runErr == nil || !strings.Contains(string(output), "wb was not found") {
+			t.Fatalf("missing resolver result = %v, output=%q", runErr, output)
+		}
+	})
+}
+
+func hookEnvironment(overrides map[string]string, remove ...string) []string {
+	removed := make(map[string]bool, len(remove)+len(overrides))
+	for _, name := range remove {
+		removed[name] = true
+	}
+	for name := range overrides {
+		removed[name] = true
+	}
+	environment := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		name, _, found := strings.Cut(entry, "=")
+		if found && removed[name] {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	for name, value := range overrides {
+		environment = append(environment, name+"="+value)
+	}
+	return environment
 }
 
 func TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation(t *testing.T) {
@@ -537,16 +670,17 @@ func TestApplyRefusesRepositoryAncestorSwapBeforeFirstCommonDirectoryOpen(t *tes
 func TestApplyRefusesManagedHookReplacementAfterRead(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	oldExecutable := testWBExecutable(t, "old-wb")
-	newExecutable := testWBExecutable(t, "new-wb")
-	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: oldExecutable})
+	executable := testWBExecutable(t, "wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
 	if err != nil {
 		t.Fatal(err)
 	}
 	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	stale := strings.Replace(mustReadFile(t, preCommit), "command -v wb", "command -v wb-stale", 1)
+	mustWrite(t, preCommit, stale)
 	replacement := "#!/bin/sh\necho replacement\n"
 	_, err = Apply(ApplyOptions{
-		RepoPath: repo, WBExecutable: newExecutable,
+		RepoPath: repo, WBExecutable: executable,
 		afterManagedHookRead: func(name string) {
 			if name == "pre-commit" {
 				replaceTestFile(t, preCommit, replacement)
@@ -564,16 +698,17 @@ func TestApplyRefusesManagedHookReplacementAfterRead(t *testing.T) {
 func TestApplyRefusesManagedHookReplacementAfterFinalAuthorization(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
-	oldExecutable := testWBExecutable(t, "old-wb")
-	newExecutable := testWBExecutable(t, "new-wb")
-	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: oldExecutable})
+	executable := testWBExecutable(t, "wb")
+	installed, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
 	if err != nil {
 		t.Fatal(err)
 	}
 	preCommit := filepath.Join(installed.Report.ManagedPath, "pre-commit")
+	stale := strings.Replace(mustReadFile(t, preCommit), "command -v wb", "command -v wb-stale", 1)
+	mustWrite(t, preCommit, stale)
 	replacement := "#!/bin/sh\necho replacement-after-final-check\n"
 	_, err = Apply(ApplyOptions{
-		RepoPath: repo, WBExecutable: newExecutable,
+		RepoPath: repo, WBExecutable: executable,
 		afterManagedHookAuthorization: func(name string) {
 			if name == "pre-commit" {
 				replaceTestFile(t, preCommit, replacement)
@@ -966,7 +1101,8 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(data), managedStartMarker) || !strings.Contains(string(data), managedEndMarker) ||
-		!strings.Contains(string(data), shellQuote(executable)+" --projects-root '/tmp/projects root' hooks run 'pre-commit' -- \"$@\"") ||
+		!strings.Contains(string(data), `"$_wb_hook_executable" --projects-root '/tmp/projects root' hooks run 'pre-commit' -- "$@"`) ||
+		strings.Contains(string(data), executable) ||
 		strings.Contains(string(data), "exec ") {
 		t.Fatalf("unexpected shim:\n%s", data)
 	}
@@ -979,7 +1115,7 @@ func TestApplyCheckAndRepairManagedHooks(t *testing.T) {
 		t.Fatalf("generated hook syntax: %v\n%s", syntaxErr, output)
 	}
 
-	mustWrite(t, preCommit, strings.Replace(string(data), executable, "/old/wb", 1))
+	mustWrite(t, preCommit, strings.Replace(string(data), "command -v wb", "command -v wb-stale", 1))
 	stale := filepath.Join(result.Report.ManagedPath, "commit-msg")
 	mustWrite(t, stale, shimContent(executable, "commit-msg", "", projectsRoot, "", false))
 	report, err := Check(repo, "", executable, projectsRoot)
@@ -1058,25 +1194,19 @@ func TestCheckDoesNotFlagHookExecutableBuiltAfterHeadCommit(t *testing.T) {
 	}
 }
 
-// TestCheckIgnoresUnresolvableHookExecutable pins existing tests' fixtures,
-// which routinely point managed hooks at executable paths that were never
-// created on disk (e.g. "/opt/wb"). Apply itself now refuses to install a
-// hook pointing at a path that doesn't resolve to a durable executable, so
-// this writes the shim directly to reach a state Apply would no longer
-// produce. The staleness check must still skip silently rather than fail
-// Check or fabricate a finding when there's nothing to stat.
-func TestCheckIgnoresUnresolvableHookExecutable(t *testing.T) {
+// TestCheckIgnoresUnresolvableCurrentExecutable proves hook text validation is
+// independent of the executable path used by the checking process. Staleness
+// evidence is omitted when that current executable cannot be resolved.
+func TestCheckIgnoresUnresolvableCurrentExecutable(t *testing.T) {
 	repo := initWBSourceRepo(t)
 	isolateConfig(t)
 	executable := filepath.Join(t.TempDir(), "wb")
 	mustWriteExecutable(t, executable, "#!/bin/sh\nexit 0\n")
-	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	_, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
 	if err != nil {
 		t.Fatal(err)
 	}
-	preCommit := filepath.Join(result.Report.ManagedPath, "pre-commit")
-	mustWrite(t, preCommit, shimContent("/opt/wb-does-not-exist", "pre-commit", "", "", "", false))
-	report, err := Check(repo, "", executable, "")
+	report, err := Check(repo, "", "/opt/wb-does-not-exist", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1157,9 +1287,12 @@ func TestApplyEmbedsAbsoluteProjectsRootInManagedHooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := shellQuote(executable) + " --projects-root " + shellQuote(absoluteRoot) + " hooks run 'pre-commit'"
+	expected := `"$_wb_hook_executable" --projects-root ` + shellQuote(absoluteRoot) + " hooks run 'pre-commit'"
 	if !strings.Contains(string(preCommit), expected) {
 		t.Fatalf("managed hook does not preserve the absolute projects root %q:\n%s", absoluteRoot, preCommit)
+	}
+	if strings.Contains(string(preCommit), executable) {
+		t.Fatalf("managed hook persisted installer executable %q:\n%s", executable, preCommit)
 	}
 	if report, checkErr := Check(repo, "", executable, relativeRoot); checkErr != nil || len(report.Findings) != 0 {
 		t.Fatalf("relative projects root should check cleanly: report = %#v, error = %v", report, checkErr)
@@ -1197,13 +1330,13 @@ func TestRepairPreservesUserSectionsOutsideManagedDelimiter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, wanted := range []string{"set -eu", "echo before", "echo after", shellQuote(newExecutable) + " hooks run 'pre-push'"} {
+	for _, wanted := range []string{"set -eu", "echo before", "echo after", `"$_wb_hook_executable" hooks run 'pre-push'`} {
 		if !strings.Contains(string(prePushData), wanted) {
 			t.Fatalf("repaired pre-push lost %q:\n%s", wanted, prePushData)
 		}
 	}
-	if strings.Contains(string(prePushData), oldExecutable) {
-		t.Fatalf("old managed dispatcher remains:\n%s", prePushData)
+	if strings.Contains(string(prePushData), oldExecutable) || strings.Contains(string(prePushData), newExecutable) {
+		t.Fatalf("managed dispatcher retained an installer path:\n%s", prePushData)
 	}
 }
 

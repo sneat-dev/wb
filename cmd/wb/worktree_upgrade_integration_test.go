@@ -24,7 +24,12 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	projects := filepath.Join(root, "projects")
 	remote := filepath.Join(root, "remote.git")
 	canonical := filepath.Join(projects, "acme", "app")
+	// Candidate WB invocations deliberately have neither WB_EXECUTABLE nor the
+	// candidate binary on PATH. Their child Git hooks can succeed only when the
+	// running CLI transiently propagates its own executable. Standalone Git
+	// commands later in the journey model an operator-provided override.
 	upgradeEnv := wbUpgradeEnv(home)
+	hookEnv := append(append([]string(nil), upgradeEnv...), "WB_EXECUTABLE="+binary)
 	mustUpgradeMkdir(t, home)
 	resolvedHome, err := filepath.EvalSymlinks(home)
 	if err != nil {
@@ -69,17 +74,20 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 		checked := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "hooks", "check", canonical)
 		t.Fatalf("candidate did not refresh previous-release hook home:\n%s\ncheck exit=%d stdout=%s stderr=%s", refreshed, checked.exitCode, checked.stdout, checked.stderr)
 	}
+	if strings.Contains(string(refreshed), binary) || !strings.Contains(string(refreshed), "command -v wb") {
+		t.Fatalf("candidate retained the previous release's installer path instead of a runtime resolver:\n%s", refreshed)
+	}
 
 	// Both new and legacy linked worktrees now run the refreshed guard. A
 	// commit in each proves the default-pinned shim retains migration access.
 	mustUpgradeWrite(t, filepath.Join(worktree, "feature.txt"), "new home\n")
-	upgradeGit(t, worktree, upgradeEnv, "add", "feature.txt")
-	upgradeGit(t, worktree, upgradeEnv, "commit", "-m", "new home feature")
+	upgradeGit(t, worktree, hookEnv, "add", "feature.txt")
+	upgradeGit(t, worktree, hookEnv, "commit", "-m", "new home feature")
 	mustUpgradeWrite(t, filepath.Join(legacy, "legacy.txt"), "legacy\n")
-	upgradeGit(t, legacy, upgradeEnv, "add", "legacy.txt")
-	upgradeGit(t, legacy, upgradeEnv, "commit", "-m", "legacy feature")
-	legacyHead := upgradeGitOutput(t, legacy, upgradeEnv, "rev-parse", "HEAD")
-	upgradeGit(t, legacy, upgradeEnv, "push", "-u", "origin", "codex/legacy")
+	upgradeGit(t, legacy, hookEnv, "add", "legacy.txt")
+	upgradeGit(t, legacy, hookEnv, "commit", "-m", "legacy feature")
+	legacyHead := upgradeGitOutput(t, legacy, hookEnv, "rev-parse", "HEAD")
+	upgradeGit(t, legacy, hookEnv, "push", "-u", "origin", "codex/legacy")
 
 	listed := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "list", "--format", "json")
 	if listed.exitCode != exitOK || !strings.Contains(listed.stdout, worktree) || !strings.Contains(listed.stdout, legacy) {
@@ -94,11 +102,11 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	// hook and an explicit candidate guard must both accept only that transient
 	// detached state, then return to normal after --continue.
 	mustUpgradeWrite(t, filepath.Join(worktree, "README.md"), "feature side\n")
-	upgradeGit(t, worktree, upgradeEnv, "add", "README.md")
-	upgradeGit(t, worktree, upgradeEnv, "commit", "-m", "conflicting feature")
+	upgradeGit(t, worktree, hookEnv, "add", "README.md")
+	upgradeGit(t, worktree, hookEnv, "commit", "-m", "conflicting feature")
 	writeMainConflict(t, remote, root)
-	upgradeGit(t, worktree, upgradeEnv, "fetch", "origin", "main")
-	if output, err := runUpgradeGit(worktree, upgradeEnv, "rebase", "origin/main"); err == nil {
+	upgradeGit(t, worktree, hookEnv, "fetch", "origin", "main")
+	if output, err := runUpgradeGit(worktree, hookEnv, "rebase", "origin/main"); err == nil {
 		t.Fatalf("rebase unexpectedly succeeded:\n%s", output)
 	}
 	guarded := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "guard", worktree)
@@ -106,8 +114,8 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 		t.Fatalf("candidate guard rejected active rebase: %s", guarded.stderr)
 	}
 	mustUpgradeWrite(t, filepath.Join(worktree, "README.md"), "resolved\n")
-	upgradeGit(t, worktree, upgradeEnv, "add", "README.md")
-	if output, err := runUpgradeGit(worktree, append(upgradeEnv, "GIT_EDITOR=true"), "rebase", "--continue"); err != nil {
+	upgradeGit(t, worktree, hookEnv, "add", "README.md")
+	if output, err := runUpgradeGit(worktree, append(hookEnv, "GIT_EDITOR=true"), "rebase", "--continue"); err != nil {
 		t.Fatalf("finish rebase: %v\n%s", err, output)
 	}
 	guarded = runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "guard", worktree)
@@ -142,7 +150,7 @@ func runWBUpgrade(t *testing.T, binary string, environment []string, args ...str
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, binary, args...)
-	command.Env = append(os.Environ(), environment...)
+	command.Env = append(upgradeEnvironmentWithout(os.Environ(), "WB_EXECUTABLE"), environment...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -159,6 +167,22 @@ func runWBUpgrade(t *testing.T, binary string, environment []string, args ...str
 	}
 	t.Fatalf("wb %s: %v", strings.Join(args, " "), err)
 	return wbUpgradeResult{}
+}
+
+func upgradeEnvironmentWithout(environment []string, names ...string) []string {
+	removed := make(map[string]bool, len(names))
+	for _, name := range names {
+		removed[name] = true
+	}
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, found := strings.Cut(entry, "=")
+		if found && removed[name] {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func wbUpgradeEnv(home string) []string {
