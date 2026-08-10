@@ -7,7 +7,30 @@ description: Integrate compatible completed agent branches, prove remote receipt
 
 This is the canonical, harness-neutral merger contract. It is an operational
 skill, not a branch-prefix convention and not a model profile. Read
-[ci-polling.md](references/ci-polling.md) when CI must be observed.
+[ci-polling.md](references/ci-polling.md) when CI must be observed and
+[adapters.md](references/adapters.md) when installing or migrating a harness.
+
+The dedicated merger agent captures current `main` and selected-target failures
+as baseline diagnostics but never waits for current target CI to turn green;
+the candidate may fix a red target. The merger owns fetching and
+fast-forwarding, integration validation, exact-head CI, the merge and immediate
+push, post-merge target CI, release/install evidence, and cleanup. Main and
+planning agents hand work to the merger and receive only behavioral, design,
+or authority blockers. The invoking harness assigns this mechanical role to a
+faster, lower-cost model with adequate repository and CI capability; the Work
+Log records a model ID only when the runtime explicitly exposes it. Omit
+`--model` when it is not exposed; never infer or guess a model ID.
+
+Coordination uses one exclusive logical merger lane per
+`(repository, target branch)`, independent of the calling session. Main agents
+submit manual handoffs; the lane owner batches compatible work, orders
+dependencies, resolves mechanical conflicts, and owns the full delivery cycle.
+If its runtime dies, another session resumes the same logical lane and Work Log
+instead of opening a competing lane. In the founder MVP one agent may own
+multiple lanes; at scale, different repository/target lanes may run
+concurrently. WB does not yet provide durable merger submit, queue, claim, run,
+or status commands, so this skill is the manual-handoff vertical slice rather
+than a fictional queue.
 
 1. Inventory every relevant effort from WB claims/list and fetched Git refs:
    use `wb worktree list --github --format json` (and each named task where
@@ -23,28 +46,42 @@ skill, not a branch-prefix convention and not a model profile. Read
    `wb worktree create` with its required private prompt when a merger checkout
    is needed. Never create, repair, or substitute a checkout with raw Git
    worktree commands.
-4. Fetch and fast-forward the target from `origin` before preparing the batch.
+4. Capture current target failures as a diagnostic baseline, not a green gate.
+   Fetch and fast-forward the target from `origin` before preparing the batch.
    The dedicated merger checkout must be clean before every integration and
    push; unrelated dirty state is a blocker, not an exception.
    Integrate the compatible batch through the approved target integration
    route, validate after each merge, then run the full target verification.
+   Before candidate CI, prove the candidate head contains the freshly fetched
+   exact target SHA and that the target has a nonempty server-enforced strict
+   required-status-check policy. If the target advances, rebase or reintegrate
+   and obtain a new receipt. Merge-group observation is planned; this
+   source-head workflow must fail closed for a merge queue rather than claim
+   synthetic-SHA support.
    WB does not yet expose a generic `merge` subcommand: do not invent one or
    represent an unverified local integration as landed.
-5. Push the exact target immediately after validation. Record and verify the
-   remote target SHA; a local merge or a merely queued push is not receipt.
-   For a PR route, first wait for all observed CI on its exact source head
-   before merging, then wait for all observed CI/release evidence on the exact
-   pushed target merge SHA. For a direct route, wait for all observed CI on the
-   exact target SHA. Use `wb ci wait --repo <owner/repo> --target <target> --head <exact-sha> --json`
-   (for example, `wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json`); add
-   `--pr <number-or-url>` only to corroborate a PR head. Pending is
+5. Push whichever ref was integrated immediately after validation. For a
+   direct route, push the exact target and verify its remote SHA. For a PR route,
+   push the source branch, wait for its exact source-head and PR receipt, then
+   merge through the PR with that exact-head guard. Fetch again, fast-forward
+   the local target to `origin/<target>`, and prove that the fetched remote
+   target contains the exact merge SHA. A local merge, source push, or merely
+   queued target push is not target receipt. After either route, wait for all
+   observed CI and required release evidence on the exact remote target SHA.
+   Use `wb ci wait --repo <owner/repo> --target <target> --head <exact-sha>
+   --json` (for example, `wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json`);
+   add `--pr <number-or-url>` only to corroborate a PR head. Pending is
    intermediate state only: execute `resume_args` as structured JSON argv (or
    shell-quote every argument) and rerun until terminal pass or failure. A pass
-   records the target's enumerated required-check policy (including a pinned
-   GitHub App for direct-push checks) and an unchanged terminal reread of all
-   checks observed in that bounded window. It does not prove that no optional
-   workflow can register later, so it never replaces the next release-evidence
-   step.
+   records the target's enumerated required-check policy and an unchanged
+   terminal reread of all checks observed in that bounded window. In every
+   mode, an App-pinned required context must be produced by that exact GitHub
+   App; a same-named PR summary or legacy status is insufficient. The receipt
+   does not prove that no optional workflow can register later, so it never
+   replaces the next release-evidence step.
+   The strict server policy closes the final target-movement race; if GitHub
+   rejects the merge after the local rereads, keep the PR unmerged and
+   reintegrate instead of reporting completion.
 6. Collect required release evidence before terminalization. Then, for every
    landed task, inspect `wb worktree cleanup <task>` and apply
    `wb worktree cleanup <task> --apply --remote --older-than 0`. WB seals the

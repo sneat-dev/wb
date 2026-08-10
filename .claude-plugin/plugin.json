@@ -1,5 +1,6 @@
 {
   "name": "wb",
+  "version": "1.0.0",
   "description": "Token-efficient WB CLI operations and safe multi-repository workflows",
   "author": {
     "name": "Sneat.dev"
@@ -14,21 +15,5 @@
     "ci",
     "fleet",
     "agents"
-  ],
-  "skills": [
-    "./ai/skills/wb-install",
-    "./ai/skills/wb-worktrees",
-    "./ai/skills/wb-hooks",
-    "./ai/skills/wb-deps",
-    "./ai/skills/wb-ci",
-    "./ai/skills/wb-migrate",
-    "./ai/skills/wb-run",
-    "./ai/skills/wb-fleet",
-    "./ai/skills/wb-change",
-    "./ai/skills/wb-dependency-campaign",
-    "./ai/skills/wb-merge"
-  ],
-  "agents": [
-    "./agents/wb-merger.md"
   ]
 }

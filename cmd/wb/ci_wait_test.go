@@ -12,7 +12,10 @@ import (
 	"github.com/sneat-dev/wb/internal/orchestrate"
 )
 
-const ciWaitHead = "0123456789012345678901234567890123456789"
+const (
+	ciWaitHead       = "0123456789012345678901234567890123456789"
+	ciWaitTargetHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
 
 func TestCIWaitResumesForegroundSlicesUntilExactHeadPasses(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
@@ -24,6 +27,12 @@ func TestCIWaitResumesForegroundSlicesUntilExactHeadPasses(t *testing.T) {
 if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"feature/integration"}'
   exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/feature/integration'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
+  echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then
 	case " $* " in
@@ -43,9 +52,24 @@ if [ "$1" = pr ] && [ "$2" = checks ]; then
   fi
   exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  if [ "${WB_CI_WAIT_INVOCATION:-0}" -lt 2 ]; then
+    echo '{"total_count":1,"check_runs":[{"name":"CI","status":"in_progress","app":{"id":42}}]}'
+  else
+    echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'
+  fi
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
 if [ "$1" = api ] && echo "$2" | grep -q '^repos/acme/app/branches/feature%2Fintegration$'; then
   echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["CI"]}}}'
   exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '^repos/acme/app/branches/feature%2Fintegration/protection/required_status_checks$'; then
+  echo '{"strict":true,"contexts":["CI"],"checks":[]}'; exit 0
 fi
 if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/feature%2Fintegration?per_page=100'; then
   echo '[[]]'
@@ -79,7 +103,7 @@ exit 30
 			}
 			continue
 		}
-		if code != exitOK || output.Status != "passed" || output.ObservedHead != ciWaitHead || output.StableObservations != 2 {
+		if code != exitOK || output.Status != "passed" || output.ObservedHead != ciWaitHead || output.ObservedTargetHead != ciWaitTargetHead || !output.CandidateContainsTarget || output.TargetFreshnessAuthority == "" || output.StableObservations != 2 {
 			t.Fatalf("terminal slice = code %d output=%+v stderr=%s", code, output, stderr.String())
 		}
 		passedAt = invocation
@@ -105,9 +129,23 @@ if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'
   exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
+  echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then
   echo '[{"name":"CI","bucket":"fail"}]'
   exit 1
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":0,"check_runs":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
 fi
 echo "unexpected gh args: $*" >&2
 exit 30
@@ -360,6 +398,318 @@ echo "unexpected gh args: $*" >&2; exit 30
 				t.Fatalf("wrong producer was not explained: %+v", output)
 			}
 		})
+	}
+}
+
+func TestCIWaitPullRequestHonorsPinnedRequiredCheckIntegration(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		appID      string
+		wantStatus string
+		wantCode   int
+		slice      string
+	}{
+		{name: "matching app", appID: "42", wantStatus: "passed", wantCode: exitOK, slice: "15s"},
+		{name: "same name wrong app", appID: "7", wantStatus: "pending", wantCode: exitFindings, slice: "5s"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bin := filepath.Join(t.TempDir(), "bin")
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
+  echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then
+  echo '[{"name":"CI","bucket":"pass","link":"https://example.test/pr-check"}]'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":true,"protection":{}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[[{"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7,"parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"CI","integration_id":42}]}}]]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":` + test.appID + `}}]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":1,"statuses":[{"context":"CI","state":"success"}]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+			writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", test.slice, "--interval", "100ms", "--json"}, &stdout, &stderr)
+			var output ciWaitOutput
+			if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+				t.Fatal(err)
+			}
+			if code != test.wantCode || string(output.Status) != test.wantStatus || len(output.RequiredChecks) != 1 || output.RequiredChecks[0].IntegrationID != 42 {
+				t.Fatalf("PR pinned integration receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+			}
+			if test.wantStatus == "pending" && !strings.Contains(output.Reason, "GitHub App 42") {
+				t.Fatalf("PR summary or wrong producer satisfied pinned requirement: %+v", output)
+			}
+			if test.wantStatus == "passed" {
+				foundProducer := false
+				for _, check := range output.Checks {
+					if check.Name == "check-run:CI" && check.AppID == 42 {
+						foundProducer = true
+					}
+				}
+				if !foundProducer || output.StableObservations != 2 {
+					t.Fatalf("PR pass lacks producer-aware stable exact-head receipt: %+v", output)
+				}
+			}
+		})
+	}
+}
+
+func TestCIWaitFreshPullRequestDoesNotWaitForRedTargetCI(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0
+fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then
+  echo '[{"name":"CI","bucket":"pass"}]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
+  echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs'; then
+  echo '{"total_count":1,"check_runs":[{"name":"Target CI","status":"completed","conclusion":"failure","app":{"id":42}}]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then
+  echo '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[[]]'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitOK || output.Status != "passed" || output.ObservedTargetHead != ciWaitTargetHead || !output.CandidateContainsTarget || !strings.Contains(output.TargetFreshnessAuthority, "strict") {
+		t.Fatalf("fresh PR receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+}
+
+func TestCIWaitRejectsStalePullRequestBeforeChecks(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
+  echo '{"status":"behind","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"cccccccccccccccccccccccccccccccccccccccc"}}'; exit 0
+fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then
+  echo 'stale candidate reached checks' >&2; exit 31
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFindings || output.Status != "failed" || output.CandidateContainsTarget || !strings.Contains(output.Reason, "does not contain current target") {
+		t.Fatalf("stale PR receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+}
+
+func TestCIWaitRejectsPullRequestWithoutServerFreshnessFence(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["CI"]}}}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"strict":false,"contexts":["CI"],"checks":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFindings || output.Status != "failed" || output.TargetFreshnessAuthority != "" || !strings.Contains(output.Reason, "server-enforced strict up-to-date fence") {
+		t.Fatalf("unfenced PR receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+}
+
+func TestCIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["CI"]}}}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"contexts":["CI"],"checks":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFindings || output.Status != "pending" || output.TargetFreshnessAuthority != "" || !strings.Contains(output.Reason, "omitted strict") {
+		t.Fatalf("missing strict receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+}
+
+func TestCIWaitRejectsEmptyStrictFreshnessPolicy(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then case " $* " in *" --required "*) echo '[]';; *) echo '[{"name":"Optional","bucket":"pass"}]';; esac; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"Optional","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{}}}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"strict":true,"contexts":[],"checks":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFindings || output.Status != "failed" || output.TargetFreshnessAuthority != "" || !strings.Contains(output.Reason, "server-enforced strict up-to-date fence") {
+		t.Fatalf("empty strict policy receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+}
+
+func TestCIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{}}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[{"type":"merge_queue","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":9,"parameters":{}}]]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFindings || output.Status != "pending" || !strings.Contains(output.Reason, "merge-group check observation") {
+		t.Fatalf("merge-queue source-head receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+}
+
+func TestCIWaitRejectsTargetAdvanceAfterStablePullRequestChecks(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "target-reads")
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  count=0; if [ -f "$WB_TARGET_STATE" ]; then count=$(cat "$WB_TARGET_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_TARGET_STATE"
+  if [ "$count" -le 2 ]; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; else echo '{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'; fi
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["CI"]}}}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"strict":true,"contexts":["CI"],"checks":[]}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_TARGET_STATE", state)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitFindings || output.Status != "failed" || output.StableObservations != 2 || !strings.Contains(output.Reason, "advanced after checks passed") {
+		t.Fatalf("target-advance receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
 	}
 }
 

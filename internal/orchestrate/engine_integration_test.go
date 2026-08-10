@@ -151,29 +151,69 @@ func TestNormalizePublicationImplicationsAndValidation(t *testing.T) {
 	}
 }
 
-func TestWaitAndMergeRetriesUntilGitHubChecksAppear(t *testing.T) {
+func TestWaitAndMergeRequiresStableProducerAwareExactHeadReceipt(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	state := filepath.Join(t.TempDir(), "checks-state")
 	script := `#!/bin/sh
-if [ "$2" = view ]; then
-  echo '{"headRefOid":"0123456789012345678901234567890123456789"}'
+if [ "$1" = pr ] && [ "$2" = view ]; then
+  echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'
   exit 0
 fi
-if [ "$2" = checks ]; then
-  if [ ! -f "$WB_CHECK_STATE" ]; then
-    : > "$WB_CHECK_STATE"
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
+  echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
+  exit 0
+fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then
+  count=0
+  if [ -f "$WB_CHECK_STATE" ]; then count=$(cat "$WB_CHECK_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CHECK_STATE"
+  if [ "$count" -eq 1 ]; then
     echo "no checks reported on the branch" >&2
     exit 1
   fi
   echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'
   exit 0
 fi
-if [ "$2" = merge ]; then
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'
   exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'
+  exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then
+  echo '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[[]]'
+  exit 0
+fi
+if [ "$1" = pr ] && [ "$2" = merge ]; then
+  count=$(cat "$WB_CHECK_STATE")
+  if [ "$count" -lt 6 ]; then
+    echo "merge attempted before stable exact-head reread: $count" >&2
+    exit 31
+  fi
+  case " $* " in
+    *" --match-head-commit 0123456789012345678901234567890123456789 "*) ;;
+    *) echo "merge omitted exact head guard: $*" >&2; exit 32;;
+  esac
+  exit 0
+fi
+echo "unexpected gh args: $*" >&2
 exit 2
 `
 	writeEngineFile(t, filepath.Join(bin, "gh"), script)
@@ -183,7 +223,7 @@ exit 2
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CHECK_STATE", state)
 
-	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Commit: "0123456789012345678901234567890123456789"}
+	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Ref: "main", Commit: "0123456789012345678901234567890123456789"}
 	// This exercises retry semantics, not a process-start SLA. Under the full
 	// suite's parallel package load, a shell process can be scheduled late
 	// enough to hit a short artificial boundary before it runs at all. The
@@ -194,8 +234,44 @@ exit 2
 	if err := waitAndMerge(ctx, Options{Timeout: 30 * time.Second, CheckPollInterval: time.Millisecond}, &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Merged || result.Status != "merged" || len(result.Checks) != 1 || result.Checks[0].Bucket != "pass" {
+	if !result.Merged || result.Status != "merged" || len(result.Checks) < 2 || !strings.Contains(result.Reason, "producer-aware") {
 		t.Fatalf("result = %+v", result)
+	}
+	if count, err := os.ReadFile(state); err != nil || strings.TrimSpace(string(count)) != "6" {
+		t.Fatalf("stabilized waiter did not perform the expected observed/required rereads: count=%q err=%v", count, err)
+	}
+}
+
+func TestWaitAndMergeLeavesPullRequestUnmergedWhenProtectedMergeRejectsLateTargetAdvance(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = merge ]; then echo 'base branch advanced; strict update required' >&2; exit 17; fi
+echo "unexpected gh args: $*" >&2; exit 2
+`
+	writeEngineFile(t, filepath.Join(bin, "gh"), script)
+	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Ref: "main", Commit: "0123456789012345678901234567890123456789"}
+	err := waitAndMerge(context.Background(), Options{Timeout: 30 * time.Second, CheckPollInterval: time.Millisecond}, &result)
+	if err == nil || !strings.Contains(err.Error(), "base branch advanced") {
+		t.Fatalf("late target advance error = %v", err)
+	}
+	if result.Merged || result.Status == "merged" {
+		t.Fatalf("protected merge rejection was reported as merged: %+v", result)
 	}
 }
 

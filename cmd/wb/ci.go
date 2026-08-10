@@ -55,16 +55,21 @@ func newCIWaitCmd() *cobra.Command {
 
 Every invocation is bounded (eight minutes by default, never ten), foreground,
 and terminating. A pending result exits 1 with exact resume arguments; invoke
-those again until checks pass or fail. With --pr, WB re-reads that PR's head
-and target before every check observation. Without --pr, it observes the exact
-direct-push target commit through GitHub check runs and commit statuses. A pass
-requires GitHub's authoritative required-check policy plus an unchanged
-terminal reread, so the first green snapshot cannot become sole merger
-evidence while suites are still registering. The reread proves bounded
-observed-set quiescence, not that a future optional workflow can never appear;
-collect separate release evidence where the repository requires it. Either
-mode rejects drift; no later commit can inherit a prior head's receipt. This
-command never starts a detached watcher or background loop.`,
+those again until checks pass or fail. In every mode WB reads the exact head's
+GitHub check runs and commit statuses, preserving each check-run producer App.
+With --pr it also re-reads that PR's head and target and corroborates GitHub's
+PR check views. PR mode fetches the exact target SHA, proves that SHA is an
+ancestor of the candidate, and requires a server-enforced strict policy with at
+least one required check. It never waits for current target CI to turn green;
+the candidate may fix a red target. A same-named PR summary or legacy status
+cannot satisfy a required context pinned to another GitHub App. A pass requires
+GitHub's authoritative required-check policy plus a terminal reread that is
+unchanged, so the first green snapshot cannot become sole merger evidence while
+suites are still registering. A target advance rejects the receipt. Merge-group
+observation is not implemented, so merge-queue PRs fail closed. The reread
+proves bounded observed-set quiescence, not that a future optional workflow can
+never appear; collect separate release evidence where the repository requires
+it. This command never starts a detached watcher or background loop.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.NoArgs(command, args); err != nil {
 				return err

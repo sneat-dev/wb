@@ -16,10 +16,11 @@ import (
 const MaxForegroundCheckWaitSlice = 9 * time.Minute
 
 // WaitForCommitChecks observes checks for one exact target commit. PullRequest
-// is optional: when present it corroborates that exact PR head and target;
-// without it WB observes the target branch's exact direct-push commit through
-// the GitHub check-runs API. Pending is an intermediate terminal result that
-// callers resume with the same identity, not successful completion.
+// is optional: when present it corroborates that exact PR head and target and
+// augments the exact-head check-run/status receipt with GitHub's PR view.
+// Every mode observes the exact commit through producer-aware APIs. Pending is
+// an intermediate terminal result that callers resume with the same identity,
+// not successful completion.
 func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (PullRequestWaitResult, error) {
 	if strings.TrimSpace(options.Repository) == "" || strings.TrimSpace(options.Target) == "" || strings.TrimSpace(options.Head) == "" {
 		return PullRequestWaitResult{}, fmt.Errorf("repository, target, and exact head are required")
@@ -51,6 +52,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			}
 			return failedCommitWaitResult(result, err.Error()), nil
 		}
+		observedTargetHead := ""
 		if options.PullRequest != "" {
 			observedHead, observedTarget, reason := pullRequestIdentity(sliceCtx, options.Repository, options.PullRequest)
 			result.ObservedHead = observedHead
@@ -66,6 +68,25 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			if observedTarget != options.Target {
 				return failedCommitWaitResult(result, fmt.Sprintf("pull request target drifted from %s to %s; start a new exact wait", options.Target, observedTarget)), nil
 			}
+			observedTargetHead, reason = targetHead(sliceCtx, options.Repository, options.Target)
+			result.ObservedTargetHead = observedTargetHead
+			if reason != "" {
+				if sliceCtx.Err() == context.DeadlineExceeded {
+					return pendingCommitWaitResult(result), nil
+				}
+				return failedCommitWaitResult(result, "read exact pull-request target head: "+reason), nil
+			}
+			containsTarget, reason := candidateContainsTarget(sliceCtx, options.Repository, observedTargetHead, options.Head)
+			if reason != "" {
+				if sliceCtx.Err() == context.DeadlineExceeded {
+					return pendingCommitWaitResult(result), nil
+				}
+				return failedCommitWaitResult(result, reason), nil
+			}
+			result.CandidateContainsTarget = containsTarget
+			if !containsTarget {
+				return failedCommitWaitResult(result, fmt.Sprintf("pull request head %s does not contain current target %s at %s; rebase or reintegrate before waiting or merging", options.Head, options.Target, observedTargetHead)), nil
+			}
 		} else {
 			observedHead, reason := targetHead(sliceCtx, options.Repository, options.Target)
 			result.ObservedHead = observedHead
@@ -78,6 +99,9 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			if observedHead != options.Head {
 				return failedCommitWaitResult(result, fmt.Sprintf("target %s advanced from exact head %s to %s; start a new exact wait", options.Target, options.Head, observedHead)), nil
 			}
+			observedTargetHead = observedHead
+			result.ObservedTargetHead = observedHead
+			result.CandidateContainsTarget = true
 		}
 
 		checks, pending, reason := commitChecks(sliceCtx, options)
@@ -102,17 +126,24 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			return failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled"), nil
 		}
 
-		requiredChecks, authority, authorityReason := requiredChecksReceipt(sliceCtx, options)
-		result.RequiredChecks = requiredChecks
-		result.RequiredChecksAuthority = authority
+		requiredChecks, authority, freshnessAuthority, authorityReason := requiredChecksReceipt(sliceCtx, options)
 		if authorityReason != "" {
+			if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
+				return pendingCommitWaitResult(result), nil
+			}
 			result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + authorityReason
 			return pendingCommitWaitResult(result), nil
 		}
-		missingRequired := missingRequiredChecks(checks, requiredChecks, options.PullRequest == "")
+		result.RequiredChecks = requiredChecks
+		result.RequiredChecksAuthority = authority
+		result.TargetFreshnessAuthority = freshnessAuthority
+		if options.PullRequest != "" && freshnessAuthority == "" {
+			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
+		}
+		missingRequired := missingRequiredChecks(checks, requiredChecks)
 		terminal := len(checks) > 0 && !pending && len(missingRequired) == 0
 		if terminal {
-			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority)
+			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, observedTargetHead, freshnessAuthority)
 			if fingerprint == stableFingerprint {
 				stableObservations++
 			} else {
@@ -148,6 +179,16 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				if observedHead != options.Head || observedTarget != options.Target {
 					return failedCommitWaitResult(result, "pull request identity changed after checks passed; start a new exact wait"), nil
 				}
+				finalTargetHead, targetReason := targetHead(sliceCtx, options.Repository, options.Target)
+				if targetReason != "" {
+					if sliceCtx.Err() == context.DeadlineExceeded {
+						return pendingCommitWaitResult(result), nil
+					}
+					return failedCommitWaitResult(result, "re-read exact pull-request target head: "+targetReason), nil
+				}
+				if finalTargetHead != observedTargetHead {
+					return failedCommitWaitResult(result, fmt.Sprintf("target %s advanced after checks passed from %s to %s; rebase or reintegrate before merging", options.Target, observedTargetHead, finalTargetHead)), nil
+				}
 			} else {
 				observedHead, reason := targetHead(sliceCtx, options.Repository, options.Target)
 				result.ObservedHead = observedHead
@@ -162,7 +203,11 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				}
 			}
 			result.Status = PullRequestWaitPassed
-			result.Reason = "GitHub's required-check policy was enumerated (possibly empty), every required check was present, and the observed GitHub check set stayed terminal across a bounded stable reread for the exact target identity"
+			if options.PullRequest != "" {
+				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, server-side target freshness was enforced, and the observed GitHub check set stayed terminal across a bounded stable reread"
+			} else {
+				result.Reason = "GitHub's required-check policy was enumerated (possibly empty), every required check was present, and the exact remote target's observed check set stayed terminal across a bounded stable reread"
+			}
 			return result, nil
 		}
 		if terminal {
@@ -214,14 +259,16 @@ func failedCommitWaitResult(result PullRequestWaitResult, reason string) PullReq
 }
 
 func commitChecks(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
+	checks := make([]RemoteCheck, 0)
+	pending := false
 	if options.PullRequest != "" {
 		output, _, commandErr := runCommand(ctx, 0, 0, "", "gh", "pr", "checks", options.PullRequest, "--repo", options.Repository, "--json", "name,bucket,link")
-		checks, pending, err := decodePullRequestChecks(options.PullRequest, output, commandErr)
+		prChecks, prPending, err := decodePullRequestChecks(options.PullRequest, output, commandErr)
 		if err != nil {
 			return nil, false, err.Error()
 		}
-		sortRemoteChecks(checks)
-		return checks, pending, ""
+		checks = append(checks, prChecks...)
+		pending = prPending
 	}
 	runChecks, runPending, reason := commitCheckRuns(ctx, options)
 	if reason != "" {
@@ -231,8 +278,9 @@ func commitChecks(ctx context.Context, options PullRequestWaitOptions) ([]Remote
 	if reason != "" {
 		return nil, false, reason
 	}
-	checks := append(runChecks, statusChecks...)
-	pending := runPending || statusPending || len(checks) == 0
+	checks = append(checks, runChecks...)
+	checks = append(checks, statusChecks...)
+	pending = pending || runPending || statusPending || len(checks) == 0
 	sortRemoteChecks(checks)
 	return checks, pending, ""
 }
@@ -252,9 +300,13 @@ func sortRemoteChecks(checks []RemoteCheck) {
 	})
 }
 
-func terminalChecksFingerprint(checks []RemoteCheck, required []RequiredRemoteCheck, authority string) string {
+func terminalChecksFingerprint(checks []RemoteCheck, required []RequiredRemoteCheck, authority, targetHead, freshnessAuthority string) string {
 	var builder strings.Builder
 	builder.WriteString(authority)
+	builder.WriteString("\ntarget:")
+	builder.WriteString(targetHead)
+	builder.WriteString("\nfreshness:")
+	builder.WriteString(freshnessAuthority)
 	for _, expectation := range required {
 		builder.WriteByte('\n')
 		builder.WriteString("required:")
@@ -275,7 +327,7 @@ func terminalChecksFingerprint(checks []RemoteCheck, required []RequiredRemoteCh
 	return builder.String()
 }
 
-func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck, requireIntegration bool) []string {
+func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck) []string {
 	observed := make(map[string][]RemoteCheck, len(checks))
 	for _, check := range checks {
 		name := strings.TrimSpace(check.Name)
@@ -289,14 +341,14 @@ func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck,
 	for _, expectation := range required {
 		matched := false
 		for _, check := range observed[expectation.Name] {
-			if !requireIntegration || expectation.IntegrationID == 0 || check.AppID == expectation.IntegrationID {
+			if expectation.IntegrationID == 0 || check.AppID == expectation.IntegrationID {
 				matched = true
 				break
 			}
 		}
 		if !matched {
 			label := expectation.Name
-			if requireIntegration && expectation.IntegrationID != 0 {
+			if expectation.IntegrationID != 0 {
 				label += fmt.Sprintf(" (GitHub App %d)", expectation.IntegrationID)
 			}
 			missing = append(missing, label)
@@ -310,11 +362,11 @@ func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck,
 // PR's effective required-check view when one exists. A terminal result is not
 // allowed when any authority cannot be read: an observed green snapshot can
 // otherwise precede registration of a required workflow on the same SHA.
-func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions) ([]RequiredRemoteCheck, string, string) {
+func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions) ([]RequiredRemoteCheck, string, string, string) {
 	required := map[string]RequiredRemoteCheck{}
-	branchChecks, reason := targetBranchRequiredChecks(ctx, options.Repository, options.Target)
+	branchChecks, freshnessAuthority, reason := targetBranchRequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "")
 	if reason != "" {
-		return nil, "", reason
+		return nil, "", "", reason
 	}
 	for _, expectation := range branchChecks {
 		addRequiredExpectation(required, expectation)
@@ -323,7 +375,7 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions) 
 	if options.PullRequest != "" {
 		prChecks, prReason := pullRequestRequiredChecks(ctx, options.Repository, options.PullRequest)
 		if prReason != "" {
-			return nil, "", prReason
+			return nil, "", "", prReason
 		}
 		for _, expectation := range prChecks {
 			addRequiredExpectation(required, expectation)
@@ -335,7 +387,7 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions) 
 		checks = append(checks, expectation)
 	}
 	sortRequiredChecks(checks)
-	return checks, authority, ""
+	return checks, authority, freshnessAuthority, ""
 }
 
 func pullRequestRequiredChecks(ctx context.Context, repository, pullRequest string) ([]RequiredRemoteCheck, string) {
@@ -376,74 +428,114 @@ type githubBranchPolicyView struct {
 	} `json:"protection"`
 }
 
+type githubRequiredStatusChecksPolicy struct {
+	Strict   *bool    `json:"strict"`
+	Contexts []string `json:"contexts"`
+	Checks   []struct {
+		Context string `json:"context"`
+		AppID   int64  `json:"app_id"`
+	} `json:"checks"`
+}
+
 type githubActiveBranchRule struct {
 	Type              string `json:"type"`
 	RulesetSourceType string `json:"ruleset_source_type"`
 	RulesetSource     string `json:"ruleset_source"`
 	RulesetID         int64  `json:"ruleset_id"`
 	Parameters        struct {
-		RequiredStatusChecks []struct {
+		StrictRequiredStatusChecksPolicy *bool `json:"strict_required_status_checks_policy"`
+		RequiredStatusChecks             []struct {
 			Context       string `json:"context"`
 			IntegrationID int64  `json:"integration_id"`
 		} `json:"required_status_checks"`
 	} `json:"parameters"`
 }
 
-func targetBranchRequiredChecks(ctx context.Context, repository, target string) ([]RequiredRemoteCheck, string) {
+func targetBranchRequiredChecks(ctx context.Context, repository, target string, requireServerFreshness bool) ([]RequiredRemoteCheck, string, string) {
 	branchEndpoint := "repos/" + repository + "/branches/" + url.PathEscape(target)
 	branchOutput, _, branchErr := runCommand(ctx, 0, 0, "", "gh", "api", branchEndpoint)
 	if branchErr != nil {
-		return nil, fmt.Sprintf("read target branch protection for %s: %v", target, branchErr)
+		return nil, "", fmt.Sprintf("read target branch protection for %s: %v", target, branchErr)
 	}
 	var branch githubBranchPolicyView
 	if err := json.Unmarshal([]byte(branchOutput), &branch); err != nil {
-		return nil, fmt.Sprintf("decode target branch protection for %s: %v", target, err)
+		return nil, "", fmt.Sprintf("decode target branch protection for %s: %v", target, err)
 	}
 	if branch.Protected == nil {
-		return nil, fmt.Sprintf("target branch protection for %s omitted the protected policy receipt", target)
+		return nil, "", fmt.Sprintf("target branch protection for %s omitted the protected policy receipt", target)
 	}
 	required := map[string]RequiredRemoteCheck{}
+	freshnessAuthorities := make([]string, 0)
 	if branch.Protection.RequiredStatusChecks != nil {
-		for _, name := range branch.Protection.RequiredStatusChecks.Contexts {
+		contexts := branch.Protection.RequiredStatusChecks.Contexts
+		checks := branch.Protection.RequiredStatusChecks.Checks
+		classicStrict := false
+		if requireServerFreshness {
+			detailOutput, _, detailErr := runCommand(ctx, 0, 0, "", "gh", "api", branchEndpoint+"/protection/required_status_checks")
+			if detailErr != nil {
+				return nil, "", fmt.Sprintf("read authoritative required-status-check policy for %s: %v", target, detailErr)
+			}
+			var detail githubRequiredStatusChecksPolicy
+			if err := json.Unmarshal([]byte(detailOutput), &detail); err != nil {
+				return nil, "", fmt.Sprintf("decode authoritative required-status-check policy for %s: %v", target, err)
+			}
+			if detail.Strict == nil {
+				return nil, "", fmt.Sprintf("authoritative required-status-check policy for %s omitted strict", target)
+			}
+			classicStrict = *detail.Strict
+			contexts = detail.Contexts
+			checks = detail.Checks
+		}
+		for _, name := range contexts {
 			if reason := addRequiredCheck(required, name, 0); reason != "" {
-				return nil, "target branch protection " + reason
+				return nil, "", "target branch protection " + reason
 			}
 		}
-		for _, check := range branch.Protection.RequiredStatusChecks.Checks {
+		for _, check := range checks {
 			if reason := addRequiredCheck(required, check.Context, check.AppID); reason != "" {
-				return nil, "target branch protection " + reason
+				return nil, "", "target branch protection " + reason
 			}
+		}
+		if classicStrict && len(contexts)+len(checks) > 0 {
+			freshnessAuthorities = append(freshnessAuthorities, "classic strict required-status-check policy")
 		}
 	}
 
 	rulesEndpoint := "repos/" + repository + "/rules/branches/" + url.PathEscape(target) + "?per_page=100"
 	rulesOutput, _, rulesErr := runCommand(ctx, 0, 0, "", "gh", "api", "--paginate", "--slurp", rulesEndpoint)
 	if rulesErr != nil {
-		return nil, fmt.Sprintf("read active branch rules for target %s: %v", target, rulesErr)
+		return nil, "", fmt.Sprintf("read active branch rules for target %s: %v", target, rulesErr)
 	}
 	var pages [][]githubActiveBranchRule
 	if err := json.Unmarshal([]byte(rulesOutput), &pages); err != nil {
-		return nil, fmt.Sprintf("decode paginated active branch rules for target %s: %v", target, err)
+		return nil, "", fmt.Sprintf("decode paginated active branch rules for target %s: %v", target, err)
 	}
 	if len(pages) == 0 {
-		return nil, fmt.Sprintf("paginated active branch rules for target %s returned no page receipt", target)
+		return nil, "", fmt.Sprintf("paginated active branch rules for target %s returned no page receipt", target)
 	}
 	for _, page := range pages {
 		for _, rule := range page {
 			ruleType := strings.TrimSpace(rule.Type)
 			if ruleType == "" {
-				return nil, fmt.Sprintf("active branch rule for target %s omitted its type", target)
+				return nil, "", fmt.Sprintf("active branch rule for target %s omitted its type", target)
 			}
 			source := fmt.Sprintf("ruleset %d (%s %s)", rule.RulesetID, rule.RulesetSourceType, rule.RulesetSource)
 			switch {
 			case ruleType == "required_status_checks":
 				for _, check := range rule.Parameters.RequiredStatusChecks {
 					if reason := addRequiredCheck(required, check.Context, check.IntegrationID); reason != "" {
-						return nil, source + " " + reason
+						return nil, "", source + " " + reason
 					}
 				}
+				if rule.Parameters.StrictRequiredStatusChecksPolicy != nil && *rule.Parameters.StrictRequiredStatusChecksPolicy && len(rule.Parameters.RequiredStatusChecks) > 0 {
+					freshnessAuthorities = append(freshnessAuthorities, fmt.Sprintf("strict required-status-check ruleset %d", rule.RulesetID))
+				}
+			case ruleType == "merge_queue":
+				if requireServerFreshness {
+					return nil, "", fmt.Sprintf("%s requires merge-group check observation, which this source-head waiter does not yet implement", source)
+				}
 			case strings.Contains(ruleType, "workflow"):
-				return nil, fmt.Sprintf("%s contains %s, whose expected check names GitHub does not expose in this receipt", source, ruleType)
+				return nil, "", fmt.Sprintf("%s contains %s, whose expected check names GitHub does not expose in this receipt", source, ruleType)
 			}
 		}
 	}
@@ -453,7 +545,8 @@ func targetBranchRequiredChecks(ctx context.Context, repository, target string) 
 		checks = append(checks, expectation)
 	}
 	sortRequiredChecks(checks)
-	return checks, ""
+	sort.Strings(freshnessAuthorities)
+	return checks, strings.Join(freshnessAuthorities, "+"), ""
 }
 
 func addRequiredCheck(required map[string]RequiredRemoteCheck, value string, integrationID int64) string {
@@ -589,6 +682,48 @@ func targetHead(ctx context.Context, repository, target string) (string, string)
 		return "", "GitHub target ref returned no SHA"
 	}
 	return strings.TrimSpace(reference.Object.SHA), ""
+}
+
+type githubCompareView struct {
+	Status     string `json:"status"`
+	BaseCommit struct {
+		SHA string `json:"sha"`
+	} `json:"base_commit"`
+	MergeBaseCommit struct {
+		SHA string `json:"sha"`
+	} `json:"merge_base_commit"`
+}
+
+func candidateContainsTarget(ctx context.Context, repository, target, candidate string) (bool, string) {
+	endpoint := "repos/" + repository + "/compare/" + target + "..." + candidate
+	output, _, err := runCommand(ctx, 0, 0, "", "gh", "api", endpoint)
+	if err != nil {
+		return false, fmt.Sprintf("prove candidate ancestry against target %s: %v", target, err)
+	}
+	var comparison githubCompareView
+	if err := json.Unmarshal([]byte(output), &comparison); err != nil {
+		return false, fmt.Sprintf("decode candidate ancestry against target %s: %v", target, err)
+	}
+	status := strings.TrimSpace(comparison.Status)
+	base := strings.TrimSpace(comparison.BaseCommit.SHA)
+	mergeBase := strings.TrimSpace(comparison.MergeBaseCommit.SHA)
+	if base == "" || mergeBase == "" {
+		return false, fmt.Sprintf("GitHub comparison omitted base or merge-base SHA for target %s", target)
+	}
+	if base != target {
+		return false, fmt.Sprintf("GitHub comparison returned base %s, want exact target %s", base, target)
+	}
+	switch status {
+	case "ahead", "identical":
+		if mergeBase != target {
+			return false, fmt.Sprintf("GitHub comparison status %s did not use target %s as merge base (got %s)", status, target, mergeBase)
+		}
+		return true, ""
+	case "behind", "diverged":
+		return false, ""
+	default:
+		return false, fmt.Sprintf("GitHub comparison returned unsupported status %q for target %s and candidate %s", status, target, candidate)
+	}
 }
 
 type githubCheckRunsResponse struct {

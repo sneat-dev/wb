@@ -204,7 +204,9 @@ contract for Claude, Codex, and GitHub Copilot when this WB plugin/repository
 is installed: it inventories active work without a branch prefix assumption,
 validates/pushes an exact target receipt, uses bounded foreground `wb ci wait`
 slices, then performs audited cleanup. Marketplace distribution to every
-harness is still pending. The full
+harness is still pending: checked-in adapter files alone are not an installed
+merger. Once installed, this adapter supersedes copied legacy merger prompts.
+The full
 `wb worktree log` command group, seven-day history, and authorized encrypted
 private-prompt export are also planned.
 
@@ -509,10 +511,16 @@ stages. Local lint, test, and build checks are enabled by default; use
 them explicitly.
 
 WB opens all eligible PRs before entering its CI-wait phase, so independent
-repository work continues while earlier PRs build. A merge requires at least
-one observed GitHub check and every observed check must pass or be explicitly
-skipped. Failing, cancelled, conflicted, checkless, and timed-out PRs remain
-open. `--resume` validates and reuses the expected worktree branch and open PR.
+repository work continues while earlier PRs build. A merge uses the same
+bounded exact-head waiter as `wb ci wait`: it reads target policy, verifies
+producer-pinned checks against exact-head check runs, proves that the candidate
+contains the freshly fetched target, and requires both a nonempty strict
+freshness policy and an unchanged terminal reread before issuing an
+exact-head-guarded GitHub merge. It does not require current target CI to be
+green; the candidate may fix it. Pending, failing, cancelled, conflicted,
+checkless, stale, unfenced, and timed-out PRs remain open for an explicit
+resume. `--resume` validates and reuses the expected worktree branch and open
+PR.
 
 Every run writes `deps-set.md` and `deps-set.yaml` below
 `<wb-home>/reports/<operation>` (or `--report-dir`; normally
@@ -1049,17 +1057,24 @@ wb ci wait --repo sneat-dev/wb --pr <number> --target main --head <exact-sha> --
 
 Each foreground slice is eight minutes by default and never more than nine.
 Pending and failed results exit `1`; pending JSON includes `resume_args` for
-the same exact identity. Reinvoke those arguments until a terminal result. A
-direct target receipt rejects target-head drift and combines GitHub check runs
-with legacy commit statuses. WB enumerates classic protection and every
-paginated active branch rule; a producer-pinned required context must come
-from that exact GitHub App in direct mode. Missing policy authority, unsupported
-required-workflow names, or incomplete check/status pagination remain pending
-or fail closed. A pass requires two unchanged terminal observations. That is a
-bounded quiescence receipt, not proof that an optional workflow cannot register
-later, so collect separate repository release evidence before cleanup. PR mode
-also rejects source-head or target drift. Do not replace this with a detached
-or long-running shell poller.
+the same exact identity. Reinvoke those arguments until a terminal result. In
+every mode WB combines the exact head's GitHub check runs with legacy commit
+statuses. PR mode additionally corroborates the PR identity and GitHub's PR
+check views. WB enumerates classic protection and every paginated active branch
+rule; a producer-pinned required context must come from that exact GitHub App
+in every mode. A same-named PR summary or legacy status cannot substitute for
+the pinned producer. PR mode also fetches the exact target SHA, proves it is an
+ancestor of the candidate, and requires either classic or ruleset strict
+required-status-check policy with at least one required check. It does not wait
+for current target CI to turn green: an updated candidate may be the fix for a
+red target. Target movement rejects the receipt and requires reintegration.
+Merge-group observation for merge queues remains planned and fails closed.
+Missing policy authority, unsupported required-workflow names, or incomplete
+check/status pagination remain pending or fail closed. A pass requires two
+unchanged terminal observations. That is a bounded quiescence receipt, not
+proof that an optional workflow cannot register later, so collect separate
+repository release evidence before cleanup. Both modes reject identity drift.
+Do not replace this with a detached or long-running shell poller.
 
 ### `wb hooks` — consistent, user-owned Git hooks
 
