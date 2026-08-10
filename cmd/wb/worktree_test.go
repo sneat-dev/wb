@@ -27,7 +27,7 @@ func writeOriginalPromptFixture(t *testing.T, contents string) string {
 func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	command := newWorktreeCreateCmd()
 	for _, wanted := range []string{
-		"canonical clone must be clean",
+		"dirty or off-base canonical clone",
 		"fetches",
 		"without switching or updating any local branch",
 		"<wb-home>/worktrees/<task>/<owner>/<repository>",

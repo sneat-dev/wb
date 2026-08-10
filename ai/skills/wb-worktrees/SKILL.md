@@ -5,8 +5,10 @@ description: Use WB to guard, create, resume, inspect, or safely clean isolated 
 
 # WB worktrees
 
-Keep canonical clones clean and available for synchronization; prefer `main`,
-but WB creation leaves any clean currently checked-out branch untouched.
+Keep canonical clones clean and available for synchronization when possible;
+prefer `main`, but never mutate a dirty or off-base canonical checkout to make
+it eligible. WB creation leaves its current branch, index, and working tree
+untouched while it fetches and pins the requested remote base.
 Make feature changes only below the authoritative WB home:
 
 ```txt
@@ -45,10 +47,11 @@ Branch names are not agent provenance — use the Work Log for runtime and model
 identity. Use one task slug and one creation command for a coordinated
 multi-repository change.
 
-WB fetches and pins `origin/main` before branching without switching or
-fast-forwarding the canonical checkout. If a repository only supplies read-only integration-test input, its clean, freshly synchronized
-canonical checkout may be used. Create a worktree as soon as that repository
-needs a modification.
+WB fetches and pins `origin/main` before branching without switching,
+fast-forwarding, staging, or otherwise changing the canonical checkout,
+including when it is dirty or off-base. If a repository only supplies read-only
+integration-test input, its clean, freshly synchronized canonical checkout may
+be used. Create a worktree as soon as that repository needs a modification.
 
 Before create, write the exact originating request to a readable non-empty
 0600 private file outside source Git. Every create requires that file and has

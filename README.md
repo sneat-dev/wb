@@ -60,9 +60,10 @@ wb self-update [flags]       # update the installed wb binary (alias: wb update)
 
 ### `wb worktree` — isolated feature branches
 
-Keep canonical clones at `<projects-root>/<owner>/<repository>` clean. Their
-currently checked-out branch is left untouched while WB creates every feature
-branch in its shared worktree hierarchy:
+Keep canonical clones at `<projects-root>/<owner>/<repository>` clean when
+possible, but never mutate one to make it eligible for creation. WB leaves its
+currently checked-out branch, index, and working tree untouched while it
+creates every feature branch in its shared worktree hierarchy:
 
 ```sh
 # From any checkout of sneat-bots; owner/repository is derived from origin.
@@ -78,11 +79,12 @@ wb worktree create bots-e2e sneat-co/sneat-bots \
   --original-prompt-file <private-prompt-file>
 ```
 
-Before branching, WB requires every canonical clone to be clean, then fetches
-the exact `refs/heads/<base>` from `origin` (`main` by default). It creates the
-new branch from that verified commit without switching, pulling, resetting, or
-fast-forwarding the canonical checkout or any local base branch; this is safe
-when local `main` is stale or checked out in another worktree. Worktrees are created at
+Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
+(`main` by default), even when the canonical checkout is dirty or off-base. It
+creates the new branch from that verified commit without switching, pulling,
+resetting, or fast-forwarding the canonical checkout or any local base branch;
+this is safe when local `main` is stale, checked out in another worktree, or
+contains active local work. Worktrees are created at
 `~/.wb/worktrees/<task>/<owner>/<repository>` by default. Set `WB_HOME` to an
 explicit alternative. New work never silently falls back to the historic
 `<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
@@ -130,9 +132,10 @@ worktree, branch, commit, and recovery receipt remain visible for cleanup.
 accepts a clean canonical base checkout for synchronization, or a non-base
 linked worktree in a resolver-recognized hierarchy for development. It rejects
 feature branches and local changes in canonical clones, arbitrary detached
-HEADs, and linked worktrees stored elsewhere. A detached linked checkout is
-allowed only while Git has a real active `rebase-merge` or `rebase-apply`
-state.
+HEADs, and linked worktrees stored elsewhere. This guard health policy does
+not prevent `wb worktree create` from safely fetching a remote base without
+mutating an unsafe canonical checkout. A detached linked checkout is allowed
+only while Git has a real active `rebase-merge` or `rebase-apply` state.
 
 Inspect live task worktrees without contacting GitHub:
 

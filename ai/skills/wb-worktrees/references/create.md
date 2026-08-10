@@ -12,8 +12,10 @@
    git ls-remote --heads origin <branch>
    ```
 
-3. Keep `<projects-root>/<owner>/<repository>` clean. WB fetches and pins the
-   exact remote base without switching or updating its current local branch.
+3. Never mutate `<projects-root>/<owner>/<repository>` to make it eligible.
+   WB fetches and pins the exact remote base without switching or updating its
+   current local branch, index, or working tree, including when that canonical
+   checkout is already dirty or off-base.
 
 ## Create
 

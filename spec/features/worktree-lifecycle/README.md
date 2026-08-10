@@ -34,14 +34,16 @@ short-lived Git rebase from an arbitrary detached development checkout.
 
 #### REQ: nonmutating-verified-base
 
-Before creating a new worktree, WB MUST require the canonical clone to be
-clean and verify the requested `refs/heads/<base>` by fetching it from
-`origin`. It MUST create the feature branch from the exact verified commit,
-not an unverified or moving local/remote ref. Creation MUST NOT switch, pull,
-reset, or fast-forward the canonical checkout or any local base branch. A
-stale local base branch or one checked out in another linked worktree is not a
-blocker; an inaccessible, missing, non-commit, or otherwise unverifiable
-remote base MUST fail before WB creates a branch or worktree.
+Before creating a new worktree, WB MUST verify the requested
+`refs/heads/<base>` by fetching it from `origin`, without requiring the
+canonical clone to be clean or on the base branch. It MUST create the feature
+branch from the exact verified commit, not an unverified or moving
+local/remote ref. Creation MUST NOT switch, pull, reset, fast-forward, stage,
+or otherwise alter the canonical checkout, any local base branch, or a nested
+linked worktree. A stale local base branch, active local canonical changes, or
+one checked out in another linked worktree is not a blocker; an inaccessible,
+missing, non-commit, or otherwise unverifiable remote base MUST fail before WB
+creates a branch or worktree.
 
 #### REQ: offline-list-default
 
@@ -214,8 +216,8 @@ task checkouts.
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
-remote base without changing a clean canonical feature checkout or a stale
-local base checked out elsewhere; new creation uses the
+remote base without changing a dirty, off-base canonical checkout, its staged
+index, unstaged and untracked files, or a nested live linked worktree; new creation uses the
 authoritative home even when legacy state exists; legacy and current worktrees
 remain guardable, listable, and safely cleanable; direct legacy repository
 roots do not recurse into source directories; arbitrary detached work is
