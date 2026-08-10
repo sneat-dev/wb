@@ -25,6 +25,10 @@
     "./ai/skills/wb-run",
     "./ai/skills/wb-fleet",
     "./ai/skills/wb-change",
-    "./ai/skills/wb-dependency-campaign"
+    "./ai/skills/wb-dependency-campaign",
+    "./ai/skills/wb-merge"
+  ],
+  "agents": [
+    "./agents/wb-merger.md"
   ]
 }

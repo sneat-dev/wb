@@ -128,7 +128,12 @@ func defaultPolicy(repoRoot string) Policy {
 			"pre-commit": {Name: "pre-commit", Template: BuiltinPreCommit, Builtin: true},
 			"pre-push":   {Name: "pre-push", Template: BuiltinPrePush, Builtin: true},
 		},
-		ProfileSelections:  map[string]bool{},
+		// Worktree admission is WB's safety boundary, not an optional language
+		// profile. Every `wb hooks install` therefore installs the guard at
+		// checkout, commit, and push unless a policy explicitly excludes it.
+		// The explicit exclusion remains available for repositories where WB
+		// cannot own checkout policy, and is visible in `wb hooks check`.
+		ProfileSelections:  map[string]bool{"worktree": true},
 		ProfileDefinitions: builtinProfileDefinitions(),
 		Metrics:            MetricsPolicy{Enabled: true, Path: defaultMetricsPath(), Labels: map[string]string{}},
 	}
@@ -342,7 +347,23 @@ run_if_present test
 set -eu
 : "${WB_EXECUTABLE:?WB_EXECUTABLE is required for the worktree guard}"
 : "${WB_PROJECTS_ROOT:?WB_PROJECTS_ROOT is required for the worktree guard}"
-exec "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" worktree guard --quiet "$WB_REPO_ROOT"
+if "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" worktree guard --quiet "$WB_REPO_ROOT"; then
+    exit 0
+else
+    guard_status=$?
+fi
+
+# Git offers no pre-checkout hook. A non-zero post-checkout hook makes common
+# 'git checkout && next-step' flows stop after Git has already changed the
+# checkout, leaving misleading half-failed state. Report the violation loudly
+# and preserve the checkout for explicit recovery; commit and push remain the
+# hard enforcement boundaries.
+if [ "$WB_HOOK" = "post-checkout" ]; then
+    printf '%s\n' "WB warning: checkout already happened outside WB's managed worktree hierarchy; do not edit or commit here." >&2
+    printf '%s\n' "Run 'wb worktree guard .' for details. Preserve the state; wb worktree rescue is not available yet." >&2
+    exit 0
+fi
+exit "$guard_status"
 `, true
 	default:
 		return "", false

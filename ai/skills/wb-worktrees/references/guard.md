@@ -25,10 +25,12 @@ permits that state only while its own Git directory has active `rebase-merge`
 or `rebase-apply` state; finish or abort the rebase rather than treating a
 general detached checkout as safe.
 
-Git has no pre-checkout hook. A failed `git checkout` caused by WB's
-`post-checkout` guard can leave the requested branch checked out. Inspect the
-branch, preserve work, and restore canonical `main` only when doing so is
-known to be safe.
+Git has no pre-checkout hook. WB's `post-checkout` guard therefore reports an
+unmanaged checkout only after Git has made it, then exits successfully to avoid
+leaving a deceptive half-failed `git checkout && ...` flow. Inspect and
+preserve the branch; `wb worktree rescue` is not available yet. Restore
+canonical `main` only when doing so is known to be safe. `pre-commit` and
+`pre-push` remain blocking boundaries.
 
 Use `wb hooks check .` to confirm the guard is enforced by `post-checkout`,
 `pre-commit`, and `pre-push`. Use `$wb-hooks` for installation or repair.

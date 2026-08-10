@@ -47,10 +47,20 @@ const SecureStageCanonicalGitHelperArgument = "--wb-internal-stage-canonical-git
 type CreateOptions struct {
 	ProjectsRoot string
 	Operation    string
-	Branch       string
-	Base         string
-	Resume       bool
-	WorkLog      WorkLogOptions
+	// Branch is an exact branch name. It has highest precedence and is never
+	// derived from agent or harness identity.
+	Branch string
+	// BranchChosen distinguishes an omitted branch from an explicitly empty
+	// --branch flag, which is invalid rather than a request to fall back.
+	BranchChosen bool
+	// BranchPrefix derives <prefix><operation> when Branch is empty. The
+	// companion boolean preserves the meaningful explicit empty CLI value,
+	// which disables any persisted prefix for this invocation.
+	BranchPrefix       string
+	BranchPrefixChosen bool
+	Base               string
+	Resume             bool
+	WorkLog            WorkLogOptions
 	// beforeHomeDirectoryOpen is a test-only seam before WB opens or creates
 	// its resolved home hierarchy. It proves a substituted WB_HOME leaf cannot
 	// redirect the initial descriptor chain.
@@ -332,6 +342,15 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			canonicalHandle.close()
 			return nil, err
 		}
+		branch, branchErr := deriveBranchName(ctx, branchNamingOptions{
+			Task: normalized.Operation, ExactBranch: normalized.Branch, ExactBranchChosen: normalized.BranchChosen,
+			CLIPrefix: normalized.BranchPrefix, CLIPrefixChosen: normalized.BranchPrefixChosen,
+			Canonical: canonicalHandle, BaseRevision: baseRevision, Base: normalized.Base,
+		})
+		if branchErr != nil {
+			canonicalHandle.close()
+			return nil, branchErr
+		}
 		worktree, exists, err := prepareWorktreeDestination(operation.Path, operation.Directory, owner, name)
 		if err != nil {
 			canonicalHandle.close()
@@ -339,36 +358,36 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		}
 		plan := createPlan{owner: owner, repository: name, canonical: canonicalHandle, baseRevision: baseRevision, result: CreateResult{
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
-			Branch: normalized.Branch, Base: normalized.Base, BaseSHA: baseRevision,
+			Branch: branch, Base: normalized.Base, BaseSHA: baseRevision,
 		}}
 		if exists {
 			if !normalized.Resume {
 				canonicalHandle.close()
 				return nil, fmt.Errorf("worktree already exists: %s (use --resume or choose another operation)", worktree)
 			}
-			if err := validateExistingWorktree(ctx, canonicalHandle, worktree, normalized.Branch); err != nil {
+			if err := validateExistingWorktree(ctx, canonicalHandle, worktree, branch); err != nil {
 				canonicalHandle.close()
 				return nil, err
 			}
 			plan.resumed = true
 			plan.result.Action = "resumed"
 		} else {
-			plan.branchExists, err = localBranchExistsCanonical(ctx, canonicalHandle, normalized.Branch)
+			plan.branchExists, err = localBranchExistsCanonical(ctx, canonicalHandle, branch)
 			if err != nil {
 				canonicalHandle.close()
 				return nil, err
 			}
 			if plan.branchExists && !normalized.Resume {
 				canonicalHandle.close()
-				return nil, fmt.Errorf("branch %q already exists in %s (use --resume or choose --branch)", normalized.Branch, repository)
+				return nil, fmt.Errorf("branch %q already exists in %s (use --resume or choose --branch)", branch, repository)
 			}
 			if plan.branchExists {
-				if occupied, path, err := branchWorktreeCanonical(ctx, canonicalHandle, normalized.Branch); err != nil {
+				if occupied, path, err := branchWorktreeCanonical(ctx, canonicalHandle, branch); err != nil {
 					canonicalHandle.close()
 					return nil, err
 				} else if occupied {
 					canonicalHandle.close()
-					return nil, fmt.Errorf("branch %q is already checked out at %s", normalized.Branch, path)
+					return nil, fmt.Errorf("branch %q is already checked out at %s", branch, path)
 				}
 			}
 			plan.result.Action = "created"
@@ -855,18 +874,31 @@ func normalizeCreateOptions(options CreateOptions) (CreateOptions, error) {
 	if options.Base == "" {
 		options.Base = "main"
 	}
-	if options.Branch == "" {
-		options.Branch = "codex/" + options.Operation
-	}
+	branchProvided := options.Branch != ""
+	prefixProvided := options.BranchPrefix != ""
 	options.Branch = strings.TrimSpace(options.Branch)
+	// Preserve source compatibility for callers of the Go API that predate the
+	// explicit-presence booleans. The booleans are needed only to distinguish an
+	// omitted value from an explicitly empty CLI flag.
+	options.BranchChosen = options.BranchChosen || branchProvided
+	options.BranchPrefixChosen = options.BranchPrefixChosen || prefixProvided
+	if options.BranchPrefixChosen && strings.TrimSpace(options.BranchPrefix) != options.BranchPrefix {
+		return CreateOptions{}, fmt.Errorf("branch prefix must not have surrounding whitespace")
+	}
+	if options.BranchChosen && options.BranchPrefixChosen {
+		return CreateOptions{}, fmt.Errorf("--branch and --branch-prefix cannot be used together")
+	}
+	if options.BranchChosen && options.Branch == "" {
+		return CreateOptions{}, fmt.Errorf("--branch must not be empty when explicitly provided")
+	}
 	ctx := context.Background()
 	if !validBranch(ctx, options.Base) {
 		return CreateOptions{}, fmt.Errorf("invalid base branch %q", options.Base)
 	}
-	if !validBranch(ctx, options.Branch) {
+	if options.Branch != "" && !validBranch(ctx, options.Branch) {
 		return CreateOptions{}, fmt.Errorf("invalid feature branch %q", options.Branch)
 	}
-	if options.Branch == options.Base {
+	if options.Branch != "" && options.Branch == options.Base {
 		return CreateOptions{}, fmt.Errorf("feature branch must differ from base branch %q", options.Base)
 	}
 	return options, nil
@@ -2056,11 +2088,38 @@ func moveExpectedDirectoryNoReplace(
 	afterAuthorization func(),
 	afterMove ...func(),
 ) (*os.File, error) {
+	var authorize func() error
+	if afterAuthorization != nil {
+		authorize = func() error {
+			afterAuthorization()
+			return nil
+		}
+	}
+	return moveExpectedDirectoryNoReplaceAuthorized(fromDirectory, fromName, toDirectory, toName, expected, authorize, afterMove...)
+}
+
+// moveExpectedDirectoryNoReplaceAuthorized is the error-returning form used
+// when a caller has further descriptor-to-path authorization to perform in
+// the last instant before renameat. The retained source/destination
+// descriptors remain the mutation authority; the callback makes a changed
+// public spelling fail closed rather than silently publishing through a
+// stale namespace.
+func moveExpectedDirectoryNoReplaceAuthorized(
+	fromDirectory *os.File,
+	fromName string,
+	toDirectory *os.File,
+	toName string,
+	expected *os.File,
+	authorize func() error,
+	afterMove ...func(),
+) (*os.File, error) {
 	if !directoryEntryStillMatches(fromDirectory, fromName, expected) {
 		return nil, fmt.Errorf("directory entry %s changed after inspection; refusing mutation", fromName)
 	}
-	if afterAuthorization != nil {
-		afterAuthorization()
+	if authorize != nil {
+		if err := authorize(); err != nil {
+			return nil, err
+		}
 	}
 	if err := renameNoReplace(int(fromDirectory.Fd()), fromName, int(toDirectory.Fd()), toName); err != nil {
 		return nil, err

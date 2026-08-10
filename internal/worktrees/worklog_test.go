@@ -32,9 +32,9 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 	}
 	options := WorkLogOptions{EffortID: "fair-split", RunID: "codex-run-1", AgentRuntime: "codex"}
 	for _, result := range []CreateResult{
-		{Repository: "acme/a-b", WorktreeDir: worktrees[0], Branch: "codex/fair-split", Base: "main", BaseSHA: "aabbcc"},
-		{Repository: "acme-a/b", WorktreeDir: worktrees[1], Branch: "codex/fair-split", Base: "main", BaseSHA: "ddeeff"},
-		{Repository: "acme/third", WorktreeDir: worktrees[2], Branch: "codex/fair-split", Base: "main", BaseSHA: "ffeeaa"},
+		{Repository: "acme/a-b", WorktreeDir: worktrees[0], Branch: "feature/fair-split", Base: "main", BaseSHA: "aabbcc"},
+		{Repository: "acme-a/b", WorktreeDir: worktrees[1], Branch: "feature/fair-split", Base: "main", BaseSHA: "ddeeff"},
+		{Repository: "acme/third", WorktreeDir: worktrees[2], Branch: "feature/fair-split", Base: "main", BaseSHA: "ffeeaa"},
 	} {
 		if _, err := recordWorkLog(home, "fair-split", result, options); err != nil {
 			t.Fatal(err)
@@ -74,7 +74,7 @@ func TestWorkLogClaimIdentitySurvivesRunAndWorktreeRelocation(t *testing.T) {
 	original := CreateResult{
 		Repository:  "acme/app",
 		WorktreeDir: "/machine-a/worktrees/task/acme/app",
-		Branch:      "codex/fair-split",
+		Branch:      "feature/fair-split",
 		Base:        "main",
 		BaseSHA:     strings.Repeat("a", 40),
 	}
@@ -318,7 +318,7 @@ func TestWorkLogMigratesLegacySingletonAndReportsLostCardinality(t *testing.T) {
 	}
 	legacy := legacyWorkLogClaim{Version: 1, EffortID: effort, RunID: run,
 		Task: effort, Repository: "acme/last-survivor", Worktree: filepath.Join(home, "worktrees", effort, "acme", "last-survivor"),
-		Branch: "codex/legacy", Base: "main", BaseSHA: "deadbeef", Lifecycle: "active"}
+		Branch: "feature/legacy", Base: "main", BaseSHA: "deadbeef", Lifecycle: "active"}
 	if err := writeJSONAtomic(filepath.Join(runDir, "claim.json"), legacy, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestWorkLogMigratesLegacySingletonAndReportsLostCardinality(t *testing.T) {
 	}
 	gitTest(t, newWorktree, "init")
 	if _, err := recordWorkLog(home, effort, CreateResult{Repository: "acme/new", WorktreeDir: newWorktree,
-		Branch: "codex/legacy", Base: "main", BaseSHA: "c0ffee"}, WorkLogOptions{EffortID: effort, RunID: run}); err != nil {
+		Branch: "feature/legacy", Base: "main", BaseSHA: "c0ffee"}, WorkLogOptions{EffortID: effort, RunID: run}); err != nil {
 		t.Fatal(err)
 	}
 	claims, err := os.ReadDir(filepath.Join(runDir, "claims"))

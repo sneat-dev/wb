@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Merge"
+  short_description: "Integrate and retire completed agent work"
+  default_prompt: "Use $wb-merge to integrate these completed branches safely and clean up their worktrees."

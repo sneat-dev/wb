@@ -40,6 +40,26 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	}
 }
 
+func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "create exact and prefix", args: []string{"worktree", "create", "task", "--branch", "", "--branch-prefix", "team/"}, want: "cannot be used together"},
+		{name: "create empty exact", args: []string{"worktree", "create", "task", "--branch", ""}, want: "must not be empty"},
+		{name: "rename exact and prefix", args: []string{"worktree", "rename", "old", "new", "--branch", "", "--branch-prefix", "team/"}, want: "cannot be used together"},
+		{name: "rename empty exact", args: []string{"worktree", "rename", "old", "new", "--branch", ""}, want: "must not be empty"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("branch flag validation = code %d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	command := newWorktreeCleanupCmd()
 	olderThan := command.Flags().Lookup("older-than")
@@ -251,7 +271,7 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 	runGit(canonical, "add", "README.md")
 	runGit(canonical, "commit", "-m", "initial")
 	stale := filepath.Join(home, "worktrees", "stale-task", "acme", "old-repo-name")
-	runGit(canonical, "worktree", "add", "-b", "codex/stale-task", stale, "main")
+	runGit(canonical, "worktree", "add", "-b", "feature/stale-task", stale, "main")
 	return projects, home
 }
 

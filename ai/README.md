@@ -14,6 +14,7 @@
 | `wb-fleet` | Sync, inspect, and verify repository fleets |
 | `wb-change` | Deliver a safe multi-step code change |
 | `wb-dependency-campaign` | Propagate releases with minimal CI builds |
+| `wb-merge` | Integrate completed work and retire its lifecycle debt |
 
 The first eight are compact command skills. The final two compose them for
 workflows where orchestration saves time or avoids duplicate builds. Detailed

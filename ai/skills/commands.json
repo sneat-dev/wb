@@ -40,7 +40,8 @@
     ],
     "worktree": [
       "wb-worktrees",
-      "wb-change"
+      "wb-change",
+      "wb-merge"
     ]
   }
 }

@@ -72,9 +72,9 @@ wb worktree create bots-e2e --original-prompt-file <private-prompt-file>
 wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go \
   --original-prompt-file <private-prompt-file>
 
-# Override the default codex/<task> branch or resume an existing exact checkout.
+# Choose a one-off prefix, or resume an existing exact checkout.
 wb worktree create bots-e2e sneat-co/sneat-bots \
-  --branch agent/bots-e2e --resume \
+  --branch-prefix agent/ --resume \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -88,6 +88,14 @@ explicit alternative. New work never silently falls back to the historic
 `<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
 guards, lists, and cleans linked worktrees there during migration. Existing
 branches and worktrees are rejected unless `--resume` is explicit.
+
+By default the task slug is the branch name. For a durable policy, WB layers
+`$XDG_CONFIG_HOME/wb/worktrees.yaml` (or `~/.config/wb/worktrees.yaml`) below
+the target base object's `.wb/worktrees.yaml`; `worktrees.branch_prefix` may be
+an empty string to deliberately disable the lower layer. An exact `--branch`
+overrides policy, `--branch-prefix` overrides it for one invocation, and an
+explicit empty CLI prefix returns to the task slug. Branch spelling is never
+agent provenance: Work Logs record the agent/runtime/model instead.
 
 Every create writes one private Hybrid Work Log claim per repository under
 `<wb-home>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`, where the
@@ -189,33 +197,38 @@ the deletion boundary. The same discarded command resumes an exact durable
 post-removal branch backlog after interruption; it never relies on live
 worktree inventory alone.
 
-Portable merger-agent adapters, plan-overlap/migration-scope detection,
-periodic refresh notifications, distributed Synchestra fences, and Git-backed
-communication fallback are planned capabilities. The full `wb worktree log`
-command group, seven-day history, and authorized encrypted private-prompt
-export are also planned. No current WB command or skill example claims those
-surfaces are usable.
-
-Enable the built-in guard in a repository or global WB hooks policy, then let
-WB install the shims:
-
-```yaml
-version: 1
-profiles:
-  include:
-    - worktree
-```
+Plan-overlap/migration-scope detection, periodic refresh notifications,
+distributed Synchestra fences, and Git-backed communication fallback are
+planned capabilities. `wb-merge` is a versioned repository-local merger-agent
+contract for Claude, Codex, and GitHub Copilot when this WB plugin/repository
+is installed: it inventories active work without a branch prefix assumption,
+validates/pushes an exact target receipt, uses bounded foreground `wb ci wait`
+slices, then performs audited cleanup. Marketplace distribution to every
+harness is still pending. The full
+`wb worktree log` command group, seven-day history, and authorized encrypted
+private-prompt export are also planned.
 
 ```sh
 wb hooks install .
 ```
 
-The profile runs the same `wb worktree guard` policy at `post-checkout`,
-`pre-commit`, and `pre-push`. Git has no pre-checkout hook: when an agent
-checks out a feature branch in a canonical clone, `post-checkout` makes that
-Git command fail with recovery instructions, but the agent must still switch
-the canonical clone back to `main`. The commit and push guards are the hard
-boundary that prevents unsafe work from progressing.
+Every installation includes the worktree admission guard by default. To opt
+out explicitly in a repository that cannot let WB own checkout policy, record
+`profiles.exclude: [worktree]` in `.wb/hooks.yaml` and run `wb hooks repair`;
+the exclusion remains visible in `wb hooks check`. The guard runs the same
+`wb worktree guard` policy at `post-checkout`, `pre-commit`, and `pre-push`.
+Git has no pre-checkout hook: `post-checkout` prints a loud warning after an
+unmanaged checkout has already happened, then preserves that state for
+inspection (the future `wb worktree rescue` command is not available yet). The
+commit and push guards are the hard boundary that prevents unsafe work from
+progressing.
+
+Managed hooks retain no installer executable path. Each invocation prefers an
+explicit `WB_EXECUTABLE`, otherwise resolves `wb` from `PATH`, and rejects a
+relative, repository-local, non-regular, or non-executable result. A GUI Git
+client with a reduced `PATH` should set `WB_EXECUTABLE` to an installed
+launcher in its hook environment; package upgrades then do not require a
+repository-by-repository repair.
 
 ### `wb sync`
 
@@ -1024,6 +1037,24 @@ without source-SHA/checksum verification. `--strict` makes findings fail with a
 non-zero exit code, suitable for CI and pre-push hooks; `--json` is intended for
 Backstage/ops inventory.
 
+### `wb ci wait` — bounded exact CI receipt
+
+Wait for all observed CI on one exact direct-push target or PR head without a
+background watcher:
+
+```sh
+wb ci wait --repo sneat-dev/wb --target main --head <exact-sha> --json
+wb ci wait --repo sneat-dev/wb --pr <number> --target main --head <exact-sha> --json
+```
+
+Each foreground slice is eight minutes by default and never more than nine.
+Pending and failed results exit `1`; pending JSON includes `resume_args` for
+the same exact identity. Reinvoke those arguments until a terminal result. A
+direct target receipt rejects target-head drift and combines GitHub check runs
+with legacy commit statuses; incomplete pagination fails closed. PR mode also
+rejects source-head or target drift. Do not replace this with a detached or
+long-running shell poller.
+
 ### `wb hooks` — consistent, user-owned Git hooks
 
 WB installs small managed shims while you retain control of the scripts they
@@ -1052,7 +1083,8 @@ explicit `WB_HOME` remains isolated.
 
 #### Hook policy, detection, and composable profiles
 
-Policy layers in this order: WB's conservative built-ins, the user's global
+Policy layers in this order: WB's conservative built-ins (including worktree
+admission), the user's global
 `~/.config/wb/hooks.yaml`, then the repository's `.wb/hooks.yaml`. A repository
 entry overrides the same global hook. Automatic profiles are opt-in, so
 upgrading WB never adds expensive checks to an existing installation
@@ -1064,7 +1096,7 @@ version: 1
 profiles:
   auto: true                    # detect all built-in and custom definitions
   # include: [sneat-product]    # force a profile even without a match
-  # exclude: [node]             # suppress a detected or inherited profile
+  # exclude: [node, worktree]   # explicit opt-out of a detected/default profile
   definitions:
     sneat-product:              # custom product/tool/domain profile
       order: 200
@@ -1126,7 +1158,9 @@ set -eu
 # Local commands that run before WB.
 
 ### Start of WB managed hook ###
-'/path/to/wb' hooks run 'pre-push' -- "$@"
+# The generated resolver selects WB_EXECUTABLE or an absolute `command -v wb`
+# result, validates it, and stores the physical result only for this process.
+"$_wb_hook_executable" hooks run 'pre-push' -- "$@"
 _wb_hook_status=$?
 if [ "$_wb_hook_status" -ne 0 ]; then
     exit "$_wb_hook_status"

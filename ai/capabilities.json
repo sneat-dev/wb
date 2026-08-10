@@ -28,6 +28,18 @@
       "notes": "The audit reports CI policy evidence; it does not substitute for running the repository checks."
     },
     {
+      "id": "wb.ci.wait",
+      "feature_refs": ["spec/plans/work-log-recovery.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb ci wait", "flags": ["--head", "--interval", "--json", "--pr", "--repo", "--slice", "--target"], "modes": ["Waits one terminating foreground slice for all observed checks on an exact target SHA", "Optional PR corroboration rejects head or target drift; direct-push check runs and commit statuses are both observed", "Pending and failed observations exit 1 with structured status; pending includes exact resume arguments"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb ci wait --help", "contains": ["never ten", "--target", "detached watcher", "direct-push"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/SKILL.md", "marker": "# WB merge", "examples": ["wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/ci_wait_test.go", "name": "TestCIWaitResumesForegroundSlicesUntilExactHeadPasses", "kind": "integration"}, {"path": "cmd/wb/ci_wait_test.go", "name": "TestCIWaitResumesDirectTargetSlicesUntilExactHeadPasses", "kind": "integration"}, {"path": "cmd/wb/ci_wait_test.go", "name": "TestCIWaitDirectTargetStatusReceiptsBlockFailureAndAcceptStatusOnlyPass", "kind": "integration"}, {"path": "cmd/wb/ci_wait_test.go", "name": "TestCIWaitRejectsIncompleteDirectCheckPagination", "kind": "integration"}, {"path": "cmd/wb/ci_wait_test.go", "name": "TestCIWaitRejectsIncompleteDirectStatusPagination", "kind": "integration"}, {"path": "cmd/wb/ci_wait_test.go", "name": "TestCIWaitRejectsDirectTargetHeadDrift", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The public waiter is a receipt primitive, not a background CI monitor or generic merge command."
+    },
+    {
       "id": "wb.clone-layout.audit",
       "feature_refs": ["spec/plans/work-log-recovery.md"],
       "since": null,
@@ -78,14 +90,14 @@
     {
       "id": "wb.coordination.portable-merger",
       "feature_refs": ["spec/plans/work-log-recovery.md"],
-      "since": null,
+      "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Planned", "commands": [], "limitation": "No portable merger-agent adapter or integration-batch command is implemented."},
-        "help": {"status": "Planned", "anchors": [], "limitation": "No merger-agent command is advertised."},
-        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills name the planned role only and do not provide an executable example."},
-        "tests": {"status": "Planned", "references": [], "limitation": "The Fair Split Relay cross-harness E2E is not implemented."}
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree list", "flags": ["--base", "--format", "--github"], "modes": ["Inventories managed candidate efforts without a branch-prefix assumption"]}, {"path": "wb worktree cleanup", "flags": ["--all-merged", "--apply", "--base", "--format", "--older-than", "--remote", "--report-dir"], "modes": ["Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt"]}], "limitation": "WB exposes the inventory and exact remote-backed cleanup primitives but no generic integration-batch command."},
+        "help": {"status": "Partial", "anchors": [{"command": "wb worktree list --help", "contains": ["--github", "lifecycle artifacts"]}, {"command": "wb worktree cleanup --help", "contains": ["freshly fetched exact", "requires --remote"]}], "limitation": "The CLI deliberately has no fictional generic merger command."},
+        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-merge/SKILL.md", "marker": "# WB merge", "examples": ["wb worktree list --github --format json", "wb worktree cleanup <task> --apply --remote --older-than 0"]}], "limitation": "The repository version-controls Claude, Codex, and Copilot adapters, but no installed WB marketplace/distribution path exposes the merger skill to every harness yet."},
+        "tests": {"status": "Partial", "references": [{"path": "cmd/wb/skills_test.go", "name": "TestWBMergeSkillIsOnePortableContract", "kind": "conformance"}, {"path": "internal/worktrees/lifecycle_integration_test.go", "name": "TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest", "kind": "integration"}], "limitation": "The versioned adapters and cleanup receipt are covered; the Fair Split Relay cross-harness E2E remains planned."}
       },
-      "notes": "The first planned adapters are Codex CLI and Claude Code CLI; desktop automation remains outside the MVP."
+      "notes": "Claude, Codex, and GitHub Copilot adapters delegate to one versioned canonical skill when this repository/plugin is installed; model selection remains harness-owned."
     },
     {
       "id": "wb.coordination.refresh-notifications",
@@ -176,12 +188,12 @@
       "feature_refs": [],
       "since": "existing",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb hooks install", "flags": ["--config", "--fleet"], "modes": ["Installs descriptor-safe WB-managed hook shims while preserving authorized unmanaged content."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb hooks install --help", "contains": ["--config", "--fleet"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb hooks install", "flags": ["--config", "--fleet"], "modes": ["Installs descriptor-safe WB-managed hook shims while preserving authorized unmanaged content.", "Enables worktree admission by default unless policy explicitly excludes it", "Reports after an already-completed unmanaged checkout; blocks it at pre-commit and pre-push."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb hooks install --help", "contains": ["--config", "--fleet", "admission is installed by default", "post-checkout reports"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-hooks/SKILL.md", "marker": "## Fast path", "examples": ["wb hooks install ."]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestApplyProtectsConflictingHooksAndForceBacksUp", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation", "kind": "integration"}], "limitation": null}
+        "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestApplyProtectsConflictingHooksAndForceBacksUp", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestApplyRefusesSymlinkedManagedHooksDirectoryWithoutExternalMutation", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestManagedHookResolvesWBAtRuntimeAfterInstallerDisappears", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestManagedHookRejectsUnsafeRuntimeWBExecutables", "kind": "integration"}, {"path": "cmd/wb/worktree_upgrade_integration_test.go", "name": "TestHooksInstallReportsAndBlocksRawWorktreeAtAdmission", "kind": "integration"}], "limitation": null}
       },
-      "notes": "A transient go-run executable is rejected so generated shims never retain a disappearing binary path."
+      "notes": "A transient go-run executable is rejected. Generated shims retain no installer executable path; at hook execution they resolve WB_EXECUTABLE or a safe absolute PATH result."
     },
     {
       "id": "wb.hooks.metrics",
@@ -349,8 +361,8 @@
       "feature_refs": ["spec/features/work-log/README.md", "spec/features/worktree-lifecycle/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree create", "flags": ["--agent", "--agent-runtime", "--base", "--branch", "--effort", "--format", "--initiator", "--model", "--original-prompt-file", "--resume", "--run"], "modes": ["One immutable private claim per repository in one shared run", "A readable non-empty exact original prompt is mandatory and its snapshotted bytes/digest are bound before worktree creation", "A reused Run ID rejects different prompt bytes before Git/worktree mutation"]}], "limitation": "A rare storage failure after Git publishes a worktree is reported with durable partial evidence but is not yet transactionally rolled back across all repositories."},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree create --help", "contains": ["--original-prompt-file", "--agent-runtime", "without switching or updating"]}], "limitation": null},
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree create", "flags": ["--agent", "--agent-runtime", "--base", "--branch", "--branch-prefix", "--effort", "--format", "--initiator", "--model", "--original-prompt-file", "--resume", "--run"], "modes": ["One immutable private claim per repository in one shared run", "A readable non-empty exact original prompt is mandatory and its snapshotted bytes/digest are bound before worktree creation", "A reused Run ID rejects different prompt bytes before Git/worktree mutation", "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes"]}], "limitation": "A rare storage failure after Git publishes a worktree is reported with durable partial evidence but is not yet transactionally rolled back across all repositories."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree create --help", "contains": ["--original-prompt-file", "--agent-runtime", "--branch-prefix", "without switching or updating"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/create.md", "marker": "One command covering multiple repositories", "examples": ["wb worktree create fair-split acme/app --agent codex-run-1 --agent-runtime codex --original-prompt-file <private-prompt-file>"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worklog_test.go", "name": "TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun", "kind": "integration"}, {"path": "internal/worktrees/worklog_test.go", "name": "TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation", "kind": "integration"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation", "kind": "unit"}, {"path": "internal/worktrees/worktrees_test.go", "name": "TestCreateFetchesOriginBaseWithoutChangingCanonicalCheckout", "kind": "integration"}], "limitation": null}
       },
@@ -409,8 +421,8 @@
       "feature_refs": ["spec/features/work-log/README.md", "spec/features/worktree-lifecycle/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree rename", "flags": ["--agent", "--agent-runtime", "--apply", "--base", "--branch", "--effort", "--force", "--format", "--initiator", "--model", "--original-prompt-file", "--preserve-cache", "--remote", "--report-dir", "--run"], "modes": ["All repositories preflight before first mutation", "Normal runtime failure rolls every already-applied repository back for deterministic retry", "Old local and exact remote source branches are mandatory-retired", "Only explicit cache allow-list may survive", "New effort/run/agent metadata binds the reset projection"]}], "limitation": "A process crash between old-claim seal, worktree move, and new-claim projection may require deterministic recovery from the durable terminal/claim records; automatic crash replay is not complete."},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree rename --help", "contains": ["always deleted", "--preserve-cache", "--remote", "--apply"]}], "limitation": null},
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree rename", "flags": ["--agent", "--agent-runtime", "--apply", "--base", "--branch", "--branch-prefix", "--effort", "--force", "--format", "--initiator", "--model", "--original-prompt-file", "--preserve-cache", "--remote", "--report-dir", "--run"], "modes": ["All repositories preflight before first mutation", "Normal runtime failure rolls every already-applied repository back for deterministic retry", "Old local and exact remote source branches are mandatory-retired", "Only explicit cache allow-list may survive", "New effort/run/agent metadata binds the reset projection", "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes"]}], "limitation": "A process crash between old-claim seal, worktree move, and new-claim projection may require deterministic recovery from the durable terminal/claim records; automatic crash replay is not complete."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree rename --help", "contains": ["always deleted", "--branch-prefix", "--preserve-cache", "--remote", "--apply"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Recycle only explicit caches", "examples": ["wb worktree rename finished-task next-task --preserve-cache node_modules"]}], "limitation": null},
         "tests": {"status": "Partial", "references": [{"path": "internal/worktrees/rename_test.go", "name": "TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameDeleteOldBranchWithoutForceWhenMerged", "kind": "integration"}], "limitation": "Failure-injection covers normal multi-repository rollback and remote retirement; it does not prove automatic recovery for every process-crash point after terminal seal."}
       },

@@ -23,6 +23,11 @@ type skillCommandCoverage struct {
 
 type claudePluginManifest struct {
 	Skills []string `json:"skills"`
+	Agents []string `json:"agents"`
+}
+
+type codexPluginManifest struct {
+	Skills string `json:"skills"`
 }
 
 type capabilityManifest struct {
@@ -129,6 +134,7 @@ func TestAgentSkillsCoverPublicCommands(t *testing.T) {
 	}
 
 	assertClaudeManifestListsAllSkills(t, repoRoot)
+	assertCodexManifestExposesSkills(t, repoRoot)
 }
 
 func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
@@ -168,6 +174,89 @@ func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestWBMergeSkillIsOnePortableContract prevents a local harness prompt from
+// regressing into the branch-prefix, background-watch, or cleanup debt that
+// this merger role exists to remove. The assertion is deliberately semantic:
+// it checks required safety statements and rejects executable anti-patterns,
+// rather than snapshotting a particular prose layout.
+func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	skillPath := filepath.Join(repoRoot, "ai", "skills", "wb-merge", "SKILL.md")
+	contents, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := string(contents)
+	for _, required := range []string{
+		"without a branch prefix",
+		"WB-managed worktrees only",
+		"Fetch and fast-forward the target from `origin`",
+		"main`, a feature branch, or a task branch",
+		"dedicated merger checkout must be clean",
+		"Preserve both stated intents",
+		"validate after each merge, then run the full target verification",
+		"Push the exact target immediately",
+		"remote target SHA",
+		"wb ci wait --repo <owner/repo>",
+		"wb worktree cleanup <task> --apply --remote --older-than 0",
+		"Work Log",
+		"TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Errorf("WB merger contract is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"git worktree add", "sleep 1800", "sonnet", "opus", "haiku", "codex/", "claude/"} {
+		if strings.Contains(strings.ToLower(contract), forbidden) {
+			t.Errorf("WB merger contract permits a prefix/model/raw-worktree anti-pattern %q", forbidden)
+		}
+	}
+	polling, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-merge", "references", "ci-polling.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"foreground", "shorter than that harness's tool timeout", "Never detach a watcher, use a background process"} {
+		if !strings.Contains(string(polling), required) {
+			t.Errorf("CI polling contract is missing %q", required)
+		}
+	}
+
+	claude, err := os.ReadFile(filepath.Join(repoRoot, ".claude-plugin", "plugin.json"))
+	if err != nil || !strings.Contains(string(claude), "./ai/skills/wb-merge") {
+		t.Fatalf("Claude adapter does not expose wb-merge: %v", err)
+	}
+	claudeAgent, err := os.ReadFile(filepath.Join(repoRoot, "agents", "wb-merger.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"name: wb-merger", "description:", "skills: [wb-merge]", "Follow the preloaded `$wb-merge` skill"} {
+		if !strings.Contains(string(claudeAgent), required) {
+			t.Errorf("Claude merger agent is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"model:", "background:", "isolation:"} {
+		if strings.Contains(string(claudeAgent), forbidden) {
+			t.Errorf("Claude merger agent must leave %s to the canonical foreground WB contract", strings.TrimSuffix(forbidden, ":"))
+		}
+	}
+	codex, err := os.ReadFile(filepath.Join(repoRoot, ".codex-plugin", "plugin.json"))
+	if err != nil || !strings.Contains(string(codex), "WB merger workflow") {
+		t.Fatalf("Codex adapter does not expose wb-merge: %v", err)
+	}
+	copilot, err := os.ReadFile(filepath.Join(repoRoot, ".github", "agents", "wb-merger.agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"description:", "Read and follow `ai/skills/wb-merge/SKILL.md`", "does not define a second workflow"} {
+		if !strings.Contains(string(copilot), required) {
+			t.Errorf("Copilot adapter is missing %q", required)
+		}
+	}
+	if strings.Contains(string(copilot), "model:") {
+		t.Error("Copilot adapter must leave model selection to its harness")
 	}
 }
 
@@ -503,5 +592,29 @@ func assertClaudeManifestListsAllSkills(t *testing.T, repoRoot string) {
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("Claude skill manifest mismatch\ngot:\n%s\nwant:\n%s",
 			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if strings.Join(manifest.Agents, "\n") != "./agents/wb-merger.md" {
+		t.Fatalf("Claude merger agent manifest = %q, want ./agents/wb-merger.md", manifest.Agents)
+	}
+}
+
+func assertCodexManifestExposesSkills(t *testing.T, repoRoot string) {
+	t.Helper()
+	manifestPath := filepath.Join(repoRoot, ".codex-plugin", "plugin.json")
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest codexPluginManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("parse %s: %v", manifestPath, err)
+	}
+	if manifest.Skills != "./ai/skills/" {
+		t.Fatalf("Codex skills root = %q, want ./ai/skills/", manifest.Skills)
+	}
+	skillRoot := filepath.Join(repoRoot, filepath.FromSlash(manifest.Skills))
+	info, err := os.Stat(skillRoot)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("Codex skills root %s is not an existing directory: %v", skillRoot, err)
 	}
 }

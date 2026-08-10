@@ -64,6 +64,42 @@ type RemoteCheck struct {
 	Link   string `json:"link,omitempty" yaml:"link,omitempty"`
 }
 
+// PullRequestWaitOptions identifies exactly one direct-push or pull-request
+// head whose observed checks are read by a bounded foreground invocation. A
+// caller resumes a pending result with the same repository, target, PR (when
+// supplied), and head; any later head is a distinct integration candidate.
+type PullRequestWaitOptions struct {
+	Repository        string
+	PullRequest       string
+	Target            string
+	Head              string
+	Slice             time.Duration
+	CheckPollInterval time.Duration
+}
+
+// PullRequestWaitStatus is intentionally small so callers can branch on a
+// machine result instead of parsing human GitHub CLI output.
+type PullRequestWaitStatus string
+
+const (
+	PullRequestWaitPassed  PullRequestWaitStatus = "passed"
+	PullRequestWaitPending PullRequestWaitStatus = "pending"
+	PullRequestWaitFailed  PullRequestWaitStatus = "failed"
+)
+
+// PullRequestWaitResult is one terminating foreground observation slice.
+// Pending means resume is required, not that the merger is finished.
+type PullRequestWaitResult struct {
+	Status       PullRequestWaitStatus `json:"status" yaml:"status"`
+	Repository   string                `json:"repository" yaml:"repository"`
+	PullRequest  string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	Target       string                `json:"target" yaml:"target"`
+	Head         string                `json:"head" yaml:"head"`
+	ObservedHead string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
+	Checks       []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
+	Reason       string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+}
+
 // Result records lifecycle state and typed adapter metadata for one repository.
 type Result[T any] struct {
 	Repository    string

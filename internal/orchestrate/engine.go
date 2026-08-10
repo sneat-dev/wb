@@ -383,17 +383,20 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 }
 
 func decodePullRequestChecks(pr, output string, commandErr error) ([]RemoteCheck, bool, error) {
-	if commandErr != nil {
-		if strings.Contains(strings.ToLower(output), "no checks reported") {
-			return nil, true, nil
-		}
-		return nil, false, commandErr
-	}
 	var checks []RemoteCheck
-	if err := json.Unmarshal([]byte(output), &checks); err != nil {
+	if err := json.Unmarshal([]byte(output), &checks); err == nil {
+		// `gh pr checks` uses non-zero exit statuses for both pending (8) and
+		// failed checks, while still returning its requested JSON receipt. The
+		// normalized buckets, not the transport exit code, decide whether this
+		// exact CI observation is resumable or terminal.
+		return checks, len(checks) == 0, nil
+	} else if commandErr == nil {
 		return nil, false, fmt.Errorf("decode checks for %s: %w", pr, err)
 	}
-	return checks, len(checks) == 0, nil
+	if strings.Contains(strings.ToLower(output), "no checks reported") {
+		return nil, true, nil
+	}
+	return nil, false, commandErr
 }
 
 func githubChecksPollInterval(options Options) time.Duration {

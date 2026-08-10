@@ -158,6 +158,10 @@ func TestWaitAndMergeRetriesUntilGitHubChecksAppear(t *testing.T) {
 	}
 	state := filepath.Join(t.TempDir(), "checks-state")
 	script := `#!/bin/sh
+if [ "$2" = view ]; then
+  echo '{"headRefOid":"0123456789012345678901234567890123456789"}'
+  exit 0
+fi
 if [ "$2" = checks ]; then
   if [ ! -f "$WB_CHECK_STATE" ]; then
     : > "$WB_CHECK_STATE"
@@ -179,7 +183,7 @@ exit 2
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CHECK_STATE", state)
 
-	result := Result[string]{WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1"}
+	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Commit: "0123456789012345678901234567890123456789"}
 	// This exercises retry semantics, not a process-start SLA. Under the full
 	// suite's parallel package load, a shell process can be scheduled late
 	// enough to hit a short artificial boundary before it runs at all. The

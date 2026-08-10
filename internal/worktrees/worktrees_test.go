@@ -26,6 +26,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureStageCanonicalGitHelperArgument {
 		os.Exit(RunSecureStageCanonicalGitHelper(os.Args[2:]))
 	}
+	if len(os.Args) > 1 && os.Args[1] == SecureRenameGitHelperArgument {
+		os.Exit(RunSecureRenameGitHelper(os.Args[2:]))
+	}
 	os.Exit(m.Run())
 }
 
@@ -51,13 +54,13 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 	result := results[0]
 	wantWorktree := filepath.Join(fixture.home, "worktrees", "issue-123", "acme", "app")
-	if result.WorktreeDir != wantWorktree || result.Branch != "codex/issue-123" || result.Action != "created" {
+	if result.WorktreeDir != wantWorktree || result.Branch != "issue-123" || result.Action != "created" {
 		t.Fatalf("result = %#v", result)
 	}
 	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != canonicalHeadBefore {
 		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHeadBefore, got)
 	}
-	if got := gitTestOutput(t, result.WorktreeDir, "branch", "--show-current"); got != "codex/issue-123" {
+	if got := gitTestOutput(t, result.WorktreeDir, "branch", "--show-current"); got != "issue-123" {
 		t.Fatalf("worktree branch = %q", got)
 	}
 	if got := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
@@ -138,7 +141,7 @@ func TestCreateFailsBeforeMutationWhenRequestedOriginBaseCannotBeFetched(t *test
 	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != canonicalHeadBefore {
 		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHeadBefore, got)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/missing-remote-base"); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "missing-remote-base"); branchErr != nil || exists {
 		t.Fatalf("missing remote base left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
@@ -161,7 +164,7 @@ func TestCreateDoesNotFollowSubstitutedWBHomeBeforeInitialOpen(t *testing.T) {
 	if entries, readErr := os.ReadDir(external); readErr != nil || len(entries) != 0 {
 		t.Fatalf("substituted WB home mutated external target: entries=%v err=%v", entries, readErr)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/home-before-open-swap"); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "home-before-open-swap"); branchErr != nil || exists {
 		t.Fatalf("substituted WB home left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
@@ -272,7 +275,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapDuringSecureAdd(t *testing.T) {
 	if strings.Contains(registered, outside) || strings.Contains(registered, movedWorktrees) {
 		t.Fatalf("worktrees ancestor swap left registration:\n%s", registered)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, operation); branchErr != nil || exists {
 		t.Fatalf("worktrees ancestor swap left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
@@ -305,7 +308,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapBeforePlanning(t *testing.T) {
 	if strings.Contains(registered, external) || strings.Contains(registered, movedWorktrees) {
 		t.Fatalf("worktrees ancestor plan swap left registration:\n%s", registered)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, operation); branchErr != nil || exists {
 		t.Fatalf("worktrees ancestor plan swap left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
@@ -341,7 +344,7 @@ func TestCreateRejectsOwnerSwapAfterWorktreeRepair(t *testing.T) {
 	if strings.Contains(registered, outside) || strings.Contains(registered, movedOwner) {
 		t.Fatalf("owner swap after repair left registration:\n%s", registered)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, operation); branchErr != nil || exists {
 		t.Fatalf("owner swap after repair left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
@@ -484,7 +487,7 @@ func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
 	if strings.Contains(registered, destination) {
 		t.Fatalf("late destination left worktree registration:\n%s", registered)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, operation); branchErr != nil || exists {
 		t.Fatalf("late destination left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
@@ -950,7 +953,7 @@ func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
 	if !strings.Contains(registered, results[0].WorktreeDir) {
 		t.Fatalf("post-validation stage swap did not register published worktree %s:\n%s", results[0].WorktreeDir, registered)
 	}
-	if got := gitTestOutput(t, results[0].WorktreeDir, "branch", "--show-current"); got != "codex/"+operation {
+	if got := gitTestOutput(t, results[0].WorktreeDir, "branch", "--show-current"); got != operation {
 		t.Fatalf("post-validation stage swap branch = %q", got)
 	}
 }
@@ -1142,7 +1145,7 @@ func TestCreateRejectsWhitespaceEquivalentRepositoryBeforeMutation(t *testing.T)
 	if _, statErr := os.Stat(fixture.home); !os.IsNotExist(statErr) {
 		t.Fatalf("invalid slug created WB home before rejection: %v", statErr)
 	}
-	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/whitespace-duplicate"); branchErr != nil || exists {
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "whitespace-duplicate"); branchErr != nil || exists {
 		t.Fatalf("invalid slug created feature branch: exists=%t err=%v", exists, branchErr)
 	}
 	if status := gitTestOutput(t, fixture.canonical, "status", "--porcelain=v1"); status != "" {
@@ -1227,7 +1230,7 @@ func assertFailedCreateRolledBack(t *testing.T, fixture *gitFixture, operation s
 	if strings.Contains(registered, operationRoot) {
 		t.Fatalf("failed creation left worktree registration:\n%s", registered)
 	}
-	if exists, err := localBranchExists(context.Background(), fixture.canonical, "codex/"+operation); err != nil || exists {
+	if exists, err := localBranchExists(context.Background(), fixture.canonical, operation); err != nil || exists {
 		t.Fatalf("failed creation left feature branch: exists=%t err=%v", exists, err)
 	}
 	listed, err := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: operation})
@@ -1242,7 +1245,7 @@ func assertFailedCreateRolledBack(t *testing.T, fixture *gitFixture, operation s
 func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "legacy", "acme", "app")
-	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/legacy", legacy, "main")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/legacy", legacy, "main")
 
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -1407,7 +1410,7 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 				t.Fatalf("finish rebase: %v\n%s", err, output)
 			}
 			guarded, err = Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
-			if err != nil || guarded.Transient || guarded.Branch != "codex/rebase" {
+			if err != nil || guarded.Transient || guarded.Branch != "feature/rebase" {
 				t.Fatalf("guard after rebase = %#v, %v", guarded, err)
 			}
 			gitTest(t, worktree, "checkout", "--detach", "HEAD")
@@ -1517,7 +1520,7 @@ func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 		t.Fatalf("empty rebase state guard error = %v", err)
 	}
 	for name, content := range map[string]string{
-		"head-name":              "refs/heads/codex/fabricated-rebase\n",
+		"head-name":              "refs/heads/feature/fabricated-rebase\n",
 		"orig-head":              strings.Repeat("a", 40) + "\n",
 		"onto":                   strings.Repeat("b", 40) + "\n",
 		"git-rebase-todo.backup": "pick deadbeef synthetic\n",
@@ -1570,7 +1573,7 @@ func TestGuardRejectsForgedRebaseStateWithRealGitObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{
-		"head-name":              "refs/heads/codex/forged-real-rebase\n",
+		"head-name":              "refs/heads/feature/forged-real-rebase\n",
 		"orig-head":              originalHead + "\n",
 		"onto":                   onto + "\n",
 		"git-rebase-todo.backup": "pick " + originalHead + " feature used by forged rebase\n",

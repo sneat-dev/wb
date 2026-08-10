@@ -42,7 +42,7 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	upgradeGit(t, canonical, nil, "push", "-u", "origin", "main")
 
 	legacy := filepath.Join(projects, ".wb", "worktrees", "legacy", "acme", "app")
-	upgradeGit(t, canonical, nil, "worktree", "add", "-b", "codex/legacy", legacy, "main")
+	upgradeGit(t, canonical, nil, "worktree", "add", "-b", "feature/legacy", legacy, "main")
 	configureUpgradeGitUser(t, legacy)
 	installPreviousReleaseHooks(t, binary, projects, canonical)
 
@@ -79,7 +79,7 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	upgradeGit(t, legacy, upgradeEnv, "add", "legacy.txt")
 	upgradeGit(t, legacy, upgradeEnv, "commit", "-m", "legacy feature")
 	legacyHead := upgradeGitOutput(t, legacy, upgradeEnv, "rev-parse", "HEAD")
-	upgradeGit(t, legacy, upgradeEnv, "push", "-u", "origin", "codex/legacy")
+	upgradeGit(t, legacy, upgradeEnv, "push", "-u", "origin", "feature/legacy")
 
 	listed := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "list", "--format", "json")
 	if listed.exitCode != exitOK || !strings.Contains(listed.stdout, worktree) || !strings.Contains(listed.stdout, legacy) {
@@ -88,7 +88,7 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 
 	// Merge the legacy branch through an unhooked writer so the canonical clone
 	// remains a clean base checkout throughout the fixture.
-	mergeLegacyIntoMain(t, remote, root, "codex/legacy")
+	mergeLegacyIntoMain(t, remote, root, "feature/legacy")
 
 	// A real conflict leaves Git in rebase-merge. The refreshed post-checkout
 	// hook and an explicit candidate guard must both accept only that transient
@@ -131,6 +131,78 @@ printf '[{"number":17,"url":"https://github.com/acme/app/pull/17","state":"MERGE
 	}
 }
 
+// TestHooksInstallReportsAndBlocksRawWorktreeAtAdmission is black-box evidence
+// for the admission boundary: an ordinary external `git worktree add` reports
+// the unsafe checkout immediately without pretending post-checkout can undo
+// it, while pre-commit blocks work from landing and WB's staged managed create
+// remains allowed. The raw checkout stays visible for explicit recovery rather
+// than WB silently deleting evidence it does not own.
+func TestHooksInstallReportsAndBlocksRawWorktreeAtAdmission(t *testing.T) {
+	binary := buildWB(t)
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	projects := filepath.Join(root, "projects")
+	remote := filepath.Join(root, "remote.git")
+	canonical := filepath.Join(projects, "acme", "app")
+	environment := append(wbUpgradeEnv(home), "WB_EXECUTABLE="+binary)
+
+	upgradeGit(t, root, nil, "init", "--bare", "--initial-branch=main", remote)
+	mustUpgradeMkdir(t, filepath.Dir(canonical))
+	upgradeGit(t, root, nil, "clone", remote, canonical)
+	configureUpgradeGitUser(t, canonical)
+	mustUpgradeWrite(t, filepath.Join(canonical, "README.md"), "initial\n")
+	upgradeGit(t, canonical, nil, "add", "README.md")
+	upgradeGit(t, canonical, nil, "commit", "-m", "initial")
+	upgradeGit(t, canonical, nil, "push", "-u", "origin", "main")
+
+	installed := runWBUpgrade(t, binary, environment, "--projects-root", projects, "hooks", "install", canonical)
+	if installed.exitCode != exitOK || !strings.Contains(installed.stdout, "post-checkout") {
+		t.Fatalf("default hooks install did not install admission guard: exit=%d stdout=%s stderr=%s", installed.exitCode, installed.stdout, installed.stderr)
+	}
+
+	raw := filepath.Join(root, "raw-external-worktree")
+	output, rawErr := runUpgradeGit(canonical, environment, "worktree", "add", "-b", "feature/raw-external", raw, "main")
+	if rawErr != nil {
+		t.Fatalf("post-checkout reported after Git had already created the raw worktree but corrupted Git's control flow: %v\n%s", rawErr, output)
+	}
+	for _, message := range []string{
+		"checkout already happened outside WB's managed worktree hierarchy",
+		"wb worktree rescue is not available yet",
+	} {
+		if !strings.Contains(output, message) {
+			t.Fatalf("raw worktree admission report is missing %q:\n%s", message, output)
+		}
+	}
+	if _, err := os.Stat(raw); err != nil {
+		t.Fatalf("reported raw checkout was silently removed instead of remaining recoverable: %v", err)
+	}
+	registeredRaw, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatalf("resolve rejected raw checkout for Git registration comparison: %v", err)
+	}
+	listing := upgradeGitOutput(t, canonical, environment, "worktree", "list", "--porcelain")
+	if !strings.Contains(listing, "worktree "+registeredRaw) {
+		t.Fatalf("rejected raw checkout was not visibly registered for recovery:\n%s", listing)
+	}
+	guarded := runWBUpgrade(t, binary, environment, "--projects-root", projects, "worktree", "guard", raw)
+	if guarded.exitCode == exitOK || !strings.Contains(guarded.stderr, "must be below a resolver-recognized") {
+		t.Fatalf("raw checkout guard = exit=%d stdout=%s stderr=%s", guarded.exitCode, guarded.stdout, guarded.stderr)
+	}
+	mustUpgradeWrite(t, filepath.Join(raw, "blocked.txt"), "must not land from an unmanaged checkout\n")
+	upgradeGit(t, raw, environment, "add", "blocked.txt")
+	commitOutput, commitErr := runUpgradeGit(raw, environment, "commit", "-m", "must be blocked")
+	if commitErr == nil || !strings.Contains(commitOutput, "must be below a resolver-recognized") {
+		t.Fatalf("unmanaged checkout commit was not blocked: err=%v\n%s", commitErr, commitOutput)
+	}
+
+	prompt := filepath.Join(root, "managed-prompt.txt")
+	mustUpgradeWrite(t, prompt, "create managed checkout\n")
+	managed := runWBUpgrade(t, binary, environment, "--projects-root", projects, "worktree", "create", "managed", "acme/app", "--original-prompt-file", prompt)
+	if managed.exitCode != exitOK {
+		t.Fatalf("WB-managed checkout did not pass its own admission guard: stdout=%s stderr=%s", managed.stdout, managed.stderr)
+	}
+}
+
 type wbUpgradeResult struct {
 	stdout   string
 	stderr   string
@@ -162,7 +234,16 @@ func runWBUpgrade(t *testing.T, binary string, environment []string, args ...str
 }
 
 func wbUpgradeEnv(home string) []string {
-	return []string{"HOME=" + home, "WB_HOME=", "WB_HOME_MIGRATION_COMPAT="}
+	// The fixture must not inherit an operator's global hooks policy. In
+	// particular, an explicit worktree-profile exclusion would make this
+	// black-box default-policy test appear to install a disabled guard.
+	return []string{
+		"HOME=" + home,
+		"XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
+		"XDG_STATE_HOME=" + filepath.Join(home, ".local", "state"),
+		"WB_HOME=",
+		"WB_HOME_MIGRATION_COMPAT=",
+	}
 }
 
 func installPreviousReleaseHooks(t *testing.T, binary, projects, canonical string) {

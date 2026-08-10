@@ -44,7 +44,15 @@ func newHooksInstallCmd(repair bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   verb + " [repository-path]",
 		Short: short,
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Install WB-managed hook shims without replacing unauthorized user hooks.
+
+Worktree admission is installed by default at post-checkout, pre-commit, and
+pre-push. Git has no pre-checkout hook, so post-checkout reports an unmanaged
+checkout after it has happened and preserves it for inspection; pre-commit and
+pre-push block unsafe work. To opt out, record profiles.exclude: [worktree] in
+the selected hooks policy and run repair; the exception remains visible to
+hooks check.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fleet {
 				if len(args) > 0 {

@@ -17,11 +17,11 @@
     "fleet",
     "agents"
   ],
-  "skills": "./skills/",
+  "skills": "./ai/skills/",
   "interface": {
     "displayName": "WB",
     "shortDescription": "Operate repository fleets with fewer agent tokens.",
-    "longDescription": "Use the WB CLI for isolated worktrees, fleet hooks, dependency waves, CI audits, migrations, reusable recipes, and repository verification.",
+    "longDescription": "Use the WB CLI for isolated worktrees, fleet hooks, dependency waves, CI audits, migrations, reusable recipes, repository verification, and audited merger cleanup.",
     "developerName": "Sneat.dev",
     "category": "Developer Tools",
     "capabilities": [
@@ -32,7 +32,8 @@
     "defaultPrompt": [
       "Create a safe WB worktree for this change.",
       "Propagate these releases with minimal CI builds.",
-      "Run the smallest WB fleet check for this task."
+      "Run the smallest WB fleet check for this task.",
+      "Drain compatible completed branches with the WB merger workflow."
     ]
   }
 }

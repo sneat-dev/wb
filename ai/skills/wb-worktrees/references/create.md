@@ -20,14 +20,14 @@
 From any checkout whose `origin` identifies the repository:
 
 ```sh
-wb worktree create <task> --branch <prefix>/<task> \
+wb worktree create <task> --branch-prefix <prefix>/ \
   --original-prompt-file <private-prompt-file>
 ```
 
 For one task spanning repositories:
 
 ```sh
-wb worktree create <task> --branch <prefix>/<task> \
+wb worktree create <task> --branch-prefix <prefix>/ \
   <owner/repository-a> <owner/repository-b> \
   --effort <stable-effort-id> --run <agent-run-id> \
   --initiator <human-or-parent-agent> --agent <agent-id> \
@@ -45,7 +45,7 @@ With a non-default projects root, put the global option on every call:
 
 ```sh
 wb --projects-root <root> worktree create <task> \
-  --branch <prefix>/<task> <owner/repository> \
+  --branch-prefix <prefix>/ <owner/repository> \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -67,12 +67,31 @@ By default the printed path is below `~/.wb/worktrees`. A populated historic
 WB refreshes its home semantics before creation or fails before creating a
 mixed-layout checkout.
 
+## Branch policy
+
+Without an exact branch or prefix, WB uses `<task>` itself. The precedence is:
+exact `--branch`; CLI `--branch-prefix` (an explicit empty prefix means no
+prefix); repository `.wb/worktrees.yaml` from the exact fetched target-base
+commit; user `$XDG_CONFIG_HOME/wb/worktrees.yaml` or
+`~/.config/wb/worktrees.yaml`; then the task. Repository policy never comes
+from whichever branch the canonical checkout currently shows. A policy is:
+
+```yaml
+version: 1
+worktrees:
+  branch_prefix: feature/
+```
+
+Do not use harness names in branch spelling. Work Logs carry runtime and model
+provenance. `--branch` and `--branch-prefix` together, including an explicitly
+empty `--branch`, are rejected before fetch or worktree mutation.
+
 ## Resume
 
 Use `--resume` only when the open work belongs to this exact task and branch:
 
 ```sh
-wb worktree create <task> --branch <prefix>/<task> --resume \
+wb worktree create <task> --branch-prefix <prefix>/ --resume \
   <owner/repository> --original-prompt-file <private-prompt-file>
 ```
 
