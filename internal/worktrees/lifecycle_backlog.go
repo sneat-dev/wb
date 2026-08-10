@@ -152,8 +152,14 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	if !managedPath && !legacyPath {
 		return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
 	}
-	if !validBranch(context.Background(), record.Branch) || !validBranch(context.Background(), record.Base) || !isGitObjectID(record.HeadSHA) {
-		return fmt.Errorf("invalid lifecycle backlog Git identity")
+	if !validBranch(context.Background(), record.Branch) {
+		return fmt.Errorf("invalid lifecycle backlog branch identity")
+	}
+	if !validBranch(context.Background(), record.Base) {
+		return fmt.Errorf("invalid lifecycle backlog base identity")
+	}
+	if !isGitObjectID(record.HeadSHA) {
+		return fmt.Errorf("invalid lifecycle backlog head identity")
 	}
 	result := ListResult{Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 		WorktreeDir: record.WorktreeDir, Branch: record.Branch, HeadSHA: record.HeadSHA}
