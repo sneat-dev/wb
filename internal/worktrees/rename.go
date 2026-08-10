@@ -351,11 +351,13 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		return fmt.Errorf("open canonical repository %s: %w", plan.entry.CanonicalDir, err)
 	}
 	defer canonical.close()
-	// Pulling here, exactly like Create's synchronizeCanonical, guarantees the
-	// freshly created branch starts from the latest remote base rather than a
-	// possibly stale local one.
-	if err := synchronizeCanonical(ctx, canonical, plan.entry.Repository, options.Base); err != nil {
-		return fmt.Errorf("update base before renaming %s: %w", plan.entry.Repository, err)
+	// Fetching here, exactly like Create's synchronizeCanonical, guarantees the
+	// freshly created branch starts from one verified remote commit rather than
+	// a possibly stale local base. It does not switch or update any local base
+	// branch, which may be checked out in another worktree.
+	baseRevision, err := synchronizeCanonical(ctx, canonical, plan.entry.Repository, options.Base)
+	if err != nil {
+		return fmt.Errorf("fetch base before renaming %s: %w", plan.entry.Repository, err)
 	}
 	if exists, existsErr := localBranchExistsCanonical(ctx, canonical, plan.result.NewBranch); existsErr != nil {
 		return existsErr
@@ -386,7 +388,7 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 	}
 	plan.result.Repaired = repaired
 
-	if _, checkoutErr := git(ctx, plan.result.NewWorktreeDir, "checkout", "-b", plan.result.NewBranch, "origin/"+options.Base); checkoutErr != nil {
+	if _, checkoutErr := git(ctx, plan.result.NewWorktreeDir, "checkout", "-b", plan.result.NewBranch, baseRevision); checkoutErr != nil {
 		return fmt.Errorf("check out new branch %s in %s: %w", plan.result.NewBranch, plan.result.NewWorktreeDir, checkoutErr)
 	}
 

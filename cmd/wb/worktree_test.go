@@ -17,7 +17,8 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	command := newWorktreeCreateCmd()
 	for _, wanted := range []string{
 		"canonical clone must be clean",
-		"pulls",
+		"fetches",
+		"without switching or updating any local branch",
 		"<wb-home>/worktrees/<task>/<owner>/<repository>",
 		"WB_HOME",
 		"--resume",
@@ -387,7 +388,7 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 
 // TestWorktreeCreateReportsCanonicalSyncFailureAsFindings is the regression
 // test for a second bug found alongside a real production outage in the
-// canonical `git pull --ff-only` step: the failure was reported to the shell
+// canonical origin-base fetch step: the failure was reported to the shell
 // as exit code 0. WB's own documented contract (see rootLongHelp) is that a
 // command which ran and found a real problem exits 1 ("findings"), not 0
 // ("success") — a caller, human or agent, that only checks the exit code
@@ -395,9 +396,9 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 //
 // This drives the real end-to-end path — worktrees.Create ->
 // synchronizeCanonical -> gitCanonical -> the re-exec'd secure canonical Git
-// helper -> a real sandboxed `git pull` — through run(), the same function
-// main() uses, against a canonical clone whose origin can never fast-forward
-// pull. That makes the pull failure genuine and reproducible without a
+// helper -> a real sandboxed `git fetch` — through run(), the same function
+// main() uses, against a canonical clone whose origin cannot be fetched. That
+// makes the fetch failure genuine and reproducible without a
 // network dependency, rather than a simulated error return.
 func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	root := t.TempDir()
@@ -427,7 +428,7 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	}
 	runCanonicalGit("add", "README.md")
 	runCanonicalGit("commit", "-m", "initial")
-	// An origin that cannot be fetched from makes `git pull --ff-only` fail for
+	// An origin that cannot be fetched from makes `git fetch` fail for
 	// a real, reproducible reason, without needing SSH or a reachable remote.
 	runCanonicalGit("remote", "add", "origin", filepath.Join(root, "does-not-exist.git"))
 
@@ -439,7 +440,7 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 		t.Fatalf("canonical sync failure exit code = %d, want %d (findings); stdout=%s stderr=%s",
 			code, exitFindings, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "update canonical") {
+	if !strings.Contains(stderr.String(), "fetch verified origin base") {
 		t.Fatalf("stderr does not explain the canonical sync failure: %s", stderr.String())
 	}
 	if stdout.Len() != 0 {

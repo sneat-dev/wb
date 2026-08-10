@@ -119,6 +119,28 @@ durable checkpoint and handoff offer, releases or expires its claim, then the
 incoming Run validates current Git evidence and acquires a new claim. A same
 worktree/branch multi-writer mode is out of scope.
 
+#### REQ: checkpointed-base-refresh-and-integration
+
+The Work Log MUST distinguish **refresh** from **integrate**. Refresh only
+fetches the claimed branch's configured target ref and measures divergence; it
+does not modify the worktree, index, branch, or local base branch. The journal
+and public projection MUST retain target ref and SHA, last successful fetch,
+last integration, ahead/behind counts, and nullable conflict state. WB MUST
+request refresh at least every 60 minutes and whenever observed target-ref
+movement makes the recorded target SHA stale.
+
+Integration is a separate, claim-owner operation permitted only at a clean
+checkpoint. WB MUST require it after every checkpoint that records a clean
+committed state and before push, handoff, finalize, or merge. Before merging,
+WB MUST fetch and fast-forward the target ref first. If the refresh timer is
+due while the worktree is dirty, WB MUST append a `refresh_required` event and
+leave all Git state untouched: it MUST NOT auto-stash, reset, rebase, merge, or
+rewrite. For an unpublished branch with one owner, integration defaults to
+rebase; for a published or shared branch, it defaults to merge. Rewriting a
+published branch requires explicit user approval and a force-with-lease guard.
+Conflict state blocks handoff/finalization until a clean checkpoint records its
+resolution or an explicit failed terminal result explains it.
+
 #### REQ: commands-and-projections
 
 WB MUST provide the following deterministic command group:
@@ -128,6 +150,8 @@ WB MUST provide the following deterministic command group:
 | `wb worktree log init` | Create or attach an Effort, record exact private prompt and provenance, verify a WB-managed worktree, and acquire the initial claim. |
 | `wb worktree log show` | Read journal and live Git evidence without mutation; default text redacts private data and `--json` exposes the public projection only. |
 | `wb worktree log checkpoint` | Append a typed progress/checkpoint event, observed Git evidence, optional nullable usage, and update both projections. |
+| `wb worktree log refresh` | Fetch and measure target-ref divergence without changing the claimed worktree; record target SHA and freshness evidence. |
+| `wb worktree log integrate` | At a clean checkpoint, integrate the fetched target using the policy-selected rebase or merge strategy and record the result/conflict state. |
 | `wb worktree log handoff` | Create a bounded handoff summary and next action, then make the claim available only after the outgoing checkpoint is durable. |
 | `wb worktree log recover` | Rebuild derived state from journal plus Git, diagnose stale/lost claims, and require explicit takeover after dry-run evidence. |
 | `wb worktree log finalize` | Record terminal result or failure, release the claim, preserve recovery evidence, and enqueue final sync. |
@@ -196,6 +220,17 @@ artifact
 **Then** the helper never obtains write authority, the outgoing Run durably
 records its checkpoint and handoff before release, and exactly one successor
 Run can validate current Git evidence and acquire the claim.
+
+### AC: safe-base-refresh-and-integration
+
+**Given** a claimed branch has a stale target ref and its canonical checkout's
+local base branch may be stale or in use elsewhere
+**When** its 60-minute refresh is due while the claimed worktree is dirty
+**Then** WB records `refresh_required` without changing Git state; after a
+clean checkpoint, it fetches and measures the target, records target SHA,
+ahead/behind/conflict evidence, and integrates before the next push, handoff,
+finalize, or merge using rebase only for unpublished single-owner work and
+merge by default for published/shared work.
 
 ### AC: authoritative-receipt-with-replica-observation
 

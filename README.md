@@ -58,8 +58,9 @@ wb self-update [flags]       # update the installed wb binary (alias: wb update)
 
 ### `wb worktree` — isolated feature branches
 
-Keep canonical clones at `<projects-root>/<owner>/<repository>` clean and on
-`main`. Create every feature branch in WB's shared worktree hierarchy:
+Keep canonical clones at `<projects-root>/<owner>/<repository>` clean. Their
+currently checked-out branch is left untouched while WB creates every feature
+branch in its shared worktree hierarchy:
 
 ```sh
 # From any checkout of sneat-bots; owner/repository is derived from origin.
@@ -73,9 +74,11 @@ wb worktree create bots-e2e sneat-co/sneat-bots \
   --branch agent/bots-e2e --resume
 ```
 
-Before branching, WB requires every canonical clone to be clean and checked
-out on the selected base (`main` by default), then runs
-`git pull --ff-only --no-tags origin <base>`. Worktrees are created at
+Before branching, WB requires every canonical clone to be clean, then fetches
+the exact `refs/heads/<base>` from `origin` (`main` by default). It creates the
+new branch from that verified commit without switching, pulling, resetting, or
+fast-forwarding the canonical checkout or any local base branch; this is safe
+when local `main` is stale or checked out in another worktree. Worktrees are created at
 `~/.wb/worktrees/<task>/<owner>/<repository>` by default. Set `WB_HOME` to an
 explicit alternative. New work never silently falls back to the historic
 `<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still

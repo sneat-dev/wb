@@ -28,12 +28,13 @@ endpoint and displays its receipt plus server-reported replica state.
    the private exact prompt, immutable source/Git snapshot, agent provenance,
    Run, and exclusive Worktree Claim exist; the source repository shows neither
    a tracked log nor the prompt.
-2. **Middle — work progresses without unsafe sharing.** The primary Run writes
-   checkpoints while helpers inspect read-only snapshots and return patches or
-   findings. Observable good result: `show` exposes redacted current progress,
-   live Git evidence, and authoritative-sync/replica lag; only the primary can
-   change the claimed worktree and an offline endpoint merely grows the local
-   outbox.
+2. **Middle — work progresses without unsafe sharing or stale-base drift.** The
+primary Run writes checkpoints while helpers inspect read-only snapshots and
+return patches or findings. Observable good result: `show` exposes redacted
+current progress, live Git evidence, target SHA/divergence/freshness, and
+authoritative-sync/replica lag; only the primary can change the claimed
+worktree, a dirty refresh timer records a requirement without changing Git,
+and an offline endpoint merely grows the local outbox.
 3. **End A — sequential handoff.** The primary is interrupted or deliberately
    hands work off. Observable good result: a successor sees a deterministic
    recovery diagnosis, validates the exact branch/head/base, and acquires the
@@ -100,9 +101,26 @@ event, projection rebuild, changed branch/head/base, stale claim, explicitly
 approved takeover, and sequential handoff; recovery starts read-only and cannot
 silently revive uncertain writes.
 
-### Task 4: Add authoritative Synchestra outbox and replica observation
+### Task 4: Add safe base refresh and checkpointed integration
 
 **Id:** task-4
+**Verifies:** work-log#ac:safe-base-refresh-and-integration
+**Depends-On:** task-1, task-2, task-3
+**Status:** planning
+
+Add typed target-ref freshness evidence and `refresh_required` events to the
+journal and public projection. Implement read-safe `refresh` with the
+60-minute and target-movement triggers, and clean-checkpoint-only `integrate`.
+Use real Git fixtures to prove refresh never changes a dirty worktree, local
+base branch, index, or current canonical branch; integration selects rebase for
+unpublished single-owner branches and merge for published/shared branches;
+rewriting a published branch requires explicit force-with-lease. Prove fetch
+and fast-forward of the target before merge, ahead/behind/conflict persistence,
+and blocking push/handoff/finalize/merge until required integration resolves.
+
+### Task 5: Add authoritative Synchestra outbox and replica observation
+
+**Id:** task-5
 **Verifies:** work-log#ac:authoritative-receipt-with-replica-observation
 **Depends-On:** task-1, task-3
 **Status:** planning
@@ -116,11 +134,11 @@ duplicate submission, acknowledgement before a replica advances, replica
 lag/error display, and permanent sync failure without direct writes to Git or
 another replica and without SQLite/DALgo/inGitDB assumptions in WB.
 
-### Task 5: Retain, archive, surface, and document the recovery journey
+### Task 6: Retain, archive, surface, and document the recovery journey
 
-**Id:** task-5
+**Id:** task-6
 **Verifies:** work-log#ac:safe-terminal-retention
-**Depends-On:** task-2, task-3, task-4
+**Depends-On:** task-2, task-3, task-4, task-5
 **Status:** planning
 
 Add seven-day Recent and explicit `wb worktree log archive` lifecycle support,

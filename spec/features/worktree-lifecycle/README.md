@@ -32,6 +32,17 @@ short-lived Git rebase from an arbitrary detached development checkout.
 
 ### Fast local inventory
 
+#### REQ: nonmutating-verified-base
+
+Before creating a new worktree, WB MUST require the canonical clone to be
+clean and verify the requested `refs/heads/<base>` by fetching it from
+`origin`. It MUST create the feature branch from the exact verified commit,
+not an unverified or moving local/remote ref. Creation MUST NOT switch, pull,
+reset, or fast-forward the canonical checkout or any local base branch. A
+stale local base branch or one checked out in another linked worktree is not a
+blocker; an inaccessible, missing, non-commit, or otherwise unverifiable
+remote base MUST fail before WB creates a branch or worktree.
+
 #### REQ: offline-list-default
 
 `wb worktree list [task]` MUST inspect only the local, resolver-recognized
@@ -147,10 +158,12 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-pr-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-pr-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
-linked worktrees, rebases, and refs prove that new creation uses the
+linked worktrees, rebases, and refs prove that creation fetches and pins the
+remote base without changing a clean canonical feature checkout or a stale
+local base checked out elsewhere; new creation uses the
 authoritative home even when legacy state exists; legacy and current worktrees
 remain guardable, listable, and safely cleanable; direct legacy repository
 roots do not recurse into source directories; arbitrary detached work is

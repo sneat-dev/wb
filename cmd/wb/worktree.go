@@ -33,9 +33,9 @@ func newWorktreeCreateCmd() *cobra.Command {
 		Short: "Create feature branches below WB's home worktrees directory",
 		Long: `Create one isolated feature worktree per repository.
 
-The canonical clone must be clean and checked out on the base branch. WB pulls
-that branch from origin with --ff-only before branching, then creates each
-worktree at:
+The canonical clone must be clean. WB fetches the exact requested base from
+origin without switching or updating any local branch, then creates each
+worktree from that verified commit at:
 
   <wb-home>/worktrees/<task>/<owner>/<repository>
 
