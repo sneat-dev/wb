@@ -112,7 +112,7 @@ exit "${WB_TEST_EXIT:-0}"
 	t.Run("success preserves arguments and order", func(t *testing.T) {
 		mustWrite(t, toolLog, "")
 		command := exec.Command(prePush, "origin", "ssh://example.invalid/repo with spaces")
-		command.Env = append(os.Environ(), "WB_TEST_EXIT=0")
+		command.Env = hookEnvironment(map[string]string{"WB_EXECUTABLE": fakeWB, "WB_TEST_EXIT": "0"})
 		if output, runErr := command.CombinedOutput(); runErr != nil {
 			t.Fatalf("run generated hook: %v\n%s", runErr, output)
 		}
@@ -128,7 +128,7 @@ exit "${WB_TEST_EXIT:-0}"
 	t.Run("failure preserves status and skips user post section", func(t *testing.T) {
 		mustWrite(t, toolLog, "")
 		command := exec.Command(prePush, "origin")
-		command.Env = append(os.Environ(), "WB_TEST_EXIT=17")
+		command.Env = hookEnvironment(map[string]string{"WB_EXECUTABLE": fakeWB, "WB_TEST_EXIT": "17"})
 		output, runErr := command.CombinedOutput()
 		var exitErr *exec.ExitError
 		if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 17 {
@@ -145,7 +145,7 @@ exit "${WB_TEST_EXIT:-0}"
 	}
 	mustWrite(t, toolLog, "")
 	command := exec.Command(prePush, "origin")
-	command.Env = append(os.Environ(), "WB_TEST_EXIT=0")
+	command.Env = hookEnvironment(map[string]string{"WB_EXECUTABLE": fakeWB, "WB_TEST_EXIT": "0"})
 	if output, runErr := command.CombinedOutput(); runErr != nil {
 		t.Fatalf("run repaired hook: %v\n%s", runErr, output)
 	}

@@ -138,8 +138,14 @@ func shimContent(executable, hook, explicitConfig, projectsRoot, wbHome string, 
 	return "#!/bin/sh\nset -eu\n\n" + shimManagedSection(executable, hook, explicitConfig, projectsRoot, wbHome, wbHomeAllowsLegacy)
 }
 
-func shimManagedSection(executable, hook, explicitConfig, projectsRoot, wbHome string, wbHomeAllowsLegacy bool) string {
-	args := []string{shellQuote(executable)}
+func shimManagedSection(_ string, hook, explicitConfig, projectsRoot, wbHome string, wbHomeAllowsLegacy bool) string {
+	// Do not persist the installer executable. A Go build, package-manager
+	// launcher, or harness binary can disappear while this hook remains in
+	// hundreds of repositories. Resolve WB afresh for every invocation, then
+	// validate the physical target before executing it. WB_EXECUTABLE is an
+	// explicit operator override; otherwise the user's current PATH is the
+	// authority.
+	args := []string{`"$_wb_hook_executable"`}
 	if projectsRoot != "" {
 		// A hook starts in the repository, outside the command that installed
 		// it, so it cannot recover a caller's non-default projects root.
@@ -164,12 +170,71 @@ func shimManagedSection(executable, hook, explicitConfig, projectsRoot, wbHome s
 	}
 	return managedStartMarker + "\n" +
 		homeExport +
+		wbRuntimeExecutableResolver() +
 		strings.Join(args, " ") + "\n" +
 		"_wb_hook_status=$?\n" +
 		"if [ \"$_wb_hook_status\" -ne 0 ]; then\n" +
 		"    exit \"$_wb_hook_status\"\n" +
 		"fi\n" +
 		managedEndMarker + "\n"
+}
+
+// wbRuntimeExecutableResolver is POSIX shell embedded in every managed hook.
+// It deliberately contains no installer path. The physical-path check closes
+// the common `PATH=.` and symlink-into-checkout injection cases while still
+// allowing package-manager launchers to retarget between releases.
+func wbRuntimeExecutableResolver() string {
+	return `_wb_hook_error() {
+    printf '%s\n' "WB hook: $1" >&2
+    exit 1
+}
+_wb_hook_physical_file() {
+    _wb_hook_path=$1
+    _wb_hook_links=0
+    while [ -L "$_wb_hook_path" ]; do
+        _wb_hook_links=$((_wb_hook_links + 1))
+        [ "$_wb_hook_links" -le 40 ] || return 1
+        _wb_hook_link=$(readlink "$_wb_hook_path") || return 1
+        case "$_wb_hook_link" in
+            /*) _wb_hook_path=$_wb_hook_link ;;
+            *) _wb_hook_path=${_wb_hook_path%/*}/$_wb_hook_link ;;
+        esac
+    done
+    _wb_hook_directory=${_wb_hook_path%/*}
+    _wb_hook_name=${_wb_hook_path##*/}
+    [ "$_wb_hook_directory" != "$_wb_hook_path" ] || _wb_hook_directory=/
+    (
+        CDPATH= cd -P "$_wb_hook_directory" 2>/dev/null || exit 1
+        _wb_hook_directory=$(pwd -P) || exit 1
+        if [ "$_wb_hook_directory" = / ]; then
+            printf '/%s\n' "$_wb_hook_name"
+        else
+            printf '%s/%s\n' "$_wb_hook_directory" "$_wb_hook_name"
+        fi
+    )
+}
+_wb_hook_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || _wb_hook_error 'cannot resolve the repository root'
+_wb_hook_repo_root=$(CDPATH= cd -P "$_wb_hook_repo_root" 2>/dev/null && pwd -P) || _wb_hook_error 'cannot resolve the physical repository root'
+if [ -n "${WB_EXECUTABLE:-}" ]; then
+    _wb_hook_candidate=$WB_EXECUTABLE
+else
+    _wb_hook_candidate=$(command -v wb 2>/dev/null || true)
+fi
+[ -n "$_wb_hook_candidate" ] || _wb_hook_error 'wb was not found; set WB_EXECUTABLE to an absolute installed executable or add wb to PATH'
+case "$_wb_hook_candidate" in
+    /*) ;;
+    *) _wb_hook_error 'resolved wb executable must be an absolute path' ;;
+esac
+[ -f "$_wb_hook_candidate" ] || _wb_hook_error 'resolved wb executable must be a regular file'
+[ -x "$_wb_hook_candidate" ] || _wb_hook_error 'resolved wb executable is not executable'
+_wb_hook_executable=$(_wb_hook_physical_file "$_wb_hook_candidate") || _wb_hook_error 'cannot resolve the physical wb executable'
+[ -f "$_wb_hook_executable" ] || _wb_hook_error 'physical wb executable must be a regular file'
+[ -x "$_wb_hook_executable" ] || _wb_hook_error 'physical wb executable is not executable'
+case "$_wb_hook_executable" in
+    "$_wb_hook_repo_root"|"$_wb_hook_repo_root"/*) _wb_hook_error 'refusing a repository-local wb executable' ;;
+esac
+export WB_EXECUTABLE="$_wb_hook_executable"
+`
 }
 
 func shellQuote(value string) string {
@@ -190,10 +255,9 @@ func absoluteProjectsRoot(projectsRoot string) (string, error) {
 // Check validates config, core.hooksPath, generated shims, and executability
 // without changing repository state.
 func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport, error) {
-	// The shim intentionally retains a stable launcher (for example
-	// /opt/homebrew/bin/wb) instead of the version-specific target of that
-	// launcher symlink. Normalise only its spelling here so `hooks check`
-	// compares the same durable entry point that Apply recorded.
+	// Generated shims intentionally contain no executable path. Normalize the
+	// current check process's launcher only for WB-source stale-build evidence;
+	// shim text comparison itself is independent of installation location.
 	if launcher, normalizeErr := normalizedWBLauncher(wbExecutable); normalizeErr == nil {
 		wbExecutable = launcher
 	}
@@ -253,9 +317,17 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 	// always older than the next commit made in an actively developed repo.
 	var headCommitTime time.Time
 	var headTimeErr error
+	var checkedExecutablePath string
+	var checkedExecutableInfo os.FileInfo
 	checkExecutableStaleness := repositoryIsWBSourceModule(policy.RepoRoot)
 	if checkExecutableStaleness {
 		headCommitTime, headTimeErr = repositoryHeadCommitTime(policy.RepoRoot)
+		if resolved, resolveErr := filepath.EvalSymlinks(wbExecutable); resolveErr == nil {
+			if info, statErr := os.Stat(resolved); statErr == nil && info.Mode().IsRegular() {
+				checkedExecutablePath = filepath.Clean(resolved)
+				checkedExecutableInfo = info
+			}
+		}
 	}
 	for _, name := range names {
 		path := filepath.Join(managed, name)
@@ -272,19 +344,15 @@ func Check(repoPath, configPath, wbExecutable, projectsRoot string) (CheckReport
 		if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o111 == 0 {
 			report.Findings = append(report.Findings, Finding{Code: "hook-not-executable", Message: fmt.Sprintf("managed %s hook is not executable", name), Path: path})
 		}
-		if checkExecutableStaleness && isManaged && valid && headTimeErr == nil {
-			if executable := executablePathFromManagedSection(actual); executable != "" {
-				if info, statErr := os.Stat(executable); statErr == nil && info.Mode().IsRegular() && info.ModTime().Before(headCommitTime) {
-					report.Findings = append(report.Findings, Finding{
-						Code: "hook-executable-stale",
-						Message: fmt.Sprintf(
-							"managed %s hook's executable was built %s, before HEAD was committed at %s — rebuild it to enforce current policy",
-							name, info.ModTime().Format(time.RFC3339), headCommitTime.Format(time.RFC3339),
-						),
-						Path: executable,
-					})
-				}
-			}
+		if checkExecutableStaleness && isManaged && valid && headTimeErr == nil && checkedExecutableInfo != nil && checkedExecutableInfo.ModTime().Before(headCommitTime) {
+			report.Findings = append(report.Findings, Finding{
+				Code: "hook-executable-stale",
+				Message: fmt.Sprintf(
+					"the WB executable checking managed %s was built %s, before HEAD was committed at %s — rebuild it to enforce current policy",
+					name, checkedExecutableInfo.ModTime().Format(time.RFC3339), headCommitTime.Format(time.RFC3339),
+				),
+				Path: checkedExecutablePath,
+			})
 		}
 	}
 	entries, readErr := os.ReadDir(managed)
@@ -1093,26 +1161,6 @@ func extractManagedSection(content string) (section string, managed, valid bool)
 		return content[start:end], true, true
 	}
 	return "", false, false
-}
-
-// executablePathFromManagedSection extracts the wb executable a generated
-// shim invokes, skipping the start marker and any export lines (a pinned
-// WB_HOME, for example) to reach the actual invocation line.
-func executablePathFromManagedSection(section string) string {
-	for _, line := range strings.Split(section, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line == managedStartMarker || strings.HasPrefix(line, "export ") {
-			continue
-		}
-		if !strings.HasPrefix(line, "'") {
-			return ""
-		}
-		if end := strings.Index(line[1:], "'"); end >= 0 {
-			return line[1 : end+1]
-		}
-		return ""
-	}
-	return ""
 }
 
 // repositoryHeadCommitTime reads HEAD's own commit time, the only staleness

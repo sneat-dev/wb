@@ -44,7 +44,12 @@ func newHooksInstallCmd(repair bool) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   verb + " [repository-path]",
 		Short: short,
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Install WB-managed hook shims without replacing unauthorized user hooks.
+
+Managed shims retain no installer executable path. At each Git invocation they
+prefer an explicit WB_EXECUTABLE; otherwise they resolve wb from PATH and
+reject relative, repository-local, non-regular, or non-executable results.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fleet {
 				if len(args) > 0 {

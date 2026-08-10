@@ -217,6 +217,13 @@ Git command fail with recovery instructions, but the agent must still switch
 the canonical clone back to `main`. The commit and push guards are the hard
 boundary that prevents unsafe work from progressing.
 
+Managed hooks retain no installer executable path. Each invocation prefers an
+explicit `WB_EXECUTABLE`, otherwise resolves `wb` from `PATH`, and rejects a
+relative, repository-local, non-regular, or non-executable result. A GUI Git
+client with a reduced `PATH` should set `WB_EXECUTABLE` to an installed
+launcher in its hook environment; package upgrades then do not require a
+repository-by-repository repair.
+
 ### `wb sync`
 
 Reconciles `~/projects/{org}/{repo}` with GitHub:
@@ -1050,6 +1057,11 @@ them from a non-default projects hierarchy. A shim installed from the normal
 default home remains migration-compatible with legacy linked worktrees; an
 explicit `WB_HOME` remains isolated.
 
+The managed shim does not retain the executable path used by `hooks install`
+or `hooks repair`. At hook runtime it prefers `WB_EXECUTABLE`, otherwise
+resolves `wb` from `PATH`, then verifies the physical result is an absolute,
+regular, executable file outside the repository before invoking it.
+
 #### Hook policy, detection, and composable profiles
 
 Policy layers in this order: WB's conservative built-ins, the user's global
@@ -1126,7 +1138,9 @@ set -eu
 # Local commands that run before WB.
 
 ### Start of WB managed hook ###
-'/path/to/wb' hooks run 'pre-push' -- "$@"
+# The generated resolver selects WB_EXECUTABLE or an absolute `command -v wb`
+# result, validates it, and stores the physical result only for this process.
+"$_wb_hook_executable" hooks run 'pre-push' -- "$@"
 _wb_hook_status=$?
 if [ "$_wb_hook_status" -ne 0 ]; then
     exit "$_wb_hook_status"
