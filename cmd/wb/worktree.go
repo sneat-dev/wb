@@ -93,8 +93,7 @@ func newWorktreeCreateCmd() *cobra.Command {
 		Short: "Create feature branches below WB's home worktrees directory",
 		Long: `Create one isolated feature worktree per repository.
 
-WB reads even a dirty or off-base canonical clone without switching or updating
-its local branch, index, or working tree. It fetches the exact requested base
+WB reads even a dirty or off-base canonical clone without switching or updating any local branch, index, or working tree. It fetches the exact requested base
 from origin, then creates each
 worktree from that verified commit at:
 

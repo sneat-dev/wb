@@ -1266,11 +1266,6 @@ func gitDirectoriesCanonical(ctx context.Context, canonical *canonicalRepository
 	return filepath.Clean(gitDir), filepath.Clean(commonDir), nil
 }
 
-func cleanCanonicalWorktree(ctx context.Context, canonical *canonicalRepository) (bool, error) {
-	output, err := gitCanonical(ctx, canonical, "status", "--porcelain=v1")
-	return output == "", err
-}
-
 func gitDirectories(ctx context.Context, root string) (gitDir, commonDir string, err error) {
 	gitDir, err = git(ctx, root, "rev-parse", "--absolute-git-dir")
 	if err != nil {
