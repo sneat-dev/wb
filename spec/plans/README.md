@@ -11,6 +11,7 @@ Canonical index of all plans in this repository. Each plan is a single Markdown 
 | Plan | Status | Source | Date | Owner |
 |---|---|---|---|---|
 | [wb-home-worktree-guard](wb-home-worktree-guard.md) | Approved | worktree-lifecycle | 2026-07-28 | codex |
+| [work-log-recovery](work-log-recovery.md) | Draft | work-log | 2026-08-10 | codex |
 
 ## Recently Closed
 
