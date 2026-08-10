@@ -3,17 +3,7 @@ name: Go CI
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/go-ci.yml'
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
   pull_request:
-    paths:
-      - '.github/workflows/go-ci.yml'
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
   workflow_dispatch:
 
 permissions:
@@ -36,6 +26,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: go mod tidy check
+        run: go mod tidy -diff
 
       - name: gofmt
         run: |

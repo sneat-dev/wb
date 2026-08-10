@@ -334,66 +334,59 @@ func openPullRequest(ctx context.Context, worktree, branch, base, title, body st
 }
 
 func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]) error {
-	deadline := time.Time{}
-	if options.Timeout > 0 {
-		deadline = time.Now().Add(options.Timeout)
+	slice := 8 * time.Minute
+	if options.Timeout > 0 && options.Timeout < slice {
+		slice = options.Timeout
 	}
-	for {
-		output, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", "pr", "checks", result.PR, "--json", "name,bucket,link")
-		checks, pending, checkErr := decodePullRequestChecks(result.PR, output, err)
-		if checkErr != nil {
-			return checkErr
-		}
-		result.Checks = checks
-		failed := false
-		for _, check := range checks {
-			switch check.Bucket {
-			case "pass", "skipping":
-			case "fail", "cancel":
-				failed = true
-			default:
-				pending = true
-			}
-		}
-		if failed {
-			return fmt.Errorf("GitHub checks failed for %s", result.PR)
-		}
-		if len(checks) > 0 && !pending {
-			break
-		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			if len(checks) == 0 {
-				return fmt.Errorf("no GitHub checks appeared before timeout for %s", result.PR)
-			}
-			return fmt.Errorf("GitHub checks remained pending past timeout for %s", result.PR)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(githubChecksPollInterval(options)):
-		}
+	interval := githubChecksPollInterval(options)
+	if interval >= slice {
+		return fmt.Errorf("CI poll interval %s must be shorter than bounded merge slice %s", interval, slice)
 	}
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", "pr", "merge", result.PR, "--merge"); err != nil {
+	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+		Repository:        result.Repository,
+		PullRequest:       result.PR,
+		Target:            result.Ref,
+		Head:              result.Commit,
+		Slice:             slice,
+		CheckPollInterval: interval,
+	})
+	if err != nil {
+		return err
+	}
+	result.Checks = receipt.Checks
+	switch receipt.Status {
+	case PullRequestWaitPassed:
+	case PullRequestWaitPending:
+		return fmt.Errorf("GitHub CI receipt is pending for %s at %s; resume the orchestrated merge or run wb ci wait with the same exact identity: %s", result.PR, result.Commit, receipt.Reason)
+	default:
+		return fmt.Errorf("GitHub CI receipt failed for %s at %s: %s", result.PR, result.Commit, receipt.Reason)
+	}
+	mergeArgs := []string{"pr", "merge", result.PR, "--match-head-commit", result.Commit, "--merge"}
+	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", mergeArgs...); err != nil {
 		return err
 	}
 	result.Merged = true
 	result.Status = "merged"
-	result.Reason = "all observed GitHub checks passed or skipped; pull request merged normally"
+	result.Reason = "producer-aware required policy and the exact-head observed check set were stable before the pull request merged"
 	return nil
 }
 
 func decodePullRequestChecks(pr, output string, commandErr error) ([]RemoteCheck, bool, error) {
-	if commandErr != nil {
-		if strings.Contains(strings.ToLower(output), "no checks reported") {
-			return nil, true, nil
-		}
-		return nil, false, commandErr
-	}
 	var checks []RemoteCheck
-	if err := json.Unmarshal([]byte(output), &checks); err != nil {
+	if err := json.Unmarshal([]byte(output), &checks); err == nil {
+		// `gh pr checks` uses non-zero exit statuses for both pending (8) and
+		// failed checks, while still returning its requested JSON receipt. The
+		// normalized buckets, not the transport exit code, decide whether this
+		// exact CI observation is resumable or terminal.
+		return checks, len(checks) == 0, nil
+	} else if commandErr == nil {
 		return nil, false, fmt.Errorf("decode checks for %s: %w", pr, err)
 	}
-	return checks, len(checks) == 0, nil
+	lowerOutput := strings.ToLower(output)
+	if strings.Contains(lowerOutput, "no checks reported") || strings.Contains(lowerOutput, "no required checks reported") {
+		return nil, true, nil
+	}
+	return nil, false, commandErr
 }
 
 func githubChecksPollInterval(options Options) time.Duration {

@@ -97,6 +97,7 @@ worktree for a new task, plan then apply a rename:
 ```sh
 wb worktree rename <finished-task> <next-task> --preserve-cache node_modules
 wb worktree rename finished-task next-task --preserve-cache node_modules
+wb worktree rename finished-task next-task --branch-prefix feature/ --preserve-cache node_modules
 wb worktree rename <finished-task> <next-task> --apply --remote \
   --preserve-cache node_modules --effort <new-effort> --run <new-run> \
   --agent <new-agent> --agent-runtime <runtime> --model <model> \

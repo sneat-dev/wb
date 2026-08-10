@@ -85,7 +85,7 @@ The default is a dry-run plan.`,
 }
 
 func newWorktreeCreateCmd() *cobra.Command {
-	var branch, base, format string
+	var branch, branchPrefix, base, format string
 	var resume bool
 	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
 	command := &cobra.Command{
@@ -108,10 +108,21 @@ If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
 unless --resume is explicit.
 
+Resume first recovers its registered branch and active Work Log claim. Current
+naming policy cannot replace that recovered identity; WB consults it only when
+it creates a new checkout. An exact --branch may assert the recovered branch.
+Changing run or agent provenance requires an audited handoff instead of
+silently replacing the claim.
+
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
 into the private Work Log under WB_HOME before any worktree is created; prompt
 text never enters the worktree projection, source Git, or normal output.`,
-		Args: cobra.MinimumNArgs(1),
+		Args: func(command *cobra.Command, args []string) error {
+			if err := cobra.MinimumNArgs(1)(command, args); err != nil {
+				return err
+			}
+			return validateWorktreeBranchFlags(command, branch)
+		},
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
@@ -138,16 +149,29 @@ text never enters the worktree projection, source Git, or normal output.`,
 			if err != nil {
 				return err
 			}
+			// Prepare snapshots the prompt before hook mutation and supplies a
+			// generated fallback identity. On resume, preserve whether effort/run
+			// were actually supplied so Create can recover the existing active
+			// claim instead of mistaking the local fallback for a handoff.
+			if resume && !command.Flags().Changed("effort") {
+				workLog.EffortID = ""
+			}
+			if resume && !command.Flags().Changed("run") {
+				workLog.RunID = ""
+			}
 			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
 				return err
 			}
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
-				ProjectsRoot: projectsRoot,
-				Operation:    args[0],
-				Branch:       branch,
-				Base:         base,
-				Resume:       resume,
-				WorkLog:      workLog,
+				ProjectsRoot:       projectsRoot,
+				Operation:          args[0],
+				Branch:             branch,
+				BranchChosen:       command.Flags().Changed("branch"),
+				BranchPrefix:       branchPrefix,
+				BranchPrefixChosen: command.Flags().Changed("branch-prefix"),
+				Base:               base,
+				Resume:             resume,
+				WorkLog:            workLog,
 			})
 			if err != nil {
 				return err
@@ -172,7 +196,8 @@ text never enters the worktree projection, source Git, or normal output.`,
 			return nil
 		},
 	}
-	command.Flags().StringVar(&branch, "branch", "", "feature branch (default codex/<task>)")
+	command.Flags().StringVar(&branch, "branch", "", "exact feature branch (overrides branch-prefix configuration)")
+	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
 	command.Flags().BoolVar(&resume, "resume", false, "reuse only the exact expected branch and worktree")
 	command.Flags().StringVar(&effortID, "effort", "", "stable Synchestra/WB effort id (default task)")
@@ -458,16 +483,17 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 }
 
 func newWorktreeRenameCmd() *cobra.Command {
-	var branch, base, reportDir, format string
+	var branch, branchPrefix, base, reportDir, format string
 	var force, apply, deleteRemote bool
 	var preserveCachePaths []string
 	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
 	command := &cobra.Command{
 		Use:   "rename <old-task> <new-task>",
 		Short: "Re-home a task's worktrees under a new task name, keeping their working-tree contents",
-		Long: `Move every repository worktree below <old-task> to <new-task> using
-'git worktree move' — with a plain move plus 'git worktree repair' as a
-verified fallback — so Git's own gitdir pointers never go stale.
+		Long: `Move every repository worktree below <old-task> to <new-task> with a
+descriptor-relative no-replace directory move. WB retains the exact checkout
+identity through 'git worktree repair' and registration verification, so Git's
+own gitdir pointers never go stale and a substituted endpoint is never moved.
 
 Recycling is opt-in. WB refuses to carry arbitrary ignored/untracked state
 into the next effort. Pass --preserve-cache for each repository-relative cache
@@ -475,8 +501,8 @@ path that may survive (for example node_modules); every other local file must
 be removed or archived before recycling.
 
 The branch itself is never recycled. After the move, each repository is
-switched onto a freshly created branch (default codex/<new-task>; override
-with --branch) based on an up-to-date origin/<base>, exactly like
+switched onto a freshly created branch (default <new-task>; derive a configured
+prefix with --branch-prefix, or override exactly with --branch) based on an up-to-date origin/<base>, exactly like
 'wb worktree create'. The old local branch is always deleted. Apply requires
 --remote: an existing exact remote source branch is retired with force-with-
 lease after the old Work Log is sealed. A branch that is not integrated into
@@ -488,7 +514,12 @@ renamed. A malformed candidate, a dirty or locked worktree, or an already
 existing <new-task> blocks the whole (coordinated) rename. The default is a
 dry-run plan; --apply performs the move and requires --original-prompt-file
 for the new private Work Log.`,
-		Args: cobra.ExactArgs(2),
+		Args: func(command *cobra.Command, args []string) error {
+			if err := cobra.ExactArgs(2)(command, args); err != nil {
+				return err
+			}
+			return validateWorktreeBranchFlags(command, branch)
+		},
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
@@ -499,6 +530,9 @@ for the new private Work Log.`,
 				NewTask:            args[1],
 				Filter:             filterFlag,
 				Branch:             branch,
+				BranchChosen:       command.Flags().Changed("branch"),
+				BranchPrefix:       branchPrefix,
+				BranchPrefixChosen: command.Flags().Changed("branch-prefix"),
 				Base:               base,
 				Force:              force,
 				DeleteRemote:       deleteRemote,
@@ -549,7 +583,8 @@ for the new private Work Log.`,
 			return nil
 		},
 	}
-	command.Flags().StringVar(&branch, "branch", "", "feature branch for the renamed worktree (default codex/<new-task>)")
+	command.Flags().StringVar(&branch, "branch", "", "exact feature branch for the renamed worktree (overrides branch-prefix configuration)")
+	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><new-task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
 	command.Flags().BoolVar(&force, "force", false, "explicitly discard an old branch not integrated into origin/base; recycle always deletes the old local branch")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged old remote source branch; required with --apply")
@@ -565,6 +600,18 @@ for the new private Work Log.`,
 	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+func validateWorktreeBranchFlags(command *cobra.Command, branch string) error {
+	branchChosen := command.Flags().Changed("branch")
+	prefixChosen := command.Flags().Changed("branch-prefix")
+	if branchChosen && prefixChosen {
+		return fmt.Errorf("--branch and --branch-prefix cannot be used together")
+	}
+	if branchChosen && strings.TrimSpace(branch) == "" {
+		return fmt.Errorf("--branch must not be empty when explicitly provided")
+	}
+	return nil
 }
 
 func requireOutputFormat(value string, allowed ...string) error {

@@ -40,6 +40,26 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	}
 }
 
+func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "create exact and prefix", args: []string{"worktree", "create", "task", "--branch", "", "--branch-prefix", "team/"}, want: "cannot be used together"},
+		{name: "create empty exact", args: []string{"worktree", "create", "task", "--branch", ""}, want: "must not be empty"},
+		{name: "rename exact and prefix", args: []string{"worktree", "rename", "old", "new", "--branch", "", "--branch-prefix", "team/"}, want: "cannot be used together"},
+		{name: "rename empty exact", args: []string{"worktree", "rename", "old", "new", "--branch", ""}, want: "must not be empty"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != exitUsage || !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("branch flag validation = code %d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	command := newWorktreeCleanupCmd()
 	olderThan := command.Flags().Lookup("older-than")
@@ -251,14 +271,14 @@ func setUpMismatchedWorktreeFixture(t *testing.T, root string) (projects, home s
 	runGit(canonical, "add", "README.md")
 	runGit(canonical, "commit", "-m", "initial")
 	stale := filepath.Join(home, "worktrees", "stale-task", "acme", "old-repo-name")
-	runGit(canonical, "worktree", "add", "-b", "codex/stale-task", stale, "main")
+	runGit(canonical, "worktree", "add", "-b", "feature/stale-task", stale, "main")
 	return projects, home
 }
 
 func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	command := newWorktreeRenameCmd()
 	for _, wanted := range []string{
-		"git worktree move", "git worktree repair", "node_modules",
+		"descriptor-relative", "no-replace", "git worktree repair", "node_modules",
 		"always deleted", "--force", "dry-run",
 	} {
 		if !strings.Contains(command.Long, wanted) {
@@ -346,6 +366,38 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	newWorktree := filepath.Join(home, "worktrees", "cli-new", "acme", "app")
 	if info, statErr := os.Stat(newWorktree); statErr != nil || !info.IsDir() {
 		t.Fatalf("renamed worktree missing at %s: %v", newWorktree, statErr)
+	}
+}
+
+func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "resume the original request")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"--projects-root", projects, "worktree", "create", "cli-resume", "acme/app", "--original-prompt-file", prompt}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("initial create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	projectionPath := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-resume", "acme", "app", ".wb-worklog", "recovery.json")
+	before, err := os.ReadFile(projectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	args = append(args, "--resume")
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("resume failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "resumed acme/app") {
+		t.Fatalf("resume stdout = %s", stdout.String())
+	}
+	after, err := os.ReadFile(projectionPath)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("CLI resume replaced implicit active run projection: err=%v before=%s after=%s", err, before, after)
 	}
 }
 

@@ -76,14 +76,14 @@ metrics:
 	if len(policy.ConfigPaths) != 2 {
 		t.Fatalf("config paths = %v, want global + repository", policy.ConfigPaths)
 	}
-	if got, want := expectedHookNames(policy), []string{"post-commit", "pre-commit"}; !reflect.DeepEqual(got, want) {
+	if got, want := expectedHookNames(policy), []string{"post-checkout", "post-commit", "pre-commit"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("expected hooks = %v, want %v", got, want)
 	}
 }
 
 func TestLoadPolicyRejectsUnknownAndMissingTemplates(t *testing.T) {
 	repo := initRepo(t)
-	isolateConfig(t)
+	isolateEnvironment(t)
 	config := filepath.Join(t.TempDir(), "hooks.yaml")
 	mustWrite(t, config, "version: 1\nunknown: true\n")
 	if _, err := LoadPolicy(repo, config); err == nil || !strings.Contains(err.Error(), "field unknown not found") {
@@ -138,16 +138,48 @@ func TestLoadPolicyAutoDetectsOnlyRelevantBuiltInProfiles(t *testing.T) {
 	}
 }
 
-func TestLoadPolicyDoesNotAutoDetectProfilesUntilEnabled(t *testing.T) {
+func TestDefaultPolicyAlwaysEnforcesWorktreeAdmissionWithoutEnablingLanguageProfiles(t *testing.T) {
 	repo := initRepo(t)
-	isolateConfig(t)
+	isolateEnvironment(t)
 	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/opt-in\n\ngo 1.26\n")
 	policy, err := LoadPolicy(repo, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.ProfilesAuto || len(policy.ActiveProfiles) != 0 {
-		t.Fatalf("profiles should be opt-in: auto = %v, active = %#v", policy.ProfilesAuto, policy.ActiveProfiles)
+	if policy.ProfilesAuto || len(policy.ActiveProfiles) != 1 || policy.ActiveProfiles[0].Name != "worktree" ||
+		policy.ActiveProfiles[0].Reason != "included by policy" {
+		t.Fatalf("only mandatory worktree admission should be active: auto = %v, active = %#v", policy.ProfilesAuto, policy.ActiveProfiles)
+	}
+}
+
+func TestWorktreeAdmissionCanBeExplicitlyExcluded(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  exclude: [worktree]\nmetrics:\n  enabled: false\n")
+	policy, err := LoadPolicy(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range policy.ActiveProfiles {
+		if profile.Name == "worktree" {
+			t.Fatalf("explicit worktree exclusion did not take effect: %#v", policy.ActiveProfiles)
+		}
+	}
+	for _, hook := range []string{"post-checkout", "pre-commit", "pre-push"} {
+		for _, block := range hookBlocks(policy, hook) {
+			if block.Profile == "worktree" {
+				t.Fatalf("%s retains excluded worktree guard: %#v", hook, block)
+			}
+		}
+	}
+	report, err := Check(repo, "", os.Args[0], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(report.ExcludedProfiles, []string{"worktree"}) {
+		t.Fatalf("reported policy exclusions = %v, want visible worktree exception", report.ExcludedProfiles)
 	}
 }
 
@@ -201,6 +233,43 @@ func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
 	want := "--projects-root " + projects + " worktree guard --quiet " + repo
 	if got := strings.TrimSpace(string(output)); got != want {
 		t.Fatalf("guard invocation = %q, want %q", got, want)
+	}
+}
+
+func TestWorktreeAdmissionWarnsAfterCheckoutAndBlocksCommitOrPush(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
+	fakeWB := filepath.Join(t.TempDir(), "wb")
+	mustWriteExecutable(t, fakeWB, "#!/bin/sh\nprintf '%s\\n' 'linked worktree is unmanaged' >&2\nexit 31\n")
+	projects := filepath.Join(t.TempDir(), "projects")
+
+	var checkoutErr bytes.Buffer
+	checkout, err := Run(RunOptions{
+		RepoPath: repo, Hook: "post-checkout", Args: []string{"old", "new", "1"},
+		Stdout: &bytes.Buffer{}, Stderr: &checkoutErr, WBExecutable: fakeWB, ProjectsRoot: projects,
+	})
+	if err != nil || checkout.ExitCode != 0 {
+		t.Fatalf("post-checkout result = %#v, error = %v", checkout, err)
+	}
+	for _, message := range []string{"linked worktree is unmanaged", "checkout already happened outside WB's managed worktree hierarchy", "wb worktree rescue is not available yet"} {
+		if !strings.Contains(checkoutErr.String(), message) {
+			t.Errorf("post-checkout warning missing %q: %s", message, checkoutErr.String())
+		}
+	}
+
+	for _, hook := range []string{"pre-commit", "pre-push"} {
+		t.Run(hook, func(t *testing.T) {
+			result, runErr := Run(RunOptions{
+				RepoPath: repo, Hook: hook, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+				WBExecutable: fakeWB, ProjectsRoot: projects,
+			})
+			if runErr == nil || result.ExitCode != 31 {
+				t.Fatalf("%s result = %#v, error = %v; want guard failure", hook, result, runErr)
+			}
+		})
 	}
 }
 
@@ -1041,7 +1110,7 @@ func TestProfileSelectionCanOverrideEarlierLayerAndDisableWholeHook(t *testing.T
 	mustWrite(t, filepath.Join(repo, "package.json"), "{}\n")
 	globalDir := filepath.Join(configHome, "wb")
 	mustMkdirAll(t, globalDir)
-	mustWrite(t, filepath.Join(globalDir, "hooks.yaml"), "version: 1\nprofiles:\n  auto: true\n  exclude: [node]\n")
+	mustWrite(t, filepath.Join(globalDir, "hooks.yaml"), "version: 1\nprofiles:\n  auto: true\n  exclude: [node, worktree]\n")
 	repoConfigDir := filepath.Join(repo, ".wb")
 	mustMkdirAll(t, repoConfigDir)
 	mustWrite(t, filepath.Join(repoConfigDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [node]\nhooks:\n  pre-push:\n    disabled: true\n")
@@ -1675,6 +1744,62 @@ func TestBuiltInGoPrePushStillRunsVetAndTestWithGoMod(t *testing.T) {
 	}
 }
 
+func TestBuiltInGoPrePushSkipsPublicationTestsOnlyForPureRefDeletion(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.invalid/hooks-test\n\ngo 1.26\n")
+	mustWrite(t, filepath.Join(repo, "main.go"), "package main\n\nfunc main() {}\n")
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [go]\nmetrics:\n  enabled: false\n")
+
+	bin := filepath.Join(t.TempDir(), "bin")
+	mustMkdirAll(t, bin)
+	goLog := filepath.Join(t.TempDir(), "go.log")
+	mustWrite(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf 'called\\n' >> \"$WB_GO_LOG\"\nexit 97\n")
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_GO_LOG", goLog)
+
+	for _, zero := range []string{
+		strings.Repeat("0", 40),
+		strings.Repeat("0", 64),
+	} {
+		result, err := Run(RunOptions{
+			RepoPath: repo,
+			Hook:     "pre-push",
+			Stdin:    strings.NewReader("(delete) " + zero + " refs/heads/task " + strings.Repeat("a", len(zero)) + "\n"),
+			Stdout:   &bytes.Buffer{},
+			Stderr:   &bytes.Buffer{},
+		})
+		if err != nil || result.ExitCode != 0 {
+			t.Fatalf("deletion-only pre-push = %#v, error=%v", result, err)
+		}
+	}
+	if data, err := os.ReadFile(goLog); !os.IsNotExist(err) {
+		t.Fatalf("deletion-only push invoked Go publication checks: data=%q err=%v", data, err)
+	}
+
+	result, err := Run(RunOptions{
+		RepoPath: repo,
+		Hook:     "pre-push",
+		Stdin: strings.NewReader(
+			"(delete) " + strings.Repeat("0", 40) + " refs/heads/old " + strings.Repeat("a", 40) + "\n" +
+				"refs/heads/main " + strings.Repeat("b", 40) + " refs/heads/main " + strings.Repeat("a", 40) + "\n",
+		),
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	})
+	if err == nil || result.ExitCode != 97 {
+		t.Fatalf("mixed publication bypassed Go checks: result=%#v error=%v", result, err)
+	}
+	if data, readErr := os.ReadFile(goLog); readErr != nil || string(data) != "called\n" {
+		t.Fatalf("mixed publication did not invoke Go checks exactly once: data=%q err=%v", data, readErr)
+	}
+}
+
 func TestRunMetricsFailureNeverBlocksSuccessfulHook(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -1791,10 +1916,21 @@ func initRepo(t *testing.T) string {
 	return repo
 }
 
-func isolateConfig(t *testing.T) {
+func isolateEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+}
+
+// isolateConfig keeps legacy unit fixtures focused on the profile or hook they
+// name. Production's default worktree admission is exercised separately; a
+// test that wants the exception must state it in an effective policy layer.
+func isolateConfig(t *testing.T) {
+	t.Helper()
+	isolateEnvironment(t)
+	globalDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "wb")
+	mustMkdirAll(t, globalDir)
+	mustWrite(t, filepath.Join(globalDir, "hooks.yaml"), "version: 1\nprofiles:\n  exclude: [worktree]\n")
 }
 
 func git(t *testing.T, dir string, args ...string) string {

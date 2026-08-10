@@ -35,6 +35,19 @@ home in managed shims, so guards use the same policy when Git invokes them
 later. A default-home shim keeps legacy worktrees readable during migration;
 an explicitly selected `WB_HOME` remains authoritative.
 
+Worktree admission is enabled by default at post-checkout, pre-commit, and
+pre-push. Post-checkout reports an unmanaged checkout after Git has already
+made it and preserves the state; pre-commit and pre-push block work until it
+is recovered. `wb worktree rescue` is not available yet. Only if WB cannot own
+checkout policy, record the explicit exception in `.wb/hooks.yaml`, run repair,
+and leave it visible to `hooks check`:
+
+```yaml
+version: 1
+profiles:
+  exclude: [worktree]
+```
+
 Do not run `wb hooks install` or `repair` through `go run`: the installer is
 temporary and cannot establish a durable runtime. Generated shims do not store
 that installer's path. At every Git invocation they prefer an explicit

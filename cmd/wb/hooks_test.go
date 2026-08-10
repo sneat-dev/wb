@@ -98,6 +98,21 @@ func TestApplyAndCheckHooksFleet(t *testing.T) {
 	}
 }
 
+func TestPrintHooksCheckShowsExplicitProfileExclusion(t *testing.T) {
+	command := &cobra.Command{}
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := printHooksCheckDetails(command, hooks.CheckReport{
+		ManagedPath:      "/managed/hooks",
+		ExcludedProfiles: []string{"worktree"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "! profile worktree (explicitly excluded by policy)") {
+		t.Fatalf("hooks check hid explicit safety exception:\n%s", got)
+	}
+}
+
 func TestPrintHookMetricsExplainsPushAttempts(t *testing.T) {
 	cmd := &cobra.Command{}
 	var output bytes.Buffer

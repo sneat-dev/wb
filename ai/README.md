@@ -14,15 +14,21 @@
 | `wb-fleet` | Sync, inspect, and verify repository fleets |
 | `wb-change` | Deliver a safe multi-step code change |
 | `wb-dependency-campaign` | Propagate releases with minimal CI builds |
+| `wb-merge` | Integrate completed work and retire its lifecycle debt |
 
 The first eight are compact command skills. The final two compose them for
 workflows where orchestration saves time or avoids duplicate builds. Detailed
 flags live in references and load only when needed.
 
-Claude Code reads the same files through `.claude-plugin/plugin.json`. Codex
-reads them through `.codex-plugin/plugin.json` and the per-skill
-`agents/openai.yaml` presentation metadata. The Sneat AI marketplace indexes
-this repository without copying instructions.
+Claude Code recursively auto-discovers the same skills and root `agents/`
+through the plugin described by `.claude-plugin/plugin.json`; the manifest does
+not list them again. Codex reads the skills through
+`.codex-plugin/plugin.json` and the per-skill `agents/openai.yaml` presentation
+metadata. Marketplace packaging should reference this repository without
+copying instructions; it is not included here. These checked-in adapters are
+source, not proof that a harness has installed them. An installed `wb-merge`
+adapter supersedes copied legacy merger prompts, which should be removed or
+disabled so they cannot compete with the canonical contract.
 
 [`skills/commands.json`](skills/commands.json) maps every public WB top-level
 command to at least one skill. `go test ./cmd/wb` enforces that coverage as the

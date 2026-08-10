@@ -72,9 +72,9 @@ wb worktree create bots-e2e --original-prompt-file <private-prompt-file>
 wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go \
   --original-prompt-file <private-prompt-file>
 
-# Override the default codex/<task> branch or resume an existing exact checkout.
+# Resume an existing exact checkout without re-deriving its branch.
 wb worktree create bots-e2e sneat-co/sneat-bots \
-  --branch agent/bots-e2e --resume \
+  --resume \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -88,6 +88,21 @@ explicit alternative. New work never silently falls back to the historic
 `<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
 guards, lists, and cleans linked worktrees there during migration. Existing
 branches and worktrees are rejected unless `--resume` is explicit.
+
+Resume recovers the registered branch and active Work Log claim before reading
+today's branch-prefix policy, so a policy change cannot strand or split an
+existing task. An explicit `--branch` is an assertion of that recovered branch;
+different run or agent provenance is rejected until an audited handoff is
+performed. A successful resume preserves the existing immutable claim and
+projection instead of recording a replacement claim with a new timestamp.
+
+By default the task slug is the branch name. For a durable policy, WB layers
+`$XDG_CONFIG_HOME/wb/worktrees.yaml` (or `~/.config/wb/worktrees.yaml`) below
+the target base object's `.wb/worktrees.yaml`; `worktrees.branch_prefix` may be
+an empty string to deliberately disable the lower layer. An exact `--branch`
+overrides policy, `--branch-prefix` overrides it for one invocation, and an
+explicit empty CLI prefix returns to the task slug. Branch spelling is never
+agent provenance: Work Logs record the agent/runtime/model instead.
 
 Every create writes one private Hybrid Work Log claim per repository under
 `<wb-home>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`, where the
@@ -103,6 +118,13 @@ provenance. The local journal/outbox remains usable as
 recovery evidence when a Synchestra server is down, so server receipt never
 blocks safe local work. It is not yet a Git-repository communication fallback
 and cannot deliver inter-agent messages.
+
+If Work Log publication fails after Git has published one or more coordinated
+worktrees, WB records exact per-repository recovery outcomes, writes durable
+cleanup receipts when storage remains available, and rolls back every Git asset
+published by that invocation in reverse order. Written claims are terminalized
+append-only as failed creation. If safe rollback cannot be proven, the exact
+worktree, branch, commit, and recovery receipt remain visible for cleanup.
 
 `wb worktree guard [path]` is the policy check used by agents and Git hooks. It
 accepts a clean canonical base checkout for synchronization, or a non-base
@@ -189,33 +211,33 @@ the deletion boundary. The same discarded command resumes an exact durable
 post-removal branch backlog after interruption; it never relies on live
 worktree inventory alone.
 
-Portable merger-agent adapters, plan-overlap/migration-scope detection,
-periodic refresh notifications, distributed Synchestra fences, and Git-backed
-communication fallback are planned capabilities. The full `wb worktree log`
-command group, seven-day history, and authorized encrypted private-prompt
-export are also planned. No current WB command or skill example claims those
-surfaces are usable.
-
-Enable the built-in guard in a repository or global WB hooks policy, then let
-WB install the shims:
-
-```yaml
-version: 1
-profiles:
-  include:
-    - worktree
-```
+Plan-overlap/migration-scope detection, periodic refresh notifications,
+distributed Synchestra fences, and Git-backed communication fallback are
+planned capabilities. `wb-merge` is a versioned repository-local merger-agent
+contract for Claude, Codex, and GitHub Copilot when this WB plugin/repository
+is installed: it inventories active work without a branch prefix assumption,
+validates/pushes an exact target receipt, uses bounded foreground `wb ci wait`
+slices, then performs audited cleanup. Marketplace distribution to every
+harness is still pending: checked-in adapter files alone are not an installed
+merger. Once installed, this adapter supersedes copied legacy merger prompts.
+The full
+`wb worktree log` command group, seven-day history, and authorized encrypted
+private-prompt export are also planned.
 
 ```sh
 wb hooks install .
 ```
 
-The profile runs the same `wb worktree guard` policy at `post-checkout`,
-`pre-commit`, and `pre-push`. Git has no pre-checkout hook: when an agent
-checks out a feature branch in a canonical clone, `post-checkout` makes that
-Git command fail with recovery instructions, but the agent must still switch
-the canonical clone back to `main`. The commit and push guards are the hard
-boundary that prevents unsafe work from progressing.
+Every installation includes the worktree admission guard by default. To opt
+out explicitly in a repository that cannot let WB own checkout policy, record
+`profiles.exclude: [worktree]` in `.wb/hooks.yaml` and run `wb hooks repair`;
+the exclusion remains visible in `wb hooks check`. The guard runs the same
+`wb worktree guard` policy at `post-checkout`, `pre-commit`, and `pre-push`.
+Git has no pre-checkout hook: `post-checkout` prints a loud warning after an
+unmanaged checkout has already happened, then preserves that state for
+inspection (the future `wb worktree rescue` command is not available yet). The
+commit and push guards are the hard boundary that prevents unsafe work from
+progressing.
 
 Managed hooks retain no installer executable path. Each invocation prefers an
 explicit `WB_EXECUTABLE`, otherwise resolves `wb` from `PATH`, and rejects a
@@ -503,10 +525,16 @@ stages. Local lint, test, and build checks are enabled by default; use
 them explicitly.
 
 WB opens all eligible PRs before entering its CI-wait phase, so independent
-repository work continues while earlier PRs build. A merge requires at least
-one observed GitHub check and every observed check must pass or be explicitly
-skipped. Failing, cancelled, conflicted, checkless, and timed-out PRs remain
-open. `--resume` validates and reuses the expected worktree branch and open PR.
+repository work continues while earlier PRs build. A merge uses the same
+bounded exact-head waiter as `wb ci wait`: it reads target policy, verifies
+producer-pinned checks against exact-head check runs, proves that the candidate
+contains the freshly fetched target, and requires both a nonempty strict
+freshness policy and an unchanged terminal reread before issuing an
+exact-head-guarded GitHub merge. It does not require current target CI to be
+green; the candidate may fix it. Pending, failing, cancelled, conflicted,
+checkless, stale, unfenced, and timed-out PRs remain open for an explicit
+resume. `--resume` validates and reuses the expected worktree branch and open
+PR.
 
 Every run writes `deps-set.md` and `deps-set.yaml` below
 `<wb-home>/reports/<operation>` (or `--report-dir`; normally
@@ -1031,6 +1059,37 @@ without source-SHA/checksum verification. `--strict` makes findings fail with a
 non-zero exit code, suitable for CI and pre-push hooks; `--json` is intended for
 Backstage/ops inventory.
 
+### `wb ci wait` — bounded exact CI receipt
+
+Wait for all observed CI on one exact direct-push target or PR head without a
+background watcher:
+
+```sh
+wb ci wait --repo sneat-dev/wb --target main --head <exact-sha> --json
+wb ci wait --repo sneat-dev/wb --pr <number> --target main --head <exact-sha> --json
+```
+
+Each foreground slice is eight minutes by default and never more than nine.
+Pending and failed results exit `1`; pending JSON includes `resume_args` for
+the same exact identity. Reinvoke those arguments until a terminal result. In
+every mode WB combines the exact head's GitHub check runs with legacy commit
+statuses. PR mode additionally corroborates the PR identity and GitHub's PR
+check views. WB enumerates classic protection and every paginated active branch
+rule; a producer-pinned required context must come from that exact GitHub App
+in every mode. A same-named PR summary or legacy status cannot substitute for
+the pinned producer. PR mode also fetches the exact target SHA, proves it is an
+ancestor of the candidate, and requires either classic or ruleset strict
+required-status-check policy with at least one required check. It does not wait
+for current target CI to turn green: an updated candidate may be the fix for a
+red target. Target movement rejects the receipt and requires reintegration.
+Merge-group observation for merge queues remains planned and fails closed.
+Missing policy authority, unsupported required-workflow names, or incomplete
+check/status pagination remain pending or fail closed. A pass requires two
+unchanged terminal observations. That is a bounded quiescence receipt, not
+proof that an optional workflow cannot register later, so collect separate
+repository release evidence before cleanup. Both modes reject identity drift.
+Do not replace this with a detached or long-running shell poller.
+
 ### `wb hooks` — consistent, user-owned Git hooks
 
 WB installs small managed shims while you retain control of the scripts they
@@ -1064,7 +1123,8 @@ regular, executable file outside the repository before invoking it.
 
 #### Hook policy, detection, and composable profiles
 
-Policy layers in this order: WB's conservative built-ins, the user's global
+Policy layers in this order: WB's conservative built-ins (including worktree
+admission), the user's global
 `~/.config/wb/hooks.yaml`, then the repository's `.wb/hooks.yaml`. A repository
 entry overrides the same global hook. Automatic profiles are opt-in, so
 upgrading WB never adds expensive checks to an existing installation
@@ -1076,7 +1136,7 @@ version: 1
 profiles:
   auto: true                    # detect all built-in and custom definitions
   # include: [sneat-product]    # force a profile even without a match
-  # exclude: [node]             # suppress a detected or inherited profile
+  # exclude: [node, worktree]   # explicit opt-out of a detected/default profile
   definitions:
     sneat-product:              # custom product/tool/domain profile
       order: 200
@@ -1110,7 +1170,12 @@ With `profiles.auto: true`, the built-in detectors currently contribute:
 
 A Go-only repository therefore runs the base and Go blocks, a Node-only
 repository runs the base and Node blocks, and a mixed repository runs all
-relevant blocks. Custom definitions use repository-relative `any_files` and
+relevant blocks. A pure remote-ref deletion has no Go object to publish, so
+the Go block records success without running vet/test; base, worktree, custom,
+and metrics policy still run, and any mixed or non-deletion push runs the full
+Go checks. General deterministic cache and durable metrics write authority for
+secure hook execution remains tracked in [#61](https://github.com/sneat-dev/wb/issues/61).
+Custom definitions use repository-relative `any_files` and
 `all_files` detectors; standard glob patterns are supported. A definition with
 the same name as `go` or `node` overrides selected built-in hooks, so users can
 replace either language template globally. The base block runs first; profiles
