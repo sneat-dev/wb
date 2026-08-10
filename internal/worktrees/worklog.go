@@ -847,7 +847,6 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
-		terminal = existing
 		sealedAt = existing.SealedAt
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return time.Time{}, fmt.Errorf("inspect immutable terminal: %w", err)

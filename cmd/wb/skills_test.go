@@ -155,8 +155,9 @@ func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
 				example = strings.TrimSpace(strings.TrimSuffix(example, "\\")) + " " + strings.TrimSpace(lines[index+1])
 				index++
 			}
-			if !strings.Contains(example, "worktree create") &&
-				!(strings.Contains(example, "worktree rename") && strings.Contains(example, "--apply")) {
+			isLifecycleMutation := strings.Contains(example, "worktree create") ||
+				(strings.Contains(example, "worktree rename") && strings.Contains(example, "--apply"))
+			if !isLifecycleMutation {
 				continue
 			}
 			if err := parseSkillCommandExample(example); err != nil {
