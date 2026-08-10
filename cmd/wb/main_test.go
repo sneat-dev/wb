@@ -32,6 +32,63 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestPropagateRuntimeWBExecutable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exports current executable when unset", func(t *testing.T) {
+		t.Parallel()
+		var gotName, gotValue string
+		err := propagateRuntimeWBExecutable(
+			func(string) (string, bool) { return "", false },
+			func() (string, error) { return "/opt/wb/current/wb", nil },
+			func(name, value string) error {
+				gotName, gotValue = name, value
+				return nil
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotName != "WB_EXECUTABLE" || gotValue != "/opt/wb/current/wb" {
+			t.Fatalf("export = %s=%q", gotName, gotValue)
+		}
+	})
+
+	t.Run("preserves explicit override", func(t *testing.T) {
+		t.Parallel()
+		called := false
+		err := propagateRuntimeWBExecutable(
+			func(name string) (string, bool) { return "/operator/wb", name == "WB_EXECUTABLE" },
+			func() (string, error) {
+				called = true
+				return "", errors.New("must not inspect executable")
+			},
+			func(string, string) error {
+				called = true
+				return errors.New("must not replace override")
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if called {
+			t.Fatal("explicit WB_EXECUTABLE was not preserved")
+		}
+	})
+
+	t.Run("fails closed for a nonabsolute runtime path", func(t *testing.T) {
+		t.Parallel()
+		err := propagateRuntimeWBExecutable(
+			func(string) (string, bool) { return "", false },
+			func() (string, error) { return "bin/wb", nil },
+			func(string, string) error { return nil },
+		)
+		if err == nil || !strings.Contains(err.Error(), "not absolute") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
 func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testing.T) {
 	tests := []struct {
 		name string
