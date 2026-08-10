@@ -1390,35 +1390,24 @@ func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *tes
 	}
 }
 
-func TestCreateRefusesUnsafeCanonicalClone(t *testing.T) {
-	tests := []struct {
-		name string
-		trip func(*testing.T, *gitFixture)
-		want string
-	}{
-		{
-			name: "dirty",
-			trip: func(t *testing.T, fixture *gitFixture) {
-				t.Helper()
-				if err := os.WriteFile(filepath.Join(fixture.canonical, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "is dirty",
-		},
+func TestCreateAllowsDirtyCanonicalClone(t *testing.T) {
+	fixture := newGitFixture(t)
+	dirty := filepath.Join(fixture.canonical, "dirty.txt")
+	if err := os.WriteFile(dirty, []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			fixture := newGitFixture(t)
-			test.trip(t, fixture)
-			_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-				ProjectsRoot: fixture.projectsRoot,
-				Operation:    "unsafe",
-			})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v, want %q", err, test.want)
-			}
-		})
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "dirty-canonical",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	if contents, readErr := os.ReadFile(dirty); readErr != nil || string(contents) != "dirty\n" {
+		t.Fatalf("canonical dirty file = %q, err=%v", contents, readErr)
 	}
 }
 
