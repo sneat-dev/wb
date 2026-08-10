@@ -355,14 +355,17 @@ func (operation preparedOperationRoot) close() {
 	}
 }
 
-// Create verifies each clean canonical clone, fetches its requested origin base
+// Create verifies each canonical clone, fetches its requested origin base
 // without changing any local branch, then creates (or explicitly resumes) the
 // corresponding isolated worktree.
 //
 // Synchronization happens before any branch is created. This is deliberate:
 // every new feature branch must be based on a verified latest remote base. The
-// canonical checkout is only a clean Git capability: WB never switches it to
-// the base or fast-forwards a local branch as a side effect of creation.
+// canonical checkout is only a Git capability: WB never switches it to the
+// base, fast-forwards a local branch, or changes its index or working tree as
+// a side effect of creation. This remains safe when an already-unsafe
+// canonical checkout is dirty or off-base: creation starts from FETCH_HEAD,
+// not from that checkout's local state.
 func Create(ctx context.Context, repositories []string, options CreateOptions) ([]CreateResult, error) {
 	normalized, err := normalizeCreateOptions(options)
 	if err != nil {
@@ -737,7 +740,7 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		}
 		if !clean {
 			return GuardResult{}, fmt.Errorf(
-				"canonical clone %s has local changes; canonical clones must remain clean. Move the work to a checkout created by `wb worktree create`",
+				"canonical clone %s has local changes; canonical clones must remain clean. `wb worktree create` can still create a fresh remote-base checkout without changing this branch, index, or working tree",
 				root,
 			)
 		}
@@ -1181,7 +1184,7 @@ func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, cano
 	return owner, name, filepath.Join(projectsRoot, owner, name), nil
 }
 
-// synchronizeCanonical validates that canonical is an ordinary clean clone and
+// synchronizeCanonical validates that canonical is an ordinary clone and
 // fetches exactly refs/heads/<base> from origin. It deliberately never checks
 // out, pulls, resets, or updates a local branch: the requested base may be
 // stale locally or checked out in another linked worktree. The returned object
@@ -1205,14 +1208,6 @@ func synchronizeCanonical(ctx context.Context, canonical *canonicalRepository, r
 	if gitDir != commonDir {
 		return "", fmt.Errorf("%s is a linked worktree, not the canonical clone for %s", canonical.path, repository)
 	}
-	clean, err := cleanCanonicalWorktree(ctx, canonical)
-	if err != nil {
-		return "", err
-	}
-	if !clean {
-		return "", fmt.Errorf("canonical clone %s is dirty; move or commit its changes before creating a worktree", canonical.path)
-	}
-
 	// Fetching this fully-qualified ref writes only fetch metadata. In
 	// particular, it does not update refs/heads/<base>, which could be stale or
 	// checked out in another worktree. A missing or inaccessible remote base

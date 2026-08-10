@@ -122,6 +122,58 @@ func TestCreateFetchesOriginBaseWithoutChangingCanonicalCheckout(t *testing.T) {
 	}
 }
 
+func TestCreatePreservesDirtyOffBaseCanonicalState(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "agent/abandoned")
+	tracked := filepath.Join(fixture.canonical, "README.md")
+	if err := os.WriteFile(tracked, []byte("staged canonical change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "README.md")
+	if err := os.WriteFile(tracked, []byte("staged plus unstaged canonical change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	untracked := filepath.Join(fixture.canonical, "untracked.txt")
+	if err := os.WriteFile(untracked, []byte("preserve me\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	branchBefore := gitTestOutput(t, fixture.canonical, "branch", "--show-current")
+	headBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	indexBefore := gitTestOutput(t, fixture.canonical, "write-tree")
+	statusBefore := gitTestOutput(t, fixture.canonical, "status", "--porcelain=v1")
+	fixture.pushRemoteCommit(t, "remote main while canonical is unsafe")
+	remoteHead := strings.Fields(gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main"))[0]
+
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "preserve-unsafe-canonical",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "branch", "--show-current"); got != branchBefore {
+		t.Fatalf("canonical branch = %q, want %q", got, branchBefore)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != headBefore {
+		t.Fatalf("canonical HEAD = %q, want %q", got, headBefore)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "write-tree"); got != indexBefore {
+		t.Fatalf("canonical index tree = %q, want %q", got, indexBefore)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "status", "--porcelain=v1"); got != statusBefore {
+		t.Fatalf("canonical status = %q, want %q", got, statusBefore)
+	}
+	if contents, readErr := os.ReadFile(untracked); readErr != nil || string(contents) != "preserve me\n" {
+		t.Fatalf("untracked canonical file = %q, err=%v", contents, readErr)
+	}
+	if got := gitTestOutput(t, results[0].WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("new worktree HEAD = %s, want fetched origin/main %s", got, remoteHead)
+	}
+}
+
 func TestCreateFailsBeforeMutationWhenRequestedOriginBaseCannotBeFetched(t *testing.T) {
 	fixture := newGitFixture(t)
 	gitTest(t, fixture.canonical, "checkout", "-b", "feat/canonical-in-use")
