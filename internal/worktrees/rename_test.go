@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,13 +10,13 @@ import (
 	"time"
 )
 
-// TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch is the
-// core regression test for the verb's whole reason to exist: an untracked
-// file (standing in for node_modules) must survive the move, Git's own
+// TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch proves
+// an explicitly allowed cache (standing in for node_modules) may survive the
+// move, while Git's own
 // bookkeeping (`git worktree list`) must report the new path, and the
 // worktree must land on a freshly created branch that both `wb worktree
 // guard` and Git itself accept.
-func TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch(t *testing.T) {
+func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *testing.T) {
 	fixture := newGitFixture(t)
 	// A real project ignores node_modules; without that, plain `git status`
 	// would call the worktree dirty for the exact directory this verb exists
@@ -45,10 +46,12 @@ func TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch(t *test
 	}
 
 	outcome, err := Rename(context.Background(), RenameOptions{
-		ProjectsRoot: fixture.projectsRoot,
-		OldTask:      "old-task",
-		NewTask:      "new-task",
-		Apply:        true,
+		ProjectsRoot:       fixture.projectsRoot,
+		OldTask:            "old-task",
+		NewTask:            "new-task",
+		PreserveCachePaths: []string{"node_modules"},
+		DeleteRemote:       true,
+		Apply:              true,
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
@@ -120,6 +123,92 @@ func TestRenameApplyMovesWorktreePreservesUntrackedFileAndSwitchesBranch(t *test
 	t.Fatalf("old task root has no retired lock sentinel: %#v", entries)
 }
 
+func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *testing.T) {
+	fixture := newGitFixture(t)
+	storageCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
+	gitTest(t, fixture.projectsRoot, "clone", fixture.remote, storageCanonical)
+	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "multi-recycle-old",
+		WorkLog:      WorkLogOptions{RunID: "multi-recycle-run"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldProjections := make([]workLogProjection, len(created))
+	for index := range created {
+		oldProjections[index], err = readWorkLogProjection(created[index].WorktreeDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	outcome, err := Rename(context.Background(), RenameOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		OldTask:      "multi-recycle-old",
+		NewTask:      "multi-recycle-new",
+		DeleteRemote: true,
+		Apply:        true,
+		beforeRenameBind: func(repository string) error {
+			if repository == "acme/storage" {
+				return errors.New("injected second-repository bind failure")
+			}
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected second-repository bind failure") {
+		t.Fatalf("rename error = %v", err)
+	}
+	if len(outcome.Results) != 2 || outcome.Results[0].Applied || outcome.Results[1].Applied {
+		t.Fatalf("coordinated rollback evidence = %#v", outcome.Results)
+	}
+	if outcome.ReportPath == "" {
+		t.Fatal("partial rename did not preserve a durable report path")
+	}
+	for index, create := range created {
+		if _, err := os.Stat(create.WorktreeDir); err != nil {
+			t.Fatalf("repository %s was not restored to source: %v", create.Repository, err)
+		}
+		if _, err := os.Stat(outcome.Results[index].NewWorktreeDir); !os.IsNotExist(err) {
+			t.Fatalf("repository %s remains at destination: %v", create.Repository, err)
+		}
+		canonical := fixture.canonical
+		if create.Repository == "acme/storage" {
+			canonical = storageCanonical
+		}
+		if !gitRefExists(canonical, "refs/heads/"+create.Branch) || gitRefExists(canonical, "refs/heads/codex/multi-recycle-new") {
+			t.Fatalf("%s rollback did not restore exact old/remove new branch refs", create.Repository)
+		}
+		recoveryProjection, projectionErr := readWorkLogProjection(create.WorktreeDir)
+		if projectionErr != nil {
+			t.Fatal(projectionErr)
+		}
+		if recoveryProjection.Lifecycle != "active" || recoveryProjection.ClaimID == oldProjections[index].ClaimID {
+			t.Fatalf("%s recovery claim = %#v, old = %#v", create.Repository, recoveryProjection, oldProjections[index])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(fixture.home, "worktrees", "multi-recycle-new")); !os.IsNotExist(err) {
+		t.Fatalf("coordinated rollback stranded destination task: %v", err)
+	}
+
+	// The same operation is retryable without manually deleting a partial
+	// destination or repairing branch refs.
+	retried, err := Rename(context.Background(), RenameOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		OldTask:      "multi-recycle-old",
+		NewTask:      "multi-recycle-new",
+		DeleteRemote: true,
+		Apply:        true,
+	})
+	if err != nil {
+		t.Fatalf("retry coordinated rename: %v\nresults=%#v", err, retried.Results)
+	}
+	for _, result := range retried.Results {
+		if !result.Applied {
+			t.Fatalf("retry left repository unapplied: %#v", retried.Results)
+		}
+	}
+}
+
 // TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses is the
 // regression test for the founder's own production incident: a bare
 // filesystem move leaves Git's gitdir pointer stale, and it must never be the
@@ -145,6 +234,7 @@ func TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses(t *testing.T) 
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "locked-move-task",
 		NewTask:      "locked-move-task-renamed",
+		DeleteRemote: true,
 		Apply:        true,
 	})
 	if err != nil {
@@ -197,6 +287,32 @@ func TestRenamePlanDoesNotMutateAnything(t *testing.T) {
 	}
 }
 
+func TestRenameApplyRequiresExplicitRemoteRetirementBeforeMutation(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "remote-retirement-required",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := Rename(context.Background(), RenameOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		OldTask:      "remote-retirement-required",
+		NewTask:      "remote-retirement-required-next",
+		Apply:        true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "--remote") {
+		t.Fatalf("missing remote authorization error = %v, results=%#v", err, outcome.Results)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("missing --remote mutated source: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "remote-retirement-required-next")); !os.IsNotExist(statErr) {
+		t.Fatalf("missing --remote created destination: %v", statErr)
+	}
+}
+
 // TestRenameRefusesDirtyWorktree matches Cleanup's own safety posture: a
 // worktree with local changes must never be renamed out from under whatever
 // process is relying on its current path.
@@ -217,6 +333,7 @@ func TestRenameRefusesDirtyWorktree(t *testing.T) {
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "dirty-task",
 		NewTask:      "dirty-task-renamed",
+		DeleteRemote: true,
 		Apply:        true,
 	})
 	if err == nil {
@@ -257,6 +374,7 @@ func TestRenameRefusesLockedTask(t *testing.T) {
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "locked-task",
 		NewTask:      "locked-task-renamed",
+		DeleteRemote: true,
 		Apply:        true,
 	})
 	if err == nil {
@@ -294,6 +412,7 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "source-task",
 		NewTask:      "taken-task",
+		DeleteRemote: true,
 		Apply:        true,
 	})
 	if err == nil {
@@ -310,8 +429,8 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 
 // TestRenameDeleteOldBranchRequiresForceUnlessMerged is the regression test
 // for the founder's explicit "unmerged work must never be silently lost"
-// requirement: --delete-old-branch on an unmerged branch is a no-op unless
-// --force is also given, and the branch survives either way until it does.
+// requirement: recycle refuses an unmerged branch before any move unless
+// --force explicitly authorizes discarded work.
 func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -328,37 +447,31 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 	gitTest(t, created[0].WorktreeDir, "commit", "-m", "unmerged work")
 
 	outcome, err := Rename(context.Background(), RenameOptions{
-		ProjectsRoot:    fixture.projectsRoot,
-		OldTask:         "unmerged-task",
-		NewTask:         "unmerged-task-renamed",
-		DeleteOldBranch: true,
-		Apply:           true,
+		ProjectsRoot: fixture.projectsRoot,
+		OldTask:      "unmerged-task",
+		NewTask:      "unmerged-task-renamed",
+		DeleteRemote: true,
+		Apply:        true,
 	})
-	if err != nil {
-		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
+	if err == nil || !strings.Contains(err.Error(), "not integrated") {
+		t.Fatalf("unmerged Rename error = %v, results=%#v", err, outcome.Results)
 	}
-	if !outcome.Results[0].Applied || outcome.Results[0].OldBranchDeleted {
-		t.Fatalf("unmerged branch was deleted without --force: %#v", outcome.Results[0])
-	}
-	if !strings.Contains(outcome.Results[0].Reason, "--force") {
-		t.Fatalf("refusal reason does not mention --force: %q", outcome.Results[0].Reason)
-	}
-	if !strings.Contains(outcome.Results[0].Reason, "main") {
-		t.Fatalf("refusal reason does not say which base it was checked against: %q", outcome.Results[0].Reason)
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("unmerged worktree moved despite refusal: %v", statErr)
 	}
 	if !localBranchExistsIn(t, fixture.canonical, "codex/unmerged-task") {
 		t.Fatal("unmerged old branch was deleted despite missing --force")
 	}
 
-	// A second rename, this time with --force, must delete it.
+	// The explicit discarded-work retry must recycle and delete the old branch.
 	outcome, err = Rename(context.Background(), RenameOptions{
-		ProjectsRoot:    fixture.projectsRoot,
-		OldTask:         "unmerged-task-renamed",
-		NewTask:         "unmerged-task-final",
-		Branch:          "codex/unmerged-task-final",
-		DeleteOldBranch: true,
-		Force:           true,
-		Apply:           true,
+		ProjectsRoot: fixture.projectsRoot,
+		OldTask:      "unmerged-task",
+		NewTask:      "unmerged-task-final",
+		Branch:       "codex/unmerged-task-final",
+		Force:        true,
+		DeleteRemote: true,
+		Apply:        true,
 	})
 	if err != nil {
 		t.Fatalf("forced Rename apply: %v\nresults=%#v", err, outcome.Results)
@@ -366,10 +479,7 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 	if !outcome.Results[0].Applied || !outcome.Results[0].OldBranchDeleted {
 		t.Fatalf("forced delete did not remove the unmerged branch: %#v", outcome.Results[0])
 	}
-	// codex/unmerged-task-renamed is the branch the worktree was on entering
-	// this second rename (created by the first rename above); --force must
-	// have deleted that one specifically.
-	if localBranchExistsIn(t, fixture.canonical, "codex/unmerged-task-renamed") {
+	if localBranchExistsIn(t, fixture.canonical, "codex/unmerged-task") {
 		t.Fatal("unmerged old branch survived --force")
 	}
 }
@@ -400,16 +510,20 @@ func TestRenameDeleteOldBranchWithoutForceWhenMerged(t *testing.T) {
 		OldTask:         "merged-task",
 		NewTask:         "merged-task-renamed",
 		DeleteOldBranch: true,
+		DeleteRemote:    true,
 		Apply:           true,
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
 	}
-	if !outcome.Results[0].Applied || !outcome.Results[0].OldBranchDeleted {
-		t.Fatalf("merged branch was not deleted without --force: %#v", outcome.Results[0])
+	if !outcome.Results[0].Applied || !outcome.Results[0].OldBranchDeleted || !outcome.Results[0].OldRemoteDeleted {
+		t.Fatalf("merged local/remote branch was not retired without --force: %#v", outcome.Results[0])
 	}
 	if localBranchExistsIn(t, fixture.canonical, "codex/merged-task") {
 		t.Fatal("merged old branch survived deletion")
+	}
+	if remoteHead, err := remoteBranchHead(context.Background(), fixture.canonical, "codex/merged-task"); err != nil || remoteHead != "" {
+		t.Fatalf("merged old remote branch remains at %q: %v", remoteHead, err)
 	}
 }
 

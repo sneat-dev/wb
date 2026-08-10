@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,21 +48,23 @@ type PullRequest struct {
 
 // ListResult describes one linked checkout below the WB task hierarchy.
 type ListResult struct {
-	Task              string       `json:"task"`
-	Repository        string       `json:"repository"`
-	CanonicalDir      string       `json:"canonical_dir"`
-	WorktreeDir       string       `json:"worktree_dir"`
-	WorktreesRoot     string       `json:"worktrees_root"`
-	Branch            string       `json:"branch"`
-	Base              string       `json:"base"`
-	HeadSHA           string       `json:"head_sha"`
-	RemoteHeadSHA     string       `json:"remote_head_sha,omitempty"`
-	Clean             bool         `json:"clean"`
-	LocallyMerged     bool         `json:"locally_merged"`
-	Locked            bool         `json:"locked"`
-	LastCommit        time.Time    `json:"last_commit"`
-	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
-	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
+	Task               string       `json:"task"`
+	Repository         string       `json:"repository"`
+	CanonicalDir       string       `json:"canonical_dir"`
+	WorktreeDir        string       `json:"worktree_dir"`
+	WorktreesRoot      string       `json:"worktrees_root"`
+	Branch             string       `json:"branch"`
+	Base               string       `json:"base"`
+	HeadSHA            string       `json:"head_sha"`
+	RemoteHeadSHA      string       `json:"remote_head_sha,omitempty"`
+	RemoteTargetSHA    string       `json:"remote_target_sha,omitempty"`
+	IntegratedAtOrigin bool         `json:"integrated_at_origin"`
+	Clean              bool         `json:"clean"`
+	LocallyMerged      bool         `json:"locally_merged"`
+	Locked             bool         `json:"locked"`
+	LastCommit         time.Time    `json:"last_commit"`
+	OpenPullRequest    *PullRequest `json:"open_pull_request,omitempty"`
+	MergedPullRequest  *PullRequest `json:"merged_pull_request,omitempty"`
 }
 
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
@@ -78,11 +81,32 @@ type ListDiagnostic struct {
 	Message       string `json:"message"`
 }
 
+// LifecycleArtifact is WB-owned control-plane state, never a user worktree
+// candidate. Active secure stages are transient under the task lock. Retired
+// stages are identity-bound quarantine evidence: a later create may reclaim
+// one only when it is still the same empty directory. Inventory reports the
+// classification but cleanup must never reinterpret or delete it as a legacy
+// dot-prefixed repository checkout.
+type LifecycleArtifact struct {
+	Task          string `json:"task"`
+	WorktreesRoot string `json:"worktrees_root"`
+	Path          string `json:"path"`
+	Kind          string `json:"kind"`
+	State         string `json:"state"`
+	Disposition   string `json:"disposition"`
+	Eligible      bool   `json:"eligible"`
+	Applied       bool   `json:"applied"`
+	ArchivePath   string `json:"archive_path,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
 // ListOutcome preserves the valid local inventory while exposing every
 // deterministic malformed-candidate diagnostic encountered during scanning.
 type ListOutcome struct {
-	Results     []ListResult     `json:"results"`
-	Diagnostics []ListDiagnostic `json:"diagnostics,omitempty"`
+	SchemaVersion int                 `json:"schema_version"`
+	Results       []ListResult        `json:"results"`
+	Diagnostics   []ListDiagnostic    `json:"diagnostics,omitempty"`
+	Artifacts     []LifecycleArtifact `json:"artifacts,omitempty"`
 }
 
 // CleanupOptions controls planning and removal of merged WB tasks.
@@ -108,6 +132,10 @@ type CleanupOptions struct {
 	// before Git removes a worktree. It proves the held descriptor identity is
 	// reauthorized immediately before destructive removal.
 	beforeCleanupWorktreeRemoval func(worktree string)
+	// afterCleanupWorktreeRemoval simulates a crash/failure after Git removed
+	// the checkout but before the exact local branch deletion. The durable
+	// lifecycle backlog must make the next identical cleanup resumable.
+	afterCleanupWorktreeRemoval func(worktree string) error
 	// beforeCleanupNetworkBranchOperation is a test-only seam after cleanup's
 	// final pre-network authorization. It proves a substituted worktree blocks
 	// the optional remote-branch deletion as well as local removal.
@@ -129,6 +157,9 @@ type CleanupResult struct {
 	Eligible      bool   `json:"eligible"`
 	Applied       bool   `json:"applied"`
 	RemoteDeleted bool   `json:"remote_deleted"`
+	WorktreeGone  bool   `json:"worktree_gone"`
+	BranchDeleted bool   `json:"branch_deleted"`
+	BacklogID     string `json:"backlog_id,omitempty"`
 	Reason        string `json:"reason,omitempty"`
 }
 
@@ -141,22 +172,24 @@ type CleanupResult struct {
 // all-or-nothing unit blockUnsafeTasks already applies to an unclean, locked,
 // or unmerged sibling. Every other task in the run proceeds normally.
 type CleanupOutcome struct {
-	Results     []CleanupResult  `json:"results"`
-	ReportPath  string           `json:"report_path,omitempty"`
-	Diagnostics []ListDiagnostic `json:"diagnostics,omitempty"`
+	Results     []CleanupResult     `json:"results"`
+	ReportPath  string              `json:"report_path,omitempty"`
+	Diagnostics []ListDiagnostic    `json:"diagnostics,omitempty"`
+	Artifacts   []LifecycleArtifact `json:"artifacts,omitempty"`
 }
 
 type cleanupReport struct {
-	GeneratedAt  time.Time        `json:"generated_at"`
-	Phase        string           `json:"phase"`
-	Task         string           `json:"task,omitempty"`
-	Filter       string           `json:"filter,omitempty"`
-	AllMerged    bool             `json:"all_merged"`
-	Apply        bool             `json:"apply"`
-	DeleteRemote bool             `json:"delete_remote"`
-	OlderThan    string           `json:"older_than"`
-	Results      []CleanupResult  `json:"results"`
-	Diagnostics  []ListDiagnostic `json:"diagnostics,omitempty"`
+	GeneratedAt  time.Time           `json:"generated_at"`
+	Phase        string              `json:"phase"`
+	Task         string              `json:"task,omitempty"`
+	Filter       string              `json:"filter,omitempty"`
+	AllMerged    bool                `json:"all_merged"`
+	Apply        bool                `json:"apply"`
+	DeleteRemote bool                `json:"delete_remote"`
+	OlderThan    string              `json:"older_than"`
+	Results      []CleanupResult     `json:"results"`
+	Diagnostics  []ListDiagnostic    `json:"diagnostics,omitempty"`
+	Artifacts    []LifecycleArtifact `json:"artifacts,omitempty"`
 }
 
 type cleanupTaskHandle struct {
@@ -165,6 +198,116 @@ type cleanupTaskHandle struct {
 	worktrees     *os.File
 	task          *os.File
 	lock          operationLock
+}
+
+type cleanupLifecycleArtifactHandle struct {
+	index     int
+	name      string
+	directory *os.File
+}
+
+func prepareCleanupLifecycleArtifacts(
+	home string,
+	task *cleanupTaskHandle,
+	taskKey string,
+	artifacts []LifecycleArtifact,
+) (*os.File, string, []cleanupLifecycleArtifactHandle, error) {
+	handles := make([]cleanupLifecycleArtifactHandle, 0)
+	for index := range artifacts {
+		artifact := artifacts[index]
+		if !artifact.Eligible || cleanupTaskKey(artifact.WorktreesRoot, artifact.Task) != taskKey {
+			continue
+		}
+		name := filepath.Base(artifact.Path)
+		if _, _, recognized := lifecycleArtifactName(name); !recognized {
+			closeCleanupLifecycleArtifacts(handles)
+			return nil, "", nil, fmt.Errorf("cleanup artifact %s lost its reserved WB identity", artifact.Path)
+		}
+		fd, err := unix.Openat(int(task.task.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			closeCleanupLifecycleArtifacts(handles)
+			return nil, "", nil, fmt.Errorf("open cleanup lifecycle artifact %s: %w", artifact.Path, err)
+		}
+		directory := os.NewFile(uintptr(fd), "wb-cleanup-lifecycle-artifact")
+		if directory == nil {
+			_ = unix.Close(fd)
+			closeCleanupLifecycleArtifacts(handles)
+			return nil, "", nil, fmt.Errorf("wrap cleanup lifecycle artifact %s", artifact.Path)
+		}
+		if !directoryStillMatches(artifact.Path, directory) {
+			_ = directory.Close()
+			closeCleanupLifecycleArtifacts(handles)
+			return nil, "", nil, fmt.Errorf("cleanup lifecycle artifact path changed: %s", artifact.Path)
+		}
+		empty, err := directoryEmpty(directory)
+		if err != nil || !empty {
+			_ = directory.Close()
+			closeCleanupLifecycleArtifacts(handles)
+			if err != nil {
+				return nil, "", nil, fmt.Errorf("reinspect cleanup lifecycle artifact %s: %w", artifact.Path, err)
+			}
+			return nil, "", nil, fmt.Errorf("cleanup lifecycle artifact %s became non-empty; retained as explicit cleanup backlog", artifact.Path)
+		}
+		handles = append(handles, cleanupLifecycleArtifactHandle{index: index, name: name, directory: directory})
+	}
+	if len(handles) == 0 {
+		return nil, "", nil, nil
+	}
+	archiveID := lifecycleBacklogID(ListResult{
+		Task: task.taskPath, WorktreesRoot: task.worktreesPath, WorktreeDir: task.taskPath,
+	}, "stage-archive")
+	archivePath := filepath.Join(home, "reports", "worktree-cleanup", "stage-archive",
+		filepath.Base(task.taskPath)+"-"+archiveID[:16])
+	archive, err := openAbsoluteDirectoryNoFollow(archivePath, true)
+	if err != nil {
+		closeCleanupLifecycleArtifacts(handles)
+		return nil, "", nil, fmt.Errorf("open cleanup lifecycle artifact archive: %w", err)
+	}
+	return archive, archivePath, handles, nil
+}
+
+func archiveCleanupLifecycleArtifacts(
+	task *cleanupTaskHandle,
+	archive *os.File,
+	archivePath string,
+	handles []cleanupLifecycleArtifactHandle,
+	artifacts []LifecycleArtifact,
+) error {
+	for _, handle := range handles {
+		artifact := &artifacts[handle.index]
+		if err := task.validate(); err != nil {
+			return err
+		}
+		empty, err := directoryEmpty(handle.directory)
+		if err != nil || !empty {
+			if err != nil {
+				return fmt.Errorf("reinspect cleanup lifecycle artifact %s at retirement boundary: %w", artifact.Path, err)
+			}
+			return fmt.Errorf("cleanup lifecycle artifact %s became non-empty at retirement boundary; retained as explicit cleanup backlog", artifact.Path)
+		}
+		moved, err := moveExpectedDirectoryNoReplace(task.task, handle.name, archive, handle.name, handle.directory, nil)
+		if err != nil {
+			if moved != nil {
+				_ = moved.Close()
+			}
+			return fmt.Errorf("descriptor-safely archive cleanup lifecycle artifact %s: %w", artifact.Path, err)
+		}
+		_ = moved.Close()
+		artifact.State = "archived"
+		artifact.Disposition = "archived_empty_stage"
+		artifact.Applied = true
+		artifact.ArchivePath = filepath.Join(archivePath, handle.name)
+		artifact.Reason = "recognized empty WB-owned stage archived outside the active task"
+	}
+	return nil
+}
+
+func closeCleanupLifecycleArtifacts(handles []cleanupLifecycleArtifactHandle) {
+	for _, handle := range handles {
+		if handle.directory != nil {
+			_ = handle.directory.Close()
+		}
+	}
 }
 
 func (handle *cleanupTaskHandle) validate() error {
@@ -273,14 +416,15 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	if err != nil {
 		return ListOutcome{}, err
 	}
-	outcome := ListOutcome{}
+	outcome := ListOutcome{SchemaVersion: 1}
 	for _, layout := range resolution.Read {
-		results, diagnostics, listErr := listLayout(ctx, projectsRoot, layout, task, base, filter, options.GitHub)
+		results, diagnostics, artifacts, listErr := listLayout(ctx, projectsRoot, layout, task, base, filter, options.GitHub)
 		if listErr != nil {
 			return ListOutcome{}, listErr
 		}
 		outcome.Results = append(outcome.Results, results...)
 		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
+		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
 	}
 	sort.Slice(outcome.Results, func(i, j int) bool {
 		if outcome.Results[i].Task == outcome.Results[j].Task {
@@ -297,6 +441,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		}
 		return outcome.Diagnostics[i].Task < outcome.Diagnostics[j].Task
 	})
+	sort.Slice(outcome.Artifacts, func(i, j int) bool { return outcome.Artifacts[i].Path < outcome.Artifacts[j].Path })
 	return outcome, nil
 }
 
@@ -306,16 +451,17 @@ func listLayout(
 	layout wbhome.Layout,
 	task, base, filter string,
 	withGitHub bool,
-) ([]ListResult, []ListDiagnostic, error) {
+) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, error) {
 	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
+		return nil, nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
 	}
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
+	artifacts := make([]LifecycleArtifact, 0)
 	for _, taskEntry := range taskEntries {
 		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || (task != "" && taskEntry.Name() != task) {
 			continue
@@ -332,17 +478,21 @@ func listLayout(
 		_, lockErr := os.Stat(filepath.Join(taskRoot, ".lock"))
 		locked := lockErr == nil
 		if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
-			return nil, nil, fmt.Errorf("inspect task lock %s: %w", taskRoot, lockErr)
+			return nil, nil, nil, fmt.Errorf("inspect task lock %s: %w", taskRoot, lockErr)
 		}
 		entries, readErr := os.ReadDir(taskRoot)
 		if readErr != nil {
-			return nil, nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), readErr)
+			return nil, nil, nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), readErr)
 		}
 		for _, entry := range entries {
+			candidate := filepath.Join(taskRoot, entry.Name())
+			if artifact, internal := inspectLifecycleArtifact(layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
+				artifacts = append(artifacts, artifact)
+				continue
+			}
 			if !entry.IsDir() {
 				continue
 			}
-			candidate := filepath.Join(taskRoot, entry.Name())
 			if isGitRoot(ctx, candidate) {
 				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, withGitHub, locked)
 				if inspectErr != nil {
@@ -413,7 +563,56 @@ func listLayout(
 			}
 		}
 	}
-	return results, diagnostics, nil
+	return results, diagnostics, artifacts, nil
+}
+
+func inspectLifecycleArtifact(worktreesRoot, task, path string, entry os.DirEntry) (LifecycleArtifact, bool) {
+	name := entry.Name()
+	kind, state, recognized := lifecycleArtifactName(name)
+	if !recognized {
+		return LifecycleArtifact{}, false
+	}
+	artifact := LifecycleArtifact{Task: task, WorktreesRoot: worktreesRoot, Path: path,
+		Kind: kind, State: state, Disposition: "cleanup_backlog"}
+	if (state == "staging" && !isWorktreeStagingDirectory(name)) ||
+		(state == "quarantined" && !isRetiredWorktreeStagingDirectory(name)) {
+		artifact.Reason = "reserved WB stage name has no collision-resistant identity suffix"
+		return artifact, true
+	}
+	if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+		artifact.Reason = "reserved WB stage entry is not a no-follow directory"
+		return artifact, true
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(path, false)
+	if err != nil {
+		artifact.Reason = "cannot open reserved WB stage without following links: " + err.Error()
+		return artifact, true
+	}
+	empty, emptyErr := directoryEmpty(directory)
+	_ = directory.Close()
+	if emptyErr != nil {
+		artifact.Reason = "cannot inspect reserved WB stage contents: " + emptyErr.Error()
+		return artifact, true
+	}
+	if !empty {
+		artifact.Reason = "reserved WB stage is non-empty and requires audited recovery before task cleanup"
+		return artifact, true
+	}
+	artifact.Eligible = true
+	artifact.Disposition = "archive_empty_stage"
+	artifact.Reason = "recognized empty WB-owned stage will be descriptor-safely archived on apply"
+	return artifact, true
+}
+
+func lifecycleArtifactName(name string) (kind, state string, recognized bool) {
+	switch {
+	case strings.HasPrefix(name, ".wb-stage-"):
+		return "secure_worktree_stage", "staging", true
+	case strings.HasPrefix(name, ".wb-retired-stage-"):
+		return "secure_worktree_stage", "quarantined", true
+	default:
+		return "", "", false
+	}
 }
 
 func listDiagnostic(worktreesRoot, task, path, message string) ListDiagnostic {
@@ -511,6 +710,14 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	recognizedWorktreesRoots := make([]string, 0, len(resolution.Read))
+	for _, layout := range resolution.Read {
+		recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
+	}
+	backlog, err := loadResumableLifecycleBacklog(resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, normalized.Task, normalized.Filter, "removed")
+	if err != nil {
+		return CleanupOutcome{}, err
+	}
 	// A malformed candidate never aborts the run — see blockDiagnosedTasks. It
 	// is legitimate history (for example a renamed canonical repository, see
 	// RepositoryRenameMismatchError), not evidence that anyone's work is at
@@ -518,7 +725,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// cleanup everywhere else. --filter (and the exact-match task argument
 	// above) already scoped listed.Diagnostics to the current selection, so
 	// every diagnostic here is one the caller asked to see.
-	if normalized.Task != "" && len(listed.Results) == 0 && len(listed.Diagnostics) == 0 {
+	if normalized.Task != "" && len(listed.Results) == 0 && len(listed.Diagnostics) == 0 && len(listed.Artifacts) == 0 && len(backlog) == 0 {
 		return CleanupOutcome{}, fmt.Errorf("WB worktree task %q was not found", normalized.Task)
 	}
 
@@ -527,14 +734,23 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		eligible, reason := cleanupEligibility(entry, normalized.OlderThan, now)
 		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
 	}
+	for _, record := range backlog {
+		results = append(results, CleanupResult{ListResult: ListResult{
+			Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
+			WorktreeDir: record.WorktreeDir, WorktreesRoot: record.WorktreesRoot,
+			Branch: record.Branch, Base: record.Base, HeadSHA: record.HeadSHA,
+		}, Eligible: true, WorktreeGone: true, BacklogID: record.ID,
+			Reason: "durable cleanup backlog awaiting exact local branch retirement"})
+	}
 	blockDiagnosedTasks(results, listed.Diagnostics)
+	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
-	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics}
+	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.
 	if normalized.Apply && normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results, outcome.Diagnostics)
+		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results, outcome.Diagnostics, outcome.Artifacts)
 		if err != nil {
 			return outcome, err
 		}
@@ -545,11 +761,23 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 
 	fail := func(cleanupErr error) (CleanupOutcome, error) {
 		if normalized.ReportDir != "" {
-			if _, reportErr := writeCleanupReport(normalized, now, "failed", outcome.Results, outcome.Diagnostics); reportErr != nil {
+			if _, reportErr := writeCleanupReport(normalized, now, "failed", outcome.Results, outcome.Diagnostics, outcome.Artifacts); reportErr != nil {
 				return outcome, fmt.Errorf("%w; write failed cleanup report: %v", cleanupErr, reportErr)
 			}
 		}
 		return outcome, cleanupErr
+	}
+	for backlogIndex := range backlog {
+		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex]); err != nil {
+			return fail(err)
+		}
+		for resultIndex := range outcome.Results {
+			if outcome.Results[resultIndex].BacklogID == backlog[backlogIndex].ID {
+				outcome.Results[resultIndex].Applied = true
+				outcome.Results[resultIndex].BranchDeleted = true
+				outcome.Results[resultIndex].Reason = "resumed durable cleanup backlog"
+			}
+		}
 	}
 	// Hold the same per-task lock used by worktree creation across that task's
 	// complete recheck-and-remove sequence. Complete one task, close all of its
@@ -558,15 +786,12 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if normalized.beforeCleanupLocks != nil {
 		normalized.beforeCleanupLocks()
 	}
-	completedTasks := make(map[string]bool)
-	for taskIndex := range outcome.Results {
-		first := outcome.Results[taskIndex]
-		taskKey := cleanupTaskKey(first.WorktreesRoot, first.Task)
-		if !first.Eligible || completedTasks[taskKey] {
+	for _, selection := range cleanupTaskSelections(outcome) {
+		taskKey := cleanupTaskKey(selection.WorktreesRoot, selection.Task)
+		if !cleanupTaskCanApply(outcome, taskKey) {
 			continue
 		}
-		completedTasks[taskKey] = true
-		task, err := acquireCleanupTask(first)
+		task, err := acquireCleanupTaskAt(selection.WorktreesRoot, selection.Task)
 		if err != nil {
 			return fail(err)
 		}
@@ -575,8 +800,32 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				task.lock.release()
 				task.close()
 			}()
+			// Corroborate every repository, exact remote target SHA, and private
+			// Work Log before the first terminal write or Git deletion. The task
+			// lock prevents another WB lifecycle operation from racing this phase;
+			// every destructive step still repeats its local/network recheck below.
 			for index := range outcome.Results {
-				if !outcome.Results[index].Eligible || cleanupTaskKey(outcome.Results[index].WorktreesRoot, outcome.Results[index].Task) != taskKey {
+				if !outcome.Results[index].Eligible || outcome.Results[index].BacklogID != "" || cleanupTaskKey(outcome.Results[index].WorktreesRoot, outcome.Results[index].Task) != taskKey {
+					continue
+				}
+				refreshed, preflightErr := preflightCleanupRepository(ctx, normalized, now, task, outcome.Results[index], resolution.Write.Home)
+				if preflightErr != nil {
+					return fail(preflightErr)
+				}
+				outcome.Results[index].ListResult = refreshed
+			}
+			artifactArchive, artifactArchivePath, artifactHandles, artifactErr := prepareCleanupLifecycleArtifacts(
+				resolution.Write.Home, task, taskKey, outcome.Artifacts,
+			)
+			if artifactErr != nil {
+				return fail(artifactErr)
+			}
+			if artifactArchive != nil {
+				defer func() { _ = artifactArchive.Close() }()
+			}
+			defer closeCleanupLifecycleArtifacts(artifactHandles)
+			for index := range outcome.Results {
+				if !outcome.Results[index].Eligible || outcome.Results[index].BacklogID != "" || cleanupTaskKey(outcome.Results[index].WorktreesRoot, outcome.Results[index].Task) != taskKey {
 					continue
 				}
 				worktree, err := openCleanupWorktree(task, outcome.Results[index])
@@ -646,7 +895,27 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					worktree.close()
 					return fail(err)
 				}
+				// Archive the recoverable run record while every Git asset still
+				// exists. Remote branch deletion is destructive too, so it must never
+				// precede the durable terminal/outbox record.
+				if err := sealWorkLogForRecycle(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, "removed"); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, err))
+				}
+				backlogRecord := newLifecycleBacklogRecord(normalized.ProjectsRoot, refreshed, "removed")
+				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageSealed); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
+				outcome.Results[index].BacklogID = backlogRecord.ID
 				if normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
+					if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRetiringRemote); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(err)
+					}
 					if err := worktree.validate(); err != nil {
 						closeCanonical()
 						worktree.close()
@@ -669,6 +938,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 						return fail(fmt.Errorf("delete remote branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
 					}
 					outcome.Results[index].RemoteDeleted = true
+					if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRemoteRetired); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(err)
+					}
 				}
 				if err := worktree.validate(); err != nil {
 					closeCanonical()
@@ -678,10 +952,28 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				if normalized.afterCleanupGitAuthorization != nil {
 					normalized.afterCleanupGitAuthorization("remove worktree")
 				}
+				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRemovingWorktree); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
 				if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
 					closeCanonical()
 					worktree.close()
 					return fail(fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, err))
+				}
+				outcome.Results[index].WorktreeGone = true
+				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageWorktreeRemoved); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
+				if normalized.afterCleanupWorktreeRemoval != nil {
+					if err := normalized.afterCleanupWorktreeRemoval(refreshed.WorktreeDir); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(fmt.Errorf("after worktree removal for %s: %w", refreshed.Repository, err))
+					}
 				}
 				if err := task.validate(); err != nil {
 					closeCanonical()
@@ -691,12 +983,23 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				if normalized.afterCleanupGitAuthorization != nil {
 					normalized.afterCleanupGitAuthorization("delete local branch")
 				}
+				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRemovingLocalBranch); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
 				if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
 					closeCanonical()
 					worktree.close()
 					return fail(fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err))
 				}
+				outcome.Results[index].BranchDeleted = true
 				if err := worktree.removeEmptyParent(normalized.afterCleanupParentAuthorization); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
+				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageComplete); err != nil {
 					closeCanonical()
 					worktree.close()
 					return fail(err)
@@ -704,6 +1007,9 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				worktree.close()
 				closeCanonical()
 				outcome.Results[index].Applied = true
+			}
+			if err := archiveCleanupLifecycleArtifacts(task, artifactArchive, artifactArchivePath, artifactHandles, outcome.Artifacts); err != nil {
+				return fail(err)
 			}
 			return outcome, nil
 		}()
@@ -716,12 +1022,68 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// create can make a new, unreachable task directory at the same pathname.
 	// Future creation reuses this harmless empty root under its normal lock.
 	if normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results, outcome.Diagnostics)
+		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results, outcome.Diagnostics, outcome.Artifacts)
 		if err != nil {
 			return outcome, err
 		}
 	}
 	return outcome, nil
+}
+
+type cleanupTaskSelection struct {
+	WorktreesRoot string
+	Task          string
+}
+
+func cleanupTaskSelections(outcome CleanupOutcome) []cleanupTaskSelection {
+	byKey := make(map[string]cleanupTaskSelection)
+	for _, result := range outcome.Results {
+		if result.BacklogID != "" {
+			continue
+		}
+		key := cleanupTaskKey(result.WorktreesRoot, result.Task)
+		byKey[key] = cleanupTaskSelection{WorktreesRoot: result.WorktreesRoot, Task: result.Task}
+	}
+	for _, artifact := range outcome.Artifacts {
+		key := cleanupTaskKey(artifact.WorktreesRoot, artifact.Task)
+		byKey[key] = cleanupTaskSelection{WorktreesRoot: artifact.WorktreesRoot, Task: artifact.Task}
+	}
+	selections := make([]cleanupTaskSelection, 0, len(byKey))
+	for _, selection := range byKey {
+		selections = append(selections, selection)
+	}
+	sort.Slice(selections, func(i, j int) bool {
+		return cleanupTaskKey(selections[i].WorktreesRoot, selections[i].Task) <
+			cleanupTaskKey(selections[j].WorktreesRoot, selections[j].Task)
+	})
+	return selections
+}
+
+func cleanupTaskCanApply(outcome CleanupOutcome, taskKey string) bool {
+	hasPending := false
+	for _, result := range outcome.Results {
+		if result.BacklogID != "" || cleanupTaskKey(result.WorktreesRoot, result.Task) != taskKey {
+			continue
+		}
+		if !result.Eligible {
+			return false
+		}
+		if !result.Applied {
+			hasPending = true
+		}
+	}
+	for _, artifact := range outcome.Artifacts {
+		if cleanupTaskKey(artifact.WorktreesRoot, artifact.Task) != taskKey {
+			continue
+		}
+		if !artifact.Eligible {
+			return false
+		}
+		if !artifact.Applied {
+			hasPending = true
+		}
+	}
+	return hasPending
 }
 
 func normalizeListOptions(options ListOptions) (projectsRoot, task, base, filter string, err error) {
@@ -867,6 +1229,17 @@ func inspectLifecycleWorktree(
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked, LastCommit: lastCommit,
 	}
 	if withGitHub {
+		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, base)
+		if err != nil {
+			return ListResult{}, err
+		}
+		result.IntegratedAtOrigin, err = isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
+		if err != nil {
+			return ListResult{}, err
+		}
+		// LocallyMerged historically described the remote-tracking ref. Once an
+		// exact fetched target is available, report the stronger observation.
+		result.LocallyMerged = result.IntegratedAtOrigin
 		result.RemoteHeadSHA, err = remoteBranchHead(ctx, canonical, branch)
 		if err != nil {
 			return ListResult{}, err
@@ -907,6 +1280,24 @@ func remoteBranchHead(ctx context.Context, repository, branch string) (string, e
 		return "", fmt.Errorf("unexpected remote branch response for %s: %q", branch, output)
 	}
 	return fields[0], nil
+}
+
+// fetchRemoteTargetHead obtains the exact origin target object used for the
+// integration decision. FETCH_HEAD is deliberately used instead of trusting
+// a possibly stale origin/<base> tracking ref. Cleanup repeats this immediately
+// before deletion, so a force-pushed target cannot reuse old evidence.
+func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (string, error) {
+	if _, err := git(ctx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
+	}
+	head, err := git(ctx, repository, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve fetched origin/%s target: %w", branch, err)
+	}
+	if !isGitObjectID(head) {
+		return "", fmt.Errorf("origin/%s returned invalid target SHA %q", branch, head)
+	}
+	return head, nil
 }
 
 func githubPullRequests(ctx context.Context, worktree, repository, branch string) ([]githubPullRequest, error) {
@@ -965,11 +1356,11 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 		return false, "worktree has local changes"
 	case entry.OpenPullRequest != nil:
 		return false, "branch still has an open pull request: " + entry.OpenPullRequest.URL
-	case entry.MergedPullRequest == nil:
-		return false, "no merged pull request matches the current branch head and base"
+	case entry.MergedPullRequest == nil && !entry.IntegratedAtOrigin:
+		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
 	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA:
 		return false, "remote branch advanced after the merged pull request"
-	case olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
+	case entry.MergedPullRequest != nil && olderThan > 0 && entry.MergedPullRequest.Merged.Add(olderThan).After(now):
 		return false, "merged pull request is newer than the cleanup safety window"
 	default:
 		return true, ""
@@ -1004,6 +1395,26 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic) 
 	}
 }
 
+func blockArtifactTasks(results []CleanupResult, artifacts []LifecycleArtifact) {
+	reasonByTask := make(map[string]string)
+	for _, artifact := range artifacts {
+		if artifact.Eligible {
+			continue
+		}
+		key := cleanupTaskKey(artifact.WorktreesRoot, artifact.Task)
+		if reasonByTask[key] == "" {
+			reasonByTask[key] = artifact.Path + ": " + artifact.Reason
+		}
+	}
+	for index := range results {
+		key := cleanupTaskKey(results[index].WorktreesRoot, results[index].Task)
+		if reason := reasonByTask[key]; reason != "" && results[index].Eligible {
+			results[index].Eligible = false
+			results[index].Reason = "coordinated task blocked by WB lifecycle artifact cleanup backlog " + reason
+		}
+	}
+}
+
 func blockUnsafeTasks(results []CleanupResult) {
 	reasonByTask := map[string]string{}
 	for _, result := range results {
@@ -1023,25 +1434,77 @@ func cleanupTaskKey(worktreesRoot, task string) string {
 	return filepath.Clean(worktreesRoot) + "\x00" + task
 }
 
-func acquireCleanupTask(result CleanupResult) (*cleanupTaskHandle, error) {
-	worktrees, err := openAbsoluteDirectoryNoFollow(result.WorktreesRoot, false)
+func preflightCleanupRepository(
+	ctx context.Context,
+	options CleanupOptions,
+	now time.Time,
+	task *cleanupTaskHandle,
+	entry CleanupResult,
+	home string,
+) (ListResult, error) {
+	worktree, err := openCleanupWorktree(task, entry)
 	if err != nil {
-		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", result.WorktreesRoot, err)
+		return ListResult{}, err
 	}
-	taskFD, err := unix.Openat(int(worktrees.Fd()), result.Task, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	defer worktree.close()
+	if err := worktree.validate(); err != nil {
+		return ListResult{}, err
+	}
+	refreshed, err := inspectLifecycleWorktree(
+		ctx,
+		options.ProjectsRoot,
+		wbhome.Layout{WorktreesRoot: entry.WorktreesRoot},
+		entry.Task,
+		entry.WorktreeDir,
+		options.Base,
+		true,
+		false,
+	)
+	if err != nil {
+		return ListResult{}, fmt.Errorf("preflight cleanup %s: %w", entry.Repository, err)
+	}
+	if err := worktree.validate(); err != nil {
+		return ListResult{}, err
+	}
+	if eligible, reason := cleanupEligibility(refreshed, options.OlderThan, now); !eligible {
+		return ListResult{}, fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason)
+	}
+	if refreshed.HeadSHA != entry.HeadSHA {
+		return ListResult{}, fmt.Errorf("cleanup safety changed for %s: branch head moved", refreshed.Repository)
+	}
+	canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
+	if err != nil {
+		return ListResult{}, fmt.Errorf("open cleanup canonical repository %s: %w", refreshed.CanonicalDir, err)
+	}
+	defer canonical.close()
+	if err := canonical.validate(); err != nil {
+		return ListResult{}, fmt.Errorf("cleanup canonical repository changed during preflight: %w", err)
+	}
+	if err := preflightWorkLogSeal(home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
+		return ListResult{}, fmt.Errorf("preflight Work Log for %s: %w", refreshed.Repository, err)
+	}
+	return refreshed, nil
+}
+
+func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
+	if err != nil {
+		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", worktreesRoot, err)
+	}
+	taskFD, err := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		_ = worktrees.Close()
-		return nil, fmt.Errorf("open cleanup task %s without following links: %w", result.Task, err)
+		return nil, fmt.Errorf("open cleanup task %s without following links: %w", taskName, err)
 	}
 	task := os.NewFile(uintptr(taskFD), "wb-cleanup-task")
 	if task == nil {
 		_ = unix.Close(taskFD)
 		_ = worktrees.Close()
-		return nil, fmt.Errorf("wrap cleanup task %s", result.Task)
+		return nil, fmt.Errorf("wrap cleanup task %s", taskName)
 	}
 	handle := &cleanupTaskHandle{
-		worktreesPath: result.WorktreesRoot,
-		taskPath:      filepath.Join(result.WorktreesRoot, result.Task),
+		worktreesPath: worktreesRoot,
+		taskPath:      filepath.Join(worktreesRoot, taskName),
 		worktrees:     worktrees,
 		task:          task,
 	}
@@ -1052,7 +1515,7 @@ func acquireCleanupTask(result CleanupResult) (*cleanupTaskHandle, error) {
 	lock, err := acquireLockAt(task)
 	if err != nil {
 		handle.close()
-		return nil, fmt.Errorf("lock cleanup task %s: %w", result.Task, err)
+		return nil, fmt.Errorf("lock cleanup task %s: %w", taskName, err)
 	}
 	handle.lock = lock
 	return handle, nil
@@ -1077,21 +1540,79 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 	if err != nil {
 		return err
 	}
-	arguments := append([]string{SecureCleanupGitHelperArgument, canonical.path, worktreePath, worktreeParentPath, gitExecutable}, gitArgs...)
+	extraFiles := []*os.File{canonical.root, canonical.common}
+	remoteDirectory, remotePath, err := localOriginDirectoryForSecurePush(ctx, canonical, gitArgs)
+	if err != nil {
+		return err
+	}
+	remoteFD := -1
+	if remoteDirectory != nil {
+		defer func() { _ = remoteDirectory.Close() }()
+		remoteFD = 3 + len(extraFiles)
+		extraFiles = append(extraFiles, remoteDirectory)
+	}
+	arguments := append([]string{
+		SecureCleanupGitHelperArgument, canonical.path, worktreePath, worktreeParentPath,
+		gitExecutable, remotePath, strconv.Itoa(remoteFD),
+	}, gitArgs...)
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Env = console.Env()
-	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
 	if worktreeDirectory != nil {
 		if worktreeParent == nil || worktreeParentPath == "" {
 			return fmt.Errorf("cleanup worktree parent descriptor is unavailable")
 		}
-		command.ExtraFiles = append(command.ExtraFiles, worktreeParent, worktreeDirectory)
+		// Worktree descriptors must precede the optional local remote so their
+		// child FD numbers remain 5 and 6. Rebuild the ordered list and adjust
+		// the advertised remote FD when both are present.
+		extraFiles = []*os.File{canonical.root, canonical.common, worktreeParent, worktreeDirectory}
+		if remoteDirectory != nil {
+			remoteFD = 3 + len(extraFiles)
+			extraFiles = append(extraFiles, remoteDirectory)
+			arguments[6] = strconv.Itoa(remoteFD)
+			command.Args[7] = strconv.Itoa(remoteFD)
+		}
 	}
+	command.ExtraFiles = extraFiles
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("run descriptor-anchored cleanup Git: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// localOriginDirectoryForSecurePush authorizes an exact local file remote as
+// an additional descriptor-bound write root. Network/SSH remotes need no
+// local filesystem root. This keeps integration tests and legitimate local
+// bare-repository workflows inside the same sandbox boundary instead of
+// weakening remote deletion to an unanchored Git process.
+func localOriginDirectoryForSecurePush(ctx context.Context, canonical *canonicalRepository, gitArgs []string) (*os.File, string, error) {
+	if len(gitArgs) == 0 || gitArgs[0] != "push" {
+		return nil, "", nil
+	}
+	remoteURL, err := gitCanonical(ctx, canonical, "remote", "get-url", "--push", "origin")
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve origin push URL: %w", err)
+	}
+	remoteURL = strings.TrimSpace(remoteURL)
+	localPath := remoteURL
+	if strings.HasPrefix(localPath, "file://") {
+		localPath = strings.TrimPrefix(localPath, "file://")
+		localPath = strings.TrimPrefix(localPath, "localhost")
+	} else if strings.Contains(localPath, "://") || (!filepath.IsAbs(localPath) && strings.Contains(localPath, ":")) {
+		return nil, "", nil
+	}
+	if !filepath.IsAbs(localPath) {
+		localPath = filepath.Join(canonical.path, localPath)
+	}
+	localPath, err = filepath.EvalSymlinks(filepath.Clean(localPath))
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve local origin directory %s: %w", remoteURL, err)
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(localPath, false)
+	if err != nil {
+		return nil, "", fmt.Errorf("open local origin directory %s: %w", localPath, err)
+	}
+	return directory, localPath, nil
 }
 
 // RunSecureCleanupGitHelper is the child half of descriptor-anchored cleanup
@@ -1100,7 +1621,7 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 // worktree. Both canonical descriptors and the optional parent/worktree pair
 // are reauthorized immediately before Git executes.
 func RunSecureCleanupGitHelper(args []string) int {
-	if len(args) < 5 {
+	if len(args) < 7 {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: missing worktree path or Git command")
 		return 1
 	}
@@ -1155,12 +1676,30 @@ func RunSecureCleanupGitHelper(args []string) int {
 	if args[1] != "" {
 		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[2], directory: parent})
 	}
+	if args[4] != "" {
+		remoteFD, parseErr := strconv.Atoi(args[5])
+		if parseErr != nil || remoteFD < 5 {
+			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: invalid local remote descriptor")
+			return 1
+		}
+		remote := os.NewFile(uintptr(remoteFD), "wb-cleanup-local-remote")
+		if remote == nil {
+			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: inherited local remote is unavailable")
+			return 1
+		}
+		defer func() { _ = remote.Close() }()
+		if !directoryStillMatches(args[4], remote) {
+			_, _ = fmt.Fprintln(os.Stderr, "wb secure cleanup helper: local remote path changed before Git operation")
+			return 1
+		}
+		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[4], directory: remote})
+	}
 	capability, err := newGitFilesystemCapability(writeRoots...)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: %v\n", err)
 		return 1
 	}
-	return runGitWithFilesystemCapability(capability, args[3], args[4:], gitEnvironmentWithHeldGitDir(filepath.Join(args[0], ".git")))
+	return runGitWithFilesystemCapability(capability, args[3], args[6:], gitEnvironmentWithHeldGitDirAndWorkTree(filepath.Join(args[0], ".git"), args[0]))
 }
 
 func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanupWorktreeHandle, error) {
@@ -1230,6 +1769,7 @@ func writeCleanupReport(
 	phase string,
 	results []CleanupResult,
 	diagnostics []ListDiagnostic,
+	artifacts []LifecycleArtifact,
 ) (string, error) {
 	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create cleanup report directory: %w", err)
@@ -1245,6 +1785,7 @@ func writeCleanupReport(
 		OlderThan:    options.OlderThan.String(),
 		Results:      results,
 		Diagnostics:  diagnostics,
+		Artifacts:    artifacts,
 	}
 	content, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

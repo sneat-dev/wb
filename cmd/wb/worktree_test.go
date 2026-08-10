@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,13 +12,24 @@ import (
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+func writeOriginalPromptFixture(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "original-prompt.txt")
+	if err := os.WriteFile(path, []byte(contents+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
 func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	command := newWorktreeCreateCmd()
 	for _, wanted := range []string{
 		"canonical clone must be clean",
-		"pulls",
+		"fetches",
+		"without switching or updating any local branch",
 		"<wb-home>/worktrees/<task>/<owner>/<repository>",
 		"WB_HOME",
 		"--resume",
@@ -48,16 +60,117 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 	list := newWorktreeListCmd()
-	for _, wanted := range []string{"only local Git data", "--github", "exact-head"} {
+	for _, wanted := range []string{"only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
 	}
 	cleanup := newWorktreeCleanupCmd()
-	for _, wanted := range []string{"default is a dry-run", "recorded head match", "force-with-lease"} {
+	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero"} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("worktree cleanup help does not mention %q", wanted)
 		}
+	}
+}
+
+func TestWorktreeListJSONIncludesArtifactOnlyCleanupBacklog(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	projects := filepath.Join(root, "projects")
+	const task = "artifact-json"
+	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	if err := os.MkdirAll(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, home)
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", projects, "worktree", "list", task, "--format", "json"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("artifact-only JSON inventory exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var outcome worktrees.ListOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &outcome); err != nil {
+		t.Fatalf("decode JSON inventory: %v\n%s", err, stdout.String())
+	}
+	if outcome.SchemaVersion != 1 || len(outcome.Results) != 0 || len(outcome.Diagnostics) != 0 || len(outcome.Artifacts) != 1 {
+		t.Fatalf("JSON control-plane envelope = %#v", outcome)
+	}
+	if filepath.Base(outcome.Artifacts[0].Path) != filepath.Base(retired) ||
+		outcome.Artifacts[0].Task != task || !outcome.Artifacts[0].Eligible ||
+		outcome.Artifacts[0].Disposition != "archive_empty_stage" {
+		t.Fatalf("JSON lifecycle artifact = %#v", outcome.Artifacts)
+	}
+}
+
+func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	projects := filepath.Join(root, "projects")
+	const task = "artifact-only-blocked"
+	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	if err := os.MkdirAll(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	evidence := filepath.Join(retired, "recovery-evidence")
+	if err := os.WriteFile(evidence, []byte("preserve\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, home)
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", projects, "worktree", "cleanup", task, "--apply", "--remote", "--format", "json"}, &stdout, &stderr)
+	if code != exitFindings {
+		t.Fatalf("non-empty artifact-only cleanup exit=%d, want %d; stdout=%s stderr=%s", code, exitFindings, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "did not satisfy cleanup safety") ||
+		!strings.Contains(stderr.String(), "non-empty") {
+		t.Fatalf("artifact-only cleanup did not explain blocking backlog: %s", stderr.String())
+	}
+	if contents, err := os.ReadFile(evidence); err != nil || string(contents) != "preserve\n" {
+		t.Fatalf("blocking evidence changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func TestNamedCleanupApplyRequiresRemoteBranchRetirementBeforeInspection(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", t.TempDir(), "worktree", "cleanup", "delivered-task", "--apply"}, &stdout, &stderr)
+	if code == exitOK || !strings.Contains(stderr.String(), "requires --remote") {
+		t.Fatalf("named cleanup without remote exit=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "format", args: []string{"worktree", "create", "bad-format", "acme/app", "--format", "yaml"}, want: "unsupported format"},
+		{name: "missing-required-prompt", args: []string{"worktree", "create", "missing-prompt", "acme/app"}, want: "--original-prompt-file is required"},
+		{name: "prompt", args: []string{"worktree", "create", "bad-prompt", "acme/app", "--original-prompt-file", "missing-private-prompt.txt"}, want: "open original prompt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, ".wb")
+			t.Setenv("WB_HOME", home)
+			args := append([]string{"--projects-root", filepath.Join(root, "projects")}, test.args...)
+			var stdout, stderr bytes.Buffer
+			if code := run(args, &stdout, &stderr); code == exitOK {
+				t.Fatalf("invalid preflight succeeded: stdout=%s", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), test.want)
+			}
+			task := test.args[2]
+			if _, err := os.Stat(filepath.Join(home, "worktrees", task)); !os.IsNotExist(err) {
+				t.Fatalf("invalid preflight created task state: %v", err)
+			}
+		})
 	}
 }
 
@@ -146,7 +259,7 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	command := newWorktreeRenameCmd()
 	for _, wanted := range []string{
 		"git worktree move", "git worktree repair", "node_modules",
-		"--delete-old-branch", "--force", "dry-run",
+		"always deleted", "--force", "dry-run",
 	} {
 		if !strings.Contains(command.Long, wanted) {
 			t.Errorf("worktree rename help does not mention %q", wanted)
@@ -159,9 +272,8 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	if apply == nil || apply.DefValue != "false" {
 		t.Fatalf("--apply default = %#v, want false", apply)
 	}
-	deleteOldBranch := command.Flags().Lookup("delete-old-branch")
-	if deleteOldBranch == nil || deleteOldBranch.DefValue != "false" {
-		t.Fatalf("--delete-old-branch default = %#v, want false", deleteOldBranch)
+	if deleteOldBranch := command.Flags().Lookup("delete-old-branch"); deleteOldBranch != nil {
+		t.Fatalf("obsolete optional --delete-old-branch is still advertised: %#v", deleteOldBranch)
 	}
 }
 
@@ -211,17 +323,19 @@ func setUpRenameCLIFixture(t *testing.T) (projects string) {
 // that a successful rename is reported as exit 0 with the new path on stdout.
 func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
+	oldPrompt := writeOriginalPromptFixture(t, "create original request")
+	newPrompt := writeOriginalPromptFixture(t, "recycle original request")
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-old", "acme/app"}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-old", "acme/app", "--original-prompt-file", oldPrompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 
 	stdout.Reset()
 	stderr.Reset()
-	code := run([]string{"--projects-root", projects, "worktree", "rename", "cli-old", "cli-new", "--apply", "--non-interactive"}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "rename", "cli-old", "cli-new", "--apply", "--remote", "--non-interactive", "--original-prompt-file", newPrompt}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("worktree rename failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
@@ -240,22 +354,25 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 // not success and not a bare usage error, through the same run() entry point.
 func TestWorktreeRenameCLIRefusesDestinationCollisionAsFindings(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
+	takenPrompt := writeOriginalPromptFixture(t, "taken original request")
+	sourcePrompt := writeOriginalPromptFixture(t, "source original request")
+	newPrompt := writeOriginalPromptFixture(t, "collision recycle request")
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "taken", "acme/app"}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "taken", "acme/app", "--original-prompt-file", takenPrompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("seed worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "source", "acme/app"}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "source", "acme/app", "--original-prompt-file", sourcePrompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("source worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 
 	stdout.Reset()
 	stderr.Reset()
-	code := run([]string{"--projects-root", projects, "worktree", "rename", "source", "taken", "--apply", "--non-interactive"}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "rename", "source", "taken", "--apply", "--remote", "--non-interactive", "--original-prompt-file", newPrompt}, &stdout, &stderr)
 	if code != exitFindings {
 		t.Fatalf("collision rename exit code = %d, want %d (findings); stdout=%s stderr=%s", code, exitFindings, stdout.String(), stderr.String())
 	}
@@ -387,7 +504,7 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 
 // TestWorktreeCreateReportsCanonicalSyncFailureAsFindings is the regression
 // test for a second bug found alongside a real production outage in the
-// canonical `git pull --ff-only` step: the failure was reported to the shell
+// canonical origin-base fetch step: the failure was reported to the shell
 // as exit code 0. WB's own documented contract (see rootLongHelp) is that a
 // command which ran and found a real problem exits 1 ("findings"), not 0
 // ("success") — a caller, human or agent, that only checks the exit code
@@ -395,9 +512,9 @@ func TestWorktreeCreateRejectsCaseVariantDuplicateBeforeRefreshingManagedHook(t 
 //
 // This drives the real end-to-end path — worktrees.Create ->
 // synchronizeCanonical -> gitCanonical -> the re-exec'd secure canonical Git
-// helper -> a real sandboxed `git pull` — through run(), the same function
-// main() uses, against a canonical clone whose origin can never fast-forward
-// pull. That makes the pull failure genuine and reproducible without a
+// helper -> a real sandboxed `git fetch` — through run(), the same function
+// main() uses, against a canonical clone whose origin cannot be fetched. That
+// makes the fetch failure genuine and reproducible without a
 // network dependency, rather than a simulated error return.
 func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	root := t.TempDir()
@@ -427,19 +544,20 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	}
 	runCanonicalGit("add", "README.md")
 	runCanonicalGit("commit", "-m", "initial")
-	// An origin that cannot be fetched from makes `git pull --ff-only` fail for
+	// An origin that cannot be fetched from makes `git fetch` fail for
 	// a real, reproducible reason, without needing SSH or a reachable remote.
 	runCanonicalGit("remote", "add", "origin", filepath.Join(root, "does-not-exist.git"))
 
 	previousProjectsRoot := projectsRoot
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	prompt := writeOriginalPromptFixture(t, "create request whose origin fetch fails")
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--projects-root", projects, "worktree", "create", "sync-fail", "acme/app", "--non-interactive"}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "create", "sync-fail", "acme/app", "--non-interactive", "--original-prompt-file", prompt}, &stdout, &stderr)
 	if code != exitFindings {
 		t.Fatalf("canonical sync failure exit code = %d, want %d (findings); stdout=%s stderr=%s",
 			code, exitFindings, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "update canonical") {
+	if !strings.Contains(stderr.String(), "fetch verified origin base") {
 		t.Fatalf("stderr does not explain the canonical sync failure: %s", stderr.String())
 	}
 	if stdout.Len() != 0 {

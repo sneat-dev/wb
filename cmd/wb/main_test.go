@@ -10,6 +10,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
+	"github.com/spf13/cobra"
 )
 
 func TestMain(m *testing.M) {
@@ -29,6 +30,99 @@ func TestMain(m *testing.M) {
 		os.Exit(worktrees.RunSecureStageCanonicalGitHelper(os.Args[2:]))
 	}
 	os.Exit(m.Run())
+}
+
+func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "filter-create", args: []string{"--filter", "acme", "worktree", "create", "task", "acme/app"}, want: "--filter is not supported by worktree create"},
+		{name: "org-list", args: []string{"--org", "acme", "worktree", "list"}, want: "--org is not supported by worktree list"},
+		{name: "filter-version", args: []string{"--filter", "acme", "version"}, want: "--filter is not supported by version"},
+		{name: "filter-ci-direct", args: []string{"--filter", "acme", "ci", "audit"}, want: "--filter requires --fleet for ci audit"},
+		{name: "filter-hooks-direct", args: []string{"--filter", "acme", "hooks", "check"}, want: "--filter requires --fleet for hooks check"},
+		{name: "filter-coverage-direct", args: []string{"--filter", "acme", "coverage"}, want: "--filter requires --fleet for coverage"},
+		{name: "root-verify-direct", args: []string{"--projects-root", t.TempDir(), "verify"}, want: "--projects-root requires --fleet for verify"},
+		{name: "root-ci-direct", args: []string{"--projects-root", t.TempDir(), "ci", "audit"}, want: "--projects-root requires --fleet for ci audit"},
+		{name: "filter-status-path", args: []string{"--filter", "acme", "status", "."}, want: "--filter is not supported by status with repository-path"},
+		{name: "root-status-path", args: []string{"--projects-root", t.TempDir(), "status", "."}, want: "--projects-root is not supported by status with repository-path"},
+		{name: "org-deps-direct", args: []string{"--org", "acme", "deps", "graph"}, want: "--org requires --fleet for deps graph"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != exitUsage {
+				t.Fatalf("run(%q) exit = %d, stderr=%s", test.args, code, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), test.want)
+			}
+		})
+	}
+}
+
+// TestPersistentFlagMatrix exercises every advertised root flag against every
+// leaf command without running the command. A supported cell must reach RunE;
+// every other cell must fail in PersistentPreRunE rather than be ignored.
+func TestPersistentFlagMatrix(t *testing.T) {
+	values := map[string]string{
+		"projects-root":   t.TempDir(),
+		"filter":          "acme",
+		"org":             "acme",
+		"non-interactive": "true",
+	}
+	for flag, value := range values {
+		for _, commandID := range leafCommandIDs(newRootCmd()) {
+			name := flag + "/" + strings.ReplaceAll(commandID, " ", "-")
+			t.Run(name, func(t *testing.T) {
+				root := newRootCmd()
+				command, _, err := root.Find(strings.Fields(commandID))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := root.PersistentFlags().Set(flag, value); err != nil {
+					t.Fatal(err)
+				}
+				supported := persistentFlagSupport[flag][commandID] || persistentFlagSupport[flag]["*"]
+				if supported && persistentFlagNeedsFleet(flag, commandID) {
+					if fleet := command.Flags().Lookup("fleet"); fleet != nil {
+						if err := command.Flags().Set("fleet", "true"); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				rejectErr := rejectIgnoredPersistentFlags(command, nil)
+				if supported && rejectErr != nil {
+					t.Fatalf("supported matrix cell rejected: %v", rejectErr)
+				}
+				if !supported && rejectErr == nil {
+					t.Fatalf("unsupported matrix cell accepted: --%s %s", flag, commandID)
+				}
+			})
+		}
+	}
+}
+
+func leafCommandIDs(root *cobra.Command) []string {
+	var result []string
+	var visit func(*cobra.Command)
+	visit = func(command *cobra.Command) {
+		children := command.Commands()
+		if len(children) == 0 {
+			result = append(result, persistentCommandID(command))
+			return
+		}
+		for _, child := range children {
+			if child.Name() == "help" || child.Name() == "completion" {
+				continue
+			}
+			visit(child)
+		}
+	}
+	visit(root)
+	return result
 }
 
 func TestHasVersionFlagRecognisesOnlyRootLevelRequests(t *testing.T) {

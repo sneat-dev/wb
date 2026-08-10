@@ -27,3 +27,20 @@ this repository without copying instructions.
 [`skills/commands.json`](skills/commands.json) maps every public WB top-level
 command to at least one skill. `go test ./cmd/wb` enforces that coverage as the
 CLI evolves.
+
+## Capability delivery contract
+
+`capabilities.json` is WB's single runtime/help/AI-skill/test delivery view.
+Every public CLI leaf must have one conventionally named row; planned product
+seams may add rows only when all four surfaces are honestly `Planned` and no
+fictional command or example is exposed.
+
+`cli-capability-delivery.schema.json` is a pinned vendored validation input,
+not a second schema authority. Its canonical source is
+`specscore` commit `e06f6ab`, path
+`new/cli-capability-delivery.schema.json`, with schema ID
+`https://specscore.md/new/cli-capability-delivery.schema.json`. The WB validator
+in `cmd/wb/skills_test.go` pins the exact SHA-256 digest of that file before it
+compiles the schema. An upstream schema update therefore fails until an
+explicit migration replaces the vendored input, updates the digest, and makes
+the manifest pass the new contract.

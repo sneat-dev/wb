@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -70,6 +71,9 @@ func newRootCmd() *cobra.Command {
 		// of cobra's error messages. No subcommand may define its own
 		// PersistentPreRun, which would shadow this one.
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if err := rejectIgnoredPersistentFlags(cmd, args); err != nil {
+				return err
+			}
 			commandStarted = true
 			return nil
 		},
@@ -98,6 +102,97 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newSelfUpdateCmd())
 
 	return root
+}
+
+// persistentFlagSupport is an executable counterpart to
+// docs/cli-flag-matrix.md. A persistent flag must either affect the selected
+// command or be rejected before that command starts; accepting a flag and
+// silently ignoring it is unsafe for scripts and agents.
+var persistentFlagSupport = map[string]map[string]bool{
+	"projects-root": {
+		"sync": true, "run": true, "migrate": true,
+		"deps graph": true, "deps set": true, "deps bump": true,
+		"ci audit":      true,
+		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
+		"coverage": true, "verify": true, "check": true, "status": true,
+		"worktree abort": true, "worktree create": true, "worktree guard": true,
+		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
+	},
+	"filter": {
+		"sync": true, "run": true,
+		"deps graph": true, "deps set": true, "deps bump": true,
+		"ci audit":      true,
+		"hooks install": true, "hooks check": true, "hooks repair": true,
+		"coverage": true, "verify": true, "check": true, "status": true,
+		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
+	},
+	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true},
+	// This is a root rendering/input-safety guarantee. Commands without a TUI
+	// still consume it by inheriting the non-blocking contract; rejecting it
+	// would make scripts need command-specific conditionals for no benefit.
+	"non-interactive": {"*": true},
+}
+
+func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
+	commandID := persistentCommandID(cmd)
+	for flag, supported := range persistentFlagSupport {
+		// Inspect only the root flag. A command-local flag may intentionally
+		// shadow a persistent name (sync --org restricts owners); treating that
+		// local flag as the root contract previously rejected valid invocations.
+		candidate := cmd.Root().PersistentFlags().Lookup(flag)
+		if candidate == nil || !candidate.Changed {
+			continue
+		}
+		if !supported[commandID] && !supported["*"] {
+			return fmt.Errorf("--%s is not supported by %s; see docs/cli-flag-matrix.md", flag, commandID)
+		}
+		// Some leaves have both direct and fleet modes. A root selector cannot
+		// truthfully affect a named path, so accept it only when the invocation
+		// selected the fleet. Status is fleet-by-default when no path is given;
+		// the other leaves use an explicit --fleet flag.
+		if persistentFlagNeedsFleet(flag, commandID) && !persistentCommandSelectedFleet(cmd, commandID, args) {
+			if commandID == "status" {
+				return fmt.Errorf("--%s is not supported by status with repository-path; omit the path to select the --projects-root fleet", flag)
+			}
+			return fmt.Errorf("--%s requires --fleet for %s; see docs/cli-flag-matrix.md", flag, commandID)
+		}
+	}
+	return nil
+}
+
+func persistentFlagNeedsFleet(flag, commandID string) bool {
+	if flag == "org" && strings.HasPrefix(commandID, "deps ") {
+		return true
+	}
+	switch flag {
+	case "filter":
+		switch commandID {
+		case "ci audit", "hooks install", "hooks check", "hooks repair", "coverage", "verify", "check", "status":
+			return true
+		}
+	case "projects-root":
+		switch commandID {
+		case "ci audit", "coverage", "verify", "check", "status":
+			return true
+		}
+	}
+	return false
+}
+
+func persistentCommandSelectedFleet(cmd *cobra.Command, commandID string, args []string) bool {
+	if commandID == "status" {
+		return len(args) == 0
+	}
+	fleet := cmd.Flags().Lookup("fleet")
+	return fleet != nil && fleet.Value.String() == "true"
+}
+
+func persistentCommandID(cmd *cobra.Command) string {
+	var parts []string
+	for current := cmd; current != nil && current.Parent() != nil; current = current.Parent() {
+		parts = append([]string{current.Name()}, parts...)
+	}
+	return strings.Join(parts, " ")
 }
 
 func main() {

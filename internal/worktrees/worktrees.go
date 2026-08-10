@@ -50,6 +50,7 @@ type CreateOptions struct {
 	Branch       string
 	Base         string
 	Resume       bool
+	WorkLog      WorkLogOptions
 	// beforeHomeDirectoryOpen is a test-only seam before WB opens or creates
 	// its resolved home hierarchy. It proves a substituted WB_HOME leaf cannot
 	// redirect the initial descriptor chain.
@@ -114,7 +115,9 @@ type CreateResult struct {
 	WorktreeDir  string `json:"worktree_dir"`
 	Branch       string `json:"branch"`
 	Base         string `json:"base"`
+	BaseSHA      string `json:"base_sha"`
 	Action       string `json:"action"`
+	WorkLogPath  string `json:"work_log_path,omitempty"`
 }
 
 // GuardOptions defines the local checkout policy checked by hooks and agents.
@@ -150,6 +153,7 @@ type createPlan struct {
 	owner        string
 	repository   string
 	canonical    *canonicalRepository
+	baseRevision string
 	branchExists bool
 	resumed      bool
 }
@@ -246,13 +250,14 @@ func (operation preparedOperationRoot) close() {
 	}
 }
 
-// Create synchronizes each clean canonical base branch with origin, then
-// creates (or explicitly resumes) the corresponding isolated worktree.
+// Create verifies each clean canonical clone, fetches its requested origin base
+// without changing any local branch, then creates (or explicitly resumes) the
+// corresponding isolated worktree.
 //
 // Synchronization happens before any branch is created. This is deliberate:
-// every new feature branch must be based on the latest remote base, while an
-// unsafe canonical clone causes the whole request to fail before feature work
-// starts.
+// every new feature branch must be based on a verified latest remote base. The
+// canonical checkout is only a clean Git capability: WB never switches it to
+// the base or fast-forwards a local branch as a side effect of creation.
 func Create(ctx context.Context, repositories []string, options CreateOptions) ([]CreateResult, error) {
 	normalized, err := normalizeCreateOptions(options)
 	if err != nil {
@@ -265,9 +270,28 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err := requireGitFilesystemCapability(); err != nil {
 		return nil, err
 	}
+	// A coordinated create is one Run claiming several repositories. Generate
+	// its local fallback ID once here, not once per claim, so the durable run
+	// index preserves cardinality and a recovery reader can join all claims.
+	if strings.TrimSpace(normalized.WorkLog.RunID) == "" {
+		normalized.WorkLog.RunID = "wb-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	}
+	// Prompt readability, exact bytes, and every identifier used by the private
+	// archive are part of mutation preflight. An existing Run ID is corroborated
+	// before a fetched canonical clone, branch, or linked checkout can change.
+	normalized.WorkLog, err = PrepareWorkLogOptions(normalized.ProjectsRoot, normalized.Operation, normalized.WorkLog)
+	if err != nil {
+		return nil, err
+	}
 
 	home, err := wbhome.Root(normalized.ProjectsRoot)
 	if err != nil {
+		return nil, err
+	}
+	// Bind the coordinated run to the exact snapshotted prompt before worktree
+	// publication. Immutable no-replace storage makes a concurrent conflicting
+	// use of the same Run ID fail here rather than after a checkout exists.
+	if err := reserveOriginalPromptArchive(home, normalized.Operation, normalized.WorkLog); err != nil {
 		return nil, err
 	}
 	operation, err := prepareOperationRoot(home, normalized.Operation, normalized.beforeHomeDirectoryOpen)
@@ -303,7 +327,8 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, err
 		}
 		canonicalHandle.afterValidation = normalized.afterCanonicalGitAuthorization
-		if err := synchronizeCanonical(ctx, canonicalHandle, repository, normalized.Base); err != nil {
+		baseRevision, err := synchronizeCanonical(ctx, canonicalHandle, repository, normalized.Base)
+		if err != nil {
 			canonicalHandle.close()
 			return nil, err
 		}
@@ -312,9 +337,9 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			canonicalHandle.close()
 			return nil, err
 		}
-		plan := createPlan{owner: owner, repository: name, canonical: canonicalHandle, result: CreateResult{
+		plan := createPlan{owner: owner, repository: name, canonical: canonicalHandle, baseRevision: baseRevision, result: CreateResult{
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
-			Branch: normalized.Branch, Base: normalized.Base,
+			Branch: normalized.Branch, Base: normalized.Base, BaseSHA: baseRevision,
 		}}
 		if exists {
 			if !normalized.Resume {
@@ -363,6 +388,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				plan.repository,
 				plan.result.Branch,
 				plan.result.Base,
+				plan.baseRevision,
 				plan.branchExists,
 				normalized.beforeSecureWorktreeAdd,
 				normalized.afterSecureStageDirectoryCreated,
@@ -378,6 +404,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			); err != nil {
 				return results, err
 			}
+		}
+		if logPath, logErr := recordWorkLog(home, normalized.Operation, plan.result, normalized.WorkLog); logErr != nil {
+			return results, fmt.Errorf("record work log for %s: %w", plan.result.Repository, logErr)
+		} else {
+			plan.result.WorkLogPath = logPath
 		}
 		results = append(results, plan.result)
 	}
@@ -567,6 +598,10 @@ func locateManagedWorktree(
 
 func isWorktreeStagingDirectory(name string) bool {
 	return strings.HasPrefix(name, ".wb-stage-") && len(name) > len(".wb-stage-")
+}
+
+func isRetiredWorktreeStagingDirectory(name string) bool {
+	return strings.HasPrefix(name, ".wb-retired-stage-") && len(name) > len(".wb-retired-stage-")
 }
 
 func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root string) (owner, repository string, err error) {
@@ -889,57 +924,53 @@ func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, cano
 	return owner, name, filepath.Join(projectsRoot, owner, name), nil
 }
 
-func synchronizeCanonical(ctx context.Context, canonical *canonicalRepository, repository, base string) error {
+// synchronizeCanonical validates that canonical is an ordinary clean clone and
+// fetches exactly refs/heads/<base> from origin. It deliberately never checks
+// out, pulls, resets, or updates a local branch: the requested base may be
+// stale locally or checked out in another linked worktree. The returned object
+// ID pins the new worktree to the commit just verified from origin, even if a
+// later fetch advances origin/<base> before Git creates the branch.
+func synchronizeCanonical(ctx context.Context, canonical *canonicalRepository, repository, base string) (string, error) {
 	if err := canonical.validate(); err != nil {
-		return err
+		return "", err
 	}
 	root, err := gitCanonical(ctx, canonical, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return err
+		return "", err
 	}
 	if filepath.Clean(root) != filepath.Clean(canonical.path) {
-		return fmt.Errorf("%s is not the root of its canonical clone (root is %s)", canonical.path, root)
+		return "", fmt.Errorf("%s is not the root of its canonical clone (root is %s)", canonical.path, root)
 	}
 	gitDir, commonDir, err := gitDirectoriesCanonical(ctx, canonical)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if gitDir != commonDir {
-		return fmt.Errorf("%s is a linked worktree, not the canonical clone for %s", canonical.path, repository)
-	}
-	branch, err := gitCanonical(ctx, canonical, "branch", "--show-current")
-	if err != nil {
-		return err
-	}
-	if branch != base {
-		return fmt.Errorf("canonical clone %s is on %q; switch it to %q before creating a worktree", canonical.path, branch, base)
+		return "", fmt.Errorf("%s is a linked worktree, not the canonical clone for %s", canonical.path, repository)
 	}
 	clean, err := cleanCanonicalWorktree(ctx, canonical)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !clean {
-		return fmt.Errorf("canonical clone %s is dirty; move or commit its changes before creating a worktree", canonical.path)
+		return "", fmt.Errorf("canonical clone %s is dirty; move or commit its changes before creating a worktree", canonical.path)
 	}
 
-	// Pulling here, instead of merely branching from a possibly stale
-	// origin/<base>, keeps the canonical clone useful as an exact local mirror
-	// and guarantees the new worktree starts from the latest remote base.
-	if _, err := gitCanonical(ctx, canonical, "pull", "--ff-only", "--no-tags", "origin", base); err != nil {
-		return fmt.Errorf("update canonical %s/%s: %w", repository, base, err)
+	// Fetching this fully-qualified ref writes only fetch metadata. In
+	// particular, it does not update refs/heads/<base>, which could be stale or
+	// checked out in another worktree. A missing or inaccessible remote base
+	// fails before WB creates a branch or publishes a checkout.
+	if _, err := gitCanonical(ctx, canonical, "fetch", "--no-tags", "origin", "refs/heads/"+base); err != nil {
+		return "", fmt.Errorf("fetch verified origin base %s/%s: %w", repository, base, err)
 	}
-	head, err := gitCanonical(ctx, canonical, "rev-parse", "HEAD")
+	baseRevision, err := gitCanonical(ctx, canonical, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
 	if err != nil {
-		return err
+		return "", fmt.Errorf("verify fetched origin base %s/%s: %w", repository, base, err)
 	}
-	remote, err := gitCanonical(ctx, canonical, "rev-parse", "origin/"+base)
-	if err != nil {
-		return err
+	if !isGitObjectID(baseRevision) {
+		return "", fmt.Errorf("verify fetched origin base %s/%s: Git returned invalid commit %q", repository, base, baseRevision)
 	}
-	if head != remote {
-		return fmt.Errorf("canonical clone %s is not at origin/%s after pull", canonical.path, base)
-	}
-	return nil
+	return baseRevision, nil
 }
 
 func validateExistingWorktree(ctx context.Context, canonical *canonicalRepository, worktree, branch string) error {
@@ -1179,6 +1210,22 @@ func gitEnvironmentWithHeldGitDir(temporaryRoot string) []string {
 	return append(environment, "GIT_DIR=.", "GIT_WORK_TREE=..", "TMPDIR="+temporaryRoot)
 }
 
+// gitEnvironmentWithHeldGitDirAndWorkTree keeps GIT_DIR descriptor-relative
+// while making the worktree identity absolute for hooks spawned by Git. A
+// relative GIT_WORK_TREE is resolved again after Git changes a hook's working
+// directory and can make the hook misidentify the canonical checkout as its
+// .git directory.
+func gitEnvironmentWithHeldGitDirAndWorkTree(temporaryRoot, worktree string) []string {
+	environment := gitEnvironmentWithHeldGitDir(temporaryRoot)
+	for index, entry := range environment {
+		if strings.HasPrefix(entry, "GIT_WORK_TREE=") {
+			environment[index] = "GIT_WORK_TREE=" + worktree
+			break
+		}
+	}
+	return environment
+}
+
 // prepareOperationRoot creates the fixed WB hierarchy one component at a
 // time. os.MkdirAll would follow a pre-existing task or owner symlink; that
 // could direct a worktree add outside WB_HOME before Git has a chance to
@@ -1298,6 +1345,7 @@ func addWorktreeAtSecureDestination(
 	operationRoot string,
 	operationDirectory *os.File,
 	owner, repository, branch, base string,
+	baseRevision string,
 	branchExists bool,
 	beforeAdd func(),
 	afterStageDirectoryCreated func(),
@@ -1313,10 +1361,9 @@ func addWorktreeAtSecureDestination(
 ) error {
 	expectedBranchTip := ""
 	if !branchExists {
-		var err error
-		expectedBranchTip, err = gitCanonical(ctx, canonical, "rev-parse", "origin/"+base)
-		if err != nil {
-			return fmt.Errorf("resolve feature branch base origin/%s: %w", base, err)
+		expectedBranchTip = baseRevision
+		if !isGitObjectID(expectedBranchTip) {
+			return fmt.Errorf("create feature branch from origin/%s: verified base commit is invalid", base)
 		}
 	}
 	operationFD := int(operationDirectory.Fd())
@@ -1399,7 +1446,7 @@ func addWorktreeAtSecureDestination(
 	if afterStageValidation != nil {
 		afterStageValidation()
 	}
-	if err := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, base, branchExists); err != nil {
+	if err := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists); err != nil {
 		return rollback(fmt.Errorf("create staged worktree: %w", err), "", nil)
 	}
 	checkoutFD, err := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
@@ -1495,7 +1542,7 @@ func gitWorktreeAddFromStageDirectory(
 	canonical *canonicalRepository,
 	trustedOperationRoot string,
 	stageDirectory *os.File,
-	branch, base string,
+	branch, baseRevision string,
 	branchExists bool,
 ) error {
 	gitExecutable, err := trustedGitExecutable()
@@ -1505,7 +1552,7 @@ func gitWorktreeAddFromStageDirectory(
 	if err := canonical.authorizeForGit(); err != nil {
 		return err
 	}
-	output, err := runSecureStageCanonicalGitHelper(ctx, stageDirectory, canonical, trustedOperationRoot, gitExecutable, branch, base, branchExists)
+	output, err := runSecureStageCanonicalGitHelper(ctx, stageDirectory, canonical, trustedOperationRoot, gitExecutable, branch, baseRevision, branchExists)
 	if err != nil {
 		detail := strings.TrimSpace(string(output))
 		if detail == "" {
@@ -1520,12 +1567,12 @@ func trustedGitExecutable() (string, error) {
 	return platformTrustedGitExecutable()
 }
 
-func worktreeAddArguments(checkout, branch, base string, branchExists bool) []string {
+func worktreeAddArguments(checkout, branch, baseRevision string, branchExists bool) []string {
 	args := []string{"worktree", "add", "--quiet"}
 	if branchExists {
 		args = append(args, checkout, branch)
 	} else {
-		args = append(args, "-b", branch, checkout, "origin/"+base)
+		args = append(args, "-b", branch, checkout, baseRevision)
 	}
 	return args
 }
@@ -1550,7 +1597,7 @@ func runSecureStageCanonicalGitHelper(
 	ctx context.Context,
 	stageDirectory *os.File,
 	canonical *canonicalRepository,
-	trustedOperationRoot, gitExecutable, branch, base string,
+	trustedOperationRoot, gitExecutable, branch, baseRevision string,
 	branchExists bool,
 ) ([]byte, error) {
 	executable, err := os.Executable()
@@ -1561,7 +1608,7 @@ func runSecureStageCanonicalGitHelper(
 	if branchExists {
 		exists = "1"
 	}
-	command := exec.CommandContext(ctx, executable, SecureStageCanonicalGitHelperArgument, trustedOperationRoot, canonical.path, gitExecutable, branch, base, exists)
+	command := exec.CommandContext(ctx, executable, SecureStageCanonicalGitHelperArgument, trustedOperationRoot, canonical.path, gitExecutable, branch, baseRevision, exists)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{stageDirectory, canonical.root, canonical.common}
 	return command.CombinedOutput()
@@ -1874,7 +1921,7 @@ func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err
 		return "", false, fmt.Errorf("read secure staging parent for retirement reap: %w", err)
 	}
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), ".wb-retired-stage-") {
+		if !isRetiredWorktreeStagingDirectory(entry.Name()) {
 			continue
 		}
 		fd, openErr := unix.Openat(int(parent.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
@@ -2066,10 +2113,15 @@ func noFollowChildAbsent(parentFD int, name string) (bool, error) {
 }
 
 func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, prefix string) (*os.File, error) {
+	moved, _, err := quarantineDirectoryEntryNamed(parent, name, expected, prefix)
+	return moved, err
+}
+
+func quarantineDirectoryEntryNamed(parent *os.File, name string, expected *os.File, prefix string) (*os.File, string, error) {
 	for attempt := 0; attempt < 16; attempt++ {
 		var token [16]byte
 		if _, err := rand.Read(token[:]); err != nil {
-			return nil, fmt.Errorf("generate directory retirement name: %w", err)
+			return nil, "", fmt.Errorf("generate directory retirement name: %w", err)
 		}
 		retired := fmt.Sprintf("%s%x", prefix, token[:])
 		moved, err := moveExpectedDirectoryNoReplace(parent, name, parent, retired, expected, nil)
@@ -2080,11 +2132,11 @@ func quarantineDirectoryEntry(parent *os.File, name string, expected *os.File, p
 			if moved != nil {
 				_ = moved.Close()
 			}
-			return nil, err
+			return nil, "", err
 		}
-		return moved, nil
+		return moved, retired, nil
 	}
-	return nil, fmt.Errorf("create collision-free directory retirement name")
+	return nil, "", fmt.Errorf("create collision-free directory retirement name")
 }
 
 type secureDirectoryIdentity struct {

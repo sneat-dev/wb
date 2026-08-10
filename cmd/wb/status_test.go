@@ -114,6 +114,10 @@ func TestStatusFiltersACleanFleetEndToEnd(t *testing.T) {
 	if everything.HiddenClean != 0 {
 		t.Errorf("--all hid %d repositories; it must hide none", everything.HiddenClean)
 	}
+	selected := decodeStatusIndex(t, runWB(t, "status", "--projects-root", root, "--filter", "acme/clean", "--format", "json", "--all"))
+	if len(selected.Repositories) != 1 || selected.Repositories[0].Repository != "acme/clean" {
+		t.Errorf("--projects-root + --filter selection = %+v, want only acme/clean", selected.Repositories)
+	}
 
 	single := decodeStatusIndex(t, runWB(t, "status", clean, "--format", "json"))
 	if len(single.Repositories) != 1 || single.Repositories[0].Status != "clean" {

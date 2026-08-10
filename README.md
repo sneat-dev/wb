@@ -42,9 +42,11 @@ wb verify [path] [flags]     # run conventional lint, test, and build checks
 wb check [path] [flags]      # run a named local CI-equivalent check profile
 wb status [path] [flags]     # report local repos needing attention (--all for every repo)
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
-wb worktree create <task>    # create a feature branch in a central linked worktree
+wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
 wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task>   # plan or apply safe merged-task cleanup
+wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
+wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
 ```
 
@@ -54,33 +56,53 @@ wb self-update [flags]       # update the installed wb binary (alias: wb update)
 |------|---------|---------|
 | `--projects-root P` | `~/projects` | Root dir holding `{org}/{repo}` clones. |
 | `--filter S` | — | Only process repos whose `org/name` contains `S`. |
-| `--org O` | — | Query an additional GitHub owner (repeatable). **Not used by `sync`** — see below. |
+| `--org O` | — | Query an additional GitHub owner (repeatable); before `sync`, it has the same restricting selection as command-local `sync --org`. |
 
 ### `wb worktree` — isolated feature branches
 
-Keep canonical clones at `<projects-root>/<owner>/<repository>` clean and on
-`main`. Create every feature branch in WB's shared worktree hierarchy:
+Keep canonical clones at `<projects-root>/<owner>/<repository>` clean. Their
+currently checked-out branch is left untouched while WB creates every feature
+branch in its shared worktree hierarchy:
 
 ```sh
 # From any checkout of sneat-bots; owner/repository is derived from origin.
-wb worktree create bots-e2e
+wb worktree create bots-e2e --original-prompt-file <private-prompt-file>
 
 # Create coordinated branches for a cross-repository change.
-wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go
+wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go \
+  --original-prompt-file <private-prompt-file>
 
 # Override the default codex/<task> branch or resume an existing exact checkout.
 wb worktree create bots-e2e sneat-co/sneat-bots \
-  --branch agent/bots-e2e --resume
+  --branch agent/bots-e2e --resume \
+  --original-prompt-file <private-prompt-file>
 ```
 
-Before branching, WB requires every canonical clone to be clean and checked
-out on the selected base (`main` by default), then runs
-`git pull --ff-only --no-tags origin <base>`. Worktrees are created at
+Before branching, WB requires every canonical clone to be clean, then fetches
+the exact `refs/heads/<base>` from `origin` (`main` by default). It creates the
+new branch from that verified commit without switching, pulling, resetting, or
+fast-forwarding the canonical checkout or any local base branch; this is safe
+when local `main` is stale or checked out in another worktree. Worktrees are created at
 `~/.wb/worktrees/<task>/<owner>/<repository>` by default. Set `WB_HOME` to an
 explicit alternative. New work never silently falls back to the historic
 `<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
 guards, lists, and cleans linked worktrees there during migration. Existing
 branches and worktrees are rejected unless `--resume` is explicit.
+
+Every create writes one private Hybrid Work Log claim per repository under
+`<wb-home>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`, where the
+claim ID is a portable collision-resistant digest of effort, canonical
+repository, branch, and immutable base (never Run ID or an absolute machine
+path), plus a small Git-excluded `.wb-worklog/recovery.json` projection in the
+worktree, and a typed local
+outbox event. Every create requires a readable non-empty
+`--original-prompt-file` containing the exact originating request; WB snapshots
+its bytes and SHA-256 digest before creating a worktree and copies them only
+into the private archive. `--agent`, `--agent-runtime`, and `--model` add run
+provenance. The local journal/outbox remains usable as
+recovery evidence when a Synchestra server is down, so server receipt never
+blocks safe local work. It is not yet a Git-repository communication fallback
+and cannot deliver inter-agent messages.
 
 `wb worktree guard [path]` is the policy check used by agents and Git hooks. It
 accepts a clean canonical base checkout for synchronization, or a non-base
@@ -90,28 +112,89 @@ HEADs, and linked worktrees stored elsewhere. A detached linked checkout is
 allowed only while Git has a real active `rebase-merge` or `rebase-apply`
 state.
 
-Inspect active task worktrees without contacting GitHub:
+Inspect live task worktrees without contacting GitHub:
 
 ```sh
 wb worktree list
 wb worktree list bots-e2e --github
 ```
 
+`--format json` returns a versioned envelope containing `results`,
+`diagnostics`, and WB lifecycle `artifacts`. Consumers must inspect all three:
+an interrupted internal stage can be cleanup backlog even when no live
+worktree result remains. This intentionally replaces the legacy bare result
+array; JSON consumers must migrate to the envelope and check `schema_version`.
+
+This inventory does not yet join archived Work Logs into the approved
+seven-day active/recent/history view.
+
 After every PR in a coordinated task has merged, plan cleanup first:
 
 ```sh
 wb worktree cleanup bots-e2e
-wb worktree cleanup bots-e2e --apply
-wb worktree cleanup bots-e2e --apply --remote
+wb worktree cleanup bots-e2e --apply --remote --older-than 0
 ```
 
 Cleanup is a dry run by default. It removes nothing unless every repository in
-the task is clean, unlocked, and has a merged GitHub PR for the expected base
-whose recorded head is the current branch tip. The default 24-hour safety
-window is configurable with `--older-than`; `--apply` writes an audit report
+the task is clean, unlocked, and its exact branch tip is contained in the
+freshly fetched `origin/<target>`. A matching merged GitHub PR supplies
+merge-age evidence, while an exact direct-push integration is also supported;
+a local merge that has not reached the remote target remains `awaiting_push`.
+Named cleanup defaults to an immediate age window and refuses `--apply`
+without `--remote`, because done means the retired source remote branch is gone
+as well as the local worktree/branch. Fleet `--all-merged` sweeping retains the
+default 24-hour merged-PR grace window. `--apply` writes an audit report
 below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
-before removing exact worktree and local branch refs. `--remote` is separate and deletes only an
-unchanged remote branch using force-with-lease.
+before removing exact worktree and branch refs; remote retirement uses
+force-with-lease against the observed source-branch SHA.
+
+Before worktree removal WB also writes a private lifecycle recovery stage under
+`<wb-home>/reports/worktree-cleanup/backlog/`. If the process stops after the
+worktree disappears but before the exact local ref is deleted, the same named
+cleanup dry run shows that backlog and the same `--apply --remote` invocation
+finishes it only after proving the worktree path/registration and remote branch
+are absent and the local ref still has the recorded SHA.
+
+Cleanup separately classifies WB-owned `.wb-stage-*` and
+`.wb-retired-stage-*` entries. A recognized empty stage is reported in the dry
+run and descriptor-safely archived outside the active task on apply. A
+non-empty, symlinked, or invalid stage remains explicit blocking cleanup
+backlog; it is never reinterpreted as a legacy repository worktree or silently
+discarded.
+
+`wb worktree rename` is the explicit, audited recycle path. It seals the old
+private Work Log before that worktree's projection disappears, then binds the
+renamed checkout to a fresh effort/run/claim from a newly fetched base. It
+never carries arbitrary local state into the next effort: ignored or untracked
+files block recycle unless each retained cache is named with
+`--preserve-cache node_modules` (repeatable). Apply requires `--remote`; an
+exact new `--original-prompt-file` is mandatory for the reset projection;
+exact old remote source branch is retired with force-with-lease, and a normal
+failure on any later repository rolls all already-moved repositories back to
+active recovery claims so the coordinated operation is retryable. A feature effort is terminal
+only after merge to `main` and removal or audited recycle of every related
+worktree and branch; a task effort has the same requirement after merge to its
+feature branch. A validated branch is not terminal.
+
+Use `wb worktree abort <task> --disposition handoff|not_landed --successor
+<agent-or-session>` or explicit `--disposition discarded` for
+an interrupted or never-started effort that has no merged PR and therefore is
+ineligible for normal cleanup. Its default is a dry-run; `--apply` seals the
+local archive and emits an outbox event. `handoff` and `not_landed` seal the
+old claim and bind exactly one active successor while retaining even dirty
+resumable state; only explicit `discarded --apply --remote` retires an exact
+unchanged remote source branch and removes a clean, unlocked worktree/local
+branch after the archive is durable and the live checkout is revalidated at
+the deletion boundary. The same discarded command resumes an exact durable
+post-removal branch backlog after interruption; it never relies on live
+worktree inventory alone.
+
+Portable merger-agent adapters, plan-overlap/migration-scope detection,
+periodic refresh notifications, distributed Synchestra fences, and Git-backed
+communication fallback are planned capabilities. The full `wb worktree log`
+command group, seven-day history, and authorized encrypted private-prompt
+export are also planned. No current WB command or skill example claims those
+surfaces are usable.
 
 Enable the built-in guard in a repository or global WB hooks policy, then let
 WB install the shims:
@@ -143,6 +226,12 @@ Reconciles `~/projects/{org}/{repo}` with GitHub:
 - archived, present + safe (clean, no stash, nothing unpushed) → remove
 - archived, present + unsafe → keep, report why
 - archived, missing → nothing
+
+`wb sync` is currently the only WB creator for canonical
+`<projects-root>/<owner>/<repository>` clones. A deterministic read-only audit
+and admission guard for top-level/misowned clones is planned, not implemented;
+WB cannot intercept an arbitrary external `git clone`, so agents must not
+clone directly below `<projects-root>/<repository>`.
 
 Runs against every repo owned by your GitHub account and every org you
 belong to, in parallel, with a live progress UI (overall + per-org bars, a

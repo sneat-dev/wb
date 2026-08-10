@@ -32,6 +32,17 @@ short-lived Git rebase from an arbitrary detached development checkout.
 
 ### Fast local inventory
 
+#### REQ: nonmutating-verified-base
+
+Before creating a new worktree, WB MUST require the canonical clone to be
+clean and verify the requested `refs/heads/<base>` by fetching it from
+`origin`. It MUST create the feature branch from the exact verified commit,
+not an unverified or moving local/remote ref. Creation MUST NOT switch, pull,
+reset, or fast-forward the canonical checkout or any local base branch. A
+stale local base branch or one checked out in another linked worktree is not a
+blocker; an inaccessible, missing, non-commit, or otherwise unverifiable
+remote base MUST fail before WB creates a branch or worktree.
+
 #### REQ: offline-list-default
 
 `wb worktree list [task]` MUST inspect only the local, resolver-recognized
@@ -104,12 +115,15 @@ the next Git operation unable to run its guard.
 run unless `--apply` is explicit. A 24-hour merged-PR safety window MUST apply
 by default; zero MUST explicitly disable it.
 
-#### REQ: exact-pr-evidence
+#### REQ: exact-remote-target-evidence
 
 A repository MUST be eligible only when it is clean and unlocked, has no open
-PR for its branch, and has a merged GitHub PR whose base and recorded head
-exactly match the requested base and current local branch head. An existing
-remote branch MUST still point to that exact head.
+PR for its branch, and the current local branch head is an ancestor of the
+exact freshly fetched `origin/<target>` SHA. A matching merged GitHub PR MAY
+supply merge-time evidence for the age window, but a direct push to the target
+MUST be a supported integration path. A local-only merge is `awaiting_push`
+and ineligible. An existing remote source branch MUST still point to the exact
+local head.
 
 #### REQ: coordinated-task-safety
 
@@ -121,9 +135,11 @@ blocking evidence.
 
 #### REQ: recheck-and-compare-delete
 
-Before mutation, WB MUST reacquire PR and remote evidence, recheck cleanliness,
-and refuse a moved head. It MUST remove only the identified linked worktree
-and use a compare-and-delete operation for the exact local branch ref.
+Before mutation, WB MUST refetch the exact remote target, reacquire optional PR
+and source-branch evidence, recheck cleanliness, and refuse a moved head. It
+MUST durably seal/archive the Work Log before any remote or local deletion,
+remove only the identified linked worktree, and use a compare-and-delete
+operation for the exact local branch ref.
 
 #### REQ: remote-opt-in
 
@@ -137,6 +153,53 @@ destructive Git operation and update the same report with applied or failed
 state. The report MUST retain repository, branch, head, PR URL, decision, and
 outcome evidence.
 
+#### REQ: resumable-post-removal-backlog
+
+Before Git removes a linked checkout, WB MUST persist a private machine-readable
+recovery stage carrying the exact task, repository, worktree registration,
+branch, head, remote-ref evidence, and disposition. If the process stops after
+worktree removal but before compare-and-delete of the local branch, the same
+named cleanup or discarded-abort journey MUST expose that backlog and resume
+only after proving the worktree path and registration are absent, the remote
+source branch is absent, and the local ref is either absent or still equals the
+recorded head. Completion MUST remain discoverable even when live worktree
+inventory no longer contains the task.
+
+#### REQ: internal-stage-terminalization
+
+Inventory MUST classify reserved `.wb-stage-*` and `.wb-retired-stage-*`
+entries as WB control-plane artifacts before considering legacy dot-prefixed
+Git worktrees. A dry run MUST expose their exact disposition. Under the held
+task descriptor/lock, apply MAY atomically archive only the exact recognized
+stage that is still empty at the retirement boundary. A non-empty, symlinked,
+replaced, or invalid stage MUST remain explicit blocking cleanup backlog and
+MUST NOT be silently ignored, deleted, or treated as a repository. A terminal
+task MUST have no such artifact left in its active task namespace.
+
+### Audited abort and recycle
+
+#### REQ: discarded-abort-boundary
+
+`wb worktree abort --disposition discarded --apply` MUST also require
+`--remote`. Before the first deletion across a coordinated task, WB MUST
+corroborate every immutable Work Log claim and live checkout. Immediately
+before each removal it MUST repeat clean/head/registration checks, seal the
+local archive/outbox, retire only an exact unchanged remote source ref with
+force-with-lease, and remove the worktree/local ref through descriptor-anchored
+Git operations. Handoff and `not_landed` MUST retain dirty resumable state and
+bind exactly one successor instead of deleting it.
+
+#### REQ: recycle-transaction
+
+`wb worktree rename --apply` MUST require `--remote`, fetch and pin the fresh
+base, preflight every repository before terminalizing the first, retire old
+local and exact remote source branches, reset the Work Log projection, and
+carry only explicitly allow-listed cache paths. An ordinary runtime failure on
+repository N MUST roll repositories 1..N back to their old paths/branches and
+active recovery claims so the same coordinated rename is retryable. Durable
+terminal/outbox history MUST remain append-only. A process crash MAY require
+recovery from those records until automatic journal replay is implemented.
+
 ## Interaction with Other Features
 
 [Fleet Status](../fleet-status/README.md) reports canonical repository health.
@@ -147,17 +210,21 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-pr-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
-linked worktrees, rebases, and refs prove that new creation uses the
+linked worktrees, rebases, and refs prove that creation fetches and pins the
+remote base without changing a clean canonical feature checkout or a stale
+local base checked out elsewhere; new creation uses the
 authoritative home even when legacy state exists; legacy and current worktrees
 remain guardable, listable, and safely cleanable; direct legacy repository
 roots do not recurse into source directories; arbitrary detached work is
 rejected while a live rebase is accepted only transiently; prior-release hooks
 remain compatible without persisting an ephemeral executable; dry runs preserve state; exact merged heads can be cleaned;
 dirty or advanced branches survive; local and optional remote refs are removed
-with comparison guards; and apply writes durable evidence. Hosted PR metadata
+with comparison guards; interruption after worktree removal is resumed from a
+durable exact-ref backlog; exact empty internal stages are archived while
+non-empty ones remain blocking backlog; and apply writes durable evidence. Hosted PR metadata
 MAY be supplied by a deterministic test double.
 
 ## Open Questions

@@ -31,7 +31,13 @@ func TestMain(m *testing.M) {
 
 func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
+	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	fixture.pushRemoteCommit(t, "remote change")
+	remoteHeadFields := strings.Fields(gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main"))
+	if len(remoteHeadFields) != 2 {
+		t.Fatalf("unexpected origin/main response: %q", remoteHeadFields)
+	}
+	remoteHead := remoteHeadFields[0]
 
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -48,14 +54,14 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	if result.WorktreeDir != wantWorktree || result.Branch != "codex/issue-123" || result.Action != "created" {
 		t.Fatalf("result = %#v", result)
 	}
-	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main") {
-		t.Fatalf("canonical HEAD %s did not synchronize with origin/main", got)
+	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != canonicalHeadBefore {
+		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHeadBefore, got)
 	}
 	if got := gitTestOutput(t, result.WorktreeDir, "branch", "--show-current"); got != "codex/issue-123" {
 		t.Fatalf("worktree branch = %q", got)
 	}
-	if got := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD"); got != gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD") {
-		t.Fatal("new worktree was not based on synchronized main")
+	if got := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("new worktree head = %s, want fetched origin/main %s", got, remoteHead)
 	}
 
 	guarded, err := Guard(context.Background(), result.WorktreeDir, GuardOptions{ProjectsRoot: fixture.projectsRoot})
@@ -64,6 +70,76 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 	if guarded.Kind != "linked" || guarded.CanonicalDir != fixture.canonical {
 		t.Fatalf("guard result = %#v", guarded)
+	}
+}
+
+// TestCreateFetchesOriginBaseWithoutChangingCanonicalCheckout proves the
+// regression fixed after WB refused creation just because a clean canonical
+// clone was temporarily on a feature branch. The protected local main branch
+// is deliberately checked out in another linked worktree and left stale: WB
+// must create from the freshly fetched origin/main commit without switching or
+// advancing either existing checkout.
+func TestCreateFetchesOriginBaseWithoutChangingCanonicalCheckout(t *testing.T) {
+	fixture := newGitFixture(t)
+	canonicalFeature := "feat/canonical-in-use"
+	gitTest(t, fixture.canonical, "checkout", "-b", canonicalFeature)
+	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	baseHolder := filepath.Join(filepath.Dir(fixture.projectsRoot), "main-holder")
+	gitTest(t, fixture.canonical, "worktree", "add", baseHolder, "main")
+	t.Cleanup(func() { _ = os.RemoveAll(baseHolder) })
+	mainHeadBefore := gitTestOutput(t, baseHolder, "rev-parse", "HEAD")
+	fixture.pushRemoteCommit(t, "remote main after canonical feature")
+	remoteHead := gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main")
+	remoteHead = strings.Fields(remoteHead)[0]
+
+	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "from-fetched-main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "branch", "--show-current"); got != canonicalFeature {
+		t.Fatalf("canonical branch = %q, want %q", got, canonicalFeature)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != canonicalHeadBefore {
+		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHeadBefore, got)
+	}
+	if got := gitTestOutput(t, baseHolder, "branch", "--show-current"); got != "main" {
+		t.Fatalf("base-holder branch = %q, want main", got)
+	}
+	if got := gitTestOutput(t, baseHolder, "rev-parse", "HEAD"); got != mainHeadBefore {
+		t.Fatalf("local main changed from %s to %s", mainHeadBefore, got)
+	}
+	if got := gitTestOutput(t, results[0].WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
+		t.Fatalf("new worktree HEAD = %s, want fetched origin/main %s", got, remoteHead)
+	}
+}
+
+func TestCreateFailsBeforeMutationWhenRequestedOriginBaseCannotBeFetched(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "checkout", "-b", "feat/canonical-in-use")
+	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "missing-remote-base",
+		Base:         "release",
+	})
+	if err == nil || !strings.Contains(err.Error(), "fetch verified origin base acme/app/release") {
+		t.Fatalf("Create missing remote base error = %v", err)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "branch", "--show-current"); got != "feat/canonical-in-use" {
+		t.Fatalf("canonical branch changed to %q", got)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != canonicalHeadBefore {
+		t.Fatalf("canonical HEAD changed from %s to %s", canonicalHeadBefore, got)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, "codex/missing-remote-base"); branchErr != nil || exists {
+		t.Fatalf("missing remote base left feature branch: exists=%t err=%v", exists, branchErr)
 	}
 }
 
@@ -686,6 +762,20 @@ func TestGitEnvironmentUsesOnlyScopedGitAndTemporaryDirectories(t *testing.T) {
 	}
 }
 
+func TestCleanupGitEnvironmentPinsCanonicalWorkTreeForHooks(t *testing.T) {
+	environment := gitEnvironmentWithHeldGitDirAndWorkTree("/retained/git", "/retained/repository")
+	values := map[string]string{}
+	for _, entry := range environment {
+		key, value, found := strings.Cut(entry, "=")
+		if found {
+			values[key] = value
+		}
+	}
+	if values["GIT_DIR"] != "." || values["GIT_WORK_TREE"] != "/retained/repository" || values["TMPDIR"] != "/retained/git" {
+		t.Fatalf("cleanup Git environment = %#v", values)
+	}
+}
+
 func TestCreatePreservesDoubleSwapAcrossSecureCheckoutPublish(t *testing.T) {
 	fixture := newGitFixture(t)
 	operation := "checkout-double-swap"
@@ -1198,14 +1288,6 @@ func TestCreateRefusesUnsafeCanonicalClone(t *testing.T) {
 				}
 			},
 			want: "is dirty",
-		},
-		{
-			name: "feature branch",
-			trip: func(t *testing.T, fixture *gitFixture) {
-				t.Helper()
-				gitTest(t, fixture.canonical, "switch", "-c", "feature")
-			},
-			want: `is on "feature"`,
 		},
 	}
 	for _, test := range tests {

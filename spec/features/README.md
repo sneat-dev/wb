@@ -17,6 +17,7 @@ format: https://specscore.md/features-index-specification
 | [Hierarchical Migration Campaigns](hierarchical-migration-campaigns/README.md) | Implementing | WB migrates a dependency hierarchy through dedicated local worktrees, then can |
 | [Worktree Lifecycle](worktree-lifecycle/README.md) | Implementing | `wb worktree` creates, guards, inventories, and safely cleans task worktrees |
 | [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |
+| [Work Log Recovery](work-log/README.md) | Approved | `wb worktree log` gives every WB-managed effort a private, durable local journal |
 
 ## Open Questions
 

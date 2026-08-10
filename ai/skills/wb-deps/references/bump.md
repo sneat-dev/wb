@@ -3,6 +3,9 @@
 Supply every already-published root event in one campaign:
 
 ```sh
+wb deps bump go --fleet --changed example.com/lib@v1.2.3 --dry-run
+
+# Multiple release roots can be coalesced into one wave campaign:
 wb deps bump go --fleet \
   --changed <module-a>@<version-a> \
   --changed <module-b>@<version-b> \

@@ -55,8 +55,8 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
-	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. sneat-co/*")
-	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
+	command.Flags().StringVar(&options.match, "match", "", "default-fleet glob matched against org/repo, e.g. sneat-co/*")
+	command.Flags().StringVar(&options.regex, "regex", "", "default-fleet regular expression matched against org/repo")
 	command.Flags().IntVar(&options.parallel, "parallel", 4, "maximum repositories to inspect concurrently")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write status.md and status.yaml to this directory")
