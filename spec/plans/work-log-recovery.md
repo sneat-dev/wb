@@ -87,6 +87,7 @@ no-shared-writer workflow.
 - Still planned: the full `wb worktree log` command group, periodic refresh and
   integration enforcement, Synchestra authoritative sync/replica observation,
   Git transport fallback, distributed fencing, Portable Merger Agent,
+  per-target merger lanes/queue takeover, model-provenance correction,
   plan-overlap/migration-scope detection, and Fair Split Relay E2E.
 
 ## Tasks
@@ -94,7 +95,7 @@ no-shared-writer workflow.
 ### Task 1: Define the local Effort, Run, and journal contract
 
 **Id:** task-1
-**Verifies:** work-log#ac:private-recoverable-effort
+**Verifies:** work-log#ac:private-recoverable-effort, work-log#ac:unknown-model-is-not-guessed-and-can-be-corrected
 **Depends-On:** —
 **Status:** planning
 
@@ -102,8 +103,11 @@ Add typed Go models and canonical encoders for Effort, Run, Worktree Claim,
 agent provenance, private prompt snapshot, nullable usage states, Git evidence,
 typed event, outbox envelope, and public recovery projection. Implement
 deterministic IDs/hashes, schema validation, permission policy, redacted public
-projection, and atomic projection replacement; unit-test exact prompt exclusion
-from every public representation.
+projection, and atomic projection replacement. Keep model identity nullable,
+record `runtime_observed`/`caller_declared` provenance, and append audited
+corrections that supersede bad metadata without rewriting history; unit-test
+unknown-runtime input, correction recovery, and exact prompt exclusion from
+every public representation.
 
 ### Task 2: Bind journal creation to WB-managed worktrees and exclusive claims
 
@@ -234,12 +238,20 @@ lose late local work.
 Define a transport-neutral Portable Merger Agent contract that can drain a
 compatible batch of task branches through task→feature→main integration and
 prove exact remote-target landing plus zero abandoned worktrees/branches.
+WB must persist one stable fenced merger lane and ordered queue per canonical
+`(repository, target ref)`. Primary sessions enqueue immutable ready heads;
+takeover invalidates the old fence and resumes the same lane/Work Log without
+replaying receipted steps. One founder-MVP agent may service multiple distinct
+lanes, while independent lane keys may execute concurrently at scale.
 Add typed plan-overlap and migration-scope evidence so two active efforts can
 detect shared files/libraries before duplicating work, select one owner, and
 record audited reuse/handoff decisions. These are planned capability seams:
 there is no current `wb` command, built-in help topic, or executable AI-skill
 example for merger dispatch, overlap detection, or migration-scope claiming.
-The Fair Split Relay is the first required E2E consumer.
+Schema-valid packages are insufficient: every supported harness must load the
+released adapter and assert its exact discovered component IDs/cardinality,
+including unique skills and the expected merger agent. The Fair Split Relay is
+the first required E2E consumer.
 
 ### Task 10: Audit and enforce canonical clone layout at WB admission
 

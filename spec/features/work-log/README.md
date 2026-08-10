@@ -36,7 +36,10 @@ usage.
 - An **Effort** is one durable requested outcome. `effort_id` is supplied by an
   upstream task/dispatch when available, otherwise WB creates a stable local ID.
 - A **Run** is one concrete agent execution of an Effort. It records the
-  instantiator and the agent's vendor, surface, role, parent session, and model.
+  instantiator and the agent's vendor, surface, role, parent session, and
+  nullable model identity. A present model value records whether it was
+  `runtime_observed` or `caller_declared`; absence is `unknown`, never a guessed
+  default.
 - A **Worktree Claim** is the time-bounded, exclusive local authority for one
   Run to change one WB-managed worktree and branch. It records canonical
   repository identity, worktree path, branch, immutable base, and observed
@@ -103,8 +106,16 @@ or projection/event disagreement rather than guessing a safe state.
 #### REQ: agent-provenance-and-usage
 
 A Run MUST retain instantiator identity and kind, agent vendor, surface,
-model, role (`primary`, `reviewer`, or `helper`), session ID, and nullable
-parent-session ID. Token usage MUST carry a discriminator of exactly
+nullable model identity, role (`primary`, `reviewer`, or `helper`), session ID,
+and nullable parent-session ID. Every non-null model MUST carry provenance of
+exactly `runtime_observed` or `caller_declared`; a null model represents unknown
+identity and carries no invented provenance. WB MUST NOT infer a model value
+when the runtime does not expose one. If later evidence proves immutable
+provenance metadata wrong, WB MUST append a typed correction event naming the
+superseded event/field and replacement value/provenance; it MUST NOT rewrite
+history.
+Recovery and projections apply the latest valid correction while retaining the
+full chain. Token usage MUST carry a discriminator of exactly
 `provider_reported`, `estimated`, or `unavailable`; input tokens, output
 tokens, total, estimated cost, currency, and provider usage reference are
 nullable unless the selected discriminator makes them available. Local metrics
@@ -225,6 +236,15 @@ artifact
 **Then** the helper never obtains write authority, the outgoing Run durably
 records its checkpoint and handoff before release, and exactly one successor
 Run can validate current Git evidence and acquire the claim.
+
+### AC: unknown-model-is-not-guessed-and-can-be-corrected
+
+**Given** the current runtime exposes no model identity, or later evidence
+contradicts a caller-declared value in an immutable Run event
+**When** WB records or recovers the Work Log
+**Then** it keeps the model unknown rather than guessing, labels every present
+value `runtime_observed` or `caller_declared`, and applies an append-only
+correction linked to the superseded event without modifying prior bytes.
 
 ### AC: safe-base-refresh-and-integration
 
