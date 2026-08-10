@@ -136,9 +136,11 @@ func EnsureHome(home string) error {
 // it outside of WB itself.
 const readmeContent = `# WB home
 
-This directory holds WB's shared state: task worktrees, operation locks, and
-command reports. WB manages its own layout below here — it's safe to delete
-whenever no WB command is running, since WB recreates whatever it needs.
+This directory holds WB-managed state: task worktrees and operation locks,
+plus durable private Work Logs, prompt archives, cleanup backlogs, recovery
+evidence, and command reports. Do not delete this directory or its contents
+manually, even when no WB command is running. Use WB lifecycle commands so
+recovery and audit evidence is preserved.
 
 Learn more about the WB CLI at https://sneat.dev/workbench.
 `

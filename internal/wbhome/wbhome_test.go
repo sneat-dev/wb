@@ -159,6 +159,15 @@ func TestEnsureRootSeedsReadmeInHomeDirectory(t *testing.T) {
 	if !strings.Contains(string(contents), "https://sneat.dev/workbench") {
 		t.Fatalf("README.md missing workbench link, got: %s", contents)
 	}
+	readme := strings.Join(strings.Fields(string(contents)), " ")
+	for _, durableState := range []string{"Work Logs", "prompt archives", "cleanup backlogs", "recovery evidence"} {
+		if !strings.Contains(readme, durableState) {
+			t.Errorf("README.md does not identify durable %s, got: %s", durableState, contents)
+		}
+	}
+	if strings.Contains(readme, "safe to delete") || !strings.Contains(readme, "Do not delete") {
+		t.Fatalf("README.md must not describe the durable WB home as disposable, got: %s", contents)
+	}
 }
 
 func TestEnsureRootDoesNotOverwriteExistingReadme(t *testing.T) {
