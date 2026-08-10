@@ -369,6 +369,38 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	}
 }
 
+func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "resume the original request")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	args := []string{"--projects-root", projects, "worktree", "create", "cli-resume", "acme/app", "--original-prompt-file", prompt}
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("initial create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	projectionPath := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-resume", "acme", "app", ".wb-worklog", "recovery.json")
+	before, err := os.ReadFile(projectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	args = append(args, "--resume")
+	if code := run(args, &stdout, &stderr); code != exitOK {
+		t.Fatalf("resume failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "resumed acme/app") {
+		t.Fatalf("resume stdout = %s", stdout.String())
+	}
+	after, err := os.ReadFile(projectionPath)
+	if err != nil || !bytes.Equal(after, before) {
+		t.Fatalf("CLI resume replaced implicit active run projection: err=%v before=%s after=%s", err, before, after)
+	}
+}
+
 // TestWorktreeRenameCLIRefusesDestinationCollisionAsFindings proves a
 // destination collision surfaces as a documented "findings" exit code (1),
 // not success and not a bare usage error, through the same run() entry point.

@@ -91,14 +91,21 @@ empty `--branch`, are rejected before fetch or worktree mutation.
 Use `--resume` only when the open work belongs to this exact task and branch:
 
 ```sh
-wb worktree create <task> --branch-prefix <prefix>/ --resume \
+wb worktree create <task> --resume \
   <owner/repository> --original-prompt-file <private-prompt-file>
 ```
 
-WB validates the expected canonical clone, branch, and linked path. Preserve
-all existing changes and inspect them before continuing.
+WB recovers the registered branch and active Work Log claim before it consults
+current naming policy. A changed repository/user prefix cannot split the task;
+use exact `--branch` only to assert the recovered branch. WB preserves the
+existing claim and projection. A different explicit run, agent, runtime, or
+model requires an audited handoff instead of a silent reclaim. Preserve all
+existing changes and inspect them before continuing.
 
-If creation reports failure, run `git worktree list --porcelain` and inspect
-the expected path and Work Log report before retrying. Prompt and identifier
-errors are rejected before mutation; a rare storage failure after Git publishes
-a worktree is currently reported as partial state rather than auto-deleted.
+If Work Log publication fails after Git publishes coordinated worktrees, WB
+returns typed exact outcomes, writes durable cleanup receipts when possible,
+rolls back every asset published by that invocation, and terminalizes written
+claims append-only. If rollback cannot be proven, inspect the reported exact
+path/backlog with `wb worktree list` and `wb worktree cleanup`; never guess or
+delete it with raw Git. Prompt and identifier errors are rejected before
+mutation.

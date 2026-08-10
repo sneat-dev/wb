@@ -114,6 +114,26 @@ type workLogPublicEvent struct {
 	Disposition string    `json:"disposition,omitempty"`
 }
 
+// WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
+// publication sequence. A caller can distinguish a failure before any claim
+// from one after an immutable claim or local projection became durable and can
+// therefore roll back or expose the exact recovery evidence deterministically.
+type WorkLogPublicationOutcome struct {
+	ClaimPath         string `json:"claim_path,omitempty"`
+	EffortID          string `json:"effort_id,omitempty"`
+	RunID             string `json:"run_id,omitempty"`
+	ClaimID           string `json:"claim_id,omitempty"`
+	ClaimWritten      bool   `json:"claim_written"`
+	ProjectionWritten bool   `json:"projection_written"`
+	OutboxWritten     bool   `json:"outbox_written"`
+	claim             workLogClaim
+}
+
+type workLogPublicationHooks struct {
+	afterClaim      func() error
+	afterProjection func() error
+}
+
 type legacyWorkLogClaim struct {
 	Version       int       `json:"version"`
 	EffortID      string    `json:"effort_id"`
@@ -332,24 +352,32 @@ func validClaimID(value string) bool {
 // recordWorkLog writes one immutable private claim per worktree, a redacted
 // pointer projection, and a collision-free per-claim outbox event.
 func recordWorkLog(home, task string, result CreateResult, options WorkLogOptions) (string, error) {
+	outcome, err := recordWorkLogWithHooks(home, task, result, options, workLogPublicationHooks{})
+	return outcome.ClaimPath, err
+}
+
+func recordWorkLogWithHooks(home, task string, result CreateResult, options WorkLogOptions, hooks workLogPublicationHooks) (WorkLogPublicationOutcome, error) {
+	var outcome WorkLogPublicationOutcome
 	now := time.Now().UTC()
 	effort, run, err := normalizeWorkLogOptions(task, options, now)
 	if err != nil {
-		return "", err
+		return outcome, err
 	}
+	outcome.EffortID, outcome.RunID = effort, run
 	claimID := workLogClaimID(effort, result)
+	outcome.ClaimID = claimID
 	runDir, runPath, err := openWorkLogRun(home, effort, run, true)
 	if err != nil {
-		return "", err
+		return outcome, err
 	}
 	defer func() { _ = runDir.Close() }()
 	if err := migrateLegacySingletonClaim(runDir, runPath, home, effort, run); err != nil {
-		return "", fmt.Errorf("migrate legacy singleton claim: %w", err)
+		return outcome, fmt.Errorf("migrate legacy singleton claim: %w", err)
 	}
 
 	promptArchive, promptDigest, err := ensureOriginalPromptArchive(runDir, options, now)
 	if err != nil {
-		return "", err
+		return outcome, err
 	}
 	claim := workLogClaim{Version: 1, EffortID: effort, RunID: run, ClaimID: claimID, Task: task,
 		Repository: result.Repository, Worktree: result.WorktreeDir, Branch: result.Branch,
@@ -359,32 +387,146 @@ func recordWorkLog(home, task string, result CreateResult, options WorkLogOption
 		PromptArchive: promptArchive, PromptDigest: promptDigest}
 	claims, err := openPrivateChild(runDir, "claims", true)
 	if err != nil {
-		return "", err
+		return outcome, err
 	}
 	defer func() { _ = claims.Close() }()
 	claimName := claimID + ".json"
 	if err := writeJSONImmutableAt(claims, claimName, claim, true); err != nil {
-		return "", fmt.Errorf("write immutable work-log claim: %w", err)
+		return outcome, fmt.Errorf("write immutable work-log claim: %w", err)
+	}
+	outcome.ClaimPath = filepath.Join(runPath, "claims", claimName)
+	outcome.ClaimWritten = true
+	outcome.claim = claim
+	if hooks.afterClaim != nil {
+		if err := hooks.afterClaim(); err != nil {
+			return outcome, fmt.Errorf("after immutable work-log claim publication: %w", err)
+		}
 	}
 	if err := ensureWorkLogRunIndex(runDir, effort, run); err != nil {
-		return "", err
+		return outcome, err
 	}
 	projection := workLogProjection{Version: 1, EffortID: effort, RunID: run, ClaimID: claimID, Lifecycle: "active"}
 	if err := writeWorkLogProjection(result.WorktreeDir, projection); err != nil {
-		return "", err
+		return outcome, err
+	}
+	outcome.ProjectionWritten = true
+	if hooks.afterProjection != nil {
+		if err := hooks.afterProjection(); err != nil {
+			return outcome, fmt.Errorf("after work-log recovery projection publication: %w", err)
+		}
 	}
 	outbox, err := openWorkLogOutbox(home, effort, true)
 	if err != nil {
-		return "", err
+		return outcome, err
 	}
 	defer func() { _ = outbox.Close() }()
 	event := workLogPublicEvent{Version: 1, Type: "worktree.claimed", At: now, EffortID: effort,
 		RunID: run, ClaimID: claimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, Lifecycle: "active"}
 	if err := writeJSONImmutableAt(outbox, run+"-"+claimID+"-claimed.json", event, true); err != nil {
-		return "", err
+		return outcome, err
 	}
-	return filepath.Join(runPath, "claims", claimName), nil
+	outcome.OutboxWritten = true
+	return outcome, nil
+}
+
+// activeWorkLogClaim resolves the worktree's untrusted projection through its
+// immutable private claim and live Git identity. A missing projection denotes
+// a legacy pre-Work-Log checkout; every other mismatch is a hard resume error.
+func activeWorkLogClaim(home, worktree string) (workLogClaim, workLogProjection, string, error) {
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if err != nil {
+		return workLogClaim{}, workLogProjection{}, "", err
+	}
+	if projection.Lifecycle != "active" {
+		return workLogClaim{}, projection, "", fmt.Errorf("work-log projection is %s, not active", projection.Lifecycle)
+	}
+	if err := corroborateProjectionWithPrivateClaim(home, worktree, projection); err != nil {
+		return workLogClaim{}, projection, "", fmt.Errorf("corroborate active work-log claim: %w", err)
+	}
+	runDir, runPath, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return workLogClaim{}, projection, "", err
+	}
+	defer func() { _ = runDir.Close() }()
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return workLogClaim{}, projection, "", err
+	}
+	defer func() { _ = claims.Close() }()
+	var claim workLogClaim
+	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
+		return workLogClaim{}, projection, "", err
+	}
+	return claim, projection, filepath.Join(runPath, "claims", projection.ClaimID+".json"), nil
+}
+
+func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim workLogClaim) error {
+	for _, identity := range []struct {
+		name      string
+		requested string
+		existing  string
+	}{
+		{name: "effort", requested: requested.EffortID, existing: claim.EffortID},
+		{name: "run", requested: requested.RunID, existing: claim.RunID},
+		{name: "initiator", requested: requested.Initiator, existing: claim.Initiator},
+		{name: "agent", requested: requested.AgentID, existing: claim.AgentID},
+		{name: "agent runtime", requested: requested.AgentRuntime, existing: claim.AgentRuntime},
+		{name: "model", requested: requested.Model, existing: claim.Model},
+	} {
+		if value := strings.TrimSpace(identity.requested); value != "" && value != identity.existing {
+			return fmt.Errorf("cannot resume active work-log claim with different %s %q (existing %q); use an audited handoff instead", identity.name, value, identity.existing)
+		}
+	}
+	prepared := requested
+	prepared.EffortID, prepared.RunID = claim.EffortID, claim.RunID
+	if err := snapshotOriginalPrompt(&prepared); err != nil {
+		return err
+	}
+	if len(prepared.originalPromptContents) == 0 {
+		return nil
+	}
+	prepared.RequireOriginalPrompt = false
+	if err := corroborateExistingRunPrompt(home, claim.EffortID, claim.RunID, prepared); err != nil {
+		return fmt.Errorf("corroborate resumed original prompt: %w", err)
+	}
+	return nil
+}
+
+// workLogOptionsForClaimExtension reuses one existing coordinated run when a
+// resume invocation adds a legacy or previously absent repository. It never
+// invents new provenance: an explicitly different caller must use handoff.
+func workLogOptionsForClaimExtension(home string, requested WorkLogOptions, claim workLogClaim) (WorkLogOptions, error) {
+	if err := validateResumeWorkLogRequest(home, requested, claim); err != nil {
+		return WorkLogOptions{}, err
+	}
+	requested.EffortID, requested.RunID = claim.EffortID, claim.RunID
+	requested.Initiator, requested.AgentID = claim.Initiator, claim.AgentID
+	requested.AgentRuntime, requested.Model = claim.AgentRuntime, claim.Model
+	if len(requested.originalPromptContents) != 0 || strings.TrimSpace(requested.OriginalPrompt) != "" {
+		requested.RequireOriginalPrompt = false
+		if err := snapshotOriginalPrompt(&requested); err != nil {
+			return WorkLogOptions{}, err
+		}
+		return requested, nil
+	}
+	runDir, runPath, err := openWorkLogRun(home, claim.EffortID, claim.RunID, false)
+	if err != nil {
+		return WorkLogOptions{}, err
+	}
+	defer func() { _ = runDir.Close() }()
+	contents, err := readBytesAt(runDir, "original-prompt.txt")
+	if errors.Is(err, os.ErrNotExist) && !requested.RequireOriginalPrompt {
+		return requested, nil
+	}
+	if err != nil {
+		return WorkLogOptions{}, fmt.Errorf("reuse existing original prompt archive: %w", err)
+	}
+	digest := sha256.Sum256(contents)
+	requested.OriginalPrompt = filepath.Join(runPath, "original-prompt.txt")
+	requested.originalPromptContents = contents
+	requested.originalPromptDigest = hex.EncodeToString(digest[:])
+	return requested, nil
 }
 
 // reserveOriginalPromptArchive binds a coordinated run to its exact private

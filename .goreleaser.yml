@@ -4,7 +4,7 @@ project_name: wb
 
 before:
   hooks:
-    - go mod tidy
+    - go mod tidy -diff
 
 builds:
   - id: wb

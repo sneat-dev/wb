@@ -108,6 +108,11 @@ If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
 unless --resume is explicit.
 
+Resume first recovers its registered branch and active Work Log claim. It then
+consults current branch policy. An exact --branch may assert that recovered
+identity. Changing run or agent provenance requires an audited handoff instead
+of silently replacing the claim.
+
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
 into the private Work Log under WB_HOME before any worktree is created; prompt
 text never enters the worktree projection, source Git, or normal output.`,
@@ -142,6 +147,16 @@ text never enters the worktree projection, source Git, or normal output.`,
 			workLog, err = worktrees.PrepareWorkLogOptions(projectsRoot, args[0], workLog)
 			if err != nil {
 				return err
+			}
+			// Prepare snapshots the prompt before hook mutation and supplies a
+			// generated fallback identity. On resume, preserve whether effort/run
+			// were actually supplied so Create can recover the existing active
+			// claim instead of mistaking the local fallback for a handoff.
+			if resume && !command.Flags().Changed("effort") {
+				workLog.EffortID = ""
+			}
+			if resume && !command.Flags().Changed("run") {
+				workLog.RunID = ""
 			}
 			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
 				return err

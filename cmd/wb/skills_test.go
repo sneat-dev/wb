@@ -344,6 +344,28 @@ func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
 			}
 		}
 	}
+	tidyIndex := strings.Index(string(contents), "run: go mod tidy -diff")
+	formatIndex := strings.Index(string(contents), "- name: gofmt")
+	if tidyIndex < 0 {
+		t.Fatalf("%s does not fail when go.mod or go.sum needs go mod tidy", workflowPath)
+	}
+	if formatIndex < 0 || tidyIndex > formatIndex {
+		t.Fatalf("%s must run go mod tidy -diff before formatting, build, and test gates", workflowPath)
+	}
+	if strings.Contains(string(contents), "run: go mod tidy\n") {
+		t.Fatalf("%s mutates release source with bare go mod tidy instead of checking its diff", workflowPath)
+	}
+	releasePath := filepath.Join(repoRoot, ".goreleaser.yml")
+	releaseContents, err := os.ReadFile(releasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(releaseContents), "- go mod tidy -diff") {
+		t.Fatalf("%s does not fail closed on dependency metadata drift", releasePath)
+	}
+	if strings.Contains(string(releaseContents), "- go mod tidy\n") {
+		t.Fatalf("%s mutates source before stamping release artifacts", releasePath)
+	}
 }
 
 // TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne Checked-in

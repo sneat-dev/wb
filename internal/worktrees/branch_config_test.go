@@ -111,6 +111,67 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 	}
 }
 
+func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
+	tests := []struct {
+		name          string
+		initialPolicy string
+		driftPolicy   string
+		wantBranch    string
+		explicitRun   string
+	}{
+		{name: "no prefix to feature prefix", driftPolicy: "feature/", wantBranch: "policy-resume"},
+		{name: "feature prefix to no prefix", initialPolicy: "feature/", driftPolicy: "", wantBranch: "feature/policy-resume", explicitRun: "stable-explicit-run"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			if test.initialPolicy != "" {
+				commitRepositoryBranchConfig(t, fixture, "version: 1\nworktrees:\n  branch_prefix: "+test.initialPolicy+"\n", "initial branch policy")
+			}
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "policy-resume",
+				WorkLog:      WorkLogOptions{RunID: test.explicitRun},
+			})
+			if err != nil || len(created) != 1 || created[0].Branch != test.wantBranch {
+				t.Fatalf("initial create = %#v err=%v", created, err)
+			}
+			projectionBefore, err := readWorkLogProjection(created[0].WorktreeDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runDir := filepath.Join(fixture.home, "worklogs", projectionBefore.EffortID, "runs", projectionBefore.RunID)
+			claimsBefore, err := os.ReadDir(filepath.Join(runDir, "claims"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			commitRepositoryBranchConfig(t, fixture, "version: 1\nworktrees:\n  branch_prefix: \""+test.driftPolicy+"\"\n", "drifted branch policy")
+
+			resumed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "policy-resume",
+				Resume:       true,
+				WorkLog:      WorkLogOptions{RunID: test.explicitRun},
+			})
+			if err != nil || len(resumed) != 1 {
+				t.Fatalf("resume after policy drift = %#v err=%v", resumed, err)
+			}
+			if resumed[0].Action != "resumed" || resumed[0].Branch != test.wantBranch || resumed[0].WorkLogPath != created[0].WorkLogPath {
+				t.Fatalf("resume did not preserve active claim: created=%#v resumed=%#v", created[0], resumed[0])
+			}
+			projectionAfter, err := readWorkLogProjection(created[0].WorktreeDir)
+			if err != nil || projectionAfter != projectionBefore {
+				t.Fatalf("resume replaced work-log projection: before=%#v after=%#v err=%v", projectionBefore, projectionAfter, err)
+			}
+			claimsAfter, err := os.ReadDir(filepath.Join(runDir, "claims"))
+			if err != nil || len(claimsAfter) != len(claimsBefore) {
+				t.Fatalf("resume claim cardinality changed from %d to %d: %v", len(claimsBefore), len(claimsAfter), err)
+			}
+		})
+	}
+}
+
 func TestRepositoryBranchPolicyRejectsUnsafeOrInvalidBlob(t *testing.T) {
 	tests := []struct {
 		name     string

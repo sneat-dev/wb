@@ -72,9 +72,9 @@ wb worktree create bots-e2e --original-prompt-file <private-prompt-file>
 wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go \
   --original-prompt-file <private-prompt-file>
 
-# Choose a one-off prefix, or resume an existing exact checkout.
+# Resume an existing exact checkout without re-deriving its branch.
 wb worktree create bots-e2e sneat-co/sneat-bots \
-  --branch-prefix agent/ --resume \
+  --resume \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -88,6 +88,13 @@ explicit alternative. New work never silently falls back to the historic
 `<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
 guards, lists, and cleans linked worktrees there during migration. Existing
 branches and worktrees are rejected unless `--resume` is explicit.
+
+Resume recovers the registered branch and active Work Log claim before reading
+today's branch-prefix policy, so a policy change cannot strand or split an
+existing task. An explicit `--branch` is an assertion of that recovered branch;
+different run or agent provenance is rejected until an audited handoff is
+performed. A successful resume preserves the existing immutable claim and
+projection instead of recording a replacement claim with a new timestamp.
 
 By default the task slug is the branch name. For a durable policy, WB layers
 `$XDG_CONFIG_HOME/wb/worktrees.yaml` (or `~/.config/wb/worktrees.yaml`) below
@@ -111,6 +118,13 @@ provenance. The local journal/outbox remains usable as
 recovery evidence when a Synchestra server is down, so server receipt never
 blocks safe local work. It is not yet a Git-repository communication fallback
 and cannot deliver inter-agent messages.
+
+If Work Log publication fails after Git has published one or more coordinated
+worktrees, WB records exact per-repository recovery outcomes, writes durable
+cleanup receipts when storage remains available, and rolls back every Git asset
+published by that invocation in reverse order. Written claims are terminalized
+append-only as failed creation. If safe rollback cannot be proven, the exact
+worktree, branch, commit, and recovery receipt remain visible for cleanup.
 
 `wb worktree guard [path]` is the policy check used by agents and Git hooks. It
 accepts a clean canonical base checkout for synchronization, or a non-base
