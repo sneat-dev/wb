@@ -4,11 +4,330 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSecureRenameHelperRejectsSubstitutedDescriptorsAndGitMetadata(t *testing.T) {
+	t.Run("linked .git redirect", func(t *testing.T) {
+		fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+		defer canonical.close()
+		defer func() { _ = root.Close() }()
+		defer func() { _ = worktree.Close() }()
+		defer linked.close()
+		if err := os.WriteFile(filepath.Join(fixture.worktreePath, ".git"), []byte("gitdir: /tmp/redirected-linked-git\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runSecureRenameHelperForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath)
+		if err == nil || !strings.Contains(output, "linked worktree Git metadata changed") {
+			t.Fatalf("redirected .git helper result: err=%v output=%s", err, output)
+		}
+	})
+
+	t.Run("worktree path alias", func(t *testing.T) {
+		fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+		defer canonical.close()
+		defer func() { _ = root.Close() }()
+		defer func() { _ = worktree.Close() }()
+		defer linked.close()
+		alias := filepath.Join(t.TempDir(), "checkout-alias")
+		if err := os.Symlink(fixture.worktreePath, alias); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runSecureRenameHelperForTest(canonical, root, worktree, linked, fixture.worktreesRoot, alias)
+		if err == nil || !strings.Contains(output, "managed worktree changed") {
+			t.Fatalf("aliased worktree helper result: err=%v output=%s", err, output)
+		}
+	})
+
+	t.Run("substituted worktrees root", func(t *testing.T) {
+		fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+		defer canonical.close()
+		defer func() { _ = root.Close() }()
+		defer func() { _ = worktree.Close() }()
+		defer linked.close()
+		heldRoot := filepath.Join(t.TempDir(), "held-worktrees")
+		if err := os.Rename(fixture.worktreesRoot, heldRoot); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(fixture.worktreesRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runSecureRenameHelperForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath)
+		if err == nil || !strings.Contains(output, "managed worktree changed") {
+			t.Fatalf("substituted worktrees-root helper result: err=%v output=%s", err, output)
+		}
+	})
+
+	t.Run("substituted canonical git directory", func(t *testing.T) {
+		fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+		defer canonical.close()
+		defer func() { _ = root.Close() }()
+		defer func() { _ = worktree.Close() }()
+		defer linked.close()
+		canonicalGit := filepath.Join(canonical.path, ".git")
+		if err := os.Rename(canonicalGit, filepath.Join(t.TempDir(), "held-canonical-git")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(canonicalGit, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runSecureRenameHelperForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath)
+		if err == nil || !strings.Contains(output, "canonical repository changed") {
+			t.Fatalf("substituted canonical Git helper result: err=%v output=%s", err, output)
+		}
+	})
+
+	t.Run("substituted linked admin root", func(t *testing.T) {
+		fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+		defer canonical.close()
+		defer func() { _ = root.Close() }()
+		defer func() { _ = worktree.Close() }()
+		defer linked.close()
+		adminRoot := filepath.Join(canonical.path, ".git", "worktrees")
+		if err := os.Rename(adminRoot, filepath.Join(t.TempDir(), "held-linked-admin-root")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(adminRoot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		output, err := runSecureRenameHelperForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath)
+		if err == nil || !strings.Contains(output, "linked worktree Git metadata changed") {
+			t.Fatalf("substituted linked admin-root helper result: err=%v output=%s", err, output)
+		}
+	})
+}
+
+// TestSecureRenameHelperRejectsLateAdminPathRedirection makes the Git
+// executable itself attempt the administrative-path replacement after the
+// helper's final reauthorization. The lexical GIT_DIR is valid only while the
+// capability holds that exact admin descriptor: the swap must be denied, or
+// Git must fail closed rather than accepting the replacement.
+func TestSecureRenameHelperRejectsLateAdminPathRedirection(t *testing.T) {
+	fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+	defer canonical.close()
+	defer func() { _ = root.Close() }()
+	defer func() { _ = worktree.Close() }()
+	defer linked.close()
+	scriptPath := filepath.Join(t.TempDir(), "late-admin-swap-git")
+	adminPath := filepath.Join(canonical.path, ".git", "worktrees", linked.adminName)
+	movedPath := filepath.Join(filepath.Dir(adminPath), linked.adminName+"-held")
+	gitExecutable, err := trustedGitExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+set -eu
+if mv "$WB_TEST_RENAME_ADMIN" "$WB_TEST_RENAME_HELD" 2>/dev/null && mkdir "$WB_TEST_RENAME_ADMIN" 2>/dev/null; then
+  echo wb-test-admin-swap-succeeded >&2
+else
+  echo wb-test-admin-swap-blocked >&2
+fi
+exec "$WB_TEST_RENAME_GIT" "$@"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_RENAME_ADMIN", adminPath)
+	t.Setenv("WB_TEST_RENAME_HELD", movedPath)
+	t.Setenv("WB_TEST_RENAME_GIT", gitExecutable)
+	output, err := runSecureRenameHelperWithGitForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath, scriptPath, "status", "--porcelain")
+	switch {
+	case strings.Contains(output, "wb-test-admin-swap-blocked"):
+		if err != nil {
+			t.Fatalf("blocked late admin replacement still broke Git: %v\n%s", err, output)
+		}
+	case strings.Contains(output, "wb-test-admin-swap-succeeded"):
+		if err == nil {
+			t.Fatalf("late admin replacement was accepted by Git instead of failing closed:\n%s", output)
+		}
+	default:
+		t.Fatalf("late admin replacement had no auditable result: err=%v\n%s", err, output)
+	}
+}
+
+// TestSecureRenameHelperRejectsLateCommonPathRedirection proves the same
+// fail-closed behavior for the lexical GIT_COMMON_DIR spelling. Darwin freezes
+// its parent; Landlock binds the capability to the retained common directory.
+func TestSecureRenameHelperRejectsLateCommonPathRedirection(t *testing.T) {
+	fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+	defer canonical.close()
+	defer func() { _ = root.Close() }()
+	defer func() { _ = worktree.Close() }()
+	defer linked.close()
+	scriptPath := filepath.Join(t.TempDir(), "late-common-swap-git")
+	commonPath := filepath.Join(canonical.path, ".git")
+	gitExecutable, err := trustedGitExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+set -eu
+if mv "$WB_TEST_RENAME_COMMON" "$WB_TEST_RENAME_HELD" 2>/dev/null && mkdir "$WB_TEST_RENAME_COMMON" 2>/dev/null; then
+  echo wb-test-common-swap-succeeded >&2
+else
+  echo wb-test-common-swap-blocked >&2
+fi
+exec "$WB_TEST_RENAME_GIT" "$@"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_RENAME_COMMON", commonPath)
+	t.Setenv("WB_TEST_RENAME_HELD", commonPath+"-held")
+	t.Setenv("WB_TEST_RENAME_GIT", gitExecutable)
+	output, err := runSecureRenameHelperWithGitForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath, scriptPath, "status", "--porcelain")
+	switch {
+	case strings.Contains(output, "wb-test-common-swap-blocked"):
+		if err != nil {
+			t.Fatalf("blocked late common replacement still broke Git: %v\n%s", err, output)
+		}
+	case strings.Contains(output, "wb-test-common-swap-succeeded"):
+		if err == nil {
+			t.Fatalf("late common replacement was accepted by Git instead of failing closed:\n%s", output)
+		}
+	default:
+		t.Fatalf("late common replacement had no auditable result: err=%v\n%s", err, output)
+	}
+}
+
+// TestSecureRenameHelperUsesHeldWorktreeAfterLatePathSwap proves that the
+// checkout itself is descriptor-anchored: a replacement at its public path
+// cannot redirect GIT_WORK_TREE=., which is resolved from the helper's held
+// cwd.
+func TestSecureRenameHelperUsesHeldWorktreeAfterLatePathSwap(t *testing.T) {
+	fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+	defer canonical.close()
+	defer func() { _ = root.Close() }()
+	defer func() { _ = worktree.Close() }()
+	defer linked.close()
+	scriptPath := filepath.Join(t.TempDir(), "late-worktree-swap-git")
+	gitExecutable, err := trustedGitExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+set -eu
+if mv "$WB_TEST_RENAME_WORKTREE" "$WB_TEST_RENAME_HELD" 2>/dev/null && mkdir "$WB_TEST_RENAME_WORKTREE" 2>/dev/null; then
+  echo wb-test-worktree-swap-succeeded >&2
+else
+  echo wb-test-worktree-swap-blocked >&2
+fi
+exec "$WB_TEST_RENAME_GIT" "$@"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_RENAME_WORKTREE", fixture.worktreePath)
+	t.Setenv("WB_TEST_RENAME_HELD", fixture.worktreePath+"-held")
+	t.Setenv("WB_TEST_RENAME_GIT", gitExecutable)
+	output, err := runSecureRenameHelperWithGitForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath, scriptPath, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("late worktree swap helper failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "wb-test-worktree-swap-succeeded") {
+		t.Fatalf("late worktree replacement was not exercised:\n%s", output)
+	}
+}
+
+// TestSecureRenameHelperIgnoresLateCommondirReplacement replaces the mutable
+// linked admin commondir file after final authorization. Explicit
+// GIT_COMMON_DIR must make this ordinary status operation continue against the
+// retained canonical common capability instead of consulting the hostile file.
+func TestSecureRenameHelperIgnoresLateCommondirReplacement(t *testing.T) {
+	fixture, canonical, root, worktree, linked := newSecureRenameHelperFixture(t)
+	defer canonical.close()
+	defer func() { _ = root.Close() }()
+	defer func() { _ = worktree.Close() }()
+	defer linked.close()
+	scriptPath := filepath.Join(t.TempDir(), "late-commondir-swap-git")
+	commonDirPath := filepath.Join(canonical.path, ".git", "worktrees", linked.adminName, "commondir")
+	gitExecutable, err := trustedGitExecutable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, []byte(`#!/bin/sh
+set -eu
+if printf '%s\\n' /wb-test-hostile-common-dir > "$WB_TEST_RENAME_COMMONDIR" 2>/dev/null; then
+  echo wb-test-commondir-swap-succeeded >&2
+else
+  echo wb-test-commondir-swap-blocked >&2
+fi
+exec "$WB_TEST_RENAME_GIT" "$@"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_RENAME_COMMONDIR", commonDirPath)
+	t.Setenv("WB_TEST_RENAME_GIT", gitExecutable)
+	output, err := runSecureRenameHelperWithGitForTest(canonical, root, worktree, linked, fixture.worktreesRoot, fixture.worktreePath, scriptPath, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("late commondir swap helper failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(output, "wb-test-commondir-swap-succeeded") {
+		t.Fatalf("late commondir replacement did not execute:\n%s", output)
+	}
+}
+
+type secureRenameHelperFixture struct {
+	worktreesRoot string
+	worktreePath  string
+}
+
+func newSecureRenameHelperFixture(t *testing.T) (secureRenameHelperFixture, *canonicalRepository, *os.File, *os.File, *linkedWorktreeGitDir) {
+	t.Helper()
+	gitFixture := newGitFixture(t)
+	temporaryRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreesRoot := filepath.Join(temporaryRoot, "managed-worktrees")
+	if err := os.Mkdir(worktreesRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	worktreePath := filepath.Join(worktreesRoot, "checkout")
+	gitTest(t, gitFixture.canonical, "worktree", "add", "-b", "feature/secure-rename-helper", worktreePath, "main")
+	canonical, err := openCanonicalRepository(gitFixture.canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
+	if err != nil {
+		canonical.close()
+		t.Fatal(err)
+	}
+	worktree, err := openAbsoluteDirectoryNoFollow(worktreePath, false)
+	if err != nil {
+		_ = root.Close()
+		canonical.close()
+		t.Fatal(err)
+	}
+	linked, err := openLinkedWorktreeGitDir(canonical, worktree)
+	if err != nil {
+		_ = worktree.Close()
+		_ = root.Close()
+		canonical.close()
+		t.Fatal(err)
+	}
+	return secureRenameHelperFixture{worktreesRoot: worktreesRoot, worktreePath: worktreePath}, canonical, root, worktree, linked
+}
+
+func runSecureRenameHelperForTest(canonical *canonicalRepository, root, worktree *os.File, linked *linkedWorktreeGitDir, worktreesRoot, worktreePath string) (string, error) {
+	return runSecureRenameHelperWithGitForTest(canonical, root, worktree, linked, worktreesRoot, worktreePath, "/bin/false", "status")
+}
+
+func runSecureRenameHelperWithGitForTest(canonical *canonicalRepository, root, worktree *os.File, linked *linkedWorktreeGitDir, worktreesRoot, worktreePath, executable string, gitArgs ...string) (string, error) {
+	command := exec.Command(os.Args[0], append([]string{
+		SecureRenameGitHelperArgument,
+		canonical.path,
+		worktreePath,
+		worktreesRoot,
+		linked.adminName,
+		executable,
+	}, gitArgs...)...)
+	command.ExtraFiles = []*os.File{canonical.root, canonical.common, root, worktree, linked.gitFile, linked.adminRoot, linked.admin}
+	output, err := command.CombinedOutput()
+	return string(output), err
+}
 
 // TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch proves
 // an explicitly allowed cache (standing in for node_modules) may survive the
@@ -64,11 +383,11 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 	if result.NewWorktreeDir != wantNewWorktree {
 		t.Fatalf("new worktree dir = %s, want %s", result.NewWorktreeDir, wantNewWorktree)
 	}
-	if result.NewBranch != "codex/new-task" {
-		t.Fatalf("default new branch = %q, want codex/new-task", result.NewBranch)
+	if result.NewBranch != "new-task" {
+		t.Fatalf("default new branch = %q, want new-task", result.NewBranch)
 	}
-	if result.Repaired {
-		t.Fatalf("a healthy `git worktree move` must not need repair: %#v", result)
+	if !result.Repaired {
+		t.Fatalf("descriptor-relative relocation must repair Git registration: %#v", result)
 	}
 
 	// The untracked file — node_modules stand-in — must have made the trip.
@@ -95,8 +414,8 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 
 	// The worktree must be on the new branch, and satisfy Guard.
 	branch := gitTestOutput(t, wantNewWorktree, "branch", "--show-current")
-	if branch != "codex/new-task" {
-		t.Fatalf("checked-out branch = %q, want codex/new-task", branch)
+	if branch != "new-task" {
+		t.Fatalf("checked-out branch = %q, want new-task", branch)
 	}
 	if _, err := Guard(context.Background(), wantNewWorktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
 		t.Fatalf("renamed worktree failed guard: %v", err)
@@ -175,7 +494,7 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 		if create.Repository == "acme/storage" {
 			canonical = storageCanonical
 		}
-		if !gitRefExists(canonical, "refs/heads/"+create.Branch) || gitRefExists(canonical, "refs/heads/codex/multi-recycle-new") {
+		if !gitRefExists(canonical, "refs/heads/"+create.Branch) || gitRefExists(canonical, "refs/heads/multi-recycle-new") {
 			t.Fatalf("%s rollback did not restore exact old/remove new branch refs", create.Repository)
 		}
 		recoveryProjection, projectionErr := readWorkLogProjection(create.WorktreeDir)
@@ -209,14 +528,11 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 	}
 }
 
-// TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses is the
-// regression test for the founder's own production incident: a bare
-// filesystem move leaves Git's gitdir pointer stale, and it must never be the
-// first choice. This test forces `git worktree move` itself to refuse — by
-// taking a real Git-level worktree lock, independent of WB's own task
-// `.lock` — so the fallback path (plain move + `git worktree repair`) is the
-// one actually exercised and verified, not merely present as dead code.
-func TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses(t *testing.T) {
+// TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse keeps the
+// founder's production incident covered: Git-level worktree locks make
+// `git worktree move` refuse, but WB's descriptor-relative no-replace move plus
+// held-checkout repair remains safe and leaves Git's registration exact.
+func TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -250,6 +566,153 @@ func TestRenameFallsBackToMoveAndRepairWhenGitWorktreeMoveRefuses(t *testing.T) 
 	}
 	if _, guardErr := Guard(context.Background(), newWorktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); guardErr != nil {
 		t.Fatalf("repaired worktree failed guard: %v", guardErr)
+	}
+}
+
+func TestMoveWorktreeRejectsPostAuthorizationEndpointSubstitution(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		swap   func(t *testing.T, oldPath, newPath string)
+		assert func(t *testing.T, oldPath, newPath, heldPath string)
+	}{
+		{
+			name: "source identity",
+			swap: func(t *testing.T, oldPath, _ string) {
+				t.Helper()
+				if err := os.Rename(oldPath, oldPath+"-held"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(oldPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(oldPath, "replacement"), []byte("hostile\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assert: func(t *testing.T, oldPath, newPath, heldPath string) {
+				t.Helper()
+				if data, err := os.ReadFile(filepath.Join(oldPath, "replacement")); err != nil || string(data) != "hostile\n" {
+					t.Fatalf("source replacement was consumed or changed: data=%q err=%v", data, err)
+				}
+				if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+					t.Fatalf("source replacement escaped to destination: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(heldPath, ".git")); err != nil {
+					t.Fatalf("retained original checkout was not preserved: %v", err)
+				}
+			},
+		},
+		{
+			name: "destination insertion",
+			swap: func(t *testing.T, _, newPath string) {
+				t.Helper()
+				if err := os.Mkdir(newPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(newPath, "replacement"), []byte("hostile\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			assert: func(t *testing.T, oldPath, newPath, _ string) {
+				t.Helper()
+				if _, err := os.Stat(filepath.Join(oldPath, ".git")); err != nil {
+					t.Fatalf("source checkout moved despite occupied destination: %v", err)
+				}
+				if data, err := os.ReadFile(filepath.Join(newPath, "replacement")); err != nil || string(data) != "hostile\n" {
+					t.Fatalf("destination replacement was overwritten: data=%q err=%v", data, err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "late-endpoint-source",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldPath := created[0].WorktreeDir
+			newPath := filepath.Join(fixture.home, "worktrees", "late-endpoint-destination", "acme", "app")
+			if err := os.MkdirAll(filepath.Dir(newPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outcome, moveErr := moveWorktree(
+				context.Background(), fixture.canonical, filepath.Join(fixture.home, "worktrees"), oldPath, newPath,
+				worktreeMoveHooks{afterAuthorization: func() { test.swap(t, oldPath, newPath) }},
+			)
+			if moveErr == nil || outcome.Moved {
+				t.Fatalf("post-authorization substitution result = %#v, error=%v", outcome, moveErr)
+			}
+			test.assert(t, oldPath, newPath, oldPath+"-held")
+		})
+	}
+}
+
+func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*RenameOptions)
+		wantError string
+	}{
+		{
+			name: "repair failure",
+			configure: func(options *RenameOptions) {
+				options.beforeWorktreeRepair = func(string) error { return errors.New("injected repair failure") }
+			},
+			wantError: "injected repair failure",
+		},
+		{
+			name: "registration failure",
+			configure: func(options *RenameOptions) {
+				options.beforeWorktreeRegistrationVerify = func(string) error { return errors.New("injected registration failure") }
+			},
+			wantError: "injected registration failure",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				Operation:    "partial-move-source",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			options := RenameOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				OldTask:      "partial-move-source",
+				NewTask:      "partial-move-destination",
+				DeleteRemote: true,
+				Apply:        true,
+			}
+			test.configure(&options)
+			outcome, renameErr := Rename(context.Background(), options)
+			if renameErr == nil || !strings.Contains(renameErr.Error(), test.wantError) {
+				t.Fatalf("rename error = %v, results=%#v", renameErr, outcome.Results)
+			}
+			if _, err := os.Stat(created[0].WorktreeDir); err != nil {
+				t.Fatalf("partial move was not restored to source: %v", err)
+			}
+			newPath := filepath.Join(fixture.home, "worktrees", "partial-move-destination", "acme", "app")
+			if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+				t.Fatalf("partial move stranded destination checkout: %v", err)
+			}
+			listing := gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain")
+			if !strings.Contains(listing, "worktree "+created[0].WorktreeDir) || strings.Contains(listing, "worktree "+newPath) {
+				t.Fatalf("rollback registration is not exact:\n%s", listing)
+			}
+			if _, err := Rename(context.Background(), RenameOptions{
+				ProjectsRoot: fixture.projectsRoot,
+				OldTask:      "partial-move-source",
+				NewTask:      "partial-move-destination",
+				DeleteRemote: true,
+				Apply:        true,
+			}); err != nil {
+				t.Fatalf("partial-move rollback was not retryable: %v", err)
+			}
+		})
 	}
 }
 
@@ -459,7 +922,7 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
 		t.Fatalf("unmerged worktree moved despite refusal: %v", statErr)
 	}
-	if !localBranchExistsIn(t, fixture.canonical, "codex/unmerged-task") {
+	if !localBranchExistsIn(t, fixture.canonical, "unmerged-task") {
 		t.Fatal("unmerged old branch was deleted despite missing --force")
 	}
 
@@ -468,7 +931,7 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "unmerged-task",
 		NewTask:      "unmerged-task-final",
-		Branch:       "codex/unmerged-task-final",
+		Branch:       "feature/unmerged-task-final",
 		Force:        true,
 		DeleteRemote: true,
 		Apply:        true,
@@ -476,10 +939,10 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("forced Rename apply: %v\nresults=%#v", err, outcome.Results)
 	}
-	if !outcome.Results[0].Applied || !outcome.Results[0].OldBranchDeleted {
+	if !outcome.Results[0].Applied || !outcome.Results[0].OldBranchDeleted || outcome.Results[0].NewBranch != "feature/unmerged-task-final" {
 		t.Fatalf("forced delete did not remove the unmerged branch: %#v", outcome.Results[0])
 	}
-	if localBranchExistsIn(t, fixture.canonical, "codex/unmerged-task") {
+	if localBranchExistsIn(t, fixture.canonical, "unmerged-task") {
 		t.Fatal("unmerged old branch survived --force")
 	}
 }
@@ -501,8 +964,8 @@ func TestRenameDeleteOldBranchWithoutForceWhenMerged(t *testing.T) {
 	}
 	gitTest(t, created[0].WorktreeDir, "add", "feature.txt")
 	gitTest(t, created[0].WorktreeDir, "commit", "-m", "merged work")
-	gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", "codex/merged-task")
-	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/merged-task", "-m", "merge feature")
+	gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", "merged-task")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "merged-task", "-m", "merge feature")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 
 	outcome, err := Rename(context.Background(), RenameOptions{
@@ -519,10 +982,10 @@ func TestRenameDeleteOldBranchWithoutForceWhenMerged(t *testing.T) {
 	if !outcome.Results[0].Applied || !outcome.Results[0].OldBranchDeleted || !outcome.Results[0].OldRemoteDeleted {
 		t.Fatalf("merged local/remote branch was not retired without --force: %#v", outcome.Results[0])
 	}
-	if localBranchExistsIn(t, fixture.canonical, "codex/merged-task") {
+	if localBranchExistsIn(t, fixture.canonical, "merged-task") {
 		t.Fatal("merged old branch survived deletion")
 	}
-	if remoteHead, err := remoteBranchHead(context.Background(), fixture.canonical, "codex/merged-task"); err != nil || remoteHead != "" {
+	if remoteHead, err := remoteBranchHead(context.Background(), fixture.canonical, "merged-task"); err != nil || remoteHead != "" {
 		t.Fatalf("merged old remote branch remains at %q: %v", remoteHead, err)
 	}
 }

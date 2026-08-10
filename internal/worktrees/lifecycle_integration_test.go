@@ -47,7 +47,7 @@ func TestListStopsAtLegacyDirectRepositoryRootsAndRetainsValidSiblings(t *testin
 	fixture := newDefaultHomeGitFixture(t)
 	legacyRoot := filepath.Join(fixture.projectsRoot, ".wb", "worktrees")
 	direct := filepath.Join(legacyRoot, "ci-gates", "app")
-	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/ci-gates", direct, "main")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/ci-gates", direct, "main")
 	for _, directory := range []string{
 		filepath.Join(direct, ".claude"),
 		filepath.Join(direct, ".github", "workflows"),
@@ -115,15 +115,15 @@ func TestListIgnoresDotDirectoriesAtEveryManagedHierarchyLevel(t *testing.T) {
 func TestListAndCleanupRegisteredHiddenWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
 	hidden := filepath.Join(fixture.home, "worktrees", "hidden-worktree", "acme", ".hidden-repo")
-	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/hidden-worktree", hidden, "main")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/hidden-worktree", hidden, "main")
 	if err := os.WriteFile(filepath.Join(hidden, "hidden.txt"), []byte("hidden\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, hidden, "add", "hidden.txt")
 	gitTest(t, hidden, "commit", "-m", "hidden feature")
 	head := gitTestOutput(t, hidden, "rev-parse", "HEAD")
-	gitTest(t, hidden, "push", "-u", "origin", "codex/hidden-worktree")
-	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/hidden-worktree", "-m", "merge hidden feature")
+	gitTest(t, hidden, "push", "-u", "origin", "feature/hidden-worktree")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "feature/hidden-worktree", "-m", "merge hidden feature")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	installMergedPullRequestFixture(t, head, mergedAt)
@@ -224,8 +224,8 @@ func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
 	gitTest(t, worktree, "add", "feature.txt")
 	gitTest(t, worktree, "commit", "-m", "dot repository feature")
 	head := gitTestOutput(t, worktree, "rev-parse", "HEAD")
-	gitTest(t, worktree, "push", "-u", "origin", "codex/dot-repository")
-	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/dot-repository", "-m", "merge dot repository feature")
+	gitTest(t, worktree, "push", "-u", "origin", created[0].Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", created[0].Branch, "-m", "merge dot repository feature")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	installMergedPullRequestFixture(t, head, mergedAt)
@@ -263,15 +263,15 @@ func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
 func TestCleanupLegacyLayoutWritesAuditToAuthoritativeDefaultHome(t *testing.T) {
 	fixture := newDefaultHomeGitFixture(t)
 	legacy := filepath.Join(fixture.projectsRoot, ".wb", "worktrees", "cleanup-legacy", "acme", "app")
-	gitTest(t, fixture.canonical, "worktree", "add", "-b", "codex/cleanup-legacy", legacy, "main")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "feature/cleanup-legacy", legacy, "main")
 	if err := os.WriteFile(filepath.Join(legacy, "feature.txt"), []byte("legacy\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, legacy, "add", "feature.txt")
 	gitTest(t, legacy, "commit", "-m", "legacy feature")
 	head := gitTestOutput(t, legacy, "rev-parse", "HEAD")
-	gitTest(t, legacy, "push", "-u", "origin", "codex/cleanup-legacy")
-	gitTest(t, fixture.canonical, "merge", "--no-ff", "codex/cleanup-legacy", "-m", "merge legacy feature")
+	gitTest(t, legacy, "push", "-u", "origin", "feature/cleanup-legacy")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "feature/cleanup-legacy", "-m", "merge legacy feature")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	installMergedPullRequestFixture(t, head, mergedAt)
@@ -1143,7 +1143,7 @@ func createMismatchedWorktree(t *testing.T, fixture *gitFixture, task, owner, ca
 	gitTest(t, canonical, "add", "README.md")
 	gitTest(t, canonical, "commit", "-m", "initial")
 	worktree := filepath.Join(fixture.home, "worktrees", task, owner, pathRepository)
-	gitTest(t, canonical, "worktree", "add", "-b", "codex/"+task, worktree, "main")
+	gitTest(t, canonical, "worktree", "add", "-b", "feature/"+task, worktree, "main")
 	return worktree
 }
 

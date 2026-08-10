@@ -33,22 +33,28 @@ const (
 // checkout, so a crash cannot make the remaining exact local branch invisible
 // merely because live worktree inventory no longer finds it.
 type lifecycleBacklogRecord struct {
-	Version       int       `json:"version"`
-	ID            string    `json:"id"`
-	Task          string    `json:"task"`
-	Repository    string    `json:"repository"`
-	ProjectsRoot  string    `json:"projects_root"`
-	CanonicalDir  string    `json:"canonical_dir"`
-	WorktreesRoot string    `json:"worktrees_root"`
-	WorktreeDir   string    `json:"worktree_dir"`
-	Branch        string    `json:"branch"`
-	Base          string    `json:"base"`
-	HeadSHA       string    `json:"head_sha"`
-	Disposition   string    `json:"disposition"`
-	RemoteHeadSHA string    `json:"remote_head_sha,omitempty"`
-	Stage         string    `json:"stage"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	Version             int       `json:"version"`
+	ID                  string    `json:"id"`
+	Task                string    `json:"task"`
+	Repository          string    `json:"repository"`
+	ProjectsRoot        string    `json:"projects_root"`
+	CanonicalDir        string    `json:"canonical_dir"`
+	WorktreesRoot       string    `json:"worktrees_root"`
+	WorktreeDir         string    `json:"worktree_dir"`
+	Branch              string    `json:"branch"`
+	Base                string    `json:"base"`
+	HeadSHA             string    `json:"head_sha"`
+	Disposition         string    `json:"disposition"`
+	RecoveryKind        string    `json:"recovery_kind,omitempty"`
+	WorkLogEffort       string    `json:"work_log_effort_id,omitempty"`
+	WorkLogRun          string    `json:"work_log_run_id,omitempty"`
+	WorkLogClaim        string    `json:"work_log_claim_id,omitempty"`
+	PreserveLocalBranch bool      `json:"preserve_local_branch,omitempty"`
+	Failure             string    `json:"failure,omitempty"`
+	RemoteHeadSHA       string    `json:"remote_head_sha,omitempty"`
+	Stage               string    `json:"stage"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 func lifecycleBacklogID(result ListResult, disposition string) string {
@@ -72,6 +78,10 @@ func newLifecycleBacklogRecord(projectsRoot string, result ListResult, dispositi
 
 func lifecycleBacklogDirectory(home string) string {
 	return filepath.Join(home, "reports", "worktree-cleanup", "backlog")
+}
+
+func lifecycleBacklogPath(home, id string) string {
+	return filepath.Join(lifecycleBacklogDirectory(home), id+".json")
 }
 
 func openLifecycleBacklogDirectory(home string, create bool) (*os.File, error) {
@@ -154,6 +164,27 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	case "removed", string(AbortDiscarded):
 	default:
 		return fmt.Errorf("invalid lifecycle backlog disposition %q", record.Disposition)
+	}
+	switch record.RecoveryKind {
+	case "":
+		if record.WorkLogEffort != "" || record.WorkLogRun != "" || record.WorkLogClaim != "" || record.PreserveLocalBranch || record.Failure != "" {
+			return fmt.Errorf("ordinary lifecycle backlog contains create-recovery metadata")
+		}
+	case "create_work_log_failed":
+		if record.Disposition != "removed" {
+			return fmt.Errorf("create recovery backlog must retire a failed publication")
+		}
+		if len(record.Failure) > 2000 || strings.ContainsRune(record.Failure, '\x00') {
+			return fmt.Errorf("invalid create recovery failure detail")
+		}
+		if record.WorkLogClaim != "" && (!validSafeSegment(record.WorkLogEffort) || !validSafeSegment(record.WorkLogRun) || !validClaimID(record.WorkLogClaim)) {
+			return fmt.Errorf("invalid create recovery Work Log identity")
+		}
+		if record.WorkLogClaim == "" && (record.WorkLogEffort != "" || record.WorkLogRun != "") {
+			return fmt.Errorf("incomplete create recovery Work Log identity")
+		}
+	default:
+		return fmt.Errorf("invalid lifecycle backlog recovery kind %q", record.RecoveryKind)
 	}
 	switch record.Stage {
 	case lifecycleStageSealed, lifecycleStageRetiringRemote, lifecycleStageRemoteRetired,
@@ -244,7 +275,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	}
 	if remoteHead, err := remoteBranchHead(ctx, record.CanonicalDir, record.Branch); err != nil {
 		return err
-	} else if remoteHead != "" {
+	} else if remoteHead != "" && !record.PreserveLocalBranch {
 		return fmt.Errorf("resume lifecycle backlog %s: origin/%s still exists at %s", record.ID, record.Branch, remoteHead)
 	}
 	if _, err := os.Lstat(record.WorktreeDir); !errors.Is(err, os.ErrNotExist) {
@@ -264,7 +295,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	if err != nil {
 		return err
 	}
-	if exists {
+	if exists && !record.PreserveLocalBranch {
 		head, err := gitCanonical(ctx, canonical, "rev-parse", "refs/heads/"+record.Branch)
 		if err != nil {
 			return err
@@ -279,5 +310,37 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 			return fmt.Errorf("resume exact local branch deletion %s: %w", record.Branch, err)
 		}
 	}
+	if record.RecoveryKind == "create_work_log_failed" && record.WorkLogClaim != "" {
+		if err := sealCreateFailureBacklogClaim(home, *record); err != nil {
+			return err
+		}
+	}
 	return persistLifecycleBacklog(home, record, lifecycleStageComplete)
+}
+
+func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) error {
+	runDir, _, err := openWorkLogRun(home, record.WorkLogEffort, record.WorkLogRun, false)
+	if err != nil {
+		return fmt.Errorf("open failed-create Work Log run: %w", err)
+	}
+	defer func() { _ = runDir.Close() }()
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return err
+	}
+	var claim workLogClaim
+	if err := readJSONAt(claims, record.WorkLogClaim+".json", &claim); err != nil {
+		_ = claims.Close()
+		return err
+	}
+	_ = claims.Close()
+	if claim.ClaimID != record.WorkLogClaim || claim.EffortID != record.WorkLogEffort || claim.RunID != record.WorkLogRun ||
+		claim.Task != record.Task || claim.Repository != record.Repository || claim.Worktree != record.WorktreeDir ||
+		claim.Branch != record.Branch || claim.Base != record.Base || claim.Lifecycle != "active" {
+		return fmt.Errorf("failed-create Work Log claim does not match durable cleanup receipt")
+	}
+	if _, err := writeWorkLogTerminal(home, runDir, claim, record.HeadSHA, "create_failed", "", ""); err != nil {
+		return fmt.Errorf("seal failed-create Work Log claim: %w", err)
+	}
+	return nil
 }

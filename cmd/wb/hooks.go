@@ -46,6 +46,13 @@ func newHooksInstallCmd(repair bool) *cobra.Command {
 		Short: short,
 		Long: `Install WB-managed hook shims without replacing unauthorized user hooks.
 
+Worktree admission is installed by default at post-checkout, pre-commit, and
+pre-push. Git has no pre-checkout hook, so post-checkout reports an unmanaged
+checkout after it has happened and preserves it for inspection; pre-commit and
+pre-push block unsafe work. To opt out, record profiles.exclude: [worktree] in
+the selected hooks policy and run repair; the exception remains visible to
+hooks check.
+
 Managed shims retain no installer executable path. At each Git invocation they
 prefer an explicit WB_EXECUTABLE; otherwise they resolve wb from PATH and
 reject relative, repository-local, non-regular, or non-executable results.`,
@@ -280,6 +287,11 @@ func printHooksCheckDetails(cmd *cobra.Command, report hooks.CheckReport) error 
 	}
 	for _, profile := range report.ActiveProfiles {
 		if err := writeFormat(out, "  ✓ profile %s (%s)\n", profile.Name, profile.Reason); err != nil {
+			return err
+		}
+	}
+	for _, profile := range report.ExcludedProfiles {
+		if err := writeFormat(out, "  ! profile %s (explicitly excluded by policy)\n", profile); err != nil {
 			return err
 		}
 	}

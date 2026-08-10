@@ -159,7 +159,7 @@ func TestSecureStageCapabilityDeniesStageMoveAfterFinalCheck(t *testing.T) {
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], SecureStageCanonicalGitHelperArgument, operationRoot, fixture.canonical, script, "codex/sandbox-stage", "main", "0")
+	command := exec.Command(os.Args[0], SecureStageCanonicalGitHelperArgument, operationRoot, fixture.canonical, script, "feature/sandbox-stage", "main", "0")
 	command.ExtraFiles = []*os.File{stage, canonical.root, canonical.common}
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -229,7 +229,7 @@ func TestSecureStageCapabilityDeniesBroaderOperationRootWrites(t *testing.T) {
 	if err := os.WriteFile(script, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	command := exec.Command(os.Args[0], SecureStageCanonicalGitHelperArgument, operationRoot, fixture.canonical, script, "codex/sandbox-root", "main", "0")
+	command := exec.Command(os.Args[0], SecureStageCanonicalGitHelperArgument, operationRoot, fixture.canonical, script, "feature/sandbox-root", "main", "0")
 	command.ExtraFiles = []*os.File{stage, canonical.root, canonical.common}
 	output, err := command.CombinedOutput()
 	if err != nil {

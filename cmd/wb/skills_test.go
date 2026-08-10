@@ -14,6 +14,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"gopkg.in/yaml.v3"
 )
 
 type skillCommandCoverage struct {
@@ -22,7 +23,15 @@ type skillCommandCoverage struct {
 }
 
 type claudePluginManifest struct {
-	Skills []string `json:"skills"`
+	Version string `json:"version"`
+}
+
+type codexPluginManifest struct {
+	Version   string `json:"version"`
+	Skills    string `json:"skills"`
+	Interface struct {
+		DefaultPrompt []string `json:"defaultPrompt"`
+	} `json:"interface"`
 }
 
 type capabilityManifest struct {
@@ -129,6 +138,7 @@ func TestAgentSkillsCoverPublicCommands(t *testing.T) {
 	}
 
 	assertClaudeManifestListsAllSkills(t, repoRoot)
+	assertCodexManifestExposesSkills(t, repoRoot)
 }
 
 func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
@@ -168,6 +178,193 @@ func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestWBMergeSkillIsOnePortableContract prevents a local harness prompt from
+// regressing into the branch-prefix, background-watch, or cleanup debt that
+// this merger role exists to remove. The assertion is deliberately semantic:
+// it checks required safety statements and rejects executable anti-patterns,
+// rather than snapshotting a particular prose layout.
+func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	skillPath := filepath.Join(repoRoot, "ai", "skills", "wb-merge", "SKILL.md")
+	contents, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := string(contents)
+	for _, required := range []string{
+		"without a branch prefix",
+		"WB-managed worktrees only",
+		"Fetch and fast-forward the target from `origin`",
+		"main`, a feature branch, or a task branch",
+		"dedicated merger checkout must be clean",
+		"Preserve both stated intents",
+		"validate after each merge, then run the full target verification",
+		"captures current `main`",
+		"never waits for current target CI to turn green",
+		"candidate may fix a red target",
+		"model ID only when the runtime explicitly exposes it",
+		"`--model` when it is not exposed",
+		"never infer or guess a model ID",
+		"candidate head contains the freshly fetched",
+		"nonempty server-enforced strict",
+		"If the target advances, rebase or reintegrate",
+		"Merge-group observation is planned",
+		"keep the PR unmerged",
+		"post-merge target CI",
+		"behavioral, design,",
+		"or authority blockers",
+		"one exclusive logical merger lane per",
+		"`(repository, target branch)`",
+		"independent of the calling session",
+		"submit manual handoffs",
+		"another session resumes the same logical lane",
+		"one agent may own",
+		"different repository/target lanes may run",
+		"durable merger submit, queue, claim, run,",
+		"Push whichever ref was integrated immediately",
+		"direct route, push the exact target",
+		"For a PR route",
+		"push the source branch",
+		"merge through the PR with that exact-head guard",
+		"fast-forward",
+		"local target to `origin/<target>`",
+		"target contains the exact merge SHA",
+		"required release evidence on the exact remote target SHA",
+		"wb ci wait --repo <owner/repo>",
+		"enumerated required-check policy",
+		"same-named PR summary or legacy status is insufficient",
+		"does not prove that no optional",
+		"workflow can register later",
+		"wb worktree cleanup <task> --apply --remote --older-than 0",
+		"Work Log",
+		"TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
+	} {
+		if !strings.Contains(contract, required) {
+			t.Errorf("WB merger contract is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"git worktree add", "sleep 1800", "sonnet", "opus", "haiku", "codex/", "claude/"} {
+		if strings.Contains(strings.ToLower(contract), forbidden) {
+			t.Errorf("WB merger contract permits a prefix/model/raw-worktree anti-pattern %q", forbidden)
+		}
+	}
+	polling, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-merge", "references", "ci-polling.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"foreground", "shorter than that harness's tool timeout", "bounded quiescence receipt", "same-named PR summary", "separate release evidence", "Never detach a watcher, use a background process"} {
+		if !strings.Contains(string(polling), required) {
+			t.Errorf("CI polling contract is missing %q", required)
+		}
+	}
+	adapters, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-merge", "references", "adapters.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"Checked-in adapter files alone do not mean the merger is installed", "supersedes copied legacy merger prompts"} {
+		if !strings.Contains(string(adapters), required) {
+			t.Errorf("merger adapter contract is missing %q", required)
+		}
+	}
+
+	claude, err := os.ReadFile(filepath.Join(repoRoot, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claudeFields map[string]any
+	if err := json.Unmarshal(claude, &claudeFields); err != nil {
+		t.Fatal(err)
+	}
+	for _, autoDiscovered := range []string{"skills", "agents"} {
+		if _, explicit := claudeFields[autoDiscovered]; explicit {
+			t.Errorf("Claude manifest explicitly lists %s and duplicates recursive auto-discovery", autoDiscovered)
+		}
+	}
+	claudeAgent, err := os.ReadFile(filepath.Join(repoRoot, "agents", "wb-merger.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"name: wb-merger", "description:", "Load and follow `$wb-merge`"} {
+		if !strings.Contains(string(claudeAgent), required) {
+			t.Errorf("Claude merger agent is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"model:", "background:", "isolation:", "skills:"} {
+		if strings.Contains(string(claudeAgent), forbidden) {
+			t.Errorf("Claude merger agent must leave %s to the canonical foreground WB contract", strings.TrimSuffix(forbidden, ":"))
+		}
+	}
+	codex, err := os.ReadFile(filepath.Join(repoRoot, ".codex-plugin", "plugin.json"))
+	if err != nil || !strings.Contains(string(codex), "WB merger workflow") {
+		t.Fatalf("Codex adapter does not expose wb-merge: %v", err)
+	}
+	copilot, err := os.ReadFile(filepath.Join(repoRoot, ".github", "agents", "wb-merger.agent.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"description:", "Read and follow `ai/skills/wb-merge/SKILL.md`", "does not define a second workflow"} {
+		if !strings.Contains(string(copilot), required) {
+			t.Errorf("Copilot adapter is missing %q", required)
+		}
+	}
+	if strings.Contains(string(copilot), "model:") {
+		t.Error("Copilot adapter must leave model selection to its harness")
+	}
+}
+
+func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "go-ci.yml")
+	contents, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow map[string]any
+	if err := yaml.Unmarshal(contents, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", workflowPath, err)
+	}
+	triggers, ok := workflow["on"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s has no mapping-valued on trigger", workflowPath)
+	}
+	for _, trigger := range []string{"pull_request", "push"} {
+		configuration, ok := triggers[trigger]
+		if !ok {
+			t.Fatalf("%s does not run for %s", workflowPath, trigger)
+		}
+		if configuration, ok := configuration.(map[string]any); ok {
+			if _, filtered := configuration["paths"]; filtered {
+				t.Fatalf("%s filters %s paths, so its required check can remain missing", workflowPath, trigger)
+			}
+			if _, filtered := configuration["paths-ignore"]; filtered {
+				t.Fatalf("%s ignores %s paths, so its required check can remain missing", workflowPath, trigger)
+			}
+		}
+	}
+	tidyIndex := strings.Index(string(contents), "run: go mod tidy -diff")
+	formatIndex := strings.Index(string(contents), "- name: gofmt")
+	if tidyIndex < 0 {
+		t.Fatalf("%s does not fail when go.mod or go.sum needs go mod tidy", workflowPath)
+	}
+	if formatIndex < 0 || tidyIndex > formatIndex {
+		t.Fatalf("%s must run go mod tidy -diff before formatting, build, and test gates", workflowPath)
+	}
+	if strings.Contains(string(contents), "run: go mod tidy\n") {
+		t.Fatalf("%s mutates release source with bare go mod tidy instead of checking its diff", workflowPath)
+	}
+	releasePath := filepath.Join(repoRoot, ".goreleaser.yml")
+	releaseContents, err := os.ReadFile(releasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(releaseContents), "- go mod tidy -diff") {
+		t.Fatalf("%s does not fail closed on dependency metadata drift", releasePath)
+	}
+	if strings.Contains(string(releaseContents), "- go mod tidy\n") {
+		t.Fatalf("%s mutates source before stamping release artifacts", releasePath)
 	}
 }
 
@@ -480,28 +677,61 @@ func assertClaudeManifestListsAllSkills(t *testing.T, repoRoot string) {
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatalf("parse %s: %v", manifestPath, err)
 	}
+	var fields map[string]any
+	if err := json.Unmarshal(manifestBytes, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, autoDiscovered := range []string{"skills", "agents"} {
+		if _, explicit := fields[autoDiscovered]; explicit {
+			t.Fatalf("Claude manifest explicitly lists %s and duplicates recursive auto-discovery", autoDiscovered)
+		}
+	}
+	if manifest.Version != "1.0.0" {
+		t.Fatalf("Claude plugin version = %q, want initial unified 1.0.0", manifest.Version)
+	}
+	for _, discovered := range []string{filepath.Join("ai", "skills", "wb-merge", "SKILL.md"), filepath.Join("agents", "wb-merger.md")} {
+		if info, err := os.Stat(filepath.Join(repoRoot, discovered)); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("Claude auto-discovery source %s is missing or non-regular: %v", discovered, err)
+		}
+	}
+}
 
-	got := append([]string(nil), manifest.Skills...)
-	sort.Strings(got)
-	entries, err := os.ReadDir(filepath.Join(repoRoot, "ai", "skills"))
+func assertCodexManifestExposesSkills(t *testing.T, repoRoot string) {
+	t.Helper()
+	manifestPath := filepath.Join(repoRoot, ".codex-plugin", "plugin.json")
+	manifestBytes, err := os.ReadFile(manifestPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		skillPath := filepath.Join(repoRoot, "ai", "skills", entry.Name(), "SKILL.md")
-		if _, err := os.Stat(skillPath); err != nil {
-			continue
-		}
-		want = append(want, "./ai/skills/"+entry.Name())
+	var manifest codexPluginManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("parse %s: %v", manifestPath, err)
 	}
-	sort.Strings(want)
-
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("Claude skill manifest mismatch\ngot:\n%s\nwant:\n%s",
-			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	if manifest.Skills != "./ai/skills/" {
+		t.Fatalf("Codex skills root = %q, want ./ai/skills/", manifest.Skills)
+	}
+	claudeBytes, err := os.ReadFile(filepath.Join(repoRoot, ".claude-plugin", "plugin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claude claudePluginManifest
+	if err := json.Unmarshal(claudeBytes, &claude); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version == "" || manifest.Version != claude.Version {
+		t.Fatalf("plugin versions differ: Codex=%q Claude=%q", manifest.Version, claude.Version)
+	}
+	if len(manifest.Interface.DefaultPrompt) == 0 || len(manifest.Interface.DefaultPrompt) > 3 {
+		t.Fatalf("Codex plugin defaultPrompt count = %d, want 1..3", len(manifest.Interface.DefaultPrompt))
+	}
+	for index, prompt := range manifest.Interface.DefaultPrompt {
+		if strings.TrimSpace(prompt) == "" {
+			t.Fatalf("Codex plugin defaultPrompt[%d] is empty", index)
+		}
+	}
+	skillRoot := filepath.Join(repoRoot, filepath.FromSlash(manifest.Skills))
+	info, err := os.Stat(skillRoot)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("Codex skills root %s is not an existing directory: %v", skillRoot, err)
 	}
 }

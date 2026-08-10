@@ -9,6 +9,7 @@ require (
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	github.com/strongo/selfupdate v0.2.0
 	golang.org/x/mod v0.38.0
 	golang.org/x/sys v0.47.0
@@ -37,7 +38,6 @@ require (
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sahilm/fuzzy v0.1.3 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zclconf/go-cty v1.16.3 // indirect
 	golang.org/x/sync v0.21.0 // indirect

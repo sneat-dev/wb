@@ -20,14 +20,14 @@
 From any checkout whose `origin` identifies the repository:
 
 ```sh
-wb worktree create <task> --branch <prefix>/<task> \
+wb worktree create <task> --branch-prefix <prefix>/ \
   --original-prompt-file <private-prompt-file>
 ```
 
 For one task spanning repositories:
 
 ```sh
-wb worktree create <task> --branch <prefix>/<task> \
+wb worktree create <task> --branch-prefix <prefix>/ \
   <owner/repository-a> <owner/repository-b> \
   --effort <stable-effort-id> --run <agent-run-id> \
   --initiator <human-or-parent-agent> --agent <agent-id> \
@@ -45,7 +45,7 @@ With a non-default projects root, put the global option on every call:
 
 ```sh
 wb --projects-root <root> worktree create <task> \
-  --branch <prefix>/<task> <owner/repository> \
+  --branch-prefix <prefix>/ <owner/repository> \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -67,19 +67,45 @@ By default the printed path is below `~/.wb/worktrees`. A populated historic
 WB refreshes its home semantics before creation or fails before creating a
 mixed-layout checkout.
 
+## Branch policy
+
+Without an exact branch or prefix, WB uses `<task>` itself. The precedence is:
+exact `--branch`; CLI `--branch-prefix` (an explicit empty prefix means no
+prefix); repository `.wb/worktrees.yaml` from the exact fetched target-base
+commit; user `$XDG_CONFIG_HOME/wb/worktrees.yaml` or
+`~/.config/wb/worktrees.yaml`; then the task. Repository policy never comes
+from whichever branch the canonical checkout currently shows. A policy is:
+
+```yaml
+version: 1
+worktrees:
+  branch_prefix: feature/
+```
+
+Do not use harness names in branch spelling. Work Logs carry runtime and model
+provenance. `--branch` and `--branch-prefix` together, including an explicitly
+empty `--branch`, are rejected before fetch or worktree mutation.
+
 ## Resume
 
 Use `--resume` only when the open work belongs to this exact task and branch:
 
 ```sh
-wb worktree create <task> --branch <prefix>/<task> --resume \
+wb worktree create <task> --resume \
   <owner/repository> --original-prompt-file <private-prompt-file>
 ```
 
-WB validates the expected canonical clone, branch, and linked path. Preserve
-all existing changes and inspect them before continuing.
+WB recovers the registered branch and active Work Log claim before it consults
+current naming policy. A changed repository/user prefix cannot split the task;
+use exact `--branch` only to assert the recovered branch. WB preserves the
+existing claim and projection. A different explicit run, agent, runtime, or
+model requires an audited handoff instead of a silent reclaim. Preserve all
+existing changes and inspect them before continuing.
 
-If creation reports failure, run `git worktree list --porcelain` and inspect
-the expected path and Work Log report before retrying. Prompt and identifier
-errors are rejected before mutation; a rare storage failure after Git publishes
-a worktree is currently reported as partial state rather than auto-deleted.
+If Work Log publication fails after Git publishes coordinated worktrees, WB
+returns typed exact outcomes, writes durable cleanup receipts when possible,
+rolls back every asset published by that invocation, and terminalizes written
+claims append-only. If rollback cannot be proven, inspect the reported exact
+path/backlog with `wb worktree list` and `wb worktree cleanup`; never guess or
+delete it with raw Git. Prompt and identifier errors are rejected before
+mutation.

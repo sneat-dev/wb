@@ -38,8 +38,12 @@ wb worktree guard <printed-worktree-path>
 wb worktree list <task>
 ```
 
-Use `codex/`, `claude/`, or the active harness's required prefix. Use one task
-slug and one creation command for a coordinated multi-repository change.
+With no prefix, WB uses the task slug itself as the branch name. Use
+`--branch-prefix <team-or-workflow>/` for one invocation, or configure a user
+or repository policy; use `--branch` only for an exact pre-agreed branch.
+Branch names are not agent provenance — use the Work Log for runtime and model
+identity. Use one task slug and one creation command for a coordinated
+multi-repository change.
 
 WB fetches and pins `origin/main` before branching without switching or
 fast-forwarding the canonical checkout. If a repository only supplies read-only integration-test input, its clean, freshly synchronized
