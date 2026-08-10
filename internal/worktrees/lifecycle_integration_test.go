@@ -205,6 +205,35 @@ func TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval(t *testin
 	}
 }
 
+func TestCleanupCompletesWhenInvokedFromWorktreeBeingRemoved(t *testing.T) {
+	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-from-removed-cwd")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(created.WorktreeDir); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if chdirErr := os.Chdir(originalDirectory); chdirErr != nil {
+			t.Errorf("restore test directory: %v", chdirErr)
+		}
+	}()
+
+	cleaned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-from-removed-cwd",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaned.Results) != 1 || !cleaned.Results[0].Applied || !cleaned.Results[0].WorktreeGone || !cleaned.Results[0].BranchDeleted {
+		t.Fatalf("cleanup from removed cwd = %#v", cleaned.Results)
+	}
+}
+
 func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
 	fixture := newGitFixtureForRepository(t, ".github")
 	created, err := Create(context.Background(), []string{"acme/.github"}, CreateOptions{

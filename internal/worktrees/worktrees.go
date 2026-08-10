@@ -1323,7 +1323,22 @@ func branchWorktreeCanonical(ctx context.Context, canonical *canonicalRepository
 }
 
 func validBranch(ctx context.Context, branch string) bool {
-	command := exec.CommandContext(ctx, "git", "check-ref-format", "--branch", branch)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(gitPath) {
+		gitPath, err = filepath.Abs(gitPath)
+		if err != nil {
+			return false
+		}
+	}
+	command := exec.CommandContext(ctx, gitPath, "check-ref-format", "--branch", branch)
+	// This syntax-only Git command must not inherit a worktree that cleanup has
+	// just removed. A final local-branch retirement persists its durable
+	// backlog stage after removing that checkout; using a stable directory keeps
+	// validation independent of the caller's current directory.
+	command.Dir = os.TempDir()
 	command.Env = console.Env()
 	return command.Run() == nil
 }
