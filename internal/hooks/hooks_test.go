@@ -452,7 +452,7 @@ func TestManagedHookResolvesWBAtRuntimeAfterInstallerDisappears(t *testing.T) {
 	isolateConfig(t)
 	root := t.TempDir()
 	binA := filepath.Join(root, "bin-a")
-	binB := filepath.Join(root, "bin-b")
+	binB := filepath.Join(root, "bin with space")
 	if err := os.MkdirAll(binA, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -537,6 +537,24 @@ func TestManagedHookRejectsUnsafeRuntimeWBExecutables(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("missing from PATH", func(t *testing.T) {
+		gitExecutable, lookErr := exec.LookPath("git")
+		if lookErr != nil {
+			t.Fatal(lookErr)
+		}
+		bin := t.TempDir()
+		if err := os.Symlink(gitExecutable, filepath.Join(bin, "git")); err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(preCommit)
+		command.Dir = repo
+		command.Env = hookEnvironment(map[string]string{"PATH": bin}, "WB_EXECUTABLE")
+		output, runErr := command.CombinedOutput()
+		if runErr == nil || !strings.Contains(string(output), "wb was not found") {
+			t.Fatalf("missing resolver result = %v, output=%q", runErr, output)
+		}
+	})
 }
 
 func hookEnvironment(overrides map[string]string, remove ...string) []string {
@@ -1245,25 +1263,19 @@ func TestCheckDoesNotFlagHookExecutableBuiltAfterHeadCommit(t *testing.T) {
 	}
 }
 
-// TestCheckIgnoresUnresolvableHookExecutable pins existing tests' fixtures,
-// which routinely point managed hooks at executable paths that were never
-// created on disk (e.g. "/opt/wb"). Apply itself now refuses to install a
-// hook pointing at a path that doesn't resolve to a durable executable, so
-// this writes the shim directly to reach a state Apply would no longer
-// produce. The staleness check must still skip silently rather than fail
-// Check or fabricate a finding when there's nothing to stat.
-func TestCheckIgnoresUnresolvableHookExecutable(t *testing.T) {
+// TestCheckIgnoresUnresolvableCurrentExecutable proves hook text validation is
+// independent of the executable path used by the checking process. Staleness
+// evidence is omitted when that current executable cannot be resolved.
+func TestCheckIgnoresUnresolvableCurrentExecutable(t *testing.T) {
 	repo := initWBSourceRepo(t)
 	isolateConfig(t)
 	executable := filepath.Join(t.TempDir(), "wb")
 	mustWriteExecutable(t, executable, "#!/bin/sh\nexit 0\n")
-	result, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
+	_, err := Apply(ApplyOptions{RepoPath: repo, WBExecutable: executable})
 	if err != nil {
 		t.Fatal(err)
 	}
-	preCommit := filepath.Join(result.Report.ManagedPath, "pre-commit")
-	mustWrite(t, preCommit, shimContent("/opt/wb-does-not-exist", "pre-commit", "", "", "", false))
-	report, err := Check(repo, "", executable, "")
+	report, err := Check(repo, "", "/opt/wb-does-not-exist", "")
 	if err != nil {
 		t.Fatal(err)
 	}

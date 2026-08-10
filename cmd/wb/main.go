@@ -196,6 +196,10 @@ func persistentCommandID(cmd *cobra.Command) string {
 }
 
 func main() {
+	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)
+		os.Exit(exitFindings)
+	}
 	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
 		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
 	}
@@ -215,6 +219,32 @@ func main() {
 		os.Exit(worktrees.RunSecureRenameGitHelper(os.Args[2:]))
 	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// propagateRuntimeWBExecutable gives Git hooks started by this WB process a
+// transient, invocation-scoped route back to the same executable. Managed hook
+// files deliberately contain no installer path: a caller-provided override is
+// preserved, while a normal CLI invocation supplies its current executable to
+// child Git processes through the inherited environment.
+func propagateRuntimeWBExecutable(
+	lookupEnv func(string) (string, bool),
+	executable func() (string, error),
+	setEnv func(string, string) error,
+) error {
+	if _, configured := lookupEnv("WB_EXECUTABLE"); configured {
+		return nil
+	}
+	path, err := executable()
+	if err != nil {
+		return fmt.Errorf("locate current executable: %w", err)
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("current executable path is not absolute: %q", path)
+	}
+	if err := setEnv("WB_EXECUTABLE", filepath.Clean(path)); err != nil {
+		return fmt.Errorf("export WB_EXECUTABLE: %w", err)
+	}
+	return nil
 }
 
 // run executes the CLI and maps the outcome onto a documented exit code. It is

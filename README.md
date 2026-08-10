@@ -1087,6 +1087,11 @@ them from a non-default projects hierarchy. A shim installed from the normal
 default home remains migration-compatible with legacy linked worktrees; an
 explicit `WB_HOME` remains isolated.
 
+The managed shim does not retain the executable path used by `hooks install`
+or `hooks repair`. At hook runtime it prefers `WB_EXECUTABLE`, otherwise
+resolves `wb` from `PATH`, then verifies the physical result is an absolute,
+regular, executable file outside the repository before invoking it.
+
 #### Hook policy, detection, and composable profiles
 
 Policy layers in this order: WB's conservative built-ins (including worktree

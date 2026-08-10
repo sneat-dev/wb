@@ -51,7 +51,11 @@ pre-push. Git has no pre-checkout hook, so post-checkout reports an unmanaged
 checkout after it has happened and preserves it for inspection; pre-commit and
 pre-push block unsafe work. To opt out, record profiles.exclude: [worktree] in
 the selected hooks policy and run repair; the exception remains visible to
-hooks check.`,
+hooks check.
+
+Managed shims retain no installer executable path. At each Git invocation they
+prefer an explicit WB_EXECUTABLE; otherwise they resolve wb from PATH and
+reject relative, repository-local, non-regular, or non-executable results.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fleet {
