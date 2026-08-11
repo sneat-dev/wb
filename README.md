@@ -1093,6 +1093,14 @@ proof that an optional workflow cannot register later, so collect separate
 repository release evidence before cleanup. Both modes reject identity drift.
 Do not replace this with a detached or long-running shell poller.
 
+The default observation interval is 30 seconds. Within one foreground slice,
+WB caches the initial branch-protection and active-rules receipt while it polls
+the exact mutable PR and commit state; before reporting a pass it fetches that
+policy receipt again. This keeps the same fail-closed merge evidence while
+reducing a pending PR's normal REST observation rate from seven calls every ten
+seconds to four calls every thirty seconds (about an 81% reduction, before any
+rules pagination).
+
 ### `wb hooks` — consistent, user-owned Git hooks
 
 WB installs small managed shims while you retain control of the scripts they

@@ -15,6 +15,12 @@ import (
 // never a detached worker or a hidden thirty-minute loop.
 const MaxForegroundCheckWaitSlice = 9 * time.Minute
 
+// DefaultCheckPollInterval deliberately leaves room for other WB operations
+// sharing the authenticated GitHub user budget. A PR receipt still reads every
+// dynamic fact on each observation; only static branch policy is cached within
+// the bounded slice and is fetched again before a pass is returned.
+const DefaultCheckPollInterval = 30 * time.Second
+
 // WaitForCommitChecks observes checks for one exact target commit. PullRequest
 // is optional: when present it corroborates that exact PR head and target and
 // augments the exact-head check-run/status receipt with GitHub's PR view.
@@ -45,6 +51,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	defer cancel()
 	stableFingerprint := ""
 	stableObservations := 0
+	policyCache := requiredChecksCache{}
 	for {
 		if err := sliceCtx.Err(); err != nil {
 			if err == context.DeadlineExceeded {
@@ -126,7 +133,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			return failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled"), nil
 		}
 
-		requiredChecks, authority, freshnessAuthority, authorityReason := requiredChecksReceipt(sliceCtx, options)
+		requiredChecks, authority, freshnessAuthority, authorityReason := requiredChecksReceipt(sliceCtx, options, &policyCache)
 		if authorityReason != "" {
 			if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
 				return pendingCommitWaitResult(result), nil
@@ -165,6 +172,28 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			}
 		}
 		if terminal && stableObservations >= 2 {
+			// Branch protection and active rules are configuration, not a CI
+			// observation. Reusing their first receipt eliminates three REST
+			// requests from every pending poll, but a pass must still be based on
+			// a fresh authority receipt in case policy changed during the slice.
+			requiredChecks, authority, freshnessAuthority, authorityReason = requiredChecksReceipt(sliceCtx, options, nil)
+			if authorityReason != "" {
+				if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
+					return pendingCommitWaitResult(result), nil
+				}
+				result.Reason = "required-check authority is unavailable; terminal CI evidence is incomplete: " + authorityReason
+				return pendingCommitWaitResult(result), nil
+			}
+			result.RequiredChecks = requiredChecks
+			result.RequiredChecksAuthority = authority
+			result.TargetFreshnessAuthority = freshnessAuthority
+			if options.PullRequest != "" && freshnessAuthority == "" {
+				return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
+			}
+			if missingRequired = missingRequiredChecks(checks, requiredChecks); len(missingRequired) > 0 {
+				result.Reason = "required GitHub checks have not registered for the exact head: " + strings.Join(missingRequired, ", ")
+				return pendingCommitWaitResult(result), nil
+			}
 			// A final identity receipt closes the race between the stable check
 			// observation and the reported terminal pass.
 			if options.PullRequest != "" {
@@ -362,11 +391,30 @@ func missingRequiredChecks(checks []RemoteCheck, required []RequiredRemoteCheck)
 // PR's effective required-check view when one exists. A terminal result is not
 // allowed when any authority cannot be read: an observed green snapshot can
 // otherwise precede registration of a required workflow on the same SHA.
-func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions) ([]RequiredRemoteCheck, string, string, string) {
+type requiredChecksCache struct {
+	valid              bool
+	branchChecks       []RequiredRemoteCheck
+	freshnessAuthority string
+}
+
+func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string) {
 	required := map[string]RequiredRemoteCheck{}
-	branchChecks, freshnessAuthority, reason := targetBranchRequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "")
-	if reason != "" {
-		return nil, "", "", reason
+	branchChecks := []RequiredRemoteCheck(nil)
+	freshnessAuthority := ""
+	if cache != nil && cache.valid {
+		branchChecks = cache.branchChecks
+		freshnessAuthority = cache.freshnessAuthority
+	} else {
+		var reason string
+		branchChecks, freshnessAuthority, reason = targetBranchRequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "")
+		if reason != "" {
+			return nil, "", "", reason
+		}
+		if cache != nil {
+			cache.valid = true
+			cache.branchChecks = branchChecks
+			cache.freshnessAuthority = freshnessAuthority
+		}
 	}
 	for _, expectation := range branchChecks {
 		addRequiredExpectation(required, expectation)

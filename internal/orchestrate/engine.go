@@ -393,7 +393,7 @@ func githubChecksPollInterval(options Options) time.Duration {
 	if options.CheckPollInterval > 0 {
 		return options.CheckPollInterval
 	}
-	return 10 * time.Second
+	return DefaultCheckPollInterval
 }
 
 func failResult[T any](result *Result[T], err error) error {

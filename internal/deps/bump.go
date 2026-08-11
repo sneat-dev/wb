@@ -470,7 +470,7 @@ func normalizeBumpOptions(options BumpOptions, events []ReleaseEvent) (BumpOptio
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("max waves must be at least 1")
 	}
 	if options.PollInterval == 0 {
-		options.PollInterval = 10 * time.Second
+		options.PollInterval = 30 * time.Second
 	}
 	if options.PollInterval < 0 {
 		return BumpOptions{}, orchestrate.Options{}, nil, fmt.Errorf("release poll interval must not be negative")

@@ -157,6 +157,7 @@ func TestWaitAndMergeRequiresStableProducerAwareExactHeadReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := filepath.Join(t.TempDir(), "checks-state")
+	policyState := filepath.Join(t.TempDir(), "policy-state")
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'
@@ -190,6 +191,9 @@ if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
   exit 0
 fi
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+	count=0
+	if [ -f "$WB_POLICY_STATE" ]; then count=$(cat "$WB_POLICY_STATE"); fi
+	count=$((count + 1)); printf '%s' "$count" > "$WB_POLICY_STATE"
   echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'
   exit 0
 fi
@@ -222,6 +226,7 @@ exit 2
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CHECK_STATE", state)
+	t.Setenv("WB_POLICY_STATE", policyState)
 
 	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Ref: "main", Commit: "0123456789012345678901234567890123456789"}
 	// This exercises retry semantics, not a process-start SLA. Under the full
@@ -237,8 +242,11 @@ exit 2
 	if !result.Merged || result.Status != "merged" || len(result.Checks) < 2 || !strings.Contains(result.Reason, "producer-aware") {
 		t.Fatalf("result = %+v", result)
 	}
-	if count, err := os.ReadFile(state); err != nil || strings.TrimSpace(string(count)) != "6" {
-		t.Fatalf("stabilized waiter did not perform the expected observed/required rereads: count=%q err=%v", count, err)
+	if count, err := os.ReadFile(state); err != nil || strings.TrimSpace(string(count)) != "7" {
+		t.Fatalf("stabilized waiter did not perform the expected observed/required rereads plus the final fresh-policy receipt: count=%q err=%v", count, err)
+	}
+	if count, err := os.ReadFile(policyState); err != nil || strings.TrimSpace(string(count)) != "2" {
+		t.Fatalf("branch policy was not cached during pending observations and refreshed before pass: count=%q err=%v", count, err)
 	}
 }
 
