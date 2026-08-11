@@ -15,3 +15,8 @@ gate in `$wb-merge` before any release/tag, installation, cleanup, or next
 merge-cycle action; it permits only the skill's verified registered
 nested-worktree exception. Leave any blocked canonical checkout for its owner
 rather than repairing it.
+
+For installation evidence, follow the owning product's distribution status:
+never use a channel marked blocked or unverified. Use an exact source-built
+artifact only when the product explicitly permits it; otherwise report release
+evidence blocked and keep the task queued.
