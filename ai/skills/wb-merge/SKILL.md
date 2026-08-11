@@ -21,6 +21,25 @@ faster, lower-cost model with adequate repository and CI capability; the Work
 Log records a model ID only when the runtime explicitly exposes it. Omit
 `--model` when it is not exposed; never infer or guess a model ID.
 
+## Mechanical integration-only boundary
+
+The dedicated merger is **mechanical integration-only**. It must not author,
+change, or repair implementation code, tests, specs, generated artifacts, or
+fixtures to satisfy build, test, coverage, lint, spec, or generated gates.
+Those failures belong to the originating implementation agent; return gate
+repairs to a distinct implementation agent while the merger retains the branch
+in its queue. It may modify a conflicted file only to perform a mechanical
+merge-conflict resolution that reconciles already-approved branch content and
+introduces no new behavior. A conflict requiring a product or design decision,
+or any novel code or test change, must be returned to implementation rather
+than resolved by the merger.
+
+This boundary does not weaken full-cycle ownership: the merger still fetches
+and fast-forwards, queues and batches compatible branches, mechanically
+integrates, validates, operates the PR/merge, observes exact-head and
+post-merge CI, collects release/install/distribution evidence, and performs
+audited cleanup.
+
 Coordination uses one exclusive logical merger lane per
 `(repository, target branch)`, independent of the calling session. Main agents
 submit manual handoffs; the lane owner batches compatible work, orders
