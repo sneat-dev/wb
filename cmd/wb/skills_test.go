@@ -45,6 +45,7 @@ type capability struct {
 	ID          string             `json:"id"`
 	FeatureRefs []string           `json:"feature_refs"`
 	Surfaces    capabilitySurfaces `json:"surfaces"`
+	Notes       string             `json:"notes"`
 }
 
 type capabilitySurfaces struct {
@@ -246,6 +247,19 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"repairs to a distinct implementation agent",
 		"mechanical\nmerge-conflict resolution",
 		"introduces no new behavior",
+		"Immediately after a PR\n   into `main` reports merged, and before any release/tag advancement,\n   installation evidence, cleanup, or other merge-cycle action",
+		"resolve that repository's canonical checkout",
+		"Require it to be checked out on local `main` with clean\n   staged and unstaged tracked state; reject ordinary untracked paths",
+		"only\n   untracked exception is an exact registered nested linked-worktree root",
+		"prove `origin/main` tracks no conflicting path there",
+		"snapshot that\n   nested worktree's branch, `HEAD`, and status, and recheck every snapshot is\n   unchanged after canonical synchronization",
+		"All other dirty or non-`main`\n   states fail closed",
+		"git fetch origin",
+		"git merge --ff-only origin/main",
+		"PR's exact server\n   merge-result SHA",
+		"canonical checkout is missing,\n   cannot fast-forward, or has a different exact SHA, fail closed",
+		"Do not advance a\n   release or tag, collect installation evidence, terminalize cleanup, or\n   start the next batch before this gate passes",
+		"Never reset, switch over\n   changes, stash, discard, or otherwise repair the canonical checkout",
 	} {
 		if !strings.Contains(contract, required) {
 			t.Errorf("WB merger contract is missing %q", required)
@@ -269,7 +283,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"Checked-in adapter files alone do not mean the merger is installed", "supersedes copied legacy merger prompts"} {
+	for _, required := range []string{"Checked-in adapter files alone do not mean the merger is installed", "supersedes copied legacy merger prompts", "post-PR-merge canonical-checkout\nreconciliation gate", "before release/tag advancement,\ninstallation evidence, cleanup, or the next merge-cycle action", "verified registered nested-worktree\nexception", "must not replace it, including its verified registered nested-worktree\nexception, with a shortcut or repair a blocked canonical checkout"} {
 		if !strings.Contains(string(adapters), required) {
 			t.Errorf("merger adapter contract is missing %q", required)
 		}
@@ -292,7 +306,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"name: wb-merger", "description:", "Load and follow `$wb-merge`", "mechanical integration-only", "must not author or repair implementation code", "generated artifacts", "gate failures", "distinct implementation agent", "keep that branch queued", "behavioral-free mechanical merge conflicts"} {
+	for _, required := range []string{"name: wb-merger", "description:", "Load and follow `$wb-merge`", "mechanical integration-only", "must not author or repair implementation code", "generated artifacts", "gate failures", "distinct implementation agent", "keep that branch queued", "behavioral-free mechanical merge conflicts", "After a PR into `main` merges", "canonical checkout reconciliation\ngate", "before any release/tag, installation, cleanup, or next\nmerge-cycle action", "verified registered\nnested-worktree exception", "blocked canonical checkout for its owner\nrather than repairing it"} {
 		if !strings.Contains(string(claudeAgent), required) {
 			t.Errorf("Claude merger agent is missing %q", required)
 		}
@@ -303,14 +317,14 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		}
 	}
 	codex, err := os.ReadFile(filepath.Join(repoRoot, ".codex-plugin", "plugin.json"))
-	if err != nil || !strings.Contains(string(codex), "WB merger workflow") {
+	if err != nil || !strings.Contains(string(codex), "WB merger workflow") || !strings.Contains(string(codex), "reconcile the canonical checkout after every PR merge into main—including only the verified registered nested-worktree exception—before release/tag, installation, cleanup, or the next merge-cycle action") {
 		t.Fatalf("Codex adapter does not expose wb-merge: %v", err)
 	}
 	copilot, err := os.ReadFile(filepath.Join(repoRoot, ".github", "agents", "wb-merger.agent.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"description:", "Read and follow `ai/skills/wb-merge/SKILL.md`", "does not define a second workflow", "mechanical integration-only", "must not author or repair", "generated artifacts", "gate\nfailures", "distinct implementation agent", "Keep the branch queued", "behavioral-free mechanical\nmerge conflicts"} {
+	for _, required := range []string{"description:", "Read and follow `ai/skills/wb-merge/SKILL.md`", "does not define a second workflow", "mechanical integration-only", "must not author or repair", "generated artifacts", "gate\nfailures", "distinct implementation agent", "Keep the branch queued", "behavioral-free mechanical\nmerge conflicts", "After a PR into `main` merges", "canonical checkout reconciliation\ngate", "before any release/tag, installation, cleanup, or\nnext merge-cycle action", "verified registered\nnested-worktree exception", "blocked canonical checkout to its owner\nwithout repairing it"} {
 		if !strings.Contains(string(copilot), required) {
 			t.Errorf("Copilot adapter is missing %q", required)
 		}
@@ -322,7 +336,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"mechanical integration-only", "distinct implementation agent", "keep its branch queued", "behavioral-free mechanical merge conflicts"} {
+	for _, required := range []string{"mechanical integration-only", "distinct implementation agent", "keep its branch queued", "behavioral-free mechanical merge conflicts", "After each PR into main merges", "canonical-checkout reconciliation gate, including only its verified registered nested-worktree exception, before release/tag, installation, cleanup, or the next merge-cycle action"} {
 		if !strings.Contains(string(openAI), required) {
 			t.Errorf("OpenAI merger adapter is missing %q", required)
 		}
@@ -462,6 +476,10 @@ func TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne(t *testing.T) {
 				}
 			}
 		}
+	}
+	mergerCapability, ok := capabilitiesByID["wb.coordination.portable-merger"]
+	if !ok || !strings.Contains(mergerCapability.Notes, "Immediately after every PR into main merges") || !strings.Contains(mergerCapability.Notes, "Tracked state must be clean; ordinary untracked paths are rejected, except exact registered nested-worktree roots with proved no target conflict and unchanged branch/HEAD/status") || !strings.Contains(mergerCapability.Notes, "Until then no release/tag, installation, cleanup, or next merge-cycle action") || !strings.Contains(mergerCapability.Notes, "never resets, switches over changes, stashes, discards, or repairs that checkout") {
+		t.Fatal("portable merger capability must declare the fail-closed post-PR canonical-checkout reconciliation gate")
 	}
 
 	// The manifest is the one WB CLI view, not a hand-picked feature slice.

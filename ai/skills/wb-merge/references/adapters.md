@@ -20,3 +20,9 @@ Checked-in adapter files alone do not mean the merger is installed. Once
 installed, the WB adapter supersedes copied legacy merger prompts; remove or
 disable those copies instead of letting their raw-worktree, prefix-locked, or
 ad hoc CI instructions compete with this contract.
+
+Every adapter delegates the same post-PR-merge canonical-checkout
+reconciliation gate to the canonical skill before release/tag advancement,
+installation evidence, cleanup, or the next merge-cycle action. An adapter
+must not replace it, including its verified registered nested-worktree
+exception, with a shortcut or repair a blocked canonical checkout.
