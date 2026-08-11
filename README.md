@@ -115,8 +115,11 @@ worktree, and a typed local
 outbox event. Every create requires a readable non-empty
 `--original-prompt-file` containing the exact originating request; WB snapshots
 its bytes and SHA-256 digest before creating a worktree and copies them only
-into the private archive. `--agent`, `--agent-runtime`, and `--model` add run
-provenance. The local journal/outbox remains usable as
+into the private archive. `--agent`, `--agent-runtime`, and a mandatory explicit
+`--model` add run provenance. The dispatcher supplies the exact child model it
+selected or the literal `unknown`; WB never guesses. Pass independent optional
+`--cli` and `--provider` when known (provider is routing/billing metadata only,
+never a credential). The local journal/outbox remains usable as
 recovery evidence when a Synchestra server is down, so server receipt never
 blocks safe local work. It is not yet a Git-repository communication fallback
 and cannot deliver inter-agent messages.

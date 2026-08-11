@@ -34,7 +34,8 @@ recognizes legacy linked worktrees there during migration.
 ```sh
 wb worktree guard .
 wb worktree create <task> --branch <prefix>/<task> <owner>/<repository> \
-  --effort <effort> --run <run> --agent <agent> --agent-runtime <runtime> --model <model> \
+  --effort <effort> --run <run> --agent <agent> --agent-runtime <runtime> --model <exact-child-model-or-unknown> \
+  --cli <invoking-cli-if-known> --provider <routing-or-billing-provider-if-known> \
   --original-prompt-file <private-prompt-file>
 wb worktree guard <printed-worktree-path>
 wb worktree list <task>
@@ -64,6 +65,14 @@ prompt text in a repository or command argument. The local outbox preserves
 recovery evidence while Synchestra is unavailable, so local create, seal, and
 cleanup do not wait for a server. It is not the planned Git-repository
 communication fallback and does not deliver messages to agents.
+
+The dispatcher/session/worktree creator must pass the exact child `--model` it
+selected, or the literal `unknown`; omission is rejected before WB publishes a
+worktree or claim. Never infer it from a harness, CLI, environment, or
+provider. Also pass `--cli` and `--provider` independently when known. `cli`
+names the invoking client (for example `codex` or `opencode`); `provider` is
+only the routing/billing/subscription identifier and must never be a token or
+credential. A direct API call may omit `cli`.
 
 One agent is the concurrent writer for each worktree/branch. Helpers are
 read-only and return patches/findings. Inspect upstream state explicitly and

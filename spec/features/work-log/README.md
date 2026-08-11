@@ -35,11 +35,11 @@ usage.
 
 - An **Effort** is one durable requested outcome. `effort_id` is supplied by an
   upstream task/dispatch when available, otherwise WB creates a stable local ID.
-- A **Run** is one concrete agent execution of an Effort. It records the
-  instantiator and the agent's vendor, surface, role, parent session, and
-  nullable model identity. A present model value records whether it was
-  `runtime_observed` or `caller_declared`; absence is `unknown`, never a guessed
-  default.
+- A **Run** is one concrete agent execution of an Effort. Its creator explicitly
+  records the exact child model or `unknown`, the declaring identity and
+  provenance (`runtime_observed`, `caller_declared`, or `unknown`), plus
+  independent optional `cli` and routing/billing `provider` identity. Neither
+  route field is inferred; provider is never a credential.
 - A **Worktree Claim** is the time-bounded, exclusive local authority for one
   Run to change one WB-managed worktree and branch. It records canonical
   repository identity, worktree path, branch, immutable base, and observed
@@ -105,17 +105,19 @@ or projection/event disagreement rather than guessing a safe state.
 
 #### REQ: agent-provenance-and-usage
 
-A Run MUST retain instantiator identity and kind, agent vendor, surface,
-nullable model identity, role (`primary`, `reviewer`, or `helper`), session ID,
-and nullable parent-session ID. Every non-null model MUST carry provenance of
-exactly `runtime_observed` or `caller_declared`; a null model represents unknown
-identity and carries no invented provenance. WB MUST NOT infer a model value
-when the runtime does not expose one. If later evidence proves immutable
-provenance metadata wrong, WB MUST append a typed correction event naming the
-superseded event/field and replacement value/provenance; it MUST NOT rewrite
-history.
-Recovery and projections apply the latest valid correction while retaining the
-full chain. Token usage MUST carry a discriminator of exactly
+A Run creator MUST explicitly supply the exact child model or literal `unknown`
+before a new claim is published. WB MUST retain the declaring identity and model
+provenance of exactly `runtime_observed`, `caller_declared`, or `unknown`; it
+MUST NOT infer model, CLI, or provider from a harness, environment, or one
+another. CLI and provider are independent optional bounded identifiers;
+provider is routing/billing/subscription metadata only and never a credential.
+Legacy absent model projects as unknown and absent route fields remain absent.
+If later evidence proves identity metadata wrong, WB MUST append a typed,
+claim-addressable correction event with reason, actor, timestamp, explicit
+predecessor, and replacement/clear field presence; it MUST NOT rewrite history.
+Recovery and projections reject an incomplete, forked, cyclic, cross-claim, or
+malformed chain and apply the latest valid correction while retaining complete
+history, including after worktree cleanup. Token usage MUST carry a discriminator of exactly
 `provider_reported`, `estimated`, or `unavailable`; input tokens, output
 tokens, total, estimated cost, currency, and provider usage reference are
 nullable unless the selected discriminator makes them available. Local metrics
@@ -239,12 +241,13 @@ Run can validate current Git evidence and acquire the claim.
 
 ### AC: unknown-model-is-not-guessed-and-can-be-corrected
 
-**Given** the current runtime exposes no model identity, or later evidence
-contradicts a caller-declared value in an immutable Run event
+**Given** a dispatcher creates a Run with an exact child model or explicit
+`unknown`, or later evidence contradicts its immutable identity metadata
 **When** WB records or recovers the Work Log
-**Then** it keeps the model unknown rather than guessing, labels every present
-value `runtime_observed` or `caller_declared`, and applies an append-only
-correction linked to the superseded event without modifying prior bytes.
+**Then** it rejects omission before publication, never guesses model/CLI/provider,
+retains caller/creator provenance and independent optional route identity, and
+applies a deterministic append-only correction chain without modifying prior
+bytes, including after the worktree is removed.
 
 ### AC: safe-base-refresh-and-integration
 

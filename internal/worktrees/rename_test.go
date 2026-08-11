@@ -449,7 +449,7 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "multi-recycle-old",
-		WorkLog:      WorkLogOptions{RunID: "multi-recycle-run"},
+		WorkLog:      WorkLogOptions{RunID: "multi-recycle-run", Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)

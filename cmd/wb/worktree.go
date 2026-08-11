@@ -24,6 +24,58 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeCleanupCmd())
 	command.AddCommand(newWorktreeRenameCmd())
 	command.AddCommand(newWorktreeAbortCmd())
+	command.AddCommand(newWorktreeCorrectIdentityCmd())
+	return command
+}
+
+func newWorktreeCorrectIdentityCmd() *cobra.Command {
+	var model, cli, provider, actor, reason, eventID, format string
+	command := &cobra.Command{
+		Use:   "correct-identity <effort> <run> <claim-id>",
+		Short: "Append an audited execution-identity correction to one Work Log claim",
+		Long: `Correct execution identity only through an immutable, append-only Work Log event.
+Address the durable effort/run/claim identity, not a live worktree, so a correction
+also works after terminal cleanup. Pass a stable --event-id so retries are
+idempotent. Select each field to replace: --model accepts an exact model or
+explicit unknown; --cli= and --provider= clear their optional values. WB never
+guesses model, CLI, or provider. Provider is a routing/billing identifier only,
+never a token, credential, or secret.`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			var modelValue, cliValue, providerValue *string
+			if command.Flags().Changed("model") {
+				modelValue = &model
+			}
+			if command.Flags().Changed("cli") {
+				cliValue = &cli
+			}
+			if command.Flags().Changed("provider") {
+				providerValue = &provider
+			}
+			result, err := worktrees.CorrectExecutionIdentity(worktrees.CorrectExecutionIdentityOptions{
+				ProjectsRoot: projectsRoot, EffortID: args[0], RunID: args[1], ClaimID: args[2], EventID: eventID,
+				Actor: actor, Reason: reason, Model: modelValue, CLI: cliValue, Provider: providerValue,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				return json.NewEncoder(command.OutOrStdout()).Encode(result)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "corrected execution identity for claim %s with event %s\n", result.ClaimID, result.CorrectionID)
+			return err
+		},
+	}
+	command.Flags().StringVar(&model, "model", "", "replacement exact child model or explicit unknown")
+	command.Flags().StringVar(&cli, "cli", "", "replacement invoking CLI; use --cli= to clear")
+	command.Flags().StringVar(&provider, "provider", "", "replacement routing/billing provider; use --provider= to clear")
+	command.Flags().StringVar(&actor, "actor", "", "required person or agent making the correction")
+	command.Flags().StringVar(&reason, "reason", "", "required audit reason")
+	command.Flags().StringVar(&eventID, "event-id", "", "required stable correction event ID for idempotent retry")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
@@ -87,7 +139,7 @@ The default is a dry-run plan.`,
 func newWorktreeCreateCmd() *cobra.Command {
 	var branch, branchPrefix, base, format string
 	var resume bool
-	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
+	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
 		Short: "Create feature branches below WB's home worktrees directory",
@@ -129,7 +181,7 @@ text never enters the worktree projection, source Git, or normal output.`,
 			}
 			workLog := worktrees.WorkLogOptions{
 				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
-				AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
+				AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
 				RequireOriginalPrompt: true,
 			}
 			repositories := args[1:]
@@ -205,7 +257,9 @@ text never enters the worktree projection, source Git, or normal output.`,
 	command.Flags().StringVar(&initiator, "initiator", "", "human or agent that started the effort")
 	command.Flags().StringVar(&agentID, "agent", "", "agent identity")
 	command.Flags().StringVar(&agentRuntime, "agent-runtime", "", "agent runtime, e.g. codex or claude")
-	command.Flags().StringVar(&model, "model", "", "agent model identifier")
+	command.Flags().StringVar(&model, "model", "", "required exact child model identifier, or explicit unknown; WB never guesses")
+	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
+	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
@@ -486,7 +540,7 @@ func newWorktreeRenameCmd() *cobra.Command {
 	var branch, branchPrefix, base, reportDir, format string
 	var force, apply, deleteRemote bool
 	var preserveCachePaths []string
-	var effortID, runID, initiator, agentID, agentRuntime, model, originalPrompt string
+	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
 		Use:   "rename <old-task> <new-task>",
 		Short: "Re-home a task's worktrees under a new task name, keeping their working-tree contents",
@@ -539,7 +593,7 @@ for the new private Work Log.`,
 				PreserveCachePaths: preserveCachePaths,
 				WorkLog: worktrees.WorkLogOptions{
 					EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
-					AgentRuntime: agentRuntime, Model: model, OriginalPrompt: originalPrompt,
+					AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
 					RequireOriginalPrompt: apply,
 				},
 				Apply:     apply,
@@ -594,7 +648,9 @@ for the new private Work Log.`,
 	command.Flags().StringVar(&initiator, "initiator", "", "human or agent that started the new effort")
 	command.Flags().StringVar(&agentID, "agent", "", "agent identity for the new effort")
 	command.Flags().StringVar(&agentRuntime, "agent-runtime", "", "agent runtime, e.g. codex or claude")
-	command.Flags().StringVar(&model, "model", "", "agent model identifier")
+	command.Flags().StringVar(&model, "model", "", "required exact child model identifier, or explicit unknown; WB never guesses")
+	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
+	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required with --apply: readable non-empty file containing the new exact prompt; archived under WB_HOME only")
 	command.Flags().BoolVar(&apply, "apply", false, "perform the rename; the default is a dry-run plan")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")

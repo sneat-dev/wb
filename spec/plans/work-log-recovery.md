@@ -84,6 +84,11 @@ no-shared-writer workflow.
 - Partially implemented: live worktree inventory and recycle crash recovery.
   The capability manifest names their exact limitations; seven-day history and
   every process-crash replay point remain open.
+- Delivered in WB #62 (pending merge): creator-supplied execution identity on
+  new claims (`model` required as exact ID or `unknown`, independent optional
+  `cli`/routing-provider), append-only claim-addressable correction events with
+  predecessor chains and offline outbox receipts, and legacy unknown/absent
+  projection. This is local Work Log evidence, not a Synchestra transport.
 - Still planned: the full `wb worktree log` command group, periodic refresh and
   integration enforcement, Synchestra authoritative sync/replica observation,
   Git transport fallback, distributed fencing, Portable Merger Agent,

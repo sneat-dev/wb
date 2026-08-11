@@ -132,7 +132,7 @@ func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot,
 				Operation:    "policy-resume",
-				WorkLog:      WorkLogOptions{RunID: test.explicitRun},
+				WorkLog:      WorkLogOptions{RunID: test.explicitRun, Model: "unknown"},
 			})
 			if err != nil || len(created) != 1 || created[0].Branch != test.wantBranch {
 				t.Fatalf("initial create = %#v err=%v", created, err)
@@ -152,7 +152,7 @@ func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 				ProjectsRoot: fixture.projectsRoot,
 				Operation:    "policy-resume",
 				Resume:       true,
-				WorkLog:      WorkLogOptions{RunID: test.explicitRun},
+				WorkLog:      WorkLogOptions{RunID: test.explicitRun, Model: "unknown"},
 			})
 			if err != nil || len(resumed) != 1 {
 				t.Fatalf("resume after policy drift = %#v err=%v", resumed, err)
@@ -257,7 +257,7 @@ func TestRenameRefusesTargetPolicyMovementAfterPlanning(t *testing.T) {
 		NewTask:      "new",
 		Apply:        true,
 		DeleteRemote: true,
-		WorkLog:      WorkLogOptions{OriginalPrompt: prompt, RequireOriginalPrompt: true},
+		WorkLog:      WorkLogOptions{Model: "unknown", OriginalPrompt: prompt, RequireOriginalPrompt: true},
 		beforeRenamePreflight: func() {
 			commitRepositoryBranchConfig(t, fixture, "version: 1\nworktrees:\n  branch_prefix: second/\n", "moved branch policy")
 		},

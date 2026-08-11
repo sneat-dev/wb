@@ -40,6 +40,26 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	}
 }
 
+func TestWorktreeIdentityHelpAndCreatePreflightRequireExplicitModel(t *testing.T) {
+	create := newWorktreeCreateCmd()
+	for _, flag := range []string{"model", "cli", "provider"} {
+		if create.Flags().Lookup(flag) == nil {
+			t.Fatalf("create is missing --%s", flag)
+		}
+	}
+	correct := newWorktreeCorrectIdentityCmd()
+	for _, flag := range []string{"event-id", "actor", "reason", "model", "cli", "provider"} {
+		if correct.Flags().Lookup(flag) == nil {
+			t.Fatalf("correct-identity is missing --%s", flag)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", t.TempDir(), "worktree", "create", "identity-required", "acme/app", "--original-prompt-file", writeOriginalPromptFixture(t, "identity")}, &stdout, &stderr)
+	if code == exitOK || !strings.Contains(stderr.String(), "--model is required") {
+		t.Fatalf("missing model CLI preflight = code %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
 	for _, test := range []struct {
 		name string
