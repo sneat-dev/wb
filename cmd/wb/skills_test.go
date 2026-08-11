@@ -241,6 +241,11 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		"wb worktree cleanup <task> --apply --remote --older-than 0",
 		"Work Log",
 		"TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
+		"mechanical integration-only",
+		"must not author,\nchange, or repair implementation code, tests, specs, generated artifacts, or\nfixtures",
+		"repairs to a distinct implementation agent",
+		"mechanical\nmerge-conflict resolution",
+		"introduces no new behavior",
 	} {
 		if !strings.Contains(contract, required) {
 			t.Errorf("WB merger contract is missing %q", required)
@@ -287,7 +292,7 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"name: wb-merger", "description:", "Load and follow `$wb-merge`"} {
+	for _, required := range []string{"name: wb-merger", "description:", "Load and follow `$wb-merge`", "mechanical integration-only", "must not author or repair implementation code", "generated artifacts", "gate failures", "distinct implementation agent", "keep that branch queued", "behavioral-free mechanical merge conflicts"} {
 		if !strings.Contains(string(claudeAgent), required) {
 			t.Errorf("Claude merger agent is missing %q", required)
 		}
@@ -305,13 +310,22 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"description:", "Read and follow `ai/skills/wb-merge/SKILL.md`", "does not define a second workflow"} {
+	for _, required := range []string{"description:", "Read and follow `ai/skills/wb-merge/SKILL.md`", "does not define a second workflow", "mechanical integration-only", "must not author or repair", "generated artifacts", "gate\nfailures", "distinct implementation agent", "Keep the branch queued", "behavioral-free mechanical\nmerge conflicts"} {
 		if !strings.Contains(string(copilot), required) {
 			t.Errorf("Copilot adapter is missing %q", required)
 		}
 	}
 	if strings.Contains(string(copilot), "model:") {
 		t.Error("Copilot adapter must leave model selection to its harness")
+	}
+	openAI, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-merge", "agents", "openai.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"mechanical integration-only", "distinct implementation agent", "keep its branch queued", "behavioral-free mechanical merge conflicts"} {
+		if !strings.Contains(string(openAI), required) {
+			t.Errorf("OpenAI merger adapter is missing %q", required)
+		}
 	}
 }
 
