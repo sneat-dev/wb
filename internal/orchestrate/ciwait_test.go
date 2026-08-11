@@ -28,3 +28,12 @@ func TestWaitForCommitChecksRejectsSliceAboveForegroundCeiling(t *testing.T) {
 		t.Fatalf("overlong wait error = %v", err)
 	}
 }
+
+func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
+	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {
+		t.Fatalf("default GitHub check poll interval = %s, want %s", got, DefaultCheckPollInterval)
+	}
+	if DefaultCheckPollInterval != 30*time.Second {
+		t.Fatalf("quota-aware default = %s, want 30s", DefaultCheckPollInterval)
+	}
+}

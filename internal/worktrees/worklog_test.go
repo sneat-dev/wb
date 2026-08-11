@@ -31,7 +31,7 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 		}
 		gitTest(t, worktree, "init")
 	}
-	options := WorkLogOptions{EffortID: "fair-split", RunID: "codex-run-1", AgentRuntime: "codex"}
+	options := WorkLogOptions{EffortID: "fair-split", RunID: "codex-run-1", AgentRuntime: "codex", Model: "unknown"}
 	for _, result := range []CreateResult{
 		{Repository: "acme/a-b", WorktreeDir: worktrees[0], Branch: "feature/fair-split", Base: "main", BaseSHA: "aabbcc"},
 		{Repository: "acme-a/b", WorktreeDir: worktrees[1], Branch: "feature/fair-split", Base: "main", BaseSHA: "ddeeff"},
@@ -98,6 +98,184 @@ func TestWorkLogClaimIdentitySurvivesRunAndWorktreeRelocation(t *testing.T) {
 	}
 }
 
+func TestNewClaimsRequireExplicitExecutionIdentityBeforePublication(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "missing-model", WorkLog: WorkLogOptions{RunID: "missing-model-run"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "--model is required") {
+		t.Fatalf("missing model error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "missing-model")); !os.IsNotExist(statErr) {
+		t.Fatalf("missing-model create published a worktree: %v", statErr)
+	}
+	for _, model := range []string{"gpt-5.6-sol", "unknown"} {
+		prepared, prepareErr := PrepareWorkLogOptions(fixture.projectsRoot, "identity-"+model, WorkLogOptions{Model: model, CLI: "codex", Provider: "openai-codex"})
+		if prepareErr != nil || prepared.Model != model {
+			t.Fatalf("explicit model %q prepared=%#v err=%v", model, prepared, prepareErr)
+		}
+	}
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "explicit-unknown",
+		WorkLog: WorkLogOptions{RunID: "explicit-unknown-run", Initiator: "dispatcher", Model: "unknown", CLI: "opencode", Provider: "opencode-go"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknownClaim workLogClaim
+	claimBytes, readErr := os.ReadFile(created[0].WorkLogPath)
+	if readErr != nil || json.Unmarshal(claimBytes, &unknownClaim) != nil {
+		t.Fatalf("read explicit-unknown claim: %v", readErr)
+	}
+	if unknownClaim.Model != "unknown" || unknownClaim.ModelProvenance != modelProvenanceUnknown || unknownClaim.ModelDeclaredBy != "dispatcher" ||
+		unknownClaim.CLI != "opencode" || unknownClaim.Provider != "opencode-go" {
+		t.Fatalf("explicit-unknown execution identity = %#v", unknownClaim)
+	}
+	for _, provider := range []string{"sk-secret-route", "ghp_syntheticcredential"} {
+		if _, err := PrepareWorkLogOptions(fixture.projectsRoot, "secret-route", WorkLogOptions{Model: "gpt-5.6-sol", Provider: provider}); err == nil {
+			t.Fatalf("credential-shaped initial provider %q was accepted", provider)
+		}
+	}
+}
+
+func TestExecutionIdentityCorrectionIsAppendOnlyIdempotentAndProjectsChain(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "identity-chain",
+		WorkLog: WorkLogOptions{RunID: "identity-chain-run", Initiator: "dispatcher", Model: "gpt-5.6-sol", CLI: "codex", Provider: "openai-codex"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	contents, err := os.ReadFile(created[0].WorkLogPath)
+	if err != nil || json.Unmarshal(contents, &claim) != nil {
+		t.Fatalf("claim = %v", err)
+	}
+	if claim.Version != 2 || claim.ModelProvenance != modelProvenanceCallerDeclared || claim.ModelDeclaredBy != "dispatcher" || claim.CLI != "codex" || claim.Provider != "openai-codex" {
+		t.Fatalf("new claim execution identity = %#v", claim)
+	}
+	modelUnknown := "unknown"
+	first, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-1", Actor: "reviewer", Reason: "observed route differs", Model: &modelUnknown})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Identity.Model != "unknown" || first.Identity.ModelProvenance != modelProvenanceUnknown || first.Identity.CLI != "codex" || first.Identity.Provider != "openai-codex" {
+		t.Fatalf("first projection = %#v", first.Identity)
+	}
+	clearCLI, newProvider := "", "opencode-go"
+	second, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-2", Actor: "reviewer", Reason: "correct independent route", CLI: &clearCLI, Provider: &newProvider})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Identity.Model != "unknown" || second.Identity.CLI != "" || second.Identity.Provider != "opencode-go" || len(second.Identity.CorrectionIDs) != 2 {
+		t.Fatalf("second projection = %#v", second.Identity)
+	}
+	// Same stable event is the crash-safe retry path, and must not append twice.
+	retried, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-2", Actor: "reviewer", Reason: "correct independent route", CLI: &clearCLI, Provider: &newProvider})
+	if err != nil || len(retried.Identity.CorrectionIDs) != 2 {
+		t.Fatalf("idempotent retry = %#v err=%v", retried, err)
+	}
+	if _, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-2", Actor: "reviewer", Reason: "different", CLI: &clearCLI}); err == nil {
+		t.Fatal("same correction event ID accepted a mutation")
+	}
+	if _, err := os.Stat(first.OutboxPath); err != nil {
+		t.Fatalf("offline outbox receipt = %v", err)
+	}
+	if err := os.RemoveAll(created[0].WorktreeDir); err != nil {
+		t.Fatal(err)
+	}
+	provider := "direct-api"
+	if _, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-3", Actor: "reviewer", Reason: "post-cleanup correction", Provider: &provider}); err != nil {
+		t.Fatalf("correction after worktree removal = %v", err)
+	}
+}
+
+func TestExecutionIdentityCorrectionRejectsMalformedAndCrossClaimHistory(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "identity-reject", WorkLog: WorkLogOptions{RunID: "identity-reject-run", Model: "gpt-5.6-sol"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := make([]workLogClaim, 2)
+	bytes, readErr := os.ReadFile(created[0].WorkLogPath)
+	if readErr != nil || json.Unmarshal(bytes, &claims[0]) != nil {
+		t.Fatalf("read first claim: %v", readErr)
+	}
+	secondRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWorktree := filepath.Join(secondRoot, "second")
+	if err := os.MkdirAll(secondWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, secondWorktree, "init")
+	secondPath, err := recordWorkLog(fixture.home, "identity-reject", CreateResult{Repository: "acme/second", WorktreeDir: secondWorktree, Branch: "identity-reject", Base: "main", BaseSHA: "abcdef"}, WorkLogOptions{RunID: claims[0].RunID, Model: "gpt-5.6-sol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytes, readErr = os.ReadFile(secondPath)
+	if readErr != nil || json.Unmarshal(bytes, &claims[1]) != nil {
+		t.Fatalf("read second claim: %v", readErr)
+	}
+	badProvider := "github_pat_syntheticcredential"
+	if _, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claims[0].EffortID, RunID: claims[0].RunID, ClaimID: claims[0].ClaimID, EventID: "bad-route", Actor: "reviewer", Reason: "test", Provider: &badProvider}); err == nil {
+		t.Fatal("credential-shaped provider was accepted")
+	}
+	runDir, _, err := openWorkLogRun(fixture.home, claims[1].EffortID, claims[1].RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runDir.Close() }()
+	directory, err := openWorkLogCorrections(runDir, claims[1].ClaimID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	model := "unknown"
+	forged := workLogIdentityCorrection{Version: 1, Type: "worktree.execution_identity_corrected", CorrectionID: "forged", ClaimID: claims[0].ClaimID, Sequence: 1, At: time.Now().UTC(), Actor: "attacker", Reason: "cross claim", Model: &model}
+	if err := writeJSONImmutableAt(directory, "forged.json", forged, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := projectExecutionIdentity(runDir, claims[1]); err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("cross-claim correction error = %v", err)
+	}
+}
+
+func TestExecutionIdentityCorrectionConcurrentRetryPublishesOneEvent(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "identity-concurrent", WorkLog: WorkLogOptions{RunID: "identity-concurrent-run", Model: "gpt-5.6-sol"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	contents, err := os.ReadFile(created[0].WorkLogPath)
+	if err != nil || json.Unmarshal(contents, &claim) != nil {
+		t.Fatalf("claim = %v", err)
+	}
+	cli := "opencode"
+	request := CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "same-retry", Actor: "dispatcher", Reason: "concurrent retry", CLI: &cli}
+	errors := make(chan error, 2)
+	for range 2 {
+		go func() { _, correctErr := CorrectExecutionIdentity(request); errors <- correctErr }()
+	}
+	for range 2 {
+		if correctErr := <-errors; correctErr != nil {
+			t.Fatalf("concurrent correction = %v", correctErr)
+		}
+	}
+	runDir, _, err := openWorkLogRun(fixture.home, claim.EffortID, claim.RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = runDir.Close() }()
+	identity, corrections, err := projectExecutionIdentity(runDir, claim)
+	if err != nil || identity.CLI != "opencode" || len(corrections) != 1 {
+		t.Fatalf("concurrent projection=%#v corrections=%#v err=%v", identity, corrections, err)
+	}
+}
+
 func TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation(t *testing.T) {
 	fixture := newGitFixture(t)
 	firstPrompt := filepath.Join(t.TempDir(), "first-prompt.txt")
@@ -113,7 +291,7 @@ func TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation(t *testing.T) {
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "prompt-source",
-		WorkLog: WorkLogOptions{EffortID: effort, RunID: run,
+		WorkLog: WorkLogOptions{EffortID: effort, RunID: run, Model: "unknown",
 			OriginalPrompt: firstPrompt, RequireOriginalPrompt: true},
 	})
 	if err != nil {
@@ -146,7 +324,7 @@ func TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation(t *testing.T) {
 	_, err = Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "prompt-conflict",
-		WorkLog: WorkLogOptions{EffortID: effort, RunID: run,
+		WorkLog: WorkLogOptions{EffortID: effort, RunID: run, Model: "unknown",
 			OriginalPrompt: secondPrompt, RequireOriginalPrompt: true},
 	})
 	if err == nil || !strings.Contains(err.Error(), "different original prompt bytes") {
@@ -162,7 +340,7 @@ func TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := PrepareWorkLogOptions(fixture.projectsRoot, "same-prompt", WorkLogOptions{
-		EffortID: effort, RunID: run, OriginalPrompt: samePrompt, RequireOriginalPrompt: true,
+		EffortID: effort, RunID: run, Model: "unknown", OriginalPrompt: samePrompt, RequireOriginalPrompt: true,
 	}); err != nil {
 		t.Fatalf("identical same-run prompt was rejected: %v", err)
 	}
@@ -173,7 +351,7 @@ func TestWorkLogMigratesLegacyProjectionOnlyAfterPrivateClaimCorroboration(t *te
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "projection-migration",
-		WorkLog:      WorkLogOptions{RunID: "legacy-projection-run"},
+		WorkLog:      WorkLogOptions{RunID: "legacy-projection-run", Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -229,6 +407,7 @@ func TestWorkLogProjectionCannotEscapePrivateArchiveOrAuthorizeCleanup(t *testin
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "projection-trust",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +455,7 @@ func TestWorkLogTerminalCardinalityAndRestartForThreeRepositories(t *testing.T) 
 	created, err := Create(context.Background(), repositories, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "terminal-cardinality",
-		WorkLog:      WorkLogOptions{RunID: "shared-three"},
+		WorkLog:      WorkLogOptions{RunID: "shared-three", Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -311,7 +490,7 @@ func TestCreateResumeRejectsSilentWorkLogReclaim(t *testing.T) {
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "claim-owner",
-		WorkLog:      WorkLogOptions{RunID: "original-run", AgentID: "agent-one"},
+		WorkLog:      WorkLogOptions{RunID: "original-run", AgentID: "agent-one", Model: "unknown"},
 	})
 	if err != nil || len(created) != 1 {
 		t.Fatalf("create original claim = %#v err=%v", created, err)
@@ -321,8 +500,8 @@ func TestCreateResumeRejectsSilentWorkLogReclaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, request := range []WorkLogOptions{
-		{RunID: "replacement-run", AgentID: "agent-one"},
-		{RunID: "original-run", AgentID: "agent-two"},
+		{RunID: "replacement-run", AgentID: "agent-one", Model: "unknown"},
+		{RunID: "original-run", AgentID: "agent-two", Model: "unknown"},
 	} {
 		_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 			ProjectsRoot: fixture.projectsRoot,
@@ -356,7 +535,7 @@ func TestCreateResumePreservesIndependentActiveClaimsAcrossRepositories(t *testi
 		results, err := Create(context.Background(), []string{request.repository}, CreateOptions{
 			ProjectsRoot: fixture.projectsRoot,
 			Operation:    operation,
-			WorkLog:      WorkLogOptions{RunID: request.run},
+			WorkLog:      WorkLogOptions{RunID: request.run, Model: "unknown"},
 		})
 		if err != nil || len(results) != 1 {
 			t.Fatalf("create %s = %#v err=%v", request.repository, results, err)
@@ -414,7 +593,7 @@ func TestCreateRollsBackPublishedGitAfterWorkLogStageFailure(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newGitFixture(t)
-			options := CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "worklog-stage-failure", WorkLog: WorkLogOptions{RunID: "stage-failure-run"}}
+			options := CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "worklog-stage-failure", WorkLog: WorkLogOptions{RunID: "stage-failure-run", Model: "unknown"}}
 			test.configure(&options)
 			_, err := Create(context.Background(), []string{"acme/app"}, options)
 			var publicationErr *CreatePublicationError
@@ -450,7 +629,7 @@ func TestCreatePublicationErrorRetainsExactRecoveryWhenBacklogStorageAndRollback
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "receipt-unavailable",
-		WorkLog:      WorkLogOptions{RunID: "receipt-unavailable-run"},
+		WorkLog:      WorkLogOptions{RunID: "receipt-unavailable-run", Model: "unknown"},
 		afterWorkLogClaim: func(CreateResult) error {
 			return errors.New("injected Work Log failure")
 		},
@@ -490,7 +669,7 @@ func TestCreateUncertainRollbackPersistsExactVisibleCleanupBacklog(t *testing.T)
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "uncertain-create-rollback",
-		WorkLog:      WorkLogOptions{RunID: "uncertain-create-run"},
+		WorkLog:      WorkLogOptions{RunID: "uncertain-create-run", Model: "unknown"},
 		afterWorkLogClaim: func(CreateResult) error {
 			return errors.New("injected Work Log failure")
 		},
@@ -533,7 +712,7 @@ func TestCreateRecoveryBacklogPreservesPreexistingLocalAndRemoteBranch(t *testin
 		Resume:       true,
 		Branch:       branch,
 		BranchChosen: true,
-		WorkLog:      WorkLogOptions{RunID: "preserve-existing-run"},
+		WorkLog:      WorkLogOptions{RunID: "preserve-existing-run", Model: "unknown"},
 		afterWorkLogClaim: func(CreateResult) error {
 			return errors.New("injected Work Log failure")
 		},
@@ -572,7 +751,7 @@ func TestCreateWorkLogFailureRollsBackEveryRepositoryPublishedByInvocation(t *te
 	_, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "coordinated-worklog-failure",
-		WorkLog:      WorkLogOptions{RunID: "coordinated-failure-run"},
+		WorkLog:      WorkLogOptions{RunID: "coordinated-failure-run", Model: "unknown"},
 		afterWorkLogProjection: func(result CreateResult) error {
 			if result.Repository == "acme/storage" {
 				return errors.New("injected second-repository Work Log failure")
@@ -653,7 +832,7 @@ func TestWorkLogMigratesLegacySingletonAndReportsLostCardinality(t *testing.T) {
 	}
 	gitTest(t, newWorktree, "init")
 	if _, err := recordWorkLog(home, effort, CreateResult{Repository: "acme/new", WorktreeDir: newWorktree,
-		Branch: "feature/legacy", Base: "main", BaseSHA: "c0ffee"}, WorkLogOptions{EffortID: effort, RunID: run}); err != nil {
+		Branch: "feature/legacy", Base: "main", BaseSHA: "c0ffee"}, WorkLogOptions{EffortID: effort, RunID: run, Model: "unknown"}); err != nil {
 		t.Fatal(err)
 	}
 	claims, err := os.ReadDir(filepath.Join(runDir, "claims"))

@@ -17,9 +17,10 @@ fast-forwarding, integration validation, exact-head CI, the merge and immediate
 push, post-merge target CI, release/install evidence, and cleanup. Main and
 planning agents hand work to the merger and receive only behavioral, design,
 or authority blockers. The invoking harness assigns this mechanical role to a
-faster, lower-cost model with adequate repository and CI capability; the Work
-Log records a model ID only when the runtime explicitly exposes it. Omit
-`--model` when it is not exposed; never infer or guess a model ID.
+faster, lower-cost model with adequate repository and CI capability. Every
+Work Log creator MUST pass the exact model identifier when the runtime exposes
+it, or the literal `unknown` when it does not; never infer or guess a model ID
+and never omit `--model`.
 
 ## Mechanical integration-only boundary
 
@@ -121,12 +122,21 @@ than a fictional queue.
    The strict server policy closes the final target-movement race; if GitHub
    rejects the merge after the local rereads, keep the PR unmerged and
    reintegrate instead of reporting completion.
-6. Collect required release evidence before terminalization. Then, for every
+6. Before collecting installation evidence, read the owning product's
+   release/distribution contract. **Never use a distribution channel that the
+   owning product marks blocked or unverified** for installation, upgrade, or
+   runtime evidence. Where that contract explicitly permits an exact
+   source-built artifact, use only that exact source-built artifact instead.
+   Otherwise report release evidence blocked and leave the task queued; do not
+   substitute another channel or relax the product's gate. A blocked channel can
+   return only after the owning product records an explicit verified-status
+   change.
+7. Collect required release evidence before terminalization. Then, for every
    landed task, inspect `wb worktree cleanup <task>` and apply
    `wb worktree cleanup <task> --apply --remote --older-than 0`. WB seals the
    Work Log, archives lifecycle evidence, removes the exact local worktree and
    branch, and retires an exact unchanged remote source branch.
-7. Re-list the tasks and resolve every live entry or durable cleanup backlog.
+8. Re-list the tasks and resolve every live entry or durable cleanup backlog.
    Completion requires remote receipt plus audited cleanup/recycle, not a
    green local test or an apparently finished branch.
 

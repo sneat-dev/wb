@@ -119,16 +119,23 @@ An unused or interrupted worktree has no merged PR, so `cleanup` must refuse
 it. Do not delete it manually. Inspect an explicit disposition first:
 
 ```sh
-wb worktree abort <task> --disposition handoff --successor <agent-or-session>
-wb worktree abort <task> --disposition not_landed --successor <agent-or-session> --apply
+wb worktree abort <task> --disposition handoff --successor <agent-or-session> \
+  --model <exact-successor-model-or-unknown>
+wb worktree abort <task> --disposition not_landed --successor <agent-or-session> \
+  --model <exact-successor-model-or-unknown> --cli <invoking-cli-if-known> \
+  --provider <routing-or-billing-provider-if-known> --apply
 wb worktree abort <task> --disposition discarded --apply --remote
-wb worktree abort fair-split --disposition handoff --successor codex-run-2
+wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown
 wb worktree abort fair-split --disposition discarded --apply --remote
 ```
 
-`handoff` and `not_landed` require exactly one successor, terminalize the old
-claim, create one deterministic active successor claim, and keep even a dirty
-worktree/branch resumable. `discarded --apply --remote` is the explicit
+Applied `handoff` and `not_landed` require exactly one successor and its exact
+model or explicit `unknown` before publication. Pass independently known CLI
+and commercial route identifiers separately (for example `--cli opencode
+--provider opencode-go`); never pass credentials. WB terminalizes the old
+claim, creates one deterministic active successor claim without inheriting its
+execution route, and keeps even a dirty worktree/branch resumable.
+`discarded --apply --remote` is the explicit
 authorization to seal first, retire an exact unchanged remote source branch,
 then remove a clean unlocked worktree and its exact local branch. WB repeats
 the clean/head/registration checks at the removal boundary; a concurrent write

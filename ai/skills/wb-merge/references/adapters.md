@@ -26,3 +26,10 @@ reconciliation gate to the canonical skill before release/tag advancement,
 installation evidence, cleanup, or the next merge-cycle action. An adapter
 must not replace it, including its verified registered nested-worktree
 exception, with a shortcut or repair a blocked canonical checkout.
+
+The adapter also delegates the canonical product-distribution gate: it must not
+collect installation, upgrade, or runtime evidence through a channel the owning
+product marks blocked or unverified. It may use an exact source-built artifact
+only where that product explicitly permits one; otherwise it reports release
+evidence blocked and leaves the task queued. This is a product-owned policy,
+not WB production-code configuration.

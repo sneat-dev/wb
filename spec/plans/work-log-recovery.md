@@ -84,6 +84,13 @@ no-shared-writer workflow.
 - Partially implemented: live worktree inventory and recycle crash recovery.
   The capability manifest names their exact limitations; seven-day history and
   every process-crash replay point remain open.
+- Delivered in WB #62 (pending merge): creator-supplied execution identity on
+  new claims (`model` required as exact ID or `unknown`, independent optional
+  `cli`/routing-provider), append-only claim-addressable correction events with
+  predecessor chains and offline outbox receipts, and legacy unknown/absent
+  projection. Applied handoffs require a fresh successor declaration without
+  inheriting the predecessor route; internal recycle rollback uses explicit
+  unknown. This is local Work Log evidence, not a Synchestra transport.
 - Still planned: the full `wb worktree log` command group, periodic refresh and
   integration enforcement, Synchestra authoritative sync/replica observation,
   Git transport fallback, distributed fencing, Portable Merger Agent,
@@ -218,7 +225,10 @@ Add `wb worktree abort` as the only normal escape hatch for work that cannot
 meet merged-PR cleanup evidence. It must require an explicit `handoff`,
 `not_landed`, or `discarded` disposition; seal/archive the Work Log and emit an
 offline-safe outbox event before changing the worktree; and release the claim.
-Handoff and not-landed work remain resumable. Discard must require explicit
+Handoff and not-landed work remain resumable. Their applied successor claim
+must require an explicit exact model or `unknown` and independently known
+optional CLI/provider identifiers before the predecessor is sealed; successor
+identity must not be copied from the predecessor. Discard must require explicit
 apply plus remote retirement authorization, clean/unlocked revalidation at the
 removal boundary, force-with-lease deletion of only an exact remote source
 ref, and compare-and-delete of the exact local branch after the archive is

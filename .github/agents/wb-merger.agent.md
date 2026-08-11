@@ -17,3 +17,8 @@ gate in the canonical skill before any release/tag, installation, cleanup, or
 next merge-cycle action, including only its verified registered
 nested-worktree exception; return any blocked canonical checkout to its owner
 without repairing it.
+
+For installation evidence, never use a distribution channel the owning product
+marks blocked or unverified. Use an exact source-built artifact only where that
+product explicitly permits it; otherwise report release evidence blocked and
+keep the task queued.

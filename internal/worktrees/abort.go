@@ -25,8 +25,11 @@ type AbortOptions struct {
 	Base         string
 	Disposition  AbortDisposition
 	Successor    string
-	DeleteRemote bool
-	Apply        bool
+	// SuccessorIdentity is the caller's explicit execution identity declaration
+	// for the claim created by an applied handoff/not_landed transition.
+	SuccessorIdentity ClaimExecutionIdentity
+	DeleteRemote      bool
+	Apply             bool
 	// beforeAbortRemoval is a test-only race seam immediately before the
 	// destructive reinspection. A concurrent writer must make abort refuse,
 	// never make its new work disappear.
@@ -71,6 +74,14 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	}
 	if options.Disposition == AbortDiscarded && options.Successor != "" {
 		return nil, fmt.Errorf("--successor cannot be used with discarded")
+	}
+	identitySupplied := strings.TrimSpace(options.SuccessorIdentity.Model) != "" || strings.TrimSpace(options.SuccessorIdentity.CLI) != "" || strings.TrimSpace(options.SuccessorIdentity.Provider) != ""
+	if options.Disposition != AbortDiscarded && (options.Apply || identitySupplied) {
+		if err := validateNewExecutionIdentity(options.SuccessorIdentity); err != nil {
+			return nil, err
+		}
+	} else if options.Disposition == AbortDiscarded && identitySupplied {
+		return nil, fmt.Errorf("--model, --cli, and --provider cannot be used with discarded")
 	}
 	if options.Apply && options.Disposition == AbortDiscarded && !options.DeleteRemote {
 		return nil, fmt.Errorf("discarded abort requires remote branch retirement; rerun with --remote")
@@ -171,7 +182,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			if err := applyDiscardedAbort(ctx, options, taskHandle, resolution.Write.Home, result); err != nil {
 				return results, err
 			}
-		} else if err := transferWorkLogClaim(resolution.Write.Home, result.WorktreeDir, result.HeadSHA, string(options.Disposition), options.Successor); err != nil {
+		} else if err := transferWorkLogClaim(resolution.Write.Home, result.WorktreeDir, result.HeadSHA, string(options.Disposition), options.Successor, options.SuccessorIdentity); err != nil {
 			return results, fmt.Errorf("transfer resumable work log for %s: %w", result.Repository, err)
 		}
 		result.Applied = true

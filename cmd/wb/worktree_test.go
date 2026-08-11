@@ -40,6 +40,38 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 	}
 }
 
+func TestWorktreeIdentityHelpAndCreatePreflightRequireExplicitModel(t *testing.T) {
+	create := newWorktreeCreateCmd()
+	for _, flag := range []string{"model", "cli", "provider"} {
+		if create.Flags().Lookup(flag) == nil {
+			t.Fatalf("create is missing --%s", flag)
+		}
+	}
+	correct := newWorktreeCorrectIdentityCmd()
+	for _, flag := range []string{"event-id", "actor", "reason", "model", "cli", "provider"} {
+		if correct.Flags().Lookup(flag) == nil {
+			t.Fatalf("correct-identity is missing --%s", flag)
+		}
+	}
+	abort := newWorktreeAbortCmd()
+	for _, flag := range []string{"model", "cli", "provider"} {
+		if abort.Flags().Lookup(flag) == nil {
+			t.Fatalf("abort is missing --%s", flag)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--projects-root", t.TempDir(), "worktree", "create", "identity-required", "acme/app", "--original-prompt-file", writeOriginalPromptFixture(t, "identity")}, &stdout, &stderr)
+	if code == exitOK || !strings.Contains(stderr.String(), "--model is required") {
+		t.Fatalf("missing model CLI preflight = code %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"--projects-root", t.TempDir(), "worktree", "abort", "identity-required", "--disposition", "handoff", "--successor", "next-run", "--apply"}, &stdout, &stderr)
+	if code == exitOK || !strings.Contains(stderr.String(), "--model is required") {
+		t.Fatalf("missing successor model CLI preflight = code %d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestWorktreeBranchFlagsRejectBeforeAnyWorkStarts(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -171,8 +203,8 @@ func TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation(t *testing.T) {
 		want string
 	}{
 		{name: "format", args: []string{"worktree", "create", "bad-format", "acme/app", "--format", "yaml"}, want: "unsupported format"},
-		{name: "missing-required-prompt", args: []string{"worktree", "create", "missing-prompt", "acme/app"}, want: "--original-prompt-file is required"},
-		{name: "prompt", args: []string{"worktree", "create", "bad-prompt", "acme/app", "--original-prompt-file", "missing-private-prompt.txt"}, want: "open original prompt"},
+		{name: "missing-required-prompt", args: []string{"worktree", "create", "missing-prompt", "acme/app", "--model", "unknown"}, want: "--original-prompt-file is required"},
+		{name: "prompt", args: []string{"worktree", "create", "bad-prompt", "acme/app", "--model", "unknown", "--original-prompt-file", "missing-private-prompt.txt"}, want: "open original prompt"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -349,13 +381,13 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-old", "acme/app", "--original-prompt-file", oldPrompt}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-old", "acme/app", "--model", "unknown", "--original-prompt-file", oldPrompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 
 	stdout.Reset()
 	stderr.Reset()
-	code := run([]string{"--projects-root", projects, "worktree", "rename", "cli-old", "cli-new", "--apply", "--remote", "--non-interactive", "--original-prompt-file", newPrompt}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "rename", "cli-old", "cli-new", "--apply", "--remote", "--non-interactive", "--model", "unknown", "--original-prompt-file", newPrompt}, &stdout, &stderr)
 	if code != exitOK {
 		t.Fatalf("worktree rename failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
@@ -376,7 +408,7 @@ func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
-	args := []string{"--projects-root", projects, "worktree", "create", "cli-resume", "acme/app", "--original-prompt-file", prompt}
+	args := []string{"--projects-root", projects, "worktree", "create", "cli-resume", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
 	if code := run(args, &stdout, &stderr); code != exitOK {
 		t.Fatalf("initial create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
@@ -413,18 +445,18 @@ func TestWorktreeRenameCLIRefusesDestinationCollisionAsFindings(t *testing.T) {
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "taken", "acme/app", "--original-prompt-file", takenPrompt}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "taken", "acme/app", "--model", "unknown", "--original-prompt-file", takenPrompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("seed worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if code := run([]string{"--projects-root", projects, "worktree", "create", "source", "acme/app", "--original-prompt-file", sourcePrompt}, &stdout, &stderr); code != exitOK {
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "source", "acme/app", "--model", "unknown", "--original-prompt-file", sourcePrompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("source worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 
 	stdout.Reset()
 	stderr.Reset()
-	code := run([]string{"--projects-root", projects, "worktree", "rename", "source", "taken", "--apply", "--remote", "--non-interactive", "--original-prompt-file", newPrompt}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "rename", "source", "taken", "--apply", "--remote", "--non-interactive", "--model", "unknown", "--original-prompt-file", newPrompt}, &stdout, &stderr)
 	if code != exitFindings {
 		t.Fatalf("collision rename exit code = %d, want %d (findings); stdout=%s stderr=%s", code, exitFindings, stdout.String(), stderr.String())
 	}
@@ -604,7 +636,7 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	prompt := writeOriginalPromptFixture(t, "create request whose origin fetch fails")
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"--projects-root", projects, "worktree", "create", "sync-fail", "acme/app", "--non-interactive", "--original-prompt-file", prompt}, &stdout, &stderr)
+	code := run([]string{"--projects-root", projects, "worktree", "create", "sync-fail", "acme/app", "--non-interactive", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr)
 	if code != exitFindings {
 		t.Fatalf("canonical sync failure exit code = %d, want %d (findings); stdout=%s stderr=%s",
 			code, exitFindings, stdout.String(), stderr.String())

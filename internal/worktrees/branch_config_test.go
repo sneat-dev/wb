@@ -78,7 +78,7 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 	create, err := normalizeCreateOptions(CreateOptions{
 		ProjectsRoot: projectsRoot,
 		Operation:    "direct-create",
-		Branch:       "feature/direct-create",
+		Branch:       "feature/direct-create", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil || !create.BranchChosen || create.Branch != "feature/direct-create" {
 		t.Fatalf("direct create branch normalization = %#v, err=%v", create, err)
@@ -86,7 +86,7 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 	create, err = normalizeCreateOptions(CreateOptions{
 		ProjectsRoot: projectsRoot,
 		Operation:    "direct-prefix",
-		BranchPrefix: "feature/",
+		BranchPrefix: "feature/", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil || !create.BranchPrefixChosen || create.BranchPrefix != "feature/" {
 		t.Fatalf("direct create prefix normalization = %#v, err=%v", create, err)
@@ -95,7 +95,7 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 		ProjectsRoot: projectsRoot,
 		OldTask:      "old",
 		NewTask:      "new",
-		Branch:       "feature/direct-rename",
+		Branch:       "feature/direct-rename", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil || !rename.BranchChosen || rename.Branch != "feature/direct-rename" {
 		t.Fatalf("direct rename branch normalization = %#v, err=%v", rename, err)
@@ -104,7 +104,7 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 		ProjectsRoot: projectsRoot,
 		OldTask:      "old",
 		NewTask:      "new",
-		BranchPrefix: "feature/",
+		BranchPrefix: "feature/", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil || !rename.BranchPrefixChosen || rename.BranchPrefix != "feature/" {
 		t.Fatalf("direct rename prefix normalization = %#v, err=%v", rename, err)
@@ -132,7 +132,7 @@ func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot,
 				Operation:    "policy-resume",
-				WorkLog:      WorkLogOptions{RunID: test.explicitRun},
+				WorkLog:      WorkLogOptions{RunID: test.explicitRun, Model: "unknown"},
 			})
 			if err != nil || len(created) != 1 || created[0].Branch != test.wantBranch {
 				t.Fatalf("initial create = %#v err=%v", created, err)
@@ -152,7 +152,7 @@ func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 				ProjectsRoot: fixture.projectsRoot,
 				Operation:    "policy-resume",
 				Resume:       true,
-				WorkLog:      WorkLogOptions{RunID: test.explicitRun},
+				WorkLog:      WorkLogOptions{RunID: test.explicitRun, Model: "unknown"},
 			})
 			if err != nil || len(resumed) != 1 {
 				t.Fatalf("resume after policy drift = %#v err=%v", resumed, err)
@@ -235,14 +235,14 @@ func TestRenameRefusesTargetPolicyMovementAfterPlanning(t *testing.T) {
 	fixture := newGitFixture(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	commitRepositoryBranchConfig(t, fixture, "version: 1\nworktrees:\n  branch_prefix: first/\n", "first branch policy")
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "old"})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "old", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(created) != 1 || created[0].Branch != "first/old" {
 		t.Fatalf("create did not apply target-base branch policy: %#v", created)
 	}
-	planned, err := Rename(context.Background(), RenameOptions{ProjectsRoot: fixture.projectsRoot, OldTask: "old", NewTask: "planned"})
+	planned, err := Rename(context.Background(), RenameOptions{ProjectsRoot: fixture.projectsRoot, OldTask: "old", NewTask: "planned", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestRenameRefusesTargetPolicyMovementAfterPlanning(t *testing.T) {
 		NewTask:      "new",
 		Apply:        true,
 		DeleteRemote: true,
-		WorkLog:      WorkLogOptions{OriginalPrompt: prompt, RequireOriginalPrompt: true},
+		WorkLog:      WorkLogOptions{Model: "unknown", OriginalPrompt: prompt, RequireOriginalPrompt: true},
 		beforeRenamePreflight: func() {
 			commitRepositoryBranchConfig(t, fixture, "version: 1\nworktrees:\n  branch_prefix: second/\n", "moved branch policy")
 		},

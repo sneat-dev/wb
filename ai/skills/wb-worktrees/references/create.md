@@ -23,6 +23,7 @@ From any checkout whose `origin` identifies the repository:
 
 ```sh
 wb worktree create <task> --branch-prefix <prefix>/ \
+  --model unknown \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -33,14 +34,15 @@ wb worktree create <task> --branch-prefix <prefix>/ \
   <owner/repository-a> <owner/repository-b> \
   --effort <stable-effort-id> --run <agent-run-id> \
   --initiator <human-or-parent-agent> --agent <agent-id> \
-  --agent-runtime codex --model <model-id> \
+  --agent-runtime codex --model <exact-child-model-or-unknown> \
+  --cli <invoking-cli-if-known> --provider <routing-or-billing-provider-if-known> \
   --original-prompt-file <private-prompt-file>
 ```
 
 A minimal literal command suitable for an adapter fixture is:
 
 ```sh
-wb worktree create fair-split acme/app --agent codex-run-1 --agent-runtime codex --original-prompt-file <private-prompt-file>
+wb worktree create fair-split acme/app --agent codex-run-1 --agent-runtime codex --model unknown --original-prompt-file <private-prompt-file>
 ```
 
 With a non-default projects root, put the global option on every call:
@@ -48,6 +50,7 @@ With a non-default projects root, put the global option on every call:
 ```sh
 wb --projects-root <root> worktree create <task> \
   --branch-prefix <prefix>/ <owner/repository> \
+  --model unknown \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -63,6 +66,31 @@ create, write the exact originating request to a readable non-empty 0600 file
 outside source Git. `--original-prompt-file` is mandatory and copies those
 exact bytes into the private archive only. They are intentionally absent from the
 Git-excluded worktree projection and Synchestra outbox.
+
+The dispatcher that creates a session, worktree, or successor claim must
+explicitly supply the model it chose: `--model <exact-id>` or `--model
+unknown`. WB rejects omission before publication and never guesses from
+runtime, CLI, provider, or ambient configuration. Record `--cli` and
+`--provider` only when independently known;
+they are optional, independent route metadata. Provider is a routing/billing
+or subscription identifier, never a credential.
+
+## Correct an audited identity without rewriting history
+
+Corrections target the durable claim rather than a live worktree, so they also
+work after terminal cleanup. Supply a stable event ID for retry safety:
+
+```sh
+wb worktree correct-identity <effort> <run> <claim-id> \
+  --event-id <stable-event-id> --actor <person-or-agent> --reason <why> \
+  --model unknown
+```
+
+One-line retry-safe form: `wb worktree correct-identity <effort> <run> <claim-id> --event-id <stable-event-id> --actor <person-or-agent> --reason <why> --model unknown`.
+
+Select only fields that change. `--cli=` or `--provider=` explicitly clears an
+optional value. Do not edit private claim files: WB appends an immutable event
+and offline outbox receipt, then projects the explicit predecessor chain.
 
 By default the printed path is below `~/.wb/worktrees`. A populated historic
 `<projects-root>/.wb` is never a create target. If an old managed hook exists,
@@ -94,7 +122,8 @@ Use `--resume` only when the open work belongs to this exact task and branch:
 
 ```sh
 wb worktree create <task> --resume \
-  <owner/repository> --original-prompt-file <private-prompt-file>
+  <owner/repository> --model unknown \
+  --original-prompt-file <private-prompt-file>
 ```
 
 WB recovers the registered branch and active Work Log claim before it consults

@@ -115,8 +115,11 @@ worktree, and a typed local
 outbox event. Every create requires a readable non-empty
 `--original-prompt-file` containing the exact originating request; WB snapshots
 its bytes and SHA-256 digest before creating a worktree and copies them only
-into the private archive. `--agent`, `--agent-runtime`, and `--model` add run
-provenance. The local journal/outbox remains usable as
+into the private archive. `--agent`, `--agent-runtime`, and a mandatory explicit
+`--model` add run provenance. The dispatcher supplies the exact child model it
+selected or the literal `unknown`; WB never guesses. Pass independent optional
+`--cli` and `--provider` when known (provider is routing/billing metadata only,
+never a credential). The local journal/outbox remains usable as
 recovery evidence when a Synchestra server is down, so server receipt never
 blocks safe local work. It is not yet a Git-repository communication fallback
 and cannot deliver inter-agent messages.
@@ -202,12 +205,16 @@ worktree and branch; a task effort has the same requirement after merge to its
 feature branch. A validated branch is not terminal.
 
 Use `wb worktree abort <task> --disposition handoff|not_landed --successor
-<agent-or-session>` or explicit `--disposition discarded` for
+<agent-or-session> --model <exact-successor-model-or-unknown>` or explicit
+`--disposition discarded` for
 an interrupted or never-started effort that has no merged PR and therefore is
 ineligible for normal cleanup. Its default is a dry-run; `--apply` seals the
-local archive and emits an outbox event. `handoff` and `not_landed` seal the
-old claim and bind exactly one active successor while retaining even dirty
-resumable state; only explicit `discarded --apply --remote` retires an exact
+local archive and emits an outbox event. Applied `handoff` and `not_landed`
+reject an omitted model before sealing the old claim, then bind exactly one
+active successor while retaining even dirty resumable state. Pass `--cli` and
+`--provider` independently when known—for example `--cli opencode --provider
+opencode-go`; the provider is a commercial routing/subscription identifier,
+never a credential. Only explicit `discarded --apply --remote` retires an exact
 unchanged remote source branch and removes a clean, unlocked worktree/local
 branch after the archive is durable and the live checkout is revalidated at
 the deletion boundary. The same discarded command resumes an exact durable
@@ -1092,6 +1099,14 @@ unchanged terminal observations. That is a bounded quiescence receipt, not
 proof that an optional workflow cannot register later, so collect separate
 repository release evidence before cleanup. Both modes reject identity drift.
 Do not replace this with a detached or long-running shell poller.
+
+The default observation interval is 30 seconds. Within one foreground slice,
+WB caches the initial branch-protection and active-rules receipt while it polls
+the exact mutable PR and commit state; before reporting a pass it fetches that
+policy receipt again. This keeps the same fail-closed merge evidence while
+reducing a pending PR's normal REST observation rate from seven calls every ten
+seconds to four calls every thirty seconds (about an 81% reduction, before any
+rules pagination).
 
 ### `wb hooks` — consistent, user-owned Git hooks
 
