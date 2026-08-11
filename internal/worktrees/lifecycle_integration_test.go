@@ -21,7 +21,7 @@ func TestListDefaultsToOfflineRealGitData(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "offline-list",
+		Operation:    "offline-list", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestListIgnoresDotDirectoriesAtEveryManagedHierarchyLevel(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "dot-directories",
+		Operation:    "dot-directories", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -238,7 +238,7 @@ func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
 	fixture := newGitFixtureForRepository(t, ".github")
 	created, err := Create(context.Background(), []string{"acme/.github"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "dot-repository",
+		Operation:    "dot-repository", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1187,7 +1187,7 @@ func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) 
 	t.Helper()
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    task,
+		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)

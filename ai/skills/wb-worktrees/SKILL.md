@@ -66,10 +66,10 @@ recovery evidence while Synchestra is unavailable, so local create, seal, and
 cleanup do not wait for a server. It is not the planned Git-repository
 communication fallback and does not deliver messages to agents.
 
-The dispatcher/session/worktree creator must pass the exact child `--model` it
-selected, or the literal `unknown`; omission is rejected before WB publishes a
-worktree or claim. Never infer it from a harness, CLI, environment, or
-provider. Also pass `--cli` and `--provider` independently when known. `cli`
+The dispatcher/session/worktree/successor-claim creator must pass the exact
+child `--model` it selected, or the literal `unknown`; omission is rejected
+before WB publishes a worktree or claim. Never infer it from a harness, CLI,
+environment, or provider. Also pass `--cli` and `--provider` independently when known. `cli`
 names the invoking client (for example `codex` or `opencode`); `provider` is
 only the routing/billing/subscription identifier and must never be a token or
 credential. A direct API call may omit `cli`.

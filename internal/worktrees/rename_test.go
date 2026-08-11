@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -350,7 +351,7 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "old-task",
+		Operation:    "old-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +371,7 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 		NewTask:            "new-task",
 		PreserveCachePaths: []string{"node_modules"},
 		DeleteRemote:       true,
-		Apply:              true,
+		Apply:              true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
@@ -449,7 +450,8 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "multi-recycle-old",
-		WorkLog:      WorkLogOptions{RunID: "multi-recycle-run", Model: "unknown"},
+		WorkLog: WorkLogOptions{RunID: "multi-recycle-run", Model: "gpt-5.6-sol",
+			CLI: "codex", Provider: "openai-codex"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +474,7 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 				return errors.New("injected second-repository bind failure")
 			}
 			return nil
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "injected second-repository bind failure") {
 		t.Fatalf("rename error = %v", err)
@@ -504,6 +506,18 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 		if recoveryProjection.Lifecycle != "active" || recoveryProjection.ClaimID == oldProjections[index].ClaimID {
 			t.Fatalf("%s recovery claim = %#v, old = %#v", create.Repository, recoveryProjection, oldProjections[index])
 		}
+		claimBytes, readErr := os.ReadFile(filepath.Join(fixture.home, "worklogs", recoveryProjection.EffortID, "runs", recoveryProjection.RunID, "claims", recoveryProjection.ClaimID+".json"))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		var recovery workLogClaim
+		if err := json.Unmarshal(claimBytes, &recovery); err != nil {
+			t.Fatal(err)
+		}
+		if recovery.Version != 2 || recovery.Model != "unknown" || recovery.ModelProvenance != modelProvenanceUnknown ||
+			recovery.ModelDeclaredBy != "wb-recycle-recovery" || recovery.CLI != "" || recovery.Provider != "" || recovery.AgentRuntime != "" {
+			t.Fatalf("%s automatic recovery execution identity = %#v", create.Repository, recovery)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(fixture.home, "worktrees", "multi-recycle-new")); !os.IsNotExist(err) {
 		t.Fatalf("coordinated rollback stranded destination task: %v", err)
@@ -516,7 +530,7 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 		OldTask:      "multi-recycle-old",
 		NewTask:      "multi-recycle-new",
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("retry coordinated rename: %v\nresults=%#v", err, retried.Results)
@@ -536,7 +550,7 @@ func TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse(t *testing.T)
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "locked-move-task",
+		Operation:    "locked-move-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -551,7 +565,7 @@ func TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse(t *testing.T)
 		OldTask:      "locked-move-task",
 		NewTask:      "locked-move-task-renamed",
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)
@@ -628,7 +642,7 @@ func TestMoveWorktreeRejectsPostAuthorizationEndpointSubstitution(t *testing.T) 
 			fixture := newGitFixture(t)
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot,
-				Operation:    "late-endpoint-source",
+				Operation:    "late-endpoint-source", WorkLog: WorkLogOptions{Model: "unknown"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -675,7 +689,7 @@ func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing
 			fixture := newGitFixture(t)
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot,
-				Operation:    "partial-move-source",
+				Operation:    "partial-move-source", WorkLog: WorkLogOptions{Model: "unknown"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -685,7 +699,7 @@ func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing
 				OldTask:      "partial-move-source",
 				NewTask:      "partial-move-destination",
 				DeleteRemote: true,
-				Apply:        true,
+				Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 			}
 			test.configure(&options)
 			outcome, renameErr := Rename(context.Background(), options)
@@ -708,7 +722,7 @@ func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing
 				OldTask:      "partial-move-source",
 				NewTask:      "partial-move-destination",
 				DeleteRemote: true,
-				Apply:        true,
+				Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 			}); err != nil {
 				t.Fatalf("partial-move rollback was not retryable: %v", err)
 			}
@@ -722,7 +736,7 @@ func TestRenamePlanDoesNotMutateAnything(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "plan-only",
+		Operation:    "plan-only", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -731,7 +745,7 @@ func TestRenamePlanDoesNotMutateAnything(t *testing.T) {
 	outcome, err := Rename(context.Background(), RenameOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "plan-only",
-		NewTask:      "plan-only-renamed",
+		NewTask:      "plan-only-renamed", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -754,7 +768,7 @@ func TestRenameApplyRequiresExplicitRemoteRetirementBeforeMutation(t *testing.T)
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "remote-retirement-required",
+		Operation:    "remote-retirement-required", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -763,7 +777,7 @@ func TestRenameApplyRequiresExplicitRemoteRetirementBeforeMutation(t *testing.T)
 		ProjectsRoot: fixture.projectsRoot,
 		OldTask:      "remote-retirement-required",
 		NewTask:      "remote-retirement-required-next",
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "--remote") {
 		t.Fatalf("missing remote authorization error = %v, results=%#v", err, outcome.Results)
@@ -783,7 +797,7 @@ func TestRenameRefusesDirtyWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "dirty-task",
+		Operation:    "dirty-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -797,7 +811,7 @@ func TestRenameRefusesDirtyWorktree(t *testing.T) {
 		OldTask:      "dirty-task",
 		NewTask:      "dirty-task-renamed",
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil {
 		t.Fatalf("dirty worktree rename unexpectedly succeeded: %#v", outcome.Results)
@@ -823,7 +837,7 @@ func TestRenameRefusesLockedTask(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "locked-task",
+		Operation:    "locked-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -838,7 +852,7 @@ func TestRenameRefusesLockedTask(t *testing.T) {
 		OldTask:      "locked-task",
 		NewTask:      "locked-task-renamed",
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil {
 		t.Fatalf("locked task rename unexpectedly succeeded: %#v", outcome.Results)
@@ -858,7 +872,7 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 	fixture := newGitFixture(t)
 	if _, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "source-task",
+		Operation:    "source-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -866,7 +880,7 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 	if _, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "taken-task",
-		Resume:       false,
+		Resume:       false, WorkLog: WorkLogOptions{Model: "unknown"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -876,7 +890,7 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 		OldTask:      "source-task",
 		NewTask:      "taken-task",
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil {
 		t.Fatalf("collision rename unexpectedly succeeded: %#v", outcome.Results)
@@ -898,7 +912,7 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "unmerged-task",
+		Operation:    "unmerged-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -914,7 +928,7 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 		OldTask:      "unmerged-task",
 		NewTask:      "unmerged-task-renamed",
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "not integrated") {
 		t.Fatalf("unmerged Rename error = %v, results=%#v", err, outcome.Results)
@@ -934,7 +948,7 @@ func TestRenameDeleteOldBranchRequiresForceUnlessMerged(t *testing.T) {
 		Branch:       "feature/unmerged-task-final",
 		Force:        true,
 		DeleteRemote: true,
-		Apply:        true,
+		Apply:        true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("forced Rename apply: %v\nresults=%#v", err, outcome.Results)
@@ -954,7 +968,7 @@ func TestRenameDeleteOldBranchWithoutForceWhenMerged(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "merged-task",
+		Operation:    "merged-task", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -974,7 +988,7 @@ func TestRenameDeleteOldBranchWithoutForceWhenMerged(t *testing.T) {
 		NewTask:         "merged-task-renamed",
 		DeleteOldBranch: true,
 		DeleteRemote:    true,
-		Apply:           true,
+		Apply:           true, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("Rename apply: %v\nresults=%#v", err, outcome.Results)

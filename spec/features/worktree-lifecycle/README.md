@@ -189,7 +189,11 @@ before each removal it MUST repeat clean/head/registration checks, seal the
 local archive/outbox, retire only an exact unchanged remote source ref with
 force-with-lease, and remove the worktree/local ref through descriptor-anchored
 Git operations. Handoff and `not_landed` MUST retain dirty resumable state and
-bind exactly one successor instead of deleting it.
+bind exactly one successor instead of deleting it. Before an applied transfer
+publishes anything, its creator MUST supply the successor's exact model or
+explicit `unknown`, plus independently known optional CLI/provider route
+identifiers; WB MUST NOT copy the predecessor's route. Automatic recycle
+rollback recovery MUST use explicit unknown model/provenance and no route.
 
 #### REQ: recycle-transaction
 

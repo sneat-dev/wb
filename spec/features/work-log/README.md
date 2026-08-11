@@ -112,6 +112,11 @@ MUST NOT infer model, CLI, or provider from a harness, environment, or one
 another. CLI and provider are independent optional bounded identifiers;
 provider is routing/billing/subscription metadata only and never a credential.
 Legacy absent model projects as unknown and absent route fields remain absent.
+An applied handoff/not-landed transition is also a claim creation: its caller
+MUST provide the successor model or explicit `unknown`, plus independently
+known CLI/provider identifiers. It MUST NOT inherit those fields from the old
+claim. A WB-internal rollback recovery with no external creator MUST publish
+explicit model/provenance `unknown` and absent route identifiers.
 If later evidence proves identity metadata wrong, WB MUST append a typed,
 claim-addressable correction event with reason, actor, timestamp, explicit
 predecessor, and replacement/clear field presence; it MUST NOT rewrite history.

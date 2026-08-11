@@ -44,7 +44,7 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "issue-123",
+		Operation:    "issue-123", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +97,7 @@ func TestCreateFetchesOriginBaseWithoutChangingCanonicalCheckout(t *testing.T) {
 
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "from-fetched-main",
+		Operation:    "from-fetched-main", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestCreatePreservesDirtyOffBaseCanonicalState(t *testing.T) {
 
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "preserve-unsafe-canonical",
+		Operation:    "preserve-unsafe-canonical", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +202,7 @@ func TestCreateDoesNotTouchNestedWorktreeInsideDirtyCanonical(t *testing.T) {
 
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "preserve-nested-worktree",
+		Operation:    "preserve-nested-worktree", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func TestCreateFailsBeforeMutationWhenRequestedOriginBaseCannotBeFetched(t *test
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "missing-remote-base",
-		Base:         "release",
+		Base:         "release", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "fetch verified origin base acme/app/release") {
 		t.Fatalf("Create missing remote base error = %v", err)
@@ -270,7 +270,7 @@ func TestCreateDoesNotFollowSubstitutedWBHomeBeforeInitialOpen(t *testing.T) {
 			if symlinkErr := os.Symlink(external, fixture.home); symlinkErr != nil {
 				t.Fatalf("substitute WB home before initial open: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "symlinked") {
 		t.Fatalf("substituted WB home Create error = %v", err)
@@ -320,7 +320,7 @@ func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
 			test.setup(t, fixture, outside)
 			_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot,
-				Operation:    "escape",
+				Operation:    "escape", WorkLog: WorkLogOptions{Model: "unknown"},
 			})
 			if err == nil || !strings.Contains(err.Error(), "symlinked") {
 				t.Fatalf("Create symlink guard error = %v", err)
@@ -347,7 +347,7 @@ func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 			if err := os.Symlink(outside, ownerPath); err != nil {
 				t.Fatalf("swap owner for external symlink during secure-add regression: %v", err)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "owner path changed") {
 		t.Fatalf("owner-swap Create error = %v", err)
@@ -377,7 +377,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapDuringSecureAdd(t *testing.T) {
 			if symlinkErr := os.Symlink(outside, worktreesPath); symlinkErr != nil {
 				t.Fatalf("substitute worktrees ancestor during secure-add regression: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "secure staging directory path changed") {
 		t.Fatalf("worktrees-ancestor-swap Create error = %v", err)
@@ -410,7 +410,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapBeforePlanning(t *testing.T) {
 			if symlinkErr := os.Symlink(external, worktreesPath); symlinkErr != nil {
 				t.Fatalf("substitute worktrees ancestor before planning regression: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "operation path changed before planning") {
 		t.Fatalf("worktrees-ancestor-plan-swap Create error = %v", err)
@@ -443,7 +443,7 @@ func TestCreateRejectsOwnerSwapAfterWorktreeRepair(t *testing.T) {
 			if symlinkErr := os.Symlink(outside, ownerPath); symlinkErr != nil {
 				t.Fatalf("substitute owner after repair: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "owner path changed during repair") {
 		t.Fatalf("owner-swap-after-repair Create error = %v", err)
@@ -494,7 +494,7 @@ func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) 
 			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
 				t.Fatalf("substitute secure staging directory: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "secure staging directory path changed") {
 		t.Fatalf("stage-swap Create error = %v", err)
@@ -537,7 +537,7 @@ func TestCreateCleansStageWhenOpeningItFails(t *testing.T) {
 				}
 			}
 			t.Fatal("secure staging directory was not created")
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "open secure worktree staging directory") {
 		t.Fatalf("stage-open failure Create error = %v", err)
@@ -585,7 +585,7 @@ func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
 			if writeErr := os.WriteFile(filepath.Join(destination, "keep.txt"), []byte(foreign), 0o600); writeErr != nil {
 				t.Fatalf("write late destination sentinel: %v", writeErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "publish secure worktree") {
 		t.Fatalf("late destination Create error = %v", err)
@@ -626,7 +626,7 @@ func TestCreateRefusesLateStagedCheckoutSubstitutionWithoutPublishingIt(t *testi
 			if writeErr := os.WriteFile(filepath.Join(checkout, "keep.txt"), []byte(foreign), 0o600); writeErr != nil {
 				t.Fatalf("write replacement checkout sentinel: %v", writeErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "publish secure worktree") {
 		t.Fatalf("late checkout substitution error = %v", err)
@@ -663,7 +663,7 @@ func TestCreateRefusesLatePublishedWorktreeSubstitutionBeforeRepair(t *testing.T
 			if writeErr := os.WriteFile(filepath.Join(finalPath, "keep.txt"), []byte(foreign), 0o600); writeErr != nil {
 				t.Fatalf("write replacement final sentinel: %v", writeErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "repair published worktree metadata") {
 		t.Fatalf("late published worktree substitution error = %v", err)
@@ -937,7 +937,7 @@ func TestCreatePreservesDoubleSwapAcrossSecureCheckoutPublish(t *testing.T) {
 			if writeErr := os.WriteFile(filepath.Join(checkout, "keep.txt"), []byte(secondForeign), 0o600); writeErr != nil {
 				t.Fatalf("write second replacement: %v", writeErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous replacement state") {
 		t.Fatalf("double-swap creation error = %v", err)
@@ -967,7 +967,7 @@ func TestCreateChildRefusesCanonicalGitDirectorySwapAfterAuthorization(t *testin
 			if mkdirErr := os.Mkdir(filepath.Join(fixture.canonical, ".git"), 0o755); mkdirErr != nil {
 				t.Fatalf("replace canonical Git directory: %v", mkdirErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "canonical Git directory changed before Git operation") {
 		t.Fatalf("canonical Git swap error = %v", err)
@@ -999,7 +999,7 @@ func TestCreateUsesHeldCanonicalRootAfterAuthorizationSwap(t *testing.T) {
 			if symlinkErr := os.Symlink(external, fixture.canonical); symlinkErr != nil {
 				t.Fatalf("replace canonical root after authorization: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "canonical repository path changed before Git operation") {
 		t.Fatalf("canonical root swap error = %v", err)
@@ -1043,7 +1043,7 @@ func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
 			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
 				t.Fatalf("substitute validated staging directory: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("Create after validated stage swap: %v", err)
@@ -1090,7 +1090,7 @@ func TestCreateRejectsStageRootMovedOutsideOperationAfterValidation(t *testing.T
 			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
 				t.Fatalf("substitute validated staging directory: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "outside trusted operation root") {
 		t.Fatalf("external stage move Create error = %v", err)
@@ -1126,7 +1126,7 @@ func TestCreatePublishesAfterExternalStageMoveFollowingFinalVerification(t *test
 			if symlinkErr := os.Symlink(outside, stageRoot); symlinkErr != nil {
 				t.Fatalf("substitute verified staging directory: %v", symlinkErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("Create after final external stage move: %v", err)
@@ -1167,7 +1167,7 @@ func TestCreateRollsBackExternalStageAfterPublishedRepairFailure(t *testing.T) {
 		},
 		beforeWorktreeRepair: func() error {
 			return errors.New("simulated repair failure after external stage move")
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "simulated repair failure") {
 		t.Fatalf("external stage repair failure Create error = %v", err)
@@ -1219,7 +1219,7 @@ func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
 			if writeErr := os.WriteFile(fakeGit, []byte(contents), 0o755); writeErr != nil {
 				t.Fatalf("write staged fake git: %v", writeErr)
 			}
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatalf("Create with PATH=. and staged fake git: %v", err)
@@ -1251,7 +1251,7 @@ func TestCreateRejectsWhitespaceEquivalentRepositoryBeforeMutation(t *testing.T)
 	fixture := newGitFixture(t)
 	_, err := Create(context.Background(), []string{"acme/app", " acme/app "}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "whitespace-duplicate",
+		Operation:    "whitespace-duplicate", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "surrounding whitespace") {
 		t.Fatalf("whitespace-equivalent Create error = %v", err)
@@ -1276,7 +1276,7 @@ func TestCreateRollsBackPartialStagedWorktreeFailure(t *testing.T) {
 			// Model a post-checkout hook or other Git-side failure reported after
 			// Git has created the linked checkout and branch.
 			return errors.New("simulated post-checkout failure")
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "simulated post-checkout failure") {
 		t.Fatalf("partial staged Create error = %v", err)
@@ -1294,7 +1294,7 @@ func TestCreateRollsBackWhenContextIsCancelledAfterStagedAdd(t *testing.T) {
 		afterStagedWorktreeAdd: func() error {
 			cancel()
 			return errors.New("simulated cancellation after staged add")
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "simulated cancellation after staged add") {
 		t.Fatalf("cancelled Create error = %v", err)
@@ -1309,7 +1309,7 @@ func TestCreateRollsBackWhenPublishedWorktreeRepairFails(t *testing.T) {
 		Operation:    "repair-failure",
 		beforeWorktreeRepair: func() error {
 			return errors.New("simulated worktree repair failure")
-		},
+		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "simulated worktree repair failure") {
 		t.Fatalf("repair-failure Create error = %v", err)
@@ -1363,7 +1363,7 @@ func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *tes
 
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "new-home",
+		Operation:    "new-home", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1398,7 +1398,7 @@ func TestCreateAllowsDirtyCanonicalClone(t *testing.T) {
 	}
 	results, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "dirty-canonical",
+		Operation:    "dirty-canonical", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1413,7 +1413,7 @@ func TestCreateAllowsDirtyCanonicalClone(t *testing.T) {
 
 func TestCreateResumeIsExplicitAndPreservesChanges(t *testing.T) {
 	fixture := newGitFixture(t)
-	options := CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "resume-me"}
+	options := CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "resume-me", WorkLog: WorkLogOptions{Model: "unknown"}}
 	first, err := Create(context.Background(), []string{"acme/app"}, options)
 	if err != nil {
 		t.Fatal(err)
@@ -1477,7 +1477,7 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			fixture := newGitFixture(t)
-			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "rebase"})
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "rebase", WorkLog: WorkLogOptions{Model: "unknown"}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1526,7 +1526,7 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 
 func TestGuardAllowsLongRealRebaseHistory(t *testing.T) {
 	fixture := newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "long-rebase"})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "long-rebase", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1562,7 +1562,7 @@ func TestGuardAllowsLongRealRebaseHistory(t *testing.T) {
 
 func TestGuardAllowsInteractiveRebaseAmend(t *testing.T) {
 	fixture := newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "interactive-amend"})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "interactive-amend", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1608,7 +1608,7 @@ func TestGuardAllowsInteractiveRebaseAmend(t *testing.T) {
 
 func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 	fixture := newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "fabricated-rebase"})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "fabricated-rebase", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1656,7 +1656,7 @@ func TestGuardRejectsFabricatedOrSymlinkedRebaseState(t *testing.T) {
 
 func TestGuardRejectsForgedRebaseStateWithRealGitObjects(t *testing.T) {
 	fixture := newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "forged-real-rebase"})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "forged-real-rebase", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}

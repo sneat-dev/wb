@@ -115,6 +115,27 @@ func TestNewClaimsRequireExplicitExecutionIdentityBeforePublication(t *testing.T
 			t.Fatalf("explicit model %q prepared=%#v err=%v", model, prepared, prepareErr)
 		}
 	}
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "explicit-unknown",
+		WorkLog: WorkLogOptions{RunID: "explicit-unknown-run", Initiator: "dispatcher", Model: "unknown", CLI: "opencode", Provider: "opencode-go"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unknownClaim workLogClaim
+	claimBytes, readErr := os.ReadFile(created[0].WorkLogPath)
+	if readErr != nil || json.Unmarshal(claimBytes, &unknownClaim) != nil {
+		t.Fatalf("read explicit-unknown claim: %v", readErr)
+	}
+	if unknownClaim.Model != "unknown" || unknownClaim.ModelProvenance != modelProvenanceUnknown || unknownClaim.ModelDeclaredBy != "dispatcher" ||
+		unknownClaim.CLI != "opencode" || unknownClaim.Provider != "opencode-go" {
+		t.Fatalf("explicit-unknown execution identity = %#v", unknownClaim)
+	}
+	for _, provider := range []string{"sk-secret-route", "ghp_syntheticcredential"} {
+		if _, err := PrepareWorkLogOptions(fixture.projectsRoot, "secret-route", WorkLogOptions{Model: "gpt-5.6-sol", Provider: provider}); err == nil {
+			t.Fatalf("credential-shaped initial provider %q was accepted", provider)
+		}
+	}
 }
 
 func TestExecutionIdentityCorrectionIsAppendOnlyIdempotentAndProjectsChain(t *testing.T) {
@@ -198,7 +219,7 @@ func TestExecutionIdentityCorrectionRejectsMalformedAndCrossClaimHistory(t *test
 	if readErr != nil || json.Unmarshal(bytes, &claims[1]) != nil {
 		t.Fatalf("read second claim: %v", readErr)
 	}
-	badProvider := "sk-secret-route"
+	badProvider := "github_pat_syntheticcredential"
 	if _, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claims[0].EffortID, RunID: claims[0].RunID, ClaimID: claims[0].ClaimID, EventID: "bad-route", Actor: "reviewer", Reason: "test", Provider: &badProvider}); err == nil {
 		t.Fatal("credential-shaped provider was accepted")
 	}
@@ -386,6 +407,7 @@ func TestWorkLogProjectionCannotEscapePrivateArchiveOrAuthorizeCleanup(t *testin
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "projection-trust",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)

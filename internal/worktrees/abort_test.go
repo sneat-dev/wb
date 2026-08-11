@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 func TestAbortDiscardedResumesExactBranchAfterWorktreeRemoval(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
-		ProjectsRoot: fixture.projectsRoot, Operation: "discard-resume-after-remove",
+		ProjectsRoot: fixture.projectsRoot, Operation: "discard-resume-after-remove", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +56,7 @@ func TestAbortDiscardedUnusedWorktreesIsAudited(t *testing.T) {
 	fixture := newGitFixture(t)
 	otherCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
 	gitTest(t, fixture.projectsRoot, "clone", fixture.remote, otherCanonical)
-	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "unused-storage"})
+	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "unused-storage", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestAbortDiscardedRetiresExactRemoteBranchOnlyWithExplicitAuthorization(t *
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "pushed-discard",
+		Operation:    "pushed-discard", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,7 +155,7 @@ func TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		Operation:    "raced-discard",
+		Operation:    "raced-discard", WorkLog: WorkLogOptions{Model: "unknown"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +198,7 @@ func TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary(t *testing.T) {
 
 func TestAbortNotLandedSealsButRetainsResumableWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
-	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "resume-storage"})
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "resume-storage", WorkLog: WorkLogOptions{Model: "unknown"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,11 @@ func TestAbortNotLandedSealsButRetainsResumableWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "resume-storage", Disposition: AbortNotLanded, Successor: "codex-resume-2", Apply: true})
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "resume-storage", Disposition: AbortNotLanded,
+		Successor: "codex-resume-2", Apply: true,
+		SuccessorIdentity: ClaimExecutionIdentity{Model: "gpt-5.6-terra", CLI: "opencode", Provider: "opencode-go"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,19 +232,119 @@ func TestAbortNotLandedSealsButRetainsResumableWorktree(t *testing.T) {
 	if err != nil || len(claims) != 2 {
 		t.Fatalf("claim transfer cardinality = %d err=%v, want 2", len(claims), err)
 	}
+	claimBytes, err := os.ReadFile(filepath.Join(runDir, "claims", after.ClaimID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var successor workLogClaim
+	if err := json.Unmarshal(claimBytes, &successor); err != nil {
+		t.Fatal(err)
+	}
+	if successor.Version != 2 || successor.Model != "gpt-5.6-terra" || successor.ModelProvenance != modelProvenanceCallerDeclared ||
+		successor.ModelDeclaredBy != "codex-resume-2" || successor.CLI != "opencode" || successor.Provider != "opencode-go" || successor.AgentRuntime != "" {
+		t.Fatalf("successor execution identity = %#v", successor)
+	}
 	terminals, err := os.ReadDir(filepath.Join(runDir, "terminals"))
 	if err != nil || len(terminals) != 1 {
 		t.Fatalf("terminal transfer cardinality = %d err=%v, want 1", len(terminals), err)
 	}
 }
 
-func TestAbortResumableRequiresExactlyOneSuccessor(t *testing.T) {
+func TestAbortHandoffCrashBindsSuccessorExecutionIdentity(t *testing.T) {
 	fixture := newGitFixture(t)
-	if _, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "needs-successor"}); err != nil {
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "handoff-crash-binding",
+		WorkLog: WorkLogOptions{RunID: "handoff-crash-run", Model: "unknown"},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err := Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "needs-successor", Disposition: AbortHandoff, Apply: true})
+	projection, err := readWorkLogProjection(created[0].WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(created[0].WorkLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatal(err)
+	}
+	head := gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD")
+	first := ClaimExecutionIdentity{Model: "gpt-5.6-terra", CLI: "opencode", Provider: "opencode-go"}
+	drifted := ClaimExecutionIdentity{Model: "gpt-5.6-terra", CLI: "opencode", Provider: "openai-codex"}
+	firstID := declaredSuccessorWorkLogClaimID(claim.ClaimID, "next-run", "handoff", first)
+	driftedID := declaredSuccessorWorkLogClaimID(claim.ClaimID, "next-run", "handoff", drifted)
+	if firstID == driftedID {
+		t.Fatal("same model with different commercial routes produced one successor identity")
+	}
+	runDir, _, err := openWorkLogRun(fixture.home, claim.EffortID, claim.RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writeWorkLogTerminal(fixture.home, runDir, claim, head, "handoff", firstID, "next-run"); err != nil {
+		_ = runDir.Close()
+		t.Fatal(err)
+	}
+	_ = runDir.Close() // simulate a crash before successor claim publication
+
+	err = transferWorkLogClaim(fixture.home, created[0].WorktreeDir, head, "handoff", "next-run", drifted)
+	if err == nil || !strings.Contains(err.Error(), "immutable terminal conflicts") {
+		t.Fatalf("identity drift after sealed crash = %v", err)
+	}
+	afterDrift, err := readWorkLogProjection(created[0].WorktreeDir)
+	if err != nil || afterDrift != projection {
+		t.Fatalf("drifted retry changed projection: before=%#v after=%#v err=%v", projection, afterDrift, err)
+	}
+	claimsDir := filepath.Join(fixture.home, "worklogs", claim.EffortID, "runs", claim.RunID, "claims")
+	if _, err := os.Stat(filepath.Join(claimsDir, driftedID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("drifted retry published a successor claim: %v", err)
+	}
+	if err := transferWorkLogClaim(fixture.home, created[0].WorktreeDir, head, "handoff", "next-run", first); err != nil {
+		t.Fatalf("same-identity crash retry: %v", err)
+	}
+	afterRetry, err := readWorkLogProjection(created[0].WorktreeDir)
+	if err != nil || afterRetry.ClaimID != firstID || afterRetry.Lifecycle != "active" {
+		t.Fatalf("same-identity retry projection = %#v err=%v", afterRetry, err)
+	}
+}
+
+func TestAbortResumableRequiresSuccessorAndExplicitModel(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "needs-successor", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := readWorkLogProjection(created[0].WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "needs-successor", Disposition: AbortHandoff, Apply: true})
 	if err == nil || !strings.Contains(err.Error(), "--successor") {
 		t.Fatalf("missing successor error = %v", err)
+	}
+	_, err = Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "needs-successor", Disposition: AbortHandoff, Successor: "next-run", Apply: true})
+	if err == nil || !strings.Contains(err.Error(), "--model is required") {
+		t.Fatalf("missing successor model error = %v", err)
+	}
+	_, err = Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "needs-successor", Disposition: AbortHandoff,
+		Successor: "next-run", Apply: true,
+		SuccessorIdentity: ClaimExecutionIdentity{Model: "gpt-5.6-sol", Provider: "xoxb-synthetic-credential"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "provider") {
+		t.Fatalf("credential-shaped successor provider error = %v", err)
+	}
+	after, err := readWorkLogProjection(created[0].WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("missing model changed claim projection: before=%#v after=%#v", before, after)
+	}
+	runDir := filepath.Join(fixture.home, "worklogs", before.EffortID, "runs", before.RunID)
+	if terminals, readErr := os.ReadDir(filepath.Join(runDir, "terminals")); !os.IsNotExist(readErr) || len(terminals) != 0 {
+		t.Fatalf("missing model published terminal records: entries=%#v err=%v", terminals, readErr)
 	}
 }

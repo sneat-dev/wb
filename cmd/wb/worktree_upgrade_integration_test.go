@@ -53,7 +53,7 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 
 	prompt := filepath.Join(root, "upgrade-original-prompt.txt")
 	mustUpgradeWrite(t, prompt, "upgrade the managed worktree contract\n")
-	created := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "create", "upgrade", "acme/app", "--original-prompt-file", prompt)
+	created := runWBUpgrade(t, binary, upgradeEnv, "--projects-root", projects, "worktree", "create", "upgrade", "acme/app", "--model", "unknown", "--original-prompt-file", prompt)
 	if created.exitCode != exitOK {
 		t.Fatalf("candidate create failed: %s", created.stderr)
 	}
@@ -205,7 +205,7 @@ func TestHooksInstallReportsAndBlocksRawWorktreeAtAdmission(t *testing.T) {
 
 	prompt := filepath.Join(root, "managed-prompt.txt")
 	mustUpgradeWrite(t, prompt, "create managed checkout\n")
-	managed := runWBUpgrade(t, binary, environment, "--projects-root", projects, "worktree", "create", "managed", "acme/app", "--original-prompt-file", prompt)
+	managed := runWBUpgrade(t, binary, environment, "--projects-root", projects, "worktree", "create", "managed", "acme/app", "--model", "unknown", "--original-prompt-file", prompt)
 	if managed.exitCode != exitOK {
 		t.Fatalf("WB-managed checkout did not pass its own admission guard: stdout=%s stderr=%s", managed.stdout, managed.stderr)
 	}

@@ -60,6 +60,15 @@ type WorkLogOptions struct {
 	originalPromptDigest   string
 }
 
+// ClaimExecutionIdentity is the creator-supplied identity for one new claim.
+// Model is mandatory when the claim is published. CLI and Provider are
+// independent optional route identifiers and never carry credentials.
+type ClaimExecutionIdentity struct {
+	Model    string
+	CLI      string
+	Provider string
+}
+
 // workLogProjection is an untrusted pointer. It contains no path, prompt,
 // repository, branch, or model data and is never used without loading and
 // corroborating the immutable private claim.
@@ -372,7 +381,7 @@ func corroborateExistingRunPrompt(home, effort, run string, options WorkLogOptio
 }
 
 func normalizeWorkLogOptions(task string, options WorkLogOptions, now time.Time) (effort, run string, err error) {
-	if err := validateNewExecutionIdentity(options); err != nil {
+	if err := validateNewExecutionIdentity(ClaimExecutionIdentity{Model: options.Model, CLI: options.CLI, Provider: options.Provider}); err != nil {
 		return "", "", err
 	}
 	effort = strings.TrimSpace(options.EffortID)
@@ -392,15 +401,15 @@ func normalizeWorkLogOptions(task string, options WorkLogOptions, now time.Time)
 	return effort, run, nil
 }
 
-func validateNewExecutionIdentity(options WorkLogOptions) error {
-	model := strings.TrimSpace(options.Model)
+func validateNewExecutionIdentity(identity ClaimExecutionIdentity) error {
+	model := strings.TrimSpace(identity.Model)
 	if model == "" {
 		return fmt.Errorf("--model is required for every new Work Log claim; pass the exact child model or the explicit value unknown")
 	}
 	if !validExecutionIdentifier(model, true) {
 		return fmt.Errorf("model %q must be a non-secret execution identifier or explicit unknown", model)
 	}
-	for _, field := range []struct{ name, value string }{{"cli", options.CLI}, {"provider", options.Provider}} {
+	for _, field := range []struct{ name, value string }{{"cli", identity.CLI}, {"provider", identity.Provider}} {
 		value := strings.TrimSpace(field.value)
 		if value != "" && !validExecutionIdentifier(value, false) {
 			return fmt.Errorf("%s %q must be a non-secret execution identifier", field.name, value)
@@ -444,11 +453,25 @@ func validExecutionIdentifier(value string, allowUnknown bool) bool {
 		return false
 	}
 	lower := strings.ToLower(value)
-	// Credentials are never execution-route metadata. Reject obvious token and
-	// URL user-info forms instead of preserving a value that might be secret.
+	// Credentials are never execution-route metadata. This is deliberately a
+	// bounded defense against well-known credential shapes, not a claim that
+	// arbitrary secrets can be detected. Label syntax and caller guidance remain
+	// the primary boundary; obvious token and URL user-info forms are refused.
 	return !strings.ContainsAny(value, "@=?#") && !strings.Contains(lower, "token") &&
 		!strings.Contains(lower, "secret") && !strings.Contains(lower, "password") &&
-		!strings.HasPrefix(lower, "sk-") && !strings.HasPrefix(lower, "bearer")
+		!hasCredentialPrefix(lower)
+}
+
+func hasCredentialPrefix(lower string) bool {
+	for _, prefix := range []string{
+		"sk-", "sk_", "rk_live_", "bearer", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_",
+		"glpat-", "xoxa-", "xoxb-", "xoxp-", "xoxr-", "npm_", "pypi-", "hf_", "ops_", "akia", "aiza", "eyj",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func declaredBy(options WorkLogOptions) string {
@@ -495,6 +518,22 @@ func workLogClaimID(effort string, result CreateResult) string {
 func successorWorkLogClaimID(parentClaimID, successor, disposition string) string {
 	hash := sha256.New()
 	for _, value := range []string{"successor", parentClaimID, successor, disposition} {
+		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
+		_, _ = io.WriteString(hash, value)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+// declaredSuccessorWorkLogClaimID binds a creator's normalized execution
+// identity to the deterministic successor ID. The terminal record stores that
+// ID before the successor is published, so a crash/retry cannot silently
+// substitute a different model or route beneath an already-sealed handoff.
+func declaredSuccessorWorkLogClaimID(parentClaimID, successor, disposition string, identity ClaimExecutionIdentity) string {
+	hash := sha256.New()
+	for _, value := range []string{
+		"successor-execution-identity-v2", parentClaimID, successor, disposition,
+		strings.TrimSpace(identity.Model), strings.TrimSpace(identity.CLI), strings.TrimSpace(identity.Provider),
+	} {
 		_, _ = io.WriteString(hash, fmt.Sprintf("%d:", len(value)))
 		_, _ = io.WriteString(hash, value)
 	}
@@ -643,17 +682,17 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 	}
 	runDir, _, err := openWorkLogRun(home, options.EffortID, options.RunID, false)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("open correction Work Log run: %w", err)
 	}
 	defer func() { _ = runDir.Close() }()
 	unlock, err := lockClaim(runDir, options.ClaimID)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("lock correction claim: %w", err)
 	}
 	defer unlock()
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("open correction claims: %w", err)
 	}
 	var claim workLogClaim
 	err = readJSONAt(claims, options.ClaimID+".json", &claim)
@@ -666,7 +705,7 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 	}
 	identity, corrections, err := projectExecutionIdentity(runDir, claim)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("project identity before correction: %w", err)
 	}
 	for _, correction := range corrections {
 		if correction.CorrectionID == options.EventID {
@@ -685,7 +724,7 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), Model: normalizedPointer(options.Model), CLI: normalizedPointer(options.CLI), Provider: normalizedPointer(options.Provider)}
 	correctionsDir, err := openWorkLogCorrections(runDir, claim.ClaimID, true)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("open correction history: %w", err)
 	}
 	defer func() { _ = correctionsDir.Close() }()
 	name := event.CorrectionID + ".json"
@@ -698,7 +737,7 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 	}
 	identity, _, err = projectExecutionIdentity(runDir, claim)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("project identity after correction: %w", err)
 	}
 	return writeCorrectionOutbox(home, claim, event, identity)
 }
@@ -707,7 +746,7 @@ func writeCorrectionOutbox(home string, claim workLogClaim, event workLogIdentit
 	var result ExecutionIdentityCorrectionResult
 	outbox, err := openWorkLogOutbox(home, claim.EffortID, true)
 	if err != nil {
-		return result, err
+		return result, fmt.Errorf("open correction outbox: %w", err)
 	}
 	defer func() { _ = outbox.Close() }()
 	public := workLogPublicEvent{Version: 1, Type: event.Type, At: event.At, EffortID: claim.EffortID,
@@ -1218,10 +1257,13 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 // intentionally untouched: handoff/not_landed is a control-plane transition,
 // not discard. A crash before the final projection write is retryable because
 // terminal and successor identities are immutable and deterministic.
-func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor string) error {
+func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor string, identity ClaimExecutionIdentity) error {
 	successor = strings.TrimSpace(successor)
 	if successor == "" || len(successor) > 200 || strings.ContainsAny(successor, "\x00\r\n") {
 		return fmt.Errorf("one successor agent/session ID is required for %s", disposition)
+	}
+	if err := validateNewExecutionIdentity(identity); err != nil {
+		return err
 	}
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if err != nil {
@@ -1253,16 +1295,27 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
-	successorClaimID := successorWorkLogClaimID(claim.ClaimID, successor, disposition)
+	successorClaimID := declaredSuccessorWorkLogClaimID(claim.ClaimID, successor, disposition, identity)
 	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, successorClaimID, successor)
 	if err != nil {
 		return err
 	}
 	successorClaim := claim
+	successorClaim.Version = 2
 	successorClaim.ClaimID = successorClaimID
 	successorClaim.Lifecycle = "active"
 	successorClaim.RecordedAt = sealedAt
+	successorClaim.Initiator = successor
 	successorClaim.AgentID = successor
+	successorClaim.AgentRuntime = ""
+	successorClaim.Model = strings.TrimSpace(identity.Model)
+	successorClaim.ModelProvenance = modelProvenanceCallerDeclared
+	if successorClaim.Model == "unknown" {
+		successorClaim.ModelProvenance = modelProvenanceUnknown
+	}
+	successorClaim.ModelDeclaredBy = successor
+	successorClaim.CLI = strings.TrimSpace(identity.CLI)
+	successorClaim.Provider = strings.TrimSpace(identity.Provider)
 	successorClaim.ParentClaimID = claim.ClaimID
 	successorClaim.AcquiredVia = disposition
 	if err := writeJSONImmutableAt(claims, successorClaimID+".json", successorClaim, true); err != nil {
@@ -1330,10 +1383,18 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 	const recoveryVia = "recycle_failed"
 	recoveryID := successorWorkLogClaimID(prior.ClaimID, recoveryAgent, recoveryVia)
 	recovery := claim
+	recovery.Version = 2
 	recovery.ClaimID = recoveryID
 	recovery.Lifecycle = "active"
 	recovery.RecordedAt = terminal.SealedAt
+	recovery.Initiator = recoveryAgent
 	recovery.AgentID = recoveryAgent
+	recovery.AgentRuntime = ""
+	recovery.Model = "unknown"
+	recovery.ModelProvenance = modelProvenanceUnknown
+	recovery.ModelDeclaredBy = recoveryAgent
+	recovery.CLI = ""
+	recovery.Provider = ""
 	recovery.ParentClaimID = prior.ClaimID
 	recovery.AcquiredVia = recoveryVia
 	if err := writeJSONImmutableAt(claims, recoveryID+".json", recovery, true); err != nil {
@@ -1528,7 +1589,12 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed") {
 			return fmt.Errorf("private successor claim metadata is invalid")
 		}
-		wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
+		if claim.Version == 2 && claim.AcquiredVia != "recycle_failed" {
+			wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
+				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
+		} else {
+			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
+		}
 	}
 	if wantID != claim.ClaimID {
 		return fmt.Errorf("private work-log claim digest mismatch")
@@ -1673,12 +1739,19 @@ func openPrivateChild(parent *os.File, name string, create bool) (*os.File, erro
 func lockClaim(runDir *os.File, claimID string) (func(), error) {
 	locks, err := openPrivateChild(runDir, "locks", true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open claim-lock directory: %w", err)
 	}
-	fd, err := unix.Openat(int(locks.Fd()), claimID+".lock", unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW, 0o600)
+	fd, err := unix.Openat(int(locks.Fd()), claimID+".lock", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+	if errors.Is(err, unix.EEXIST) {
+		// Two first-time claimers can race the lock-file publication. Separate
+		// create from open so the loser deterministically opens the winner's
+		// no-follow regular entry instead of Darwin returning a transient ENOENT
+		// from concurrent O_CREAT|O_NOFOLLOW calls.
+		fd, err = unix.Openat(int(locks.Fd()), claimID+".lock", unix.O_RDWR|unix.O_NOFOLLOW, 0)
+	}
 	_ = locks.Close()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open claim-lock file: %w", err)
 	}
 	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
 		_ = unix.Close(fd)

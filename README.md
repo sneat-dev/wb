@@ -205,12 +205,16 @@ worktree and branch; a task effort has the same requirement after merge to its
 feature branch. A validated branch is not terminal.
 
 Use `wb worktree abort <task> --disposition handoff|not_landed --successor
-<agent-or-session>` or explicit `--disposition discarded` for
+<agent-or-session> --model <exact-successor-model-or-unknown>` or explicit
+`--disposition discarded` for
 an interrupted or never-started effort that has no merged PR and therefore is
 ineligible for normal cleanup. Its default is a dry-run; `--apply` seals the
-local archive and emits an outbox event. `handoff` and `not_landed` seal the
-old claim and bind exactly one active successor while retaining even dirty
-resumable state; only explicit `discarded --apply --remote` retires an exact
+local archive and emits an outbox event. Applied `handoff` and `not_landed`
+reject an omitted model before sealing the old claim, then bind exactly one
+active successor while retaining even dirty resumable state. Pass `--cli` and
+`--provider` independently when known—for example `--cli opencode --provider
+opencode-go`; the provider is a commercial routing/subscription identifier,
+never a credential. Only explicit `discarded --apply --remote` retires an exact
 unchanged remote source branch and removes a clean, unlocked worktree/local
 branch after the archive is durable and the live checkout is revalidated at
 the deletion boundary. The same discarded command resumes an exact durable

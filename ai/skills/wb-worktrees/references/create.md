@@ -23,6 +23,7 @@ From any checkout whose `origin` identifies the repository:
 
 ```sh
 wb worktree create <task> --branch-prefix <prefix>/ \
+  --model unknown \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -49,6 +50,7 @@ With a non-default projects root, put the global option on every call:
 ```sh
 wb --projects-root <root> worktree create <task> \
   --branch-prefix <prefix>/ <owner/repository> \
+  --model unknown \
   --original-prompt-file <private-prompt-file>
 ```
 
@@ -65,10 +67,11 @@ outside source Git. `--original-prompt-file` is mandatory and copies those
 exact bytes into the private archive only. They are intentionally absent from the
 Git-excluded worktree projection and Synchestra outbox.
 
-The dispatcher that creates a session/worktree must explicitly supply the
-model it chose: `--model <exact-id>` or `--model unknown`. WB rejects omission
-before publication and never guesses from runtime, CLI, provider, or ambient
-configuration. Record `--cli` and `--provider` only when independently known;
+The dispatcher that creates a session, worktree, or successor claim must
+explicitly supply the model it chose: `--model <exact-id>` or `--model
+unknown`. WB rejects omission before publication and never guesses from
+runtime, CLI, provider, or ambient configuration. Record `--cli` and
+`--provider` only when independently known;
 they are optional, independent route metadata. Provider is a routing/billing
 or subscription identifier, never a credential.
 
@@ -119,7 +122,8 @@ Use `--resume` only when the open work belongs to this exact task and branch:
 
 ```sh
 wb worktree create <task> --resume \
-  <owner/repository> --original-prompt-file <private-prompt-file>
+  <owner/repository> --model unknown \
+  --original-prompt-file <private-prompt-file>
 ```
 
 WB recovers the registered branch and active Work Log claim before it consults

@@ -647,9 +647,23 @@ func parseSkillCommandExample(example string) error {
 
 func validateSkillExampleRequiredFlags(command *cobra.Command) error {
 	requirePrompt := command.CommandPath() == "wb worktree create"
+	requireModel := requirePrompt
 	if command.CommandPath() == "wb worktree rename" {
 		apply := command.Flags().Lookup("apply")
 		requirePrompt = apply != nil && apply.Value.String() == "true"
+		requireModel = requirePrompt
+	}
+	if command.CommandPath() == "wb worktree abort" {
+		apply := command.Flags().Lookup("apply")
+		disposition := command.Flags().Lookup("disposition")
+		requireModel = apply != nil && apply.Value.String() == "true" && disposition != nil &&
+			(disposition.Value.String() == "handoff" || disposition.Value.String() == "not_landed")
+	}
+	if requireModel {
+		model := command.Flags().Lookup("model")
+		if model == nil || !model.Changed || strings.TrimSpace(model.Value.String()) == "" {
+			return fmt.Errorf("%s requires --model", command.CommandPath())
+		}
 	}
 	if !requirePrompt {
 		return nil

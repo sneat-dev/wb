@@ -81,6 +81,7 @@ never a token, credential, or secret.`,
 
 func newWorktreeAbortCmd() *cobra.Command {
 	var base, disposition, successor, format string
+	var model, cli, provider string
 	var apply, deleteRemote bool
 	command := &cobra.Command{
 		Use:   "abort <task>",
@@ -88,7 +89,10 @@ func newWorktreeAbortCmd() *cobra.Command {
 		Long: `Abort is the audited alternative to manually deleting an unfinished worktree.
 It seals each local Work Log and queues an offline-safe outbox event. --apply
 with handoff or not_landed transfers one active claim to the required
---successor while leaving the branch/worktree resumable; --apply with
+--successor while leaving the branch/worktree resumable. The creator must
+declare the successor's exact --model or explicit unknown; --cli and
+--provider independently record the invoking client and commercial route when
+known, never credentials. --apply with
 discarded removes only clean, unlocked worktrees and their exact local branch
 refs after their archive has been sealed. A discarded apply requires --remote;
 an exact matching remote source branch is then retired with force-with-lease.
@@ -103,7 +107,8 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor,
-				DeleteRemote: deleteRemote, Apply: apply,
+				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
+				DeleteRemote:      deleteRemote, Apply: apply,
 			})
 			if err != nil {
 				return err
@@ -130,6 +135,9 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
 	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, or discarded")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
+	command.Flags().StringVar(&model, "model", "", "required with applied handoff/not_landed: exact successor model or explicit unknown; WB never guesses")
+	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
+	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().BoolVar(&apply, "apply", false, "seal Work Logs and apply the selected disposition")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged remote source branch when applying discarded")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
