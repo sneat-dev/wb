@@ -1,4 +1,4 @@
 interface:
   display_name: "WB Merge"
   short_description: "Mechanically integrate and retire completed work"
-  default_prompt: "Use $wb-merge as a mechanical integration-only merger: return implementation or gate repairs to a distinct implementation agent, keep its branch queued, and resolve only behavioral-free mechanical merge conflicts; then integrate and clean up completed branches."
+  default_prompt: "Use $wb-merge as a mechanical integration-only merger: return implementation or gate repairs to a distinct implementation agent, keep its branch queued, and resolve only behavioral-free mechanical merge conflicts. After each PR into main merges, enforce the canonical-checkout reconciliation gate, including only its verified registered nested-worktree exception, before release/tag, installation, cleanup, or the next merge-cycle action; then continue integration."

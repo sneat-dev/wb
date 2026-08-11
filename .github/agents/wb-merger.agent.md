@@ -11,3 +11,9 @@ implementation code, tests, specs, generated artifacts, fixtures, or gate
 failures. Keep the branch queued and resolve only behavioral-free mechanical
 merge conflicts. Use WB-managed worktrees and leave completion to the canonical
 remote receipt and cleanup checks.
+
+After a PR into `main` merges, enforce the canonical checkout reconciliation
+gate in the canonical skill before any release/tag, installation, cleanup, or
+next merge-cycle action, including only its verified registered
+nested-worktree exception; return any blocked canonical checkout to its owner
+without repairing it.

@@ -32,7 +32,7 @@
     "defaultPrompt": [
       "Create a safe WB worktree for this change.",
       "Propagate these releases with minimal CI builds.",
-      "Drain compatible completed branches with the WB merger workflow, prove exact remote CI receipt, and clean their worktrees."
+      "Drain compatible completed branches with the WB merger workflow, prove exact remote CI receipt, reconcile the canonical checkout after every PR merge into main—including only the verified registered nested-worktree exception—before release/tag, installation, cleanup, or the next merge-cycle action, and then clean their worktrees."
     ]
   }
 }

@@ -82,10 +82,30 @@ than a fictional queue.
 5. Push whichever ref was integrated immediately after validation. For a
    direct route, push the exact target and verify its remote SHA. For a PR route,
    push the source branch, wait for its exact source-head and PR receipt, then
-   merge through the PR with that exact-head guard. Fetch again, fast-forward
-   the local target to `origin/<target>`, and prove that the fetched remote
-   target contains the exact merge SHA. A local merge, source push, or merely
-   queued target push is not target receipt. After either route, wait for all
+   merge through the PR with that exact-head guard. **Immediately after a PR
+   into `main` reports merged, and before any release/tag advancement,
+   installation evidence, cleanup, or other merge-cycle action,**
+   resolve that repository's canonical checkout through WB's canonical
+   repository layout. Require it to be checked out on local `main` with clean
+   staged and unstaged tracked state; reject ordinary untracked paths. The only
+   untracked exception is an exact registered nested linked-worktree root:
+   first prove `origin/main` tracks no conflicting path there, snapshot that
+   nested worktree's branch, `HEAD`, and status, and recheck every snapshot is
+   unchanged after canonical synchronization. All other dirty or non-`main`
+   states fail closed. Run `git fetch origin`, capture the exact `origin/main`
+   SHA, then run
+   `git merge --ff-only origin/main` in that canonical checkout. Its `HEAD`
+   must equal both that fetched `origin/main` SHA and the PR's exact server
+   merge-result SHA before continuing. If the canonical checkout is missing,
+   cannot fast-forward, or has a different exact SHA, fail closed and hand the
+   condition to its owner. Do not advance a
+   release or tag, collect installation evidence, terminalize cleanup, or
+   start the next batch before this gate passes. Never reset, switch over
+   changes, stash, discard, or otherwise repair the canonical checkout.
+   Fetch again, fast-forward the local target to `origin/<target>`, and prove
+   that the fetched remote target contains the exact merge SHA. A local merge,
+   source push, or merely queued target push is not target receipt. After
+   either route, wait for all
    observed CI and required release evidence on the exact remote target SHA.
    Use `wb ci wait --repo <owner/repo> --target <target> --head <exact-sha>
    --json` (for example, `wb ci wait --repo acme/app --target main --head 0123456789012345678901234567890123456789 --json`);
