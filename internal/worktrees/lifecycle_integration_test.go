@@ -742,6 +742,124 @@ func TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest(t *testing.T
 	}
 }
 
+func TestCleanupAcceptsExactRebaseMergedPullRequestReceipt(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-rebase-receipt", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte("rebase merge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature source")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	// Model GitHub's rebase result: it has the source tree, but is a distinct
+	// commit and therefore the source tip is not its ancestor.
+	tree := gitTestOutput(t, fixture.canonical, "rev-parse", head+"^{tree}")
+	mergeSHA := gitTestOutput(t, fixture.canonical, "commit-tree", tree, "-p", "main", "-m", "rebase feature")
+	gitTest(t, fixture.canonical, "update-ref", "refs/heads/main", mergeSHA)
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	if merged, err := isAncestor(context.Background(), fixture.canonical, head, mergeSHA); err != nil || merged {
+		t.Fatalf("source must not be an ancestor of rebase result: merged=%t err=%v", merged, err)
+	}
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixtureWithMerge(t, head, mergeSHA, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-rebase-receipt", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible || !planned.Results[0].IntegratedAtOrigin || !planned.Results[0].RebaseMergedAtOrigin {
+		t.Fatalf("rebase receipt cleanup plan = %#v", planned)
+	}
+	if planned.Results[0].MergedPullRequest == nil || planned.Results[0].MergedPullRequest.MergeSHA != mergeSHA {
+		t.Fatalf("rebase receipt PR evidence = %#v", planned.Results[0].MergedPullRequest)
+	}
+}
+
+func TestCleanupRejectsRebaseReceiptWhoseMergeTreeDiffersFromSource(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-rebase-tree-mismatch", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "source.txt"), []byte("source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "source.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "source feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "other.txt"), []byte("different target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "other.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unrelated target")
+	mergeSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixtureWithMerge(t, head, mergeSHA, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-rebase-tree-mismatch", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].IntegratedAtOrigin || planned.Results[0].RebaseMergedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		t.Fatalf("tree-mismatched rebase receipt must be rejected: %#v", planned)
+	}
+}
+
+func TestCleanupRejectsMergedPullRequestWithoutTargetIntegration(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-unintegrated-merged-pr", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte("not landed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "unintegrated source")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-unintegrated-merged-pr", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].IntegratedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		t.Fatalf("merged PR without target integration must be rejected: %#v", planned)
+	}
+}
+
 func TestCleanupPreservesDirtyRealWorktree(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-dirty")
 	installMergedPullRequestFixture(t, head, mergedAt)
@@ -1206,16 +1324,24 @@ func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) 
 }
 
 func installMergedPullRequestFixture(t *testing.T, head string, mergedAt time.Time) {
-	installMergedPullRequestFixtures(t, []string{head}, mergedAt)
+	installMergedPullRequestFixturesWithMerge(t, []string{head}, nil, mergedAt)
 }
 
 func installMergedPullRequestFixtures(t *testing.T, heads []string, mergedAt time.Time) {
+	installMergedPullRequestFixturesWithMerge(t, heads, nil, mergedAt)
+}
+
+func installMergedPullRequestFixtureWithMerge(t *testing.T, head, mergeSHA string, mergedAt time.Time) {
+	installMergedPullRequestFixturesWithMerge(t, []string{head}, []string{mergeSHA}, mergedAt)
+}
+
+func installMergedPullRequestFixturesWithMerge(t *testing.T, heads, mergeSHAs []string, mergedAt time.Time) {
 	t.Helper()
 	binDir := t.TempDir()
 	script := filepath.Join(binDir, "gh")
 	content := `#!/bin/sh
 set -eu
-if [ "$1 $2" != "pr list" ]; then
+if [ "$1 $2" != "api --paginate" ]; then
     echo "unexpected gh command: $*" >&2
     exit 2
 fi
@@ -1227,13 +1353,17 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 	pulls := make([]map[string]any, 0, len(heads))
 	for index, head := range heads {
 		pulls = append(pulls, map[string]any{
-			"number":      index + 17,
-			"url":         "https://github.com/acme/app/pull/" + strconv.Itoa(index+17),
-			"state":       "MERGED",
-			"mergedAt":    mergedAt.Format(time.RFC3339),
-			"headRefOid":  head,
-			"baseRefName": "main",
+			"number":           index + 17,
+			"html_url":         "https://github.com/acme/app/pull/" + strconv.Itoa(index+17),
+			"state":            "closed",
+			"merged_at":        mergedAt.Format(time.RFC3339),
+			"head":             map[string]any{"ref": "feature/test", "sha": head},
+			"base":             map[string]any{"ref": "main", "sha": ""},
+			"merge_commit_sha": "",
 		})
+		if index < len(mergeSHAs) {
+			pulls[index]["merge_commit_sha"] = mergeSHAs[index]
+		}
 	}
 	payload, err := json.Marshal(pulls)
 	if err != nil {
