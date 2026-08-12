@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,12 @@ type ListOptions struct {
 	// can neither appear in the report nor influence it.
 	Filter string
 	GitHub bool
+	// AbsorbedBy points at the merged pull request or exact landing commit
+	// that carried a candidate's work into the target inside a differently
+	// named integration branch. It selects which receipt to verify and never
+	// substitutes for one: every containment proof still runs, so a wrong or
+	// dishonest pointer can only fail closed. See absorbedLandingReceipt.
+	AbsorbedBy string
 }
 
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
@@ -49,24 +56,31 @@ type PullRequest struct {
 
 // ListResult describes one linked checkout below the WB task hierarchy.
 type ListResult struct {
-	Task                 string       `json:"task"`
-	Repository           string       `json:"repository"`
-	CanonicalDir         string       `json:"canonical_dir"`
-	WorktreeDir          string       `json:"worktree_dir"`
-	WorktreesRoot        string       `json:"worktrees_root"`
-	Branch               string       `json:"branch"`
-	Base                 string       `json:"base"`
-	HeadSHA              string       `json:"head_sha"`
-	RemoteHeadSHA        string       `json:"remote_head_sha,omitempty"`
-	RemoteTargetSHA      string       `json:"remote_target_sha,omitempty"`
-	IntegratedAtOrigin   bool         `json:"integrated_at_origin"`
-	RebaseMergedAtOrigin bool         `json:"rebase_merged_at_origin,omitempty"`
-	Clean                bool         `json:"clean"`
-	LocallyMerged        bool         `json:"locally_merged"`
-	Locked               bool         `json:"locked"`
-	LastCommit           time.Time    `json:"last_commit"`
-	OpenPullRequest      *PullRequest `json:"open_pull_request,omitempty"`
-	MergedPullRequest    *PullRequest `json:"merged_pull_request,omitempty"`
+	Task                 string `json:"task"`
+	Repository           string `json:"repository"`
+	CanonicalDir         string `json:"canonical_dir"`
+	WorktreeDir          string `json:"worktree_dir"`
+	WorktreesRoot        string `json:"worktrees_root"`
+	Branch               string `json:"branch"`
+	Base                 string `json:"base"`
+	HeadSHA              string `json:"head_sha"`
+	RemoteHeadSHA        string `json:"remote_head_sha,omitempty"`
+	RemoteTargetSHA      string `json:"remote_target_sha,omitempty"`
+	IntegratedAtOrigin   bool   `json:"integrated_at_origin"`
+	RebaseMergedAtOrigin bool   `json:"rebase_merged_at_origin,omitempty"`
+	AbsorbedAtOrigin     bool   `json:"absorbed_at_origin,omitempty"`
+	AbsorbedBySHA        string `json:"absorbed_by_sha,omitempty"`
+	// AbsorbedByRejection explains why an explicitly supplied --absorbed-by
+	// receipt did not hold. An operator pointer that fails verification is a
+	// precise, reportable refusal of that candidate, never a malformed
+	// worktree and never a reason to abort a fleet-wide sweep.
+	AbsorbedByRejection string       `json:"absorbed_by_rejection,omitempty"`
+	Clean               bool         `json:"clean"`
+	LocallyMerged       bool         `json:"locally_merged"`
+	Locked              bool         `json:"locked"`
+	LastCommit          time.Time    `json:"last_commit"`
+	OpenPullRequest     *PullRequest `json:"open_pull_request,omitempty"`
+	MergedPullRequest   *PullRequest `json:"merged_pull_request,omitempty"`
 }
 
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
@@ -120,7 +134,10 @@ type CleanupOptions struct {
 	// on to those whose owner/repository slug contains this substring — see
 	// ListOptions.Filter. An empty Filter matches everything, preserving
 	// today's behavior exactly.
-	Filter       string
+	Filter string
+	// AbsorbedBy is the optional landing receipt pointer described on
+	// ListOptions.AbsorbedBy. It is verified, never trusted.
+	AbsorbedBy   string
 	AllMerged    bool
 	Apply        bool
 	DeleteRemote bool
@@ -426,7 +443,9 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	}
 	outcome := ListOutcome{SchemaVersion: 1}
 	for _, layout := range resolution.Read {
-		results, diagnostics, artifacts, listErr := listLayout(ctx, projectsRoot, layout, task, base, filter, options.GitHub)
+		results, diagnostics, artifacts, listErr := listLayout(
+			ctx, projectsRoot, layout, task, base, filter, options.AbsorbedBy, options.GitHub,
+		)
 		if listErr != nil {
 			return ListOutcome{}, listErr
 		}
@@ -457,7 +476,7 @@ func listLayout(
 	ctx context.Context,
 	projectsRoot string,
 	layout wbhome.Layout,
-	task, base, filter string,
+	task, base, filter, absorbedBy string,
 	withGitHub bool,
 ) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, error) {
 	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
@@ -502,7 +521,7 @@ func listLayout(
 				continue
 			}
 			if isGitRoot(ctx, candidate) {
-				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, withGitHub, locked)
+				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, absorbedBy, withGitHub, locked)
 				if inspectErr != nil {
 					if filterMatches(filter, inspectErrorFilterCandidates("", candidate, entry.Name(), inspectErr)...) {
 						diagnostics = append(diagnostics, listDiagnosticForInspectError(layout.WorktreesRoot, taskEntry.Name(), candidate, "", inspectErr))
@@ -544,7 +563,7 @@ func listLayout(
 				repositoryPath := filepath.Join(candidate, repositoryEntry.Name())
 				slug := entry.Name() + "/" + repositoryEntry.Name()
 				if isGitRoot(ctx, repositoryPath) {
-					result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, withGitHub, locked)
+					result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, absorbedBy, withGitHub, locked)
 					if inspectErr != nil {
 						if filterMatches(filter, inspectErrorFilterCandidates(entry.Name(), repositoryPath, slug, inspectErr)...) {
 							diagnostics = append(diagnostics, listDiagnosticForInspectError(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, entry.Name(), inspectErr))
@@ -713,6 +732,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		Task:         normalized.Task,
 		Base:         normalized.Base,
 		Filter:       normalized.Filter,
+		AbsorbedBy:   normalized.AbsorbedBy,
 		GitHub:       true,
 	})
 	if err != nil {
@@ -851,6 +871,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					outcome.Results[index].Task,
 					outcome.Results[index].WorktreeDir,
 					normalized.Base,
+					normalized.AbsorbedBy,
 					true,
 					false, // The task is locked by this cleanup operation.
 				)
@@ -1128,6 +1149,7 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 	options.Task = task
 	options.Base = base
 	options.Filter = filter
+	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
 	if options.Task == "" && !options.AllMerged {
 		return CleanupOptions{}, fmt.Errorf("supply one task or use --all-merged")
 	}
@@ -1169,11 +1191,17 @@ func validRepositorySegment(value string) bool {
 	return safeRepositorySegment.MatchString(value) && value != "." && value != ".."
 }
 
+// inspectLifecycleWorktree validates one linked checkout and, when GitHub is
+// requested, establishes whether its exact head is integrated into the freshly
+// fetched exact origin target. absorbedBy is the optional operator-supplied
+// pointer to a landing commit or merged pull request for work that reached the
+// target inside a differently named integration branch; it only says where to
+// look for a receipt and never substitutes for one (see absorbedLandingReceipt).
 func inspectLifecycleWorktree(
 	ctx context.Context,
 	projectsRoot string,
 	layout wbhome.Layout,
-	task, worktree, base string,
+	task, worktree, base, absorbedBy string,
 	withGitHub, locked bool,
 ) (ListResult, error) {
 	root, err := git(ctx, worktree, "rev-parse", "--show-toplevel")
@@ -1263,6 +1291,23 @@ func inspectLifecycleWorktree(
 				return ListResult{}, err
 			}
 			result.IntegratedAtOrigin = result.RebaseMergedAtOrigin
+		}
+		if !result.IntegratedAtOrigin {
+			receipt, rejection, err := absorbedLandingReceipt(
+				ctx, worktree, canonical, slug, head, base, result.RemoteTargetSHA, absorbedBy, pullRequests,
+			)
+			if err != nil {
+				return ListResult{}, err
+			}
+			result.AbsorbedByRejection = rejection
+			if receipt != nil {
+				result.AbsorbedAtOrigin = true
+				result.AbsorbedBySHA = receipt.LandingSHA
+				result.IntegratedAtOrigin = true
+				if result.MergedPullRequest == nil {
+					result.MergedPullRequest = receipt.PullRequest
+				}
+			}
 		}
 	}
 	return result, nil
@@ -1395,6 +1440,291 @@ func rebaseMergedPullRequestIntegrated(ctx context.Context, repository, head, ta
 	return sourceTree == mergeTree, nil
 }
 
+// absorbedReceipt is the landing evidence for a branch whose exact head can
+// never reach the target because a differently named integration branch
+// carried its content there. A merger batching several completed candidates
+// onto one integration branch and landing that branch once is the workflow a
+// repository requiring linear history forces; the source branch tips are then
+// absent from the target by construction, not by omission.
+type absorbedReceipt struct {
+	// LandingSHA is the exact commit in the target that introduced the work.
+	LandingSHA string
+	// PullRequest is the merged pull-request receipt when GitHub supplied one.
+	PullRequest *PullRequest
+}
+
+// absorbedLandingReceipt establishes, with evidence only, that a branch's
+// content reached the exact fetched origin target inside another branch.
+//
+// Two receipt sources are accepted, never a bare assertion. GitHub's own
+// commit-to-pull-request index is preferred: it is computed by GitHub, not
+// written by the author, and it already binds this immutable source commit to
+// the pull request that introduced it. An operator pointer (--absorbed-by)
+// covers the landings GitHub cannot associate, such as content cherry-picked
+// rather than merged into the integration branch, and is held to a stricter
+// bar precisely because a human chose it.
+//
+// Every path proves containment locally and cryptographically: merging the
+// branch into the landing commit must add nothing to it, and merging it into
+// the freshly fetched target must add nothing there either. The second proof
+// is what refuses a branch whose work landed and was later reverted.
+//
+// A discovered receipt that does not hold is an ordinary negative answer. An
+// explicitly supplied one that does not hold is returned as a rejection
+// string, so the operator reads exactly which verification refused it rather
+// than a generic awaiting_push verdict.
+func absorbedLandingReceipt(
+	ctx context.Context,
+	worktree, repository, slug, head, base, target, absorbedBy string,
+	pullRequests []githubPullRequest,
+) (*absorbedReceipt, string, error) {
+	if absorbedBy != "" {
+		return attestedAbsorbedReceipt(ctx, worktree, repository, slug, head, base, target, absorbedBy)
+	}
+	pullRequest := absorbingPullRequest(pullRequests, base)
+	if pullRequest == nil || !isGitObjectID(pullRequest.MergeSHA) {
+		return nil, "", nil
+	}
+	landed, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
+	if err != nil || !landed {
+		return nil, "", err
+	}
+	absorbed, err := contentAbsorbed(ctx, repository, head, pullRequest.MergeSHA, target)
+	if err != nil || !absorbed {
+		return nil, "", err
+	}
+	return &absorbedReceipt{LandingSHA: pullRequest.MergeSHA, PullRequest: pullRequest}, "", nil
+}
+
+// attestedAbsorbedReceipt verifies an operator-supplied pointer. The pointer
+// selects which commit to examine; it grants nothing. Beyond the containment
+// proofs every receipt needs, the named commit must be exactly where the work
+// entered the target: without that test an operator could name the target tip
+// itself and silently reduce the flag to an unreceipted content assertion.
+func attestedAbsorbedReceipt(
+	ctx context.Context,
+	worktree, repository, slug, head, base, target, absorbedBy string,
+) (*absorbedReceipt, string, error) {
+	landingSHA, pullRequest, rejection, err := resolveAbsorbedBy(ctx, worktree, repository, slug, base, absorbedBy)
+	if err != nil || rejection != "" {
+		return nil, rejection, err
+	}
+	landed, err := isAncestor(ctx, repository, landingSHA, target)
+	if err != nil {
+		return nil, "", err
+	}
+	if !landed {
+		return nil, fmt.Sprintf(
+			"--absorbed-by %s resolved to %s, which is not contained in the exact fetched origin/%s target %s",
+			absorbedBy, landingSHA, base, target,
+		), nil
+	}
+	inLanding, err := contentContained(ctx, repository, head, landingSHA)
+	if err != nil {
+		return nil, "", err
+	}
+	if !inLanding {
+		return nil, fmt.Sprintf(
+			"--absorbed-by %s resolved to %s, which does not contain this branch's content",
+			absorbedBy, landingSHA,
+		), nil
+	}
+	inTarget, err := contentContained(ctx, repository, head, target)
+	if err != nil {
+		return nil, "", err
+	}
+	if !inTarget {
+		return nil, fmt.Sprintf(
+			"work absorbed by %s no longer survives in the exact fetched origin/%s target %s",
+			landingSHA, base, target,
+		), nil
+	}
+	parent, err := commitFirstParent(ctx, repository, landingSHA)
+	if err != nil {
+		return nil, "", err
+	}
+	if parent != "" {
+		beforeLanding, err := contentContained(ctx, repository, head, parent)
+		if err != nil {
+			return nil, "", err
+		}
+		if beforeLanding {
+			return nil, fmt.Sprintf(
+				"--absorbed-by %s resolved to %s, which is not where this work entered the target: %s already contained it",
+				absorbedBy, landingSHA, parent,
+			), nil
+		}
+	}
+	return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+}
+
+// resolveAbsorbedBy turns an operator pointer into one exact landing commit.
+// A pull-request number must name a pull request that really merged into this
+// exact base; anything else must resolve to a commit already present in the
+// canonical object database, which a genuine landing always is because the
+// target was just fetched.
+func resolveAbsorbedBy(
+	ctx context.Context,
+	worktree, repository, slug, base, absorbedBy string,
+) (string, *PullRequest, string, error) {
+	pointer := strings.TrimPrefix(strings.TrimSpace(absorbedBy), "#")
+	if pointer == "" {
+		return "", nil, "--absorbed-by requires a pull request number or landing commit", nil
+	}
+	if number, err := strconv.Atoi(pointer); err == nil {
+		if number <= 0 {
+			return "", nil, fmt.Sprintf("--absorbed-by pull request number %d is not positive", number), nil
+		}
+		return resolveAbsorbedByPullRequest(ctx, worktree, slug, base, number)
+	}
+	landingSHA, err := git(ctx, repository, "rev-parse", "--verify", "--end-of-options", pointer+"^{commit}")
+	if err != nil {
+		return "", nil, fmt.Sprintf("--absorbed-by %s does not resolve to a commit in %s", absorbedBy, repository), nil
+	}
+	if !isGitObjectID(landingSHA) {
+		return "", nil, fmt.Sprintf("--absorbed-by %s resolved to invalid commit %q", absorbedBy, landingSHA), nil
+	}
+	return landingSHA, nil, "", nil
+}
+
+func resolveAbsorbedByPullRequest(
+	ctx context.Context,
+	worktree, slug, base string,
+	number int,
+) (string, *PullRequest, string, error) {
+	command := exec.CommandContext(ctx, "gh", "api", "repos/"+slug+"/pulls/"+strconv.Itoa(number))
+	command.Dir = worktree
+	command.Env = console.Env()
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return "", nil, "", fmt.Errorf("read %s pull request %d: %w: %s", slug, number, err, strings.TrimSpace(string(output)))
+	}
+	var candidate githubPullRequest
+	if err := json.Unmarshal(output, &candidate); err != nil {
+		return "", nil, "", fmt.Errorf("decode %s pull request %d: %w", slug, number, err)
+	}
+	if candidate.MergedAt == nil {
+		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not merged", slug, number), nil
+	}
+	if candidate.Base.Ref != base {
+		return "", nil, fmt.Sprintf(
+			"--absorbed-by pull request %s#%d merged into %q, not the requested base %q",
+			slug, number, candidate.Base.Ref, base,
+		), nil
+	}
+	if !isGitObjectID(candidate.MergeCommitSHA) {
+		return "", nil, fmt.Sprintf(
+			"--absorbed-by pull request %s#%d has invalid merge commit %q",
+			slug, number, candidate.MergeCommitSHA,
+		), nil
+	}
+	return candidate.MergeCommitSHA, &PullRequest{
+		Number: candidate.Number, URL: candidate.URL, State: "MERGED",
+		Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA,
+		MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
+	}, "", nil
+}
+
+// absorbingPullRequest selects the newest merged pull request into the exact
+// base that GitHub associates with the immutable source commit. Unlike
+// matchingPullRequests it deliberately does not require the pull-request head
+// to equal that commit: when a merger batches candidates onto one integration
+// branch, the branch name is evidence of nothing and the commit association is
+// the receipt. An open pull request is never a landing receipt.
+func absorbingPullRequest(pullRequests []githubPullRequest, base string) *PullRequest {
+	var absorbing *PullRequest
+	for _, candidate := range pullRequests {
+		if candidate.MergedAt == nil || candidate.Base.Ref != base {
+			continue
+		}
+		if absorbing != nil && !candidate.MergedAt.After(*absorbing.Merged) {
+			continue
+		}
+		absorbing = &PullRequest{
+			Number: candidate.Number, URL: candidate.URL, State: "MERGED",
+			Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA,
+			MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
+		}
+	}
+	return absorbing
+}
+
+// contentAbsorbed requires both containment proofs a landing receipt needs:
+// the work is wholly inside the commit that carried it, and it is still wholly
+// inside the target that was just fetched. Proving only the first would clean
+// up a branch whose landing was later reverted.
+func contentAbsorbed(ctx context.Context, repository, head, landingSHA, target string) (bool, error) {
+	inLanding, err := contentContained(ctx, repository, head, landingSHA)
+	if err != nil || !inLanding {
+		return false, err
+	}
+	return contentContained(ctx, repository, head, target)
+}
+
+// contentContained proves that a branch head adds nothing to a commit. The
+// three-way merge of the branch into that commit must both succeed and produce
+// exactly that commit's own tree; a conflict, or any residual delta, means part
+// of the branch is missing from it. A branch containing a revert of work the
+// commit still carries therefore fails, because merging it would remove that
+// work.
+func contentContained(ctx context.Context, repository, head, commit string) (bool, error) {
+	merged, clean, err := mergeResultTree(ctx, repository, commit, head)
+	if err != nil || !clean {
+		return false, err
+	}
+	existing, err := commitTree(ctx, repository, commit)
+	if err != nil {
+		return false, err
+	}
+	return merged == existing, nil
+}
+
+// mergeResultTree performs a real three-way merge and reports the resulting
+// tree without touching any ref, index, or working tree; only unreferenced
+// objects are written. A conflicted merge is a normal negative containment
+// answer, not an error.
+func mergeResultTree(ctx context.Context, repository, ours, theirs string) (string, bool, error) {
+	command := exec.CommandContext(
+		ctx, "git", "-C", repository, "merge-tree", "--write-tree", "--no-messages", "--end-of-options", ours, theirs,
+	)
+	command.Env = console.Env()
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf(
+			"merge %s into %s in %s: %w: %s", theirs, ours, repository, err, strings.TrimSpace(stderr.String()),
+		)
+	}
+	tree, _, _ := strings.Cut(strings.TrimSpace(stdout.String()), "\n")
+	tree = strings.TrimSpace(tree)
+	if !isGitObjectID(tree) {
+		return "", false, fmt.Errorf("merge %s into %s in %s produced invalid tree %q", theirs, ours, repository, tree)
+	}
+	return tree, true, nil
+}
+
+// commitFirstParent returns the first parent of a commit, or an empty string
+// for a root commit.
+func commitFirstParent(ctx context.Context, repository, revision string) (string, error) {
+	parents, err := git(ctx, repository, "rev-list", "--parents", "-n", "1", "--end-of-options", revision)
+	if err != nil {
+		return "", fmt.Errorf("resolve parents of %s: %w", revision, err)
+	}
+	fields := strings.Fields(parents)
+	if len(fields) < 2 {
+		return "", nil
+	}
+	if !isGitObjectID(fields[1]) {
+		return "", fmt.Errorf("commit %s resolved to invalid first parent %q", revision, fields[1])
+	}
+	return fields[1], nil
+}
+
 func commitTree(ctx context.Context, repository, revision string) (string, error) {
 	tree, err := git(ctx, repository, "rev-parse", revision+"^{tree}")
 	if err != nil {
@@ -1414,6 +1744,9 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 		return false, "worktree has local changes"
 	case entry.OpenPullRequest != nil:
 		return false, "branch still has an open pull request: " + entry.OpenPullRequest.URL
+	case !entry.IntegratedAtOrigin && entry.AbsorbedByRejection != "":
+		return false, "current branch head is not integrated into the exact origin target (awaiting push): " +
+			entry.AbsorbedByRejection
 	case !entry.IntegratedAtOrigin:
 		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
 	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA:
@@ -1515,6 +1848,7 @@ func preflightCleanupRepository(
 		entry.Task,
 		entry.WorktreeDir,
 		options.Base,
+		options.AbsorbedBy,
 		true,
 		false,
 	)

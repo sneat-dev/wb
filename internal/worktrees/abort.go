@@ -212,6 +212,7 @@ func preflightAbortRepository(
 		result.Task,
 		result.WorktreeDir,
 		result.Base,
+		"", // Abort discards work outright; no landing receipt applies.
 		false,
 		false,
 	)
@@ -279,6 +280,7 @@ func applyDiscardedAbort(
 		result.Task,
 		result.WorktreeDir,
 		result.Base,
+		"",
 		false,
 		false,
 	)

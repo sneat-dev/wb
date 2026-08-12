@@ -127,6 +127,36 @@ MUST be a supported integration path. A local-only merge is `awaiting_push`
 and ineligible. An existing remote source branch MUST still point to the exact
 local head.
 
+#### REQ: absorbed-integration-containment-evidence
+
+A target branch that requires linear history forces a merger to batch several
+completed candidates onto one integration branch and land that branch once, so
+a candidate's own head is absent from the target by construction. Such a
+candidate MUST still be eligible, on evidence only.
+
+WB MUST accept a landing receipt from GitHub's own commit-to-pull-request index
+for the immutable source commit, and MUST NOT require that pull request's head
+to equal the candidate head; a branch name MUST NOT be treated as evidence. The
+receipt MUST name a merged pull request into the exact base whose merge commit
+is contained in the freshly fetched exact origin target.
+
+Every receipt MUST additionally be proved locally: a three-way merge of the
+candidate into the landing commit MUST succeed and produce exactly that
+commit's tree, and the same merge into the fetched target MUST produce exactly
+the target's tree. Work that landed and was later reverted, or that landed only
+in part, MUST therefore remain `awaiting_push`. The proof MUST NOT mutate any
+ref, index, or working tree.
+
+`--absorbed-by` MAY name the merged pull request or exact landing commit for an
+absorption GitHub cannot associate, such as content cherry-picked rather than
+merged into the integration branch. It MUST select which receipt to verify and
+MUST NOT substitute for one: every proof above still applies, and the named
+commit MUST additionally be exactly where the work entered the target, so the
+flag cannot degrade into a bare content assertion. A pointer that fails any
+verification MUST refuse only its own candidate, with the failing verification
+reported as that candidate's reason, and MUST NOT be reported as a malformed
+worktree or abort a fleet sweep.
+
 #### REQ: coordinated-task-safety
 
 If any repository in a task is ineligible, cleanup MUST mark every repository
@@ -216,7 +246,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
