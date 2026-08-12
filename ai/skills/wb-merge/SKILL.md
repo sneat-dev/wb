@@ -135,12 +135,21 @@ than a fictional queue.
    landed task, inspect `wb worktree cleanup <task>` and apply
    `wb worktree cleanup <task> --apply --remote --older-than 0`. WB seals the
    Work Log, archives lifecycle evidence, removes the exact local worktree and
-   branch, and retires an exact unchanged remote source branch.
+   branch, and retires an exact unchanged remote source branch. This applies
+   unchanged to the source candidates a batch absorbed: when the target rejects
+   merge commits and one integration branch lands them all, cleanup reads the
+   merged pull request GitHub associates with each candidate's own commit and
+   proves containment locally, so batching never converts finished work into
+   permanent worktree debt. Add `--absorbed-by <pr|commit>` only when the batch
+   cherry-picked rather than merged a candidate, leaving GitHub nothing to
+   associate.
 8. Re-list the tasks and resolve every live entry or durable cleanup backlog.
    Completion requires remote receipt plus audited cleanup/recycle, not a
    green local test or an apparently finished branch.
 
 Direct pushes are eligible only when WB corroborates the exact remote target;
 [`TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest`](../../../internal/worktrees/lifecycle_integration_test.go)
-is the executable proof. Keep adapters thin: they select this contract, not
+is the executable proof, and
+[`TestCleanupAcceptsAbsorbedIntegrationBranchSquashReceipt`](../../../internal/worktrees/lifecycle_integration_test.go)
+is the same proof for a batch absorbed into one squash landing. Keep adapters thin: they select this contract, not
 their own merger workflow.

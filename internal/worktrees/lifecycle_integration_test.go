@@ -1404,3 +1404,309 @@ func remoteBranchForTest(t *testing.T, repository, branch string) string {
 	}
 	return fields[0]
 }
+
+// prepareAbsorbedCandidate models the landing route a repository requiring
+// linear history forces on a merger: several completed candidates are merged
+// onto one integration branch, that branch is validated once, and it lands as
+// a single squash commit. The candidate's own tip is then absent from the
+// target by construction, and the landed commit carries more than that
+// candidate's tree, so the exact-tree rebase receipt cannot describe it.
+func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateResult, string, string, time.Time) {
+	t.Helper()
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    task, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "candidate.txt"), []byte(task+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "candidate.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "candidate work")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	// A sibling candidate the same integration branch carried.
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "sibling.txt"), []byte("sibling candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "sibling.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "sibling candidate")
+	integrationTip := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+
+	// Land the whole batch as one squash commit, exactly as a PR-required,
+	// merge-commit-rejecting target branch demands.
+	gitTest(t, fixture.canonical, "merge", "--squash", result.Branch)
+	gitTest(t, fixture.canonical, "commit", "-m", "squash integration batch (#77)")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	if merged, err := isAncestor(context.Background(), fixture.canonical, head, squashSHA); err != nil || merged {
+		t.Fatalf("absorbed candidate must not be an ancestor of the squash: merged=%t err=%v", merged, err)
+	}
+	if gitTestOutput(t, fixture.canonical, "rev-parse", head+"^{tree}") == gitTestOutput(t, fixture.canonical, "rev-parse", squashSHA+"^{tree}") {
+		t.Fatal("fixture must land more than the candidate's own tree, or it would be a plain rebase receipt")
+	}
+	_ = integrationTip
+	return fixture, result, head, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+}
+
+// installAbsorbingPullRequestFixture stubs the pull request GitHub associates
+// with the immutable source commit. Its head is the integration branch tip,
+// never the candidate head — that difference is the whole point.
+func installAbsorbingPullRequestFixture(t *testing.T, integrationHead, mergeSHA string, mergedAt time.Time) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	content := `#!/bin/sh
+set -eu
+if [ "$1 $2" = "api --paginate" ]; then
+    printf '%s\n' "$WB_TEST_MERGED_PULLS"
+    exit 0
+fi
+if [ "$1" = "api" ]; then
+    printf '%s\n' "$WB_TEST_SINGLE_PULL"
+    exit 0
+fi
+echo "unexpected gh command: $*" >&2
+exit 2
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pull := map[string]any{
+		"number":           77,
+		"html_url":         "https://github.com/acme/app/pull/77",
+		"state":            "closed",
+		"merged_at":        mergedAt.Format(time.RFC3339),
+		"head":             map[string]any{"ref": "app-main-merger", "sha": integrationHead},
+		"base":             map[string]any{"ref": "main", "sha": ""},
+		"merge_commit_sha": mergeSHA,
+	}
+	list, err := json.Marshal([]map[string]any{pull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	single, err := json.Marshal(pull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_MERGED_PULLS", string(list))
+	t.Setenv("WB_TEST_SINGLE_PULL", string(single))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestCleanupAcceptsAbsorbedIntegrationBranchSquashReceipt(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-absorbed-squash")
+	installAbsorbingPullRequestFixture(t, strings.Repeat("a", 40), squashSHA, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-absorbed-squash", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible {
+		t.Fatalf("absorbed squash cleanup plan = %#v", planned)
+	}
+	entry := planned.Results[0].ListResult
+	if !entry.IntegratedAtOrigin || !entry.AbsorbedAtOrigin || entry.RebaseMergedAtOrigin {
+		t.Fatalf("absorbed squash evidence = %#v", entry)
+	}
+	if entry.AbsorbedBySHA != squashSHA {
+		t.Fatalf("absorbed landing commit = %q, want %q", entry.AbsorbedBySHA, squashSHA)
+	}
+	if entry.MergedPullRequest == nil || entry.MergedPullRequest.Number != 77 {
+		t.Fatalf("absorbed PR receipt = %#v", entry.MergedPullRequest)
+	}
+	if entry.HeadSHA != head || entry.WorktreeDir != result.WorktreeDir {
+		t.Fatalf("absorbed cleanup identity = %#v", entry)
+	}
+}
+
+func TestCleanupRejectsAbsorbedReceiptWhenTargetLaterRevertedTheWork(t *testing.T) {
+	fixture, _, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-absorbed-reverted")
+	if err := os.Remove(filepath.Join(fixture.canonical, "candidate.txt")); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "-A")
+	gitTest(t, fixture.canonical, "commit", "-m", "revert the absorbed candidate")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	installAbsorbingPullRequestFixture(t, strings.Repeat("a", 40), squashSHA, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-absorbed-reverted", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		t.Fatalf("reverted absorption must be rejected: %#v", planned)
+	}
+}
+
+func TestCleanupRejectsAbsorbedReceiptWhenOnlyPartOfTheBranchLanded(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-absorbed-partial", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "landed.txt"), []byte("landed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "landed.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "part that landed")
+	landed := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "stranded.txt"), []byte("stranded\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "stranded.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "part that did not land")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	// The integration branch absorbed only the first commit.
+	gitTest(t, fixture.canonical, "cherry-pick", landed)
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installAbsorbingPullRequestFixture(t, strings.Repeat("a", 40), squashSHA, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-absorbed-partial", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		t.Fatalf("partial absorption must be rejected: %#v", planned)
+	}
+}
+
+func TestCleanupRejectsAbsorbedReceiptWhoseMergeCommitIsNotInTarget(t *testing.T) {
+	fixture, _, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-absorbed-unpushed")
+	// Rewind the exact origin target so the receipt's merge commit never
+	// reached it: a local-only landing is awaiting_push, not integrated.
+	gitTest(t, fixture.canonical, "push", "--force", "origin", squashSHA+"^:refs/heads/main")
+	installAbsorbingPullRequestFixture(t, strings.Repeat("a", 40), squashSHA, mergedAt)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-absorbed-unpushed", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		t.Fatalf("unpushed absorption must be rejected: %#v", planned)
+	}
+}
+
+func TestCleanupAcceptsAttestedAbsorbedLandingCommitWithoutPullRequestAssociation(t *testing.T) {
+	fixture, _, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-attested-absorbed")
+	// GitHub associates nothing: the merger cherry-picked rather than merged.
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-attested-absorbed", OlderThan: 0,
+		AbsorbedBy: squashSHA,
+		Now:        func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible ||
+		!planned.Results[0].IntegratedAtOrigin || !planned.Results[0].AbsorbedAtOrigin {
+		t.Fatalf("attested absorption plan = %#v", planned)
+	}
+	if planned.Results[0].AbsorbedBySHA != squashSHA {
+		t.Fatalf("attested landing commit = %q, want %q", planned.Results[0].AbsorbedBySHA, squashSHA)
+	}
+}
+
+func TestCleanupRejectsAttestedLandingCommitThatDidNotIntroduceTheWork(t *testing.T) {
+	fixture, _, _, _, mergedAt := prepareAbsorbedCandidate(t, "cleanup-attested-not-entry")
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "later.txt"), []byte("later work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "later.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unrelated later commit")
+	later := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	// The work is already contained in this commit's first parent, so naming
+	// it cannot serve as a landing receipt. Without this, --absorbed-by main
+	// would silently degrade into a bare content assertion.
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-attested-not-entry", OlderThan: 0,
+		AbsorbedBy: later,
+		Now:        func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		t.Fatalf("non-introducing attested commit must be rejected: %#v", planned)
+	}
+}
+
+func TestCleanupRejectsAttestedLandingCommitOutsideTheExactOriginTarget(t *testing.T) {
+	fixture, _, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-attested-outside")
+	gitTest(t, fixture.canonical, "push", "--force", "origin", squashSHA+"^:refs/heads/main")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-attested-outside", OlderThan: 0,
+		AbsorbedBy: squashSHA,
+		Now:        func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A refused pointer is a precise, reportable refusal of this candidate,
+	// not a malformed worktree and not a fatal end to the whole sweep.
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
+		!strings.Contains(planned.Results[0].Reason, "not contained in the exact fetched origin/main target") {
+		t.Fatalf("attested commit outside the target must be refused with its reason: %#v", planned)
+	}
+}
+
+func TestCleanupReportsUnresolvableAbsorbedByPointerAsCandidateRefusal(t *testing.T) {
+	fixture, _, _, _, mergedAt := prepareAbsorbedCandidate(t, "cleanup-attested-unresolvable")
+	installMergedPullRequestFixtures(t, nil, time.Time{})
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-attested-unresolvable", OlderThan: 0,
+		AbsorbedBy: "no-such-landing-ref",
+		Now:        func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
+		!strings.Contains(planned.Results[0].Reason, "does not resolve to a commit") {
+		t.Fatalf("unresolvable pointer must be refused with its reason: %#v", planned)
+	}
+	if len(planned.Diagnostics) != 0 {
+		t.Fatalf("a bad pointer is not a malformed candidate: %#v", planned.Diagnostics)
+	}
+}

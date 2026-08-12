@@ -56,6 +56,20 @@ direct push to the target is also eligible. A local-only merge is
 `awaiting_push`. Preserve skipped work and report the reason; do not reset,
 clean, stash, or delete it manually.
 
+Work absorbed into a differently named integration branch — the batching a
+target requiring linear history forces — is eligible too, because the branch
+name is not the evidence. WB reads the merged pull request GitHub associates
+with the branch's own immutable head commit, then proves containment locally:
+merging the branch into the landing commit must add nothing to it, and merging
+it into the fetched target must add nothing there. Work that landed and was
+later reverted, or landed only in part, stays `awaiting_push`.
+
+`--absorbed-by <pr|commit>` names the receipt to verify when the batch
+cherry-picked rather than merged the branch, so GitHub associates nothing. It
+selects which receipt to check and never replaces one; the named commit must
+also be exactly where the work entered the target. A pointer that fails
+verification refuses only its own candidate and says which check refused it.
+
 ## Apply
 
 Apply only after reading the plan:

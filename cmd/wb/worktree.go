@@ -347,7 +347,7 @@ for how <wb-home> is resolved).`,
 }
 
 func newWorktreeListCmd() *cobra.Command {
-	var base, format string
+	var base, format, absorbedBy string
 	var github bool
 	command := &cobra.Command{
 		Use:   "list [task]",
@@ -378,6 +378,7 @@ joined into this command.`,
 				Task:         task,
 				Base:         base,
 				Filter:       filterFlag,
+				AbsorbedBy:   absorbedBy,
 				GitHub:       github,
 			})
 			if err != nil {
@@ -407,12 +408,13 @@ joined into this command.`,
 	}
 	command.Flags().StringVar(&base, "base", "main", "base branch used to assess local merge state")
 	command.Flags().BoolVar(&github, "github", false, "include pull request state from GitHub")
+	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "with --github, verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
 func newWorktreeCleanupCmd() *cobra.Command {
-	var base, format, reportDir string
+	var base, format, reportDir, absorbedBy string
 	var allMerged, apply, deleteRemote bool
 	var olderThan time.Duration
 	command := &cobra.Command{
@@ -430,6 +432,21 @@ deletes an unchanged remote branch with force-with-lease protection. Durable
 Work Log archive/outbox evidence is written before any remote or local deletion.
 The same named dry-run/apply command inspects and resumes a durable exact-ref
 backlog if interruption happened after a worktree disappeared.
+
+A branch whose exact head never reaches the target because a merger batched it
+onto a differently named integration branch and landed that branch once is
+still eligible, on evidence. WB reads GitHub's own commit-to-pull-request
+index for the immutable source commit; when that names a merged pull request
+into this exact base whose merge commit is contained in the fetched target, WB
+then proves containment locally: merging the branch into that merge commit
+must add nothing to it, and merging it into the target must add nothing there
+either. Work that landed and was later reverted therefore stays blocked.
+
+--absorbed-by <pr|commit> covers a landing GitHub cannot associate, such as
+content cherry-picked rather than merged into the integration branch. It only
+selects which receipt to verify; every proof above still runs, and the named
+commit must additionally be exactly where the work entered the target, so the
+flag can never make unlanded work eligible.
 
 Reserved .wb-stage-* and .wb-retired-stage-* entries are first-class cleanup
 backlog. Apply descriptor-safely archives an exact recognized empty stage
@@ -478,6 +495,7 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 				Task:         task,
 				Base:         base,
 				Filter:       filterFlag,
+				AbsorbedBy:   absorbedBy,
 				AllMerged:    allMerged,
 				Apply:        apply,
 				DeleteRemote: deleteRemote,
@@ -540,6 +558,7 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "also delete an unchanged remote branch when applying")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum age of a merged pull request (0 disables)")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <wb-home>/reports/worktree-cleanup/<timestamp>)")
+	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -701,6 +720,8 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 			state = "locked"
 		case result.OpenPullRequest != nil:
 			state = "open-pr"
+		case result.AbsorbedAtOrigin:
+			state = "absorbed"
 		case result.MergedPullRequest != nil:
 			state = "merged"
 		case result.LocallyMerged:
