@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 )
@@ -15,7 +17,50 @@ import (
 const (
 	ciWaitHead       = "0123456789012345678901234567890123456789"
 	ciWaitTargetHead = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// ciWaitSliceBudget outlasts every observation these tests expect by orders
+	// of magnitude. A slice deadline cancels the in-flight gh command, so a
+	// budget a loaded runner can reach silently drops observations the receipts
+	// below count.
+	ciWaitSliceBudget = 5 * time.Minute
+	// ciWaitSingleObservationInterval leaves WB no room for a second observation
+	// within the budget: the poll-budget guard refuses to start one whose
+	// interval would overrun the slice, so the slice ends on the observation
+	// contract rather than on the clock and observes exactly once on any runner.
+	ciWaitSingleObservationInterval = ciWaitSliceBudget - time.Millisecond
+	// ciWaitRereadInterval keeps a terminal observation and its stable reread
+	// back to back inside one slice.
+	ciWaitRereadInterval = 100 * time.Millisecond
 )
+
+// ciWaitSliceArguments pins how many GitHub observations a foreground slice
+// makes instead of leaving it to however many polls fit in a wall-clock budget.
+// The first slice observes exactly once and resumes; later slices poll tightly
+// so the terminal observation and its stable reread land in the same slice.
+func ciWaitSliceArguments(identity []string, invocation int) []string {
+	interval := ciWaitRereadInterval
+	if invocation == 1 {
+		interval = ciWaitSingleObservationInterval
+	}
+	return append(append([]string(nil), identity...), "--slice", ciWaitSliceBudget.String(), "--interval", interval.String())
+}
+
+// ciWaitObservations reads the fake gh receipt counter, which records one entry
+// per observation of the exact head's checks.
+func ciWaitObservations(t *testing.T, state string) int {
+	t.Helper()
+	contents, err := os.ReadFile(state)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("read observation counter %s: %v", state, err)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+	if err != nil {
+		t.Fatalf("parse observation counter %q: %v", contents, err)
+	}
+	return count
+}
 
 func TestCIWaitResumesForegroundSlicesUntilExactHeadPasses(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
@@ -81,16 +126,18 @@ exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CI_WAIT_STATE", state)
-	arguments := []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "feature/integration", "--head", ciWaitHead, "--slice", "10s", "--interval", "100ms", "--json"}
+	identity := []string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "feature/integration", "--head", ciWaitHead, "--json"}
 	passedAt := 0
 	for invocation := 1; invocation <= 3; invocation++ {
 		t.Setenv("WB_CI_WAIT_INVOCATION", strconv.Itoa(invocation))
+		before := ciWaitObservations(t, state)
 		var stdout, stderr bytes.Buffer
-		code := run(arguments, &stdout, &stderr)
+		code := run(ciWaitSliceArguments(identity, invocation), &stdout, &stderr)
 		var output ciWaitOutput
 		if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 			t.Fatalf("slice %d output=%q: %v", invocation, stdout.String(), err)
 		}
+		observations := ciWaitObservations(t, state) - before
 		if code == exitFindings && output.Status == "pending" {
 			if len(output.ResumeArgs) == 0 {
 				t.Fatalf("slice %d has no resume args: output=%+v stderr=%s", invocation, output, stderr.String())
@@ -101,21 +148,22 @@ exit 30
 					t.Fatalf("slice %d resume=%q missing %q", invocation, joined, required)
 				}
 			}
+			if observations != 1 {
+				t.Fatalf("pending slice %d observed the exact head %d times, want exactly one bounded observation", invocation, observations)
+			}
 			continue
 		}
 		if code != exitOK || output.Status != "passed" || output.ObservedHead != ciWaitHead || output.ObservedTargetHead != ciWaitTargetHead || !output.CandidateContainsTarget || output.TargetFreshnessAuthority == "" || output.StableObservations != 2 {
 			t.Fatalf("terminal slice = code %d output=%+v stderr=%s", code, output, stderr.String())
+		}
+		if observations != 2 {
+			t.Fatalf("terminal slice %d observed the exact head %d times, want one terminal observation plus one stable reread", invocation, observations)
 		}
 		passedAt = invocation
 		break
 	}
 	if passedAt < 2 {
 		t.Fatalf("terminal receipt did not require multiple bounded foreground slices: passedAt=%d", passedAt)
-	}
-	contents, err := os.ReadFile(state)
-	count, countErr := strconv.Atoi(strings.TrimSpace(string(contents)))
-	if err != nil || countErr != nil || count < 3 {
-		t.Fatalf("expected pending observations plus a stable terminal reread, state=%q readErr=%v parseErr=%v", contents, err, countErr)
 	}
 }
 
@@ -204,24 +252,32 @@ exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CI_WAIT_STATE", state)
-	arguments := []string{"ci", "wait", "--repo", "acme/app", "--target", "feature/integration", "--head", ciWaitHead, "--slice", "10s", "--interval", "100ms", "--json"}
+	identity := []string{"ci", "wait", "--repo", "acme/app", "--target", "feature/integration", "--head", ciWaitHead, "--json"}
 	passedAt := 0
 	for invocation := 1; invocation <= 3; invocation++ {
 		t.Setenv("WB_CI_WAIT_INVOCATION", strconv.Itoa(invocation))
+		before := ciWaitObservations(t, state)
 		var stdout, stderr bytes.Buffer
-		code := run(arguments, &stdout, &stderr)
+		code := run(ciWaitSliceArguments(identity, invocation), &stdout, &stderr)
 		var output ciWaitOutput
 		if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 			t.Fatalf("slice %d output=%q: %v", invocation, stdout.String(), err)
 		}
+		observations := ciWaitObservations(t, state) - before
 		if code == exitFindings && output.Status == "pending" {
 			if len(output.ResumeArgs) == 0 {
 				t.Fatalf("slice %d = code %d output=%+v stderr=%s", invocation, code, output, stderr.String())
+			}
+			if observations != 1 {
+				t.Fatalf("pending direct slice %d observed the exact head %d times, want exactly one bounded observation", invocation, observations)
 			}
 			continue
 		}
 		if code != exitOK || output.Status != "passed" || output.ObservedHead != ciWaitHead || output.StableObservations != 2 {
 			t.Fatalf("terminal direct slice = code %d output=%+v stderr=%s", code, output, stderr.String())
+		}
+		if observations != 2 {
+			t.Fatalf("terminal direct slice %d observed the exact head %d times, want one terminal observation plus one stable reread", invocation, observations)
 		}
 		if len(output.Checks) != 2 || output.Checks[0].Name != "check-run:lint" || output.Checks[1].Name != "check-run:test" {
 			t.Fatalf("direct checks were not deterministically sorted: %#v", output.Checks)
@@ -231,11 +287,6 @@ exit 30
 	}
 	if passedAt < 2 {
 		t.Fatalf("direct terminal receipt did not require multiple foreground slices: passedAt=%d", passedAt)
-	}
-	contents, err := os.ReadFile(state)
-	count, countErr := strconv.Atoi(strings.TrimSpace(string(contents)))
-	if err != nil || countErr != nil || count < 3 {
-		t.Fatalf("expected pending direct observations plus stable reread, state=%q readErr=%v parseErr=%v", contents, err, countErr)
 	}
 }
 
@@ -334,7 +385,9 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CI_WAIT_STATE", state)
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	// The fixture sequences its receipts by observation, not by elapsed time, so
+	// the slice budget only has to outlast four observations on any runner.
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json"}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
@@ -342,9 +395,8 @@ echo "unexpected gh args: $*" >&2; exit 30
 	if code != exitOK || output.Status != "passed" || output.StableObservations != 2 || len(output.Checks) != 2 {
 		t.Fatalf("late-suite receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
 	}
-	contents, err := os.ReadFile(state)
-	if err != nil || strings.TrimSpace(string(contents)) != "4" {
-		t.Fatalf("expected first green, late registration, then two stable terminal reads; state=%q err=%v", contents, err)
+	if observations := ciWaitObservations(t, state); observations != 4 {
+		t.Fatalf("expected first green, late registration, then two stable terminal reads; observations=%d", observations)
 	}
 }
 
