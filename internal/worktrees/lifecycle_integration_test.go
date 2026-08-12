@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // These integration tests stub only hosted PR metadata. Every safety-relevant
@@ -1708,5 +1710,134 @@ func TestCleanupReportsUnresolvableAbsorbedByPointerAsCandidateRefusal(t *testin
 	}
 	if len(planned.Diagnostics) != 0 {
 		t.Fatalf("a bad pointer is not a malformed candidate: %#v", planned.Diagnostics)
+	}
+}
+
+// simulateProcessDeathLeavingLock reproduces what a killed WB leaves on disk.
+// A graceful failure still runs its deferred release, which retires the lock;
+// SIGKILL does not, so .lock stays and nothing holds it. Renaming the
+// retirement back is exactly that on-disk state.
+func simulateProcessDeathLeavingLock(t *testing.T, taskDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(taskDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".wb-retired-lock-") {
+			continue
+		}
+		if err := os.Rename(filepath.Join(taskDir, entry.Name()), filepath.Join(taskDir, ".lock")); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	t.Fatalf("no retired lock to revive in %s", taskDir)
+}
+
+func TestCleanupResumesAfterProcessDeathLeftItsLockBehind(t *testing.T) {
+	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-resume-after-death")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	injected := errors.New("injected crash after worktree removal")
+	if _, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-after-death",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now:                         func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupWorktreeRemoval: func(string) error { return injected },
+	}); !errors.Is(err, injected) {
+		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
+	}
+	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	simulateProcessDeathLeavingLock(t, taskDir)
+
+	resumed, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-after-death",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("a killed run must not strand the task: %v", err)
+	}
+	if len(resumed.Results) != 1 || !resumed.Results[0].Applied || !resumed.Results[0].BranchDeleted {
+		t.Fatalf("resumed cleanup after process death = %#v", resumed.Results)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || exists {
+		t.Fatalf("resumed cleanup branch exists=%t err=%v", exists, branchErr)
+	}
+	// The reclaimed lock must be retired again, not left for the next run.
+	if _, statErr := os.Stat(filepath.Join(taskDir, ".lock")); !os.IsNotExist(statErr) {
+		t.Fatalf("reclaimed lock was not retired: %v", statErr)
+	}
+}
+
+func TestCleanupRefusesWhileAnotherProcessHoldsTheTaskLock(t *testing.T) {
+	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-live-lock-holder")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	injected := errors.New("injected crash after worktree removal")
+	if _, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-live-lock-holder",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now:                         func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupWorktreeRemoval: func(string) error { return injected },
+	}); !errors.Is(err, injected) {
+		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
+	}
+	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	simulateProcessDeathLeavingLock(t, taskDir)
+
+	// A live holder keeps the kernel lock. Liveness, not mere existence, is
+	// what must refuse the resume.
+	holder, err := os.Open(filepath.Join(taskDir, ".lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	if err := unix.Flock(int(holder.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-live-lock-holder",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "already active in another process") {
+		t.Fatalf("a live lock holder must refuse the resume: %v", err)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || !exists {
+		t.Fatalf("refused resume must not delete the branch: exists=%t err=%v", exists, branchErr)
+	}
+}
+
+func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
+	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-interrupted-no-backlog")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	// No interruption happened, so there is no durable record of what remains.
+	// A stray .lock must still block: only a describable remnant is resumable.
+	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	if err := os.WriteFile(filepath.Join(taskDir, ".lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-interrupted-no-backlog",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A live worktree carrying a stray lock is reported locked and left alone;
+	// reclaiming is reserved for a remnant a backlog record can describe, and
+	// this one still has its whole checkout.
+	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].Applied ||
+		!strings.Contains(planned.Results[0].Reason, "locked by an active or interrupted operation") {
+		t.Fatalf("undescribable interruption must keep demanding attention: %#v", planned.Results)
+	}
+	if _, statErr := os.Stat(created.WorktreeDir); statErr != nil {
+		t.Fatalf("refused cleanup must preserve the worktree: %v", statErr)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || !exists {
+		t.Fatalf("refused cleanup must preserve the branch: exists=%t err=%v", exists, branchErr)
 	}
 }

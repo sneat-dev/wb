@@ -2888,6 +2888,23 @@ type managedLockIdentity struct {
 // operation. It never follows a worktrees or task ancestor that was swapped
 // after the operation directory was opened.
 func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
+	return acquireLockAtReclaimingInterrupted(operationDirectory, false)
+}
+
+// acquireLockAtReclaimingInterrupted separates the two conditions a lingering
+// .lock can mean. A live operation holds an exclusive kernel lock on that
+// file, which the kernel drops when its process dies; an interrupted one
+// leaves the entry with nothing holding it. Existence alone cannot tell them
+// apart, and treating both as fatal is what stranded an interrupted cleanup:
+// leaving .lock behind IS how interruption presents, so the resume path could
+// never take the lock it needs to finish.
+//
+// reclaimInterrupted is therefore granted only to a caller holding its own
+// durable record of exactly what remains, which it revalidates independently
+// before deleting anything (see resumeLifecycleBacklog). Every other caller
+// still refuses, so an interruption whose remnants nobody can describe keeps
+// demanding attention. A live holder is refused in both modes.
+func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInterrupted bool) (operationLock, error) {
 	file, reused, err := claimRetiredLock(operationDirectory)
 	if err != nil {
 		return operationLock{}, err
@@ -2896,7 +2913,7 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
 		if openErr != nil {
 			if errors.Is(openErr, unix.EEXIST) {
-				return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
+				return reclaimInterruptedLock(operationDirectory, reclaimInterrupted)
 			}
 			return operationLock{}, fmt.Errorf("acquire secure worktree operation lock: %w", openErr)
 		}
@@ -2905,6 +2922,10 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 			_ = unix.Close(fd)
 			return operationLock{}, fmt.Errorf("wrap secure worktree operation lock")
 		}
+	}
+	if err := holdOperationLock(file); err != nil {
+		_ = file.Close()
+		return operationLock{}, err
 	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
@@ -2917,6 +2938,61 @@ func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 		identity:  managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)},
 	}
 	return lock, nil
+}
+
+// holdOperationLock takes the exclusive kernel lock this operation keeps for
+// its whole lifetime, so a concurrent WB process is refused while it runs and
+// the kernel releases it if the process dies. Closing the descriptor releases
+// it, which every release path already does.
+func holdOperationLock(file *os.File) error {
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			return fmt.Errorf("worktree operation is already active in another process")
+		}
+		return fmt.Errorf("hold secure worktree operation lock: %w", err)
+	}
+	return nil
+}
+
+// reclaimInterruptedLock inspects an existing .lock without creating,
+// replacing, or following one. It reports the accurate condition even when it
+// refuses, so an operator can tell "another WB is running" from "a previous WB
+// died here" instead of reading one message that means either.
+func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool) (operationLock, error) {
+	fd, err := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		// The entry vanished or is not a plain file WB may hold; stay closed.
+		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
+	}
+	file := os.NewFile(uintptr(fd), "wb-worktree-operation-lock")
+	if file == nil {
+		_ = unix.Close(fd)
+		return operationLock{}, fmt.Errorf("wrap secure worktree operation lock")
+	}
+	identity, err := lockIdentity(file)
+	if err != nil {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
+	}
+	if err := holdOperationLock(file); err != nil {
+		_ = file.Close()
+		return operationLock{}, err
+	}
+	// Nothing held it: this is an interrupted remnant, not a live operation.
+	if !reclaimInterrupted {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf(
+			"worktree operation was interrupted and left its lock behind; " +
+				"the durable cleanup backlog for this task can finish it",
+		)
+	}
+	// Re-verify the entry still names this exact file now that the lock is
+	// held, so a swap between open and lock cannot be inherited.
+	if !lockEntryStillMatches(operationDirectory, ".lock", identity) {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf("secure worktree operation lock changed while being reclaimed")
+	}
+	return operationLock{directory: operationDirectory, file: file, identity: identity}, nil
 }
 
 func claimRetiredLock(directory *os.File) (*os.File, bool, error) {

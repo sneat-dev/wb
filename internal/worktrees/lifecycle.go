@@ -1879,6 +1879,16 @@ func preflightCleanupRepository(
 }
 
 func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	return acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, false)
+}
+
+// acquireCleanupTaskAtReclaimingInterrupted is the resume-only form. See
+// acquireLockAtReclaimingInterrupted for why reclaiming an interrupted lock is
+// restricted to a caller that can describe and revalidate exactly what the
+// interruption left behind.
+func acquireCleanupTaskAtReclaimingInterrupted(
+	worktreesRoot, taskName string, reclaimInterrupted bool,
+) (*cleanupTaskHandle, error) {
 	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
 	if err != nil {
 		return nil, fmt.Errorf("open cleanup worktrees root %s: %w", worktreesRoot, err)
@@ -1904,7 +1914,7 @@ func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, e
 		handle.close()
 		return nil, err
 	}
-	lock, err := acquireLockAt(task)
+	lock, err := acquireLockAtReclaimingInterrupted(task, reclaimInterrupted)
 	if err != nil {
 		handle.close()
 		return nil, fmt.Errorf("lock cleanup task %s: %w", taskName, err)
