@@ -1841,3 +1841,76 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 		t.Fatalf("refused cleanup must preserve the branch: exists=%t err=%v", exists, branchErr)
 	}
 }
+
+// installUnknownCommitPullRequestFixture reproduces GitHub's answer for a
+// commit it has never seen, which is what an unpushed local head gets.
+func installUnknownCommitPullRequestFixture(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	content := `#!/bin/sh
+set -eu
+cat <<'JSON'
+{
+  "message": "No commit found for SHA: deadbeef",
+  "documentation_url": "https://docs.github.com/rest/commits/commits",
+  "status": "422"
+}
+JSON
+echo "gh: No commit found for SHA (HTTP 422)" >&2
+exit 1
+`
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestCleanupTreatsUnpushedHeadAsHavingNoAssociatedPullRequest(t *testing.T) {
+	fixture, _, _, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-unpushed-head")
+	installUnknownCommitPullRequestFixture(t)
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-unpushed-head", OlderThan: 0,
+		AbsorbedBy: squashSHA,
+		Now:        func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A commit GitHub never saw must not hide the worktree behind a malformed
+	// diagnostic; --absorbed-by exists for exactly this landing.
+	if len(planned.Diagnostics) != 0 {
+		t.Fatalf("an unpushed head is not a malformed candidate: %#v", planned.Diagnostics)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible ||
+		!planned.Results[0].AbsorbedAtOrigin || planned.Results[0].AbsorbedBySHA != squashSHA {
+		t.Fatalf("attested cleanup of an unpushed head = %#v", planned.Results)
+	}
+}
+
+func TestCleanupStillReportsAnUnrelatedPullRequestQueryFailure(t *testing.T) {
+	fixture, _, _, _, mergedAt := prepareAbsorbedCandidate(t, "cleanup-gh-broken")
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "gh"),
+		[]byte("#!/bin/sh\necho 'gh: server error' >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-gh-broken", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Diagnostics) != 1 || !strings.Contains(planned.Diagnostics[0].Message, "query pull requests") {
+		t.Fatalf("a genuine GitHub failure must still be reported: %#v", planned.Diagnostics)
+	}
+	for _, result := range planned.Results {
+		if result.Eligible {
+			t.Fatalf("a genuine GitHub failure must not leave a candidate eligible: %#v", result)
+		}
+	}
+}
