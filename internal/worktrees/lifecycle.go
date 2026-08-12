@@ -1372,15 +1372,44 @@ func githubPullRequests(ctx context.Context, worktree, repository, head string) 
 	)
 	command.Dir = worktree
 	command.Env = console.Env()
-	output, err := command.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("query pull requests for %s source commit %s: %w: %s", repository, head, err, strings.TrimSpace(string(output)))
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	if err := command.Run(); err != nil {
+		if unknownGitHubCommit(stdout.Bytes()) {
+			// A commit GitHub has never seen has no pull request associated
+			// with it, which is an answer rather than a failure. Local commits
+			// on an unpushed branch are ordinary, and treating them as fatal
+			// hid the whole worktree behind a malformed-candidate diagnostic —
+			// including from --absorbed-by, which exists precisely for work
+			// that reached the target without this commit ever being pushed.
+			return nil, nil
+		}
+		return nil, fmt.Errorf(
+			"query pull requests for %s source commit %s: %w: %s",
+			repository, head, err, strings.TrimSpace(stderr.String()+stdout.String()),
+		)
 	}
 	var pullRequests []githubPullRequest
-	if err := json.Unmarshal(output, &pullRequests); err != nil {
+	if err := json.Unmarshal(stdout.Bytes(), &pullRequests); err != nil {
 		return nil, fmt.Errorf("decode pull requests for %s source commit %s: %w", repository, head, err)
 	}
 	return pullRequests, nil
+}
+
+// unknownGitHubCommit recognizes only GitHub's own structured answer that the
+// commit does not exist there. It reads the API error body rather than
+// matching human-readable text anywhere in the output, so an unrelated
+// failure that merely mentions a commit is never mistaken for this one.
+func unknownGitHubCommit(body []byte) bool {
+	var failure struct {
+		Message string `json:"message"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(body), &failure); err != nil {
+		return false
+	}
+	return failure.Status == "422" && strings.HasPrefix(failure.Message, "No commit found for SHA")
 }
 
 func matchingPullRequests(pullRequests []githubPullRequest, base, head string) (open, merged *PullRequest) {
