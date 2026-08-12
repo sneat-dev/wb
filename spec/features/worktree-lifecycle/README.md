@@ -127,6 +127,22 @@ MUST be a supported integration path. A local-only merge is `awaiting_push`
 and ineligible. An existing remote source branch MUST still point to the exact
 local head.
 
+#### REQ: resumable-interrupted-operation-lock
+
+A killed operation leaves its task lock behind, because no deferred release
+runs. That remnant MUST NOT be indistinguishable from a live operation: WB MUST
+decide by whether a process still holds the lock, not by whether the lock entry
+exists. A lock held by a live process MUST refuse every caller, and MUST be
+reported distinctly from an abandoned one.
+
+Reclaiming an abandoned lock MUST be restricted to resuming a durable backlog
+record, which MUST independently revalidate that the worktree path is gone, its
+registration is gone, the remote branch is gone, and the local branch still
+points at the exact recorded head. A stray lock on a task whose checkout is
+still present MUST keep that task reported as locked and ineligible, because no
+record describes what remains to finish. A reclaimed lock MUST be retired on
+completion exactly as a normally acquired one is.
+
 #### REQ: absorbed-integration-containment-evidence
 
 A target branch that requires linear history forces a merger to batch several
@@ -246,7 +262,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the

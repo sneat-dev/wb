@@ -263,7 +263,12 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	if err := validateLifecycleBacklog(*record); err != nil {
 		return err
 	}
-	task, err := acquireCleanupTaskAt(record.WorktreesRoot, record.Task)
+	// This is the one caller allowed to reclaim a lock an interrupted run left
+	// behind: the record states exactly which worktree, registration, remote
+	// and branch head must already be gone or unchanged, and every one of them
+	// is revalidated below before anything is deleted. A live operation in
+	// another process is still refused.
+	task, err := acquireCleanupTaskAtReclaimingInterrupted(record.WorktreesRoot, record.Task, true)
 	if err != nil {
 		return fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 	}
