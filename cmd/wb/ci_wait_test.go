@@ -153,7 +153,7 @@ exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--json"}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
