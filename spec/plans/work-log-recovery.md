@@ -279,6 +279,118 @@ hooks, skills, and executable fixtures. WB cannot intercept an arbitrary
 external `git clone`; that limitation remains explicit. This capability is
 planned and has no current command or skill example.
 
+### Task 11: Move the journal into the worktree at `.wb/local/`
+
+**Id:** task-11
+**Verifies:** work-log#ac:orphan-explains-itself-without-anything-else, work-log#ac:adoption-without-stopping-sessions
+**Depends-On:** task-1, task-2
+**Status:** planning
+
+Relocate the live journal from the WB-home pointer projection to
+`<worktree>/.wb/local/`, holding `manifest.yaml`, `prompts/`, and `worklog/`.
+Write the single exclude rule `/.wb/local/`, never `/.wb/`, so a repository's own
+tracked `.wb/hooks.yaml` and `.wb/templates/` keep working and newly added policy
+files are not silently swallowed. Keep reading the legacy `.wb-worklog/`
+projection and the older `.wb-worklog.json` singleton; write only the current
+path. Adoption is additive — no existing file moves and no working tree is
+touched — so a dirty worktree is unaffected. Prove the orphan case in a test that
+deletes the canonical clone and the WB home before reading the checkout.
+
+### Task 12: Write and reconstruct the immutable creation manifest
+
+**Id:** task-12
+**Verifies:** work-log#ac:orphan-explains-itself-without-anything-else, work-log#ac:adoption-without-stopping-sessions
+**Depends-On:** task-11
+**Status:** planning
+
+Write `manifest.yaml` at creation and never rewrite it: schema version, effort
+ID and parent, effort kind, canonical repository, worktree path, branch,
+immutable base ref and SHA, creation time, creator identity and run provenance,
+and `provenance: created`. Add reconstruction from Git evidence alone — registered
+branch, first reflog entry, commit authorship and dates, merged status — writing
+`provenance: reconstructed` with the inferred fields and their evidence recorded.
+Reconstruction MUST NOT fabricate a prompt. Corrections use the existing
+append-only correction chain rather than rewriting bytes.
+
+### Task 13: Record the ordered prompt sequence
+
+**Id:** task-13
+**Verifies:** work-log#ac:steering-is-recorded-in-order-with-honest-provenance
+**Depends-On:** task-11
+**Status:** planning
+
+Store every directing instruction as `prompts/<NNNN>-<slug>.md`, zero-padded and
+strictly monotonic from `0000`, with YAML frontmatter carrying `seq`, `at`,
+`sha256`, `source`, and the recording runtime/model/CLI/provider where known.
+Ordinal `0000` is the originating instruction and gets no special filename or
+location. Add `wb worktree log steer` for agents and the `wb worktree set
+--prompt` alias for humans, both writing through one code path with `source`
+supplied explicitly and never inferred. Include the harness-hook capture path
+that writes `harness_observed`, and keep prompt bodies out of all public output,
+projections, reports, hook metrics, and Synchestra envelopes.
+
+### Task 14: Gate commits on manifest and prompt presence
+
+**Id:** task-14
+**Verifies:** work-log#ac:commit-refused-and-unblocked-by-recording-not-bypassing, work-log#ac:adoption-without-stopping-sessions
+**Depends-On:** task-12, task-13
+**Status:** planning
+
+Extend the managed worktree guard so a commit in any WB-managed worktree
+requires a valid manifest and a non-empty prompt sequence. Bind on location
+only — no environment-marker actor detection, which fails open exactly when it
+matters. The refusal message names `wb worktree set --prompt="…"`, and running it
+records an ordinary `human_declared` prompt rather than setting a bypass flag.
+Ship warn mode first, defaulting to warn, with enforcement as a separate
+reversible switch so live sessions adopt without stopping.
+
+### Task 15: Support hierarchical effort paths for sub-agent worktrees
+
+**Id:** task-15
+**Verifies:** work-log#ac:sub-agent-families-stay-independently-cleanable
+**Depends-On:** task-12
+**Status:** planning
+
+Treat an effort ID as a dot-separated path of unbounded depth within the existing
+`<task>/<owner>/<repository>` arity; reject empty components, leading or trailing
+dots, and paths that would exceed the platform limit. Derive parentage lexically
+and corroborate it against each manifest's recorded parent. Never nest a child
+worktree inside a parent's directory. Make cleanup terminalize children before
+parents and refuse a parent while any live worktree names it as an ancestor,
+naming those children in the refusal.
+
+### Task 16: Enumerate orphaned worktrees across every layout generation
+
+**Id:** task-16
+**Verifies:** work-log#ac:orphan-explains-itself-without-anything-else, work-log#ac:sub-agent-families-stay-independently-cleanable
+**Depends-On:** task-12, task-15
+**Status:** planning
+
+Add read-only `wb worktree orphans` covering the current `<WB_HOME>/worktrees`
+hierarchy, the legacy `<projects-root>/.wb` hierarchy, and worktrees registered
+to a canonical clone but living outside both. Report per worktree: effort
+identity and parent, branch, base, last commit and age, dirty state, whether the
+branch is merged into the exact remote target, and manifest presence. Group by
+lexical effort parentage so an abandoned family is one subject, classify each
+with a recommended disposition and its evidence, and label reconstructed
+identity as such. The fleet baseline this must handle is 654 linked worktrees
+across three generations, of which 489 have no manifest and never will.
+
+### Task 17: Migrate the existing fleet without stopping sessions
+
+**Id:** task-17
+**Verifies:** work-log#ac:adoption-without-stopping-sessions
+**Depends-On:** task-14, task-16
+**Status:** planning
+
+Sequence the rollout so no live session must stop. Ship tasks 11–16 with the
+gate in warn mode. Backfill in place: for each reachable worktree, write a
+reconstructed manifest, leaving prompt sequences empty where no instruction was
+ever recorded. Run `orphans` to produce the triage report, drain the families it
+recommends closing, then flip the gate to enforcing as a separate reversible
+change. Every step is idempotent and re-runnable, touches no working tree, and
+leaves the 8 currently dirty worktrees unmodified.
+
 ## Open Questions
 
 1. The Synchestra service contract is being authored concurrently. Before Task
