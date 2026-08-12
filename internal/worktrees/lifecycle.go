@@ -38,33 +38,35 @@ type ListOptions struct {
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
 // to clean up. HeadSHA must match the current branch tip.
 type PullRequest struct {
-	Number  int        `json:"number"`
-	URL     string     `json:"url"`
-	State   string     `json:"state"`
-	Base    string     `json:"base"`
-	HeadSHA string     `json:"head_sha"`
-	Merged  *time.Time `json:"merged_at,omitempty"`
+	Number   int        `json:"number"`
+	URL      string     `json:"url"`
+	State    string     `json:"state"`
+	Base     string     `json:"base"`
+	HeadSHA  string     `json:"head_sha"`
+	MergeSHA string     `json:"merge_sha,omitempty"`
+	Merged   *time.Time `json:"merged_at,omitempty"`
 }
 
 // ListResult describes one linked checkout below the WB task hierarchy.
 type ListResult struct {
-	Task               string       `json:"task"`
-	Repository         string       `json:"repository"`
-	CanonicalDir       string       `json:"canonical_dir"`
-	WorktreeDir        string       `json:"worktree_dir"`
-	WorktreesRoot      string       `json:"worktrees_root"`
-	Branch             string       `json:"branch"`
-	Base               string       `json:"base"`
-	HeadSHA            string       `json:"head_sha"`
-	RemoteHeadSHA      string       `json:"remote_head_sha,omitempty"`
-	RemoteTargetSHA    string       `json:"remote_target_sha,omitempty"`
-	IntegratedAtOrigin bool         `json:"integrated_at_origin"`
-	Clean              bool         `json:"clean"`
-	LocallyMerged      bool         `json:"locally_merged"`
-	Locked             bool         `json:"locked"`
-	LastCommit         time.Time    `json:"last_commit"`
-	OpenPullRequest    *PullRequest `json:"open_pull_request,omitempty"`
-	MergedPullRequest  *PullRequest `json:"merged_pull_request,omitempty"`
+	Task                 string       `json:"task"`
+	Repository           string       `json:"repository"`
+	CanonicalDir         string       `json:"canonical_dir"`
+	WorktreeDir          string       `json:"worktree_dir"`
+	WorktreesRoot        string       `json:"worktrees_root"`
+	Branch               string       `json:"branch"`
+	Base                 string       `json:"base"`
+	HeadSHA              string       `json:"head_sha"`
+	RemoteHeadSHA        string       `json:"remote_head_sha,omitempty"`
+	RemoteTargetSHA      string       `json:"remote_target_sha,omitempty"`
+	IntegratedAtOrigin   bool         `json:"integrated_at_origin"`
+	RebaseMergedAtOrigin bool         `json:"rebase_merged_at_origin,omitempty"`
+	Clean                bool         `json:"clean"`
+	LocallyMerged        bool         `json:"locally_merged"`
+	Locked               bool         `json:"locked"`
+	LastCommit           time.Time    `json:"last_commit"`
+	OpenPullRequest      *PullRequest `json:"open_pull_request,omitempty"`
+	MergedPullRequest    *PullRequest `json:"merged_pull_request,omitempty"`
 }
 
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
@@ -385,12 +387,18 @@ func (handle *cleanupWorktreeHandle) close() {
 }
 
 type githubPullRequest struct {
-	Number      int        `json:"number"`
-	URL         string     `json:"url"`
-	State       string     `json:"state"`
-	BaseRefName string     `json:"baseRefName"`
-	HeadRefOID  string     `json:"headRefOid"`
-	MergedAt    *time.Time `json:"mergedAt"`
+	Number         int        `json:"number"`
+	URL            string     `json:"html_url"`
+	State          string     `json:"state"`
+	Base           githubRef  `json:"base"`
+	Head           githubRef  `json:"head"`
+	MergeCommitSHA string     `json:"merge_commit_sha"`
+	MergedAt       *time.Time `json:"merged_at"`
+}
+
+type githubRef struct {
+	Ref string `json:"ref"`
+	SHA string `json:"sha"`
 }
 
 // List inspects real Git worktrees. It stays local unless GitHub is requested.
@@ -1244,11 +1252,18 @@ func inspectLifecycleWorktree(
 		if err != nil {
 			return ListResult{}, err
 		}
-		pullRequests, err := githubPullRequests(ctx, worktree, slug, branch)
+		pullRequests, err := githubPullRequests(ctx, worktree, slug, head)
 		if err != nil {
 			return ListResult{}, err
 		}
 		result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, base, head)
+		if !result.IntegratedAtOrigin {
+			result.RebaseMergedAtOrigin, err = rebaseMergedPullRequestIntegrated(ctx, canonical, head, result.RemoteTargetSHA, result.MergedPullRequest)
+			if err != nil {
+				return ListResult{}, err
+			}
+			result.IntegratedAtOrigin = result.RebaseMergedAtOrigin
+		}
 	}
 	return result, nil
 }
@@ -1300,25 +1315,25 @@ func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (stri
 	return head, nil
 }
 
-func githubPullRequests(ctx context.Context, worktree, repository, branch string) ([]githubPullRequest, error) {
+// githubPullRequests reads pull requests associated with the immutable source
+// commit rather than filtering by the current branch name. A branch can be
+// renamed, deleted, or (as in a rebase merge) differ from the managed
+// worktree's branch while the exact head SHA remains the durable receipt.
+func githubPullRequests(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, error) {
 	command := exec.CommandContext(
 		ctx,
-		"gh", "pr", "list",
-		"--repo", repository,
-		"--head", branch,
-		"--state", "all",
-		"--limit", "100",
-		"--json", "number,url,state,mergedAt,headRefOid,baseRefName",
+		"gh", "api", "--paginate",
+		"repos/"+repository+"/commits/"+head+"/pulls",
 	)
 	command.Dir = worktree
 	command.Env = console.Env()
 	output, err := command.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("query pull requests for %s:%s: %w: %s", repository, branch, err, strings.TrimSpace(string(output)))
+		return nil, fmt.Errorf("query pull requests for %s source commit %s: %w: %s", repository, head, err, strings.TrimSpace(string(output)))
 	}
 	var pullRequests []githubPullRequest
 	if err := json.Unmarshal(output, &pullRequests); err != nil {
-		return nil, fmt.Errorf("decode pull requests for %s:%s: %w", repository, branch, err)
+		return nil, fmt.Errorf("decode pull requests for %s source commit %s: %w", repository, head, err)
 	}
 	return pullRequests, nil
 }
@@ -1327,17 +1342,24 @@ func matchingPullRequests(pullRequests []githubPullRequest, base, head string) (
 	for _, candidate := range pullRequests {
 		pullRequest := &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
-			Base: candidate.BaseRefName, HeadSHA: candidate.HeadRefOID, Merged: candidate.MergedAt,
+			Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
 		}
+		if candidate.MergedAt != nil {
+			pullRequest.State = "MERGED"
+		}
+		pullRequest.MergeSHA = candidate.MergeCommitSHA
 		if strings.EqualFold(candidate.State, "OPEN") {
+			if candidate.Base.Ref != base || candidate.Head.SHA != head {
+				continue
+			}
 			if open == nil || candidate.Number > open.Number {
 				open = pullRequest
 			}
 			continue
 		}
-		if !strings.EqualFold(candidate.State, "MERGED") ||
-			candidate.BaseRefName != base ||
-			candidate.HeadRefOID != head ||
+		if !strings.EqualFold(pullRequest.State, "MERGED") ||
+			candidate.Base.Ref != base ||
+			candidate.Head.SHA != head ||
 			candidate.MergedAt == nil {
 			continue
 		}
@@ -1348,6 +1370,42 @@ func matchingPullRequests(pullRequests []githubPullRequest, base, head string) (
 	return open, merged
 }
 
+// rebaseMergedPullRequestIntegrated recognizes the one case in which a
+// branch's exact source head is correctly absent from the target history: a
+// GitHub rebase merge. The immutable PR receipt must bind that exact source
+// head to an exact merge-result commit. That result must be in the freshly
+// fetched target and have precisely the same tree as the source; matching a
+// PR number, title, or a merely similar patch is deliberately insufficient.
+func rebaseMergedPullRequestIntegrated(ctx context.Context, repository, head, target string, pullRequest *PullRequest) (bool, error) {
+	if pullRequest == nil || pullRequest.HeadSHA != head || !isGitObjectID(pullRequest.MergeSHA) {
+		return false, nil
+	}
+	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
+	if err != nil || !mergeInTarget {
+		return mergeInTarget, err
+	}
+	sourceTree, err := commitTree(ctx, repository, head)
+	if err != nil {
+		return false, err
+	}
+	mergeTree, err := commitTree(ctx, repository, pullRequest.MergeSHA)
+	if err != nil {
+		return false, err
+	}
+	return sourceTree == mergeTree, nil
+}
+
+func commitTree(ctx context.Context, repository, revision string) (string, error) {
+	tree, err := git(ctx, repository, "rev-parse", revision+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("resolve tree for %s: %w", revision, err)
+	}
+	if !isGitObjectID(tree) {
+		return "", fmt.Errorf("revision %s resolved to invalid tree SHA %q", revision, tree)
+	}
+	return tree, nil
+}
+
 func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time) (bool, string) {
 	switch {
 	case entry.Locked:
@@ -1356,7 +1414,7 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 		return false, "worktree has local changes"
 	case entry.OpenPullRequest != nil:
 		return false, "branch still has an open pull request: " + entry.OpenPullRequest.URL
-	case entry.MergedPullRequest == nil && !entry.IntegratedAtOrigin:
+	case !entry.IntegratedAtOrigin:
 		return false, "current branch head is not integrated into the exact origin target (awaiting push)"
 	case entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA:
 		return false, "remote branch advanced after the merged pull request"
