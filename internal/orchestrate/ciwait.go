@@ -521,18 +521,21 @@ func targetBranchRequiredChecks(ctx context.Context, repository, target string, 
 		if requireServerFreshness {
 			detailOutput, _, detailErr := runCommand(ctx, 0, 0, "", "gh", "api", branchEndpoint+"/protection/required_status_checks")
 			if detailErr != nil {
-				return nil, "", fmt.Sprintf("read authoritative required-status-check policy for %s: %v", target, detailErr)
+				if len(contexts) != 0 || len(checks) != 0 || !strings.Contains(strings.ToLower(detailErr.Error()), "http 404") {
+					return nil, "", fmt.Sprintf("read authoritative required-status-check policy for %s: %v", target, detailErr)
+				}
+			} else {
+				var detail githubRequiredStatusChecksPolicy
+				if err := json.Unmarshal([]byte(detailOutput), &detail); err != nil {
+					return nil, "", fmt.Sprintf("decode authoritative required-status-check policy for %s: %v", target, err)
+				}
+				if detail.Strict == nil {
+					return nil, "", fmt.Sprintf("authoritative required-status-check policy for %s omitted strict", target)
+				}
+				classicStrict = *detail.Strict
+				contexts = detail.Contexts
+				checks = detail.Checks
 			}
-			var detail githubRequiredStatusChecksPolicy
-			if err := json.Unmarshal([]byte(detailOutput), &detail); err != nil {
-				return nil, "", fmt.Sprintf("decode authoritative required-status-check policy for %s: %v", target, err)
-			}
-			if detail.Strict == nil {
-				return nil, "", fmt.Sprintf("authoritative required-status-check policy for %s omitted strict", target)
-			}
-			classicStrict = *detail.Strict
-			contexts = detail.Contexts
-			checks = detail.Checks
 		}
 		for _, name := range contexts {
 			if reason := addRequiredCheck(required, name, 0); reason != "" {
