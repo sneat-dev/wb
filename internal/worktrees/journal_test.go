@@ -22,6 +22,10 @@ func newJournalWorktree(t *testing.T) string {
 		t.Fatal(err)
 	}
 	gitTest(t, worktree, "init")
+	// CI runners carry no global Git identity, so a fixture that commits must
+	// supply its own rather than inheriting the developer's.
+	gitTest(t, worktree, "config", "user.name", "WB Test")
+	gitTest(t, worktree, "config", "user.email", "wb@example.test")
 	return worktree
 }
 
