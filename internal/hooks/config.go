@@ -375,7 +375,19 @@ run_if_present test
 set -eu
 : "${WB_EXECUTABLE:?WB_EXECUTABLE is required for the worktree guard}"
 : "${WB_PROJECTS_ROOT:?WB_PROJECTS_ROOT is required for the worktree guard}"
-if "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" worktree guard --quiet "$WB_REPO_ROOT"; then
+
+# Commit admission requires a managed worktree to carry its own record: a
+# manifest and at least one recorded instruction. It defaults to warn so a
+# fleet of unattended agents adopts it without a flag day, and applies only to
+# commits — a checkout or push is not where an instruction gets recorded.
+# Set WB_ADMISSION=enforce once the fleet has adopted, or off to disable.
+wb_admission="${WB_ADMISSION:-warn}"
+if [ "$WB_HOOK" != "pre-commit" ]; then
+    wb_admission=off
+fi
+
+if "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" worktree guard --quiet \
+    --admission "$wb_admission" "$WB_REPO_ROOT"; then
     exit 0
 else
     guard_status=$?
