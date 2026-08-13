@@ -377,11 +377,14 @@ set -eu
 : "${WB_PROJECTS_ROOT:?WB_PROJECTS_ROOT is required for the worktree guard}"
 
 # Commit admission requires a managed worktree to carry its own record: a
-# manifest and at least one recorded instruction. It defaults to warn so a
-# fleet of unattended agents adopts it without a flag day, and applies only to
-# commits — a checkout or push is not where an instruction gets recorded.
-# Set WB_ADMISSION=enforce once the fleet has adopted, or off to disable.
-wb_admission="${WB_ADMISSION:-warn}"
+# manifest and at least one recorded instruction. It applies only to commits —
+# a checkout or push is not where an instruction gets recorded.
+#
+# The default is enforce. A commit with no record of who asked for it is the
+# thing this exists to prevent, so declining it is the correct default rather
+# than an opt-in. Set WB_ADMISSION=warn to report without refusing, or off to
+# disable; both remain available for a fleet still adopting.
+wb_admission="${WB_ADMISSION:-enforce}"
 if [ "$WB_HOOK" != "pre-commit" ]; then
     wb_admission=off
 fi

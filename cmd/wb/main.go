@@ -117,6 +117,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
+		"worktree orphans": true, "worktree backfill": true,
 	},
 	"filter": {
 		"sync": true, "run": true,
