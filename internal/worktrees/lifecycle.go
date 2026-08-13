@@ -773,6 +773,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	blockDiagnosedTasks(results, listed.Diagnostics)
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
+	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
 	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
@@ -1847,6 +1848,54 @@ func blockUnsafeTasks(results []CleanupResult) {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by " + reasonByTask[results[index].Task]
 		}
+	}
+}
+
+// blockEffortsWithLiveDescendants refuses to terminalize a feature effort while
+// any of its sub-agent task efforts still has a worktree.
+//
+// Children are deliberately NOT nested inside a parent's directory, precisely so
+// removing a parent cannot delete a child's working tree. That layout choice
+// only pays off if cleanup also declines to retire the parent's branch out from
+// under work that was based on it, so the check lives here rather than relying
+// on the filesystem to enforce it.
+//
+// Descendants are found lexically, by directory name, which costs one readdir
+// per worktrees root and stays correct when a child's own manifest is missing —
+// the common case for the worktrees that predate manifests entirely.
+func blockEffortsWithLiveDescendants(results []CleanupResult, worktreesRoots []string) {
+	live := map[string]bool{}
+	for _, root := range worktreesRoots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() && !isWorktreeStagingDirectory(entry.Name()) {
+				live[entry.Name()] = true
+			}
+		}
+	}
+	for index := range results {
+		task := results[index].Task
+		if !results[index].Eligible || task == "" {
+			continue
+		}
+		var children []string
+		for candidate := range live {
+			if IsAncestorEffort(task, candidate) {
+				children = append(children, candidate)
+			}
+		}
+		if len(children) == 0 {
+			continue
+		}
+		sort.Strings(children)
+		results[index].Eligible = false
+		results[index].Reason = fmt.Sprintf(
+			"effort %q still has live sub-efforts (%s); terminalize them first",
+			task, strings.Join(children, ", "),
+		)
 	}
 }
 

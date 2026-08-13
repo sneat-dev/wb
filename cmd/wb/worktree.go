@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +30,8 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeAbortCmd())
 	command.AddCommand(newWorktreeCorrectIdentityCmd())
 	command.AddCommand(newWorktreeSetCmd())
+	command.AddCommand(newWorktreeOrphansCmd())
+	command.AddCommand(newWorktreeBackfillCmd())
 	return command
 }
 
@@ -447,6 +451,179 @@ func readPromptBody(prompt, promptFile string) ([]byte, error) {
 		return nil, fmt.Errorf("--prompt must not be empty")
 	}
 	return []byte(prompt), nil
+}
+
+func newWorktreeBackfillCmd() *cobra.Command {
+	var base, format string
+	var apply bool
+	command := &cobra.Command{
+		Use:   "backfill",
+		Short: "Give existing worktrees a reconstructed manifest so the fleet becomes explicable",
+		Long: `Write a reconstructed manifest into every reachable worktree that lacks one.
+
+Adoption never requires stopping agents. This is additive by construction:
+.wb/local/ is a new path, nothing moves, and no working tree is touched, so a
+worktree holding uncommitted changes is unaffected. Re-running is safe, which
+matters because a sweep over hundreds of worktrees will be interrupted.
+
+A reconstructed manifest records which fields were inferred and from what
+evidence, so triage never mistakes an inference for a creation record. It never
+fabricates a prompt: a worktree whose instructions were never recorded has
+none, and 'wb worktree set --prompt' is how it gets its first real one.
+
+The default is a dry run.`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			results, err := worktrees.Backfill(command.Context(), worktrees.BackfillOptions{
+				ProjectsRoot: projectsRoot, Base: base, Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(results)
+			}
+			counts := map[string]int{}
+			for _, result := range results {
+				counts[result.Action]++
+				if result.Action == worktrees.BackfillSkipped {
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "skipped %s: %s\n", result.Path, result.Reason); err != nil {
+						return err
+					}
+				}
+			}
+			actions := make([]string, 0, len(counts))
+			for action := range counts {
+				actions = append(actions, action)
+			}
+			sort.Strings(actions)
+			for _, action := range actions {
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%-15s %d\n", action, counts[action]); err != nil {
+					return err
+				}
+			}
+			if !apply {
+				_, err = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().StringVar(&base, "base", "main", "remote target used while reconstructing a base ref")
+	command.Flags().BoolVar(&apply, "apply", false, "write the reconstructed manifests")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeOrphansCmd() *cobra.Command {
+	var base, format, only string
+	var staleDays int
+	command := &cobra.Command{
+		Use:   "orphans",
+		Short: "Explain every linked worktree and recommend what to do with it",
+		Long: `Read-only triage of every linked worktree reachable from the projects root.
+
+Discovery goes through each canonical clone's own Git worktree registry, so it
+sees all three layout generations at once: WB's current home, the legacy
+<projects-root>/.wb hierarchy, and pre-WB checkouts living anywhere else.
+
+Identity comes from a worktree's own manifest where one exists. Where none
+does, WB reconstructs what it can from path, branch, and commit evidence and
+labels the row as reconstructed rather than presenting it as a creation record.
+
+Rows group by root effort so a family of sub-agent worktrees is one subject. A
+family is recommended for removal only when every worktree in it has landed.
+This command never mutates anything.`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			report, err := worktrees.Orphans(command.Context(), worktrees.OrphanOptions{
+				ProjectsRoot: projectsRoot,
+				Base:         base,
+				StaleAfter:   time.Duration(staleDays) * 24 * time.Hour,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(report)
+			}
+			return renderOrphans(command.OutOrStdout(), report, only)
+		},
+	}
+	command.Flags().StringVar(&base, "base", "main", "remote target a branch must be contained in to count as landed")
+	command.Flags().IntVar(&staleDays, "stale-days", 14, "days without a commit before unmerged work needs a decision")
+	command.Flags().StringVar(&only, "only", "", "show only families with this disposition: active, remove, review, or decide")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) error {
+	shown := 0
+	for _, family := range report.Families {
+		if only != "" && family.Disposition != only {
+			continue
+		}
+		shown++
+		if _, err := fmt.Fprintf(out, "\n%s [%s] %s\n", family.RootEffort, family.Disposition, family.Reason); err != nil {
+			return err
+		}
+		for _, worktree := range family.Worktrees {
+			marks := []string{worktree.Layout}
+			if !worktree.HasManifest {
+				marks = append(marks, "no-manifest")
+			} else if worktree.Provenance != "" {
+				marks = append(marks, worktree.Provenance)
+			}
+			if worktree.Dirty {
+				marks = append(marks, "dirty")
+			}
+			if worktree.Missing {
+				marks = append(marks, "missing")
+			}
+			if _, err := fmt.Fprintf(out, "  %-8s %s %s (%s)\n",
+				worktree.Disposition, worktree.Repository, worktree.Branch, strings.Join(marks, ", ")); err != nil {
+				return err
+			}
+			for _, evidence := range worktree.Evidence {
+				if _, err := fmt.Fprintf(out, "           - %s\n", evidence); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	totals := report.Totals
+	if _, err := fmt.Fprintf(out,
+		"\n%d worktrees in %d efforts (%d shown): %d current, %d legacy, %d external; %d without a manifest, %d dirty\n",
+		totals.Worktrees, totals.Families, shown,
+		totals.ByLayout[worktrees.LayoutCurrent], totals.ByLayout[worktrees.LayoutLegacy],
+		totals.ByLayout[worktrees.LayoutExternal], totals.NoManifest, totals.Dirty); err != nil {
+		return err
+	}
+	dispositions := make([]string, 0, len(totals.ByDispositn))
+	for disposition := range totals.ByDispositn {
+		dispositions = append(dispositions, disposition)
+	}
+	sort.Strings(dispositions)
+	for _, disposition := range dispositions {
+		if _, err := fmt.Fprintf(out, "  %-8s %d\n", disposition, totals.ByDispositn[disposition]); err != nil {
+			return err
+		}
+	}
+	for _, unscanned := range report.Unscanned {
+		if _, err := fmt.Fprintf(out, "unscanned: %s\n", unscanned); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newWorktreeListCmd() *cobra.Command {

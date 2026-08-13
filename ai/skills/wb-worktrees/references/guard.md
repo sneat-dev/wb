@@ -63,3 +63,41 @@ commit is itself the record of who directed the work. There is no bypass flag.
 
 Adopt with `warn` first. A fleet running unattended agents cannot verify that it
 has stopped them, so enforcement must never be a flag day.
+
+## Triage abandoned worktrees
+
+`wb worktree orphans` explains every linked worktree reachable from the projects
+root and recommends what to do with each. It is read-only.
+
+```sh
+wb worktree orphans                  # every family, with evidence
+wb worktree orphans --only remove    # families whose work has all landed
+wb worktree orphans --format json    # for scripting
+```
+
+Discovery goes through each canonical clone's own Git worktree registry, so it
+sees all three layout generations at once — WB's current home, the legacy
+`<projects-root>/.wb` hierarchy, and pre-WB checkouts living anywhere else.
+
+Dispositions, always paired with their evidence:
+
+- `remove` — the branch is already contained in the remote target, so nothing
+  would be lost.
+- `review` — uncommitted changes, or a registration whose working tree is gone.
+- `decide` — unmerged and idle. WB will not decide this for you.
+- `active` — committed recently; likely still in use.
+
+Rows group by root effort, so `feature` and `feature.task-one` are one subject.
+A family is recommended for removal only when every worktree in it has landed,
+and `wb worktree cleanup` refuses a parent effort while any sub-effort is live.
+
+To adopt existing worktrees into the journal:
+
+```sh
+wb worktree backfill            # dry run
+wb worktree backfill --apply    # write reconstructed manifests
+```
+
+Backfill is additive and idempotent — it touches no working tree and is safe to
+re-run after an interruption — so a fleet with live agents adopts without
+stopping. It never fabricates a prompt.
