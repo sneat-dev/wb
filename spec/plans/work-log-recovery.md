@@ -284,7 +284,7 @@ planned and has no current command or skill example.
 **Id:** task-11
 **Verifies:** work-log#ac:orphan-explains-itself-without-anything-else, work-log#ac:adoption-without-stopping-sessions
 **Depends-On:** task-1, task-2
-**Status:** planning
+**Status:** complete
 
 Relocate the live journal from the WB-home pointer projection to
 `<worktree>/.wb/local/`, holding `manifest.yaml`, `prompts/`, and `worklog/`.
@@ -301,7 +301,7 @@ deletes the canonical clone and the WB home before reading the checkout.
 **Id:** task-12
 **Verifies:** work-log#ac:orphan-explains-itself-without-anything-else, work-log#ac:adoption-without-stopping-sessions
 **Depends-On:** task-11
-**Status:** planning
+**Status:** complete
 
 Write `manifest.yaml` at creation and never rewrite it: schema version, effort
 ID and parent, effort kind, canonical repository, worktree path, branch,
@@ -317,7 +317,7 @@ append-only correction chain rather than rewriting bytes.
 **Id:** task-13
 **Verifies:** work-log#ac:steering-is-recorded-in-order-with-honest-provenance
 **Depends-On:** task-11
-**Status:** planning
+**Status:** complete
 
 Store every directing instruction as `prompts/<NNNN>-<slug>.md`, zero-padded and
 strictly monotonic from `0000`, with YAML frontmatter carrying `seq`, `at`,
@@ -334,7 +334,7 @@ projections, reports, hook metrics, and Synchestra envelopes.
 **Id:** task-14
 **Verifies:** work-log#ac:commit-refused-and-unblocked-by-recording-not-bypassing, work-log#ac:adoption-without-stopping-sessions
 **Depends-On:** task-12, task-13
-**Status:** planning
+**Status:** complete
 
 Extend the managed worktree guard so a commit in any WB-managed worktree
 requires a valid manifest and a non-empty prompt sequence. Bind on location
@@ -349,7 +349,7 @@ reversible switch so live sessions adopt without stopping.
 **Id:** task-15
 **Verifies:** work-log#ac:sub-agent-families-stay-independently-cleanable
 **Depends-On:** task-12
-**Status:** planning
+**Status:** complete
 
 Treat an effort ID as a dot-separated path of unbounded depth within the existing
 `<task>/<owner>/<repository>` arity; reject empty components, leading or trailing
@@ -364,7 +364,7 @@ naming those children in the refusal.
 **Id:** task-16
 **Verifies:** work-log#ac:orphan-explains-itself-without-anything-else, work-log#ac:sub-agent-families-stay-independently-cleanable
 **Depends-On:** task-12, task-15
-**Status:** planning
+**Status:** complete
 
 Add read-only `wb worktree orphans` covering the current `<WB_HOME>/worktrees`
 hierarchy, the legacy `<projects-root>/.wb` hierarchy, and worktrees registered
@@ -381,7 +381,7 @@ across three generations, of which 489 have no manifest and never will.
 **Id:** task-17
 **Verifies:** work-log#ac:adoption-without-stopping-sessions
 **Depends-On:** task-14, task-16
-**Status:** planning
+**Status:** complete
 
 Sequence the rollout so no live session must stop. Ship tasks 11–16 with the
 gate in warn mode. Backfill in place: for each reachable worktree, write a
