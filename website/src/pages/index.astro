@@ -4,6 +4,7 @@ import DependencyGraph from '../components/DependencyGraph.astro';
 import Terminal from '../components/Terminal.astro';
 
 const curlInstall = 'curl -fsSL https://wb.sneat.dev/install/get-cli | sh';
+const brewInstall = 'brew install --cask sneat-dev/tap/wb';
 const goInstall = 'go install github.com/sneat-dev/wb/cmd/wb@latest';
 ---
 
@@ -474,6 +475,16 @@ const goInstall = 'go install github.com/sneat-dev/wb/cmd/wb@latest';
           <div class="install-code">
             <code>{curlInstall}</code>
             <button class="copy-btn" type="button" data-copy={curlInstall} aria-label="Copy curl installation command">Copy</button>
+          </div>
+        </article>
+
+        <article class="install-card">
+          <div class="install-card-head">
+            <div><h3>Homebrew</h3><p>macOS · via sneat-dev/tap</p></div>
+          </div>
+          <div class="install-code">
+            <code>{brewInstall}</code>
+            <button class="copy-btn" type="button" data-copy={brewInstall} aria-label="Copy Homebrew installation command">Copy</button>
           </div>
         </article>
 
