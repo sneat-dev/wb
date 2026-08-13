@@ -230,9 +230,56 @@ func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "--projects-root " + projects + " worktree guard --quiet " + repo
+	// Admission is off outside pre-commit: a checkout is not where an
+	// instruction gets recorded, so gating one would only obstruct recovery.
+	want := "--projects-root " + projects + " worktree guard --quiet --admission off " + repo
 	if got := strings.TrimSpace(string(output)); got != want {
 		t.Fatalf("guard invocation = %q, want %q", got, want)
+	}
+}
+
+// Commit admission defaults to warn so a fleet running unattended agents adopts
+// it without a flag day, and stays off wherever an instruction cannot be
+// recorded anyway.
+func TestWorktreeGuardRequestsCommitAdmissionOnlyAtCommit(t *testing.T) {
+	for _, testCase := range []struct {
+		hook      string
+		args      []string
+		admission string
+	}{
+		{hook: "pre-commit", admission: "warn"},
+		{hook: "pre-push", admission: "off"},
+		{hook: "post-checkout", args: []string{"old", "new", "1"}, admission: "off"},
+	} {
+		t.Run(testCase.hook, func(t *testing.T) {
+			repo := initRepo(t)
+			isolateConfig(t)
+			configDir := filepath.Join(repo, ".wb")
+			mustMkdirAll(t, configDir)
+			mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
+
+			logPath := filepath.Join(t.TempDir(), "wb.log")
+			fakeWB := filepath.Join(t.TempDir(), "wb")
+			mustWriteExecutable(t, fakeWB, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WB_TEST_LOG\"\n")
+			t.Setenv("WB_TEST_LOG", logPath)
+			projects := filepath.Join(t.TempDir(), "projects")
+
+			result, err := Run(RunOptions{
+				RepoPath: repo, Hook: testCase.hook, Args: testCase.args,
+				Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+				WBExecutable: fakeWB, ProjectsRoot: projects,
+			})
+			if err != nil || result.ExitCode != 0 {
+				t.Fatalf("run result = %#v, error = %v", result, err)
+			}
+			output, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(output), "--admission "+testCase.admission+" ") {
+				t.Fatalf("%s must request admission %q, got %q", testCase.hook, testCase.admission, output)
+			}
+		})
 	}
 }
 

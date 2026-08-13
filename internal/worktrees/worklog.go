@@ -616,6 +616,9 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		return outcome, err
 	}
 	outcome.ProjectionWritten = true
+	if err := writeCreationJournal(effort, run, claimID, result, options, now); err != nil {
+		return outcome, err
+	}
 	if hooks.afterProjection != nil {
 		if err := hooks.afterProjection(); err != nil {
 			return outcome, fmt.Errorf("after work-log recovery projection publication: %w", err)

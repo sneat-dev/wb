@@ -409,8 +409,8 @@
       "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
       "since": "existing",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb worktree guard", "flags": ["--base", "--format", "--quiet"], "modes": ["Rejects feature work in canonical clones and rejects unsafe or unrecognized linked-checkout state."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree guard --help", "contains": ["--base", "--quiet", "--format"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree guard", "flags": ["--admission", "--base", "--format", "--quiet"], "modes": ["Rejects feature work in canonical clones and rejects unsafe or unrecognized linked-checkout state.", "--admission warn reports, and --admission enforce refuses, a commit in a managed worktree with no manifest or no recorded instruction."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree guard --help", "contains": ["--base", "--quiet", "--format", "--admission"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/guard.md", "marker": "# Guard and recover a checkout", "examples": ["wb worktree guard ."]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worktrees_test.go", "name": "TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone", "kind": "integration"}, {"path": "internal/worktrees/worktrees_test.go", "name": "TestGuardAllowsOnlyRealTransientRebases", "kind": "integration"}], "limitation": null}
       },
@@ -463,6 +463,18 @@
         "tests": {"status": "Partial", "references": [{"path": "internal/worktrees/rename_test.go", "name": "TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameDescriptorMoveRepairsWhenGitWorktreeMoveWouldRefuse", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestMoveWorktreeRejectsPostAuthorizationEndpointSubstitution", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence", "kind": "integration"}, {"path": "internal/worktrees/rename_test.go", "name": "TestRenameDeleteOldBranchWithoutForceWhenMerged", "kind": "integration"}], "limitation": "Failure-injection covers endpoint substitution, post-move repair/registration failure, normal multi-repository rollback, and remote retirement; it does not prove automatic recovery for every process-crash point after terminal seal."}
       },
       "notes": "Safe removal remains the default lifecycle path; recycle is explicit and audited."
+    },
+    {
+      "id": "wb.worktree.set",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree set", "flags": ["--prompt", "--prompt-file", "--agent-runtime", "--model", "--cli", "--provider"], "modes": ["Records one human_declared instruction at the next prompt ordinal, backfilling a reconstructed manifest when the worktree predates the journal."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree set --help", "contains": ["--prompt", "--prompt-file"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/guard.md", "marker": "# Guard and recover a checkout", "examples": ["wb worktree set --prompt=\"...\""]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/journal_test.go", "name": "TestReconstructionMakesTheNamedRemedySufficient", "kind": "unit"}, {"path": "internal/worktrees/journal_test.go", "name": "TestPromptSourceIsRecordedNeverInferred", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "This is the remedy the admission gate names. It records rather than bypasses, so unblocking a commit is itself the record of who directed it."
     }
   ]
 }

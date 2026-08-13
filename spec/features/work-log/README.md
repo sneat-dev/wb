@@ -12,11 +12,13 @@ status: Approved
 
 ## Summary
 
-`wb worktree log` gives every WB-managed effort a private, durable local journal
-that survives an interrupted agent session and reconciles safely with
-Synchestra. It records the exact original prompt, agent/run provenance, Git
-evidence, progress, handoffs, usage evidence, and server/mirror sync state
-without placing any of those records in the source repository.
+`wb worktree log` gives every WB-managed effort a private, durable journal that
+lives inside the worktree it describes, survives an interrupted agent session,
+and reconciles safely with Synchestra. It records the creation manifest, the
+ordered sequence of instructions that directed the work, agent/run provenance,
+Git evidence, progress, handoffs, usage evidence, and server/mirror sync state —
+Git-excluded, never entering the source repository — and it gates commits so no
+worktree can accumulate work without a record of who asked for it.
 
 ## Problem
 
@@ -29,12 +31,28 @@ instruction context and makes concurrent takeover unsafe; committing a detailed
 run log to product source leaks private prompts, machine details, and provider
 usage.
 
+Two failures follow from that gap and recur in practice. First, abandoned
+worktrees accumulate faster than anyone can triage them, because a checkout that
+cannot explain its own origin can only be judged by reading its diff — so it is
+never judged, and the branch dies with it. Second, a record that only the initial
+prompt creates is a record of the first instruction and none of the corrections
+that actually shaped the work, which is precisely the context a successor needs.
+
+A journal held outside the worktree cannot fix either failure: when the checkout
+is orphaned, the external record is exactly what has gone missing or stale.
+
 ## Behavior
 
 ### Vocabulary and authority
 
 - An **Effort** is one durable requested outcome. `effort_id` is supplied by an
   upstream task/dispatch when available, otherwise WB creates a stable local ID.
+  An `effort_id` is a dot-separated path: `gg-input-types` is a feature effort,
+  `gg-input-types.fix-parser` one of its task efforts, and depth is unbounded.
+  The path is the parentage; a manifest corroborates it but never contradicts it.
+- A **Prompt** is one instruction that directed an Effort, retained in order.
+  The originating instruction and every later steering instruction are the same
+  kind of record, distinguished only by ordinal.
 - A **Run** is one concrete agent execution of an Effort. Its creator explicitly
   records the exact child model or `unknown`, the declaring identity and
   provenance (`runtime_observed`, `caller_declared`, or `unknown`), plus
@@ -56,32 +74,152 @@ and requirements. The Work Log is a local recovery journal and never completes
 a task, renews a remote lease, or claims a branch merely because its own file
 says so.
 
-#### REQ: durable-private-journal
+#### REQ: self-describing-worktree-journal
 
-WB MUST store the durable journal at
-`<WB_HOME>/worklogs/<effort-id>/`, with directory and file permissions no more
-permissive than `0700` and `0600` respectively. It MUST contain an atomically
-replaced `projection.json`, append-only `events.jsonl`, and append-only
-`outbox.jsonl`. The journal MUST retain the exact original prompt snapshot,
-source reference, captured-at time, and SHA-256 digest; the prompt is private
-local data and MUST NOT be printed, copied to a source worktree, included in
-normal reports, generic operational events/projections, a Git fallback/mirror,
-or source Git. A configured Synchestra/server/cloud archive MAY accept it only
-as an explicitly authorized encrypted private sealed payload with declared
-retention. Public state records only its digest and the archive receipt; local
-exact-prompt retention remains mandatory whether or not export is configured.
+The live journal MUST live inside the worktree it describes, at
+`<worktree>/.wb/local/`, with directory and file permissions no more permissive
+than `0700` and `0600` respectively. It MUST contain `manifest.yaml`, a
+`prompts/` directory, and a `worklog/` directory holding an atomically replaced
+`projection.json`, append-only `events.jsonl`, and append-only `outbox.jsonl`.
 
-#### REQ: git-excluded-worktree-projection
+A worktree MUST be explicable from its own contents alone: identity, origin,
+instructions, and history MUST NOT require the canonical clone, WB home, or any
+index to remain intact. This is the requirement that makes abandoned-worktree
+triage possible, and it is why the journal is not a pointer.
 
-WB MUST create a small, non-sensitive recovery projection at
-`<worktree>/.wb-worklog/recovery.json` and add `/\.wb-worklog/` to that
-repository's local Git exclude mechanism rather than editing the shared
-`.gitignore`. The projection MUST contain only the schema version, Effort/Run/
-Worktree Claim IDs, journal location reference, repository/branch/base/head
-fingerprints, latest event sequence, and sync/mirror watermarks. It MUST NOT
-contain prompt text, credentials, transcript, provider output, cost, or a
-machine home path. A missing, untracked, or mismatching projection blocks
+WB MUST add exactly one rule, `/.wb/local/`, to that repository's local Git
+exclude mechanism rather than editing the shared `.gitignore`. The rule MUST NOT
+be `/.wb/`: a repository's own `.wb/hooks.yaml` and `.wb/templates/` are tracked
+team policy, and excluding their parent silently swallows newly added policy
+files.
+
+WB MUST read `<worktree>/.wb/local/` first and fall back to a legacy
+`<worktree>/.wb-worklog/` projection when only the legacy path exists. WB MUST
+write only the current path. A missing, untracked, or mismatching journal blocks
 automatic recovery and produces a deterministic diagnosis.
+
+#### REQ: immutable-creation-manifest
+
+WB MUST write `<worktree>/.wb/local/manifest.yaml` when it creates a worktree,
+and MUST NOT rewrite it afterwards. It MUST record the schema version, effort ID
+and its parent effort, effort kind (`feature` or `task`), canonical repository
+identity, worktree path, branch, immutable base ref and base SHA, creation
+timestamp, creator identity and run provenance, and `provenance` of exactly
+`created` or `reconstructed`.
+
+`provenance: reconstructed` marks a manifest WB derived from Git evidence for a
+worktree that predates this requirement. A reconstructed manifest MUST record
+which fields were inferred and from what evidence, so triage can never mistake
+inference for a creation record.
+
+Correcting a manifest MUST use the same append-only correction chain as
+execution identity: WB appends a typed, claim-addressable correction and never
+rewrites prior bytes.
+
+#### REQ: ordered-prompt-sequence
+
+Every instruction that directs an effort MUST be retained as one file in
+`<worktree>/.wb/local/prompts/`, named `<NNNN>-<slug>.md` with a zero-padded
+four-digit ordinal, strictly monotonic from `0000`. The originating instruction
+is ordinal `0000` and carries no special location or filename; a steering
+instruction is simply the next ordinal. Zero padding is required so lexical
+order equals chronological order past ordinal nine.
+
+Each prompt file MUST carry YAML frontmatter recording `seq`, `at`, `sha256`,
+and `source` of exactly `harness_observed`, `agent_declared`, or
+`human_declared`, plus the recording runtime, model, CLI, and provider where
+known. WB MUST NOT infer `source`: a prompt captured by a harness hook is
+`harness_observed`, one an agent reports about itself is `agent_declared`, and
+one a person supplies at the terminal is `human_declared`. The body is the exact
+instruction bytes.
+
+Prompt bodies are private local data. They MUST NOT be printed in normal output,
+entered into public projections, reports, hook metrics, source Git, or a
+Synchestra envelope; only the digest and ordinal may enter public state. A
+configured archive MAY accept them only as an explicitly authorized encrypted
+sealed payload with declared retention. Local exact retention remains mandatory
+whether or not export is configured.
+
+#### REQ: sealed-archive-outlives-worktree
+
+`<WB_HOME>/worklogs/` is the archive, not a second live journal. Before removing
+a checkout, worktree cleanup, abort, and recycle MUST seal that worktree's
+`.wb/local/` and move it to `<WB_HOME>/worklogs/<effort-id>/`, preserving the
+manifest, every prompt, and the complete event history. History MUST outlive the
+worktree, because a finished effort requires the worktree to be removed.
+
+Cleanup MUST NOT delete an unsealed journal. A failed seal MUST leave both the
+worktree and its journal intact and report the precise non-terminal state.
+
+#### REQ: commit-admission-gate
+
+The managed worktree guard MUST refuse a commit in any WB-managed worktree that
+lacks a valid manifest, or whose prompt sequence is empty. The gate binds on
+location, not on actor: WB MUST NOT attempt to distinguish an agent from a human
+by environment markers, because a marker that can be absent fails open exactly
+when it matters.
+
+Refusal MUST name the remedy in its message. Supplying the missing instruction
+MUST produce an ordinary `human_declared` prompt at the next ordinal, never a
+bypass flag, so the act of unblocking a commit is itself the record of who
+directed it.
+
+The gate MUST support an explicit warn mode that reports what would be refused
+without refusing it, so a fleet with live sessions can adopt enforcement without
+stopping them.
+
+#### REQ: hierarchical-effort-paths
+
+An effort path is a dot-separated sequence of segments, `feature.task.subtask`,
+of arbitrary depth. It occupies the existing `<task>/<owner>/<repository>`
+worktree arity: WB MUST NOT nest a child worktree inside a parent's directory,
+because filesystem nesting couples lifetimes and makes removing a parent destroy
+live child work.
+
+Parentage MUST be derivable lexically — the parent of `a.b.c` is `a.b` — and
+MUST be corroborated by each manifest's recorded parent effort. WB MUST reject
+an empty path component, a leading or trailing dot, and a depth or length that
+would exceed the platform path limit.
+
+Cleanup MUST terminalize children before parents, and MUST refuse to terminalize
+an effort while any live worktree names it as an ancestor.
+
+#### REQ: orphan-enumeration
+
+WB MUST enumerate every linked worktree it can reach across all supported layout
+generations — the current `<WB_HOME>/worktrees` hierarchy, the legacy
+`<projects-root>/.wb` hierarchy, and worktrees registered to a canonical clone
+but living outside both — and report, for each, its effort identity, parent,
+branch, base, last commit and its age, dirty state, whether its branch is merged
+into the exact remote target, and whether a manifest exists.
+
+Where no manifest exists, WB MUST reconstruct what it can from Git evidence
+alone: registered branch, first reflog entry, commit authorship and dates, and
+merged status. Reconstructed identity MUST be labelled as such and MUST NOT be
+presented as a creation record.
+
+Enumeration MUST group by lexical effort parentage so an abandoned family is
+reported as one subject rather than as unrelated rows, and MUST classify each
+worktree with an explicit recommended disposition and the evidence for it. It
+MUST be read-only.
+
+#### REQ: non-disruptive-adoption
+
+Adoption MUST NOT require quiescing the fleet. Agents run unattended, so a
+rollout that depends on stopping sessions cannot be verified to have stopped
+them.
+
+Every step MUST therefore be additive: `.wb/local/` is a new path, no existing
+file moves, and no working tree is touched, so a worktree with uncommitted work
+is unaffected by construction. A WB build that writes the current path MUST
+still read the legacy one, so a session running an older binary continues to
+work and a session running the current binary adopts its own worktree on first
+touch. The commit gate MUST ship in warn mode and become enforcing only as a
+separate, reversible step.
+
+Backfilling an existing worktree MUST write `provenance: reconstructed` and MUST
+NOT fabricate a prompt: a worktree whose instructions were never recorded has
+none, and the gate's remedy is how its first prompt is supplied.
 
 #### REQ: deterministic-identities-and-evidence
 
@@ -168,7 +306,10 @@ WB MUST provide the following deterministic command group:
 
 | Command | Required behavior |
 |---|---|
-| `wb worktree log init` | Create or attach an Effort, record exact private prompt and provenance, verify a WB-managed worktree, and acquire the initial claim. |
+| `wb worktree log init` | Create or attach an Effort, record the manifest and prompt ordinal `0000` with its provenance, verify a WB-managed worktree, and acquire the initial claim. |
+| `wb worktree log steer` | Append the next prompt ordinal with its exact bytes, digest, and explicit source; the agent-facing verb for recording steering. |
+| `wb worktree set --prompt` | Human-facing alias of `log steer` that records a `human_declared` prompt; the remedy the commit gate names when it refuses. |
+| `wb worktree orphans` | Read-only enumeration of every reachable linked worktree across all layout generations, grouped by effort parentage, with reconstructed identity and a recommended disposition per family. |
 | `wb worktree log show` | Read journal and live Git evidence without mutation; default text redacts private data and `--json` exposes the public projection only. |
 | `wb worktree log checkpoint` | Append a typed progress/checkpoint event, observed Git evidence, optional nullable usage, and update both projections. |
 | `wb worktree log refresh` | Fetch and measure target-ref divergence without changing the claimed worktree; record target SHA and freshness evidence. |
@@ -199,11 +340,12 @@ a configured future worker.
 immutable base, recorded head, local lock state, and live Git state before a
 new Run can write. A mismatched branch/head, non-clean unknown state, active
 claim, unresolved Synchestra ownership loss, or malformed journal is a blocker
-with a specific remedy. Finalized journals remain visible as **recent** for
-seven days; thereafter `wb worktree log archive` moves them atomically below
+with a specific remedy. Cleanup seals a finalized journal into
+`<WB_HOME>/worklogs/<effort-id>/`, where it remains visible as **recent** for
+seven days; thereafter `wb worktree log archive` moves it atomically below
 `<WB_HOME>/worklogs/archive/<YYYY>/<MM>/<effort-id>/`. Worktree cleanup MUST
-not delete an active or unarchived journal; it may surface the derived recent
-state and require finalization before destructive worktree cleanup.
+not delete an active, unfinalized, or unsealed journal; it may surface the
+derived recent state and require finalization before destructive cleanup.
 
 #### REQ: privacy-and-redaction
 
@@ -230,10 +372,59 @@ only its digest and receipt may enter public state.
 **Given** an agent initializes a WB-managed worktree for a task or dispatch
 with an exact private prompt and immutable Git base
 **When** the process crashes after one checkpoint while Synchestra is offline
-**Then** the durable local journal and Git-excluded recovery projection identify
-the Effort, Run, claim, agent provenance, prompt digest, Git evidence, progress,
-and unsent events without exposing the prompt in Git status, normal command
-output, or source files.
+**Then** the Git-excluded journal inside that worktree identifies the Effort,
+Run, claim, agent provenance, prompt digests, Git evidence, progress, and unsent
+events without exposing prompt bodies in Git status, normal command output, or
+source files.
+
+### AC: orphan-explains-itself-without-anything-else
+
+**Given** a worktree whose canonical clone has been re-cloned, whose WB home
+index is unavailable, and whose agent session ended weeks ago
+**When** a person or successor agent reads the checkout directly
+**Then** `.wb/local/manifest.yaml` and `.wb/local/prompts/` identify the effort,
+its parent, its branch and immutable base, who created it, and every instruction
+that directed it, using nothing outside that directory.
+
+### AC: steering-is-recorded-in-order-with-honest-provenance
+
+**Given** an effort that begins with one instruction and is redirected several
+times, some captured by a harness hook and some reported by the agent itself
+**When** the prompt sequence is read back
+**Then** ordinals are zero-padded and strictly monotonic so lexical order equals
+chronological order past ordinal nine, the originating instruction is simply
+ordinal `0000`, and each file records `harness_observed`, `agent_declared`, or
+`human_declared` as its actual source, never inferred from the other fields.
+
+### AC: commit-refused-and-unblocked-by-recording-not-bypassing
+
+**Given** a WB-managed worktree with no manifest, or with a manifest and an
+empty prompt sequence
+**When** any commit is attempted in it while the gate is enforcing
+**Then** the commit is refused with a message naming the remedy, no environment
+marker can exempt the attempt, and running that remedy records an ordinary
+`human_declared` prompt at the next ordinal — after which the same commit
+succeeds and the journal shows who directed it.
+
+### AC: sub-agent-families-stay-independently-cleanable
+
+**Given** a feature effort with several sub-agent task efforts, each holding its
+own worktree for the same repository
+**When** cleanup is attempted on the parent while a child is still live
+**Then** every worktree occupies the same `<task>/<owner>/<repository>` arity
+with no child nested inside a parent's directory, parentage resolves lexically
+and agrees with each manifest, and cleanup refuses the parent, naming the live
+children, rather than removing their working trees.
+
+### AC: adoption-without-stopping-sessions
+
+**Given** a fleet with live agent sessions, worktrees holding uncommitted work,
+and worktrees created by older WB builds across all layout generations
+**When** the current WB build is rolled out and the gate is left in warn mode
+**Then** no working tree is modified, legacy journals are still read, new writes
+go only to `.wb/local/`, backfilled manifests are marked
+`provenance: reconstructed` with no fabricated prompts, and every commit that
+would later be refused is reported without being refused.
 
 ### AC: exclusive-sequential-handoff
 

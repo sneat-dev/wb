@@ -1264,9 +1264,15 @@ func preflightRename(ctx context.Context, options RenameOptions, plan *renamePla
 // data loss. The caller can archive or remove that state, then retry.
 func verifyRecycleState(ctx context.Context, worktree string, preserve []string) error {
 	args := []string{"clean", "-ndx"}
-	// The projection is reset after the new branch has been created; it is WB
-	// control-plane metadata, not a cache inherited by the new effort.
-	args = append(args, "-e", workLogProjectionDirectory, "-e", legacyWorkLogProjectionName)
+	// The journal is reset after the new branch has been created; it is WB
+	// control-plane metadata, not a cache inherited by the new effort. Without
+	// these exclusions every managed worktree looks like unapproved state to
+	// recycle, because every managed worktree now carries a journal.
+	args = append(args,
+		"-e", journalRootDirectory+"/"+journalLocalDirectory,
+		"-e", workLogProjectionDirectory,
+		"-e", legacyWorkLogProjectionName,
+	)
 	for _, path := range preserve {
 		args = append(args, "-e", path)
 	}
