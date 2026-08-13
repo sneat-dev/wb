@@ -336,7 +336,7 @@ journal and enforce once it has.`,
 			// A warning prints even under --quiet: warn mode exists precisely
 			// to be seen before enforcement starts refusing the same commit.
 			if result.Admission != nil && result.Admission.Reason != "" {
-				fmt.Fprintf(command.ErrOrStderr(), "warning: %s\n  %s\n", result.Admission.Reason, result.Admission.Remedy)
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: %s\n  %s\n", result.Admission.Reason, result.Admission.Remedy)
 			}
 			if quiet {
 				return nil
@@ -402,7 +402,7 @@ instruction.`,
 				return err
 			}
 			if manifest.Provenance == worktrees.ProvenanceReconstructed {
-				fmt.Fprintf(command.ErrOrStderr(),
+				_, _ = fmt.Fprintf(command.ErrOrStderr(),
 					"reconstructed a manifest for effort %q from Git evidence; inferred %s\n",
 					manifest.EffortID, strings.Join(manifest.InferredFields, ", "))
 			}
