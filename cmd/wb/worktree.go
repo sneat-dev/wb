@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -25,6 +27,7 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeRenameCmd())
 	command.AddCommand(newWorktreeAbortCmd())
 	command.AddCommand(newWorktreeCorrectIdentityCmd())
+	command.AddCommand(newWorktreeSetCmd())
 	return command
 }
 
@@ -293,7 +296,7 @@ func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
 }
 
 func newWorktreeGuardCmd() *cobra.Command {
-	var base, format string
+	var base, format, admission string
 	var quiet bool
 	command := &cobra.Command{
 		Use:   "guard [repository-path]",
@@ -303,11 +306,20 @@ func newWorktreeGuardCmd() *cobra.Command {
 A canonical clone is valid only when it is clean and on the base branch. A
 linked checkout is valid only when it uses a non-base branch and lives at
 <wb-home>/worktrees/<task>/<owner>/<repository> (see 'wb worktree create --help'
-for how <wb-home> is resolved).`,
+for how <wb-home> is resolved).
+
+--admission additionally requires a managed worktree to carry its own record: a
+manifest and at least one recorded instruction. It binds on the worktree's
+location and never tries to tell an agent from a human by environment markers,
+which can be absent exactly when they matter. Use warn while a fleet adopts the
+journal and enforce once it has.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
+			}
+			if err := requireOutputFormat(admission, "off", "warn", "enforce"); err != nil {
+				return fmt.Errorf("unsupported admission mode %q; use off, warn, or enforce", admission)
 			}
 			path := "."
 			if len(args) == 1 {
@@ -316,9 +328,15 @@ for how <wb-home> is resolved).`,
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
 				ProjectsRoot: projectsRoot,
 				Base:         base,
+				Admission:    worktrees.AdmissionMode(admission),
 			})
 			if err != nil {
 				return err
+			}
+			// A warning prints even under --quiet: warn mode exists precisely
+			// to be seen before enforcement starts refusing the same commit.
+			if result.Admission != nil && result.Admission.Reason != "" {
+				fmt.Fprintf(command.ErrOrStderr(), "warning: %s\n  %s\n", result.Admission.Reason, result.Admission.Remedy)
 			}
 			if quiet {
 				return nil
@@ -343,7 +361,92 @@ for how <wb-home> is resolved).`,
 	command.Flags().StringVar(&base, "base", "main", "protected canonical base branch")
 	command.Flags().BoolVar(&quiet, "quiet", false, "write nothing when the checkout is valid")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce")
 	return command
+}
+
+// newWorktreeSetCmd is the human-facing remedy the admission gate names. It
+// deliberately records a prompt rather than setting a bypass flag: the act of
+// unblocking a commit is itself the record of who directed it.
+func newWorktreeSetCmd() *cobra.Command {
+	var prompt, promptFile, runtime, model, cli, provider string
+	command := &cobra.Command{
+		Use:   "set [worktree-path]",
+		Short: "Record an instruction that directed this worktree's effort",
+		Long: `Append one instruction to this worktree's ordered prompt sequence.
+
+This is the human-facing alias of 'wb worktree log steer'. It records a
+human_declared prompt at the next ordinal, which is what the commit admission
+gate asks for when it refuses a commit in a worktree with no recorded
+instruction.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			body, err := readPromptBody(prompt, promptFile)
+			if err != nil {
+				return err
+			}
+			root, err := worktrees.RepositoryRootFor(command.Context(), path)
+			if err != nil {
+				return err
+			}
+			// A worktree that predates the journal has neither a manifest nor a
+			// prompt, and the gate reports the manifest first. Backfilling here
+			// is what makes this command the whole remedy rather than half of
+			// one.
+			manifest, err := worktrees.ReconstructManifest(command.Context(), root)
+			if err != nil {
+				return err
+			}
+			if manifest.Provenance == worktrees.ProvenanceReconstructed {
+				fmt.Fprintf(command.ErrOrStderr(),
+					"reconstructed a manifest for effort %q from Git evidence; inferred %s\n",
+					manifest.EffortID, strings.Join(manifest.InferredFields, ", "))
+			}
+			name, err := worktrees.AppendPrompt(root, worktrees.PromptHeader{
+				Source:   worktrees.PromptSourceHuman,
+				Runtime:  runtime,
+				Model:    model,
+				CLI:      cli,
+				Provider: provider,
+			}, body)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "recorded %s\n", name)
+			return err
+		},
+	}
+	command.Flags().StringVar(&prompt, "prompt", "", "the exact instruction to record")
+	command.Flags().StringVar(&promptFile, "prompt-file", "", "read the exact instruction from a file instead")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "recording runtime, when known")
+	command.Flags().StringVar(&model, "model", "", "recording model, when known")
+	command.Flags().StringVar(&cli, "cli", "", "recording CLI identifier, when known")
+	command.Flags().StringVar(&provider, "provider", "", "routing/billing provider identifier, never a credential")
+	return command
+}
+
+func readPromptBody(prompt, promptFile string) ([]byte, error) {
+	if (prompt == "") == (promptFile == "") {
+		return nil, fmt.Errorf("supply exactly one of --prompt or --prompt-file")
+	}
+	if promptFile != "" {
+		content, err := os.ReadFile(promptFile)
+		if err != nil {
+			return nil, fmt.Errorf("read prompt file: %w", err)
+		}
+		if len(bytes.TrimSpace(content)) == 0 {
+			return nil, fmt.Errorf("prompt file %s is empty", promptFile)
+		}
+		return content, nil
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return nil, fmt.Errorf("--prompt must not be empty")
+	}
+	return []byte(prompt), nil
 }
 
 func newWorktreeListCmd() *cobra.Command {

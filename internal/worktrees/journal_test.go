@@ -238,6 +238,95 @@ func TestManifestRejectsParentContradictingItsPath(t *testing.T) {
 	}
 }
 
+// Warn must never refuse, and enforce must refuse for both reasons a worktree
+// can lack its record. Warn mode is what lets a fleet with unattended agents
+// adopt the gate without a flag day.
+func TestAdmissionWarnsBeforeItEnforces(t *testing.T) {
+	worktree := newJournalWorktree(t)
+
+	warned := CheckAdmission(worktree, AdmissionWarn)
+	if !warned.Admitted || warned.Reason == "" || warned.Remedy == "" {
+		t.Fatalf("warn must report without refusing: %+v", warned)
+	}
+	refused := CheckAdmission(worktree, AdmissionEnforce)
+	if refused.Admitted || !strings.Contains(refused.Remedy, "wb worktree set --prompt") {
+		t.Fatalf("enforce must refuse and name the remedy: %+v", refused)
+	}
+	if off := CheckAdmission(worktree, AdmissionOff); !off.Admitted || off.Reason != "" {
+		t.Fatalf("off must not evaluate the journal at all: %+v", off)
+	}
+
+	// A manifest alone is not enough: a commit still needs a recorded
+	// instruction, otherwise nothing says who directed it.
+	if err := WriteManifest(worktree, newCreatedManifest("effort")); err != nil {
+		t.Fatal(err)
+	}
+	stillRefused := CheckAdmission(worktree, AdmissionEnforce)
+	if stillRefused.Admitted || !strings.Contains(stillRefused.Reason, "no recorded instruction") {
+		t.Fatalf("a manifest without a prompt must still be refused: %+v", stillRefused)
+	}
+
+	if _, err := AppendPrompt(worktree, PromptHeader{Source: PromptSourceHuman}, []byte("do the thing")); err != nil {
+		t.Fatal(err)
+	}
+	if admitted := CheckAdmission(worktree, AdmissionEnforce); !admitted.Admitted {
+		t.Fatalf("recording an instruction must unblock the commit: %+v", admitted)
+	}
+}
+
+// The remedy the gate names must be sufficient on its own. A worktree with
+// neither a manifest nor a prompt is reported for the manifest first, so
+// recording a prompt has to backfill the manifest too or the advice is a dead
+// end.
+func TestReconstructionMakesTheNamedRemedySufficient(t *testing.T) {
+	worktree := newJournalWorktree(t)
+	gitTest(t, worktree, "commit", "--allow-empty", "-m", "seed")
+	gitTest(t, worktree, "checkout", "-b", "some-effort")
+
+	if CheckAdmission(worktree, AdmissionEnforce).Admitted {
+		t.Fatal("a journal-less worktree must be refused first")
+	}
+	manifest, err := ReconstructManifest(t.Context(), worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Provenance != ProvenanceReconstructed || len(manifest.InferredFields) == 0 {
+		t.Fatalf("reconstruction must label itself and its inferences: %+v", manifest)
+	}
+	if manifest.Branch != "some-effort" {
+		t.Fatalf("reconstruction must recover the real branch, got %q", manifest.Branch)
+	}
+	// Reconstruction must never invent an instruction.
+	prompts, err := ListPrompts(worktree)
+	if err != nil || len(prompts) != 0 {
+		t.Fatalf("reconstruction must not fabricate a prompt, got %+v (%v)", prompts, err)
+	}
+	if _, err := AppendPrompt(worktree, PromptHeader{Source: PromptSourceHuman}, []byte("carry on")); err != nil {
+		t.Fatal(err)
+	}
+	if !CheckAdmission(worktree, AdmissionEnforce).Admitted {
+		t.Fatal("the named remedy must be sufficient to unblock the commit")
+	}
+}
+
+func TestReconstructionIsIdempotentAndNeverOverwrites(t *testing.T) {
+	worktree := newJournalWorktree(t)
+	gitTest(t, worktree, "commit", "--allow-empty", "-m", "seed")
+	gitTest(t, worktree, "checkout", "-b", "some-effort")
+
+	first, err := ReconstructManifest(t.Context(), worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ReconstructManifest(t.Context(), worktree)
+	if err != nil {
+		t.Fatalf("reconstruction must be safely re-runnable: %v", err)
+	}
+	if first.CreatedAt != second.CreatedAt || first.EffortID != second.EffortID {
+		t.Fatalf("a second reconstruction must return the existing record, not a new one:\n%+v\n%+v", first, second)
+	}
+}
+
 func TestMissingManifestIsADeterministicDiagnosis(t *testing.T) {
 	worktree := newJournalWorktree(t)
 	_, err := ReadManifest(worktree)

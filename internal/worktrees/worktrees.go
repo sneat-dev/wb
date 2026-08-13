@@ -198,16 +198,22 @@ func (err *CreatePublicationError) Unwrap() error {
 type GuardOptions struct {
 	ProjectsRoot string
 	Base         string
+
+	// Admission gates a commit on the worktree carrying its own record. It is
+	// off unless a caller opts in, so guard's existing layout checks keep their
+	// current meaning everywhere else.
+	Admission AdmissionMode
 }
 
 // GuardResult describes a checkout that satisfies the worktree policy.
 type GuardResult struct {
-	Path          string `json:"path"`
-	CanonicalDir  string `json:"canonical_dir"`
-	WorktreesRoot string `json:"worktrees_root"`
-	Branch        string `json:"branch"`
-	Kind          string `json:"kind"`
-	Transient     bool   `json:"transient,omitempty"`
+	Path          string     `json:"path"`
+	CanonicalDir  string     `json:"canonical_dir"`
+	WorktreesRoot string     `json:"worktrees_root"`
+	Branch        string     `json:"branch"`
+	Kind          string     `json:"kind"`
+	Transient     bool       `json:"transient,omitempty"`
+	Admission     *Admission `json:"admission,omitempty"`
 }
 
 // managedWorktreeLocation is the shared, boundary-aware interpretation of a
@@ -781,6 +787,13 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	}
 	if branch == base {
 		return GuardResult{}, fmt.Errorf("linked worktree %s is on protected base branch %q; use a feature branch", root, base)
+	}
+	if options.Admission != "" && options.Admission != AdmissionOff {
+		admission := CheckAdmission(root, options.Admission)
+		result.Admission = &admission
+		if !admission.Admitted {
+			return GuardResult{}, fmt.Errorf("%s\n  %s", admission.Reason, admission.Remedy)
+		}
 	}
 	return result, nil
 }

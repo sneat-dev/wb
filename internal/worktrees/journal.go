@@ -156,6 +156,79 @@ func IsAncestorEffort(ancestor, descendant string) bool {
 	return ancestor != "" && strings.HasPrefix(descendant, ancestor+".")
 }
 
+// RepositoryRootFor resolves the working-tree root that owns a path, so a
+// caller standing anywhere inside a checkout records against that checkout's
+// journal rather than creating a stray one in a subdirectory.
+func RepositoryRootFor(ctx context.Context, path string) (string, error) {
+	root, err := git(ctx, path, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", fmt.Errorf("resolve worktree root for %s: %w", path, err)
+	}
+	return filepath.Clean(root), nil
+}
+
+// AdmissionMode selects whether a missing journal refuses a commit or is only
+// reported. Warn exists so a fleet with unattended sessions can adopt
+// enforcement without a flag day: a rollout that depends on stopping agents
+// cannot be verified to have stopped them.
+type AdmissionMode string
+
+const (
+	AdmissionOff     AdmissionMode = "off"
+	AdmissionWarn    AdmissionMode = "warn"
+	AdmissionEnforce AdmissionMode = "enforce"
+)
+
+// Admission reports whether a worktree may accept a commit and why not.
+type Admission struct {
+	Mode     AdmissionMode `json:"mode"`
+	Admitted bool          `json:"admitted"`
+	Reason   string        `json:"reason,omitempty"`
+	Remedy   string        `json:"remedy,omitempty"`
+}
+
+// CheckAdmission decides whether a WB-managed worktree carries the record a
+// commit requires: a valid manifest and at least one recorded instruction.
+//
+// It binds on the worktree's location alone and never inspects environment
+// markers to tell an agent from a human. A marker that can be absent — a
+// subshell, a wrapper, a script — fails open exactly when it matters, which
+// would make the gate an illusion rather than a control.
+func CheckAdmission(worktree string, mode AdmissionMode) Admission {
+	admission := Admission{Mode: mode, Admitted: true}
+	if mode == AdmissionOff {
+		return admission
+	}
+	remedy := fmt.Sprintf("record what you were asked to do: wb worktree set --prompt=\"...\" %s", worktree)
+
+	manifest, err := ReadManifest(worktree)
+	switch {
+	case errors.Is(err, errManifestNotFound):
+		admission.Reason = "this worktree has no WB manifest, so nothing records what it is or who asked for it"
+		admission.Remedy = remedy
+	case err != nil:
+		admission.Reason = fmt.Sprintf("this worktree's manifest cannot be read: %v", err)
+		admission.Remedy = remedy
+	default:
+		prompts, promptErr := ListPrompts(worktree)
+		switch {
+		case promptErr != nil:
+			admission.Reason = fmt.Sprintf("this worktree's prompt sequence cannot be read: %v", promptErr)
+			admission.Remedy = remedy
+		case len(prompts) == 0:
+			admission.Reason = fmt.Sprintf(
+				"effort %q has no recorded instruction, so this commit would have no record of who directed it",
+				manifest.EffortID,
+			)
+			admission.Remedy = remedy
+		}
+	}
+	if admission.Reason != "" && mode == AdmissionEnforce {
+		admission.Admitted = false
+	}
+	return admission
+}
+
 // openJournalDirectory resolves <worktree>/.wb/local one component at a time
 // with O_NOFOLLOW at every level, so neither .wb nor local can be swapped for a
 // symlink pointing outside the worktree between checks.
@@ -354,6 +427,209 @@ func validateManifest(manifest Manifest) error {
 		return fmt.Errorf("manifest must record repository and branch")
 	}
 	return nil
+}
+
+// writeCreationJournal publishes the immutable manifest and, when the caller
+// supplied the originating instruction, records it as prompt ordinal 0000.
+//
+// It is deliberately tolerant of an effort ID that predates effort paths: an
+// identifier WB cannot express as a path still gets a worktree, it just gets no
+// manifest, and the commit gate's remedy is how that worktree acquires one.
+// Refusing to create the worktree instead would strand real work over a naming
+// rule introduced after the fact.
+func writeCreationJournal(effort, run, claimID string, result CreateResult, options WorkLogOptions, now time.Time) error {
+	if !ValidEffortPath(effort) {
+		return nil
+	}
+	manifest := Manifest{
+		Version:      1,
+		EffortID:     effort,
+		ParentEffort: ParentEffort(effort),
+		EffortKind:   EffortKindFor(effort),
+		Repository:   result.Repository,
+		Worktree:     result.WorktreeDir,
+		Branch:       result.Branch,
+		Base:         result.Base,
+		BaseSHA:      result.BaseSHA,
+		CreatedAt:    now,
+		Initiator:    strings.TrimSpace(options.Initiator),
+		AgentID:      strings.TrimSpace(options.AgentID),
+		AgentRuntime: strings.TrimSpace(options.AgentRuntime),
+		Model:        strings.TrimSpace(options.Model),
+		CLI:          strings.TrimSpace(options.CLI),
+		Provider:     strings.TrimSpace(options.Provider),
+		RunID:        run,
+		ClaimID:      claimID,
+		Provenance:   ProvenanceCreated,
+	}
+	if err := WriteManifest(result.WorktreeDir, manifest); err != nil {
+		// A worktree resumed onto an existing journal already carries its
+		// creation record, and that record is immutable by design.
+		if !strings.Contains(err.Error(), "immutable") {
+			return err
+		}
+	}
+	if len(options.originalPromptContents) == 0 {
+		return nil
+	}
+	existing, err := ListPrompts(result.WorktreeDir)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	header := PromptHeader{
+		At:       now,
+		Source:   PromptSourceAgent,
+		Runtime:  strings.TrimSpace(options.AgentRuntime),
+		Model:    strings.TrimSpace(options.Model),
+		CLI:      strings.TrimSpace(options.CLI),
+		Provider: strings.TrimSpace(options.Provider),
+		Slug:     "initial",
+	}
+	if strings.TrimSpace(options.Initiator) != "" {
+		header.Source = PromptSourceHuman
+	}
+	_, err = AppendPrompt(result.WorktreeDir, header, options.originalPromptContents)
+	return err
+}
+
+// ReconstructManifest derives a manifest for a worktree that predates the
+// journal, using Git evidence alone, and records exactly which fields were
+// inferred and from what.
+//
+// It never fabricates a prompt. A worktree whose instructions were never
+// recorded genuinely has none, and inventing one would put a lie in the only
+// record a successor can trust. The admission gate's remedy is how such a
+// worktree acquires its first real instruction.
+func ReconstructManifest(ctx context.Context, worktree string) (Manifest, error) {
+	if existing, err := ReadManifest(worktree); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, errManifestNotFound) {
+		return Manifest{}, err
+	}
+	branch, err := git(ctx, worktree, "branch", "--show-current")
+	if err != nil {
+		return Manifest{}, fmt.Errorf("reconstruct manifest: %w", err)
+	}
+	if strings.TrimSpace(branch) == "" {
+		return Manifest{}, fmt.Errorf("cannot reconstruct a manifest for a detached HEAD at %s", worktree)
+	}
+	inferred := []string{"effort_id", "effort_kind", "created_at"}
+	evidence := []string{
+		"effort_id from the managed worktree path, else the branch name",
+		"created_at from the branch's earliest reflog entry, else its oldest commit",
+	}
+
+	// A worktree whose origin was removed or was never set is exactly the kind
+	// of damaged checkout triage exists for. Falling back to the path keeps it
+	// explicable instead of refusing to describe it at all.
+	repository, err := OriginSlug(ctx, worktree)
+	if err != nil || strings.TrimSpace(repository) == "" {
+		repository = repositoryFromWorktreePath(worktree)
+		if repository == "" {
+			return Manifest{}, fmt.Errorf(
+				"cannot identify the repository for %s: it has no origin remote and its path does not carry owner/repository", worktree,
+			)
+		}
+		inferred = append(inferred, "repository")
+		evidence = append(evidence, "repository from the worktree path; the checkout has no usable origin remote")
+	}
+
+	effort := effortFromWorktreePath(worktree)
+	if effort == "" {
+		effort = strings.TrimPrefix(branch, "feature/")
+		effort = strings.ReplaceAll(effort, "/", ".")
+	}
+	if !ValidEffortPath(effort) {
+		return Manifest{}, fmt.Errorf(
+			"cannot derive a valid effort path for %s from path or branch %q", worktree, branch,
+		)
+	}
+
+	manifest := Manifest{
+		Version:      1,
+		EffortID:     effort,
+		ParentEffort: ParentEffort(effort),
+		EffortKind:   EffortKindFor(effort),
+		Repository:   repository,
+		Worktree:     worktree,
+		Branch:       branch,
+		CreatedAt:    reconstructCreationTime(ctx, worktree, branch),
+		Provenance:   ProvenanceReconstructed,
+	}
+	if base, sha, ok := reconstructBase(ctx, worktree, branch); ok {
+		manifest.Base, manifest.BaseSHA = base, sha
+		inferred = append(inferred, "base", "base_sha")
+		evidence = append(evidence, "base from the merge-base with the default remote target")
+	}
+	manifest.InferredFields = inferred
+	manifest.Evidence = evidence
+	if err := WriteManifest(worktree, manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+// effortFromWorktreePath recovers the effort segment of a managed worktree path
+// laid out as <worktrees-root>/<effort>/<owner>/<repository>.
+func effortFromWorktreePath(worktree string) string {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(worktree)), "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	candidate := parts[len(parts)-3]
+	if !ValidEffortPath(candidate) {
+		return ""
+	}
+	return candidate
+}
+
+// repositoryFromWorktreePath reads owner/repository from a managed layout of
+// <worktrees-root>/<effort>/<owner>/<repository>, falling back to the checkout's
+// own directory name when the path carries no owner.
+func repositoryFromWorktreePath(worktree string) string {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(worktree)), "/")
+	if len(parts) >= 2 {
+		owner, name := parts[len(parts)-2], parts[len(parts)-1]
+		if validSafeSegment(owner) && validRepositorySegment(name) {
+			return owner + "/" + name
+		}
+	}
+	if len(parts) >= 1 && validRepositorySegment(parts[len(parts)-1]) {
+		return "unknown/" + parts[len(parts)-1]
+	}
+	return ""
+}
+
+func reconstructCreationTime(ctx context.Context, worktree, branch string) time.Time {
+	if out, err := git(ctx, worktree, "reflog", "show", "--date=iso-strict", "--format=%gd %gs %cI", branch); err == nil {
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if last := strings.TrimSpace(lines[len(lines)-1]); last != "" {
+			fields := strings.Fields(last)
+			if parsed, err := time.Parse(time.RFC3339, fields[len(fields)-1]); err == nil {
+				return parsed.UTC()
+			}
+		}
+	}
+	if out, err := git(ctx, worktree, "log", "--reverse", "--format=%cI", "-1", branch); err == nil {
+		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(out)); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func reconstructBase(ctx context.Context, worktree, branch string) (string, string, bool) {
+	for _, candidate := range []string{"origin/main", "origin/master"} {
+		sha, err := git(ctx, worktree, "merge-base", candidate, branch)
+		if err != nil || strings.TrimSpace(sha) == "" {
+			continue
+		}
+		return strings.TrimPrefix(candidate, "origin/"), strings.TrimSpace(sha), true
+	}
+	return "", "", false
 }
 
 // AppendPrompt records one instruction at the next ordinal. Body bytes are
