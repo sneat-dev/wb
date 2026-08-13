@@ -365,7 +365,7 @@ journal and enforce once it has.`,
 	command.Flags().StringVar(&base, "base", "main", "protected canonical base branch")
 	command.Flags().BoolVar(&quiet, "quiet", false, "write nothing when the checkout is valid")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
-	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce")
+	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")
 	return command
 }
 

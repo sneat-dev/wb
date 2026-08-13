@@ -85,6 +85,23 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	upgradeGit(t, worktree, hookEnv, "commit", "-m", "new home feature")
 	mustUpgradeWrite(t, filepath.Join(legacy, "legacy.txt"), "legacy\n")
 	upgradeGit(t, legacy, hookEnv, "add", "legacy.txt")
+
+	// A worktree created by the previous release has no journal, so the
+	// refreshed hook declines its first commit. This is the upgrade journey the
+	// whole feature exists for, so walk the real remedy rather than relaxing
+	// admission: the refusal must name a command that is sufficient on its own.
+	blocked := upgradeGitRun(t, legacy, hookEnv, "commit", "-m", "legacy feature")
+	if blocked == nil {
+		t.Fatal("a previous-release worktree with no record must not commit silently")
+	}
+	if !strings.Contains(blocked.Error(), "wb worktree set --prompt") {
+		t.Fatalf("the refusal must name its remedy: %v", blocked)
+	}
+	recorded := runWBUpgrade(t, binary, upgradeEnv,
+		"worktree", "set", legacy, "--prompt", "finish the legacy feature")
+	if recorded.exitCode != exitOK {
+		t.Fatalf("the named remedy must succeed: %s", recorded.stderr)
+	}
 	upgradeGit(t, legacy, hookEnv, "commit", "-m", "legacy feature")
 	legacyHead := upgradeGitOutput(t, legacy, hookEnv, "rev-parse", "HEAD")
 	upgradeGit(t, legacy, hookEnv, "push", "-u", "origin", "feature/legacy")
@@ -314,6 +331,17 @@ func upgradeGit(t *testing.T, directory string, environment []string, args ...st
 	if output, err := runUpgradeGit(directory, environment, args...); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
+}
+
+// upgradeGitRun returns the failure instead of ending the test, so a step whose
+// refusal is the behaviour under test can assert on the message.
+func upgradeGitRun(t *testing.T, directory string, environment []string, args ...string) error {
+	t.Helper()
+	output, err := runUpgradeGit(directory, environment, args...)
+	if err != nil {
+		return fmt.Errorf("%w\n%s", err, output)
+	}
+	return nil
 }
 
 func upgradeGitOutput(t *testing.T, directory string, environment []string, args ...string) string {

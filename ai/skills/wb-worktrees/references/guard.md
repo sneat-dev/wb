@@ -61,8 +61,20 @@ created before the journal existed, reconstructs a manifest from Git evidence
 and labels every inferred field. It records rather than bypasses: unblocking the
 commit is itself the record of who directed the work. There is no bypass flag.
 
-Adopt with `warn` first. A fleet running unattended agents cannot verify that it
-has stopped them, so enforcement must never be a flag day.
+WB's managed pre-commit hook requests `enforce`. A commit with no record of who
+asked for it is what this exists to prevent, so declining it is the default
+rather than an opt-in.
+
+A fleet still adopting the journal can step back without editing hook policy:
+
+```sh
+WB_ADMISSION=warn git commit ...   # report instead of refusing
+WB_ADMISSION=off  git commit ...   # skip the check entirely
+```
+
+A worktree adopted by `wb worktree backfill` has a manifest and no prompt,
+because backfill never fabricates one. Its first commit therefore asks for the
+instruction once, and then it is on record.
 
 ## Triage abandoned worktrees
 

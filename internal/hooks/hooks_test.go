@@ -238,16 +238,16 @@ func TestWorktreeProfileInvokesSameWBExecutableWithProjectsRoot(t *testing.T) {
 	}
 }
 
-// Commit admission defaults to warn so a fleet running unattended agents adopts
-// it without a flag day, and stays off wherever an instruction cannot be
-// recorded anyway.
+// A commit with no record of who asked for it is what admission exists to
+// prevent, so enforce is the default. It stays off wherever an instruction
+// cannot be recorded anyway, and WB_ADMISSION still relaxes it.
 func TestWorktreeGuardRequestsCommitAdmissionOnlyAtCommit(t *testing.T) {
 	for _, testCase := range []struct {
 		hook      string
 		args      []string
 		admission string
 	}{
-		{hook: "pre-commit", admission: "warn"},
+		{hook: "pre-commit", admission: "enforce"},
 		{hook: "pre-push", admission: "off"},
 		{hook: "post-checkout", args: []string{"old", "new", "1"}, admission: "off"},
 	} {
@@ -2051,4 +2051,40 @@ func hasFinding(findings []Finding, code string) bool {
 		}
 	}
 	return false
+}
+
+// A fleet still adopting the journal must be able to step back to reporting
+// without editing hook policy.
+func TestWorktreeAdmissionRespectsEnvironmentOverride(t *testing.T) {
+	for _, mode := range []string{"warn", "off"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := initRepo(t)
+			isolateConfig(t)
+			configDir := filepath.Join(repo, ".wb")
+			mustMkdirAll(t, configDir)
+			mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
+
+			logPath := filepath.Join(t.TempDir(), "wb.log")
+			fakeWB := filepath.Join(t.TempDir(), "wb")
+			mustWriteExecutable(t, fakeWB, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WB_TEST_LOG\"\n")
+			t.Setenv("WB_TEST_LOG", logPath)
+			t.Setenv("WB_ADMISSION", mode)
+
+			result, err := Run(RunOptions{
+				RepoPath: repo, Hook: "pre-commit",
+				Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{},
+				WBExecutable: fakeWB, ProjectsRoot: filepath.Join(t.TempDir(), "projects"),
+			})
+			if err != nil || result.ExitCode != 0 {
+				t.Fatalf("run result = %#v, error = %v", result, err)
+			}
+			output, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(output), "--admission "+mode+" ") {
+				t.Fatalf("WB_ADMISSION=%s must be honoured, got %q", mode, output)
+			}
+		})
+	}
 }
