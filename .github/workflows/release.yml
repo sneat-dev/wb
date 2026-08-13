@@ -30,6 +30,17 @@ on:
   push:
     branches:
       - main
+    # Only CLI-relevant paths cut releases (sneat-dev/wb#84): the binary is
+    # built purely from Go sources (no go:embed of ai/skills/website assets),
+    # so website/, docs/, spec/, ai/, skills/, agents/, and examples/ commits
+    # must not bump the version or exercise the release pipeline.
+    paths:
+      - ".github/workflows/release.yml"
+      - ".goreleaser.yml"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
     tags:
       - 'v*'
   workflow_dispatch:
