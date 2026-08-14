@@ -347,6 +347,99 @@ exit 30
 	}
 }
 
+func TestCIWaitDirectTargetPassesWithAuthoritativeNoApplicableChecks(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "no-applicable-checks")
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/docs/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/docs/rules/branches/main?per_page=100'; then
+  echo '[[]]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  count=0; if [ -f "$WB_CI_WAIT_STATE" ]; then count=$(cat "$WB_CI_WAIT_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CI_WAIT_STATE"
+  echo '{"total_count":0,"check_runs":[]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_CI_WAIT_STATE", state)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/docs", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitOK || output.Status != "passed" || output.StableObservations != 2 || len(output.Checks) != 0 || len(output.RequiredChecks) != 0 || !strings.Contains(output.Reason, "no checks") {
+		t.Fatalf("no-applicable-check receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if observations := ciWaitObservations(t, state); observations != 2 {
+		t.Fatalf("no-applicable-check receipt observed %d times, want an initial receipt and unchanged reread", observations)
+	}
+}
+
+func TestCIWaitDirectTargetWaitsWhenCheckRegistersAfterEmptyReceipt(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "late-after-empty")
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/docs/branches/main' ]; then
+  echo '{"protected":false,"protection":{}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/docs/rules/branches/main?per_page=100'; then
+  echo '[[]]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  count=0; if [ -f "$WB_CI_WAIT_STATE" ]; then count=$(cat "$WB_CI_WAIT_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CI_WAIT_STATE"
+  if [ "$count" -eq 1 ]; then
+    echo '{"total_count":0,"check_runs":[]}'
+  elif [ "$count" -eq 2 ]; then
+    echo '{"total_count":1,"check_runs":[{"name":"website","status":"queued"}]}'
+  else
+    echo '{"total_count":1,"check_runs":[{"name":"website","status":"completed","conclusion":"success"}]}'
+  fi
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_CI_WAIT_STATE", state)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"ci", "wait", "--repo", "acme/docs", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitRereadInterval.String(), "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitOK || output.Status != "passed" || output.StableObservations != 2 || len(output.Checks) != 1 || output.Checks[0].Name != "check-run:website" {
+		t.Fatalf("late check after empty receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if observations := ciWaitObservations(t, state); observations != 4 {
+		t.Fatalf("expected empty receipt, late pending check, then two stable terminal checks; observations=%d", observations)
+	}
+}
+
 func TestCIWaitWaitsForStableRereadAfterLateSuiteRegistration(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {

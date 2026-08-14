@@ -114,7 +114,10 @@ than a fictional queue.
    intermediate state only: execute `resume_args` as structured JSON argv (or
    shell-quote every argument) and rerun until terminal pass or failure. A pass
    records the target's enumerated required-check policy and an unchanged
-   terminal reread of all checks observed in that bounded window. In every
+   terminal reread of all checks observed in that bounded window. For a direct
+   target only, an enumerated empty policy plus complete empty check-run and
+   status receipts is a terminal no-applicable-check receipt after that same
+   reread; never extrapolate it to a PR merge. In every
    mode, an App-pinned required context must be produced by that exact GitHub
    App; a same-named PR summary or legacy status is insufficient. The receipt
    does not prove that no optional workflow can register later, so it never

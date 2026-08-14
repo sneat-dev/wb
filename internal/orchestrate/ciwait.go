@@ -148,7 +148,13 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
 		missingRequired := missingRequiredChecks(checks, requiredChecks)
-		terminal := len(checks) > 0 && !pending && len(missingRequired) == 0
+		// A direct target can truthfully have no applicable CI at all (for
+		// example, a docs-only repository or a path-filtered workflow). GitHub's
+		// complete check-run/status APIs plus the enumerated empty policy are an
+		// authoritative receipt in that case. PR mode deliberately never takes
+		// this route: it still requires a nonempty strict server freshness fence.
+		noApplicableChecks := options.PullRequest == "" && len(checks) == 0 && len(requiredChecks) == 0
+		terminal := !pending && len(missingRequired) == 0 && (len(checks) > 0 || noApplicableChecks)
 		if terminal {
 			fingerprint := terminalChecksFingerprint(checks, requiredChecks, authority, observedTargetHead, freshnessAuthority)
 			if fingerprint == stableFingerprint {
@@ -234,6 +240,8 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			result.Status = PullRequestWaitPassed
 			if options.PullRequest != "" {
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, server-side target freshness was enforced, and the observed GitHub check set stayed terminal across a bounded stable reread"
+			} else if noApplicableChecks {
+				result.Reason = "GitHub's required-check policy was enumerated as empty, complete check-run and status receipts registered no checks, and that no-applicable-check receipt stayed unchanged across a bounded stable reread"
 			} else {
 				result.Reason = "GitHub's required-check policy was enumerated (possibly empty), every required check was present, and the exact remote target's observed check set stayed terminal across a bounded stable reread"
 			}
@@ -309,7 +317,11 @@ func commitChecks(ctx context.Context, options PullRequestWaitOptions) ([]Remote
 	}
 	checks = append(checks, runChecks...)
 	checks = append(checks, statusChecks...)
-	pending = pending || runPending || statusPending || len(checks) == 0
+	// An empty observed set is not itself pending. The caller can treat it as a
+	// terminal direct-target receipt only after it has also enumerated an empty
+	// required-check policy and completed an unchanged reread. PR mode remains
+	// fail-closed through its nonempty strict-freshness requirement.
+	pending = pending || runPending || statusPending
 	sortRemoteChecks(checks)
 	return checks, pending, ""
 }
