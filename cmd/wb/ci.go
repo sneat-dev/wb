@@ -58,7 +58,9 @@ and terminating. A pending result exits 1 with exact resume arguments; invoke
 those again until checks pass or fail. In every mode WB reads the exact head's
 GitHub check runs and commit statuses, preserving each check-run producer App.
 With --pr it also re-reads that PR's head and target and corroborates GitHub's
-PR check views. PR mode fetches the exact target SHA, proves that SHA is an
+PR check views. A direct target whose fully enumerated policy is empty and
+whose complete check-run and status receipts remain empty may pass after the
+same stable reread. PR mode fetches the exact target SHA, proves that SHA is an
 ancestor of the candidate, and requires a server-enforced strict policy with at
 least one required check. It never waits for current target CI to turn green;
 the candidate may fix a red target. A same-named PR summary or legacy status
