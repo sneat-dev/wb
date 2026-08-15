@@ -2,7 +2,18 @@
 
 ## Inspect
 
-Use the offline default for a fast view of every WB-managed worktree:
+For one checkout, start with the redacted summary (no prompt bodies):
+
+```sh
+wb worktree info .
+wb worktree info . --format json
+```
+
+Use `wb worktree log .` only when an agent needs the exact original prompt and
+steering bodies. That dump is private local recovery context.
+
+For fleet inventory, use the offline default for a fast view of every
+WB-managed worktree:
 
 ```sh
 wb worktree list
