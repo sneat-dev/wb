@@ -220,16 +220,17 @@ import Terminal from '../components/Terminal.astro';
           label="why the journal matters"
           status="local only"
           lines={[
-            { kind: 'command', html: 'wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go \\' },
-            { kind: 'command', html: '  --model unknown --original-prompt-file ./prompt.txt' },
-            { kind: 'success', html: '✓ two worktrees · one task · private claim written' },
+            { kind: 'command', html: 'wb worktree create bots-e2e \\' },
+            { kind: 'command', html: '  sneat-bots sneat-go \\' },
+            { kind: 'command', html: '  --original-prompt-file ./prompt.txt' },
+            { kind: 'success', html: '✓ two worktrees · private claim' },
             { kind: 'blank', html: '' },
             { kind: 'command', html: 'wb worktree summary bots-e2e' },
-            { kind: 'output', html: '2 worktrees · branches live · both clean' },
+            { kind: 'output', html: '2 worktrees · branches live' },
             { kind: 'command', html: 'wb worktree info .' },
-            { kind: 'muted', html: 'identity + digests · prompt bodies omitted' },
+            { kind: 'muted', html: 'digests only · bodies omitted' },
             { kind: 'command', html: 'wb worktree log .' },
-            { kind: 'accent', html: 'exact original prompt for the next agent' },
+            { kind: 'accent', html: 'exact prompt for the next agent' },
           ]}
         />
       </div>
