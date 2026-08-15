@@ -2948,12 +2948,16 @@ func (lock *HeldOperationLock) ReclaimedInterrupted() bool {
 
 // Release retires the exact held inode with a descriptor-relative no-replace
 // move. It cannot unlink a successor lock installed after acquisition.
-func (lock *HeldOperationLock) Release() {
+//
+// The returned error matters to callers whose audit record claims terminal
+// ownership: a late successor or a failed quarantine is not a release.
+func (lock *HeldOperationLock) Release() error {
 	if lock == nil || lock.lock == nil {
-		return
+		return nil
 	}
-	lock.lock.release()
+	err := lock.lock.release()
 	lock.lock = nil
+	return err
 }
 
 // Preserve leaves the currently named lock entry untouched. It is for a
@@ -3115,18 +3119,21 @@ func claimRetiredLock(directory *os.File) (*os.File, bool, error) {
 	return nil, false, nil
 }
 
-func (lock operationLock) release() {
+func (lock operationLock) release() error {
 	if lock.file == nil || lock.directory == nil {
-		return
+		return nil
 	}
 	defer func() { _ = lock.file.Close() }()
 	if !lockEntryStillMatches(lock.directory, ".lock", lock.identity) {
-		return
+		return fmt.Errorf("operation lock changed before retirement")
 	}
 	if lock.beforeRelease != nil {
 		lock.beforeRelease()
 	}
-	_ = quarantineLockEntry(lock.directory, lock.identity)
+	if err := quarantineLockEntry(lock.directory, lock.identity); err != nil {
+		return fmt.Errorf("quarantine operation lock: %w", err)
+	}
+	return nil
 }
 
 func lockEntryStillMatches(directory *os.File, name string, expected managedLockIdentity) bool {

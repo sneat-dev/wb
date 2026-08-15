@@ -105,6 +105,10 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	if command.Flags().Lookup("report-dir") == nil {
 		t.Fatal("cleanup command has no --report-dir")
 	}
+	resumeInterrupted := command.Flags().Lookup("resume-interrupted")
+	if resumeInterrupted == nil || resumeInterrupted.DefValue != "false" {
+		t.Fatalf("--resume-interrupted = %#v, want default false", resumeInterrupted)
+	}
 	if err := command.Args(command, nil); err == nil || !strings.Contains(err.Error(), "--all-merged") {
 		t.Fatalf("cleanup without selection error = %v", err)
 	}
@@ -118,7 +122,7 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 		}
 	}
 	cleanup := newWorktreeCleanupCmd()
-	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero"} {
+	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero", "--resume-interrupted", "conclusively dead"} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("worktree cleanup help does not mention %q", wanted)
 		}
