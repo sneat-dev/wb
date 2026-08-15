@@ -4,6 +4,7 @@
 package ciaudit
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -39,13 +40,15 @@ var (
 	positiveGoThreshold = regexp.MustCompile(`(?mi)min_test_coverage_percent\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
 	positiveJSWorkflow  = regexp.MustCompile(`(?mi)(?:minimum-coverage|coverage-threshold)\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
 	jsConfigThreshold   = regexp.MustCompile(`(?mi)(?:coverageThreshold|thresholds)\s*[:=]`)
+	positiveC8Threshold = regexp.MustCompile(`(?mi)\bc8\b[^\n]*--check-coverage[^\n]*--(?:lines|statements|functions|branches)(?:=|\s+)(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
+	coverageScriptRun   = regexp.MustCompile(`(?mi)\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-z0-9:_-]*coverage[a-z0-9:_-]*\b`)
 	deployCommand       = regexp.MustCompile(`(?mi)(firebase(?:-tools[^\n]*)?\s+deploy|wrangler(?:-action|[^\n]*)?\s+deploy|gcloud\s+(?:run|app)\s+deploy|kubectl\s+apply|helm\s+(?:install|upgrade))`)
 	sourceBuildCommand  = regexp.MustCompile(`(?mi)(pnpm\s+(?:exec\s+nx\s+|run\s+)?build|npm\s+(?:run\s+)?build|yarn\s+build|\bnx\s+build|\bgo\s+build|\bcargo\s+build)`)
 )
 
 func Audit(root string) (Report, error) {
 	report := Report{Path: root}
-	workflows, configText, err := scan(root, &report)
+	workflows, configText, packageCoverageScripts, err := scan(root, &report)
 	if err != nil {
 		return Report{}, err
 	}
@@ -57,7 +60,9 @@ func Audit(root string) (Report, error) {
 	}
 	workflowText := allWorkflowText.String()
 	report.GoCoverageThreshold = positiveGoThreshold.MatchString(workflowText) || hasGoCoverageComparison(workflowText)
-	report.FrontendCoverageThreshold = positiveJSWorkflow.MatchString(workflowText) || jsConfigThreshold.MatchString(configText)
+	report.FrontendCoverageThreshold = report.HasFrontend && (positiveJSWorkflow.MatchString(workflowText) ||
+		jsConfigThreshold.MatchString(configText) ||
+		hasPositiveC8Coverage(workflowText, packageCoverageScripts))
 	pathScoped := strings.Contains(workflowText, "git diff --name-only") ||
 		strings.Contains(workflowText, "paths-filter") || strings.Contains(workflowText, "nx affected")
 
@@ -142,9 +147,10 @@ func Audit(root string) (Report, error) {
 	return report, nil
 }
 
-func scan(root string, report *Report) ([]workflowFile, string, error) {
+func scan(root string, report *Report) ([]workflowFile, string, string, error) {
 	var workflows []workflowFile
 	var config strings.Builder
+	var packageCoverageScripts strings.Builder
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -163,6 +169,11 @@ func scan(root string, report *Report) ([]workflowFile, string, error) {
 		switch {
 		case strings.HasSuffix(lower, ".go") && !strings.HasSuffix(lower, "_test.go"):
 			report.HasGo = true
+		case strings.HasSuffix(lower, ".astro"):
+			// A real Astro source file is frontend code. A package manifest merely
+			// mentioning Astro is not enough: documentation-only repositories often
+			// contain those dependency names without shipping a frontend.
+			report.HasFrontend = true
 		case lower == "package.json":
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -171,6 +182,17 @@ func scan(root string, report *Report) ([]workflowFile, string, error) {
 			text := strings.ToLower(string(data))
 			if strings.Contains(text, "vitest") || strings.Contains(text, "jest") || strings.Contains(text, "@angular/") || strings.Contains(text, "@nx/") {
 				report.HasFrontend = true
+			}
+			var manifest struct {
+				Scripts map[string]string `json:"scripts"`
+			}
+			if json.Unmarshal(data, &manifest) == nil {
+				for name, script := range manifest.Scripts {
+					if strings.Contains(strings.ToLower(name), "coverage") {
+						packageCoverageScripts.WriteString(strings.ToLower(script))
+						packageCoverageScripts.WriteByte('\n')
+					}
+				}
 			}
 		case strings.Contains(lower, "vitest.config") || strings.Contains(lower, "jest.config"):
 			data, err := os.ReadFile(path)
@@ -191,7 +213,14 @@ func scan(root string, report *Report) ([]workflowFile, string, error) {
 		}
 		return nil
 	})
-	return workflows, config.String(), err
+	return workflows, config.String(), packageCoverageScripts.String(), err
+}
+
+func hasPositiveC8Coverage(workflowText, packageCoverageScripts string) bool {
+	if positiveC8Threshold.MatchString(workflowText) {
+		return true
+	}
+	return positiveC8Threshold.MatchString(packageCoverageScripts) && coverageScriptRun.MatchString(workflowText)
 }
 
 func ignoredDirectory(name string) bool {
