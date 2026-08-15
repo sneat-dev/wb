@@ -56,15 +56,17 @@ wb --projects-root <root> worktree create <task> \
 
 Use the exact paths WB prints. Do not reconstruct or relocate them.
 
-After create (or when a successor agent takes over), dump the private journal
-so the agent has the exact original prompt and claim identity:
+After create (or when a successor agent takes over), inspect identity first,
+then dump the private journal only when the agent needs exact prompt bodies:
 
 ```sh
+wb worktree info <printed-worktree-path>
 wb worktree log <printed-worktree-path>
 wb --projects-root <root> worktree log <printed-worktree-path> --format json
 ```
 
-That output is local private recovery context. Do not commit it or publish it.
+`info` is redacted (ordinals/digests only). `log` includes private prompt
+bodies for agent bootstrap. Do not commit or publish that private output.
 
 One command covering multiple repositories is one Run. WB writes a separate
 immutable claim for each repository below

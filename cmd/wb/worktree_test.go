@@ -402,6 +402,54 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	}
 }
 
+func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "private original request must stay hidden")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-info", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-info", "acme", "app")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("info failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"# WB worktree info",
+		"## Claim",
+		"cli-info",
+		"wb worktree log",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("info text missing %q; stdout=%s stderr=%s", want, out, stderr.String())
+		}
+	}
+	if strings.Contains(out, "private original request must stay hidden") {
+		t.Fatalf("info leaked prompt body; stdout=%s", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("info json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "private original request must stay hidden") {
+		t.Fatalf("info json leaked prompt body; stdout=%s", stdout.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("info json: %v\n%s", err, stdout.String())
+	}
+	if document["original_prompt"] != nil {
+		t.Fatalf("redacted json still has original_prompt: %#v", document["original_prompt"])
+	}
+}
+
 func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "agent needs the original request")

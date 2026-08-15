@@ -141,4 +141,18 @@ func TestLoadWorkLogViewWithoutBodiesKeepsHeadersOnly(t *testing.T) {
 	if len(view.Prompts) != 1 || view.Prompts[0].Body != "" || view.Prompts[0].SHA256 == "" {
 		t.Fatalf("prompts = %#v", view.Prompts)
 	}
+	text := FormatWorktreeInfoText(view)
+	for _, want := range []string{
+		"# WB worktree info",
+		"headers-only",
+		"sha256=",
+		"wb worktree log",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("info text missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "secret instruction") {
+		t.Fatalf("info text leaked prompt body:\n%s", text)
+	}
 }

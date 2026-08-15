@@ -43,6 +43,7 @@ wb check [path] [flags]      # run a named local CI-equivalent check profile
 wb status [path] [flags]     # report local repos needing attention (--all for every repo)
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
+wb worktree info [path]      # redacted identity + digests for one worktree
 wb worktree log [path]       # dump initial prompt + local work log for an agent
 wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task>   # plan or apply safe merged-task cleanup
@@ -125,9 +126,11 @@ recovery evidence when a Synchestra server is down, so server receipt never
 blocks safe local work. It is not yet a Git-repository communication fallback
 and cannot deliver inter-agent messages.
 
-`wb worktree log [path]` dumps that private local journal for agent bootstrap:
+`wb worktree info [path]` is the safe redacted summary: claim identity, prompt
+ordinals/digests, and live Git evidence, with prompt bodies omitted.
+`wb worktree log [path]` dumps the private local journal for agent bootstrap:
 exact original prompt, later steering instructions, claim identity, and live
-Git evidence. Do not commit or publish that output.
+Git evidence. Do not commit or publish that private output.
 
 If Work Log publication fails after Git has published one or more coordinated
 worktrees, WB records exact per-repository recovery outcomes, writes durable

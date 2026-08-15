@@ -30,9 +30,53 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeAbortCmd())
 	command.AddCommand(newWorktreeCorrectIdentityCmd())
 	command.AddCommand(newWorktreeSetCmd())
+	command.AddCommand(newWorktreeInfoCmd())
 	command.AddCommand(newWorktreeWorkLogCmd())
 	command.AddCommand(newWorktreeOrphansCmd())
 	command.AddCommand(newWorktreeBackfillCmd())
+	return command
+}
+
+func newWorktreeInfoCmd() *cobra.Command {
+	var format string
+	command := &cobra.Command{
+		Use:   "info [worktree-path]",
+		Short: "Show redacted identity and Git state for one worktree",
+		Long: `Print a safe, redacted summary of one worktree's journal and live Git state.
+
+Includes manifest, claim identity, prompt ordinals and digests, and dirty/head
+evidence. Prompt bodies are never printed — use 'wb worktree log' when an agent
+needs the exact original prompt and steering instructions.
+
+Default text is human-readable. --format json emits the same redacted payload
+as one JSON document on stdout.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			view, err := worktrees.LoadWorkLogView(command.Context(), worktrees.LoadWorkLogOptions{
+				ProjectsRoot:        projectsRoot,
+				Worktree:            path,
+				IncludePromptBodies: false,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(view)
+			}
+			_, err = io.WriteString(command.OutOrStdout(), worktrees.FormatWorktreeInfoText(view))
+			return err
+		},
+	}
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 

@@ -429,6 +429,18 @@
       "notes": "A passing canonical clone remains read-only for feature work; a passing linked checkout is the writable surface."
     },
     {
+      "id": "wb.worktree.info",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree info", "flags": ["--format"], "modes": ["Read-only redacted summary of manifest, claim identity, prompt ordinals/digests, and live Git evidence for one worktree."]}], "limitation": "Prompt bodies are never included; use wb worktree log for the private agent dump."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree info --help", "contains": ["redacted", "wb worktree log", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/SKILL.md", "marker": "# WB worktrees", "examples": ["wb worktree info ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worklog_view_test.go", "name": "TestLoadWorkLogViewWithoutBodiesKeepsHeadersOnly", "kind": "unit"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeInfoCLIRedactsPromptBodies", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Safe default inspect surface. Contrasts with wb worktree log, which intentionally emits private prompt bodies for agent bootstrap."
+    },
+    {
       "id": "wb.worktree.list",
       "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
       "since": "unreleased",

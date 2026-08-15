@@ -61,6 +61,12 @@ created before the journal existed, reconstructs a manifest from Git evidence
 and labels every inferred field. It records rather than bypasses: unblocking the
 commit is itself the record of who directed the work. There is no bypass flag.
 
+To inspect this checkout safely (identity and digests, no prompt bodies):
+
+```sh
+wb worktree info .
+```
+
 To hand an agent the exact original prompt and the ordered work log for this
 checkout:
 

@@ -26,7 +26,7 @@ type PromptRecord struct {
 	Model    string    `json:"model,omitempty"`
 	CLI      string    `json:"cli,omitempty"`
 	Provider string    `json:"provider,omitempty"`
-	Body     string    `json:"body"`
+	Body     string    `json:"body,omitempty"`
 }
 
 // WorkLogClaimView is the public-enough claim identity an agent needs to
@@ -70,7 +70,7 @@ type OriginalPromptView struct {
 	Source string `json:"source"` // journal | archive
 	Name   string `json:"name,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
-	Body   string `json:"body"`
+	Body   string `json:"body,omitempty"`
 }
 
 // WorkLogView is the agent bootstrap payload for one worktree: identity, the
@@ -383,6 +383,93 @@ func FormatWorkLogViewText(view WorkLogView) string {
 			b.WriteString("\n")
 		}
 	}
+
+	b.WriteString("## Git\n")
+	if view.Git.Branch != "" {
+		fmt.Fprintf(&b, "branch: %s\n", view.Git.Branch)
+	}
+	if view.Git.Head != "" {
+		fmt.Fprintf(&b, "head: %s\n", view.Git.Head)
+	}
+	fmt.Fprintf(&b, "dirty: %t\n", view.Git.Dirty)
+	if view.Git.Status != "" {
+		b.WriteString("status:\n")
+		b.WriteString(view.Git.Status)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+
+	if len(view.Notes) > 0 {
+		b.WriteString("## Notes\n")
+		for _, note := range view.Notes {
+			fmt.Fprintf(&b, "- %s\n", note)
+		}
+	}
+	return b.String()
+}
+
+// FormatWorktreeInfoText renders the redacted single-worktree summary. Prompt
+// bodies are never included; only ordinals, digests, and identity. Use
+// FormatWorkLogViewText / wb worktree log when an agent needs the private
+// instruction text.
+func FormatWorktreeInfoText(view WorkLogView) string {
+	var b strings.Builder
+	b.WriteString("# WB worktree info\n\n")
+	b.WriteString("## Worktree\n")
+	b.WriteString(view.Worktree)
+	b.WriteString("\n\n")
+
+	if view.Manifest != nil {
+		b.WriteString("## Manifest\n")
+		fmt.Fprintf(&b, "effort_id: %s\n", view.Manifest.EffortID)
+		if view.Manifest.ParentEffort != "" {
+			fmt.Fprintf(&b, "parent_effort: %s\n", view.Manifest.ParentEffort)
+		}
+		fmt.Fprintf(&b, "effort_kind: %s\n", view.Manifest.EffortKind)
+		fmt.Fprintf(&b, "repository: %s\n", view.Manifest.Repository)
+		fmt.Fprintf(&b, "branch: %s\n", view.Manifest.Branch)
+		fmt.Fprintf(&b, "base: %s\n", view.Manifest.Base)
+		fmt.Fprintf(&b, "base_sha: %s\n", view.Manifest.BaseSHA)
+		fmt.Fprintf(&b, "provenance: %s\n", view.Manifest.Provenance)
+		if view.Manifest.RunID != "" {
+			fmt.Fprintf(&b, "run_id: %s\n", view.Manifest.RunID)
+		}
+		if view.Manifest.ClaimID != "" {
+			fmt.Fprintf(&b, "claim_id: %s\n", view.Manifest.ClaimID)
+		}
+		if view.Manifest.Model != "" {
+			fmt.Fprintf(&b, "model: %s\n", view.Manifest.Model)
+		}
+		b.WriteString("\n")
+	}
+
+	if view.Claim != nil {
+		b.WriteString("## Claim\n")
+		fmt.Fprintf(&b, "effort_id: %s\n", view.Claim.EffortID)
+		fmt.Fprintf(&b, "run_id: %s\n", view.Claim.RunID)
+		fmt.Fprintf(&b, "claim_id: %s\n", view.Claim.ClaimID)
+		fmt.Fprintf(&b, "lifecycle: %s\n", view.Claim.Lifecycle)
+		fmt.Fprintf(&b, "repository: %s\n", view.Claim.Repository)
+		fmt.Fprintf(&b, "branch: %s\n", view.Claim.Branch)
+		if view.Claim.Model != "" {
+			fmt.Fprintf(&b, "model: %s\n", view.Claim.Model)
+		}
+		if view.Claim.PromptDigest != "" {
+			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("## Prompt sequence\n")
+	if len(view.Prompts) == 0 {
+		b.WriteString("(none)\n\n")
+	} else {
+		for _, prompt := range view.Prompts {
+			fmt.Fprintf(&b, "- %s seq=%d source=%s sha256=%s\n", prompt.Name, prompt.Seq, prompt.Source, prompt.SHA256)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Prompt bodies are omitted. Use `wb worktree log` for the private agent dump.\n\n")
 
 	b.WriteString("## Git\n")
 	if view.Git.Branch != "" {
