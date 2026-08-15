@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/encode"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // Verification selects the built-in, non-arbitrary checks a hierarchical Go
@@ -1249,7 +1251,8 @@ func validateResumeWorktree(repo *campaignRepository) error {
 }
 
 type campaignLock struct {
-	path string
+	directory *os.File
+	lock      *worktrees.HeldOperationLock
 }
 
 func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
@@ -1258,31 +1261,77 @@ func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
 		return campaignLock{}, err
 	}
 	dir := filepath.Join(home, "worktrees", slug(migrationID))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	directory, err := worktrees.OpenOperationLockDirectory(dir)
+	if err != nil {
 		return campaignLock{}, err
 	}
-	path := filepath.Join(dir, ".lock")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	lock, err := worktrees.AcquireOperationLock(directory, true)
 	if err != nil {
-		if os.IsExist(err) {
-			return campaignLock{}, fmt.Errorf("migration campaign %q is already running or was interrupted: remove %s only after confirming no WB process is active", migrationID, path)
+		_ = directory.Close()
+		return campaignLock{}, campaignLockAcquisitionError(migrationID, err)
+	}
+	if lock.ReclaimedInterrupted() {
+		if !validCampaignLockMetadata(lock.File(), migrationID) {
+			lock.Preserve()
+			_ = directory.Close()
+			return campaignLock{}, fmt.Errorf("migration campaign %q has an ambiguous lock at %s", migrationID, filepath.Join(dir, ".lock"))
 		}
+		return campaignLock{directory: directory, lock: lock}, nil
+	}
+	file := lock.File()
+	if file == nil {
+		lock.Release()
+		_ = directory.Close()
+		return campaignLock{}, fmt.Errorf("initialize migration campaign %q lock: descriptor is unavailable", migrationID)
+	}
+	if err := file.Truncate(0); err != nil {
+		lock.Release()
+		_ = directory.Close()
+		return campaignLock{}, fmt.Errorf("initialize migration campaign %q lock: %w", migrationID, err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		lock.Release()
+		_ = directory.Close()
 		return campaignLock{}, err
 	}
 	if _, err := fmt.Fprintf(file, "migration=%s\npid=%d\n", migrationID, os.Getpid()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
+		lock.Release()
+		_ = directory.Close()
 		return campaignLock{}, err
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return campaignLock{}, err
-	}
-	return campaignLock{path: path}, nil
+	return campaignLock{directory: directory, lock: lock}, nil
 }
 
 func (l campaignLock) release() {
-	_ = os.Remove(l.path)
+	if l.lock != nil {
+		l.lock.Release()
+	}
+	if l.directory != nil {
+		_ = l.directory.Close()
+	}
+}
+
+func campaignLockAcquisitionError(migrationID string, err error) error {
+	if strings.Contains(err.Error(), "already active in another process") {
+		return fmt.Errorf("migration campaign %q is already active: %w", migrationID, err)
+	}
+	return fmt.Errorf("migration campaign %q has an ambiguous lock: %w", migrationID, err)
+}
+
+func validCampaignLockMetadata(file *os.File, migrationID string) bool {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return false
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(contents) > 4096 {
+		return false
+	}
+	lines := strings.Split(string(contents), "\n")
+	if len(lines) != 3 || lines[2] != "" || lines[0] != "migration="+migrationID {
+		return false
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(lines[1], "pid="))
+	return err == nil && pid > 0 && lines[1] == fmt.Sprintf("pid=%d", pid)
 }
 
 // CleanupCampaignWorktrees removes clean, dedicated worktrees for one

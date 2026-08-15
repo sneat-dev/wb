@@ -7,7 +7,147 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+func TestCampaignLockReclaimsUnambiguousRemnantAfterProcessDeath(t *testing.T) {
+	githubDir := setupCampaignLockTest(t)
+	const migrationID = "resume-after-death"
+	lockPath := campaignLockPath(t, githubDir, migrationID)
+	if err := os.WriteFile(lockPath, []byte("migration=resume-after-death\npid=999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the on-disk state after SIGKILL: the valid lock entry survives,
+	// but its kernel lock has gone with the dead process.
+	resumed, err := acquireCampaignLock(githubDir, migrationID)
+	if err != nil {
+		t.Fatalf("reclaim dead campaign lock: %v", err)
+	}
+	defer resumed.release()
+
+	if _, err := acquireCampaignLock(githubDir, migrationID); err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("reclaimed lock did not exclude a concurrent campaign: %v", err)
+	}
+}
+
+func TestCampaignLockRefusesLiveAndAmbiguousRemnants(t *testing.T) {
+	githubDir := setupCampaignLockTest(t)
+	const migrationID = "live-or-ambiguous"
+
+	live, err := acquireCampaignLock(githubDir, migrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireCampaignLock(githubDir, migrationID); err == nil || !strings.Contains(err.Error(), "already active") {
+		t.Fatalf("live campaign lock was reclaimed: %v", err)
+	}
+	live.release()
+
+	lockPath := campaignLockPath(t, githubDir, migrationID)
+	t.Cleanup(func() {
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove ambiguous test lock: %v", err)
+		}
+	})
+	if err := os.WriteFile(lockPath, []byte("migration=other\npid=999999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireCampaignLock(githubDir, migrationID); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous campaign lock was reclaimed: %v", err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("ambiguous lock was changed: %v", err)
+	}
+}
+
+func TestCampaignLockReleasePreservesLateReplacement(t *testing.T) {
+	githubDir := setupCampaignLockTest(t)
+	const migrationID = "release-replacement"
+	lockPath := campaignLockPath(t, githubDir, migrationID)
+	lock, err := acquireCampaignLock(githubDir, migrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := lockPath + ".original"
+	if err := os.Rename(lockPath, original); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(original) })
+	const replacement = "successor lock\n"
+	if err := os.WriteFile(lockPath, []byte(replacement), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lock.release()
+	contents, err := os.ReadFile(lockPath)
+	if err != nil || string(contents) != replacement {
+		t.Fatalf("late replacement was removed or changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func TestCampaignLockRefusesSymlinkAndHardLinkRemnants(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		link func(string, string) error
+	}{
+		{name: "symlink", link: os.Symlink},
+		{name: "hard-link", link: os.Link},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			githubDir := setupCampaignLockTest(t)
+			const migrationID = "linked-remnant"
+			lockPath := campaignLockPath(t, githubDir, migrationID)
+			target := filepath.Join(t.TempDir(), "target")
+			const contents = "migration=linked-remnant\npid=999999\n"
+			if err := os.WriteFile(target, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.link(target, lockPath); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := acquireCampaignLock(githubDir, migrationID); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+				t.Fatalf("linked remnant was reclaimed: %v", err)
+			}
+			if contentsAfter, err := os.ReadFile(target); err != nil || string(contentsAfter) != contents {
+				t.Fatalf("linked target was changed: contents=%q err=%v", contentsAfter, err)
+			}
+			info, err := os.Lstat(lockPath)
+			if err != nil {
+				t.Fatalf("linked remnant was removed: %v", err)
+			}
+			if test.name == "symlink" && info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("symlink remnant changed mode to %v", info.Mode())
+			}
+		})
+	}
+}
+
+func setupCampaignLockTest(t *testing.T) string {
+	t.Helper()
+	t.Setenv("WB_HOME", filepath.Join(t.TempDir(), "wb-home"))
+	return t.TempDir()
+}
+
+func campaignLockPath(t *testing.T, githubDir, migrationID string) string {
+	t.Helper()
+	home, err := wbhome.EnsureRoot(githubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(home, "worktrees", slug(migrationID))
+	secured, err := worktrees.OpenOperationLockDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := secured.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(directory, ".lock")
+}
 
 func TestRunRepositoriesParallelErrorsPreservesRepositoryOrder(t *testing.T) {
 	repositories := []*campaignRepository{

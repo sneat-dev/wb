@@ -58,8 +58,11 @@ before inspecting that evolving graph.
 #### REQ: campaign-lock
 
 An apply campaign MUST hold one exclusive migration lock below its dedicated
-worktree root for both planning and application. A concurrent or interrupted
-lock MUST cause a safe failure and MUST NOT be silently overwritten.
+worktree root for both planning and application. A live concurrent lock MUST
+cause a safe failure. An interrupted lock MAY be reclaimed only when its
+regular, single-link lock entry unambiguously identifies the same migration and
+the kernel confirms no process still holds it; every ambiguous remnant MUST
+remain locked and MUST NOT be silently overwritten.
 
 #### REQ: narrow-cleanup
 

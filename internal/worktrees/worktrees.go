@@ -2208,6 +2208,14 @@ func openAbsoluteDirectoryNoFollow(path string, create bool) (*os.File, error) {
 	return directory, nil
 }
 
+// OpenOperationLockDirectory opens a persistent operation directory without
+// following any ancestor symlink. Callers retain the descriptor and use it for
+// the whole lock lifetime, so a later pathname replacement cannot redirect a
+// release or reclaim operation.
+func OpenOperationLockDirectory(path string) (*os.File, error) {
+	return openAbsoluteDirectoryNoFollow(path, true)
+}
+
 // makeSecureStageDirectory claims a previously retired, empty WB stage before
 // creating a new one. Claiming is identity-bound and no-replace: an entry
 // merely named like a retirement is never removed or overwritten. Successful
@@ -2890,6 +2898,7 @@ type operationLock struct {
 	file          *os.File
 	identity      managedLockIdentity
 	beforeRelease func()
+	interrupted   bool
 }
 
 type managedLockIdentity struct {
@@ -2902,6 +2911,59 @@ type managedLockIdentity struct {
 // after the operation directory was opened.
 func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
 	return acquireLockAtReclaimingInterrupted(operationDirectory, false)
+}
+
+// HeldOperationLock is a descriptor-anchored operation lock for another WB
+// subsystem that needs the same no-follow, liveness, and successor-preserving
+// behavior as managed worktree operations.
+type HeldOperationLock struct {
+	lock *operationLock
+}
+
+// AcquireOperationLock acquires the `.lock` entry below directory. When
+// reclaimInterrupted is true, an unheld, single-link regular remnant is held
+// for the caller to validate before resuming. Call Preserve when validation
+// fails; it closes the descriptor without changing that ambiguous remnant.
+func AcquireOperationLock(directory *os.File, reclaimInterrupted bool) (*HeldOperationLock, error) {
+	lock, err := acquireLockAtReclaimingInterrupted(directory, reclaimInterrupted)
+	if err != nil {
+		return nil, err
+	}
+	return &HeldOperationLock{lock: &lock}, nil
+}
+
+// File returns the held lock descriptor. It remains owned by the lock.
+func (lock *HeldOperationLock) File() *os.File {
+	if lock == nil || lock.lock == nil {
+		return nil
+	}
+	return lock.lock.file
+}
+
+// ReclaimedInterrupted reports whether the lock was a lingering `.lock`
+// remnant rather than a fresh or properly retired entry.
+func (lock *HeldOperationLock) ReclaimedInterrupted() bool {
+	return lock != nil && lock.lock != nil && lock.lock.interrupted
+}
+
+// Release retires the exact held inode with a descriptor-relative no-replace
+// move. It cannot unlink a successor lock installed after acquisition.
+func (lock *HeldOperationLock) Release() {
+	if lock == nil || lock.lock == nil {
+		return
+	}
+	lock.lock.release()
+	lock.lock = nil
+}
+
+// Preserve leaves the currently named lock entry untouched. It is for a
+// caller that acquired an unheld remnant but could not prove ownership.
+func (lock *HeldOperationLock) Preserve() {
+	if lock == nil || lock.lock == nil {
+		return
+	}
+	_ = lock.lock.file.Close()
+	lock.lock = nil
 }
 
 // acquireLockAtReclaimingInterrupted separates the two conditions a lingering
@@ -2923,7 +2985,7 @@ func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 		return operationLock{}, err
 	}
 	if !reused {
-		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
 		if openErr != nil {
 			if errors.Is(openErr, unix.EEXIST) {
 				return reclaimInterruptedLock(operationDirectory, reclaimInterrupted)
@@ -2972,7 +3034,7 @@ func holdOperationLock(file *os.File) error {
 // refuses, so an operator can tell "another WB is running" from "a previous WB
 // died here" instead of reading one message that means either.
 func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool) (operationLock, error) {
-	fd, err := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDWR|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		// The entry vanished or is not a plain file WB may hold; stay closed.
 		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
@@ -2982,7 +3044,7 @@ func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool
 		_ = unix.Close(fd)
 		return operationLock{}, fmt.Errorf("wrap secure worktree operation lock")
 	}
-	identity, err := lockIdentity(file)
+	identity, err := exclusivelyOwnedLockIdentity(file)
 	if err != nil {
 		_ = file.Close()
 		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
@@ -3005,7 +3067,7 @@ func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool
 		_ = file.Close()
 		return operationLock{}, fmt.Errorf("secure worktree operation lock changed while being reclaimed")
 	}
-	return operationLock{directory: operationDirectory, file: file, identity: identity}, nil
+	return operationLock{directory: operationDirectory, file: file, identity: identity, interrupted: true}, nil
 }
 
 func claimRetiredLock(directory *os.File) (*os.File, bool, error) {
@@ -3118,7 +3180,7 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 	if err := renameNoReplace(int(directory.Fd()), fromName, int(directory.Fd()), toName); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDWR|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open moved operation lock %s: %w", toName, err)
 	}
