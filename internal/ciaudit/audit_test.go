@@ -159,6 +159,141 @@ jobs:
 	})
 }
 
+func TestAuditRecognizesOnlyEnforcedPlaywrightV8Coverage(t *testing.T) {
+	const manifest = `{
+  "scripts": {
+    "test:coverage": "pnpm run build && playwright test"
+  },
+  "devDependencies": {"@playwright/test": "1", "astro": "7"}
+}`
+	const workflow = `
+jobs:
+  landing:
+    steps:
+      - run: pnpm run test:coverage
+`
+	const positiveGate = `
+import { expect, test } from "@playwright/test";
+
+test("built landing runtime", async ({ page }) => {
+  await page.coverage.startJSCoverage({ reportAnonymousScripts: true });
+  await page.goto("/");
+  const entries = await page.coverage.stopJSCoverage();
+  const percentage = executableLineCoverage(entries);
+  expect(percentage).toBeGreaterThanOrEqual(90);
+});
+`
+
+	t.Run("invoked coverage script with positive executable-line gate", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", manifest)
+		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
+		write(t, root, "tests/e2e/runtime.spec.js", positiveGate)
+		write(t, root, ".github/workflows/ci.yml", workflow)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.HasFrontend || !report.FrontendCoverageThreshold || len(report.Findings) != 0 {
+			t.Fatalf("Playwright V8 coverage gate not recognized: %+v", report)
+		}
+	})
+
+	t.Run("coverage package script is not invoked", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", manifest)
+		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
+		write(t, root, "tests/e2e/runtime.spec.js", positiveGate)
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  landing:
+    steps:
+      - run: pnpm run build
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.FrontendCoverageThreshold || !hasFinding(report, "frontend-coverage-threshold") {
+			t.Fatalf("uninvoked package script accepted as a coverage gate: %+v", report)
+		}
+	})
+
+	t.Run("ordinary Playwright test", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", manifest)
+		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
+		write(t, root, "tests/e2e/runtime.spec.js", `
+import { expect, test } from "@playwright/test";
+test("landing", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("main")).toBeVisible();
+});
+`)
+		write(t, root, ".github/workflows/ci.yml", workflow)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.FrontendCoverageThreshold || !hasFinding(report, "frontend-coverage-threshold") {
+			t.Fatalf("ordinary Playwright E2E accepted as a coverage gate: %+v", report)
+		}
+	})
+
+	t.Run("zero threshold and diagnostic percentage", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", manifest)
+		write(t, root, "src/pages/index.astro", `<main>Surpriseless</main>`)
+		write(t, root, "tests/e2e/runtime.spec.js", `
+import { expect, test } from "@playwright/test";
+test("coverage diagnostic", async ({ page }) => {
+  await page.coverage.startJSCoverage();
+  const entries = await page.coverage.stopJSCoverage();
+  const percentage = executableLineCoverage(entries);
+  console.info("coverage threshold would be 90%", percentage);
+  expect(entries.length).toBeGreaterThanOrEqual(1);
+  expect(percentage).toBeGreaterThanOrEqual(0);
+});
+`)
+		write(t, root, ".github/workflows/ci.yml", workflow)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.FrontendCoverageThreshold || !hasFinding(report, "frontend-coverage-threshold") {
+			t.Fatalf("zero or diagnostic threshold accepted as a coverage gate: %+v", report)
+		}
+	})
+
+	t.Run("documentation example", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", manifest)
+		write(t, root, "README.md", positiveGate)
+		write(t, root, ".github/workflows/ci.yml", workflow)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.HasFrontend || report.FrontendCoverageThreshold || len(report.Findings) != 0 {
+			t.Fatalf("documentation-only Playwright example misclassified: %+v", report)
+		}
+	})
+}
+
+func hasFinding(report Report, code string) bool {
+	for _, finding := range report.Findings {
+		if finding.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func write(t *testing.T, root, name, content string) {
 	t.Helper()
 	path := filepath.Join(root, name)

@@ -37,18 +37,22 @@ type workflowFile struct {
 }
 
 var (
-	positiveGoThreshold = regexp.MustCompile(`(?mi)min_test_coverage_percent\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
-	positiveJSWorkflow  = regexp.MustCompile(`(?mi)(?:minimum-coverage|coverage-threshold)\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
-	jsConfigThreshold   = regexp.MustCompile(`(?mi)(?:coverageThreshold|thresholds)\s*[:=]`)
-	positiveC8Threshold = regexp.MustCompile(`(?mi)\bc8\b[^\n]*--check-coverage[^\n]*--(?:lines|statements|functions|branches)(?:=|\s+)(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
-	coverageScriptRun   = regexp.MustCompile(`(?mi)\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-z0-9:_-]*coverage[a-z0-9:_-]*\b`)
-	deployCommand       = regexp.MustCompile(`(?mi)(firebase(?:-tools[^\n]*)?\s+deploy|wrangler(?:-action|[^\n]*)?\s+deploy|gcloud\s+(?:run|app)\s+deploy|kubectl\s+apply|helm\s+(?:install|upgrade))`)
-	sourceBuildCommand  = regexp.MustCompile(`(?mi)(pnpm\s+(?:exec\s+nx\s+|run\s+)?build|npm\s+(?:run\s+)?build|yarn\s+build|\bnx\s+build|\bgo\s+build|\bcargo\s+build)`)
+	positiveGoThreshold         = regexp.MustCompile(`(?mi)min_test_coverage_percent\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
+	positiveJSWorkflow          = regexp.MustCompile(`(?mi)(?:minimum-coverage|coverage-threshold)\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
+	jsConfigThreshold           = regexp.MustCompile(`(?mi)(?:coverageThreshold|thresholds)\s*[:=]`)
+	positiveC8Threshold         = regexp.MustCompile(`(?mi)\bc8\b[^\n]*--check-coverage[^\n]*--(?:lines|statements|functions|branches)(?:=|\s+)(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
+	coverageScriptRun           = regexp.MustCompile(`(?mi)\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-z0-9:_-]*coverage[a-z0-9:_-]*\b`)
+	playwrightTestRun           = regexp.MustCompile(`(?mi)\b(?:(?:pnpm|npm|yarn)\s+(?:exec\s+)?|npx\s+)?playwright\s+test\b`)
+	playwrightV8Start           = regexp.MustCompile(`(?mi)\.\s*coverage\s*\.\s*startjscoverage\s*\(`)
+	playwrightV8Stop            = regexp.MustCompile(`(?mi)\.\s*coverage\s*\.\s*stopjscoverage\s*\(`)
+	positiveCoverageExpectFloor = regexp.MustCompile(`(?mis)\bexpect\s*\(\s*\b[a-z0-9_$]*(?:coverage|percentage|percent)[a-z0-9_$]*\b(?:\s*,.{0,500}?)?\)\s*\.\s*tobegreaterthanorequal\s*\(\s*(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])\s*\)`)
+	deployCommand               = regexp.MustCompile(`(?mi)(firebase(?:-tools[^\n]*)?\s+deploy|wrangler(?:-action|[^\n]*)?\s+deploy|gcloud\s+(?:run|app)\s+deploy|kubectl\s+apply|helm\s+(?:install|upgrade))`)
+	sourceBuildCommand          = regexp.MustCompile(`(?mi)(pnpm\s+(?:exec\s+nx\s+|run\s+)?build|npm\s+(?:run\s+)?build|yarn\s+build|\bnx\s+build|\bgo\s+build|\bcargo\s+build)`)
 )
 
 func Audit(root string) (Report, error) {
 	report := Report{Path: root}
-	workflows, configText, packageCoverageScripts, err := scan(root, &report)
+	workflows, configText, packageCoverageScripts, playwrightV8Gate, err := scan(root, &report)
 	if err != nil {
 		return Report{}, err
 	}
@@ -62,7 +66,8 @@ func Audit(root string) (Report, error) {
 	report.GoCoverageThreshold = positiveGoThreshold.MatchString(workflowText) || hasGoCoverageComparison(workflowText)
 	report.FrontendCoverageThreshold = report.HasFrontend && (positiveJSWorkflow.MatchString(workflowText) ||
 		jsConfigThreshold.MatchString(configText) ||
-		hasPositiveC8Coverage(workflowText, packageCoverageScripts))
+		hasPositiveC8Coverage(workflowText, packageCoverageScripts) ||
+		hasPositivePlaywrightV8Coverage(workflowText, packageCoverageScripts, playwrightV8Gate))
 	pathScoped := strings.Contains(workflowText, "git diff --name-only") ||
 		strings.Contains(workflowText, "paths-filter") || strings.Contains(workflowText, "nx affected")
 
@@ -147,10 +152,11 @@ func Audit(root string) (Report, error) {
 	return report, nil
 }
 
-func scan(root string, report *Report) ([]workflowFile, string, string, error) {
+func scan(root string, report *Report) ([]workflowFile, string, string, bool, error) {
 	var workflows []workflowFile
 	var config strings.Builder
 	var packageCoverageScripts strings.Builder
+	playwrightV8Gate := false
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -201,6 +207,14 @@ func scan(root string, report *Report) ([]workflowFile, string, string, error) {
 			}
 			config.Write(data)
 			config.WriteByte('\n')
+		case isPlaywrightTestSource(rel, lower):
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if hasPositivePlaywrightV8GateSource(string(data)) {
+				playwrightV8Gate = true
+			}
 		}
 		if strings.HasPrefix(filepath.ToSlash(rel), ".github/workflows/") && (strings.HasSuffix(lower, ".yml") || strings.HasSuffix(lower, ".yaml")) {
 			data, err := os.ReadFile(path)
@@ -213,7 +227,7 @@ func scan(root string, report *Report) ([]workflowFile, string, string, error) {
 		}
 		return nil
 	})
-	return workflows, config.String(), packageCoverageScripts.String(), err
+	return workflows, config.String(), packageCoverageScripts.String(), playwrightV8Gate, err
 }
 
 func hasPositiveC8Coverage(workflowText, packageCoverageScripts string) bool {
@@ -221,6 +235,37 @@ func hasPositiveC8Coverage(workflowText, packageCoverageScripts string) bool {
 		return true
 	}
 	return positiveC8Threshold.MatchString(packageCoverageScripts) && coverageScriptRun.MatchString(workflowText)
+}
+
+func hasPositivePlaywrightV8Coverage(workflowText, packageCoverageScripts string, sourceGate bool) bool {
+	if !sourceGate {
+		return false
+	}
+	return playwrightTestRun.MatchString(workflowText) ||
+		(playwrightTestRun.MatchString(packageCoverageScripts) && coverageScriptRun.MatchString(workflowText))
+}
+
+func hasPositivePlaywrightV8GateSource(content string) bool {
+	return playwrightV8Start.MatchString(content) &&
+		playwrightV8Stop.MatchString(content) &&
+		positiveCoverageExpectFloor.MatchString(content)
+}
+
+func isPlaywrightTestSource(rel, lowerName string) bool {
+	switch filepath.Ext(lowerName) {
+	case ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts":
+	default:
+		return false
+	}
+
+	path := "/" + strings.ToLower(filepath.ToSlash(rel))
+	if strings.Contains(path, "/docs/") || strings.Contains(path, "/documentation/") {
+		return false
+	}
+	return strings.Contains(path, "/test/") ||
+		strings.Contains(path, "/tests/") ||
+		strings.Contains(lowerName, ".spec.") ||
+		strings.Contains(lowerName, ".test.")
 }
 
 func ignoredDirectory(name string) bool {
