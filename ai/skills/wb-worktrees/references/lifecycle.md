@@ -7,6 +7,8 @@ For one named task/effort across every live worktree:
 ```sh
 wb worktree summary <task>
 wb worktree summary <task> --github
+wb worktree summary fair-split
+wb worktree summary fair-split --github
 wb worktree summary fair-split --format json
 ```
 
