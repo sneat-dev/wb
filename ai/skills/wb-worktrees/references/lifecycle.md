@@ -165,8 +165,10 @@ normal terminal state is zero cleanup backlog, not apparently-finished branches.
 Portable merger-agent adapters, plan-overlap and migration-scope detection,
 hourly/target-change refresh notification, distributed Synchestra fencing, and
 Git-repository communication fallback are planned. So are the full `worktree
-log` init/show/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive
+log` init/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive
 group and authorized encrypted private-prompt export. The current WB CLI does
-not implement or advertise commands for them. Its private local outbox is
-durable recovery evidence during server downtime; it is not an inter-agent Git
-transport.
+not implement or advertise those mutating coordination verbs.
+`wb worktree log` is the shipped read-only agent bootstrap dump of the
+local journal and original prompt. Later mutating verbs under this command
+remain planned. Its private local outbox is durable recovery evidence during
+server downtime; it is not an inter-agent Git transport.

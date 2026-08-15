@@ -56,6 +56,16 @@ wb --projects-root <root> worktree create <task> \
 
 Use the exact paths WB prints. Do not reconstruct or relocate them.
 
+After create (or when a successor agent takes over), dump the private journal
+so the agent has the exact original prompt and claim identity:
+
+```sh
+wb worktree log <printed-worktree-path>
+wb --projects-root <root> worktree log <printed-worktree-path> --format json
+```
+
+That output is local private recovery context. Do not commit it or publish it.
+
 One command covering multiple repositories is one Run. WB writes a separate
 immutable claim for each repository below
 `<WB_HOME>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`; claim IDs are

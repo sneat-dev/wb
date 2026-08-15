@@ -441,13 +441,25 @@
       "notes": "Live inventory remains intentionally narrow; cleanup/abort separately join durable post-removal backlog records for exact retry."
     },
     {
+      "id": "wb.worktree.log",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree log", "flags": ["--format"], "modes": ["Read-only agent bootstrap dump of manifest, claim identity, exact original prompt, ordered prompt bodies, and live Git evidence for one worktree."]}], "limitation": "Bare log dumps private local prompt bodies for agent resume. Mutating log verbs (init/steer/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive) and a redacted public show mode are not implemented."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree log --help", "contains": ["original prompt", "private local", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/SKILL.md", "marker": "# WB worktrees", "examples": ["wb worktree log ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worklog_view_test.go", "name": "TestLoadWorkLogViewIncludesInitialPromptAndClaim", "kind": "integration"}, {"path": "internal/worktrees/worklog_view_test.go", "name": "TestLoadWorkLogViewFallsBackToArchiveWhenJournalPromptsMissing", "kind": "integration"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Prompt bodies are emitted deliberately for local agent bootstrap and must not enter source Git, public reports, or Synchestra envelopes. Aliases: worklog, work-log."
+    },
+    {
       "id": "wb.worktree.log-journal",
       "feature_refs": ["spec/features/work-log/README.md", "spec/plans/work-log-recovery.md"],
       "since": null,
       "surfaces": {
-        "runtime": {"status": "Planned", "commands": [], "limitation": "Create/cleanup/abort/recycle implement a narrow immutable-claim and terminal recovery slice, but the approved log init/show/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive command group, append-only progress journal, usage model, and seven-day history are not implemented."},
-        "help": {"status": "Planned", "anchors": [], "limitation": "No wb worktree log command is advertised."},
-        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills describe only shipped lifecycle verbs and do not give examples for the planned log command group."},
+        "runtime": {"status": "Planned", "commands": [], "limitation": "Create/cleanup/abort/recycle implement a narrow immutable-claim and terminal recovery slice, and wb worktree log dumps the local journal for agents, but the approved log init/steer/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive command group, append-only progress journal, usage model, and seven-day history are not implemented."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "Bare wb worktree log is the shipped agent dump; the broader mutating log command group is not advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills describe shipped lifecycle verbs plus log dump and do not give examples for the planned mutating log command group."},
         "tests": {"status": "Planned", "references": [], "limitation": "No complete checkpoint/recover/refresh/sync/archive journey test exists."}
       },
       "notes": "This row prevents the current Hybrid Work Log vertical slice from being mistaken for the full approved Work Log feature."

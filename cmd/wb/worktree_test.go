@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -398,6 +399,49 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	newWorktree := filepath.Join(home, "worktrees", "cli-new", "acme", "app")
 	if info, statErr := os.Stat(newWorktree); statErr != nil || !info.IsDir() {
 		t.Fatalf("renamed worktree missing at %s: %v", newWorktree, statErr)
+	}
+}
+
+func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "agent needs the original request")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-worklog", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-worklog", "acme", "app")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("log failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{
+		"# WB work log",
+		"## Original prompt",
+		"agent needs the original request",
+		"## Claim",
+		"cli-worklog",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("log text missing %q; stdout=%s stderr=%s", want, stdout.String(), stderr.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "worklog", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worklog alias json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("log json: %v\n%s", err, stdout.String())
+	}
+	original, ok := document["original_prompt"].(map[string]any)
+	if !ok || !strings.Contains(fmt.Sprint(original["body"]), "agent needs the original request") {
+		t.Fatalf("json original_prompt = %#v", document["original_prompt"])
 	}
 }
 

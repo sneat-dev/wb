@@ -30,8 +30,58 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeAbortCmd())
 	command.AddCommand(newWorktreeCorrectIdentityCmd())
 	command.AddCommand(newWorktreeSetCmd())
+	command.AddCommand(newWorktreeWorkLogCmd())
 	command.AddCommand(newWorktreeOrphansCmd())
 	command.AddCommand(newWorktreeBackfillCmd())
+	return command
+}
+
+func newWorktreeWorkLogCmd() *cobra.Command {
+	var format string
+	command := &cobra.Command{
+		Use:     "log [worktree-path]",
+		Aliases: []string{"worklog", "work-log"},
+		Short:   "Dump the initial prompt and local work log for an AI agent",
+		Long: `Print the private local journal an agent needs to resume a worktree.
+
+This is the agent bootstrap surface: it includes the exact original prompt and
+every later steering instruction from .wb/local/prompts/, plus claim identity
+and live Git evidence. Prompt bodies are private local data and are emitted
+deliberately here so a successor agent can continue the work. Do not pipe this
+output into source Git, public reports, or Synchestra envelopes.
+
+Default text is markdown shaped for an agent context window. --format json
+emits the same payload as one JSON document on stdout.
+
+Later mutating verbs (init/steer/checkpoint/...) may grow under this command;
+today bare 'wb worktree log' is the read-only dump.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			view, err := worktrees.LoadWorkLogView(command.Context(), worktrees.LoadWorkLogOptions{
+				ProjectsRoot:        projectsRoot,
+				Worktree:            path,
+				IncludePromptBodies: true,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(view)
+			}
+			_, err = io.WriteString(command.OutOrStdout(), worktrees.FormatWorkLogViewText(view))
+			return err
+		},
+	}
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
