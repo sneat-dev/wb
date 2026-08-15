@@ -107,6 +107,58 @@ jobs:
 	t.Fatalf("duplicate E2E finding missing: %+v", report.Findings)
 }
 
+func TestAuditRecognizesAstroRuntimeCoverageWithoutClassifyingManifestOnlyDocsAsFrontend(t *testing.T) {
+	t.Run("Astro source with CI-invoked c8 coverage", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{
+  "scripts": {
+    "coverage": "c8 --check-coverage --lines 85 --functions 85 node --test"
+  },
+  "devDependencies": {"astro": "7", "c8": "12"}
+}`)
+		write(t, root, "src/components/Header.astro", `<header>Shared header</header>`)
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  check:
+    steps:
+      - run: pnpm coverage
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.HasFrontend || !report.FrontendCoverageThreshold || len(report.Findings) != 0 {
+			t.Fatalf("Astro runtime CI policy not recognized: %+v", report)
+		}
+	})
+
+	t.Run("manifest-only documentation", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{
+  "scripts": {
+    "coverage": "c8 --check-coverage --lines 85 node --test"
+  },
+  "devDependencies": {"astro": "7", "c8": "12"}
+}`)
+		write(t, root, "README.md", "Astro package installation notes only.\n")
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  docs:
+    steps:
+      - run: pnpm coverage
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.HasFrontend || report.FrontendCoverageThreshold || len(report.Findings) != 0 {
+			t.Fatalf("manifest-only documentation misclassified: %+v", report)
+		}
+	})
+}
+
 func write(t *testing.T, root, name, content string) {
 	t.Helper()
 	path := filepath.Join(root, name)
