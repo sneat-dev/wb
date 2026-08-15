@@ -1,0 +1,260 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Terminal from '../components/Terminal.astro';
+---
+
+<BaseLayout
+  title="Why WB — A workbench for fleets and agents"
+  description="WB is a local control plane for multi-repo work: managed worktrees, fleet operations, and recoverable agent intent. Adjacent tools cover pieces. This is the combination."
+  path="/why/"
+>
+  <section class="page-hero why-hero">
+    <div class="container why-hero-inner" data-reveal>
+      <p class="eyebrow">Why WB exists</p>
+      <h1>Not another sync script.</h1>
+      <p class="lead">
+        Git is excellent one repository at a time. Agent harnesses are excellent
+        one session at a time. Monorepo tools are excellent inside one workspace.
+        <strong>WB is for the messy middle</strong> — many clones, coordinated
+        change, and work that has to survive an interrupted agent.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="/#install">Install WB</a>
+        <a class="btn btn-secondary" href="/skills/">AI skills</a>
+      </div>
+      <p class="why-claim">
+        Bold claim, said carefully: we have not seen this combination shipped as
+        one local, open-source tool. If you have, we want to know.
+      </p>
+    </div>
+  </section>
+
+  <section class="section section-alt">
+    <div class="container why-essay">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">The gap</p>
+        <h2>People already invent WB. Badly.</h2>
+        <p>
+          A shell loop for sync. A personal worktree convention. A sticky note
+          with the original prompt. A spreadsheet of open PRs. A script that
+          almost safely cleans merged branches — until it doesn’t.
+        </p>
+      </header>
+
+      <div class="why-gap-grid">
+        <article data-reveal>
+          <h3>Git worktrees</h3>
+          <p>
+            Isolation without a fleet model. No shared task identity across
+            repositories. No private journal of who asked for the work.
+          </p>
+        </article>
+        <article data-reveal>
+          <h3>Monorepo tooling</h3>
+          <p>
+            Powerful when the product lives in one graph. Quiet when your company
+            is thirty GitHub repositories and a release wave.
+          </p>
+        </article>
+        <article data-reveal>
+          <h3>Agent harnesses</h3>
+          <p>
+            Great at running a model. Weak at durable local claims: clean
+            <code>main</code>, recoverable prompts, and honest cleanup after
+            the session ends.
+          </p>
+        </article>
+        <article data-reveal>
+          <h3>Sync utilities</h3>
+          <p>
+            Clone and pull at scale. Stop before guarded worktrees, dependency
+            campaigns, CI audit, or agent-safe lifecycle.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container why-essay">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">What WB joins</p>
+        <h2>Four jobs. One local control plane.</h2>
+        <p>
+          Each piece exists somewhere else. The product is that they share one
+          layout, one safety contract, and one place an agent can trust.
+        </p>
+      </header>
+
+      <ol class="why-pillars">
+        <li data-reveal>
+          <span class="why-pillar-index">01</span>
+          <div>
+            <h3>Fleet layout</h3>
+            <p>
+              Canonical clones stay clean and available. Feature work lives in
+              managed worktrees under a stable home — not scattered checkouts
+              that quietly become the new <code>main</code>.
+            </p>
+          </div>
+        </li>
+        <li data-reveal>
+          <span class="why-pillar-index">02</span>
+          <div>
+            <h3>Coordinated change</h3>
+            <p>
+              One task can span repositories. Create, guard, summarize, clean up,
+              rename, or abort with the same task identity — and refuse the
+              unsafe path instead of improvising.
+            </p>
+          </div>
+        </li>
+        <li data-reveal>
+          <span class="why-pillar-index">03</span>
+          <div>
+            <h3>Recoverable intent</h3>
+            <p>
+              The original prompt and later steering are private local evidence.
+              A successor agent can resume with <code>wb worktree log</code>.
+              A human can inspect without leaking bodies via
+              <code>wb worktree info</code>.
+            </p>
+          </div>
+        </li>
+        <li data-reveal>
+          <span class="why-pillar-index">04</span>
+          <div>
+            <h3>Propagation ops</h3>
+            <p>
+              Dependency waves, migrations, hooks, CI audits, and fleet verify —
+              the unglamorous work that keeps many repos from drifting apart.
+            </p>
+          </div>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="section section-alt">
+    <div class="container why-split">
+      <div class="why-split-copy" data-reveal>
+        <p class="eyebrow">Humble about neighbors</p>
+        <h2>Adjacent tools. Different job.</h2>
+        <p>
+          WB is not trying to replace Git, Nx, Cursor, or GitHub. It sits beside
+          them as the local workbench that keeps multi-repo agent work from
+          becoming landfill.
+        </p>
+      </div>
+      <div class="why-compare" data-reveal aria-label="How WB relates to adjacent tools">
+        <div class="why-compare-row">
+          <span>git worktree</span>
+          <span>isolation</span>
+          <span>WB adds fleet + journal</span>
+        </div>
+        <div class="why-compare-row">
+          <span>Nx / Bazel</span>
+          <span>one workspace graph</span>
+          <span>WB spans many clones</span>
+        </div>
+        <div class="why-compare-row">
+          <span>Cursor / Codex</span>
+          <span>run the agent</span>
+          <span>WB owns the checkout lifecycle</span>
+        </div>
+        <div class="why-compare-row">
+          <span>gh / myrepos</span>
+          <span>sync &amp; API</span>
+          <span>WB keeps going after clone</span>
+        </div>
+        <div class="why-compare-row">
+          <span>Graphite / queues</span>
+          <span>PR policy</span>
+          <span>WB is local-first evidence</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container">
+      <header class="section-head center" data-reveal>
+        <p class="eyebrow">Fit</p>
+        <h2>Useful every day. Not for everyone.</h2>
+      </header>
+      <div class="why-fit-grid">
+        <article class="why-fit why-fit-yes" data-reveal>
+          <p class="why-fit-label">Built for</p>
+          <ul>
+            <li>Many private or public repositories</li>
+            <li>Cross-repo changes and shared libraries</li>
+            <li>AI agents that must leave recoverable work</li>
+            <li>Teams who treat dirty <code>main</code> as expensive</li>
+          </ul>
+        </article>
+        <article class="why-fit why-fit-no" data-reveal>
+          <p class="why-fit-label">Probably overkill</p>
+          <ul>
+            <li>A single application repository</li>
+            <li>No agent workflows and rare fleet change</li>
+            <li>A monorepo that already is the product</li>
+            <li>Wanting a hosted dashboard more than a CLI</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt why-demo">
+    <div class="container why-demo-grid">
+      <div data-reveal>
+        <p class="eyebrow">What “different” looks like</p>
+        <h2>A task you can explain later.</h2>
+        <p class="lead">
+          Create isolated work across repositories, keep the prompt, inspect
+          without leaking it, and summarize the whole effort when you come back.
+        </p>
+      </div>
+      <div data-reveal>
+        <Terminal
+          label="why the journal matters"
+          status="local only"
+          lines={[
+            { kind: 'command', html: 'wb worktree create bots-e2e sneat-co/sneat-bots sneat-co/sneat-go \\' },
+            { kind: 'command', html: '  --model unknown --original-prompt-file ./prompt.txt' },
+            { kind: 'success', html: '✓ two worktrees · one task · private claim written' },
+            { kind: 'blank', html: '' },
+            { kind: 'command', html: 'wb worktree summary bots-e2e' },
+            { kind: 'output', html: '2 worktrees · branches live · both clean' },
+            { kind: 'command', html: 'wb worktree info .' },
+            { kind: 'muted', html: 'identity + digests · prompt bodies omitted' },
+            { kind: 'command', html: 'wb worktree log .' },
+            { kind: 'accent', html: 'exact original prompt for the next agent' },
+          ]}
+        />
+      </div>
+    </div>
+  </section>
+
+  <section class="section install-section" id="next">
+    <div class="container install-grid">
+      <div class="install-copy" data-reveal>
+        <p class="eyebrow">Still a workbench</p>
+        <h2>Try it where the pain already is.</h2>
+        <p>
+          If your day is already multi-repo and agent-shaped, WB is less a new
+          ideology than a cleaner version of the scripts you already trust too much.
+        </p>
+      </div>
+      <div class="install-options" data-reveal>
+        <a class="btn btn-primary" href="/#install">Install WB <span aria-hidden="true">→</span></a>
+        <a class="btn btn-secondary" href="/skills/">Give an agent the skills</a>
+        <a class="btn btn-secondary" href="https://github.com/sneat-dev/wb">Read the source ↗</a>
+        <p class="install-note">
+          Questions, corrections, or a tool we should credit — open an issue on
+          <a href="https://github.com/sneat-dev/wb/issues">GitHub</a>.
+        </p>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
