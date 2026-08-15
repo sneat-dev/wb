@@ -28,7 +28,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		return BumpReport{}, err
 	}
 	if !lifecycle.DryRun {
-		lock, lockErr := orchestrate.AcquireOperationLock(lifecycle.GitHubDir, lifecycle.Operation)
+		lock, lockErr := orchestrate.AcquireOperationLock(lifecycle.GitHubDir, lifecycle.Operation, lifecycle.Resume)
 		if lockErr != nil {
 			return BumpReport{}, lockErr
 		}

@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestBumpOperationIDIsIndependentOfEventOrder(t *testing.T) {
@@ -427,6 +429,68 @@ func TestRunBumpResumesPersistedReleaseBaseline(t *testing.T) {
 	if report.Status != "completed" || report.Waves[0].Status != "completed" || report.Waves[0].Releases[0].After != "v0.5.0" {
 		t.Fatalf("report = %+v", report)
 	}
+}
+
+func TestRunBumpResumesAbandonedRootOperationLock(t *testing.T) {
+	// The lock has the exact legacy bytes left after a process dies. RunBump
+	// must forward Resume to the root operation lock before it touches the
+	// persisted campaign report or starts any wave.
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	githubDir := t.TempDir()
+	seed := []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}
+	operation := BumpOperationID(seed)
+	home, err := wbhome.EnsureRoot(githubDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, err := worktrees.OpenOperationLockDirectory(filepath.Join(home, "worktrees", operation))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := directory.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "worktrees", operation, ".lock"), []byte(fmt.Sprintf("operation=%s\npid=%d\n", operation, killedBumpProcessPID(t))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := BumpReport{
+		SchemaVersion: 1, Operation: operation, Status: "awaiting_release",
+		Ecosystem: EcosystemGo, SeedEvents: seed, BaseRef: "main",
+		Waves: []BumpWaveReport{{
+			Index: 1, Status: "awaiting_release", Events: seed,
+			Releases: []ReleaseObservation{{
+				Module: "example.com/adapter", Repository: "acme/adapter", Before: "v0.4.0",
+				Source: "go list -m example.com/adapter@latest", Status: "awaiting_release",
+			}},
+		}},
+	}
+	report, err := RunBump(context.Background(), seed, nil, BumpOptions{
+		Options:  Options{GitHubDir: githubDir, Ref: "main", Resume: true, Timeout: time.Second},
+		Previous: &previous, PollInterval: time.Millisecond,
+		LatestGoVersion: func(context.Context, string) (string, error) { return "v0.5.0", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "completed" || report.Waves[0].Releases[0].After != "v0.5.0" {
+		t.Fatalf("report = %+v", report)
+	}
+}
+
+func killedBumpProcessPID(t *testing.T) int {
+	t.Helper()
+	process := exec.Command("sh", "-c", "sleep 60")
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := process.Process.Pid
+	if err := process.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err == nil {
+		t.Fatal("killed child unexpectedly exited without a signal")
+	}
+	return pid
 }
 
 func TestRunBumpAllowsFixpointScanAfterMaxMutationWave(t *testing.T) {
