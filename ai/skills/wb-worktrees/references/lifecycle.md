@@ -2,7 +2,32 @@
 
 ## Inspect
 
-Use the offline default for a fast view of every WB-managed worktree:
+For one named task/effort across every live worktree:
+
+```sh
+wb worktree summary <task>
+wb worktree summary <task> --github
+wb worktree summary fair-split
+wb worktree summary fair-split --github
+wb worktree summary fair-split --format json
+```
+
+That overview lists each repository's path, branch, short head, clean/dirty/
+locked state, and origin-target integration. Pass `--github` when open or
+merged pull-request evidence matters.
+
+For one checkout, start with the redacted summary (no prompt bodies):
+
+```sh
+wb worktree info .
+wb worktree info . --format json
+```
+
+Use `wb worktree log .` only when an agent needs the exact original prompt and
+steering bodies. That dump is private local recovery context.
+
+For fleet inventory, use the offline default for a fast view of every
+WB-managed worktree:
 
 ```sh
 wb worktree list
@@ -165,8 +190,11 @@ normal terminal state is zero cleanup backlog, not apparently-finished branches.
 Portable merger-agent adapters, plan-overlap and migration-scope detection,
 hourly/target-change refresh notification, distributed Synchestra fencing, and
 Git-repository communication fallback are planned. So are the full `worktree
-log` init/show/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive
+log` init/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive
 group and authorized encrypted private-prompt export. The current WB CLI does
-not implement or advertise commands for them. Its private local outbox is
-durable recovery evidence during server downtime; it is not an inter-agent Git
-transport.
+not implement or advertise those mutating coordination verbs.
+`wb worktree info` is the safe redacted inspect surface (identity, digests,
+Git state). `wb worktree log` is the shipped read-only agent bootstrap dump of
+the local journal and original prompt. Later mutating verbs under `log` remain
+planned. Its private local outbox is durable recovery evidence during
+server downtime; it is not an inter-agent Git transport.

@@ -429,6 +429,18 @@
       "notes": "A passing canonical clone remains read-only for feature work; a passing linked checkout is the writable surface."
     },
     {
+      "id": "wb.worktree.info",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree info", "flags": ["--format"], "modes": ["Read-only redacted summary of manifest, claim identity, prompt ordinals/digests, and live Git evidence for one worktree."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree info --help", "contains": ["redacted", "wb worktree log", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/SKILL.md", "marker": "# WB worktrees", "examples": ["wb worktree info ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worklog_view_test.go", "name": "TestLoadWorkLogViewWithoutBodiesKeepsHeadersOnly", "kind": "unit"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeInfoCLIRedactsPromptBodies", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Safe default inspect surface. Prompt bodies are never included; use wb worktree log for the private agent dump."
+    },
+    {
       "id": "wb.worktree.list",
       "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
       "since": "unreleased",
@@ -441,13 +453,25 @@
       "notes": "Live inventory remains intentionally narrow; cleanup/abort separately join durable post-removal backlog records for exact retry."
     },
     {
+      "id": "wb.worktree.log",
+      "feature_refs": ["spec/features/work-log/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Partial", "commands": [{"path": "wb worktree log", "flags": ["--format"], "modes": ["Read-only agent bootstrap dump of manifest, claim identity, exact original prompt, ordered prompt bodies, and live Git evidence for one worktree."]}], "limitation": "Bare log dumps private local prompt bodies for agent resume. Mutating log verbs (init/steer/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive) and a redacted public show mode are not implemented."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree log --help", "contains": ["original prompt", "private local", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/SKILL.md", "marker": "# WB worktrees", "examples": ["wb worktree log ."]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/worktrees/worklog_view_test.go", "name": "TestLoadWorkLogViewIncludesInitialPromptAndClaim", "kind": "integration"}, {"path": "internal/worktrees/worklog_view_test.go", "name": "TestLoadWorkLogViewFallsBackToArchiveWhenJournalPromptsMissing", "kind": "integration"}, {"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Prompt bodies are emitted deliberately for local agent bootstrap and must not enter source Git, public reports, or Synchestra envelopes. Aliases: worklog, work-log."
+    },
+    {
       "id": "wb.worktree.log-journal",
       "feature_refs": ["spec/features/work-log/README.md", "spec/plans/work-log-recovery.md"],
       "since": null,
       "surfaces": {
-        "runtime": {"status": "Planned", "commands": [], "limitation": "Create/cleanup/abort/recycle implement a narrow immutable-claim and terminal recovery slice, but the approved log init/show/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive command group, append-only progress journal, usage model, and seven-day history are not implemented."},
-        "help": {"status": "Planned", "anchors": [], "limitation": "No wb worktree log command is advertised."},
-        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills describe only shipped lifecycle verbs and do not give examples for the planned log command group."},
+        "runtime": {"status": "Planned", "commands": [], "limitation": "Create/cleanup/abort/recycle implement a narrow immutable-claim and terminal recovery slice, and wb worktree log dumps the local journal for agents, but the approved log init/steer/checkpoint/refresh/integrate/handoff/recover/finalize/sync/archive command group, append-only progress journal, usage model, and seven-day history are not implemented."},
+        "help": {"status": "Planned", "anchors": [], "limitation": "Bare wb worktree log is the shipped agent dump; the broader mutating log command group is not advertised."},
+        "ai_skill": {"status": "Planned", "skills": [], "limitation": "Skills describe shipped lifecycle verbs plus log dump and do not give examples for the planned mutating log command group."},
         "tests": {"status": "Planned", "references": [], "limitation": "No complete checkpoint/recover/refresh/sync/archive journey test exists."}
       },
       "notes": "This row prevents the current Hybrid Work Log vertical slice from being mistaken for the full approved Work Log feature."
@@ -499,6 +523,18 @@
         "tests": {"status": "Full", "references": [{"path": "internal/worktrees/journal_test.go", "name": "TestReconstructionMakesTheNamedRemedySufficient", "kind": "unit"}, {"path": "internal/worktrees/journal_test.go", "name": "TestPromptSourceIsRecordedNeverInferred", "kind": "unit"}], "limitation": null}
       },
       "notes": "This is the remedy the admission gate names. It records rather than bypasses, so unblocking a commit is itself the record of who directed it."
+    },
+    {
+      "id": "wb.worktree.summary",
+      "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree summary", "flags": ["--base", "--format", "--github"], "modes": ["Requires one task name and prints a brief overview of every live worktree: path, branch, short head, clean/dirty/locked state, and origin-target integration", "Optional --github attaches open or merged pull-request evidence"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree summary --help", "contains": ["Summarize one WB task", "--github", "task"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Inspect", "examples": ["wb worktree summary fair-split", "wb worktree summary fair-split --github"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeSummaryCLIRequiresTaskAndPrintsBriefOverview", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Task-scoped brief overview of live linked checkouts only; archived Work Log history is not joined. Contrasts with list (flat inventory, optional task) and info/log (single-checkout journal views)."
     }
   ]
 }

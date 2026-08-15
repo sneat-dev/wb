@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -398,6 +399,155 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	newWorktree := filepath.Join(home, "worktrees", "cli-new", "acme", "app")
 	if info, statErr := os.Stat(newWorktree); statErr != nil || !info.IsDir() {
 		t.Fatalf("renamed worktree missing at %s: %v", newWorktree, statErr)
+	}
+}
+
+func TestWorktreeSummaryCLIRequiresTaskAndPrintsBriefOverview(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "summarize this coordinated task")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "summary"}, &stdout, &stderr); code == exitOK {
+		t.Fatalf("summary without task should fail; stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-summary", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "summary", "cli-summary"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("summary failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"# WB worktree summary: cli-summary",
+		"1 worktree(s)",
+		"## acme/app",
+		"worktree:",
+		"branch:",
+		"state:",
+		"target:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary missing %q; stdout=%s stderr=%s", want, out, stderr.String())
+		}
+	}
+	if strings.Contains(out, "pr:") {
+		t.Fatalf("local summary should omit pr lines without --github; stdout=%s", out)
+	}
+	if strings.Contains(out, "summarize this coordinated task") {
+		t.Fatalf("summary leaked prompt body; stdout=%s", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "summary", "cli-summary", "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("summary json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("summary json: %v\n%s", err, stdout.String())
+	}
+	results, ok := document["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("summary json results = %#v", document["results"])
+	}
+}
+
+func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "private original request must stay hidden")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-info", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-info", "acme", "app")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("info failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"# WB worktree info",
+		"## Claim",
+		"cli-info",
+		"wb worktree log",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("info text missing %q; stdout=%s stderr=%s", want, out, stderr.String())
+		}
+	}
+	if strings.Contains(out, "private original request must stay hidden") {
+		t.Fatalf("info leaked prompt body; stdout=%s", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("info json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "private original request must stay hidden") {
+		t.Fatalf("info json leaked prompt body; stdout=%s", stdout.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("info json: %v\n%s", err, stdout.String())
+	}
+	if document["original_prompt"] != nil {
+		t.Fatalf("redacted json still has original_prompt: %#v", document["original_prompt"])
+	}
+}
+
+func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "agent needs the original request")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-worklog", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-worklog", "acme", "app")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("log failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	for _, want := range []string{
+		"# WB work log",
+		"## Original prompt",
+		"agent needs the original request",
+		"## Claim",
+		"cli-worklog",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("log text missing %q; stdout=%s stderr=%s", want, stdout.String(), stderr.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "worklog", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worklog alias json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("log json: %v\n%s", err, stdout.String())
+	}
+	original, ok := document["original_prompt"].(map[string]any)
+	if !ok || !strings.Contains(fmt.Sprint(original["body"]), "agent needs the original request") {
+		t.Fatalf("json original_prompt = %#v", document["original_prompt"])
 	}
 }
 

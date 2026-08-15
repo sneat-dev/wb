@@ -61,6 +61,21 @@ created before the journal existed, reconstructs a manifest from Git evidence
 and labels every inferred field. It records rather than bypasses: unblocking the
 commit is itself the record of who directed the work. There is no bypass flag.
 
+To inspect this checkout safely (identity and digests, no prompt bodies):
+
+```sh
+wb worktree info .
+```
+
+To hand an agent the exact original prompt and the ordered work log for this
+checkout:
+
+```sh
+wb worktree log .
+```
+
+That dump is local private recovery context. Do not commit it or publish it.
+
 WB's managed pre-commit hook requests `enforce`. A commit with no record of who
 asked for it is what this exists to prevent, so declining it is the default
 rather than an opt-in.

@@ -1,6 +1,6 @@
 ---
 name: wb-worktrees
-description: Use WB to guard, create, resume, inspect, or safely clean isolated feature worktrees. Use before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout.
+description: Use WB to guard, create, resume, summarize a task, inspect with info, dump work-log context, or safely clean isolated feature worktrees. Use before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout.
 ---
 
 # WB worktrees
@@ -37,6 +37,9 @@ wb worktree create <task> --branch <prefix>/<task> <owner>/<repository> \
   --effort <effort> --run <run> --agent <agent> --agent-runtime <runtime> --model <exact-child-model-or-unknown> \
   --cli <invoking-cli-if-known> --provider <routing-or-billing-provider-if-known> \
   --original-prompt-file <private-prompt-file>
+wb worktree summary <task>
+wb worktree info <printed-worktree-path>
+wb worktree log <printed-worktree-path>
 wb worktree guard <printed-worktree-path>
 wb worktree list <task>
 ```
@@ -65,6 +68,34 @@ prompt text in a repository or command argument. The local outbox preserves
 recovery evidence while Synchestra is unavailable, so local create, seal, and
 cleanup do not wait for a server. It is not the planned Git-repository
 communication fallback and does not deliver messages to agents.
+
+To inspect a checkout without leaking private prompts:
+
+```sh
+wb worktree info .
+wb worktree info . --format json
+```
+
+That summary includes claim identity, prompt ordinals/digests, and live Git
+state. Prompt bodies stay omitted.
+
+To overview every live worktree for one task/effort:
+
+```sh
+wb worktree summary <task>
+wb worktree summary <task> --github
+```
+
+To resume or bootstrap an agent on an existing worktree, dump the private
+journal (exact original prompt, later steering instructions, claim identity,
+and live Git evidence):
+
+```sh
+wb worktree log .
+wb worktree log . --format json
+```
+
+Do not commit that output or paste it into public reports.
 
 The dispatcher/session/worktree/successor-claim creator must pass the exact
 child `--model` it selected, or the literal `unknown`; omission is rejected

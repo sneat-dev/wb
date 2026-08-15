@@ -29,8 +29,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `hooks metrics` | rejected | rejected | rejected | yes |
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
-| `worktree list`, `cleanup`, `rename` | yes | yes | rejected | yes |
-| `worktree create`, `guard`, `abort` | yes | rejected | rejected | yes |
+| `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree create`, `guard`, `abort`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
