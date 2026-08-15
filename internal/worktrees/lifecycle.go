@@ -520,7 +520,7 @@ func listLayout(
 			if !entry.IsDir() {
 				continue
 			}
-			if isGitRoot(ctx, candidate) {
+			if hasGitMetadata(candidate) && isGitRoot(ctx, candidate) {
 				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, absorbedBy, withGitHub, locked)
 				if inspectErr != nil {
 					if filterMatches(filter, inspectErrorFilterCandidates("", candidate, entry.Name(), inspectErr)...) {
@@ -562,7 +562,16 @@ func listLayout(
 				}
 				repositoryPath := filepath.Join(candidate, repositoryEntry.Name())
 				slug := entry.Name() + "/" + repositoryEntry.Name()
-				if isGitRoot(ctx, repositoryPath) {
+				// A current-layout path already carries its raw owner/repository
+				// identity. Apply --filter before starting a Git subprocess so a
+				// narrow inventory does not validate every historical checkout.
+				// Repository-rename mismatches remain visible when their on-disk
+				// identity matches the filter; the documented filter contract is
+				// path-derived identity, not an unbounded canonical-name search.
+				if !filterMatches(filter, repositoryPath, slug) {
+					continue
+				}
+				if hasGitMetadata(repositoryPath) && isGitRoot(ctx, repositoryPath) {
 					result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, absorbedBy, withGitHub, locked)
 					if inspectErr != nil {
 						if filterMatches(filter, inspectErrorFilterCandidates(entry.Name(), repositoryPath, slug, inspectErr)...) {
@@ -577,9 +586,6 @@ func listLayout(
 					continue
 				}
 				if strings.HasPrefix(repositoryEntry.Name(), ".") {
-					continue
-				}
-				if !filterMatches(filter, repositoryPath, slug) {
 					continue
 				}
 				if !validSafeSegment(repositoryEntry.Name()) {
@@ -702,6 +708,16 @@ func filterMatches(filter string, candidates ...string) bool {
 func isGitRoot(ctx context.Context, path string) bool {
 	root, err := git(ctx, path, "rev-parse", "--show-toplevel")
 	return err == nil && filepath.Clean(root) == filepath.Clean(path)
+}
+
+// hasGitMetadata avoids spawning Git for ordinary task and owner directories.
+// Every Git worktree root has a .git entry (normally a gitdir file), and a
+// candidate with any .git entry still goes through isGitRoot for authoritative
+// validation. An unreadable entry deliberately remains a Git candidate so the
+// existing Git diagnostic path is preserved.
+func hasGitMetadata(path string) bool {
+	_, err := os.Lstat(filepath.Join(path, ".git"))
+	return err == nil || !errors.Is(err, os.ErrNotExist)
 }
 
 // Cleanup plans or applies cleanup for one task or every safely merged task.
