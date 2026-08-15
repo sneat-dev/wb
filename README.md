@@ -401,7 +401,9 @@ wb verify --fleet --filter sneat-co/ --parallel=2
 # Restrict verification to compilation-oriented checks for one repository.
 wb verify ~/projects/sneat-co/sneat-bots --checks lint,build
 
-# CI profile adds SpecScore lint for repositories that contain spec/.
+# CI profile adds SpecScore lint for repositories that contain spec/. A
+# specscore.yaml file makes that canonical root required, so a missing spec/
+# fails closed instead of being treated as non-applicable.
 wb check --fleet --match 'sneat-co/*' --profile ci --parallel=2 \
   --timeout 10m --retry 1 --report-dir /tmp/wb-check
 

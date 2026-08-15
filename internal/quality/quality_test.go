@@ -72,6 +72,67 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	}
 }
 
+func TestVerifySpecScoreConfiguration(t *testing.T) {
+	t.Run("configured missing root fails closed", func(t *testing.T) {
+		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, "specscore.yaml"), "project:\n  slug: example\n")
+
+		report := Verify(context.Background(), "example/configured-spec", repository, []Check{CheckSpec})
+		if report.Status != StatusFailed || len(report.Results) != 1 {
+			t.Fatalf("report = %+v", report)
+		}
+		result := report.Results[0]
+		if result.Status != StatusFailed || !strings.Contains(result.Detail, "specscore.yaml") || !strings.Contains(result.Detail, "spec") {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+
+	t.Run("unconfigured missing root remains non-applicable", func(t *testing.T) {
+		repository := t.TempDir()
+
+		report := Verify(context.Background(), "example/no-spec", repository, []Check{CheckSpec})
+		if report.Status != StatusPassed || len(report.Results) != 1 {
+			t.Fatalf("report = %+v", report)
+		}
+		if result := report.Results[0]; result.Status != StatusSkipped {
+			t.Fatalf("result = %+v", result)
+		}
+	})
+
+	t.Run("existing root runs lint", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("test shell helper is POSIX-only")
+		}
+		repository := t.TempDir()
+		writeQualityFile(t, filepath.Join(repository, "specscore.yaml"), "project:\n  slug: example\n")
+		if err := os.MkdirAll(filepath.Join(repository, "spec"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		bin := filepath.Join(t.TempDir(), "bin")
+		if err := os.MkdirAll(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		log := filepath.Join(repository, "commands.log")
+		writeQualityFile(t, filepath.Join(bin, "specscore"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \""+log+"\"\n")
+		if err := os.Chmod(filepath.Join(bin, "specscore"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		report := Verify(context.Background(), "example/spec", repository, []Check{CheckSpec})
+		if report.Status != StatusPassed || len(report.Results) != 1 || report.Results[0].Status != StatusPassed {
+			t.Fatalf("report = %+v", report)
+		}
+		contents, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := strings.TrimSpace(string(contents)), "spec lint"; got != want {
+			t.Fatalf("command = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestParseChecks(t *testing.T) {
 	checks, err := ParseChecks("test,lint,test")
 	if err != nil {
