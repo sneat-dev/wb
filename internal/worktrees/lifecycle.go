@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
@@ -137,13 +139,17 @@ type CleanupOptions struct {
 	Filter string
 	// AbsorbedBy is the optional landing receipt pointer described on
 	// ListOptions.AbsorbedBy. It is verified, never trusted.
-	AbsorbedBy   string
-	AllMerged    bool
-	Apply        bool
-	DeleteRemote bool
-	OlderThan    time.Duration
-	ReportDir    string
-	Now          func() time.Time
+	AbsorbedBy string
+	AllMerged  bool
+	Apply      bool
+	// ResumeInterrupted authorizes recovery of exactly the named task's
+	// descriptor-validated interrupted lock before normal terminal cleanup.
+	// It is deliberately unavailable to fleet cleanup.
+	ResumeInterrupted bool
+	DeleteRemote      bool
+	OlderThan         time.Duration
+	ReportDir         string
+	Now               func() time.Time
 	// beforeCleanupLocks is a test-only seam before cleanup opens and locks
 	// task directories. It exercises substituted task hierarchy rejection.
 	beforeCleanupLocks func()
@@ -168,6 +174,14 @@ type CleanupOptions struct {
 	// is atomically retired. It proves a successor cannot be unlinked by a
 	// stale verify-then-remove sequence.
 	afterCleanupParentAuthorization func(parent string)
+	// afterResumeInterruptedLock models a successor or early failure after
+	// recovery acquired the exact stale descriptor. Cleanup must preserve the
+	// lock until an eligible cleanup transaction owns it.
+	afterResumeInterruptedLock func(lockPath string) error
+	// beforeRecoveredLockQuarantine is a test-only seam immediately before a
+	// recovered lock's descriptor-anchored no-replace retirement. It proves a
+	// failed retirement never claims terminal recovery in JSON or reports.
+	beforeRecoveredLockQuarantine func(lockPath string)
 }
 
 // CleanupResult records one repository's cleanup decision and outcome.
@@ -191,24 +205,38 @@ type CleanupResult struct {
 // all-or-nothing unit blockUnsafeTasks already applies to an unclean, locked,
 // or unmerged sibling. Every other task in the run proceeds normally.
 type CleanupOutcome struct {
-	Results     []CleanupResult     `json:"results"`
-	ReportPath  string              `json:"report_path,omitempty"`
-	Diagnostics []ListDiagnostic    `json:"diagnostics,omitempty"`
-	Artifacts   []LifecycleArtifact `json:"artifacts,omitempty"`
+	Results     []CleanupResult          `json:"results"`
+	ReportPath  string                   `json:"report_path,omitempty"`
+	Diagnostics []ListDiagnostic         `json:"diagnostics,omitempty"`
+	Artifacts   []LifecycleArtifact      `json:"artifacts,omitempty"`
+	Recovery    *InterruptedLockRecovery `json:"recovery,omitempty"`
+}
+
+// InterruptedLockRecovery is durable operator-visible evidence for the one
+// explicitly named interrupted task lock a cleanup command inspected.
+type InterruptedLockRecovery struct {
+	Task          string `json:"task"`
+	WorktreesRoot string `json:"worktrees_root"`
+	Path          string `json:"path"`
+	PID           int    `json:"pid"`
+	Disposition   string `json:"disposition"`
+	Applied       bool   `json:"applied"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type cleanupReport struct {
-	GeneratedAt  time.Time           `json:"generated_at"`
-	Phase        string              `json:"phase"`
-	Task         string              `json:"task,omitempty"`
-	Filter       string              `json:"filter,omitempty"`
-	AllMerged    bool                `json:"all_merged"`
-	Apply        bool                `json:"apply"`
-	DeleteRemote bool                `json:"delete_remote"`
-	OlderThan    string              `json:"older_than"`
-	Results      []CleanupResult     `json:"results"`
-	Diagnostics  []ListDiagnostic    `json:"diagnostics,omitempty"`
-	Artifacts    []LifecycleArtifact `json:"artifacts,omitempty"`
+	GeneratedAt  time.Time                `json:"generated_at"`
+	Phase        string                   `json:"phase"`
+	Task         string                   `json:"task,omitempty"`
+	Filter       string                   `json:"filter,omitempty"`
+	AllMerged    bool                     `json:"all_merged"`
+	Apply        bool                     `json:"apply"`
+	DeleteRemote bool                     `json:"delete_remote"`
+	OlderThan    string                   `json:"older_than"`
+	Results      []CleanupResult          `json:"results"`
+	Diagnostics  []ListDiagnostic         `json:"diagnostics,omitempty"`
+	Artifacts    []LifecycleArtifact      `json:"artifacts,omitempty"`
+	Recovery     *InterruptedLockRecovery `json:"recovery,omitempty"`
 }
 
 type cleanupTaskHandle struct {
@@ -739,6 +767,29 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			return CleanupOutcome{}, err
 		}
 	}
+	var recoveredTask *cleanupTaskHandle
+	var recovery *InterruptedLockRecovery
+	if normalized.ResumeInterrupted {
+		recoveredTask, recovery, err = reclaimNamedInterruptedCleanupTask(resolution, normalized.Task)
+		if err != nil {
+			return CleanupOutcome{}, err
+		}
+		defer func() {
+			if recoveredTask == nil {
+				return
+			}
+			// Validation alone never authorizes a state transition. Only an
+			// eligible normal cleanup transaction takes ownership and releases
+			// this lock after its own terminal gates have passed.
+			recoveredTask.preserveLock()
+			recoveredTask.close()
+		}()
+		if normalized.afterResumeInterruptedLock != nil {
+			if err := normalized.afterResumeInterruptedLock(recovery.Path); err != nil {
+				return CleanupOutcome{}, err
+			}
+		}
+	}
 	now := normalized.Now()
 	if normalized.ReportDir == "" && normalized.Apply {
 		normalized.ReportDir = DefaultCleanupReportDir(resolution.Write.Home, now)
@@ -753,6 +804,13 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	})
 	if err != nil {
 		return CleanupOutcome{}, err
+	}
+	if recovery != nil {
+		for index := range listed.Results {
+			if listed.Results[index].Task == recovery.Task && listed.Results[index].WorktreesRoot == recovery.WorktreesRoot {
+				listed.Results[index].Locked = false
+			}
+		}
 	}
 	recognizedWorktreesRoots := make([]string, 0, len(resolution.Read))
 	for _, layout := range resolution.Read {
@@ -790,12 +848,12 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
-	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts}
+	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts, Recovery: recovery}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.
 	if normalized.Apply && normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results, outcome.Diagnostics, outcome.Artifacts)
+		outcome.ReportPath, err = writeCleanupReport(normalized, now, "planned", outcome.Results, outcome.Diagnostics, outcome.Artifacts, outcome.Recovery)
 		if err != nil {
 			return outcome, err
 		}
@@ -806,7 +864,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 
 	fail := func(cleanupErr error) (CleanupOutcome, error) {
 		if normalized.ReportDir != "" {
-			if _, reportErr := writeCleanupReport(normalized, now, "failed", outcome.Results, outcome.Diagnostics, outcome.Artifacts); reportErr != nil {
+			if _, reportErr := writeCleanupReport(normalized, now, "failed", outcome.Results, outcome.Diagnostics, outcome.Artifacts, outcome.Recovery); reportErr != nil {
 				return outcome, fmt.Errorf("%w; write failed cleanup report: %v", cleanupErr, reportErr)
 			}
 		}
@@ -833,16 +891,40 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	for _, selection := range cleanupTaskSelections(outcome) {
 		taskKey := cleanupTaskKey(selection.WorktreesRoot, selection.Task)
+		// A recovered lock may only become a normal cleanup transaction after the
+		// named task itself has an eligible, present worktree. Lifecycle artifacts
+		// alone are not authority to consume an interrupted task lock: they can be
+		// left behind by an ineligible, filtered, or otherwise skipped task.
+		if recoveredTask != nil && recovery != nil && selection.WorktreesRoot == recovery.WorktreesRoot && selection.Task == recovery.Task && !cleanupTaskHasEligibleWorktree(outcome, taskKey) {
+			continue
+		}
 		if !cleanupTaskCanApply(outcome, taskKey) {
 			continue
 		}
-		task, err := acquireCleanupTaskAt(selection.WorktreesRoot, selection.Task)
-		if err != nil {
-			return fail(err)
+		var task *cleanupTaskHandle
+		recoveredTransaction := false
+		if recoveredTask != nil && recovery != nil && selection.WorktreesRoot == recovery.WorktreesRoot && selection.Task == recovery.Task {
+			task = recoveredTask
+			recoveredTask = nil // ownership transfers to this cleanup transaction.
+			if err := task.validateHeldLock(); err != nil {
+				task.preserveLock()
+				task.close()
+				return fail(err)
+			}
+			recoveredTransaction = true
+		} else {
+			task, err = acquireCleanupTaskAt(selection.WorktreesRoot, selection.Task)
+			if err != nil {
+				return fail(err)
+			}
 		}
 		cleanupOutcome, cleanupErr := func() (CleanupOutcome, error) {
 			defer func() {
-				task.lock.release()
+				if recoveredTransaction && (recovery == nil || !recovery.Applied) {
+					task.preserveLock()
+				} else {
+					_ = task.lock.release()
+				}
 				task.close()
 			}()
 			// Corroborate every repository, exact remote target SHA, and private
@@ -978,6 +1060,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					if normalized.afterCleanupGitAuthorization != nil {
 						normalized.afterCleanupGitAuthorization("delete remote branch")
 					}
+					if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(err)
+					}
 					if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "push", "--force-with-lease=refs/heads/"+refreshed.Branch+":"+refreshed.HeadSHA, "origin", ":refs/heads/"+refreshed.Branch); err != nil {
 						closeCanonical()
 						worktree.close()
@@ -997,6 +1084,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				}
 				if normalized.afterCleanupGitAuthorization != nil {
 					normalized.afterCleanupGitAuthorization("remove worktree")
+				}
+				if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
 				}
 				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRemovingWorktree); err != nil {
 					closeCanonical()
@@ -1029,6 +1121,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				if normalized.afterCleanupGitAuthorization != nil {
 					normalized.afterCleanupGitAuthorization("delete local branch")
 				}
+				if err := validateRecoveredCleanupLock(recoveredTransaction, task); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fail(err)
+				}
 				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRemovingLocalBranch); err != nil {
 					closeCanonical()
 					worktree.close()
@@ -1057,6 +1154,17 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			if err := archiveCleanupLifecycleArtifacts(task, artifactArchive, artifactArchivePath, artifactHandles, outcome.Artifacts); err != nil {
 				return fail(err)
 			}
+			if recoveredTransaction {
+				if normalized.beforeRecoveredLockQuarantine != nil {
+					task.lock.beforeRelease = func() { normalized.beforeRecoveredLockQuarantine(recovery.Path) }
+				}
+				if err := task.lock.release(); err != nil {
+					return fail(fmt.Errorf("quarantine recovered cleanup lock: %w", err))
+				}
+				task.lock = operationLock{}
+				recovery.Disposition = "quarantined"
+				recovery.Applied = true
+			}
 			return outcome, nil
 		}()
 		if cleanupErr != nil {
@@ -1068,7 +1176,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// create can make a new, unreachable task directory at the same pathname.
 	// Future creation reuses this harmless empty root under its normal lock.
 	if normalized.ReportDir != "" {
-		outcome.ReportPath, err = writeCleanupReport(normalized, now, "applied", outcome.Results, outcome.Diagnostics, outcome.Artifacts)
+		phase := "applied"
+		if outcome.Recovery != nil && !outcome.Recovery.Applied {
+			phase = "validated"
+		}
+		outcome.ReportPath, err = writeCleanupReport(normalized, now, phase, outcome.Results, outcome.Diagnostics, outcome.Artifacts, outcome.Recovery)
 		if err != nil {
 			return outcome, err
 		}
@@ -1132,6 +1244,19 @@ func cleanupTaskCanApply(outcome CleanupOutcome, taskKey string) bool {
 	return hasPending
 }
 
+// cleanupTaskHasEligibleWorktree distinguishes a normal cleanup transaction
+// from artifact-only work. Interrupted-lock recovery is deliberately narrower:
+// it must preserve the exact recovered lock unless that named task's present
+// worktree has passed the ordinary eligibility gates.
+func cleanupTaskHasEligibleWorktree(outcome CleanupOutcome, taskKey string) bool {
+	for _, result := range outcome.Results {
+		if result.BacklogID == "" && !result.WorktreeGone && cleanupTaskKey(result.WorktreesRoot, result.Task) == taskKey && result.Eligible {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeListOptions(options ListOptions) (projectsRoot, task, base, filter string, err error) {
 	projectsRoot, err = absoluteProjectsRoot(options.ProjectsRoot)
 	if err != nil {
@@ -1172,6 +1297,9 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 	}
 	if options.Task != "" && options.AllMerged {
 		return CleanupOptions{}, fmt.Errorf("task and --all-merged cannot be combined")
+	}
+	if options.ResumeInterrupted && options.Task == "" {
+		return CleanupOptions{}, fmt.Errorf("resume interrupted cleanup requires one explicit task")
 	}
 	if options.OlderThan < 0 {
 		return CleanupOptions{}, fmt.Errorf("--older-than cannot be negative")
@@ -2017,6 +2145,132 @@ func acquireCleanupTaskAtReclaimingInterrupted(
 	return handle, nil
 }
 
+// reclaimNamedInterruptedCleanupTask opens only one exact named task directory
+// below a resolver-recognized WB root. It never scans or reclaims any sibling
+// task. The retained descriptor is kept through cleanup, which makes a late
+// replacement fail closed rather than turning validation into a pathname race.
+func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName string) (*cleanupTaskHandle, *InterruptedLockRecovery, error) {
+	roots := make([]string, 0, 1)
+	for _, layout := range resolution.Read {
+		worktrees, err := openAbsoluteDirectoryNoFollow(layout.WorktreesRoot, false)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("open recovery worktrees root %s: %w", layout.WorktreesRoot, err)
+		}
+		fd, openErr := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+		_ = worktrees.Close()
+		if openErr != nil {
+			if errors.Is(openErr, unix.ENOENT) {
+				continue
+			}
+			return nil, nil, fmt.Errorf("open recovery task %s without following links: %w", taskName, openErr)
+		}
+		_ = unix.Close(fd)
+		roots = append(roots, layout.WorktreesRoot)
+	}
+	if len(roots) != 1 {
+		return nil, nil, fmt.Errorf("interrupted recovery for task %q requires exactly one WB task directory, found %d", taskName, len(roots))
+	}
+	handle, err := acquireCleanupTaskAtReclaimingInterruptedLock(roots[0], taskName)
+	if err != nil {
+		return nil, nil, err
+	}
+	pid, validateErr := interruptedTaskLockPID(handle.lock.file, taskName)
+	if validateErr != nil {
+		handle.preserveLock()
+		handle.close()
+		return nil, nil, validateErr
+	}
+	recovery := &InterruptedLockRecovery{
+		Task: taskName, WorktreesRoot: roots[0], Path: filepath.Join(roots[0], taskName, ".lock"),
+		PID: pid, Disposition: "validated", Reason: "exact interrupted lock has a conclusively dead owner PID",
+	}
+	return handle, recovery, nil
+}
+
+// acquireCleanupTaskAtReclaimingInterruptedLock deliberately bypasses retired
+// lock reuse: an explicit recovery may touch only an existing `.lock` proven
+// to match the named task, never a similarly named retirement.
+func acquireCleanupTaskAtReclaimingInterruptedLock(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	worktrees, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
+	if err != nil {
+		return nil, fmt.Errorf("open recovery worktrees root %s: %w", worktreesRoot, err)
+	}
+	taskFD, err := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		_ = worktrees.Close()
+		return nil, fmt.Errorf("open recovery task %s without following links: %w", taskName, err)
+	}
+	task := os.NewFile(uintptr(taskFD), "wb-recovery-task")
+	if task == nil {
+		_ = unix.Close(taskFD)
+		_ = worktrees.Close()
+		return nil, fmt.Errorf("wrap recovery task %s", taskName)
+	}
+	handle := &cleanupTaskHandle{worktreesPath: worktreesRoot, taskPath: filepath.Join(worktreesRoot, taskName), worktrees: worktrees, task: task}
+	if err := handle.validate(); err != nil {
+		handle.close()
+		return nil, err
+	}
+	lock, err := reclaimInterruptedLock(task, true)
+	if err != nil {
+		handle.close()
+		return nil, fmt.Errorf("recover interrupted cleanup task %s: %w", taskName, err)
+	}
+	handle.lock = lock
+	return handle, nil
+}
+
+func (handle *cleanupTaskHandle) preserveLock() {
+	if handle == nil || handle.lock.file == nil {
+		return
+	}
+	_ = handle.lock.file.Close()
+	handle.lock = operationLock{}
+}
+
+func (handle *cleanupTaskHandle) validateHeldLock() error {
+	if handle == nil || handle.task == nil || handle.lock.file == nil ||
+		!lockEntryStillMatches(handle.task, ".lock", handle.lock.identity) {
+		return fmt.Errorf("interrupted cleanup lock changed after recovery")
+	}
+	return nil
+}
+
+func validateRecoveredCleanupLock(recovered bool, handle *cleanupTaskHandle) error {
+	if !recovered {
+		return nil
+	}
+	return handle.validateHeldLock()
+}
+
+func interruptedTaskLockPID(file *os.File, task string) (int, error) {
+	if file == nil {
+		return 0, fmt.Errorf("interrupted task %q lock descriptor is unavailable", task)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("seek interrupted task %q lock: %w", task, err)
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(contents) > 4096 {
+		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
+	}
+	lines := strings.Split(string(contents), "\n")
+	if len(lines) != 3 || lines[2] != "" || lines[0] != "operation="+task {
+		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(lines[1], "pid="))
+	if err != nil || pid <= 0 || lines[1] != fmt.Sprintf("pid=%d", pid) {
+		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		return 0, fmt.Errorf("interrupted task %q lock owner PID %d is live or ambiguous", task, pid)
+	}
+	return pid, nil
+}
+
 // SecureCleanupGitHelperArgument selects the private WB child process that
 // runs cleanup Git commands from retained canonical and worktree descriptors.
 const SecureCleanupGitHelperArgument = "--wb-internal-cleanup-git"
@@ -2266,6 +2520,7 @@ func writeCleanupReport(
 	results []CleanupResult,
 	diagnostics []ListDiagnostic,
 	artifacts []LifecycleArtifact,
+	recovery *InterruptedLockRecovery,
 ) (string, error) {
 	if err := os.MkdirAll(options.ReportDir, 0o755); err != nil {
 		return "", fmt.Errorf("create cleanup report directory: %w", err)
@@ -2282,6 +2537,7 @@ func writeCleanupReport(
 		Results:      results,
 		Diagnostics:  diagnostics,
 		Artifacts:    artifacts,
+		Recovery:     recovery,
 	}
 	content, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {

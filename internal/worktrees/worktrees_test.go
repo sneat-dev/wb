@@ -709,7 +709,9 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 			t.Fatalf("replace operation lock after authorization: %v", renameErr)
 		}
 	}
-	lock.release()
+	if err := lock.release(); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("late replacement release error = %v", err)
+	}
 	content, readErr := os.ReadFile(filepath.Join(directoryPath, ".lock"))
 	if readErr != nil || string(content) != replacement {
 		t.Fatalf("late lock replacement was removed: content=%q err=%v", content, readErr)

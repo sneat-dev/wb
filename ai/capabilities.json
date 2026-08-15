@@ -600,10 +600,12 @@
                 "--format",
                 "--older-than",
                 "--remote",
-                "--report-dir"
+                "--report-dir",
+                "--resume-interrupted"
               ],
               "modes": [
-                "Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt"
+                "Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt",
+                "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted"
               ]
             }
           ],
@@ -623,7 +625,9 @@
               "command": "wb worktree cleanup --help",
               "contains": [
                 "freshly fetched exact",
-                "requires --remote"
+                "requires --remote",
+                "--resume-interrupted",
+                "conclusively dead"
               ]
             }
           ],
@@ -2818,7 +2822,8 @@
                 "--format",
                 "--older-than",
                 "--remote",
-                "--report-dir"
+                "--report-dir",
+                "--resume-interrupted"
               ],
               "modes": [
                 "Exact fetched origin target proves integration with or without a merged PR",
@@ -2827,6 +2832,7 @@
                 "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement",
                 "Coordinated task preflight and durable seal precede every deletion",
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
+                "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog"
               ]
             }
@@ -2843,6 +2849,8 @@
                 "--older-than",
                 "--remote",
                 "--absorbed-by",
+                "--resume-interrupted",
+                "conclusively dead",
                 ".wb-retired-stage-*"
               ]
             }
@@ -2899,6 +2907,11 @@
             {
               "path": "cmd/wb/worktree_test.go",
               "name": "TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock",
               "kind": "integration"
             }
           ],

@@ -1244,7 +1244,7 @@ for per-checkout journal detail.`,
 
 func newWorktreeCleanupCmd() *cobra.Command {
 	var base, format, reportDir, absorbedBy string
-	var allMerged, apply, deleteRemote bool
+	var allMerged, apply, deleteRemote, resumeInterrupted bool
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "cleanup [task]",
@@ -1291,7 +1291,13 @@ the 24-hour merged-PR grace window unless --older-than overrides it.
 are inspected at all, before any of the above safety checks run. A malformed
 candidate outside that selection is invisible to the run. One inside it is
 never fatal: it is reported as a warning and blocks eligibility only for its
-own coordinated task, exactly like an unclean or locked sibling would.`,
+own coordinated task, exactly like an unclean or locked sibling would.
+
+--resume-interrupted is a named-task-only recovery authority. It validates the
+exact retained .lock as operation=<task> and a positive PID that is
+conclusively dead, then holds that descriptor-safe lock through normal cleanup.
+Without --apply it is a non-mutating recovery plan; with --apply --remote it
+quarantines only the exact held inode and completes the usual terminal flow.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MaximumNArgs(1)(command, args); err != nil {
 				return err
@@ -1318,19 +1324,23 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 			if task != "" && apply && !deleteRemote {
 				return fmt.Errorf("named terminal cleanup requires --remote so the retired source branch cannot remain as backlog")
 			}
+			if resumeInterrupted && task == "" {
+				return fmt.Errorf("--resume-interrupted requires one explicit task")
+			}
 			now := time.Now()
 			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
-				ProjectsRoot: projectsRoot,
-				Task:         task,
-				Base:         base,
-				Filter:       filterFlag,
-				AbsorbedBy:   absorbedBy,
-				AllMerged:    allMerged,
-				Apply:        apply,
-				DeleteRemote: deleteRemote,
-				OlderThan:    olderThan,
-				ReportDir:    reportDir,
-				Now:          func() time.Time { return now },
+				ProjectsRoot:      projectsRoot,
+				Task:              task,
+				Base:              base,
+				Filter:            filterFlag,
+				AbsorbedBy:        absorbedBy,
+				AllMerged:         allMerged,
+				Apply:             apply,
+				ResumeInterrupted: resumeInterrupted,
+				DeleteRemote:      deleteRemote,
+				OlderThan:         olderThan,
+				ReportDir:         reportDir,
+				Now:               func() time.Time { return now },
 			})
 			if err != nil {
 				return err
@@ -1384,6 +1394,7 @@ own coordinated task, exactly like an unclean or locked sibling would.`,
 	command.Flags().StringVar(&base, "base", "main", "exact origin target branch required to contain the work")
 	command.Flags().BoolVar(&allMerged, "all-merged", false, "select every safely merged WB task")
 	command.Flags().BoolVar(&apply, "apply", false, "remove eligible worktrees and local branches")
+	command.Flags().BoolVar(&resumeInterrupted, "resume-interrupted", false, "recover only this named task's proven-dead interrupted lock before cleanup")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "also delete an unchanged remote branch when applying")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum age of a merged pull request (0 disables)")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <wb-home>/reports/worktree-cleanup/<timestamp>)")
