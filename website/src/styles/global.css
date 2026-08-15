@@ -220,7 +220,7 @@ p { margin: 0; }
 
 .install-section { background: var(--ink); color: white; }
 .install-section .eyebrow { color: #aaa7ff; }
-.install-grid { display: grid; grid-template-columns: .82fr 1.18fr; gap: clamp(3rem, 7vw, 6rem); align-items: start; }
+.install-grid { display: grid; grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr); gap: clamp(3rem, 7vw, 6rem); align-items: start; }
 .install-copy h2 { color: white; margin-bottom: 1.2rem; }
 .install-copy p { color: #c3c3da; max-width: 42ch; }
 .install-meta { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.5rem; }
@@ -324,7 +324,7 @@ p { margin: 0; }
 .why-pillars p { color: var(--ink-2); max-width: 62ch; font-size: 1.02rem; }
 .why-split {
   display: grid;
-  grid-template-columns: .9fr 1.1fr;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
   gap: clamp(2.5rem, 6vw, 5rem);
   align-items: start;
 }
