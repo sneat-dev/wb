@@ -5,15 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // Run executes a typed mutation over independent repositories. It completes
@@ -30,7 +34,7 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 		results[index] = Result[T]{Repository: repository.Slug, Ref: options.Ref, Status: "selected"}
 	}
 	if !options.DryRun {
-		lock, err := AcquireOperationLock(options.GitHubDir, options.Operation)
+		lock, err := AcquireOperationLock(options.GitHubDir, options.Operation, options.Resume)
 		if err != nil {
 			return results, err
 		}
@@ -438,37 +442,108 @@ func runParallel(count, parallel int, run func(int)) {
 // OperationLock prevents two processes from mutating the same operation
 // worktrees. Higher-level planners may hold a campaign lock while individual
 // lifecycle runs also protect their wave directories.
-type OperationLock struct{ path string }
+type OperationLock struct {
+	directory *os.File
+	lock      *worktrees.HeldOperationLock
+}
 
-// AcquireOperationLock creates an exclusive lock below the operation root.
-func AcquireOperationLock(githubDir, operation string) (OperationLock, error) {
+// AcquireOperationLock creates an exclusive lock below the operation root. An
+// unheld remnant is reclaimable only by an explicit resume and only when its
+// descriptor proves exact ownership of this operation.
+func AcquireOperationLock(githubDir, operation string, resume bool) (OperationLock, error) {
 	home, err := wbhome.EnsureRoot(githubDir)
 	if err != nil {
 		return OperationLock{}, err
 	}
-	directory := filepath.Join(home, "worktrees", operation)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
+	directoryPath := filepath.Join(home, "worktrees", operation)
+	directory, err := worktrees.OpenOperationLockDirectory(directoryPath)
+	if err != nil {
 		return OperationLock{}, err
 	}
-	path := filepath.Join(directory, ".lock")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	lock, err := worktrees.AcquireOperationLock(directory, resume)
 	if err != nil {
-		if os.IsExist(err) {
-			return OperationLock{}, fmt.Errorf("operation is already active or was interrupted: %s", path)
+		_ = directory.Close()
+		return OperationLock{}, operationLockAcquisitionError(operation, err)
+	}
+	if lock.ReclaimedInterrupted() {
+		pid, valid := operationLockMetadataPID(lock.File(), operation)
+		if !valid {
+			lock.Preserve()
+			_ = directory.Close()
+			return OperationLock{}, fmt.Errorf("operation %q has an ambiguous lock at %s", operation, filepath.Join(directoryPath, ".lock"))
 		}
+		if operationLockPIDMayBeLive(pid) {
+			lock.Preserve()
+			_ = directory.Close()
+			return OperationLock{}, fmt.Errorf("operation %q is already active or ownership is ambiguous at %s", operation, filepath.Join(directoryPath, ".lock"))
+		}
+		return OperationLock{directory: directory, lock: lock}, nil
+	}
+	file := lock.File()
+	if file == nil {
+		lock.Release()
+		_ = directory.Close()
+		return OperationLock{}, fmt.Errorf("initialize operation %q lock: descriptor is unavailable", operation)
+	}
+	if err := file.Truncate(0); err != nil {
+		lock.Release()
+		_ = directory.Close()
+		return OperationLock{}, fmt.Errorf("initialize operation %q lock: %w", operation, err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		lock.Release()
+		_ = directory.Close()
 		return OperationLock{}, err
 	}
 	if _, err := fmt.Fprintf(file, "operation=%s\npid=%d\n", operation, os.Getpid()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
+		lock.Release()
+		_ = directory.Close()
 		return OperationLock{}, err
 	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return OperationLock{}, err
-	}
-	return OperationLock{path: path}, nil
+	return OperationLock{directory: directory, lock: lock}, nil
 }
 
-// Release removes the operation lock. It is safe to call from defer.
-func (lock OperationLock) Release() { _ = os.Remove(lock.path) }
+func operationLockAcquisitionError(operation string, err error) error {
+	if strings.Contains(err.Error(), "already active in another process") {
+		return fmt.Errorf("operation %q is already active: %w", operation, err)
+	}
+	return fmt.Errorf("operation %q has an ambiguous or interrupted lock: %w", operation, err)
+}
+
+func operationLockMetadataPID(file *os.File, operation string) (int, bool) {
+	if file == nil {
+		return 0, false
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return 0, false
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, 4097))
+	if err != nil || len(contents) > 4096 {
+		return 0, false
+	}
+	lines := strings.Split(string(contents), "\n")
+	if len(lines) != 3 || lines[2] != "" || lines[0] != "operation="+operation {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimPrefix(lines[1], "pid="))
+	return pid, err == nil && pid > 0 && lines[1] == fmt.Sprintf("pid=%d", pid)
+}
+
+// operationLockPIDMayBeLive distinguishes a dead legacy O_EXCL-only lock
+// from a process that could still own it. A permission denial is ambiguous,
+// so recovery stays closed rather than guessing that the process is gone.
+func operationLockPIDMayBeLive(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM) || !errors.Is(err, syscall.ESRCH)
+}
+
+// Release retires the exact held lock inode. It is safe to call from defer and
+// cannot unlink a successor lock installed after this operation acquired one.
+func (lock OperationLock) Release() {
+	if lock.lock != nil {
+		lock.lock.Release()
+	}
+	if lock.directory != nil {
+		_ = lock.directory.Close()
+	}
+}
