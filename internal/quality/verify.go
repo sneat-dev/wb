@@ -93,13 +93,26 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 		}
 	}
 	if containsCheck(checks, CheckSpec) {
-		if _, err := os.Stat(filepath.Join(path, "spec")); err == nil {
+		specRoot := filepath.Join(path, "spec")
+		if _, err := os.Stat(specRoot); err == nil {
 			entry := runVerification(ctx, options, "specscore", ".", CheckSpec, path, "specscore", "spec", "lint")
 			report.Results = append(report.Results, entry)
 		} else if !os.IsNotExist(err) {
-			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: err.Error()})
+			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore root %q: %v", specRoot, err)})
 		} else {
-			report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"})
+			specConfig := filepath.Join(path, "specscore.yaml")
+			if _, configErr := os.Lstat(specConfig); configErr == nil {
+				report.Results = append(report.Results, VerificationEntry{
+					Language: "specscore",
+					Check:    CheckSpec,
+					Status:   StatusFailed,
+					Detail:   fmt.Sprintf("SpecScore config %q requires root %q, but the root is missing", specConfig, specRoot),
+				})
+			} else if !os.IsNotExist(configErr) {
+				report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusFailed, Detail: fmt.Sprintf("inspect SpecScore config %q: %v", specConfig, configErr)})
+			} else {
+				report.Results = append(report.Results, VerificationEntry{Language: "specscore", Check: CheckSpec, Status: StatusSkipped, Detail: "spec directory is not present"})
+			}
 		}
 	}
 	if len(report.Results) == 0 {
