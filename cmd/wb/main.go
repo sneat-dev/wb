@@ -118,6 +118,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
+		"worktree summary": true,
 	},
 	"filter": {
 		"sync": true, "run": true,
@@ -126,6 +127,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
+		"worktree summary": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI

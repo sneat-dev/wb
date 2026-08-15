@@ -2,6 +2,18 @@
 
 ## Inspect
 
+For one named task/effort across every live worktree:
+
+```sh
+wb worktree summary <task>
+wb worktree summary <task> --github
+wb worktree summary fair-split --format json
+```
+
+That overview lists each repository's path, branch, short head, clean/dirty/
+locked state, and origin-target integration. Pass `--github` when open or
+merged pull-request evidence matters.
+
 For one checkout, start with the redacted summary (no prompt bodies):
 
 ```sh

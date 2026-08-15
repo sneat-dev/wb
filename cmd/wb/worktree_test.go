@@ -402,6 +402,64 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	}
 }
 
+func TestWorktreeSummaryCLIRequiresTaskAndPrintsBriefOverview(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "summarize this coordinated task")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "summary"}, &stdout, &stderr); code == exitOK {
+		t.Fatalf("summary without task should fail; stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-summary", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "summary", "cli-summary"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("summary failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"# WB worktree summary: cli-summary",
+		"1 worktree(s)",
+		"## acme/app",
+		"worktree:",
+		"branch:",
+		"state:",
+		"target:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary missing %q; stdout=%s stderr=%s", want, out, stderr.String())
+		}
+	}
+	if strings.Contains(out, "pr:") {
+		t.Fatalf("local summary should omit pr lines without --github; stdout=%s", out)
+	}
+	if strings.Contains(out, "summarize this coordinated task") {
+		t.Fatalf("summary leaked prompt body; stdout=%s", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "summary", "cli-summary", "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("summary json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("summary json: %v\n%s", err, stdout.String())
+	}
+	results, ok := document["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("summary json results = %#v", document["results"])
+	}
+}
+
 func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "private original request must stay hidden")

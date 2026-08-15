@@ -25,6 +25,7 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeCreateCmd())
 	command.AddCommand(newWorktreeGuardCmd())
 	command.AddCommand(newWorktreeListCmd())
+	command.AddCommand(newWorktreeSummaryCmd())
 	command.AddCommand(newWorktreeCleanupCmd())
 	command.AddCommand(newWorktreeRenameCmd())
 	command.AddCommand(newWorktreeAbortCmd())
@@ -787,6 +788,66 @@ joined into this command.`,
 	return command
 }
 
+func newWorktreeSummaryCmd() *cobra.Command {
+	var base, format string
+	var github bool
+	command := &cobra.Command{
+		Use:   "summary <task>",
+		Short: "Brief overview of every worktree, branch, and optional PR for one task",
+		Long: `Summarize one WB task/effort across all of its live linked worktrees.
+
+Requires the task name. Reports each repository's worktree path, branch, short
+head, clean/dirty/locked state, and whether the head is integrated at the
+exact origin target. Pass --github to attach open or merged pull-request
+evidence. Unlike 'wb worktree list', this command always scopes to one named
+task and formats a brief human overview rather than a flat inventory row.
+
+JSON reuses the same versioned list envelope (results, diagnostics, artifacts).
+Prompt bodies are never included; use 'wb worktree info' or 'wb worktree log'
+for per-checkout journal detail.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			outcome, err := worktrees.ListWithDiagnostics(command.Context(), worktrees.ListOptions{
+				ProjectsRoot: projectsRoot,
+				Task:         args[0],
+				Base:         base,
+				Filter:       filterFlag,
+				GitHub:       github,
+			})
+			if err != nil {
+				return err
+			}
+			for _, diagnostic := range outcome.Diagnostics {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "warning: task %s candidate %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message); err != nil {
+					return err
+				}
+			}
+			for _, artifact := range outcome.Artifacts {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(), "info: inventory classified WB internal %s as %s: %s\n", artifact.Kind, artifact.State, artifact.Path); err != nil {
+					return err
+				}
+			}
+			switch format {
+			case "text":
+				return printWorktreeSummary(command, args[0], outcome.Results, github)
+			case "json":
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(outcome)
+			default:
+				return fmt.Errorf("unsupported format %q; use text or json", format)
+			}
+		},
+	}
+	command.Flags().StringVar(&base, "base", "main", "base branch used to assess local merge state")
+	command.Flags().BoolVar(&github, "github", false, "include pull request state from GitHub")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
 func newWorktreeCleanupCmd() *cobra.Command {
 	var base, format, reportDir, absorbedBy string
 	var allMerged, apply, deleteRemote bool
@@ -1116,6 +1177,101 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 		}
 	}
 	return nil
+}
+
+func printWorktreeSummary(command *cobra.Command, task string, results []worktrees.ListResult, withGitHub bool) error {
+	out := command.OutOrStdout()
+	if _, err := fmt.Fprintf(out, "# WB worktree summary: %s\n\n", task); err != nil {
+		return err
+	}
+	if len(results) == 0 {
+		_, err := fmt.Fprintln(out, "no live worktrees for this task")
+		return err
+	}
+	if _, err := fmt.Fprintf(out, "%d worktree(s)\n\n", len(results)); err != nil {
+		return err
+	}
+	for index, result := range results {
+		state := worktreeSummaryState(result)
+		head := result.HeadSHA
+		if len(head) > 12 {
+			head = head[:12]
+		}
+		if _, err := fmt.Fprintf(out, "## %s\n", result.Repository); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "worktree: %s\n", result.WorktreeDir); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "branch:   %s\n", result.Branch); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "head:     %s\n", head); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(out, "state:    %s\n", state); err != nil {
+			return err
+		}
+		integration := "not integrated at origin/" + result.Base
+		switch {
+		case result.IntegratedAtOrigin:
+			integration = "integrated at origin/" + result.Base
+		case result.AbsorbedAtOrigin:
+			integration = "absorbed at origin/" + result.Base
+		case result.RebaseMergedAtOrigin:
+			integration = "rebase-merged at origin/" + result.Base
+		case result.LocallyMerged:
+			integration = "locally merged; awaiting push"
+		}
+		if _, err := fmt.Fprintf(out, "target:   %s\n", integration); err != nil {
+			return err
+		}
+		switch {
+		case result.OpenPullRequest != nil:
+			if _, err := fmt.Fprintf(out, "pr:       open #%d %s\n", result.OpenPullRequest.Number, result.OpenPullRequest.URL); err != nil {
+				return err
+			}
+		case result.MergedPullRequest != nil:
+			if _, err := fmt.Fprintf(out, "pr:       merged #%d %s\n", result.MergedPullRequest.Number, result.MergedPullRequest.URL); err != nil {
+				return err
+			}
+		case withGitHub:
+			if _, err := fmt.Fprintln(out, "pr:       none"); err != nil {
+				return err
+			}
+		}
+		if index+1 < len(results) {
+			if _, err := fmt.Fprintln(out); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func worktreeSummaryState(result worktrees.ListResult) string {
+	parts := make([]string, 0, 3)
+	if !result.Clean {
+		parts = append(parts, "dirty")
+	} else {
+		parts = append(parts, "clean")
+	}
+	if result.Locked {
+		parts = append(parts, "locked")
+	}
+	switch {
+	case result.OpenPullRequest != nil:
+		parts = append(parts, "open-pr")
+	case result.AbsorbedAtOrigin:
+		parts = append(parts, "absorbed")
+	case result.MergedPullRequest != nil:
+		parts = append(parts, "merged")
+	case result.LocallyMerged:
+		parts = append(parts, "locally-merged")
+	default:
+		parts = append(parts, "active")
+	}
+	return strings.Join(parts, ",")
 }
 
 func printWorktreeCleanup(command *cobra.Command, results []worktrees.CleanupResult, apply bool) error {

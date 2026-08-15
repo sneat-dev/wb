@@ -523,6 +523,18 @@
         "tests": {"status": "Full", "references": [{"path": "internal/worktrees/journal_test.go", "name": "TestReconstructionMakesTheNamedRemedySufficient", "kind": "unit"}, {"path": "internal/worktrees/journal_test.go", "name": "TestPromptSourceIsRecordedNeverInferred", "kind": "unit"}], "limitation": null}
       },
       "notes": "This is the remedy the admission gate names. It records rather than bypasses, so unblocking a commit is itself the record of who directed it."
+    },
+    {
+      "id": "wb.worktree.summary",
+      "feature_refs": ["spec/features/worktree-lifecycle/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree summary", "flags": ["--base", "--format", "--github"], "modes": ["Requires one task name and prints a brief overview of every live worktree: path, branch, short head, clean/dirty/locked state, and origin-target integration", "Optional --github attaches open or merged pull-request evidence"]}], "limitation": "Summarizes live linked checkouts only; archived Work Log history is not joined."},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree summary --help", "contains": ["Brief overview", "--github", "task"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/lifecycle.md", "marker": "## Inspect", "examples": ["wb worktree summary fair-split", "wb worktree summary fair-split --github"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_test.go", "name": "TestWorktreeSummaryCLIRequiresTaskAndPrintsBriefOverview", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Task-scoped brief overview. Contrasts with list (flat inventory, optional task) and info/log (single-checkout journal views)."
     }
   ]
 }
