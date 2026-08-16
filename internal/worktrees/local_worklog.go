@@ -390,15 +390,3 @@ func countLocalOutbox(worktree string) (int, error) {
 	}
 	return count, scanner.Err()
 }
-
-func clearLocalOutbox(worktree string) error {
-	directory, err := openLocalWorkLogDir(worktree, false)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return writeBytesAtomicAt(directory, localWorkLogOutboxName, nil, 0o600)
-}
