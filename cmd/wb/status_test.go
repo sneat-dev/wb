@@ -41,7 +41,7 @@ func TestStatusMarkdownAnnouncesHiddenRepositories(t *testing.T) {
 	t.Parallel()
 	partial := statusMarkdown(statusIndex{HiddenClean: 4, Repositories: []repositoryStatusInfo{
 		{Repository: "acme/dirty", Status: "attention", Summary: "1 modified file"},
-	}}, false)
+	}}, false, "# WB local repository status\n\n")
 	for _, want := range []string{"acme/dirty", "4 clean repositories hidden", "--all"} {
 		if !strings.Contains(partial, want) {
 			t.Errorf("filtered markdown missing %q:\n%s", want, partial)
@@ -50,7 +50,7 @@ func TestStatusMarkdownAnnouncesHiddenRepositories(t *testing.T) {
 
 	singular := statusMarkdown(statusIndex{HiddenClean: 1, Repositories: []repositoryStatusInfo{
 		{Repository: "acme/dirty", Status: "attention"},
-	}}, false)
+	}}, false, "# WB local repository status\n\n")
 	if !strings.Contains(singular, "1 clean repository hidden") {
 		t.Errorf("filtered markdown does not read naturally for one repository:\n%s", singular)
 	}
@@ -61,7 +61,7 @@ func TestStatusMarkdownAnnouncesHiddenRepositories(t *testing.T) {
 // that was never scanned.
 func TestStatusMarkdownReportsAnAllCleanFleet(t *testing.T) {
 	t.Parallel()
-	markdown := statusMarkdown(statusIndex{SchemaVersion: 1, HiddenClean: 12}, false)
+	markdown := statusMarkdown(statusIndex{SchemaVersion: 1, HiddenClean: 12}, false, "# WB local repository status\n\n")
 	if !strings.Contains(markdown, "All 12 inspected repositories are clean.") {
 		t.Errorf("all-clean markdown does not say so:\n%s", markdown)
 	}
@@ -69,7 +69,7 @@ func TestStatusMarkdownReportsAnAllCleanFleet(t *testing.T) {
 		t.Errorf("all-clean markdown still prints an empty table:\n%s", markdown)
 	}
 
-	one := statusMarkdown(statusIndex{SchemaVersion: 1, HiddenClean: 1}, false)
+	one := statusMarkdown(statusIndex{SchemaVersion: 1, HiddenClean: 1}, false, "# WB local repository status\n\n")
 	if !strings.Contains(one, "The inspected repository is clean.") {
 		t.Errorf("all-clean markdown does not read naturally for one repository:\n%s", one)
 	}
@@ -81,7 +81,7 @@ func TestStatusMarkdownUnfilteredHasNoNote(t *testing.T) {
 	t.Parallel()
 	markdown := statusMarkdown(statusIndex{SchemaVersion: 1, Repositories: []repositoryStatusInfo{
 		{Repository: "acme/clean", Status: "clean"},
-	}}, false)
+	}}, false, "# WB local repository status\n\n")
 	if strings.Contains(markdown, "--all") {
 		t.Errorf("an unfiltered report advertises --all:\n%s", markdown)
 	}

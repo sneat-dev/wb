@@ -98,6 +98,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newVerifyCmd())
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newStatusCmd())
+	root.AddCommand(newFleetCmd())
+	root.AddCommand(newRepoCmd())
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newSelfUpdateCmd())
 
@@ -115,6 +117,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
@@ -126,6 +129,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree summary": true,
 	},
@@ -157,6 +161,9 @@ func rejectIgnoredPersistentFlags(cmd *cobra.Command, args []string) error {
 			if commandID == "status" {
 				return fmt.Errorf("--%s is not supported by status with repository-path; omit the path to select the --projects-root fleet", flag)
 			}
+			if commandID == "repo status" {
+				return fmt.Errorf("--%s is not supported by repo status; use wb fleet status for the --projects-root fleet", flag)
+			}
 			return fmt.Errorf("--%s requires --fleet for %s; see docs/cli-flag-matrix.md", flag, commandID)
 		}
 	}
@@ -170,12 +177,14 @@ func persistentFlagNeedsFleet(flag, commandID string) bool {
 	switch flag {
 	case "filter":
 		switch commandID {
-		case "ci audit", "hooks install", "hooks check", "hooks repair", "coverage", "verify", "check", "status":
+		case "ci audit", "hooks install", "hooks check", "hooks repair", "coverage", "verify", "check", "status",
+			"fleet", "fleet overview", "fleet stats", "fleet status":
 			return true
 		}
 	case "projects-root":
 		switch commandID {
-		case "ci audit", "coverage", "verify", "check", "status":
+		case "ci audit", "coverage", "verify", "check", "status",
+			"fleet", "fleet overview", "fleet stats", "fleet status":
 			return true
 		}
 	}
@@ -183,8 +192,13 @@ func persistentFlagNeedsFleet(flag, commandID string) bool {
 }
 
 func persistentCommandSelectedFleet(cmd *cobra.Command, commandID string, args []string) bool {
-	if commandID == "status" {
+	switch commandID {
+	case "status":
 		return len(args) == 0
+	case "fleet", "fleet overview", "fleet stats", "fleet status":
+		return true
+	case "repo status":
+		return false
 	}
 	fleet := cmd.Flags().Lookup("fleet")
 	return fleet != nil && fleet.Value.String() == "true"

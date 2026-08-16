@@ -196,6 +196,42 @@
       "notes": "Without publication flags, verified changes remain in isolated operation worktrees for review."
     },
     {
+      "id": "wb.fleet.overview",
+      "feature_refs": ["spec/features/fleet-status/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet overview", "flags": ["--all", "--details", "--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Summarizes local fleet inventory, Git attention counts, managed worktree debt, and the attention worklist.", "wb fleet with no subcommand runs the same overview."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet overview --help", "contains": ["--all", "--details", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb fleet --format json", "wb fleet overview --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_cmd_test.go", "name": "TestFleetOverviewIncludesStatsAndAttention", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Overview is local and read-only; it does not imply remote freshness."
+    },
+    {
+      "id": "wb.fleet.stats",
+      "feature_refs": ["spec/features/fleet-status/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet stats", "flags": ["--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Counts local organizations, repositories, Git attention, and managed WB worktrees without listing every checkout."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet stats --help", "contains": ["--format", "--parallel", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb fleet stats --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_cmd_test.go", "name": "TestFleetStatsCountsLocalRepositories", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Stats are local and read-only; use wb sync --dry-run for GitHub reconciliation."
+    },
+    {
+      "id": "wb.fleet.status",
+      "feature_refs": ["spec/features/fleet-status/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet status", "flags": ["--all", "--details", "--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Reports attention-worthy local Git state for the default projects-root fleet."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet status --help", "contains": ["--details", "--all", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb fleet status --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_cmd_test.go", "name": "TestFleetStatusMatchesHistoricalFleetWorklist", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Fleet status matches the no-path form of wb status; it does not imply remote freshness."
+    },
+    {
       "id": "wb.hooks.check",
       "feature_refs": [],
       "since": "existing",
@@ -256,6 +292,18 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.repo.status",
+      "feature_refs": ["spec/features/fleet-status/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb repo status", "flags": ["--details", "--format", "--parallel", "--report-dir"], "modes": ["Reports local Git state for one repository path, clean or not."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb repo status --help", "contains": ["--details", "--format", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb repo status . --details --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_cmd_test.go", "name": "TestRepoStatusReportsOneCheckout", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Repo status never scans the projects-root fleet; use wb fleet status for that worklist."
+    },
+    {
       "id": "wb.root.filter",
       "feature_refs": ["docs/cli-flag-matrix.md"],
       "since": "unreleased",
@@ -267,6 +315,9 @@
           {"path": "wb deps bump", "flags": ["--filter"], "modes": ["Fleet-only command; filters discovered repositories."]},
           {"path": "wb deps graph", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
           {"path": "wb deps set", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
+          {"path": "wb fleet overview", "flags": ["--filter"], "modes": ["Filters the local fleet inventory, Git attention, and managed worktree rollup."]},
+          {"path": "wb fleet stats", "flags": ["--filter"], "modes": ["Filters the local fleet inventory and attention counts."]},
+          {"path": "wb fleet status", "flags": ["--filter"], "modes": ["Filters the attention worklist under --projects-root."]},
           {"path": "wb hooks check", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
           {"path": "wb hooks install", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
           {"path": "wb hooks repair", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
@@ -310,15 +361,15 @@
     },
     {
       "id": "wb.status",
-      "feature_refs": [],
+      "feature_refs": ["spec/features/fleet-status/README.md"],
       "since": "existing",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb status", "flags": ["--all", "--details", "--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Reports attention-worthy local Git state for one repository or the default local fleet."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb status --help", "contains": ["--details", "--all", "--report-dir"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb status", "flags": ["--all", "--details", "--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Reports attention-worthy local Git state for one repository or the default local fleet.", "Prefer wb fleet status for the fleet worklist and wb repo status for one checkout."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb status --help", "contains": ["--details", "--all", "--report-dir", "wb fleet status", "wb repo status"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb status <repository-path> --details --format yaml"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "cmd/wb/status_test.go", "name": "TestStatusFiltersACleanFleetEndToEnd", "kind": "integration"}, {"path": "cmd/wb/status_test.go", "name": "TestStatusMarkdownReportsAnAllCleanFleet", "kind": "unit"}], "limitation": null}
       },
-      "notes": "Status is local and read-only; it does not imply remote freshness."
+      "notes": "Status is local and read-only; it does not imply remote freshness. Prefer the explicit fleet and repo nouns for new automation."
     },
     {
       "id": "wb.sync",

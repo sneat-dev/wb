@@ -40,7 +40,9 @@ wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
 wb check [path] [flags]      # run a named local CI-equivalent check profile
-wb status [path] [flags]     # report local repos needing attention (--all for every repo)
+wb fleet [overview|stats|status] # fleet inventory, counts, or attention worklist
+wb repo status [path]        # local Git state for one repository
+wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a path is given
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
 wb worktree summary <task>   # brief overview of a task's worktrees, branches, optional PRs
@@ -444,31 +446,41 @@ for repositories with `spec/`. `--timeout` applies to each external command;
 `--resume --report-dir DIR` selects only repository failures from the previous
 YAML report. These controls also apply to `wb coverage` and `wb verify`.
 
-### `wb status` — fleet-first local Git health
+### `wb fleet` / `wb status` — local fleet Git health
 
-Status is fleet-first because the normal question is “which local checkouts
-need attention?” Run `wb status` with no flags to scan all repositories below
-`--projects-root`; there is intentionally no `--fleet` flag. Supplying a path
-narrows the same command to one checkout.
-
-The answer to that question is a worklist, so a fleet run lists only the
-repositories needing attention and reports the clean ones as a count. `--all`
-lists every inspected repository. Naming a single repository always reports
-that repository, clean or not.
+The normal fleet question is “which local checkouts need attention?” Prefer the
+explicit nouns:
 
 ```sh
-wb status
-wb status --all
-wb status --filter sneat-co/ --match 'sneat-co/*' --parallel=8
+wb fleet                 # overview: counts + attention worklist
+wb fleet overview        # same as wb fleet
+wb fleet stats           # inventory / git / worktree counts only
+wb fleet status          # attention worklist
+wb repo status ~/projects/sneat-co/sneat-bots --details --format yaml
+```
+
+`wb status` remains as a compatibility entry point: no path matches
+`wb fleet status`; a path matches `wb repo status`. There is intentionally no
+`--fleet` flag on these surfaces.
+
+A fleet worklist lists only the repositories needing attention and reports the
+clean ones as a count. `--all` lists every inspected repository. Naming a
+single repository always reports that repository, clean or not.
+
+```sh
+wb fleet status
+wb fleet status --all
+wb fleet status --filter sneat-co/ --match 'sneat-co/*' --parallel=8
 wb status ~/projects/sneat-co/sneat-bots --details --format yaml
 ```
 
-It reads only local Git state—never fetches, pulls, modifies, commits, or
-pushes—and reports clean, attention, or inspection-error status. Attention
-covers modified, untracked, conflicted, stashed, and unpushed work. Markdown
-defaults to concise summaries; YAML/JSON and `--details` provide individual
-paths and Git entries, and every format carries the same filtered set plus a
-`hidden_clean` count.
+These commands read only local Git state—never fetch, pull, modify, commit, or
+push—and report clean, attention, or inspection-error status. Attention covers
+modified, untracked, conflicted, stashed, and unpushed work. Markdown defaults
+to concise summaries; YAML/JSON and `--details` provide individual paths and
+Git entries. `wb fleet` / `stats` also roll up local inventory and managed
+worktree counts; use `wb sync --dry-run` for GitHub reconciliation and
+`wb worktree orphans` for linked-worktree debt outside managed tasks.
 
 ### `wb deps set` — one exact dependency version
 

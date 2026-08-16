@@ -29,6 +29,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `hooks metrics` | rejected | rejected | rejected | yes |
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
+| `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
+| `repo status` | rejected | rejected | rejected | yes |
 | `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `abort`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
@@ -42,12 +44,15 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
   it does not change clone discovery. CI audit, coverage, verify, and check
   consume it only with `--fleet`; status consumes it only in no-path default
   fleet mode. Supplying it with a direct repository path is rejected.
+  `wb fleet` / `overview` / `stats` / `status` always consume `--projects-root`
+  and `--filter`. `wb repo status` rejects both because it targets one path.
 - Root `--org` is consumed only by fleet commands that query owners. For sync,
   `wb --org acme sync` and `wb sync --org acme` both restrict selection to the
   named owner; the command-local spelling intentionally shadows the root flag.
 - `--filter` selects repository identities on the listed fleet/worktree
   inventory surfaces. CI, hook, coverage, verify, and check commands require
-  explicit `--fleet`; status requires its no-path default fleet mode. The flag
+  explicit `--fleet`; status requires its no-path default fleet mode; the
+  `wb fleet …` leaves always accept it. The flag
   is intentionally rejected for a direct canonical
   worktree create/guard/abort, where silently skipping the requested repository
   would be unsafe.

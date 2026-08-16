@@ -108,6 +108,8 @@ func TestPersistentFlagsAreRejectedWhenTheSelectedCommandCannotUseThem(t *testin
 		{name: "root-ci-direct", args: []string{"--projects-root", t.TempDir(), "ci", "audit"}, want: "--projects-root requires --fleet for ci audit"},
 		{name: "filter-status-path", args: []string{"--filter", "acme", "status", "."}, want: "--filter is not supported by status with repository-path"},
 		{name: "root-status-path", args: []string{"--projects-root", t.TempDir(), "status", "."}, want: "--projects-root is not supported by status with repository-path"},
+		{name: "filter-repo-status", args: []string{"--filter", "acme", "repo", "status", "."}, want: "--filter is not supported by repo status"},
+		{name: "root-repo-status", args: []string{"--projects-root", t.TempDir(), "repo", "status", "."}, want: "--projects-root is not supported by repo status"},
 		{name: "org-deps-direct", args: []string{"--org", "acme", "deps", "graph"}, want: "--org requires --fleet for deps graph"},
 	}
 	for _, test := range tests {

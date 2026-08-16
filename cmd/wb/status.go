@@ -13,56 +13,121 @@ import (
 	"github.com/sneat-dev/wb/internal/gitops"
 )
 
-// Status is fleet-first: without a path it examines every local repository
-// below --projects-root. Supplying a path intentionally narrows it to one
-// checkout, so a separate --fleet flag would only add ambiguity.
+// newStatusCmd keeps the historical entry point. Prefer the explicit nouns:
+// wb fleet status / wb fleet stats / wb fleet, and wb repo status.
 func newStatusCmd() *cobra.Command {
 	options := qualityOptions{parallel: 4}
 	var details bool
 	var all bool
 	command := &cobra.Command{
 		Use:   "status [repository-path]",
-		Short: "Report local Git state for the repositories that need attention",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Report local Git state (fleet worklist, or one repository when a path is given)",
+		Long: `Report local Git attention for the fleet or one repository.
+
+Prefer the explicit commands:
+  wb fleet status   fleet attention worklist
+  wb fleet stats    inventory and attention counts
+  wb fleet          overview (stats + attention)
+  wb repo status    one repository
+
+Without a path this command matches wb fleet status. With a path it matches
+wb repo status. It reads local Git state only and never fetches or contacts
+GitHub.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
+			fleet := true
 			if len(args) == 1 {
 				path = args[0]
-				options.fleet = false
-			} else {
-				options.fleet = true
+				fleet = false
 			}
-			targets, err := qualityTargets(path, projectsRoot, filterFlag, options)
-			if err != nil {
-				return err
-			}
-			report := statusIndex{SchemaVersion: 1, Repositories: runStatusTargets(targets, options.parallel)}
-			// A fleet report is a worklist, so clean checkouts are noise unless
-			// they were asked for. One named repository is a direct question
-			// about that checkout, where "clean" is the answer, not nothing.
-			if options.fleet && !all {
-				report = hideCleanRepositories(report)
-			}
-			if err := writeStatusOutput(report, options.format, options.reportDir, details); err != nil {
-				return err
-			}
-			if statusFailed(report) {
-				return &exitError{
-					code:    exitFindings,
-					message: "one or more repositories could not be inspected; see the `error` field of each `error` row above",
-				}
-			}
-			return nil
+			return runRepositoryStatus(repositoryStatusRequest{
+				path:      path,
+				fleet:     fleet,
+				all:       all,
+				details:   details,
+				options:   options,
+				filter:    filterFlag,
+				projects:  projectsRoot,
+				titleKind: statusTitleAuto,
+			})
 		},
 	}
-	command.Flags().StringVar(&options.match, "match", "", "default-fleet glob matched against org/repo, e.g. sneat-co/*")
-	command.Flags().StringVar(&options.regex, "regex", "", "default-fleet regular expression matched against org/repo")
+	bindRepositoryStatusFlags(command, &options, &details, &all, true)
+	return command
+}
+
+type statusTitleKind int
+
+const (
+	statusTitleAuto statusTitleKind = iota
+	statusTitleFleet
+	statusTitleRepo
+)
+
+type repositoryStatusRequest struct {
+	path      string
+	fleet     bool
+	all       bool
+	details   bool
+	options   qualityOptions
+	filter    string
+	projects  string
+	titleKind statusTitleKind
+}
+
+func bindRepositoryStatusFlags(command *cobra.Command, options *qualityOptions, details, all *bool, fleetFilters bool) {
+	if fleetFilters {
+		command.Flags().StringVar(&options.match, "match", "", "fleet-only glob matched against org/repo, e.g. sneat-co/*")
+		command.Flags().StringVar(&options.regex, "regex", "", "fleet-only regular expression matched against org/repo")
+	}
 	command.Flags().IntVar(&options.parallel, "parallel", 4, "maximum repositories to inspect concurrently")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write status.md and status.yaml to this directory")
-	command.Flags().BoolVar(&details, "details", false, "include individual changed, untracked, conflict, stash, and unpushed entries in Markdown")
-	command.Flags().BoolVar(&all, "all", false, "report clean repositories too; a single repository-path always reports its own status")
-	return command
+	command.Flags().BoolVar(details, "details", false, "include individual changed, untracked, conflict, stash, and unpushed entries in Markdown")
+	if all != nil {
+		command.Flags().BoolVar(all, "all", false, "report clean repositories too; a single repository-path always reports its own status")
+	}
+}
+
+func runRepositoryStatus(request repositoryStatusRequest) error {
+	request.options.fleet = request.fleet
+	targets, err := qualityTargets(request.path, request.projects, request.filter, request.options)
+	if err != nil {
+		return err
+	}
+	report := statusIndex{SchemaVersion: 1, Repositories: runStatusTargets(targets, request.options.parallel)}
+	// A fleet report is a worklist, so clean checkouts are noise unless they
+	// were asked for. One named repository is a direct question about that
+	// checkout, where "clean" is the answer, not nothing.
+	if request.fleet && !request.all {
+		report = hideCleanRepositories(report)
+	}
+	title := statusMarkdownTitle(request.titleKind, request.fleet)
+	if err := writeStatusOutput(report, request.options.format, request.options.reportDir, request.details, title); err != nil {
+		return err
+	}
+	if statusFailed(report) {
+		return &exitError{
+			code:    exitFindings,
+			message: "one or more repositories could not be inspected; see the `error` field of each `error` row above",
+		}
+	}
+	return nil
+}
+
+func statusMarkdownTitle(kind statusTitleKind, fleet bool) string {
+	switch kind {
+	case statusTitleFleet:
+		return "# WB fleet status\n\n"
+	case statusTitleRepo:
+		return "# WB repository status\n\n"
+	default:
+		if fleet {
+			return "# WB local repository status\n\n"
+		}
+		return "# WB repository status\n\n"
+	}
 }
 
 type statusIndex struct {
@@ -140,12 +205,15 @@ func statusFailed(report statusIndex) bool {
 	return false
 }
 
-func writeStatusOutput(report statusIndex, format, reportDir string, details bool) error {
+func writeStatusOutput(report statusIndex, format, reportDir string, details bool, title string) error {
+	if title == "" {
+		title = "# WB local repository status\n\n"
+	}
 	if reportDir != "" {
 		if err := os.MkdirAll(reportDir, 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(reportDir, "status.md"), []byte(statusMarkdown(report, details)), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(reportDir, "status.md"), []byte(statusMarkdown(report, details, title)), 0o644); err != nil {
 			return err
 		}
 		raw, err := yaml.Marshal(report)
@@ -158,7 +226,7 @@ func writeStatusOutput(report statusIndex, format, reportDir string, details boo
 	}
 	switch format {
 	case "markdown":
-		_, err := fmt.Print(statusMarkdown(report, details))
+		_, err := fmt.Print(statusMarkdown(report, details, title))
 		return err
 	case "yaml":
 		raw, err := yaml.Marshal(report)
@@ -176,9 +244,9 @@ func writeStatusOutput(report statusIndex, format, reportDir string, details boo
 	}
 }
 
-func statusMarkdown(report statusIndex, details bool) string {
+func statusMarkdown(report statusIndex, details bool, title string) string {
 	var out strings.Builder
-	out.WriteString("# WB local repository status\n\n")
+	out.WriteString(title)
 	if len(report.Repositories) == 0 && report.HiddenClean > 0 {
 		if report.HiddenClean == 1 {
 			out.WriteString("The inspected repository is clean.\n")
