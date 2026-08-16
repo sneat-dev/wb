@@ -32,7 +32,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		if lockErr != nil {
 			return BumpReport{}, lockErr
 		}
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 	report := BumpReport{
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
