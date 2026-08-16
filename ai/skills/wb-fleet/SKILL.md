@@ -10,7 +10,10 @@ Choose one command that answers the question:
 | Need | Command | Reference |
 |---|---|---|
 | Reconcile canonical clones with GitHub | `wb sync` | [sync.md](references/sync.md) |
-| Find local changes, stashes, conflicts, or unpushed commits | `wb status` | [status.md](references/status.md) |
+| One glance at fleet size and attention | `wb fleet` / `wb fleet overview` | [status.md](references/status.md) |
+| Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
+| Find local changes, stashes, conflicts, or unpushed commits | `wb fleet status` | [status.md](references/status.md) |
+| Inspect one repository checkout | `wb repo status` | [status.md](references/status.md) |
 | Measure Go coverage | `wb coverage` | [quality.md](references/quality.md) |
 | Run conventional lint/test/build | `wb verify` | [quality.md](references/quality.md) |
 | Run a stable local CI profile | `wb check` | [quality.md](references/quality.md) |
