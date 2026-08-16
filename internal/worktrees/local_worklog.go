@@ -21,36 +21,36 @@ const (
 	localWorkLogProjectionName = "projection.json"
 	localWorkLogOutboxName     = "outbox.jsonl"
 
-	LocalEventInit         = "init"
-	LocalEventSteer        = "steer"
-	LocalEventCheckpoint   = "checkpoint"
-	LocalEventRefresh      = "refresh"
-	LocalEventRefreshNeed  = "refresh_required"
-	LocalEventIntegrate    = "integrate"
-	LocalEventHandoff      = "handoff"
-	LocalEventRecover      = "recover"
-	LocalEventFinalize     = "finalize"
-	LocalEventSyncAttempt  = "sync_attempt"
-	LocalEventArchive      = "archive"
+	LocalEventInit        = "init"
+	LocalEventSteer       = "steer"
+	LocalEventCheckpoint  = "checkpoint"
+	LocalEventRefresh     = "refresh"
+	LocalEventRefreshNeed = "refresh_required"
+	LocalEventIntegrate   = "integrate"
+	LocalEventHandoff     = "handoff"
+	LocalEventRecover     = "recover"
+	LocalEventFinalize    = "finalize"
+	LocalEventSyncAttempt = "sync_attempt"
+	LocalEventArchive     = "archive"
 )
 
 // LocalWorkLogEvent is one append-only journal record under .wb/local/worklog/.
 type LocalWorkLogEvent struct {
-	Version   int                    `json:"version"`
-	Seq       int                    `json:"seq"`
-	ID        string                 `json:"id"`
-	Type      string                 `json:"type"`
-	At        time.Time              `json:"at"`
-	Message   string                 `json:"message,omitempty"`
-	NextAction string                `json:"next_action,omitempty"`
-	Prompt    string                 `json:"prompt,omitempty"`
-	PromptSHA string                 `json:"prompt_sha256,omitempty"`
-	Git       *LocalGitEvidence      `json:"git,omitempty"`
-	Target    *LocalTargetEvidence   `json:"target,omitempty"`
-	Usage     *LocalUsageEvidence    `json:"usage,omitempty"`
-	Result    string                 `json:"result,omitempty"`
-	Conflict  string                 `json:"conflict,omitempty"`
-	Extra     map[string]any         `json:"extra,omitempty"`
+	Version    int                  `json:"version"`
+	Seq        int                  `json:"seq"`
+	ID         string               `json:"id"`
+	Type       string               `json:"type"`
+	At         time.Time            `json:"at"`
+	Message    string               `json:"message,omitempty"`
+	NextAction string               `json:"next_action,omitempty"`
+	Prompt     string               `json:"prompt,omitempty"`
+	PromptSHA  string               `json:"prompt_sha256,omitempty"`
+	Git        *LocalGitEvidence    `json:"git,omitempty"`
+	Target     *LocalTargetEvidence `json:"target,omitempty"`
+	Usage      *LocalUsageEvidence  `json:"usage,omitempty"`
+	Result     string               `json:"result,omitempty"`
+	Conflict   string               `json:"conflict,omitempty"`
+	Extra      map[string]any       `json:"extra,omitempty"`
 }
 
 // LocalGitEvidence is the public Git fingerprint recorded on checkpoints.
@@ -64,12 +64,12 @@ type LocalGitEvidence struct {
 
 // LocalTargetEvidence records refresh/integrate observations.
 type LocalTargetEvidence struct {
-	Ref       string `json:"ref,omitempty"`
-	SHA       string `json:"sha,omitempty"`
+	Ref       string    `json:"ref,omitempty"`
+	SHA       string    `json:"sha,omitempty"`
 	FetchedAt time.Time `json:"fetched_at,omitempty"`
-	Ahead     int    `json:"ahead"`
-	Behind    int    `json:"behind"`
-	Strategy  string `json:"strategy,omitempty"`
+	Ahead     int       `json:"ahead"`
+	Behind    int       `json:"behind"`
+	Strategy  string    `json:"strategy,omitempty"`
 }
 
 // LocalUsageEvidence is optional nullable token usage.
@@ -85,20 +85,20 @@ type LocalUsageEvidence struct {
 
 // LocalWorkLogProjection is the derived current-state cache for the local journal.
 type LocalWorkLogProjection struct {
-	Version         int                  `json:"version"`
-	EffortID        string               `json:"effort_id,omitempty"`
-	RunID           string               `json:"run_id,omitempty"`
-	ClaimID         string               `json:"claim_id,omitempty"`
-	Lifecycle       string               `json:"lifecycle"`
-	LastSeq         int                  `json:"last_seq"`
-	LastEventID     string               `json:"last_event_id,omitempty"`
-	LastType        string               `json:"last_type,omitempty"`
-	LastMessage     string               `json:"last_message,omitempty"`
-	LastNextAction  string               `json:"last_next_action,omitempty"`
-	LastCheckpoint  *LocalGitEvidence    `json:"last_checkpoint,omitempty"`
-	LastTarget      *LocalTargetEvidence `json:"last_target,omitempty"`
-	Conflict        string               `json:"conflict,omitempty"`
-	UpdatedAt       time.Time            `json:"updated_at"`
+	Version        int                  `json:"version"`
+	EffortID       string               `json:"effort_id,omitempty"`
+	RunID          string               `json:"run_id,omitempty"`
+	ClaimID        string               `json:"claim_id,omitempty"`
+	Lifecycle      string               `json:"lifecycle"`
+	LastSeq        int                  `json:"last_seq"`
+	LastEventID    string               `json:"last_event_id,omitempty"`
+	LastType       string               `json:"last_type,omitempty"`
+	LastMessage    string               `json:"last_message,omitempty"`
+	LastNextAction string               `json:"last_next_action,omitempty"`
+	LastCheckpoint *LocalGitEvidence    `json:"last_checkpoint,omitempty"`
+	LastTarget     *LocalTargetEvidence `json:"last_target,omitempty"`
+	Conflict       string               `json:"conflict,omitempty"`
+	UpdatedAt      time.Time            `json:"updated_at"`
 }
 
 func openLocalWorkLogDir(worktree string, create bool) (*os.File, error) {

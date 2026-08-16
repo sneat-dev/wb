@@ -17,16 +17,16 @@ import (
 
 // LogVerbResult is the public receipt returned by mutating log verbs.
 type LogVerbResult struct {
-	Worktree   string                 `json:"worktree"`
-	Verb       string                 `json:"verb"`
-	Event      *LocalWorkLogEvent     `json:"event,omitempty"`
+	Worktree   string                  `json:"worktree"`
+	Verb       string                  `json:"verb"`
+	Event      *LocalWorkLogEvent      `json:"event,omitempty"`
 	Projection *LocalWorkLogProjection `json:"projection,omitempty"`
-	Prompt     string                 `json:"prompt,omitempty"`
-	Applied    bool                   `json:"applied"`
-	Offline    bool                   `json:"offline,omitempty"`
-	Outbox     int                    `json:"outbox,omitempty"`
-	Notes      []string               `json:"notes,omitempty"`
-	Diagnosis  []string               `json:"diagnosis,omitempty"`
+	Prompt     string                  `json:"prompt,omitempty"`
+	Applied    bool                    `json:"applied"`
+	Offline    bool                    `json:"offline,omitempty"`
+	Outbox     int                     `json:"outbox,omitempty"`
+	Notes      []string                `json:"notes,omitempty"`
+	Diagnosis  []string                `json:"diagnosis,omitempty"`
 }
 
 type claimFence struct {

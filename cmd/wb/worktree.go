@@ -544,7 +544,6 @@ func newWorktreeLogArchiveCmd() *cobra.Command {
 	return command
 }
 
-
 func newWorktreeCorrectIdentityCmd() *cobra.Command {
 	var model, cli, provider, actor, reason, eventID, format string
 	command := &cobra.Command{
