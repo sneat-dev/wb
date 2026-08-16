@@ -13,6 +13,7 @@ Choose the noun that matches the question:
 wb fleet --format json
 wb fleet overview --format json
 wb fleet stats --format json
+wb fleet stats --remote --hooks --format json
 wb fleet status --format json
 wb repo status . --details --format json
 ```
@@ -20,10 +21,11 @@ wb repo status . --details --format json
 `wb status` remains as a compatibility entry point: no path matches
 `wb fleet status`, and a path matches `wb repo status`.
 
-Fleet commands are local and read-only. They report modified, untracked,
-conflicted, stashed, and unpushed state, plus inventory and managed-worktree
-counts for stats/overview. Use `--details` only when individual entries are
-needed; concise output saves context.
+Fleet commands default to local disk/Git state. Layout placement counts are
+always included in stats/overview. Pass `--remote` for sync-drift counts
+(contacts GitHub) or `--hooks` for managed-hook finding counts. Use
+`wb layout audit` for the placement worklist and `wb sync --dry-run` for a
+full sync plan.
 
 A fleet worklist reports only the repositories needing attention and gives the
 number of clean ones as `hidden_clean`; a named repository is always reported,
