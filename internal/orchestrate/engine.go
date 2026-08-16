@@ -38,7 +38,7 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 		if err != nil {
 			return results, err
 		}
-		defer lock.Release()
+		defer func() { _ = lock.Release() }()
 	}
 	errorsByRepository := make([]error, len(repositories))
 	runParallel(len(repositories), options.Parallel, func(index int) {
@@ -481,22 +481,22 @@ func AcquireOperationLock(githubDir, operation string, resume bool) (OperationLo
 	}
 	file := lock.File()
 	if file == nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return OperationLock{}, fmt.Errorf("initialize operation %q lock: descriptor is unavailable", operation)
 	}
 	if err := file.Truncate(0); err != nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return OperationLock{}, fmt.Errorf("initialize operation %q lock: %w", operation, err)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return OperationLock{}, err
 	}
 	if _, err := fmt.Fprintf(file, "operation=%s\npid=%d\n", operation, os.Getpid()); err != nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return OperationLock{}, err
 	}
@@ -539,11 +539,13 @@ func operationLockPIDMayBeLive(pid int) bool {
 
 // Release retires the exact held lock inode. It is safe to call from defer and
 // cannot unlink a successor lock installed after this operation acquired one.
-func (lock OperationLock) Release() {
+func (lock OperationLock) Release() error {
+	var err error
 	if lock.lock != nil {
-		lock.lock.Release()
+		err = lock.lock.Release()
 	}
 	if lock.directory != nil {
 		_ = lock.directory.Close()
 	}
+	return err
 }

@@ -37,7 +37,7 @@ func TestAcquireOperationLockResumesExactLegacyRemnantOnlyWithResume(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Release()
+	defer func() { _ = lock.Release() }()
 	if lock.lock == nil || !lock.lock.ReclaimedInterrupted() {
 		t.Fatal("resume did not hold the exact interrupted lock")
 	}
@@ -67,7 +67,7 @@ func TestAcquireOperationLockRefusesLiveOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Release()
+	defer func() { _ = owner.Release() }()
 
 	if _, err := AcquireOperationLock(githubDir, operation, true); err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("live-owner acquisition error = %v", err)
@@ -179,7 +179,7 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 	if err := os.WriteFile(path, []byte(successor), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	lock.Release()
+	_ = lock.Release()
 	if contents, err := os.ReadFile(path); err != nil || string(contents) != successor {
 		t.Fatalf("late successor was removed: contents=%q err=%v", contents, err)
 	}

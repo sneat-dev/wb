@@ -273,7 +273,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		return fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 	}
 	defer func() {
-		task.lock.release()
+		_ = task.lock.release()
 		task.close()
 	}()
 	canonical, err := openCanonicalRepository(record.CanonicalDir)

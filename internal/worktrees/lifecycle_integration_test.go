@@ -624,11 +624,11 @@ func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
 				t.Fatalf("open next cleanup task while first is active: %v", openErr)
 			}
 			defer func() { _ = secondTask.Close() }()
-			lock, lockErr := acquireLockAt(secondTask)
+			lock, lockErr := acquireLockAt(secondTask, "second-task")
 			if lockErr != nil {
 				t.Fatalf("next cleanup task was locked before it was processed: %v", lockErr)
 			}
-			lock.release()
+			_ = lock.release()
 		},
 	})
 	if err != nil {
@@ -1840,6 +1840,436 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || !exists {
 		t.Fatalf("refused cleanup must preserve the branch: exists=%t err=%v", exists, branchErr)
 	}
+}
+
+func TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock(t *testing.T) {
+	const task = "cleanup-named-interrupted-recovery"
+	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	contents := fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))
+	lockPath := filepath.Join(taskDir, ".lock")
+	if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.Recovery == nil || planned.Recovery.Disposition != "validated" || planned.Recovery.Applied || planned.Recovery.PID <= 0 ||
+		len(planned.Results) != 1 || !planned.Results[0].Eligible {
+		t.Fatalf("recovery plan = %#v", planned)
+	}
+	if got, err := os.ReadFile(lockPath); err != nil || string(got) != contents {
+		t.Fatalf("dry-run changed exact lock: contents=%q err=%v", got, err)
+	}
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		ReportDir: filepath.Join(t.TempDir(), "recovery-audit"),
+		Now:       func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Recovery == nil || applied.Recovery.Disposition != "quarantined" || !applied.Recovery.Applied ||
+		len(applied.Results) != 1 || !applied.Results[0].Applied {
+		t.Fatalf("recovery apply = %#v", applied)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("recovered lock remains active: %v", err)
+	}
+	report, err := os.ReadFile(applied.ReportPath)
+	if err != nil || !strings.Contains(string(report), `"disposition": "quarantined"`) || !strings.Contains(string(report), `"pid":`) {
+		t.Fatalf("recovery audit = %q err=%v", report, err)
+	}
+}
+
+func TestCleanupResumeInterruptedNamedTaskPreservesAmbiguousLock(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, lockPath, task string) string
+	}{
+		{name: "invalid metadata", setup: func(t *testing.T, lockPath, _ string) string {
+			contents := "operation=other\npid=6954\n"
+			if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return contents
+		}},
+		{name: "live legacy owner", setup: func(t *testing.T, lockPath, task string) string {
+			contents := fmt.Sprintf("operation=%s\npid=%d\n", task, os.Getpid())
+			if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return contents
+		}},
+		{name: "symlink", setup: func(t *testing.T, lockPath, task string) string {
+			contents := fmt.Sprintf("operation=%s\npid=6954\n", task)
+			target := filepath.Join(t.TempDir(), "foreign-lock")
+			if err := os.WriteFile(target, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, lockPath); err != nil {
+				t.Fatal(err)
+			}
+			return contents
+		}},
+		{name: "hardlink", setup: func(t *testing.T, lockPath, task string) string {
+			contents := fmt.Sprintf("operation=%s\npid=6954\n", task)
+			target := filepath.Join(t.TempDir(), "foreign-lock")
+			if err := os.WriteFile(target, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(target, lockPath); err != nil {
+				t.Fatal(err)
+			}
+			return contents
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task := "cleanup-ambiguous-" + strings.ReplaceAll(test.name, " ", "-")
+			fixture, created, head, mergedAt := prepareMergedTask(t, task)
+			installMergedPullRequestFixture(t, head, mergedAt)
+			lockPath := filepath.Join(filepath.Dir(filepath.Dir(created.WorktreeDir)), ".lock")
+			contents := test.setup(t, lockPath, task)
+			if _, err := Cleanup(context.Background(), CleanupOptions{
+				ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true, OlderThan: 0,
+				Now: func() time.Time { return mergedAt.Add(time.Hour) },
+			}); err == nil {
+				t.Fatal("ambiguous interrupted lock was accepted")
+			}
+			if got, err := os.ReadFile(lockPath); err != nil || string(got) != contents {
+				t.Fatalf("ambiguous lock changed: contents=%q err=%v", got, err)
+			}
+			if info, err := os.Lstat(lockPath); err != nil || (test.name == "symlink" && info.Mode()&os.ModeSymlink == 0) {
+				t.Fatalf("ambiguous lock entry was replaced: info=%v err=%v", info, err)
+			}
+		})
+	}
+}
+
+func TestCleanupResumeInterruptedNamedTaskRejectsLateSuccessor(t *testing.T) {
+	const task = "cleanup-named-late-successor"
+	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	lockPath := filepath.Join(taskDir, ".lock")
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	successor := "operation=successor\npid=1\n"
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+		afterResumeInterruptedLock: func(path string) error {
+			if err := os.Rename(path, filepath.Join(taskDir, ".held-before-successor")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(successor), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "lock changed after recovery") {
+		t.Fatalf("late successor recovery error = %v", err)
+	}
+	if got, err := os.ReadFile(lockPath); err != nil || string(got) != successor {
+		t.Fatalf("late successor was changed: contents=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(created.WorktreeDir); err != nil {
+		t.Fatalf("late successor must block cleanup: %v", err)
+	}
+}
+
+func TestCleanupResumeInterruptedNamedTaskRejectsSuccessorBeforeRemoteDeletion(t *testing.T) {
+	const task = "cleanup-named-successor-before-remote"
+	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+	heldPath := lockPath + ".held-before-successor"
+	successor := "operation=successor\npid=1\n"
+	reportDir := filepath.Join(t.TempDir(), "audit")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+		Apply: true, DeleteRemote: true, OlderThan: 0, ReportDir: reportDir,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeCleanupNetworkBranchOperation: func(worktree string) {
+			if worktree != created.WorktreeDir {
+				return
+			}
+			installRecoveredLockSuccessor(t, lockPath, heldPath, successor)
+		},
+	})
+	assertRecoveredLockBoundaryRefusal(t, err, outcome, lockPath, heldPath, contents, successor)
+	if got := remoteBranchForTest(t, fixture.canonical, created.Branch); got != head {
+		t.Fatalf("successor before remote deletion changed remote branch: got %q want %q", got, head)
+	}
+	if _, statErr := os.Stat(created.WorktreeDir); statErr != nil {
+		t.Fatalf("successor before remote deletion removed worktree: %v", statErr)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/"+created.Branch) {
+		t.Fatal("successor before remote deletion removed local branch")
+	}
+	assertRecoveryFailureReport(t, outcome.ReportPath)
+}
+
+func TestCleanupResumeInterruptedNamedTaskRejectsSuccessorBeforeWorktreeRemoval(t *testing.T) {
+	const task = "cleanup-named-successor-before-worktree-removal"
+	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+	heldPath := lockPath + ".held-before-successor"
+	successor := "operation=successor\npid=1\n"
+	reportDir := filepath.Join(t.TempDir(), "audit")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+		Apply: true, DeleteRemote: false, OlderThan: 0, ReportDir: reportDir,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupGitAuthorization: func(operation string) {
+			if operation == "remove worktree" {
+				installRecoveredLockSuccessor(t, lockPath, heldPath, successor)
+			}
+		},
+	})
+	assertRecoveredLockBoundaryRefusal(t, err, outcome, lockPath, heldPath, contents, successor)
+	if got := remoteBranchForTest(t, fixture.canonical, created.Branch); got != head {
+		t.Fatalf("successor before worktree removal changed remote branch: got %q want %q", got, head)
+	}
+	if _, statErr := os.Stat(created.WorktreeDir); statErr != nil {
+		t.Fatalf("successor before worktree removal removed worktree: %v", statErr)
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/"+created.Branch) {
+		t.Fatal("successor before worktree removal removed local branch")
+	}
+	assertRecoveryFailureReport(t, outcome.ReportPath)
+}
+
+func TestCleanupResumeInterruptedNamedTaskReportsFailedQuarantineTruthfully(t *testing.T) {
+	const task = "cleanup-named-quarantine-failure"
+	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+	heldPath := lockPath + ".held-before-successor"
+	successor := "operation=successor\npid=1\n"
+	reportDir := filepath.Join(t.TempDir(), "audit")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+		Apply: true, DeleteRemote: true, OlderThan: 0, ReportDir: reportDir,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeRecoveredLockQuarantine: func(path string) {
+			if path != lockPath {
+				t.Fatalf("quarantine path = %q, want %q", path, lockPath)
+			}
+			installRecoveredLockSuccessor(t, lockPath, heldPath, successor)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "quarantine recovered cleanup lock") {
+		t.Fatalf("quarantine failure error = %v", err)
+	}
+	if outcome.Recovery == nil || outcome.Recovery.Disposition != "validated" || outcome.Recovery.Applied {
+		t.Fatalf("quarantine failure recovery = %#v", outcome.Recovery)
+	}
+	assertRecoveredLockEvidence(t, lockPath, heldPath, contents, successor)
+	assertRecoveryFailureReport(t, outcome.ReportPath)
+}
+
+func installRecoveredLockSuccessor(t *testing.T, lockPath, heldPath, successor string) {
+	t.Helper()
+	if err := os.Rename(lockPath, heldPath); err != nil {
+		t.Fatalf("move recovered lock before successor: %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte(successor), 0o600); err != nil {
+		t.Fatalf("install successor lock: %v", err)
+	}
+}
+
+func assertRecoveredLockBoundaryRefusal(t *testing.T, err error, outcome CleanupOutcome, lockPath, heldPath, contents, successor string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "lock changed after recovery") {
+		t.Fatalf("successor boundary error = %v", err)
+	}
+	if outcome.Recovery == nil || outcome.Recovery.Disposition != "validated" || outcome.Recovery.Applied {
+		t.Fatalf("successor boundary recovery = %#v", outcome.Recovery)
+	}
+	assertRecoveredLockEvidence(t, lockPath, heldPath, contents, successor)
+}
+
+func assertRecoveredLockEvidence(t *testing.T, lockPath, heldPath, wantHeld, successor string) {
+	t.Helper()
+	if got, err := os.ReadFile(lockPath); err != nil || string(got) != successor {
+		t.Fatalf("successor lock changed: contents=%q err=%v", got, err)
+	}
+	if contents, err := os.ReadFile(heldPath); err != nil || string(contents) != wantHeld {
+		t.Fatalf("held recovered lock evidence changed: contents=%q err=%v", contents, err)
+	}
+}
+
+func assertRecoveryFailureReport(t *testing.T, path string) {
+	t.Helper()
+	var report cleanupReport
+	contents, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(contents, &report) != nil || report.Phase != "failed" || report.Recovery == nil || report.Recovery.Disposition != "validated" || report.Recovery.Applied {
+		t.Fatalf("recovery failure audit=%#v contents=%q err=%v", report, contents, err)
+	}
+}
+
+func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(t *testing.T) {
+	t.Run("dirty merged task", func(t *testing.T) {
+		const task = "cleanup-recovery-dirty-merged"
+		fixture, created, head, mergedAt := prepareMergedTask(t, task)
+		installMergedPullRequestFixture(t, head, mergedAt)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+		if err := os.WriteFile(filepath.Join(created.WorktreeDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err := Cleanup(context.Background(), CleanupOptions{
+			ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+			Apply: true, DeleteRemote: true, OlderThan: 0, ReportDir: filepath.Join(t.TempDir(), "audit"),
+			Now: func() time.Time { return mergedAt.Add(time.Hour) },
+		})
+		if err != nil || outcome.Recovery == nil || outcome.Recovery.Disposition != "validated" || outcome.Recovery.Applied || len(outcome.Results) != 1 || outcome.Results[0].Eligible {
+			t.Fatalf("dirty recovery outcome=%#v err=%v", outcome, err)
+		}
+		assertInterruptedLockPreserved(t, lockPath, contents)
+		var report cleanupReport
+		content, readErr := os.ReadFile(outcome.ReportPath)
+		if readErr != nil || json.Unmarshal(content, &report) != nil || report.Phase != "validated" || report.Recovery == nil || report.Recovery.Applied {
+			t.Fatalf("dirty recovery audit=%#v read=%v", report, readErr)
+		}
+	})
+
+	t.Run("unmerged task", func(t *testing.T) {
+		const task = "cleanup-recovery-unmerged"
+		fixture := newGitFixture(t)
+		created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: task, WorkLog: WorkLogOptions{Model: "unknown"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "unmerged.txt"), []byte("unmerged\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, created[0].WorktreeDir, "add", "unmerged.txt")
+		gitTest(t, created[0].WorktreeDir, "commit", "-m", "unmerged")
+		gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", created[0].Branch)
+		installMergedPullRequestFixtures(t, nil, time.Time{})
+		contents, lockPath := writeDeadInterruptedTaskLock(t, created[0].WorktreeDir, task)
+		outcome, cleanupErr := Cleanup(context.Background(), CleanupOptions{
+			ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
+			Apply: true, DeleteRemote: true, OlderThan: 0,
+			Now: func() time.Time { return time.Now() },
+		})
+		if cleanupErr != nil || outcome.Recovery == nil || outcome.Recovery.Applied || len(outcome.Results) != 1 || outcome.Results[0].Eligible {
+			t.Fatalf("unmerged recovery outcome=%#v err=%v", outcome, cleanupErr)
+		}
+		assertInterruptedLockPreserved(t, lockPath, contents)
+	})
+
+	t.Run("filtered task", func(t *testing.T) {
+		const task = "cleanup-recovery-filtered"
+		fixture, created, head, mergedAt := prepareMergedTask(t, task)
+		installMergedPullRequestFixture(t, head, mergedAt)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+		outcome, err := Cleanup(context.Background(), CleanupOptions{
+			ProjectsRoot: fixture.projectsRoot, Task: task, Filter: "does-not-match", ResumeInterrupted: true,
+			Apply: true, DeleteRemote: true, OlderThan: 0,
+			Now: func() time.Time { return mergedAt.Add(time.Hour) },
+		})
+		if err != nil || outcome.Recovery == nil || outcome.Recovery.Disposition != "validated" || outcome.Recovery.Applied {
+			t.Fatalf("filtered recovery outcome=%#v err=%v", outcome, err)
+		}
+		assertInterruptedLockPreserved(t, lockPath, contents)
+	})
+
+	t.Run("no worktree candidate", func(t *testing.T) {
+		const task = "cleanup-recovery-no-candidate"
+		fixture := newGitFixture(t)
+		taskDir := filepath.Join(fixture.home, "worktrees", task)
+		if err := os.MkdirAll(taskDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		contents := fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))
+		lockPath := filepath.Join(taskDir, ".lock")
+		if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Cleanup(context.Background(), CleanupOptions{ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true, Apply: true, DeleteRemote: true})
+		if err == nil || !strings.Contains(err.Error(), "was not found") {
+			t.Fatalf("no-candidate recovery error=%v", err)
+		}
+		assertInterruptedLockPreserved(t, lockPath, contents)
+	})
+
+	t.Run("report directory early error", func(t *testing.T) {
+		const task = "cleanup-recovery-report-directory-error"
+		fixture, created, head, mergedAt := prepareMergedTask(t, task)
+		installMergedPullRequestFixture(t, head, mergedAt)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+		reportFile := filepath.Join(t.TempDir(), "not-a-directory")
+		if err := os.WriteFile(reportFile, []byte("not a directory\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Cleanup(context.Background(), CleanupOptions{
+			ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true, Apply: true, DeleteRemote: true,
+			ReportDir: reportFile,
+			Now:       func() time.Time { return mergedAt.Add(time.Hour) },
+		})
+		if err == nil || !strings.Contains(err.Error(), "create cleanup report directory") {
+			t.Fatalf("report-directory recovery error=%v", err)
+		}
+		assertInterruptedLockPreserved(t, lockPath, contents)
+	})
+}
+
+func writeDeadInterruptedTaskLock(t *testing.T, worktree, task string) (string, string) {
+	t.Helper()
+	contents := fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))
+	lockPath := filepath.Join(filepath.Dir(filepath.Dir(worktree)), ".lock")
+	if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return contents, lockPath
+}
+
+func assertInterruptedLockPreserved(t *testing.T, path, want string) {
+	t.Helper()
+	if got, err := os.ReadFile(path); err != nil || string(got) != want {
+		t.Fatalf("interrupted lock changed: contents=%q err=%v", got, err)
+	}
+}
+
+func TestCleanupResumeInterruptedRequiresOneNamedTask(t *testing.T) {
+	if _, err := normalizeCleanupOptions(CleanupOptions{
+		ProjectsRoot: t.TempDir(), AllMerged: true, ResumeInterrupted: true,
+	}); err == nil || !strings.Contains(err.Error(), "requires one explicit task") {
+		t.Fatalf("fleet recovery normalization error = %v", err)
+	}
+}
+
+func killedLifecycleProcessPID(t *testing.T) int {
+	t.Helper()
+	process := exec.Command("sh", "-c", "sleep 60")
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pid := process.Process.Pid
+	if err := process.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err == nil {
+		t.Fatal("killed child unexpectedly exited without a signal")
+	}
+	return pid
 }
 
 // installUnknownCommitPullRequestFixture reproduces GitHub's answer for a

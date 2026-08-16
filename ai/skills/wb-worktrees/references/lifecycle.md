@@ -68,11 +68,17 @@ After all coordinated PRs merge, always inspect the dry run:
 wb worktree cleanup <task>
 wb worktree cleanup --all-merged
 wb worktree cleanup fair-split
+wb worktree cleanup fair-split --resume-interrupted
 ```
 
 A specifically named task defaults to immediate eligibility (`--older-than 0`)
 because this is its terminalization journey. `--all-merged` fleet sweeping
 keeps the 24-hour grace window unless explicitly overridden.
+
+`--resume-interrupted` is named-task-only: it validates the exact descriptor
+lock metadata and a conclusively dead owner PID before normal cleanup. Dry-run
+leaves the lock untouched; `--apply` holds it through cleanup and quarantines
+it.
 
 WB skips the whole task if any member is locked, dirty, has an open PR, is not
 integrated into the freshly fetched exact `origin/<target>`, or has an advanced
