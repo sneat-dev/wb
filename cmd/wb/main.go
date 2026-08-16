@@ -123,6 +123,10 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
+		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
+		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
+		"worktree log handoff": true, "worktree log recover": true, "worktree log finalize": true,
+		"worktree log sync": true, "worktree log archive": true,
 		"worktree summary": true,
 	},
 	"filter": {

@@ -25,6 +25,8 @@ recognizes legacy linked worktrees there during migration.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
 - Read [lifecycle.md](references/lifecycle.md) to inspect live tasks,
   finalize merged work, recycle caches safely, or abort interrupted claims.
+- Read [worklog.md](references/worklog.md) for local work-log mutating verbs
+  (checkpoint, steer, refresh, handoff, recover, finalize, sync).
 - Consult [capabilities.json](../../capabilities.json) before assuming a WB
   surface exists; execute only commands whose runtime evidence is present.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.
@@ -93,9 +95,12 @@ and live Git evidence):
 ```sh
 wb worktree log .
 wb worktree log . --format json
+wb worktree log show .
+wb worktree log checkpoint . --message progress
 ```
 
-Do not commit that output or paste it into public reports.
+Do not commit that output or paste it into public reports. See
+[worklog.md](references/worklog.md) for the mutating verb group.
 
 The dispatcher/session/worktree/successor-claim creator must pass the exact
 child `--model` it selected, or the literal `unknown`; omission is rejected

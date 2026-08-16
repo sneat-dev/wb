@@ -50,6 +50,7 @@ wb worktree create <task> --original-prompt-file <private-file> # create an audi
 wb worktree summary <task>   # brief overview of a task's worktrees, branches, optional PRs
 wb worktree info [path]      # redacted identity + digests for one worktree
 wb worktree log [path]       # dump initial prompt + local work log for an agent
+                             # (mutating verbs: init|steer|show|checkpoint|…)
 wb worktree list [task]      # inspect local WB task worktrees
 wb worktree cleanup <task>   # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
@@ -138,7 +139,11 @@ origin-target integration. Pass `--github` for open or merged PR evidence.
 ordinals/digests, and live Git evidence, with prompt bodies omitted.
 `wb worktree log [path]` dumps the private local journal for agent bootstrap:
 exact original prompt, later steering instructions, claim identity, and live
-Git evidence. Do not commit or publish that private output.
+Git evidence. Do not commit or publish that private output. Mutating verbs
+under the same command (`init`, `steer`, `show`, `checkpoint`, `refresh`,
+`integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive`) append to
+`.wb/local/worklog/` and fence on the Hybrid claim where required. `log show`
+stays redacted; `log sync` remains offline until Synchestra is configured.
 
 If Work Log publication fails after Git has published one or more coordinated
 worktrees, WB records exact per-repository recovery outcomes, writes durable
@@ -246,9 +251,9 @@ validates/pushes an exact target receipt, uses bounded foreground `wb ci wait`
 slices, then performs audited cleanup. Marketplace distribution to every
 harness is still pending: checked-in adapter files alone are not an installed
 merger. Once installed, this adapter supersedes copied legacy merger prompts.
-The full
-`wb worktree log` command group, seven-day history, and authorized encrypted
-private-prompt export are also planned.
+The
+seven-day active/recent/history inventory, Synchestra authoritative transport,
+and authorized encrypted private-prompt export are also planned.
 
 ```sh
 wb hooks install .

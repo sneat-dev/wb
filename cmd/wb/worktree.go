@@ -86,20 +86,17 @@ func newWorktreeWorkLogCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:     "log [worktree-path]",
 		Aliases: []string{"worklog", "work-log"},
-		Short:   "Dump the initial prompt and local work log for an AI agent",
-		Long: `Print the private local journal an agent needs to resume a worktree.
+		Short:   "Dump or mutate the local work log for one worktree",
+		Long: `Bare 'wb worktree log' dumps the private local journal an agent needs to resume.
 
-This is the agent bootstrap surface: it includes the exact original prompt and
-every later steering instruction from .wb/local/prompts/, plus claim identity
-and live Git evidence. Prompt bodies are private local data and are emitted
-deliberately here so a successor agent can continue the work. Do not pipe this
-output into source Git, public reports, or Synchestra envelopes.
+Mutating verbs live under this command:
+  init, steer, show, checkpoint, refresh, integrate, handoff, recover,
+  finalize, sync, archive
 
-Default text is markdown shaped for an agent context window. --format json
-emits the same payload as one JSON document on stdout.
-
-Later mutating verbs (init/steer/checkpoint/...) may grow under this command;
-today bare 'wb worktree log' is the read-only dump.`,
+Prompt bodies are private local data. The bare dump includes the exact original prompt
+and later steering bodies deliberately for agent bootstrap; 'log show' stays
+redacted. Do not pipe private dumps into source Git, public reports, or
+Synchestra envelopes.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -126,6 +123,423 @@ today bare 'wb worktree log' is the read-only dump.`,
 			return err
 		},
 	}
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.AddCommand(
+		newWorktreeLogInitCmd(),
+		newWorktreeLogSteerCmd(),
+		newWorktreeLogShowCmd(),
+		newWorktreeLogCheckpointCmd(),
+		newWorktreeLogRefreshCmd(),
+		newWorktreeLogIntegrateCmd(),
+		newWorktreeLogHandoffCmd(),
+		newWorktreeLogRecoverCmd(),
+		newWorktreeLogFinalizeCmd(),
+		newWorktreeLogSyncCmd(),
+		newWorktreeLogArchiveCmd(),
+	)
+	return command
+}
+
+func encodeLogVerbResult(command *cobra.Command, format string, result worktrees.LogVerbResult) error {
+	if format == "json" {
+		encoder := json.NewEncoder(command.OutOrStdout())
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(result)
+	}
+	_, err := fmt.Fprintf(command.OutOrStdout(), "%s %s applied=%t", result.Verb, result.Worktree, result.Applied)
+	if err != nil {
+		return err
+	}
+	if result.Prompt != "" {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), " prompt=%s", result.Prompt); err != nil {
+			return err
+		}
+	}
+	if result.Event != nil {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), " event=%s#%d", result.Event.Type, result.Event.Seq); err != nil {
+			return err
+		}
+	}
+	if result.Offline {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), " offline outbox=%d", result.Outbox); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(command.OutOrStdout()); err != nil {
+		return err
+	}
+	for _, note := range result.Notes {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "- %s\n", note); err != nil {
+			return err
+		}
+	}
+	for _, line := range result.Diagnosis {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "diagnosis: %s\n", line); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func worktreeLogPath(args []string) string {
+	if len(args) == 1 {
+		return args[0]
+	}
+	return "."
+}
+
+func newWorktreeLogInitCmd() *cobra.Command {
+	var prompt, promptFile, source, runtime, model, cli, provider, format string
+	command := &cobra.Command{
+		Use:   "init [worktree-path]",
+		Short: "Initialize or attach the local work-log journal",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			var body []byte
+			if prompt != "" || promptFile != "" {
+				var err error
+				body, err = readPromptBody(prompt, promptFile)
+				if err != nil {
+					return err
+				}
+			}
+			result, err := worktrees.LogInit(command.Context(), worktrees.LogInitOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				Prompt: body, Source: source, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&prompt, "prompt", "", "optional initial instruction when none exists")
+	command.Flags().StringVar(&promptFile, "prompt-file", "", "read optional initial instruction from a file")
+	command.Flags().StringVar(&source, "source", "", "prompt source when recording --prompt")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "recording runtime, when known")
+	command.Flags().StringVar(&model, "model", "", "recording model, when known")
+	command.Flags().StringVar(&cli, "cli", "", "recording CLI identifier, when known")
+	command.Flags().StringVar(&provider, "provider", "", "routing/billing provider identifier, never a credential")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogSteerCmd() *cobra.Command {
+	var prompt, promptFile, source, runtime, model, cli, provider, format string
+	command := &cobra.Command{
+		Use:   "steer [worktree-path]",
+		Short: "Append the next steering prompt to the local journal",
+		Long: `Agent-facing alias of recording the next prompt ordinal.
+
+Defaults source to agent_declared. Humans should prefer 'wb worktree set --prompt',
+which records human_declared.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			body, err := readPromptBody(prompt, promptFile)
+			if err != nil {
+				return err
+			}
+			if source == "" {
+				source = worktrees.PromptSourceAgent
+			}
+			result, err := worktrees.LogSteer(command.Context(), worktrees.LogSteerOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				Body: body, Source: source, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&prompt, "prompt", "", "exact steering instruction")
+	command.Flags().StringVar(&promptFile, "prompt-file", "", "read the exact instruction from a file")
+	command.Flags().StringVar(&source, "source", "", "harness_observed, agent_declared, or human_declared")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "recording runtime, when known")
+	command.Flags().StringVar(&model, "model", "", "recording model, when known")
+	command.Flags().StringVar(&cli, "cli", "", "recording CLI identifier, when known")
+	command.Flags().StringVar(&provider, "provider", "", "routing/billing provider identifier, never a credential")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogShowCmd() *cobra.Command {
+	var format string
+	command := &cobra.Command{
+		Use:   "show [worktree-path]",
+		Short: "Show the redacted local work log without prompt bodies",
+		Long: `Show redacted journal state and live Git evidence.
+
+Prompt bodies are omitted. Use bare 'wb worktree log' when an agent needs the
+exact private original prompt.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			view, projection, err := worktrees.LogShow(command.Context(), projectsRoot, worktreeLogPath(args))
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				return json.NewEncoder(command.OutOrStdout()).Encode(map[string]any{
+					"view": view, "projection": projection,
+				})
+			}
+			_, err = io.WriteString(command.OutOrStdout(), worktrees.FormatWorktreeInfoText(view))
+			return err
+		},
+	}
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogCheckpointCmd() *cobra.Command {
+	var message, nextAction, usageDisc, currency, providerRef, format string
+	var inputTokens, outputTokens int64
+	var estimatedCost float64
+	var haveInput, haveOutput, haveCost bool
+	command := &cobra.Command{
+		Use:   "checkpoint [worktree-path]",
+		Short: "Append a progress checkpoint with observed Git evidence",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			var inPtr, outPtr *int64
+			var costPtr *float64
+			if haveInput {
+				inPtr = &inputTokens
+			}
+			if haveOutput {
+				outPtr = &outputTokens
+			}
+			if haveCost {
+				costPtr = &estimatedCost
+			}
+			result, err := worktrees.LogCheckpoint(command.Context(), worktrees.LogCheckpointOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				Message: message, NextAction: nextAction, UsageDisc: usageDisc,
+				InputTokens: inPtr, OutputTokens: outPtr, EstimatedCost: costPtr,
+				Currency: currency, ProviderRef: providerRef,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&message, "message", "", "checkpoint progress message")
+	command.Flags().StringVar(&nextAction, "next-action", "", "bounded next action")
+	command.Flags().StringVar(&usageDisc, "usage-discriminator", "", "provider_reported, estimated, or unavailable")
+	command.Flags().Int64Var(&inputTokens, "input-tokens", 0, "optional input token count")
+	command.Flags().Int64Var(&outputTokens, "output-tokens", 0, "optional output token count")
+	command.Flags().Float64Var(&estimatedCost, "estimated-cost", 0, "optional estimated cost")
+	command.Flags().StringVar(&currency, "currency", "", "optional currency for estimated cost")
+	command.Flags().StringVar(&providerRef, "provider-ref", "", "optional provider usage reference")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.PreRun = func(cmd *cobra.Command, _ []string) {
+		haveInput = cmd.Flags().Changed("input-tokens")
+		haveOutput = cmd.Flags().Changed("output-tokens")
+		haveCost = cmd.Flags().Changed("estimated-cost")
+	}
+	return command
+}
+
+func newWorktreeLogRefreshCmd() *cobra.Command {
+	var base, format string
+	command := &cobra.Command{
+		Use:   "refresh [worktree-path]",
+		Short: "Fetch and measure target divergence without changing the worktree",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogRefresh(command.Context(), worktrees.LogRefreshOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Base: base,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&base, "base", "", "target base branch (default: manifest base or main)")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogIntegrateCmd() *cobra.Command {
+	var base, strategy, format string
+	command := &cobra.Command{
+		Use:   "integrate [worktree-path]",
+		Short: "Integrate the fetched target at a clean checkpoint",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogIntegrate(command.Context(), worktrees.LogIntegrateOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Base: base, Strategy: strategy,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&base, "base", "", "target base branch (default: manifest base or main)")
+	command.Flags().StringVar(&strategy, "strategy", "auto", "rebase, merge, or auto")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogHandoffCmd() *cobra.Command {
+	var summary, nextAction, successor, model, cli, provider, format string
+	var apply bool
+	command := &cobra.Command{
+		Use:   "handoff [worktree-path]",
+		Short: "Record a durable handoff offer and optionally transfer the claim",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogHandoff(command.Context(), worktrees.LogHandoffOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				Summary: summary, NextAction: nextAction, Successor: successor,
+				Model: model, CLI: cli, Provider: provider, Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&summary, "summary", "", "required bounded handoff summary")
+	command.Flags().StringVar(&nextAction, "next-action", "", "bounded next action for the successor")
+	command.Flags().StringVar(&successor, "successor", "", "required successor agent/session ID")
+	command.Flags().StringVar(&model, "model", "", "required with --apply: successor model or unknown")
+	command.Flags().StringVar(&cli, "cli", "", "optional successor CLI")
+	command.Flags().StringVar(&provider, "provider", "", "optional successor provider, never a credential")
+	command.Flags().BoolVar(&apply, "apply", false, "transfer the hybrid claim after recording the offer")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogRecoverCmd() *cobra.Command {
+	var actor, format string
+	var apply, takeover bool
+	command := &cobra.Command{
+		Use:   "recover [worktree-path]",
+		Short: "Diagnose and rebuild derived work-log state",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogRecover(command.Context(), worktrees.LogRecoverOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				Apply: apply, Takeover: takeover, Actor: actor,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "rewrite projection.json from journal evidence")
+	command.Flags().BoolVar(&takeover, "takeover", false, "with --apply, append an explicit takeover event")
+	command.Flags().StringVar(&actor, "actor", "", "required with --takeover")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogFinalizeCmd() *cobra.Command {
+	var resultValue, message, format string
+	var apply bool
+	command := &cobra.Command{
+		Use:   "finalize [worktree-path]",
+		Short: "Record a terminal result and optionally seal the claim",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogFinalize(command.Context(), worktrees.LogFinalizeOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
+				Result: resultValue, Message: message, Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().StringVar(&resultValue, "result", "success", "success or failure")
+	command.Flags().StringVar(&message, "message", "", "terminal message")
+	command.Flags().BoolVar(&apply, "apply", false, "seal the hybrid claim terminal")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogSyncCmd() *cobra.Command {
+	var format string
+	var apply bool
+	command := &cobra.Command{
+		Use:   "sync [worktree-path]",
+		Short: "Drain local outbox to Synchestra when configured",
+		Long: `Attempt authoritative sync. Without a configured Synchestra endpoint the
+command stays offline, retains the local outbox, and records a sync_attempt.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogSync(command.Context(), worktrees.LogSyncOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "attempt drain (still offline without Synchestra)")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeLogArchiveCmd() *cobra.Command {
+	var format string
+	var apply, force bool
+	command := &cobra.Command{
+		Use:   "archive [worktree-path]",
+		Short: "Archive a finalized local journal into WB_HOME",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			result, err := worktrees.LogArchive(command.Context(), worktrees.LogArchiveOptions{
+				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Apply: apply, Force: force,
+			})
+			if err != nil {
+				return err
+			}
+			return encodeLogVerbResult(command, format, result)
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "copy .wb/local into WB_HOME/worklogs")
+	command.Flags().BoolVar(&force, "force", false, "override terminal/seven-day gates")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
@@ -488,34 +902,14 @@ instruction.`,
 			if err != nil {
 				return err
 			}
-			root, err := worktrees.RepositoryRootFor(command.Context(), path)
+			result, err := worktrees.LogSteer(command.Context(), worktrees.LogSteerOptions{
+				ProjectsRoot: projectsRoot, Worktree: path, Body: body,
+				Source: worktrees.PromptSourceHuman, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
+			})
 			if err != nil {
 				return err
 			}
-			// A worktree that predates the journal has neither a manifest nor a
-			// prompt, and the gate reports the manifest first. Backfilling here
-			// is what makes this command the whole remedy rather than half of
-			// one.
-			manifest, err := worktrees.ReconstructManifest(command.Context(), root)
-			if err != nil {
-				return err
-			}
-			if manifest.Provenance == worktrees.ProvenanceReconstructed {
-				_, _ = fmt.Fprintf(command.ErrOrStderr(),
-					"reconstructed a manifest for effort %q from Git evidence; inferred %s\n",
-					manifest.EffortID, strings.Join(manifest.InferredFields, ", "))
-			}
-			name, err := worktrees.AppendPrompt(root, worktrees.PromptHeader{
-				Source:   worktrees.PromptSourceHuman,
-				Runtime:  runtime,
-				Model:    model,
-				CLI:      cli,
-				Provider: provider,
-			}, body)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "recorded %s\n", name)
+			_, err = fmt.Fprintf(command.OutOrStdout(), "recorded %s\n", result.Prompt)
 			return err
 		},
 	}

@@ -551,6 +551,36 @@ func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 	}
 }
 
+func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "mutating verbs journey")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-log-verbs", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-log-verbs", "acme", "app")
+
+	for _, args := range [][]string{
+		{"--projects-root", projects, "worktree", "log", "init", worktree, "--format", "json"},
+		{"--projects-root", projects, "worktree", "log", "steer", worktree, "--prompt", "next slice", "--format", "json"},
+		{"--projects-root", projects, "worktree", "log", "checkpoint", worktree, "--message", "progress", "--format", "json"},
+		{"--projects-root", projects, "worktree", "log", "show", worktree, "--format", "json"},
+		{"--projects-root", projects, "worktree", "log", "sync", worktree, "--format", "json"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(args, &stdout, &stderr); code != exitOK {
+			t.Fatalf("%v failed: code=%d stdout=%s stderr=%s", args, code, stdout.String(), stderr.String())
+		}
+	}
+	if strings.Contains(stdout.String(), "mutating verbs journey") {
+		t.Fatalf("log show leaked private prompt body: %s", stdout.String())
+	}
+}
+
 func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "resume the original request")
