@@ -172,6 +172,18 @@
       "notes": "Publication flags are cumulative and resume reuses persisted campaign evidence."
     },
     {
+      "id": "wb.deps.drift",
+      "feature_refs": ["spec/features/dependency-drift/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb deps drift", "flags": ["--dependency", "--ecosystem", "--fail-on-drift", "--fleet", "--format", "--go-private", "--match", "--online", "--parallel", "--ref", "--regex", "--report-dir", "--retry", "--timeout"], "modes": ["Reports declared, selected, replaced, and optionally latest Go dependency versions for one repository or a selected fleet.", "Offline by default; --online queries the module proxy; --fail-on-drift gates divergent, replaced, and major-path-split groups after the complete report."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb deps drift --help", "contains": ["--fail-on-drift", "--online", "--fleet"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-deps/references/drift.md", "marker": "# Dependency drift", "examples": ["wb deps drift . --format json", "wb deps drift --fleet --fail-on-drift"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/deps/drift_test.go", "name": "TestAnalyzeDriftReportsDivergentFleetVersions", "kind": "integration"}, {"path": "internal/deps/drift_test.go", "name": "TestAnalyzeDriftClassifiesLocalReplace", "kind": "integration"}, {"path": "internal/deps/drift_test.go", "name": "TestAnalyzeDriftReportsMajorPathSplit", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "v1 is Go-only and offline-first. Latest versions are never claimed without --online. Forcing edges are direct require rows, not full MVS why-paths."
+    },
+    {
       "id": "wb.deps.graph",
       "feature_refs": [],
       "since": "existing",
@@ -337,6 +349,7 @@
           {"path": "wb ci audit", "flags": ["--filter"], "modes": ["Requires --fleet; direct mode rejects before RunE."]},
           {"path": "wb coverage", "flags": ["--filter"], "modes": ["Requires --fleet and filters discovered owner/repository identities; direct mode rejects before RunE."]},
           {"path": "wb deps bump", "flags": ["--filter"], "modes": ["Fleet-only command; filters discovered repositories."]},
+          {"path": "wb deps drift", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
           {"path": "wb deps graph", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
           {"path": "wb deps set", "flags": ["--filter"], "modes": ["Filters direct repository identity or fleet selection."]},
           {"path": "wb fleet overview", "flags": ["--filter"], "modes": ["Filters the local fleet inventory, Git attention, and managed worktree rollup."]},

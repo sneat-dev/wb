@@ -20,7 +20,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `run` | yes | yes | yes | yes |
 | `migrate` | yes | rejected | rejected | yes |
-| `deps graph`, `deps set` | yes | yes | `--fleet` only | yes |
+| `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps bump` | yes | yes | yes (`--fleet` is mandatory) | yes |
 | `ci audit` | `--fleet` only | `--fleet` only | rejected | yes |
 | `ci wait` | rejected | rejected | rejected | yes |

@@ -36,6 +36,7 @@ wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
 wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
+wb deps drift [path] [flags] # report Go dependency convergence / replaces / major-path splits
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
@@ -715,6 +716,23 @@ report directory.
 
 See the [Dependency Bump Waves feature specification](spec/features/dependency-bump-waves/README.md)
 for synthetic use cases and acceptance criteria.
+
+### `wb deps drift` — dependency convergence
+
+Use drift when the question is whether selected checkouts agree on Go module
+versions. It is read-only and offline by default: declared and selected versions
+come from local manifests / `go list -m`; pass `--online` only when latest
+registry versions are required. Fleet reports group each module path and
+classify `converged`, `divergent`, `replaced`, and `major_path_split` states.
+`--fail-on-drift` turns those drift classes into an exit gate after the complete
+report is written.
+
+```sh
+wb deps drift .
+wb deps drift --fleet --match 'sneat-co/*' --format json
+wb deps drift --fleet --fail-on-drift
+wb deps drift --fleet --online --dependency example.com/sdk
+```
 
 ### `wb deps graph` — one scan, three dependency views
 
