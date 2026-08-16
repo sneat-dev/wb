@@ -34,6 +34,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `repo status` | rejected | rejected | rejected | yes |
 | `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `abort`, `log`, `info` | yes | rejected | rejected | yes |
+| `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
