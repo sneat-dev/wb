@@ -1,6 +1,6 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: Implementing
 ---
 
 # Feature: Dependency Drift
@@ -35,8 +35,8 @@ time and cannot explain why a manifest was preserved.
 #### REQ: repository-and-fleet-scope
 
 `wb deps drift [path]` MUST inspect one repository when a path is supplied and
-MUST support `--fleet <projects-root>` with the common `--match`, `--regex`,
-and organization filters. Fleet results MUST be ordered by repository slug,
+MUST support `--fleet` with `--projects-root` and the common `--match`,
+`--regex`, and organization filters. Fleet results MUST be ordered by repository slug,
 independently of discovery or completion order.
 
 #### REQ: read-only-analysis

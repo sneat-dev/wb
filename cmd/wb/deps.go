@@ -39,6 +39,7 @@ func newDepsCmd() *cobra.Command {
 	command.AddCommand(newDepsSetCmd())
 	command.AddCommand(newDepsBumpCmd())
 	command.AddCommand(newDepsGraphCmd())
+	command.AddCommand(newDepsDriftCmd())
 	return command
 }
 
@@ -131,6 +132,128 @@ func newDepsGraphCmd() *cobra.Command {
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-graph Markdown, YAML, JSON, SVG, and HTML here")
 	command.Flags().BoolVar(&options.open, "open", false, "open the self-contained HTML report in the default browser after writing it")
 	return command
+}
+
+type depsDriftOptions struct {
+	fleet, online, failOnDrift           bool
+	match, regex, ref, format, reportDir string
+	ecosystem                            string
+	parallel, retry                      int
+	timeout                              time.Duration
+	dependencies                         []string
+	goPrivate                            []string
+}
+
+func newDepsDriftCmd() *cobra.Command {
+	options := depsDriftOptions{}
+	command := &cobra.Command{
+		Use:   "drift [repository-path]",
+		Short: "Report dependency version convergence for one repository or a fleet",
+		Long: `Produce a read-only Go dependency convergence report.
+
+For each dependency the report distinguishes declared, selected, replaced, and
+(optionally) latest-known versions. Fleet runs group each module path by the
+versions found across repositories and classify the state as converged,
+divergent, replaced, major-path split, unavailable, or error.
+
+By default the command stays offline and never labels an unqueried version as
+latest. Pass --online to consult the module proxy. Pass --fail-on-drift to exit
+non-zero after the complete report when divergent, replaced, or major-path-split
+groups are present. Inspection errors always exit non-zero after the report.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if options.fleet && len(args) == 1 {
+				return fmt.Errorf("repository-path cannot be used with --fleet")
+			}
+			ecosystem := deps.Ecosystem(options.ecosystem)
+			if ecosystem == "" {
+				ecosystem = deps.EcosystemGo
+			}
+			if ecosystem != deps.EcosystemGo {
+				return fmt.Errorf("dependency drift currently supports only the go ecosystem")
+			}
+			repositoryArgs := []string{string(ecosystem), "drift"}
+			if len(args) == 1 {
+				repositoryArgs = append(repositoryArgs, args[0])
+			}
+			repositories, err := dependencyRepositories(repositoryArgs, depsSetOptions{
+				fleet: options.fleet, match: options.match, regex: options.regex, ref: options.ref,
+				parallel: options.parallel, retry: options.retry, timeout: options.timeout,
+				goPrivate: options.goPrivate,
+			})
+			if err != nil {
+				return err
+			}
+			report, err := deps.AnalyzeDrift(command.Context(), repositories, deps.DriftOptions{
+				GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
+				Timeout: options.timeout, Retry: options.retry, GoPrivate: options.goPrivate,
+				Dependencies: options.dependencies, Online: options.online, FailOnDrift: options.failOnDrift,
+			})
+			if err != nil {
+				return err
+			}
+			reportDirectory := options.reportDir
+			if reportDirectory == "" {
+				home, homeErr := wbhome.EnsureRoot(projectsRoot)
+				if homeErr != nil {
+					return homeErr
+				}
+				reportDirectory = filepath.Join(home, "reports", "deps-drift")
+			}
+			if err := deps.WriteDriftReports(reportDirectory, report); err != nil {
+				return err
+			}
+			if err := writeDepsDriftReport(command, report, options.format); err != nil {
+				return err
+			}
+			if deps.DriftFailed(report, options.failOnDrift) {
+				return &exitError{
+					code:    exitFindings,
+					message: "dependency drift or inspection errors were reported; see the index above",
+				}
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&options.ecosystem, "ecosystem", string(deps.EcosystemGo), "manifest ecosystem: go")
+	command.Flags().BoolVar(&options.fleet, "fleet", false, "inspect selected local and owned GitHub repositories under --projects-root")
+	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. sneat-co/*")
+	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
+	command.Flags().StringVar(&options.ref, "ref", "main", "base ref recorded in the report metadata")
+	command.Flags().IntVar(&options.parallel, "parallel", 1, "maximum repositories to inspect concurrently")
+	command.Flags().DurationVar(&options.timeout, "timeout", 5*time.Minute, "maximum duration per external Go command (0 disables)")
+	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
+	command.Flags().StringArrayVar(&options.dependencies, "dependency", nil, "exact dependency module to retain (repeatable)")
+	command.Flags().BoolVar(&options.online, "online", false, "query the module proxy for latest versions")
+	command.Flags().BoolVar(&options.failOnDrift, "fail-on-drift", false, "exit non-zero after the report when divergent, replaced, or major-path-split groups are present")
+	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
+	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-drift.md, deps-drift.yaml, and deps-drift.json here")
+	command.Flags().StringArrayVar(&options.goPrivate, "go-private", nil, "private Go module path pattern excluded from public proxy and checksum lookup (repeatable)")
+	return command
+}
+
+func writeDepsDriftReport(command *cobra.Command, report deps.DriftReport, format string) error {
+	switch format {
+	case "markdown":
+		_, err := command.OutOrStdout().Write([]byte(report.Markdown()))
+		return err
+	case "yaml":
+		raw, err := report.YAML()
+		if err != nil {
+			return err
+		}
+		_, err = command.OutOrStdout().Write(raw)
+		return err
+	case "json":
+		raw, err := report.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = command.OutOrStdout().Write(raw)
+		return err
+	default:
+		return fmt.Errorf("unknown --format %q (want markdown, yaml, or json)", format)
+	}
 }
 
 func newDepsSetCmd() *cobra.Command {
