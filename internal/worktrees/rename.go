@@ -605,11 +605,11 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 		return fail(fmt.Errorf("open task %q: %w", normalized.OldTask, err))
 	}
 	defer func() { _ = oldTaskDirectory.Close() }()
-	oldLock, err := acquireLockAt(oldTaskDirectory)
+	oldLock, err := acquireLockAt(oldTaskDirectory, normalized.OldTask)
 	if err != nil {
 		return fail(fmt.Errorf("lock task %q: %w", normalized.OldTask, err))
 	}
-	defer oldLock.release()
+	defer func() { _ = oldLock.release() }()
 
 	// Preflight every repository while the source task lock is held before
 	// creating the destination or terminalizing the first claim. This prevents
@@ -641,11 +641,11 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 		return fail(err)
 	}
 	defer func() { _ = newTaskDirectory.Close() }()
-	newLock, err := acquireLockAt(newTaskDirectory)
+	newLock, err := acquireLockAt(newTaskDirectory, normalized.NewTask)
 	if err != nil {
 		return fail(fmt.Errorf("lock task %q: %w", normalized.NewTask, err))
 	}
-	defer func() { newLock.release() }()
+	defer func() { _ = newLock.release() }()
 	if err := prepareRenameDestinations(newTaskDirectory, newTaskPath, plans); err != nil {
 		if cleanupErr := retireEmptyRenameDestination(newWorktreesDirectory, newTaskDirectory, &newLock, normalized.NewTask, plans); cleanupErr != nil {
 			err = fmt.Errorf("%w; preserve failed destination for audit: %v", err, cleanupErr)
@@ -1053,7 +1053,7 @@ func retireEmptyRenameDestination(
 		return fmt.Errorf("retire rollback destination task: %w", err)
 	}
 	defer func() { _ = retired.Close() }()
-	lock.release()
+	_ = lock.release()
 	lock.file = nil
 	lock.directory = nil
 	if _, err := retired.Seek(0, 0); err != nil {

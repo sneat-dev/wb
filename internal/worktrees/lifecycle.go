@@ -2136,7 +2136,7 @@ func acquireCleanupTaskAtReclaimingInterrupted(
 		handle.close()
 		return nil, err
 	}
-	lock, err := acquireLockAtReclaimingInterrupted(task, reclaimInterrupted)
+	lock, err := acquireLockAtReclaimingInterrupted(task, reclaimInterrupted, taskName)
 	if err != nil {
 		handle.close()
 		return nil, fmt.Errorf("lock cleanup task %s: %w", taskName, err)

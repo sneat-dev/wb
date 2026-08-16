@@ -420,11 +420,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		return nil, err
 	}
 	defer operation.close()
-	lock, err := acquireLockAt(operation.Directory)
+	lock, err := acquireLockAt(operation.Directory, normalized.Operation)
 	if err != nil {
 		return nil, err
 	}
-	defer lock.release()
+	defer func() { _ = lock.release() }()
 	if normalized.afterOperationRootPrepared != nil {
 		normalized.afterOperationRootPrepared()
 	}
@@ -2909,8 +2909,8 @@ type managedLockIdentity struct {
 // acquireLockAt is the descriptor-relative form used while creating a new
 // operation. It never follows a worktrees or task ancestor that was swapped
 // after the operation directory was opened.
-func acquireLockAt(operationDirectory *os.File) (operationLock, error) {
-	return acquireLockAtReclaimingInterrupted(operationDirectory, false)
+func acquireLockAt(operationDirectory *os.File, operation string) (operationLock, error) {
+	return acquireLockAtReclaimingInterrupted(operationDirectory, false, operation)
 }
 
 // HeldOperationLock is a descriptor-anchored operation lock for another WB
@@ -2925,7 +2925,7 @@ type HeldOperationLock struct {
 // for the caller to validate before resuming. Call Preserve when validation
 // fails; it closes the descriptor without changing that ambiguous remnant.
 func AcquireOperationLock(directory *os.File, reclaimInterrupted bool) (*HeldOperationLock, error) {
-	lock, err := acquireLockAtReclaimingInterrupted(directory, reclaimInterrupted)
+	lock, err := acquireLockAtReclaimingInterrupted(directory, reclaimInterrupted, "")
 	if err != nil {
 		return nil, err
 	}
@@ -2983,7 +2983,7 @@ func (lock *HeldOperationLock) Preserve() {
 // before deleting anything (see resumeLifecycleBacklog). Every other caller
 // still refuses, so an interruption whose remnants nobody can describe keeps
 // demanding attention. A live holder is refused in both modes.
-func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInterrupted bool) (operationLock, error) {
+func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInterrupted bool, operation string) (operationLock, error) {
 	file, reused, err := claimRetiredLock(operationDirectory)
 	if err != nil {
 		return operationLock{}, err
@@ -3016,7 +3016,36 @@ func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 		file:      file,
 		identity:  managedLockIdentity{device: uint64(stat.Dev), inode: uint64(stat.Ino)},
 	}
+	// Fresh and retired-reused locks record exact ownership so a later
+	// --resume-interrupted path can prove the owner PID is dead. Reclaimed
+	// interrupted remnants keep their original metadata for that proof.
+	if strings.TrimSpace(operation) != "" {
+		if err := writeOperationLockMetadata(file, operation); err != nil {
+			_ = file.Close()
+			return operationLock{}, err
+		}
+	}
 	return lock, nil
+}
+
+func writeOperationLockMetadata(file *os.File, operation string) error {
+	operation = strings.TrimSpace(operation)
+	if operation == "" || strings.ContainsAny(operation, "\n\r\x00") {
+		return fmt.Errorf("operation lock metadata requires a single-line operation name")
+	}
+	if err := file.Truncate(0); err != nil {
+		return fmt.Errorf("initialize worktree operation lock: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek worktree operation lock: %w", err)
+	}
+	if _, err := fmt.Fprintf(file, "operation=%s\npid=%d\n", operation, os.Getpid()); err != nil {
+		return fmt.Errorf("write worktree operation lock metadata: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync worktree operation lock metadata: %w", err)
+	}
+	return nil
 }
 
 // holdOperationLock takes the exclusive kernel lock this operation keeps for

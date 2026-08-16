@@ -687,7 +687,7 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = directory.Close() }()
-	lock, err := acquireLockAt(directory)
+	lock, err := acquireLockAt(directory, "test-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -716,8 +716,37 @@ func TestOperationLockReleasePreservesLateReplacement(t *testing.T) {
 	if readErr != nil || string(content) != replacement {
 		t.Fatalf("late lock replacement was removed: content=%q err=%v", content, readErr)
 	}
-	if _, acquireErr := acquireLockAt(directory); acquireErr == nil {
+	if _, acquireErr := acquireLockAt(directory, "test-operation"); acquireErr == nil {
 		t.Fatal("late lock replacement no longer blocks a second operation")
+	}
+}
+
+func TestAcquireLockWritesExactOperationMetadata(t *testing.T) {
+	directoryPath := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
+		directoryPath = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(directoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	lock, err := acquireLockAt(directory, "metadata-task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.release() }()
+	content, err := os.ReadFile(filepath.Join(directoryPath, ".lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrefix := "operation=metadata-task\npid="
+	if !strings.HasPrefix(string(content), wantPrefix) || !strings.HasSuffix(string(content), "\n") {
+		t.Fatalf("lock metadata = %q, want %s<pid>\\n", content, wantPrefix)
+	}
+	lines := strings.Split(string(content), "\n")
+	if len(lines) != 3 || lines[2] != "" {
+		t.Fatalf("lock metadata lines = %#v", lines)
 	}
 }
 
@@ -798,16 +827,16 @@ func TestOperationLockReusesRetirementWithoutAccumulating(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = directory.Close() }()
-	first, err := acquireLockAt(directory)
+	first, err := acquireLockAt(directory, "test-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.release()
-	second, err := acquireLockAt(directory)
+	_ = first.release()
+	second, err := acquireLockAt(directory, "test-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second.release()
+	_ = second.release()
 	entries, err := os.ReadDir(directoryPath)
 	if err != nil {
 		t.Fatal(err)
@@ -842,15 +871,15 @@ func TestOperationLockClaimNeverMutatesHardLinkedRetirement(t *testing.T) {
 	if err := os.Link(external, retired); err != nil {
 		t.Fatal(err)
 	}
-	lock, err := acquireLockAt(directory)
+	lock, err := acquireLockAt(directory, "test-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if content, readErr := os.ReadFile(external); readErr != nil || string(content) != wanted {
-		lock.release()
+		_ = lock.release()
 		t.Fatalf("claim mutated hard-linked external file: content=%q err=%v", content, readErr)
 	}
-	lock.release()
+	_ = lock.release()
 	if _, statErr := os.Lstat(retired); statErr != nil {
 		t.Fatalf("hard-linked retirement was claimed or removed: %v", statErr)
 	}

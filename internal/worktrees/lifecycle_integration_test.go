@@ -624,11 +624,11 @@ func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
 				t.Fatalf("open next cleanup task while first is active: %v", openErr)
 			}
 			defer func() { _ = secondTask.Close() }()
-			lock, lockErr := acquireLockAt(secondTask)
+			lock, lockErr := acquireLockAt(secondTask, "second-task")
 			if lockErr != nil {
 				t.Fatalf("next cleanup task was locked before it was processed: %v", lockErr)
 			}
-			lock.release()
+			_ = lock.release()
 		},
 	})
 	if err != nil {

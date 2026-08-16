@@ -211,7 +211,7 @@ func RunCampaign(spec Spec, sourceRoot string, options CampaignOptions) (Campaig
 		if err != nil {
 			return CampaignReport{}, err
 		}
-		defer lock.release()
+		defer func() { _ = lock.release() }()
 	}
 	c, err := planCampaign(spec, sourceRoot, options)
 	if err != nil {
@@ -1280,35 +1280,37 @@ func acquireCampaignLock(githubDir, migrationID string) (campaignLock, error) {
 	}
 	file := lock.File()
 	if file == nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return campaignLock{}, fmt.Errorf("initialize migration campaign %q lock: descriptor is unavailable", migrationID)
 	}
 	if err := file.Truncate(0); err != nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return campaignLock{}, fmt.Errorf("initialize migration campaign %q lock: %w", migrationID, err)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return campaignLock{}, err
 	}
 	if _, err := fmt.Fprintf(file, "migration=%s\npid=%d\n", migrationID, os.Getpid()); err != nil {
-		lock.Release()
+		_ = lock.Release()
 		_ = directory.Close()
 		return campaignLock{}, err
 	}
 	return campaignLock{directory: directory, lock: lock}, nil
 }
 
-func (l campaignLock) release() {
+func (l campaignLock) release() error {
+	var err error
 	if l.lock != nil {
-		l.lock.Release()
+		err = l.lock.Release()
 	}
 	if l.directory != nil {
 		_ = l.directory.Close()
 	}
+	return err
 }
 
 func campaignLockAcquisitionError(migrationID string, err error) error {

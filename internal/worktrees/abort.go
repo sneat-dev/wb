@@ -161,7 +161,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		return results, err
 	}
 	defer func() {
-		taskHandle.lock.release()
+		_ = taskHandle.lock.release()
 		taskHandle.close()
 	}()
 	// Corroborate every live checkout, exact remote source ref, and private

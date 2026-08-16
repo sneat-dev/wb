@@ -26,7 +26,7 @@ func TestCampaignLockReclaimsUnambiguousRemnantAfterProcessDeath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reclaim dead campaign lock: %v", err)
 	}
-	defer resumed.release()
+	defer func() { _ = resumed.release() }()
 
 	if _, err := acquireCampaignLock(githubDir, migrationID); err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("reclaimed lock did not exclude a concurrent campaign: %v", err)
@@ -44,7 +44,7 @@ func TestCampaignLockRefusesLiveAndAmbiguousRemnants(t *testing.T) {
 	if _, err := acquireCampaignLock(githubDir, migrationID); err == nil || !strings.Contains(err.Error(), "already active") {
 		t.Fatalf("live campaign lock was reclaimed: %v", err)
 	}
-	live.release()
+	_ = live.release()
 
 	lockPath := campaignLockPath(t, githubDir, migrationID)
 	t.Cleanup(func() {
@@ -81,7 +81,7 @@ func TestCampaignLockReleasePreservesLateReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lock.release()
+	_ = lock.release()
 	contents, err := os.ReadFile(lockPath)
 	if err != nil || string(contents) != replacement {
 		t.Fatalf("late replacement was removed or changed: contents=%q err=%v", contents, err)
