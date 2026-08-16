@@ -28,6 +28,10 @@ func TestFleetStatsCountsLocalRepositories(t *testing.T) {
 	if report.Inventory.Organizations != 1 || report.Inventory.Repositories != 2 {
 		t.Errorf("inventory = %+v, want 1 org / 2 repos", report.Inventory)
 	}
+	if report.Layout.NoOrigin < 1 && report.Layout.OK < 1 {
+		// test repos have no origin remote, so expect no_origin classifications
+		t.Errorf("layout = %+v, want inspected checkouts", report.Layout)
+	}
 	if report.Git.Inspected != 2 || report.Git.Attention != 1 || report.Git.Clean != 1 || report.Git.Error != 0 {
 		t.Errorf("git stats = %+v, want inspected=2 attention=1 clean=1 error=0", report.Git)
 	}

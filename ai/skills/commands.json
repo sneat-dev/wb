@@ -41,6 +41,9 @@
     "fleet": [
       "wb-fleet"
     ],
+    "layout": [
+      "wb-fleet"
+    ],
     "repo": [
       "wb-fleet"
     ],
