@@ -56,12 +56,12 @@
       "feature_refs": ["spec/plans/work-log-recovery.md"],
       "since": null,
       "surfaces": {
-        "runtime": {"status": "Planned", "commands": [], "limitation": "WB sync creates canonical owner/repository clones, but no read-only layout audit or WB admission guard currently detects a top-level or misowned clone by origin."},
-        "help": {"status": "Planned", "anchors": [], "limitation": "No clone-layout audit command is advertised."},
-        "ai_skill": {"status": "Planned", "skills": [], "limitation": "The sync skill states the required layout but does not present a nonexistent audit command."},
-        "tests": {"status": "Planned", "references": [], "limitation": "No origin-derived top-level/misowned clone admission fixture exists."}
+        "runtime": {"status": "Partial", "commands": [{"path": "wb layout audit", "flags": ["--format", "--report-dir"], "modes": ["Reports top-level, misowned, and ok clones under --projects-root."]}, {"path": "wb layout clean", "flags": ["--allow-missing-canonical", "--apply", "--format", "--report-dir"], "modes": ["Dry-runs or removes safe top-level duplicate clones when a canonical copy exists."]}], "limitation": "Read-only audit and safe clean are implemented; WB still cannot intercept arbitrary external git clone commands or refuse admission at create/sync time."},
+        "help": {"status": "Partial", "anchors": [{"command": "wb layout audit --help", "contains": ["--format", "--report-dir"]}, {"command": "wb layout clean --help", "contains": ["--apply", "--allow-missing-canonical"]}], "limitation": "Admission-guard help is not advertised because create/sync do not yet refuse mislaid clones."},
+        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-fleet/references/layout.md", "marker": "# Clone layout", "examples": ["wb layout audit --format json", "wb layout clean --apply"]}], "limitation": "Skills cover audit/clean; they do not claim create/sync admission enforcement."},
+        "tests": {"status": "Partial", "references": [{"path": "internal/layout/layout_test.go", "name": "TestAuditDetectsTopLevelAndMisowned", "kind": "integration"}, {"path": "cmd/wb/layout_test.go", "name": "TestLayoutAuditAndCleanCLI", "kind": "integration"}], "limitation": "Audit/clean fixtures are covered; create/sync admission refusal remains planned."}
       },
-      "notes": "Future enforcement is WB admission plus a read-only audit and hook/skill surfaces; WB cannot intercept arbitrary external git clone commands."
+      "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
     },
     {
       "id": "wb.coordination.git-fallback",
@@ -212,24 +212,24 @@
       "feature_refs": ["spec/features/fleet-status/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb fleet overview", "flags": ["--all", "--details", "--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Summarizes local fleet inventory, Git attention counts, managed worktree debt, and the attention worklist.", "wb fleet with no subcommand runs the same overview."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb fleet overview --help", "contains": ["--all", "--details", "--report-dir"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet overview", "flags": ["--all", "--details", "--format", "--hooks", "--match", "--parallel", "--regex", "--remote", "--report-dir"], "modes": ["Summarizes local fleet inventory, Git attention, layout placement, managed worktree debt, and the attention worklist.", "Optional --remote adds sync-drift counts; optional --hooks adds managed-hook finding counts.", "wb fleet with no subcommand runs the same overview."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet overview --help", "contains": ["--all", "--details", "--remote", "--hooks"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb fleet --format json", "wb fleet overview --format json"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_cmd_test.go", "name": "TestFleetOverviewIncludesStatsAndAttention", "kind": "integration"}], "limitation": null}
       },
-      "notes": "Overview is local and read-only; it does not imply remote freshness."
+      "notes": "Default overview stays local. --remote contacts GitHub; --hooks inspects managed hooks."
     },
     {
       "id": "wb.fleet.stats",
       "feature_refs": ["spec/features/fleet-status/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb fleet stats", "flags": ["--format", "--match", "--parallel", "--regex", "--report-dir"], "modes": ["Counts local organizations, repositories, Git attention, and managed WB worktrees without listing every checkout."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb fleet stats --help", "contains": ["--format", "--parallel", "--report-dir"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb fleet stats", "flags": ["--format", "--hooks", "--match", "--parallel", "--regex", "--remote", "--report-dir"], "modes": ["Counts local organizations, repositories, Git attention, layout placement, and managed WB worktrees.", "Optional --remote and --hooks add sync-drift and hook-finding counts."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb fleet stats --help", "contains": ["--format", "--remote", "--hooks"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/status.md", "marker": "# Inspect local Git state", "examples": ["wb fleet stats --format json"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "cmd/wb/fleet_cmd_test.go", "name": "TestFleetStatsCountsLocalRepositories", "kind": "integration"}], "limitation": null}
       },
-      "notes": "Stats are local and read-only; use wb sync --dry-run for GitHub reconciliation."
+      "notes": "Layout counts are always included. Use wb layout audit for the placement worklist."
     },
     {
       "id": "wb.fleet.status",
@@ -290,6 +290,30 @@
         "tests": {"status": "Full", "references": [{"path": "internal/hooks/hooks_test.go", "name": "TestRepairPreservesUserSectionsOutsideManagedDelimiter", "kind": "integration"}, {"path": "internal/hooks/hooks_test.go", "name": "TestRepairRefusesStaleHookReplacementAfterFinalAuthorization", "kind": "integration"}], "limitation": null}
       },
       "notes": "Force is an explicit authorization to back up and replace conflicting unmanaged hook state."
+    },
+    {
+      "id": "wb.layout.audit",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb layout audit", "flags": ["--format", "--report-dir"], "modes": ["Reports top-level, misowned, no-origin, and ok clones under --projects-root."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb layout audit --help", "contains": ["--format", "--report-dir"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/layout.md", "marker": "# Clone layout", "examples": ["wb layout audit --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/layout/layout_test.go", "name": "TestAuditDetectsTopLevelAndMisowned", "kind": "integration"}, {"path": "cmd/wb/layout_test.go", "name": "TestLayoutAuditAndCleanCLI", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Canonical clones are {owner}/{repository} with a real .git directory. Linked worktrees are ignored."
+    },
+    {
+      "id": "wb.layout.clean",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb layout clean", "flags": ["--allow-missing-canonical", "--apply", "--format", "--report-dir"], "modes": ["Dry-runs or removes safe top-level duplicate clones when the working tree is clean and a canonical copy exists."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb layout clean --help", "contains": ["--apply", "--allow-missing-canonical"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/layout.md", "marker": "# Clone layout", "examples": ["wb layout clean --apply"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/layout/layout_test.go", "name": "TestCleanRemovesSafeTopLevelDuplicate", "kind": "integration"}, {"path": "cmd/wb/layout_test.go", "name": "TestLayoutAuditAndCleanCLI", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Default is dry-run. Misowned clones are never removed by clean."
     },
     {
       "id": "wb.migrate",

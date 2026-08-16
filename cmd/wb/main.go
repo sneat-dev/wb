@@ -99,6 +99,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newFleetCmd())
+	root.AddCommand(newLayoutCmd())
 	root.AddCommand(newRepoCmd())
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newSelfUpdateCmd())
@@ -118,6 +119,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true,
+		"layout audit": true, "layout clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,

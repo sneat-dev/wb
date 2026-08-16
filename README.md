@@ -42,6 +42,7 @@ wb coverage [path] [flags]   # measure Go test coverage for one repo or a local 
 wb verify [path] [flags]     # run conventional lint, test, and build checks
 wb check [path] [flags]      # run a named local CI-equivalent check profile
 wb fleet [overview|stats|status] # fleet inventory, counts, or attention worklist
+wb layout audit|clean            # audit/clean non-canonical clone placement
 wb repo status [path]        # local Git state for one repository
 wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a path is given
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
@@ -479,9 +480,23 @@ These commands read only local Git state—never fetch, pull, modify, commit, or
 push—and report clean, attention, or inspection-error status. Attention covers
 modified, untracked, conflicted, stashed, and unpushed work. Markdown defaults
 to concise summaries; YAML/JSON and `--details` provide individual paths and
-Git entries. `wb fleet` / `stats` also roll up local inventory and managed
-worktree counts; use `wb sync --dry-run` for GitHub reconciliation and
-`wb worktree orphans` for linked-worktree debt outside managed tasks.
+Git entries. `wb fleet` / `stats` always include layout placement counts and
+managed worktree rollups. Pass `--remote` for sync-drift counts or `--hooks`
+for managed-hook findings. Use `wb layout audit` for the placement worklist,
+`wb sync --dry-run` for GitHub reconciliation, and `wb worktree orphans` for
+linked-worktree debt outside managed tasks.
+
+### `wb layout` — clone placement under projects-root
+
+Canonical clones live at `{projects-root}/{owner}/{repository}` with a real
+`.git` directory. Audit is read-only; clean is dry-run unless `--apply`.
+
+```sh
+wb layout audit
+wb layout audit --format json
+wb layout clean              # dry-run safe top-level duplicates
+wb layout clean --apply      # delete when clean tree + canonical exists
+```
 
 ### `wb deps set` — one exact dependency version
 
