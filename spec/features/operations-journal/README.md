@@ -784,7 +784,44 @@ branch in that repository and states the fetch failure as the reason.
 
 ## Open Questions
 
-None at this time.
+- **Retention policy for the journal itself.** `#req:journal-retention-is-a-human-decision`
+  states WB must never delete a journal file and picks a 500 MiB warn
+  threshold as a starting default. Is 500 MiB the right number, should it
+  scale with fleet size (397 repositories today), and should WB offer an
+  opt-in automatic move-to-archive step analogous to `wb worktree log
+  archive`'s seven-day window, rather than warn-only forever? This is a
+  founder call, not an engineering one.
+- **Disk budget for bundle-backed preservation at fleet scale.**
+  `cleanup-preconditions#req:preservation-content` bundles every branch a
+  cleanup run deletes, unconditionally, regardless of reachability class.
+  `#req:reachability-determines-what-restore-can-promise` observes that a
+  `contained` branch's bundle is fully redundant with the target's own
+  history. At fleet scale — roughly 2,211 remote branches measured
+  2026-08-19 — should `cleanup-preconditions` be amended to bundle only
+  `absorbed` and `unique` branches, recording a SHA-only reference for
+  `contained` ones, to cut preservation disk cost with no loss of actual
+  recoverability? This feature deliberately does not decide it: it would
+  amend a merged, in-review sibling specification's normative requirement,
+  and the trade-off (disk cost versus the small residual risk of the target
+  branch itself being force-pushed or rewritten before the branch is
+  restored) is the founder's to weigh, not this feature's to assume.
+- **Should a lightweight "observed" event class exist for read-only
+  commands?** `#req:journal-scope-is-operations-not-invocations` deliberately
+  excludes `wb audit`, `wb worktree list`, and similar read commands from
+  producing journal records, on the grounds that they change nothing. An
+  agent-fleet operator might still want "was this repository even looked at
+  this week" as a signal distinct from "was it changed." Adding it multiplies
+  journal volume by the read-command call rate, which is unmeasured; this
+  should be sized before it is decided.
+- **Should `wb journal show` support a `--since <last-run-marker>` mode**,
+  mirroring the open question `cleanup-orchestration` already raised for `wb
+  cleanup --since`, so a daily digest costs proportional to the day's
+  operations rather than requiring the caller to track their own last-read
+  timestamp?
+- **Does a Windows-hosted WB installation exist today**, and if so, has
+  `LockFileEx`-based advisory locking for `#req:concurrent-appends-stay-uncorrupted`
+  actually been exercised anywhere in this codebase, or is it a requirement
+  written for a platform WB does not yet run on?
 
 ---
 *This document follows the https://specscore.md/feature-specification*
