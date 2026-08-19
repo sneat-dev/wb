@@ -19,7 +19,7 @@ format: https://specscore.md/features-index-specification
 | [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |
 | [Work Log Recovery](work-log/README.md) | Approved | `wb worktree log` gives every WB-managed effort a private, durable journal that |
 | [Branch Hygiene](branch-hygiene/README.md) | In Review | `wb branch` is a top-level command family that inventories and safely retires |
-| [Worktree Checkpoint](worktree-checkpoint/README.md) | Approved | A cheap, repeatable, hook-proof snapshot that preserves in-flight worktree state against crashes, independent of whether the work compiles or is ready to commit. |
+| [Worktree Checkpoint](worktree-checkpoint/README.md) | Implementing | A cheap, repeatable, hook-proof snapshot that preserves in-flight worktree state against crashes, independent of whether the work compiles or is ready to commit. |
 
 ## Open Questions
 
