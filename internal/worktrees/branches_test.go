@@ -309,6 +309,44 @@ func TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep(t *testing.T) 
 	}
 }
 
+// TestBranchCleanupAppliesRemoteDeletionWhenNoOpenPullRequestExists is the
+// AC-4 positive case: a contained remote branch with no open pull request is
+// deleted with force-with-lease against its observed SHA, proving the
+// success path end to end rather than only its refusals.
+func TestBranchCleanupAppliesRemoteDeletionWhenNoOpenPullRequestExists(t *testing.T) {
+	fixture := newGitFixture(t)
+	ctx := context.Background()
+	installMergedPullRequestFixturesWithMerge(t, nil, nil, time.Time{}) // empty gh payload: no PR at all
+
+	gitTest(t, fixture.canonical, "checkout", "-b", "feature/clean-remote")
+	writeAndCommit(t, fixture.canonical, "clean.txt", "v1\n", "clean remote work")
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "merge", "--no-ff", "-m", "merge feature/clean-remote", "feature/clean-remote")
+	gitTest(t, fixture.canonical, "push", "origin", "main", "feature/clean-remote")
+
+	outcome, err := BranchCleanup(ctx, BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Scope: "remote", Apply: true, OlderThan: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var applied bool
+	for _, result := range outcome.Results {
+		if result.Branch == "feature/clean-remote" && result.Applied {
+			applied = true
+		}
+	}
+	if !applied {
+		t.Fatalf("remote deletion did not apply: %#v", outcome.Results)
+	}
+	if remoteBranchForTest(t, fixture.canonical, "feature/clean-remote") != "" {
+		t.Fatal("remote branch still exists after apply")
+	}
+	if !gitRefExists(fixture.canonical, "refs/heads/feature/clean-remote") {
+		t.Fatal("--scope remote unexpectedly deleted the local ref too")
+	}
+}
+
 // TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence is the AC-4
 // core: an open PR refuses its branch regardless of containment, and when PR
 // evidence cannot be obtained at all, no remote branch is deleted while local
