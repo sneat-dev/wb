@@ -878,6 +878,17 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			if outcome.Results[resultIndex].BacklogID == backlog[backlogIndex].ID {
 				outcome.Results[resultIndex].Applied = true
 				outcome.Results[resultIndex].BranchDeleted = true
+				// resumeLifecycleBacklog never deletes a remote branch itself: it
+				// refuses to proceed unless a fresh `git ls-remote` already shows
+				// origin/<branch> gone (see its remoteBranchHead check). A record
+				// with a non-empty RemoteHeadSHA means a remote branch existed at
+				// seal time — the interrupted attempt that sealed it, not this
+				// resume, is what deleted it, most likely moments before the crash
+				// that left this backlog behind. That successful resume is itself
+				// the proof the remote branch is gone now, so the report must
+				// credit the deletion instead of defaulting to false and silently
+				// under-claiming what WB actually did.
+				outcome.Results[resultIndex].RemoteDeleted = backlog[backlogIndex].RemoteHeadSHA != ""
 				outcome.Results[resultIndex].Reason = "resumed durable cleanup backlog"
 			}
 		}

@@ -207,6 +207,68 @@ func TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval(t *testin
 	}
 }
 
+// TestCleanupResumedBacklogReportsRemoteDeletedTruthfully is the regression
+// for the founder's cleanup.json for task wb-ops-journal: remote_deleted
+// read false even though `git fetch origin --prune` and `git ls-remote`
+// both proved the remote branch was genuinely gone. The remote branch is
+// deleted before the worktree is removed (retiring_remote precedes
+// removing_worktree in the backlog stage sequence), so a crash injected
+// right after worktree removal — exactly
+// TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval's
+// fixture — leaves a durable backlog record whose remote deletion already
+// happened in the interrupted run. resumeLifecycleBacklog never deletes a
+// remote branch itself; it only proceeds once a fresh `git ls-remote`
+// already shows the branch gone, and this backlog record's non-empty
+// RemoteHeadSHA proves one existed at seal time. Before the fix, the
+// backlog-resume path in Cleanup never set RemoteDeleted on the resumed
+// result, so it silently reported false for a task whose remote branch was
+// provably deleted — an audit trail that under-claims what WB did.
+func TestCleanupResumedBacklogReportsRemoteDeletedTruthfully(t *testing.T) {
+	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-resume-remote-deleted")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	injected := errors.New("injected crash after worktree removal")
+	first, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-remote-deleted",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now:                         func() time.Time { return mergedAt.Add(time.Hour) },
+		afterCleanupWorktreeRemoval: func(string) error { return injected },
+	})
+	if !errors.Is(err, injected) {
+		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
+	}
+	if len(first.Results) != 1 || !first.Results[0].RemoteDeleted {
+		t.Fatalf("interrupted cleanup must have already deleted the remote branch: %#v", first.Results)
+	}
+	if remoteHead, remoteErr := remoteBranchHead(context.Background(), fixture.canonical, created.Branch); remoteErr != nil || remoteHead != "" {
+		t.Fatalf("interrupted cleanup remote head=%q err=%v, want the remote branch already gone", remoteHead, remoteErr)
+	}
+
+	resumed, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-remote-deleted",
+		Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(2 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Results) != 1 || !resumed.Results[0].Applied {
+		t.Fatalf("resumed cleanup = %#v", resumed.Results)
+	}
+	if !resumed.Results[0].RemoteDeleted {
+		t.Fatalf("resumed cleanup report claims remote_deleted=false for %s, but the remote branch was genuinely deleted", created.Branch)
+	}
+	if resumed.ReportPath == "" {
+		t.Fatal("resumed cleanup wrote no report")
+	}
+	reportContent, err := os.ReadFile(resumed.ReportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(reportContent), `"remote_deleted": true`) {
+		t.Fatalf("cleanup.json report does not claim remote_deleted: true:\n%s", reportContent)
+	}
+}
+
 func TestCleanupCompletesWhenInvokedFromWorktreeBeingRemoved(t *testing.T) {
 	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-from-removed-cwd")
 	installMergedPullRequestFixture(t, head, mergedAt)
