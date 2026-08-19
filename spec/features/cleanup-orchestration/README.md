@@ -99,7 +99,7 @@ Three of those rows are findings in their own right, not background:
   2026-08-12 — while WB's own write home holds 751 task directories. See
   `#req:reconcile-git-and-wb-worktree-views`.
 
-### A serial sweep and a silent one are the same failure
+### A serial sweep, a silent one, and a secretive one
 
 `wb worktree cleanup --all-merged` was run to completion as a dry run against
 the whole fleet on 2026-08-19. The measurements:
@@ -133,6 +133,18 @@ one:
 
 An operator needs those six lines first and the individual pull-request URLs on
 demand — not 107,690 bytes in arrival order. See `#req:grouped-end-of-run-summary`.
+
+`wb branch cleanup`, shipped the same evening in pull request #114 at
+`9d54694`, fixed the *silence* and left the *secrecy* untouched. Measured on
+the live fleet at repository 170 of 394 it had emitted 172 lines, all 172 of
+them `[170/394] scanning owner/repo` heartbeats and **none** of them a result —
+while a scoped `wb branch cleanup --filter dal-go --scope all` over one of the
+repositories already passed found 41 eligible branches that the sweep was
+holding in memory.
+
+Those are two different defects, and the fact that a careful implementation
+fixed one and missed the other is the reason this specification names them
+separately. See `#req:progress-liveness` and `#req:incremental-findings`.
 
 `wb worktree list --filter chessraiders` produced **58 rows on stdout and 254
 lines on stderr**. 252 of those 254 lines were
@@ -318,9 +330,16 @@ MUST fail its remote stage closed, exactly as
 [branch-hygiene#req:remote-apply-fails-closed-without-pull-request-evidence](../branch-hygiene/README.md)
 requires, and MUST NOT proceed without evidence.
 
-Results MUST be emitted in a deterministic order — repository, then branch —
-regardless of completion order, so two runs over unchanged state produce
-byte-identical `--format json` stdout.
+The `--format json` envelope and the end-of-run grouped summary MUST be
+emitted in a deterministic order — repository, then branch — regardless of
+completion order, so two runs over unchanged state produce byte-identical
+`--format json` stdout.
+
+That determinism guarantee applies to those two views only. The incremental
+finding stream of `#req:incremental-findings` is deliberately in clone
+completion order and is not stable between runs; re-buffering it to restore
+alphabetical order would reintroduce the very defect that requirement exists to
+remove.
 
 #### REQ: concurrency-lives-in-the-shared-inspection-path
 
@@ -592,8 +611,10 @@ By default a run's stderr MUST consist only of:
 - one run-start line naming the selection and the unit count;
 - one progress line per unit, carrying the unit identity and a running `[n/N]`
   count, flushed as the event happens rather than buffered to the end;
-- one line per **candidate decision**, as the Progress reporting section below
-  requires;
+- one liveness line per candidate, as `#req:progress-liveness` requires;
+- under `--format json` only, each completed clone's findings as
+  `#req:incremental-findings` requires, since stdout is a single document in
+  that mode and cannot carry them;
 - one warning line per genuine anomaly, each naming a remedy
   (`#req:every-warning-names-a-remedy`);
 - **one aggregate line** summarising WB-internal artifact classification for
@@ -604,78 +625,143 @@ Per-artifact informational lines MUST be emitted only under `--verbose`, and
 MUST always be present in the `--format json` envelope regardless of
 `--verbose`, so suppressing the noise never loses the data.
 
-The per-candidate decision line is bounded by the size of the report itself,
-not by the number of internal artifacts, so it is signal rather than the noise
-`#req:filter-scopes-work-not-output` removes. The 254-line-for-58-rows failure
-was 252 lines of internal classification, not decisions.
+Both the liveness line and the finding line are bounded by the size of the
+report itself, not by the number of internal artifacts, so they are signal
+rather than the noise `#req:filter-scopes-work-not-output` removes. The
+254-line-for-58-rows failure was 252 lines of internal classification, not
+decisions.
 
 Silence and noise are separate defects with separate cures, and this
-requirement is the noise ceiling only. Liveness — that anything is emitted at
-all while a fourteen-minute sweep runs — is the Progress reporting section
-below.
+requirement is the noise ceiling only. The two silence defects — liveness and
+incrementality — are the next section.
 
-### Progress reporting
+### Progress reporting and incrementality
 
 The founder's ruling on 2026-08-19 was direct: **"Yes, we need cli to report
-progress/status."** This section is therefore a first-class part of the
-feature, not a presentation detail attached to the output contract. It binds
-`wb cleanup`, `wb audit`, `wb unpushed`, and `wb recover`, and — because
+progress/status."** This is therefore a first-class part of the feature, not a
+presentation detail attached to the output contract. It binds `wb cleanup`,
+`wb audit`, `wb unpushed`, and `wb recover`, and — because
 `#req:concurrency-lives-in-the-shared-inspection-path` puts the sweep engine in
 `internal/worktrees` — it binds every command that shares that engine.
 
+**There are two separate defects here, and they must be specified separately,
+because a design can fix one and miss the other. That is exactly what
+happened.**
+
+| Defect | Question it answers | `wb worktree cleanup` | `wb branch cleanup` |
+|---|---|---|---|
+| **Liveness** | Is the command alive, and how far along is it? | **not solved** — zero bytes for 14 minutes | **solved** — `[N/total]` counter |
+| **Incrementality** | What has it found *so far*? | **not solved** | **not solved** |
+
 `wb branch list` and `wb branch cleanup` shipped in pull request #114, merged
-at `9d54694`. They share that engine and therefore share this defect exactly.
-Implementing progress reporting in the shared layer is what makes them inherit
-the fix instead of each growing its own.
+at `9d54694`, and they solved liveness properly. Measured on the live fleet at
+repository 170 of 394:
 
-#### REQ: streaming-per-candidate-progress
+| Observation | Measured |
+|---|---|
+| Total lines emitted | **172** |
+| Scanning heartbeats (`[170/394] scanning owner/repo`) | **172** |
+| Result lines | **0** |
 
-Every sweep MUST emit a progress event **as each candidate resolves**, flushed
-at that moment, and MUST NOT buffer progress until the run completes. The
-measured failure this replaces is a fourteen-minute run that emitted 107,690
-bytes, all of them at the end, with zero bytes at the four-, eight-, nine- and
-ten-minute marks.
+Zero result lines after 170 repositories — and not because nothing had been
+found. A scoped `wb branch cleanup --filter dal-go --scope all` run over one of
+the repositories already passed found **41 eligible branches**. Every finding
+was accumulating in memory, held until the run ended, exactly as
+`wb worktree cleanup` holds its 107,690 bytes.
 
-Each event MUST carry the candidate's identity and the disposition or skip
-reason it resolved to, so the stream is a running account of the decision and
-not merely a heartbeat.
+**Incrementality is the more valuable of the two for a ten-to-twenty-minute
+fleet command.** It is what lets an operator act on partial results, spot a
+misclassification in the first repositories instead of the last, and abort
+before wasting the remaining ten minutes. A heartbeat only ever tells the
+operator to keep waiting.
+
+Because both commands share the `internal/worktrees` engine, one fix in that
+layer serves both. Neither may grow its own.
+
+#### REQ: progress-liveness
+
+Every sweep MUST emit a liveness event to stderr as each candidate resolves,
+flushed at that moment, and MUST NOT buffer liveness output until the run
+completes. The measured failure this replaces is a fourteen-minute
+`wb worktree cleanup --all-merged` run that emitted 107,690 bytes, all of them
+at the end, with zero bytes at the four-, eight-, nine- and ten-minute marks.
+
+Each event MUST name the candidate being inspected. Liveness alone does not
+satisfy this feature: an event stream that says only what is being scanned, and
+never what was found, is the `wb branch cleanup` behaviour measured above and
+is addressed by `#req:incremental-findings`.
 
 #### REQ: progress-carries-a-denominator
 
-Every progress event MUST carry a running count against a known total —
-`inspected 42/269, 15 eligible` — so an operator can estimate the remaining
+Every liveness event MUST carry a running count against a known total —
+`[170/394] scanning sneat-dev/wb` — so an operator can estimate the remaining
 time rather than guess at it.
 
 The denominator MUST be established up front by enumerating the selected task
 directories and canonical clones **before** any network work begins. It is
 knowable without a fetch or a hosted call, so there is no excuse for an
-unbounded `inspected 42…`.
+unbounded `scanning…`.
 
 The final summary MUST close the same counters, so the last event and the
 report agree.
 
+#### REQ: incremental-findings
+
+A run MUST NOT accumulate its findings in memory and emit them only when the
+sweep ends. **Each canonical clone's findings MUST be flushed as soon as that
+clone completes**, while the rest of the sweep continues.
+
+The unit of flushing is the canonical clone, not the candidate and not the
+whole run, because the clone is the unit of inspection concurrency
+(`#req:concurrency-lives-in-the-shared-inspection-path`) and therefore the
+smallest boundary at which a set of findings is complete and internally
+consistent.
+
+Where the findings go depends on the format, and no format may lose them:
+
+- `--format text` — a completed clone's findings are written to **stdout** at
+  the moment that clone completes.
+- `--format ndjson` — one `decision` record per finding, flushed at that
+  moment.
+- `--format json` — stdout is necessarily a single document written at the end,
+  so in this mode the same per-clone findings MUST be written to **stderr** as
+  each clone completes. Choosing a machine format MUST NOT cost the operator
+  incrementality.
+
+**Findings therefore arrive in completion order, not alphabetical order.**
+Under `#req:parallel-across-units` several clones are in flight at once and
+finish in an order determined by their size and network latency. This is
+stated, expected, and MUST NOT be worked around by re-buffering to restore
+alphabetical order — re-buffering is the defect. The stable, ordered,
+deterministic view is the end-of-run grouped summary
+(`#req:grouped-end-of-run-summary`) and the `--format json` envelope, and
+callers that need determinism MUST use those.
+
 #### REQ: progress-adapts-to-the-stream-not-the-content
 
-Progress MUST go to stderr and results to stdout without exception, so
-`--format json` output stays parseable and a pipeline stays clean
+Liveness MUST go to stderr without exception, so `--format json` and
+`--format ndjson` stdout stay parseable and a pipeline stays clean
 (`#req:stdout-is-the-report-only`).
 
 - When stderr is a terminal and `--non-interactive` is unset, an animated,
-  in-place progress display is permitted.
+  in-place liveness display is permitted.
 - When stderr is **not** a terminal, WB MUST NOT emit any ANSI control
   sequence, cursor movement, or carriage-return redraw. It MUST emit plain,
   newline-terminated lines instead. A CI log or a captured agent transcript
   full of escape codes is worse than no progress at all.
-- Progress MUST NOT be suppressed merely because stderr is not a terminal. An
+- Liveness MUST NOT be suppressed merely because stderr is not a terminal. An
   agent reads stderr, and silence is the failure being fixed. A non-terminal
   run MAY emit periodic plain lines rather than one line per candidate when the
   candidate rate is high, provided the interval is bounded and stated.
+- An in-place animated display MUST NOT be used for findings. A finding that is
+  overwritten by the next redraw has not been delivered; findings are
+  append-only lines.
 
 #### REQ: progress-surfaces-throttling-and-slow-candidates
 
 When a hosted request backs off on `Retry-After`
 (`#req:secondary-rate-limits-fail-to-unreadable`), the wait MUST appear in the
-progress stream while it is happening, naming the repository and the remaining
+liveness stream while it is happening, naming the repository and the remaining
 wait. When a candidate exceeds a threshold fraction of its deadline
 (`#req:bounded-per-unit-time`), that MUST appear too.
 
@@ -685,25 +771,34 @@ which is indistinguishable from a hang.
 
 #### REQ: grouped-end-of-run-summary
 
-Every run MUST close with a summary that groups outcomes by disposition and, for
-skips, by skip reason, with counts — the shape of the measured distribution in
-the Problem section, where six grouped lines carry what 107,690 bytes of
+Every run MUST close with a summary that groups outcomes by disposition and,
+for skips, by skip reason, with counts — the shape of the measured distribution
+in the Problem section, where six grouped lines carry what 107,690 bytes of
 arrival-ordered detail did not.
 
-The grouped summary MUST come first; per-candidate detail MUST remain available
-on demand, through `--verbose`, through `--format json`, and in the durable
-report. A summary that omits a reason class entirely MUST NOT exist: every
-candidate MUST be accounted for in exactly one group, and the group counts MUST
-sum to the denominator.
+This summary is the **stable ordered view** of the run: it MUST be sorted
+deterministically by repository and then by candidate identity, and two runs
+over unchanged state MUST produce an identical summary regardless of the order
+in which clones completed. It is the counterpart to the incremental stream,
+which is deliberately in completion order.
+
+The grouped summary MUST come first in the closing output; per-candidate detail
+MUST remain available on demand, through `--verbose`, through `--format json`,
+and in the durable report. A summary that omits a reason class entirely MUST
+NOT exist: every candidate MUST be accounted for in exactly one group, and the
+group counts MUST sum to the denominator.
 
 #### REQ: progress-is-presentation-only
 
-Progress reporting MUST NOT change the exit code, the contents of stdout in any
-`--format`, the durable audit report, or any decision. Turning progress on or
-off MUST leave `--format json` stdout byte-identical.
+Liveness reporting MUST NOT change the exit code, the set of findings, the
+durable audit report, or any decision. Turning liveness on or off MUST leave
+`--format json` stdout byte-identical.
 
-A run that behaves differently when someone is watching cannot be trusted by
-someone who is not.
+Incrementality changes **when** findings are emitted and in **what order** the
+incremental stream carries them. It MUST NOT change which findings exist, the
+grouped summary, the `--format json` envelope, the durable report, or the exit
+code. A run that reaches a different conclusion when someone is watching cannot
+be trusted by someone who is not.
 
 #### REQ: every-warning-names-a-remedy
 
@@ -945,27 +1040,27 @@ completed plan containing refusals and `1` for the same run with
 `--fail-on refusals`. Repeating the run with `--format ndjson` yields one JSON
 object per stdout line whose union carries the same fields as the envelope.
 
-### AC: a-sweep-reports-its-progress-while-it-runs
+### AC: a-sweep-proves-it-is-alive
 
-**Requirements:** cleanup-orchestration#req:streaming-per-candidate-progress, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:grouped-end-of-run-summary, cleanup-orchestration#req:progress-is-presentation-only
+**Requirements:** cleanup-orchestration#req:progress-liveness, cleanup-orchestration#req:progress-carries-a-denominator, cleanup-orchestration#req:progress-adapts-to-the-stream-not-the-content, cleanup-orchestration#req:progress-surfaces-throttling-and-slow-candidates, cleanup-orchestration#req:progress-is-presentation-only
 
 Given a fixture fleet of 60 candidates in which each candidate's inspection is
 made to take a measurable interval, when `wb cleanup --format json` runs with
 stdout and stderr captured separately and timestamped, then the first stderr
-progress event is observed before 10% of the run's wall clock has elapsed and
-before any byte reaches stdout; progress events continue to arrive throughout
-rather than in one burst at the end; each event carries the candidate identity,
-its resolved disposition or skip reason, and a running count against the total
-60, where that total was emitted before the first network call; and the closing
+liveness event is observed before 10% of the run's wall clock has elapsed;
+events continue to arrive throughout rather than in one burst at the end; each
+event names the candidate and carries a running count against the total 60,
+where that total was emitted before the first network call; and the closing
 counters equal the report's own counts.
 
 Given the same run with stderr attached to a pipe, then no ANSI control
 sequence, cursor movement, or carriage-return redraw appears in the captured
-stderr, progress is still present as plain newline-terminated lines, and any
+stderr; liveness is still present as plain newline-terminated lines; and any
 periodic-line interval used instead of per-candidate lines is stated in the
 output. Given the same run with stderr attached to a pseudo-terminal and
 `--non-interactive` unset, an in-place display is permitted; with
-`--non-interactive` set, it is not.
+`--non-interactive` set, it is not; and in neither case is any **finding**
+rendered into an in-place region that a later redraw overwrites.
 
 Given a hosted double that answers with `403` and `Retry-After` for two
 candidates, and one candidate made to exceed the threshold fraction of its
@@ -973,16 +1068,58 @@ deadline, then a stderr event names the throttled repository and its remaining
 wait while the wait is still in progress, and a further event names the slow
 candidate.
 
-Given a fixture reproducing the measured skip distribution, then the run closes
-with a summary grouping outcomes by disposition and skip reason with counts,
-the grouped summary precedes any per-candidate detail, every candidate appears
-in exactly one group, the group counts sum to the denominator, and the
-per-candidate detail is present under `--verbose`, in `--format json`, and in
-the durable report.
-
-Finally, running the same fixture twice — once with progress rendered to a
+Finally, running the same fixture twice — once with liveness rendered to a
 pseudo-terminal and once to a pipe — yields byte-identical `--format json`
 stdout, identical durable reports, and identical exit codes.
+
+### AC: findings-are-visible-before-the-run-ends
+
+**Requirements:** cleanup-orchestration#req:incremental-findings, cleanup-orchestration#req:grouped-end-of-run-summary, cleanup-orchestration#req:progress-is-presentation-only
+
+Given a fixture fleet of 12 canonical clones in which each clone holds at least
+one eligible candidate and each clone's inspection is made to take a
+measurable, deliberately unequal interval, when `wb cleanup --format text` runs
+with stdout timestamped per line, then the first clone's findings appear on
+stdout at a timestamp at or before that clone's completion plus a small bound,
+and strictly before the slowest clone has completed; every clone's findings
+appear no later than shortly after that clone completes; and no clone's
+findings are withheld until the run ends.
+
+This MUST be asserted as an explicit negative too: a test MUST fail the
+implementation that emits 12 clones' findings within one final burst, which is
+the measured `wb branch cleanup` behaviour of 172 scanning lines and zero
+result lines at repository 170 of 394.
+
+Repeating with `--format ndjson` yields one flushed `decision` record per
+finding at the same timing. Repeating with `--format json` yields a single
+document on stdout at the end **and** the same per-clone findings on stderr as
+each clone completes, so the machine format costs no incrementality.
+
+Given clones whose completion order differs from alphabetical order, then the
+incremental stream is in completion order and the test asserts it is **not**
+alphabetically sorted, proving no re-buffering was introduced; while the
+end-of-run grouped summary and the `--format json` envelope are sorted
+deterministically by repository then candidate identity, and two runs over
+unchanged state produce an identical summary and an identical envelope despite
+differing completion order.
+
+### AC: a-killed-sweep-leaves-the-operator-everything-it-had-found
+
+**Requirements:** cleanup-orchestration#req:incremental-findings, cleanup-orchestration#req:progress-liveness
+
+Given the 12-clone fixture above, when `wb cleanup` is started and killed with
+`SIGINT` and again with `SIGKILL` at a point where exactly 5 clones have
+completed, then the captured stdout — for `--format text` and `--format
+ndjson`, and the captured stderr for `--format json` — already contains every
+finding from all 5 completed clones, with no finding from a completed clone
+missing; the liveness stream already showed a count reflecting the completed
+clones; and the run's partial output is well-formed for its format, so an
+`ndjson` capture parses line by line without a trailing truncated record.
+
+Under today's behaviour the operator would see none of those findings, and that
+is the cost this criterion exists to prevent. The test MUST therefore assert a
+non-zero count of findings recovered from the killed run, not merely that the
+process exited.
 
 ### AC: the-capability-is-discoverable
 
