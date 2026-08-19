@@ -102,6 +102,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newLayoutCmd())
 	root.AddCommand(newRepoCmd())
 	root.AddCommand(newWorktreeCmd())
+	root.AddCommand(newBranchCmd())
 	root.AddCommand(newSelfUpdateCmd())
 
 	return root
@@ -123,6 +124,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
+		"branch list": true, "branch cleanup": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
 		"worktree log handoff": true, "worktree log recover": true, "worktree log finalize": true,
@@ -138,6 +140,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree summary": true,
+		"branch list":      true, "branch cleanup": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps drift": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI

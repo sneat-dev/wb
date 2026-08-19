@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Branches"
+  short_description: "Inventory and safely delete Git branches across the fleet, independent of worktrees"
+  default_prompt: "Use $wb-branches to inventory and safely delete Git branches — wb branch list, wb branch cleanup — whenever the branch in question has no worktree, or you don't yet know whether it does. Never hand-roll git branch -d, git branch --merged, or git push --delete sweeps."
