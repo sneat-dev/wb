@@ -4,6 +4,174 @@
   "binary": "wb",
   "capabilities": [
     {
+      "id": "wb.branch.cleanup",
+      "feature_refs": [
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb branch cleanup",
+              "flags": [
+                "--apply",
+                "--base",
+                "--format",
+                "--older-than",
+                "--report-dir",
+                "--scope"
+              ],
+              "modes": [
+                "Dry-run plan is the default; --apply is required for every deletion in every scope",
+                "Only the contained disposition is ever eligible; absorbed is never eligible under any flag combination",
+                "Local deletion is a compare-and-delete (git update-ref -d) against the exact SHA the plan recorded",
+                "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
+                "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
+                "Immediately before each deletion WB refetches the exact target and re-verifies containment; a branch that moved between plan and apply refuses only itself",
+                "An apply attempt writes a durable JSON plan below --report-dir before its first destructive Git operation and updates it with each outcome"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb branch cleanup --help",
+              "contains": [
+                "dry-run plan",
+                "absorbed is never eligible",
+                "force-with-lease",
+                "compare-and-delete",
+                "pull-request evidence",
+                "never removes, moves, or modifies any working tree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-branches/SKILL.md",
+              "marker": "## Compare-and-delete, never `git branch -d`/`-D`",
+              "examples": [
+                "wb branch cleanup",
+                "wb branch cleanup --scope all --apply --older-than 0"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupNeverDeletesAbsorbedUnderAnyFlagCombination",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupDeletesOnlyContainedAndRefusesInUse",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. Never add a flag that makes it eligible."
+    },
+    {
+      "id": "wb.branch.list",
+      "feature_refs": [
+        "spec/features/branch-hygiene/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb branch list",
+              "flags": [
+                "--base",
+                "--format",
+                "--older-than",
+                "--only",
+                "--scope"
+              ],
+              "modes": [
+                "Read-only in every configuration; the only permitted remote interaction is fetching",
+                "Every disposition is computed against the exact commit SHA fetched from origin/<base> during the run",
+                "A repository whose target cannot be fetched yields unreadable for its branches without blocking the rest of the sweep",
+                "Closed evidence taxonomy: contained, absorbed, unique, protected, in-use, unreadable"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb branch list --help",
+              "contains": [
+                "contained",
+                "absorbed",
+                "unique",
+                "protected",
+                "in-use",
+                "unreadable",
+                "never eligible for --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-branches/SKILL.md",
+              "marker": "## The evidence taxonomy",
+              "examples": [
+                "wb branch list",
+                "wb branch list --scope all --only unique"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/branches_test.go",
+              "name": "TestBranchListClassifiesEveryEvidenceClass",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Progress streams to stderr as '[n/N] repository' plus a closing per-disposition summary; stdout stays reserved for the report so --format json stays machine-parseable."
+    },
+    {
       "id": "wb.check",
       "feature_refs": [],
       "since": "existing",

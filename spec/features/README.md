@@ -18,7 +18,8 @@ format: https://specscore.md/features-index-specification
 | [Worktree Lifecycle](worktree-lifecycle/README.md) | Implementing | `wb worktree` creates, guards, inventories, and safely cleans task worktrees |
 | [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |
 | [Work Log Recovery](work-log/README.md) | Approved | `wb worktree log` gives every WB-managed effort a private, durable journal that |
-| [Branch Hygiene](branch-hygiene/README.md) | In Review | `wb branch` is a top-level command family that inventories and safely retires |
+| [Branch Hygiene](branch-hygiene/README.md) | Implementing | `wb branch` is a top-level command family that inventories and safely retires |
+| [Cleanup Orchestration](cleanup-orchestration/README.md) | In Review | `wb cleanup` is one top-level entry point that retires a repository's |
 | [Worktree Checkpoint](worktree-checkpoint/README.md) | Implementing | A cheap, repeatable, hook-proof snapshot that preserves in-flight worktree state against crashes, independent of whether the work compiles or is ready to commit. |
 
 ## Open Questions

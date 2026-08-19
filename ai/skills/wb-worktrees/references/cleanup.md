@@ -117,21 +117,30 @@ That flag only selects which receipt to verify. Every proof still runs, and the
 named commit must be exactly where the work entered the target, so it can never
 make unlanded work eligible.
 
-## Known gap: a branch with no worktree at all
+## A branch with no worktree at all: hand off to wb branch
 
 Every command above is scoped to worktrees. A local or remote branch that has
-no linked worktree and no Work Log claim is not a cleanup candidate in any
-mode — `backfill` cannot help, because there is no worktree to give a manifest
-to. On a real fleet that is the large majority: a sweep measured 1,081 local
-branches, of which 750 were provably safe to delete, while
-`wb worktree cleanup --all-merged` found 39 eligible tasks.
+no linked worktree and no Work Log claim is not a `wb worktree cleanup`
+candidate in any mode — `backfill` cannot help, because there is no worktree
+to give a manifest to. On a real fleet that is the large majority: a sweep
+measured 1,081 local branches, of which 750 were provably safe to delete,
+while `wb worktree cleanup --all-merged` found 39 eligible tasks.
 
-`wb branch list` and `wb branch cleanup` are specified in
-`spec/features/branch-hygiene/` and are **not implemented yet**. Until they
-ship, report those branches and get a decision. Do not hand-roll the sweep: a
-`git branch --merged` or `git push --delete` loop has no audit trail, no lease
-protection, and cannot distinguish work that landed from work that landed and
-was then reverted.
+That gap is closed by a sibling command family, not by this one:
+`wb branch list` and `wb branch cleanup` (see the `wb-branches` skill and
+`spec/features/branch-hygiene/`). Reach for them for exactly this request —
+"clean up leftover branches", "delete merged branches", "prune remote
+branches" — whenever the branch you were asked about has no worktree. They
+share this feature's fresh-fetch-and-prove-containment discipline and the
+same dry-run-by-default, `--apply`-required contract, but they are a
+different evidence engine on purpose: a bare branch has no Work Log claim, no
+task lock, and no coordinated-task semantics for this feature's machinery to
+apply to. `wb branch cleanup` in turn defers back here — a branch that *does*
+have a worktree or a live WB Work Log claim is reported `in-use` and left for
+`wb worktree cleanup <task>` or `wb worktree abort <task>` to retire. Do not
+hand-roll either sweep: a `git branch --merged` or `git push --delete` loop
+has no audit trail, no lease protection, and cannot distinguish work that
+landed from work that landed and was then reverted.
 
 ## Trap 3: `--base` defaults to `main`
 
