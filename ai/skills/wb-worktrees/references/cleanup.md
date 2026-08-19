@@ -1,0 +1,222 @@
+# Clean up leftover branches and worktrees
+
+This is the entry point for any hygiene request — one finished task, or a
+historic sweep over every repository in the fleet. It covers **branches as well
+as worktrees**, because WB retires them together: a worktree and the branch it
+holds are removed in one audited transaction.
+
+Never hand-roll this with raw Git. A loop over `git branch --merged`,
+`git worktree list`, `git branch -D`, or `git push --delete` has no Work Log,
+no audit report, no lease protection, and no coordinated-task safety, and it
+cannot tell content that landed from content that was reverted after landing.
+
+## Pick the command by what you were asked
+
+| The request | Start here |
+| --- | --- |
+| "clean up leftovers", "what is safe to delete?" | `wb worktree orphans` |
+| "audit worktree/branch hygiene" | `wb worktree orphans --only review` |
+| "this task's PRs merged, tidy it up" | `wb worktree cleanup <task>` |
+| "delete every merged branch and worktree" | `wb worktree cleanup --all-merged` |
+| "the sweep sees nothing, these are not WB worktrees" | `wb worktree backfill` |
+| "the work is unfinished / never merged" | `wb worktree abort <task>` |
+| "reuse this worktree for the next task" | `wb worktree rename <old> <new>` |
+
+Every one of those is a dry run until `--apply` is explicit. Read the plan
+before applying it, every time.
+
+## Triage first: what is actually out there
+
+```sh
+wb worktree orphans
+wb worktree orphans --only remove
+wb worktree orphans --only review
+wb worktree orphans --base main --stale-days 14 --format json
+```
+
+`orphans` is read-only in every configuration and is the widest view WB has. It
+discovers through each canonical clone's own Git worktree registry, so it sees
+all three layout generations at once: WB's current `~/.wb` home, the legacy
+`<projects-root>/.wb` hierarchy, and pre-WB checkouts living anywhere else.
+Rows group by root effort, so a family of sub-agent worktrees is one subject,
+and a family is recommended for removal only when every worktree in it landed.
+
+Flags: `--base` (target a branch must be contained in to count as landed,
+default `main`), `--stale-days` (days without a commit before unmerged work
+needs a decision, default 14), `--only active|remove|review|decide`,
+`--format text|json`. `--filter` is not accepted here; scope with
+`--projects-root`.
+
+Dispositions mean: `active` — leave alone; `remove` — landed, hand to
+`cleanup`; `review` — unmerged and stale, a human decides; `decide` — WB cannot
+tell; `unreadable` — inspect by hand.
+
+For WB-managed tasks specifically, the narrower inventories are:
+
+```sh
+wb worktree list
+wb worktree list <task> --github
+wb worktree summary <task> --github
+```
+
+## Trap 1: cleanup only sees WB-managed tasks
+
+`wb worktree cleanup` inventories `<wb-home>/worktrees/<task>/...`. A linked
+worktree created by `git worktree add`, or by an older tool, is not a candidate
+at all — it is silently outside the sweep, not skipped with a reason. This is
+the single most common reason a fleet-wide sweep reports far fewer eligible
+tasks than `orphans` reports removable worktrees.
+
+Give those worktrees an identity first:
+
+```sh
+wb worktree backfill
+wb worktree backfill --base main --format json
+wb worktree backfill --apply
+```
+
+`backfill` writes a reconstructed manifest into every reachable worktree that
+lacks one. It is additive by construction — `.wb/local/` is a new path, nothing
+moves, no working tree is touched — so it is safe to run against a fleet with
+live agents and safe to re-run after an interruption. A reconstructed manifest
+records which fields were inferred and from what evidence, so triage never
+mistakes an inference for a creation record. It never fabricates a prompt;
+`wb worktree set --prompt` gives a worktree its first real one.
+
+Flags: `--base` (default `main`), `--apply`, `--format text|json`. Dry run by
+default.
+
+## Trap 2: cleanup requires a merge receipt, not merged-looking content
+
+Eligibility is evidence-gated, and the evidence is a *receipt*:
+
+- the branch head is an ancestor of the freshly fetched exact `origin/<base>`
+  SHA — a verified direct push counts, a local-only merge is `awaiting_push`
+  and ineligible; **or**
+- GitHub's own commit-to-pull-request index names a merged PR into that exact
+  base whose merge commit is contained in the fetched target, proved locally by
+  a three-way merge that adds nothing to either the landing commit or the
+  target.
+
+A branch that was squash-merged, rebase-merged, or cherry-picked, and whose
+patches are therefore all upstream by patch-id but whose head is not an
+ancestor of the target and whose PR record GitHub cannot associate, is **not** a
+candidate. `git cherry <base> <branch>` reporting no `+` lines is not a receipt
+WB accepts today: it cannot distinguish work that landed from work that landed
+and was then reverted. Do not delete such branches by hand on the strength of a
+`git cherry` run — report them and get a decision.
+
+Use `--absorbed-by` when a merger batched the branch onto a differently named
+integration branch and cherry-picked rather than merged it:
+
+```sh
+wb worktree cleanup <task> --absorbed-by <pr-number-or-landing-commit>
+```
+
+That flag only selects which receipt to verify. Every proof still runs, and the
+named commit must be exactly where the work entered the target, so it can never
+make unlanded work eligible.
+
+## Trap 3: `--base` defaults to `main`
+
+`--base` defaults to `main` on `cleanup`, `list`, `orphans`, and `backfill`. A
+task branched from a feature branch is `awaiting_push` against `main` forever
+until you say so:
+
+```sh
+wb worktree cleanup <task> --base <feature-branch>
+```
+
+This is the same rule as `wb worktree cleanup --base`: the receipt is checked
+against the exact origin target you name, and nothing else.
+
+## Trap 4: dry run is the default, and `--apply` is not enough
+
+```sh
+wb worktree cleanup <task>
+wb worktree cleanup --all-merged
+wb worktree cleanup --all-merged --older-than 0
+wb worktree cleanup --all-merged --format json
+wb --filter acme worktree cleanup --all-merged
+```
+
+`cleanup` requires exactly one of a named task or `--all-merged`; the two
+cannot be combined. A named task defaults to immediate eligibility
+(`--older-than 0`) because that is its terminalization journey; `--all-merged`
+keeps a 24-hour merged-PR grace window unless `--older-than` overrides it.
+
+For a named task, `--apply` **refuses without `--remote`**: definition of done
+includes retiring the source remote branch, not only the local worktree and
+branch.
+
+```sh
+wb worktree cleanup <task> --apply --remote --older-than 0
+```
+
+Full flag surface: `--base`, `--all-merged`, `--apply`, `--remote`,
+`--older-than`, `--report-dir`, `--absorbed-by`, `--resume-interrupted`,
+`--format`, plus the root `--filter` and `--projects-root`.
+
+`--report-dir` overrides the audit directory, which defaults to
+`<wb-home>/reports/worktree-cleanup/<timestamp>`. A plan is read-only even when
+`--report-dir` is supplied; artifacts are written only for an apply attempt,
+before its first destructive Git operation, and updated with applied or failed
+state.
+
+`--resume-interrupted` is named-task-only recovery. It validates the retained
+`.lock` as this operation with a conclusively dead PID before holding it
+through a normal cleanup.
+
+## Reading a skip reason
+
+A fleet sweep reports far more skipped tasks than eligible ones, and every skip
+is WB being correct rather than WB being stuck:
+
+- `current branch head is not integrated into the exact origin target
+  (awaiting push)` — the work exists only locally. Land it, do not delete it.
+- `branch still has an open pull request: <url>` — close or merge the PR first.
+- `worktree has local changes` — uncommitted work. WB never removes it.
+- `coordinated task blocked by <repository>` — one repository in a
+  multi-repository task is ineligible, so every repository in that task is held.
+  Resolve the named sibling.
+
+Preserve skipped work and report the reason. Never reset, clean, stash, or
+delete it manually to make a sweep pass.
+
+## When the work never landed
+
+`cleanup` must refuse an unmerged worktree, because there is no receipt. That
+is what `abort` is for — it is the audited alternative to deleting an
+unfinished worktree by hand:
+
+```sh
+wb worktree abort <task> --disposition handoff --successor <agent-or-session> \
+  --model <exact-successor-model-or-unknown>
+wb worktree abort <task> --disposition discarded --apply --remote
+```
+
+`handoff` and `not_landed` keep even a dirty worktree and branch resumable and
+bind exactly one successor. `discarded --apply --remote` is the explicit
+authorization to seal the Work Log first, retire an exact unchanged remote
+source branch with force-with-lease, then remove a clean unlocked worktree and
+its exact local branch. See [lifecycle.md](lifecycle.md) for the full
+disposition contract, and for `wb worktree rename` recycling.
+
+## Finish the sweep
+
+A sweep is done when a re-run reports nothing, not when the first pass exits:
+
+```sh
+wb worktree orphans
+wb worktree cleanup --all-merged
+wb worktree list
+```
+
+Resolve every live entry and every durable backlog record. The normal terminal
+state is zero cleanup backlog, not apparently-finished branches.
+
+Long fleet sweeps are quiet: `wb worktree cleanup --all-merged` fetches and
+queries GitHub for every candidate and prints its whole report at the end, so
+several minutes of silence is expected progress, not a hang. Run it in the
+foreground and let it finish; do not kill and retry it, which leaves task locks
+behind for `--resume-interrupted` to clear.

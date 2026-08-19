@@ -1,4 +1,4 @@
 interface:
   display_name: "WB Worktrees"
-  short_description: "Guard and manage isolated WB worktrees"
-  default_prompt: "Use $wb-worktrees to create, validate, summarize a task, inspect with info, dump worktree log context, or safely clean isolated feature worktrees."
+  short_description: "Guard WB worktrees and safely clean up leftover worktrees and branches"
+  default_prompt: "Use $wb-worktrees to create, validate, summarize, and inspect isolated worktrees, and for any branch or worktree hygiene request — wb worktree orphans, backfill, cleanup, and abort — instead of raw git branch or worktree deletion."

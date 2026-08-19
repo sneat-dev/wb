@@ -1,5 +1,9 @@
 # Guard and recover a checkout
 
+For branch and worktree hygiene sweeps rather than one checkout's safety, read
+[cleanup.md](cleanup.md): it routes `wb worktree orphans`, `wb worktree backfill`,
+and `wb worktree cleanup` for historic leftovers across every repository.
+
 Run before editing, committing, or pushing:
 
 ```sh

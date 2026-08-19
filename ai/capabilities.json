@@ -2783,6 +2783,13 @@
               "examples": [
                 "wb worktree backfill --apply"
               ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/cleanup.md",
+              "marker": "## Trap 1: cleanup only sees WB-managed tasks",
+              "examples": [
+                "wb worktree backfill --base main --format json"
+              ]
             }
           ],
           "limitation": null
@@ -2866,6 +2873,14 @@
               "examples": [
                 "wb worktree cleanup fair-split",
                 "wb worktree cleanup fair-split --apply --remote --older-than 0"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/cleanup.md",
+              "marker": "## Pick the command by what you were asked",
+              "examples": [
+                "wb worktree cleanup --all-merged",
+                "wb worktree cleanup --all-merged --older-than 0"
               ]
             }
           ],
@@ -4293,6 +4308,13 @@
               "marker": "# Guard and recover a checkout",
               "examples": [
                 "wb worktree orphans --only remove"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/cleanup.md",
+              "marker": "## Triage first: what is actually out there",
+              "examples": [
+                "wb worktree orphans --only review"
               ]
             }
           ],
