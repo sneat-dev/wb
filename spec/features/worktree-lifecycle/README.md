@@ -179,6 +179,24 @@ If any repository in a task is ineligible, cleanup MUST mark every repository
 in that task ineligible. It MUST preserve skipped work and explain the
 blocking evidence.
 
+### Long sweep feedback
+
+#### REQ: incremental-sweep-progress
+
+A fleet-wide sweep — `wb worktree cleanup --all-merged`, or any inventory run
+with `--github` — fetches and queries a hosted API once per candidate and can
+run for minutes. Such a run MUST emit incremental progress to **stderr**,
+flushed per event rather than buffered until the report is complete. Each event
+MUST name the repository or task being inspected and carry a running `[n/N]`
+count, and the run MUST close with a summary carrying totals and elapsed time.
+
+stdout MUST remain reserved for the report, so `--format json` stdout stays
+machine-parseable. Progress MUST NOT be suppressed merely because stderr is not
+a terminal: an agent reads stderr, and a multi-minute silence is
+indistinguishable from a hang. The observed consequence is concrete — a killed
+and retried sweep leaves task locks behind that then require
+`--resume-interrupted` to clear.
+
 ### Audited application
 
 #### REQ: recheck-and-compare-delete
@@ -262,7 +280,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -273,7 +291,7 @@ remain guardable, listable, and safely cleanable; direct legacy repository
 roots do not recurse into source directories; arbitrary detached work is
 rejected while a live rebase is accepted only transiently; prior-release hooks
 remain compatible without persisting an ephemeral executable; dry runs preserve state; exact merged heads can be cleaned;
-dirty or advanced branches survive; local and optional remote refs are removed
+dirty or advanced branches survive; a fleet sweep writes incremental per-repository progress to stderr before its report and leaves stdout parseable as JSON; local and optional remote refs are removed
 with comparison guards; interruption after worktree removal is resumed from a
 durable exact-ref backlog; exact empty internal stages are archived while
 non-empty ones remain blocking backlog; and apply writes durable evidence. Hosted PR metadata

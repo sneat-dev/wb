@@ -117,6 +117,22 @@ That flag only selects which receipt to verify. Every proof still runs, and the
 named commit must be exactly where the work entered the target, so it can never
 make unlanded work eligible.
 
+## Known gap: a branch with no worktree at all
+
+Every command above is scoped to worktrees. A local or remote branch that has
+no linked worktree and no Work Log claim is not a cleanup candidate in any
+mode — `backfill` cannot help, because there is no worktree to give a manifest
+to. On a real fleet that is the large majority: a sweep measured 1,081 local
+branches, of which 750 were provably safe to delete, while
+`wb worktree cleanup --all-merged` found 39 eligible tasks.
+
+`wb branch list` and `wb branch cleanup` are specified in
+`spec/features/branch-hygiene/` and are **not implemented yet**. Until they
+ship, report those branches and get a decision. Do not hand-roll the sweep: a
+`git branch --merged` or `git push --delete` loop has no audit trail, no lease
+protection, and cannot distinguish work that landed from work that landed and
+was then reverted.
+
 ## Trap 3: `--base` defaults to `main`
 
 `--base` defaults to `main` on `cleanup`, `list`, `orphans`, and `backfill`. A
