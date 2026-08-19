@@ -197,6 +197,52 @@ the exact journaled local ref. Run `wb worktree list` and a final cleanup/abort
 dry run afterwards and resolve every live entry or durable backlog record. The
 normal terminal state is zero cleanup backlog, not apparently-finished branches.
 
+## Checkpoint before you lose it
+
+`wb worktree checkpoint` is the lightweight, repeatable sibling of `abort`: it
+does not seal a task or require a disposition, it just stops the last few
+minutes of edits from being the only copy anywhere. Call it between steps,
+before anything risky, or whenever you are not sure you will get to run a
+real commit:
+
+```sh
+wb worktree checkpoint .
+wb worktree checkpoint . --message "before refactor" --no-push
+```
+
+It snapshots tracked and untracked changes — including code that does not
+compile — into `refs/wb/checkpoints/<scope>/<timestamp>`, never a branch, so
+it can never accidentally become a landable commit and never blocks on a
+verification hook. Calling it again with nothing new is a fast no-op. Push is
+on by default and best-effort: a failure is reported but never fails the
+command.
+
+Find and recover a checkpoint:
+
+```sh
+wb worktree checkpoint list .
+wb worktree checkpoint list . --remote
+wb worktree checkpoint restore latest . --apply --branch recovered/wip
+```
+
+`list --remote` also queries `origin`, so a checkpoint is findable even after
+the worktree that made it is gone. `restore --apply --branch <name>` creates
+exactly one new local branch at the checkpoint commit; it never touches the
+current branch, working tree, or index — recovery is always an explicit,
+separate, inspectable branch.
+
+`wb worktree abort` and `wb worktree cleanup --apply` call checkpoint on your
+behalf immediately before their own destructive steps, so this is mostly
+insurance against never getting to run those commands at all — a killed
+session, a dropped connection, a machine that slept mid-response. An external
+scheduler (cron, launchd, a systemd timer — WB itself runs no daemon) can call
+the fleet-wide primitive on an interval:
+
+```sh
+wb worktree checkpoint sweep
+wb worktree checkpoint sweep --no-push
+```
+
 ## Planned coordination surfaces (not commands)
 
 Portable merger-agent adapters, plan-overlap and migration-scope detection,

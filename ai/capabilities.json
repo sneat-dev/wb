@@ -2809,6 +2809,216 @@
       "notes": "Additive and idempotent so a fleet with live agents adopts without stopping. Never fabricates a prompt."
     },
     {
+      "id": "wb.worktree.checkpoint.list",
+      "feature_refs": [
+        "spec/features/worktree-checkpoint/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree checkpoint list",
+              "flags": [
+                "--all",
+                "--format",
+                "--remote",
+                "--remote-name"
+              ],
+              "modes": [
+                "Lists checkpoint refs for the current scope, newest first, with recorded message and dirty state.",
+                "--remote additionally queries origin so a checkpoint is discoverable after the local worktree that made it is gone."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree checkpoint list --help",
+              "contains": [
+                "--remote",
+                "newest first"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Checkpoint before you lose it",
+              "examples": [
+                "wb worktree checkpoint list .",
+                "wb worktree checkpoint list . --remote"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/checkpoint_test.go",
+              "name": "TestCheckpointListAndRestore",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/checkpoint_test.go",
+              "name": "TestWorktreeCheckpointCLICreateListRestore",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": null
+    },
+    {
+      "id": "wb.worktree.checkpoint.restore",
+      "feature_refs": [
+        "spec/features/worktree-checkpoint/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree checkpoint restore",
+              "flags": [
+                "--apply",
+                "--branch",
+                "--force",
+                "--format"
+              ],
+              "modes": [
+                "Default dry run reports the checkpoint's diffstat against current HEAD without changing any Git state.",
+                "--apply --branch <name> creates exactly one new local branch at the checkpoint commit; it never touches the current branch, working tree, or index."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree checkpoint restore --help",
+              "contains": [
+                "--apply",
+                "--branch",
+                "dry run"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Checkpoint before you lose it",
+              "examples": [
+                "wb worktree checkpoint restore latest . --apply --branch recovered/wip"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/checkpoint_test.go",
+              "name": "TestCheckpointListAndRestore",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/checkpoint_test.go",
+              "name": "TestWorktreeCheckpointCLICreateListRestore",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": null
+    },
+    {
+      "id": "wb.worktree.checkpoint.sweep",
+      "feature_refs": [
+        "spec/features/worktree-checkpoint/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree checkpoint sweep",
+              "flags": [
+                "--format",
+                "--no-push",
+                "--remote"
+              ],
+              "modes": [
+                "Checkpoints every locally known WB worktree, continuing past a single repository's failure.",
+                "The fleet-wide primitive an external scheduler (cron, launchd, a systemd timer) calls on an interval; WB itself runs no daemon."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree checkpoint sweep --help",
+              "contains": [
+                "scheduler",
+                "no daemon"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Checkpoint before you lose it",
+              "examples": [
+                "wb worktree checkpoint sweep",
+                "wb worktree checkpoint sweep --no-push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/checkpoint_test.go",
+              "name": "TestWorktreeCheckpointSweepCLICoversEveryKnownWorktree",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": null
+    },
+    {
       "id": "wb.worktree.cleanup",
       "feature_refs": [
         "spec/features/work-log/README.md",

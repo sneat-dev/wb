@@ -127,7 +127,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
 		"worktree log handoff": true, "worktree log recover": true, "worktree log finalize": true,
 		"worktree log sync": true, "worktree log archive": true,
-		"worktree summary": true,
+		"worktree summary": true, "worktree checkpoint sweep": true,
 	},
 	"filter": {
 		"sync": true, "run": true,

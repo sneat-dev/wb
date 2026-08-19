@@ -29,6 +29,7 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeCleanupCmd())
 	command.AddCommand(newWorktreeRenameCmd())
 	command.AddCommand(newWorktreeAbortCmd())
+	command.AddCommand(newWorktreeCheckpointCmd())
 	command.AddCommand(newWorktreeCorrectIdentityCmd())
 	command.AddCommand(newWorktreeSetCmd())
 	command.AddCommand(newWorktreeInfoCmd())
@@ -656,6 +657,235 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().BoolVar(&apply, "apply", false, "seal Work Logs and apply the selected disposition")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged remote source branch when applying discarded")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeCheckpointCmd() *cobra.Command {
+	var message, remote, format string
+	var noPush bool
+	command := &cobra.Command{
+		Use:   "checkpoint [worktree-path]",
+		Short: "Snapshot a worktree's exact current state, even if it does not build",
+		Long: `Checkpoint captures every tracked and untracked change — including code that
+does not compile — as a commit under refs/wb/checkpoints/<scope>/<timestamp>.
+It never runs build, test, or lint, never touches refs/heads/*, and never
+changes the working tree, the real index, or HEAD. Calling it again with
+nothing new is a fast no-op, so it is cheap enough to call between every
+step. Push is on by default and best-effort with --no-verify: a failure
+(offline, no remote) is reported but never fails the command.
+
+This is the lightweight, repeatable sibling of 'wb worktree abort': abort
+seals a whole interrupted task with a disposition and (for handoff/
+not_landed) a successor; checkpoint just stops the last few minutes of
+edits from being the only copy anywhere. Abort calls checkpoint on your
+behalf before its own destructive steps.
+
+Use 'wb worktree checkpoint list' to find checkpoints and
+'wb worktree checkpoint restore' to recover one into a new branch.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			result, err := worktrees.Checkpoint(command.Context(), worktrees.CheckpointOptions{
+				Worktree: path, Message: message, Remote: remote, Push: !noPush,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(result)
+			}
+			return writeCheckpointText(command.OutOrStdout(), result)
+		},
+	}
+	command.Flags().StringVarP(&message, "message", "m", "", `checkpoint message (default "checkpoint")`)
+	command.Flags().StringVar(&remote, "remote", "", "remote to push to (default origin)")
+	command.Flags().BoolVar(&noPush, "no-push", false, "skip the best-effort push to the remote")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.AddCommand(newWorktreeCheckpointListCmd())
+	command.AddCommand(newWorktreeCheckpointRestoreCmd())
+	command.AddCommand(newWorktreeCheckpointSweepCmd())
+	return command
+}
+
+func writeCheckpointText(out io.Writer, result worktrees.CheckpointResult) error {
+	state := "reused"
+	if result.Created {
+		state = "created"
+	}
+	if _, err := fmt.Fprintf(out, "%s checkpoint %s at %s (dirty=%t)\n", state, result.Ref, result.Commit, result.Dirty); err != nil {
+		return err
+	}
+	if !result.PushSkipped {
+		if result.Pushed {
+			if _, err := io.WriteString(out, "pushed to remote\n"); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(out, "push failed (preserved locally only): %s\n", result.PushError); err != nil {
+			return err
+		}
+	}
+	if result.UpstreamGone {
+		if _, err := fmt.Fprintf(out, "WARNING: upstream is gone; %d commit(s) exist only on this machine\n", result.UnpushedCommits); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func newWorktreeCheckpointListCmd() *cobra.Command {
+	var all, includeRemote bool
+	var remoteName, format string
+	command := &cobra.Command{
+		Use:   "list [worktree-path]",
+		Short: "List discoverable checkpoints for a worktree",
+		Long: `Lists local checkpoint refs newest first. --remote additionally queries the
+remote so a checkpoint can be found from a fresh clone after the worktree
+that made it is gone — the exact recovery case this feature exists for.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			path := "."
+			if len(args) == 1 {
+				path = args[0]
+			}
+			refs, err := worktrees.CheckpointList(command.Context(), worktrees.CheckpointListOptions{
+				Worktree: path, All: all, IncludeRemote: includeRemote, Remote: remoteName,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(refs)
+			}
+			if len(refs) == 0 {
+				_, err := io.WriteString(command.OutOrStdout(), "no checkpoints found\n")
+				return err
+			}
+			for _, ref := range refs {
+				origin := "local"
+				if ref.Remote {
+					origin = "remote"
+				}
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s  %s  dirty=%t  %s  %s\n", ref.Ref, ref.Commit, ref.Dirty, origin, ref.Message); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	command.Flags().BoolVar(&all, "all", false, "list every scope in the repository, not only the current one")
+	command.Flags().BoolVar(&includeRemote, "remote", false, "also query the remote for checkpoints not present locally")
+	command.Flags().StringVar(&remoteName, "remote-name", "", "remote to query with --remote (default origin)")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeCheckpointRestoreCmd() *cobra.Command {
+	var branch, format string
+	var apply, force bool
+	command := &cobra.Command{
+		Use:   "restore <ref> [worktree-path]",
+		Short: "Inspect or recover a checkpoint into a new branch",
+		Long: `Default is a dry run reporting what the checkpoint contains against current
+HEAD. --apply --branch <name> creates exactly one new local branch at the
+checkpoint commit; it never touches the current branch, working tree, or
+index. <ref> may be a full refs/wb/checkpoints/... name, a bare timestamp
+leaf resolved against the current scope, a raw commit SHA, or "latest".`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			path := "."
+			if len(args) == 2 {
+				path = args[1]
+			}
+			result, err := worktrees.CheckpointRestore(command.Context(), worktrees.CheckpointRestoreOptions{
+				Worktree: path, Ref: args[0], Branch: branch, Apply: apply, Force: force,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(result)
+			}
+			if result.Applied {
+				_, err := fmt.Fprintf(command.OutOrStdout(), "created %s at %s from %s\n", result.Branch, result.Commit, result.Ref)
+				return err
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "%s at %s (dry run; pass --apply --branch <name> to recover)\n%s\n", result.Ref, result.Commit, result.DiffStat)
+			return err
+		},
+	}
+	command.Flags().StringVar(&branch, "branch", "", "new local branch name to create at the checkpoint commit (required with --apply)")
+	command.Flags().BoolVar(&apply, "apply", false, "create the recovery branch")
+	command.Flags().BoolVar(&force, "force", false, "overwrite an existing branch of the same name")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeCheckpointSweepCmd() *cobra.Command {
+	var remote, format string
+	var noPush bool
+	command := &cobra.Command{
+		Use:   "sweep",
+		Short: "Checkpoint every locally known WB worktree",
+		Long: `Sweep is the fleet-wide primitive an external scheduler (cron, launchd, a
+systemd timer) calls on an interval — WB itself runs no daemon and
+'wb worktree create' arranges no background process. Each worktree is
+checkpointed independently; one repository's failure does not stop the rest.`,
+		Args: cobra.NoArgs,
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			results, err := worktrees.CheckpointAll(command.Context(), worktrees.CheckpointAllOptions{
+				ProjectsRoot: projectsRoot, Push: !noPush, Remote: remote,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(results)
+			}
+			failed := 0
+			for _, result := range results {
+				if result.Error != "" {
+					failed++
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "%s/%s: FAILED: %s\n", result.Task, result.Repository, result.Error); err != nil {
+						return err
+					}
+					continue
+				}
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s/%s: %s (dirty=%t)\n", result.Task, result.Repository, result.Checkpoint.Ref, result.Checkpoint.Dirty); err != nil {
+					return err
+				}
+			}
+			if failed > 0 {
+				return &exitError{code: exitFindings, message: fmt.Sprintf("%d of %d worktrees failed to checkpoint", failed, len(results))}
+			}
+			return nil
+		},
+	}
+	command.Flags().StringVar(&remote, "remote", "", "remote to push to (default origin)")
+	command.Flags().BoolVar(&noPush, "no-push", false, "skip the best-effort push to the remote")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
