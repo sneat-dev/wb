@@ -198,7 +198,247 @@ writer.
 
 ## Behavior
 
-TODO: How does this feature work?
+### Operations Journal
+
+#### REQ: journal-scope-is-operations-not-invocations
+
+The journal MUST record one entry per **operation** — a WB invocation that
+performs, attempts, or refuses at least one mutating action against a
+repository, worktree, branch, ref, stash, pull request, or preservation
+store. It MUST record destructive and non-destructive operations alike,
+exactly as the founder asked for both.
+
+A pure read/report command — `wb audit`, `wb worktree list`, `wb branch
+list`, `wb worktree log show`, a plan run without `--apply` that performs no
+mutation — produces no journal entry, because it changed nothing there is
+evidence for. This is a scope boundary, not an oversight:
+`#req:journal-record-fields` requires a before/after SHA pair and an outcome,
+neither of which a read-only command has anything to report. Whether a
+lightweight "observed" event class should exist for read commands too is
+recorded in Open Questions rather than decided here, because it is a disk-cost
+trade-off the founder should make with real numbers in front of them.
+
+The closed set of operation kinds, extensible only by amending this
+requirement, is: `worktree_create`, `worktree_rename`, `worktree_abort`,
+`worktree_recycle`, `worktree_remove`, `branch_delete_local`,
+`branch_delete_remote`, `ref_update`, `stash_drop`, `pr_retarget`, `pr_merge`,
+`preservation_capture`, `bundle_create`, `restore_apply`, `sync_apply`
+(covers `wb sync`, `wb deps set`, `wb migrate`), and `other` for a mutating
+action this list has not yet named. `other` MUST still carry every field
+`#req:journal-record-fields` requires — an unclassified operation is
+recorded, never silently invisible, and a build that emits `other` more than
+incidentally is a signal this list needs an amendment.
+
+#### REQ: journal-record-fields
+
+Every journal record MUST carry: `schema_version`; a monotonic per-file
+`sequence`; `recorded_at` (UTC, RFC 3339); `operation` (the closed set from
+`#req:journal-scope-is-operations-not-invocations`); `destructive` (bool);
+`repository` (`owner/name`); `branch` (when applicable); `worktree_dir` (when
+applicable); `task` / effort ID (when the operation ran under a WB Work Log
+claim, cross-referencing `work-log#req:deterministic-identities-and-evidence`
+without duplicating its content); `before_sha` and `after_sha` (either MAY be
+empty — a `worktree_create` has no `before_sha`, a refused deletion has no
+`after_sha`); `outcome`, drawn from the closed set `succeeded`, `refused`,
+`failed`, `partial`; `evidence_path`, a pointer to the full durable report or
+preservation manifest this operation produced (never omitted when one
+exists); `run_id` and `command` (the exact invoked WB command line, flags
+included, secrets excluded); and `actor` (`human` or `agent`, from the same
+provenance WB already collects for a Work Log Run).
+
+This is normative for the same reason
+`cleanup-orchestration#req:every-row-carries-evidence-and-remedy`'s sibling
+requirement is: a record that identifies *that* something happened without
+saying *what*, *to what*, *from what state*, *to what state*, and *where the
+detail lives* is not an audit trail, it is a heartbeat.
+
+#### REQ: journal-is-an-index-not-a-replacement
+
+A journal record MUST NOT inline the full per-candidate detail a durable
+report already carries — no embedded diff, no per-file manifest entry, no
+list of every branch a multi-branch run touched inside one record. Each
+record describes exactly one operation on exactly one subject and points, via
+`evidence_path`, to the report or manifest that carries the rest. A
+multi-branch `wb cleanup --apply` run therefore produces one journal record
+per branch retired, each pointing at the same `cleanup.json`, not one record
+for the whole run.
+
+This keeps every record small and bounds its size
+(`#req:concurrent-appends-stay-uncorrupted`), and it is what makes the
+journal the answer to "what did WB do to `sneat-co/competios` this week"
+without reproducing the 107,690-byte-report problem
+`cleanup-orchestration#req:grouped-end-of-run-summary` already exists to
+avoid.
+
+#### REQ: one-global-append-only-journal
+
+WB MUST maintain **one global journal**, not one file per repository. It MUST
+be stored as newline-delimited JSON (ndjson) — one record per line — rotated
+monthly at `<wb-home>/journal/operations-<YYYY-MM>.jsonl`, where `<YYYY-MM>`
+is the UTC year and month in which the record was appended.
+
+Both halves of this decision are deliberate:
+
+- **Global over per-repository.** The founder's own question was framed
+  per-repository ("what did wb do to `sneat-co/competios` this week"), which
+  might suggest a file per repository. A global file is chosen instead
+  because the fleet holds 397 repositories and a 500-per-hour agent-lane
+  operation rate would otherwise mean 397 growing files to rotate, retain,
+  and — critically — to *lock* independently across concurrent processes for
+  no benefit: `#req:journal-query-command` answers the per-repository
+  question by filtering one small file, not by opening one of 397. A global
+  file also answers the fleet-wide question — "what did WB do anywhere this
+  week" — that a per-repository layout cannot answer without opening all of
+  them, and that question is exactly what this feature was commissioned to
+  answer for the 777-branch run.
+- **ndjson over a directory of files.** The existing report writers already
+  use one directory and one file per run (`cleanup.json`) and per-record
+  (`backlog/<64-hex>.json`); that is precisely the pattern that produced 624
+  directories with no index. A directory of small per-operation files
+  multiplies that problem rather than fixing it. ndjson is streamable,
+  greppable with plain `grep`/`jq` without a directory walk, appends in a
+  single write, and is the same format Work Log Recovery's `events.jsonl`
+  already uses successfully in this repository.
+
+Monthly rotation bounds any one file's size without requiring rotation logic
+to run inside every WB invocation that appends — the file name is a pure
+function of the current UTC month, so no process needs to coordinate a
+rollover.
+
+#### REQ: concurrent-appends-stay-uncorrupted
+
+Multiple `wb` processes append to the same monthly journal file
+concurrently — this is the ordinary case, not an edge case, on a workstation
+running several agent lanes at once. WB MUST guarantee that concurrent
+appends never interleave partial lines and never lose a record other than as
+`#req:journal-write-is-best-effort` allows. It MUST do so by:
+
+1. Serializing each record to one JSON line with a hard cap (8 KiB); an
+   `evidence_path` pointer keeps every legitimate record far under that cap,
+   per `#req:journal-is-an-index-not-a-replacement`. A record that cannot fit
+   MUST be truncated to its mandatory fields plus `evidence_path` rather than
+   dropped.
+2. Opening the file `O_APPEND` and writing each record in one `write(2)`
+   call, relying on the POSIX guarantee that a single `write` below the
+   platform's atomic-write limit (conventionally `PIPE_BUF`, at least 4 KiB)
+   never interleaves with a concurrent writer's `write` to the same file.
+3. Additionally taking a short-held advisory lock (`flock` on POSIX,
+   `LockFileEx` on Windows) around each append as defense in depth, because
+   `O_APPEND` atomicity is not guaranteed on every filesystem WB might run
+   against (network filesystems in particular), and because a small,
+   bounded, per-record lock costs microseconds against operations that
+   already cost hundreds of milliseconds in `git` subprocess time — it is not
+   the fleet's bottleneck.
+
+A record MUST be fully written — a complete, valid JSON line terminated by
+`\n` — or not written at all from the reader's point of view; a reader MUST
+treat a non-JSON or incomplete final line as evidence of an interrupted
+append, and discard only that trailing line, exactly as
+`work-log#req:append-only-crash-consistent-events` already specifies for
+`events.jsonl`.
+
+#### REQ: journal-write-is-best-effort-and-never-blocks-the-operation
+
+Preservation is a no-opt-out gate
+(`cleanup-preconditions#req:preservation-has-no-opt-out`) because losing a
+preservation artifact loses the only recoverable copy of something
+irreplaceable. The journal is different in kind: it is an **index**, and
+every fact it records also exists in the durable report or manifest
+`evidence_path` points at. Losing one journal write therefore degrades
+discoverability, not safety.
+
+Consequently the journal write MUST NOT be a precondition for any operation
+to proceed, and a failure to append — journal directory unwritable, disk
+full, lock timeout — MUST NOT fail, block, or roll back the underlying
+operation. WB MUST emit one stderr warning naming the failure and the
+operation it could not index, and the operation MUST proceed exactly as it
+would have if the journal did not exist. This is the opposite default from
+preservation, and deliberately so, for the reason stated above.
+
+#### REQ: journal-append-ordering-around-the-destructive-act
+
+For a destructive operation, WB MUST append a `succeeded`, `refused`, or
+`failed` record only after the operation has reached that terminal state, so
+`after_sha` and `outcome` are accurate. This does not weaken the existing
+happens-before rule that durable *preservation* evidence is written and
+verified before any deletion
+(`cleanup-preconditions#req:preservation-is-verified-before-it-counts`,
+`worktree-lifecycle#req:recheck-and-compare-delete`) — that rule is about the
+preservation artifact, which this feature's journal record only points to via
+`evidence_path`, and it is unchanged by this feature.
+
+A process that dies between the destructive act and the journal append
+therefore leaves no journal record for that operation. `#req:journal-backfill`
+exists precisely to close that gap after the fact, from the durable report
+the operation already wrote before this feature existed to index it — the
+report, not the journal, remains the fleet's evidence of record.
+
+#### REQ: journal-backfill
+
+WB MUST provide `wb journal reindex`, which walks
+`<wb-home>/reports/worktree-cleanup/`, `<wb-home>/reports/branch-cleanup/`,
+`<wb-home>/preserved/`, and `<wb-home>/worklogs/`, and appends one journal
+record per operation it can reconstruct from those existing durable
+artifacts, for any operation not already represented in the journal. It MUST
+be idempotent — reindexing twice MUST NOT duplicate a record — keyed on a
+deterministic record ID derived from the source report path plus subject
+identity.
+
+This is required, not optional, because this feature ships into a fleet that
+already holds 624 report directories, hundreds of hash-named backlog files,
+and 509 Work Log entries with no index. A journal that only starts recording
+from the day it ships leaves that entire history exactly as undiscoverable as
+it is today.
+
+#### REQ: journal-query-command
+
+WB MUST expose `wb journal show`, read-only, with:
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--repository` | string | none | exact `owner/name` filter |
+| `--branch` | string | none | exact branch-name filter |
+| `--task` | string | none | effort-ID filter |
+| `--operation` | string list | all | restrict to the named operation kinds |
+| `--since` | duration | `168h` (one week) | only records at or after now minus this |
+| `--destructive-only` | bool | `false` | restrict to `destructive: true` records |
+| `--format` | string | `text` | `text`, `json`, or `ndjson` |
+
+`wb journal show` MUST be read-only, MUST NOT create, rotate, or delete a
+journal file, and obeys the same output-contract rules
+`cleanup-orchestration#req:stdout-is-the-report-only` and
+`cleanup-orchestration#req:documented-exit-codes` already state for the
+sibling commands, adopted here by reference rather than restated. It MUST
+read every monthly file its `--since` window touches, in chronological order,
+and MUST tolerate and skip a torn trailing line in the current month's file
+per `#req:concurrent-appends-stay-uncorrupted` without failing the whole
+query.
+
+This is the command that answers the founder's question directly: `wb
+journal show --repository sneat-co/competios --since 168h` MUST answer "what
+did WB do to this repository this week" without opening any report
+directory, in one call.
+
+#### REQ: journal-audit-scope
+
+`wb audit --scope journal` MUST report each monthly journal file's path, age,
+record count, and byte size, using the same reporting shape
+`cleanup-preconditions#req:preservation-location-and-retention` already
+defines for `--scope preserved`, so a human deciding what to compact or
+archive has evidence rather than a guess.
+
+#### REQ: journal-retention-is-a-human-decision
+
+WB MUST NOT delete a journal file itself, under any flag, in any command —
+the same rule `cleanup-preconditions#req:preservation-location-and-retention`
+already states for preservation artifacts, and for the same reason: a log
+that can prune itself is a log an operator cannot trust when it matters most.
+WB MUST warn on stderr when the total journal directory exceeds a configurable
+size (default 500 MiB — journal records are small, bounded text, not the
+multi-gigabyte preservation payloads the 5 GiB preservation threshold guards
+against), naming the directory, its size, and that compaction or archival is a
+manual decision. The exact default threshold and any automatic archival
+policy are recorded in Open Questions.
 
 ## Acceptance Criteria
 
