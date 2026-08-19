@@ -13,11 +13,12 @@ format: https://specscore.md/features-index-specification
 | [Dependency Drift](dependency-drift/README.md) | Implementing | `wb deps drift` produces a read-only dependency convergence report for one |
 | [Exact Dependency Set](dependency-set/README.md) | Implementing | `wb deps set <ecosystem> <dependency>@<version>` changes existing references |
 | [Fleet Quality](fleet-quality/README.md) | Implementing | WB measures Go test coverage and runs conventional lint, test, and build checks for one repository or a selected fleet of local clones. The commands continue through every selected repository and produce a reviewable Markdown index plus deterministic YAML or JSON for tools. |
-| [Fleet Status](fleet-status/README.md) | Implementing | `wb status` inspects every local repository by default and reports the ones |
+| [Fleet Status](fleet-status/README.md) | Implementing | Fleet inspection uses explicit nouns: |
 | [Hierarchical Migration Campaigns](hierarchical-migration-campaigns/README.md) | Implementing | WB migrates a dependency hierarchy through dedicated local worktrees, then can |
 | [Worktree Lifecycle](worktree-lifecycle/README.md) | Implementing | `wb worktree` creates, guards, inventories, and safely cleans task worktrees |
 | [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |
 | [Work Log Recovery](work-log/README.md) | Approved | `wb worktree log` gives every WB-managed effort a private, durable journal that |
+| [Branch Hygiene](branch-hygiene/README.md) | In Review | `wb branch` is a top-level command family that inventories and safely retires |
 
 ## Open Questions
 
