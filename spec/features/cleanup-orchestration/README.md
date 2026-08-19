@@ -296,6 +296,68 @@ Results MUST be emitted in a deterministic order — repository, then branch —
 regardless of completion order, so two runs over unchanged state produce
 byte-identical `--format json` stdout.
 
+#### REQ: concurrency-lives-in-the-shared-inspection-path
+
+The concurrency this feature depends on MUST be implemented in the shared
+inspection layer in `internal/worktrees`, not in the `wb cleanup` command. A
+parallel orchestrator layered over a serial inspection engine interleaves two
+slow serial sweeps and buys nothing.
+
+The layer beneath is serial today, verified on 2026-08-19: the non-test sources
+of `internal/worktrees` contain no `errgroup`, no `sync.WaitGroup`, and no
+`go func(`. The inventory walk in `internal/worktrees/lifecycle.go` is a plain
+nested loop over task directories and the repositories inside them, calling
+`inspectLifecycleWorktree` and blocking on each. Each such inspection performs
+real network work — a `git fetch --no-tags origin refs/heads/<base>` and, with
+`--github`, a hosted pull-request query for the landing receipt. Over the
+founder's worktree population that exceeded a 120-second foreground timeout.
+`wb branch list` has the same shape and meets the same wall.
+
+Implementing it there means `wb worktree cleanup`, `wb worktree list`, and
+`wb branch list` inherit the improvement rather than each growing its own.
+
+**Inspection parallelises. Mutation does not.** These are separate phases with
+separate rules:
+
+| Phase | Concurrency | Rule |
+|---|---|---|
+| Inspection — fetch, resolve, classify, query pull requests | bounded pool | parallel across canonical clones; never two workers in one clone |
+| Mutation — preserve, retarget, remove worktree, delete refs | none | strictly serial and ordered, exactly as `#req:serial-within-a-unit` states |
+
+No worker pool MUST be introduced anywhere in a mutation path. The
+happens-before ordering that makes `--apply` safe — durable Work Log
+archive/outbox evidence written before any local or remote deletion, per
+[worktree-lifecycle#req:recheck-and-compare-delete](../worktree-lifecycle/README.md)
+— is a property of that serial ordering, and concurrency would destroy it while
+appearing to work.
+
+The unit of inspection parallelism MUST be the **canonical clone**, not the
+worktree. Two worktrees backed by the same clone share one object store and one
+set of ref locks; fetching into it concurrently races Git's own locking and can
+corrupt or lose a ref. This is the same disjointness `#req:cleanup-unit-partitioning`
+guarantees for units, applied to the inspection phase.
+
+#### REQ: bounded-rate-limit-aware-hosted-queries
+
+The hosted pull-request query issued per candidate MUST run under a bounded
+pool sized independently of `--parallel`, and MUST back off on a rate-limit or
+secondary-rate-limit response rather than retrying immediately.
+
+A candidate whose hosted evidence was not obtained — rate-limited, timed out,
+unauthenticated, or dropped for any reason — MUST surface as `unreadable`.
+It MUST NEVER surface as `eligible`, and it MUST NEVER be silently omitted from
+the report. Silence and eligibility are the two failure modes that turn a
+throttled API into a deletion.
+
+#### REQ: partial-failure-is-per-candidate
+
+A repository or candidate that fails to fetch, resolve, or classify MUST
+degrade to a diagnostic for itself alone, exactly as the serial path does
+today. It MUST NOT abort the sweep, MUST NOT abort its sibling repositories,
+and MUST NOT change any other candidate's disposition. Introducing concurrency
+MUST NOT weaken this: a worker that panics or times out MUST be contained to
+its own clone and reported.
+
 #### REQ: serial-within-a-unit
 
 Inside one unit every operation MUST be serial, and the three deletion stages
@@ -574,6 +636,32 @@ most four units are in flight at any instant; a unit made to fail leaves every
 other unit's decisions unchanged and the run still processes them all; and two
 consecutive runs over unchanged state produce byte-identical `--format json`
 stdout despite differing completion order.
+
+### AC: inspection-is-parallel-and-mutation-is-not
+
+**Requirements:** cleanup-orchestration#req:concurrency-lives-in-the-shared-inspection-path, cleanup-orchestration#req:bounded-rate-limit-aware-hosted-queries, cleanup-orchestration#req:partial-failure-is-per-candidate
+
+Given a fixture fleet of twelve canonical clones, several of them backing more
+than one linked worktree, and a Git wrapper and hosted double that both record
+the clone and timestamp of every call, when `wb cleanup --parallel 4` and
+`wb worktree list --github` each run, then the recording shows fetches from
+distinct clones overlapping in time — proving inspection is parallel and that
+the parallelism is inherited from the shared layer rather than added in the
+command — while no two fetches into the same clone ever overlap. When
+`wb cleanup --apply` then runs, the recording shows every preservation write,
+Work Log archive write, worktree removal, and ref deletion strictly serialized,
+with each unit's Work Log archive write ordered before that unit's first
+deletion, and no two mutating operations overlapping anywhere in the run.
+
+Given the same fixture with the hosted double returning a secondary
+rate-limit response for two candidates, when the run completes, then those two
+candidates are reported `unreadable`, neither is reported `eligible`, neither is
+omitted, the double records increasing delays rather than immediate retries,
+and the number of concurrent hosted requests never exceeds the configured
+hosted bound regardless of `--parallel`. Given one clone whose fetch fails and
+one worker made to panic, then each is reported as a diagnostic against its own
+clone only, every other clone reaches its normal disposition, and the process
+exits having reported them all.
 
 ### AC: orchestrator-cannot-outreach-the-scoped-commands
 
