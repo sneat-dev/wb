@@ -1,5 +1,11 @@
 # Inspect and clean worktree tasks
 
+For a hygiene request — deleting merged branches, removing stale or leftover
+worktrees, or sweeping historic leftovers across the fleet — read
+[cleanup.md](cleanup.md) first. It carries the decision table, the traps that
+make a sweep find nothing, and how to read a skip reason. This file is the
+per-task lifecycle contract those commands enforce.
+
 ## Inspect
 
 For one named task/effort across every live worktree:

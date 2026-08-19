@@ -1,6 +1,6 @@
 ---
 name: wb-worktrees
-description: Use WB to guard, create, resume, summarize a task, inspect with info, dump work-log context, or safely clean isolated feature worktrees. Use before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout.
+description: Use WB to create, guard, resume, and inspect isolated task worktrees, and to safely clean up leftover worktrees and branches — for one finished task or as a historic, fleet-wide sweep across every repository. Use when asked to clean up branches, delete merged branches, prune remote branches, remove stale or leftover worktrees, tidy historic leftovers, or audit repository hygiene, and also before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout. Never hand-roll `git branch -d`, `git branch --merged`, `git worktree remove`, or `git push --delete` branch or worktree sweeps.
 ---
 
 # WB worktrees
@@ -23,6 +23,9 @@ recognizes legacy linked worktrees there during migration.
 
 - Read [create.md](references/create.md) to start or resume a task.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
+- Read [cleanup.md](references/cleanup.md) for ANY hygiene request — deleting
+  merged branches, removing stale or leftover worktrees, or sweeping historic
+  leftovers across the whole fleet. Start there before touching raw Git.
 - Read [lifecycle.md](references/lifecycle.md) to inspect live tasks,
   finalize merged work, recycle caches safely, or abort interrupted claims.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
@@ -30,6 +33,57 @@ recognizes legacy linked worktrees there during migration.
 - Consult [capabilities.json](../../capabilities.json) before assuming a WB
   surface exists; execute only commands whose runtime evidence is present.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.
+
+## Clean up branches and worktrees
+
+WB retires a worktree and its branch — local and remote — in one audited
+transaction, so branch hygiene is a WB command, never a raw-Git loop. These are
+the exact commands; [cleanup.md](references/cleanup.md) has the decision table,
+the full flag surface, and how to read a skip reason.
+
+```sh
+wb worktree orphans
+wb worktree orphans --only remove
+wb worktree backfill
+wb worktree backfill --apply
+wb worktree list
+wb worktree cleanup <task>
+wb worktree cleanup --all-merged
+wb worktree cleanup <task> --apply --remote --older-than 0
+wb worktree abort <task> --disposition discarded --apply --remote
+```
+
+`wb worktree orphans` is the widest read-only triage WB has: every linked
+worktree reachable from the projects root, across all three layout
+generations, grouped by root effort with an explicit disposition and evidence.
+Start a historic sweep there, not with `wb worktree cleanup`.
+
+Four traps decide whether a sweep finds anything at all:
+
+1. **`cleanup` only considers WB-managed tasks.** A worktree created by
+   `git worktree add`, or one predating WB, is not skipped with a reason — it
+   is outside the sweep entirely. Run `wb worktree backfill` first so it has a
+   reconstructed manifest.
+2. **Eligibility needs a merge receipt**, not merged-looking content: the head
+   is an ancestor of the freshly fetched exact `origin/<base>`, or GitHub's
+   commit-to-PR index names a merged PR whose landing WB then proves locally.
+   A squash-merged or cherry-picked branch whose patches are all upstream by
+   patch-id is **not** a candidate, and `git cherry` emptiness is not evidence
+   WB accepts — it cannot tell landed from landed-then-reverted.
+3. **`--base` defaults to `main`.** A task branched from a feature branch stays
+   `awaiting_push` until you pass `--base <feature-branch>`.
+4. **Dry run is the default.** `--apply` is required to act, and for a named
+   task `--apply` refuses without `--remote`.
+
+Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--apply`,
+`--remote`, `--older-than`, `--report-dir`, `--absorbed-by`,
+`--resume-interrupted`, `--format`, plus root `--filter` and
+`--projects-root`. Apply writes durable audit evidence below
+`<wb-home>/reports/worktree-cleanup/`.
+
+Never delete a branch or worktree WB refused. A skip is preserved evidence —
+`awaiting push`, an open PR, local changes, or a blocked coordinated sibling —
+and the fix is to land, close, or decide, not to force the sweep through.
 
 ## Fast path
 
