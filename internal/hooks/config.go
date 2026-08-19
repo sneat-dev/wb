@@ -320,9 +320,17 @@ fi
 # A pure remote-ref deletion publishes no Go object. Keep the base,
 # worktree-admission, custom-policy, and metrics blocks active, but do not run
 # publication tests that need compiler caches for a deletion-only push.
+#
+# A push whose every updated remote ref is under refs/wb/checkpoints/* is a
+# WB checkpoint: a plumbing snapshot that can never become a landable commit
+# (it is never a branch, never opens a PR). The whole point of a checkpoint is
+# that it must succeed on code that does not compile, so publication tests do
+# not apply to it either — narrowly scoped to that exact ref prefix so it
+# cannot be used to bypass verification on any refs/heads/* push.
 if [ ! -t 0 ]; then
     saw_update=false
     deletion_only=true
+    checkpoint_refs_only=true
     while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
         if [ -z "$local_ref$local_sha$remote_ref$remote_sha" ]; then
             continue
@@ -332,9 +340,17 @@ if [ ! -t 0 ]; then
             0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) ;;
             *) deletion_only=false ;;
         esac
+        case "$remote_ref" in
+            refs/wb/checkpoints/*) ;;
+            *) checkpoint_refs_only=false ;;
+        esac
     done
     if [ "$saw_update" = true ] && [ "$deletion_only" = true ]; then
         echo "WB hook: remote-ref deletion only; Go publication tests are not applicable."
+        exit 0
+    fi
+    if [ "$saw_update" = true ] && [ "$checkpoint_refs_only" = true ]; then
+        echo "WB hook: checkpoint-ref-only push; Go publication tests are not applicable to WB backup refs."
         exit 0
     fi
 fi
