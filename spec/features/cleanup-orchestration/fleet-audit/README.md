@@ -230,10 +230,15 @@ MUST stream progress and results as it goes, and MUST use a constant number of
 Git subprocesses per repository regardless of ref count, exactly as
 `unpushed-work#req:bounded-local-cost` requires.
 
-A run MUST NOT be capable of the observed failure mode of producing no output
-for over nine minutes: `cleanup-orchestration#req:bounded-per-unit-time` and
-`cleanup-orchestration#req:bounded-default-stderr` apply to `wb audit`
-unchanged, with the per-repository deadline replacing the per-unit one.
+A run MUST NOT be capable of either observed failure mode — producing no output
+at all while it works, or producing only scanning heartbeats while withholding
+every finding until the end. `cleanup-orchestration#req:bounded-per-unit-time`,
+`cleanup-orchestration#req:bounded-default-stderr`,
+`cleanup-orchestration#req:progress-liveness`, and
+`cleanup-orchestration#req:incremental-findings` apply to `wb audit` unchanged,
+with the per-repository deadline replacing the per-unit one. For an audit the
+canonical clone is both the inspection unit and the flush unit, so each
+repository's rows are emitted as that repository completes.
 
 ## Acceptance Criteria
 
@@ -293,10 +298,13 @@ Given a fixture fleet of forty canonical clones each holding many refs, when
 at least one progress event naming a repository with an `[n/N]` count reaches
 stderr before the report is written; stderr carries at most one progress line
 per repository plus the fixed run-level lines and exactly one aggregate line
-for WB-internal artifacts; a subprocess counter shows Git invocations bounded
-by a constant per repository and not growing with ref count; a repository whose
-inspection blocks past the deadline is reported with a timeout outcome while
-every other repository still reports; and the process exits.
+for WB-internal artifacts; each repository's rows are emitted as that
+repository completes rather than held to the end, so a run killed after twenty
+repositories has already delivered those twenty repositories' rows; a
+subprocess counter shows Git invocations bounded by a constant per repository
+and not growing with ref count; a repository whose inspection blocks past the
+deadline is reported with a timeout outcome while every other repository still
+reports; and the process exits.
 
 ## Open Questions
 
