@@ -50,6 +50,15 @@ type AbortResult struct {
 	RemoteDeleted bool             `json:"remote_deleted"`
 	BacklogID     string           `json:"backlog_id,omitempty"`
 	Reason        string           `json:"reason,omitempty"`
+	// CheckpointRef is the automatic checkpoint taken immediately before this
+	// repository's destructive or claim-transferring step. For discarded, the
+	// repository was already required clean, so this is normally a no-op
+	// backstop; for handoff/not_landed, where a dirty worktree is explicitly
+	// allowed, it is the mechanism that preserves the outgoing dirty state for
+	// the successor. CheckpointError is set instead when the best-effort
+	// checkpoint failed — it never blocks an otherwise-eligible abort.
+	CheckpointRef   string `json:"checkpoint_ref,omitempty"`
+	CheckpointError string `json:"checkpoint_error,omitempty"`
 }
 
 // Abort seals every Work Log in a coordinated task. It is the deliberate
@@ -178,6 +187,16 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	}
 	for i := range listed.Results {
 		result := &results[i]
+		// Best-effort, non-fatal: for discarded this repository is already
+		// required clean (a no-op backstop); for handoff/not_landed this is
+		// the primary mechanism preserving dirty state before the claim
+		// transfers, since the checkpoint push (not this local write) is the
+		// one step that can fail offline.
+		if checkpoint, checkpointErr := Checkpoint(ctx, CheckpointOptions{Worktree: result.WorktreeDir, Push: true}); checkpointErr != nil {
+			result.CheckpointError = checkpointErr.Error()
+		} else {
+			result.CheckpointRef = checkpoint.Ref
+		}
 		if options.Disposition == AbortDiscarded {
 			if err := applyDiscardedAbort(ctx, options, taskHandle, resolution.Write.Home, result); err != nil {
 				return results, err

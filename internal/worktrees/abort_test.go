@@ -250,6 +250,55 @@ func TestAbortNotLandedSealsButRetainsResumableWorktree(t *testing.T) {
 	}
 }
 
+// TestAbortHandoffAutoChecksPointsDirtyStateForSuccessor proves the
+// composition between abort and checkpoint: handoff/not_landed explicitly
+// allow a dirty worktree, so the automatic checkpoint immediately before the
+// claim transfer is the primary mechanism that preserves it for the
+// successor, not a defense-in-depth backstop. The worktree itself must stay
+// exactly as the outgoing agent left it — dirty and unpushed — because
+// abort's whole point is to keep it resumable.
+func TestAbortHandoffAutoChecksPointsDirtyStateForSuccessor(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "handoff-checkpoint", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "in-flight.go"), []byte("package main\n\nfunc broken( {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "handoff-checkpoint", Disposition: AbortHandoff,
+		Successor: "codex-handoff-2", Apply: true,
+		SuccessorIdentity: ClaimExecutionIdentity{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Applied {
+		t.Fatalf("abort = %#v", results)
+	}
+	if results[0].CheckpointRef == "" || results[0].CheckpointError != "" {
+		t.Fatalf("expected a recorded checkpoint, got %#v", results[0])
+	}
+	if !strings.HasPrefix(results[0].CheckpointRef, checkpointRefPrefix) {
+		t.Fatalf("checkpoint ref %q outside dedicated namespace", results[0].CheckpointRef)
+	}
+
+	// The worktree itself must be untouched: still dirty, still holding the
+	// exact in-flight file, ready for the successor to resume.
+	status := gitTestOutput(t, worktree, "status", "--porcelain")
+	if !strings.Contains(status, "in-flight.go") {
+		t.Fatalf("handoff must not clean the worktree it is handing off: status=%q", status)
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "in-flight.go")); err != nil {
+		t.Fatalf("in-flight file missing after handoff: %v", err)
+	}
+}
+
 func TestAbortHandoffCrashBindsSuccessorExecutionIdentity(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{

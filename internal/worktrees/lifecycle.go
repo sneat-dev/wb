@@ -1023,6 +1023,12 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					worktree.close()
 					return fail(err)
 				}
+				// Defense-in-depth, not the primary mechanism: eligibility already
+				// required this worktree to be clean, so this is normally a no-op.
+				// It exists in case that invariant is ever wrong at this exact
+				// moment; its failure must never block an otherwise-eligible
+				// cleanup, so the error is deliberately discarded.
+				_, _ = Checkpoint(ctx, CheckpointOptions{Worktree: refreshed.WorktreeDir, Push: true})
 				// Archive the recoverable run record while every Git asset still
 				// exists. Remote branch deletion is destructive too, so it must never
 				// precede the durable terminal/outbox record.
