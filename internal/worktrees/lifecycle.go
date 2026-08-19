@@ -412,13 +412,27 @@ func (handle *cleanupWorktreeHandle) removeEmptyParent(afterAuthorization func(s
 	if afterAuthorization != nil {
 		afterAuthorization(handle.parentPath)
 	}
-	// Keep an empty owner directory in place. It is a harmless, reusable
-	// destination for the next worktree and avoids both verify-then-unlink and
-	// an ever-growing owner-retirement namespace. Reauthorize once more after
-	// the test seam so a replacement is surfaced, never removed or retired.
+	// Reauthorize once more after the test seam so a replacement is surfaced,
+	// never blindly acted on.
 	if !directoryStillMatches(handle.parentPath, handle.parent) {
 		return fmt.Errorf("cleanup worktree parent path changed before retention: %s", handle.parentPath)
 	}
+	// Retire the owner directory when it is now empty, so a terminal task
+	// leaves no residue in its active namespace (#req:internal-stage-terminalization
+	// covers reserved .wb-stage-*/.wb-retired-stage-* entries; an ordinary
+	// empty <task>/<owner> directory left after the last repository under it
+	// is cleaned up is the same class of residue and gets the same
+	// treatment). The task lock is still held here, so no concurrent WB
+	// operation for this same task can be adding a sibling repository
+	// underneath this owner directory. AT_REMOVEDIR is itself atomic against
+	// any other writer: it refuses with ENOTEMPTY rather than destroying
+	// content, which is exactly how a sibling repository still present under
+	// the same owner (this task not yet fully terminal) is left in place,
+	// exactly as before. Any other unexpected outcome (a concurrent
+	// replacement, a symlink swapped in, ...) is likewise left untouched —
+	// this is a best-effort housekeeping step, never grounds to fail a
+	// cleanup transaction whose branch and worktree removal already applied.
+	_ = unix.Unlinkat(int(handle.task.task.Fd()), handle.parentName, unix.AT_REMOVEDIR)
 	return nil
 }
 
@@ -933,8 +947,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			defer func() {
 				if recoveredTransaction && (recovery == nil || !recovery.Applied) {
 					task.preserveLock()
-				} else {
-					_ = task.lock.release()
+				} else if releaseErr := task.lock.release(); releaseErr == nil {
+					purgeTerminalTaskLockDebris(task)
 				}
 				task.close()
 			}()
@@ -1173,6 +1187,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					return fail(fmt.Errorf("quarantine recovered cleanup lock: %w", err))
 				}
 				task.lock = operationLock{}
+				purgeTerminalTaskLockDebris(task)
 				recovery.Disposition = "quarantined"
 				recovery.Applied = true
 			}
@@ -2113,6 +2128,57 @@ func preflightCleanupRepository(
 
 func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
 	return acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, false)
+}
+
+// purgeTerminalTaskLockDebris removes every retired operation lock left
+// directly under a task directory, immediately after this cleanup
+// transaction released its own — but only when the directory now holds
+// nothing except retired locks: no owner-namespace directory, no live
+// `.lock`, nothing else. That is exactly what a genuinely terminal task
+// leaves behind release after release: `.wb-retired-lock-*` is created only
+// so a *later* operation on the very same task directory can reclaim it (see
+// claimRetiredLock), and a task nobody ever touches again just accumulates
+// them forever. removeEmptyParent has by this point already retired every
+// owner directory that became empty, so a task whose last repository just
+// finished cleanup normally satisfies the all-retired-locks test below.
+//
+// It is deliberately best-effort and never returns an error: a live `.lock`
+// created by a concurrent operation in the narrow window after release
+// simply fails the "every entry is a retired lock" test and the directory is
+// left untouched, to be reclaimed normally by that operation or swept later
+// by `wb worktree cleanup --retire-shells`. It never inspects, let alone
+// deletes, anything that is not a plain, single-link `.wb-retired-lock-*`
+// entry this package itself could have created (see
+// exclusivelyOwnedLockIdentity for the same reasoning).
+func purgeTerminalTaskLockDebris(task *cleanupTaskHandle) {
+	if task == nil || task.task == nil {
+		return
+	}
+	if _, err := task.task.Seek(0, 0); err != nil {
+		return
+	}
+	entries, err := task.task.ReadDir(-1)
+	if err != nil {
+		return
+	}
+	retired := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".wb-retired-lock-") {
+			return // an owner directory, a live .lock, or anything else: not terminal.
+		}
+		retired = append(retired, name)
+	}
+	for _, name := range retired {
+		var stat unix.Stat_t
+		if statErr := unix.Fstatat(int(task.task.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW); statErr != nil {
+			continue
+		}
+		if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+			continue // never remove anything that is not an ordinary WB-owned lock retirement.
+		}
+		_ = unix.Unlinkat(int(task.task.Fd()), name, 0)
+	}
 }
 
 // acquireCleanupTaskAtReclaimingInterrupted is the resume-only form. See

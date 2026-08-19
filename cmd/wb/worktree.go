@@ -1244,7 +1244,7 @@ for per-checkout journal detail.`,
 
 func newWorktreeCleanupCmd() *cobra.Command {
 	var base, format, reportDir, absorbedBy string
-	var allMerged, apply, deleteRemote, resumeInterrupted bool
+	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells bool
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "cleanup [task]",
@@ -1297,10 +1297,29 @@ own coordinated task, exactly like an unclean or locked sibling would.
 exact retained .lock as operation=<task> and a positive PID that is
 conclusively dead, then holds that descriptor-safe lock through normal cleanup.
 Without --apply it is a non-mutating recovery plan; with --apply --remote it
-quarantines only the exact held inode and completes the usual terminal flow.`,
+quarantines only the exact held inode and completes the usual terminal flow.
+
+--retire-shells sweeps every task directory instead of inspecting worktrees: a
+task whose worktree(s) were already removed by a cleanup that predates the
+terminal-namespace-residue fix can be left with an empty owner-namespace
+directory and/or a retired operation lock and nothing else. It only ever
+retires a task directory it can prove is exactly that — no live checkout
+anywhere under it, no live or interrupted lock, no reserved stage entry.
+Anything else is left untouched and reported. It cannot be combined with a
+task argument or --all-merged, and is itself dry-run by default; --apply is
+required to remove anything.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MaximumNArgs(1)(command, args); err != nil {
 				return err
+			}
+			if retireShells {
+				if len(args) != 0 {
+					return fmt.Errorf("--retire-shells sweeps every task; it cannot be combined with a task argument")
+				}
+				if allMerged {
+					return fmt.Errorf("--retire-shells and --all-merged cannot be combined")
+				}
+				return nil
 			}
 			if len(args) == 0 && !allMerged {
 				return fmt.Errorf("supply one task or use --all-merged")
@@ -1313,6 +1332,26 @@ quarantines only the exact held inode and completes the usual terminal flow.`,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
+			}
+			if retireShells {
+				outcome, err := worktrees.RetireTaskShells(command.Context(), worktrees.RetireShellsOptions{
+					ProjectsRoot: projectsRoot,
+					Filter:       filterFlag,
+					Apply:        apply,
+				})
+				if err != nil {
+					return err
+				}
+				switch format {
+				case "text":
+					return printRetireTaskShells(command, outcome)
+				case "json":
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					return encoder.Encode(outcome)
+				default:
+					return fmt.Errorf("unsupported format %q; use text or json", format)
+				}
 			}
 			task := ""
 			if len(args) == 1 {
@@ -1400,7 +1439,45 @@ quarantines only the exact held inode and completes the usual terminal flow.`,
 	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <wb-home>/reports/worktree-cleanup/<timestamp>)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().BoolVar(&retireShells, "retire-shells", false, "sweep every task for an empty pre-existing shell (owner directory and/or retired lock, no live checkout) and retire it")
 	return command
+}
+
+func printRetireTaskShells(command *cobra.Command, outcome worktrees.RetireShellsOutcome) error {
+	out := command.OutOrStdout()
+	if len(outcome.Results) == 0 {
+		_, err := fmt.Fprintln(out, "no WB task directories found")
+		return err
+	}
+	for _, result := range outcome.Results {
+		switch {
+		case result.Applied:
+			if _, err := fmt.Fprintf(out, "retired      %s %s\n", result.Task, result.Path); err != nil {
+				return err
+			}
+		case result.Eligible:
+			if _, err := fmt.Fprintf(out, "would retire %s %s\n", result.Task, result.Path); err != nil {
+				return err
+			}
+		case result.Error != "":
+			if _, err := fmt.Fprintf(out, "failed       %s %s: %s\n", result.Task, result.Path, result.Error); err != nil {
+				return err
+			}
+		default:
+			if _, err := fmt.Fprintf(out, "skip         %s %s: %s\n", result.Task, result.Path, result.Reason); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintln(out); err != nil {
+		return err
+	}
+	if outcome.Apply {
+		_, err := fmt.Fprintf(out, "%d retired\n", outcome.Totals["retired"])
+		return err
+	}
+	_, err := fmt.Fprintf(out, "%d would retire\n", outcome.Totals["would_retire"])
+	return err
 }
 
 func newWorktreeRenameCmd() *cobra.Command {

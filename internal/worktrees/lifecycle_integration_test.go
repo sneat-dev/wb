@@ -495,6 +495,72 @@ func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	}
 }
 
+// TestCleanupRetiresTaskNamespaceResidueOnTerminalApply is the regression
+// for the founder's fleet audit: after an otherwise fully successful
+// `wb worktree cleanup <task> --apply --remote` (worktree removed, local
+// branch deleted, remote branch deleted, integration confirmed), the task
+// directory survived containing an empty owner-namespace directory (for
+// example acme/) and a `.wb-retired-lock-<32hex>` file — residue found,
+// fleet-wide, under 626 of 755 task directories with no real checkout left
+// under them. A terminal cleanup must leave nothing in its own task
+// namespace: the owner directory is retired once its last repository's
+// cleanup applies (removeEmptyParent), and the operation lock this cleanup
+// transaction just released is purged once the task directory holds nothing
+// but retired locks (purgeTerminalTaskLockDebris). The task root itself is
+// still retained (see TestCleanupMergedTaskWithRealGitData) — only its
+// contents must be gone.
+func TestCleanupRetiresTaskNamespaceResidueOnTerminalApply(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-residue")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	now := mergedAt.Add(48 * time.Hour)
+
+	// See TestCleanupMergedTaskWithRealGitData: the sandboxed Git capability
+	// used for the actual remote push only authorizes writes under the
+	// canonical repository and the cleanup worktree's parent, so the fixture
+	// remote is relocated there for this one push to succeed.
+	relocatedRemote := filepath.Join(fixture.canonical, ".wb-test-remote.git")
+	if err := os.Rename(fixture.remote, relocatedRemote); err != nil {
+		t.Fatalf("relocate fixture remote under an authorized cleanup write root: %v", err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", relocatedRemote)
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-residue",
+		Base:         "main",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    24 * time.Hour,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.Results) != 1 || !applied.Results[0].Applied || !applied.Results[0].RemoteDeleted {
+		t.Fatalf("applied cleanup = %#v", applied)
+	}
+	if _, err := os.Stat(result.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists after cleanup: %v", err)
+	}
+
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-residue")
+	info, statErr := os.Stat(taskDir)
+	if statErr != nil || !info.IsDir() {
+		t.Fatalf("task root was not retained: info=%v err=%v", info, statErr)
+	}
+	entries, err := os.ReadDir(taskDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, len(entries))
+		for i, entry := range entries {
+			names[i] = entry.Name()
+		}
+		t.Fatalf("terminal task namespace left residue behind: %v", names)
+	}
+}
+
 func TestCleanupReauthorizesBeforeRemoteBranchDeletion(t *testing.T) {
 	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-network-reauthorization")
 	installMergedPullRequestFixture(t, head, mergedAt)
