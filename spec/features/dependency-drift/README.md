@@ -1,6 +1,6 @@
 ---
 format: https://specscore.md/feature-specification
-status: Implementing
+status: Draft
 ---
 
 # Feature: Dependency Drift
