@@ -20,6 +20,7 @@ format: https://specscore.md/features-index-specification
 | [Work Log Recovery](work-log/README.md) | Approved | `wb worktree log` gives every WB-managed effort a private, durable journal that |
 | [Branch Hygiene](branch-hygiene/README.md) | Implementing | `wb branch` is a top-level command family that inventories and safely retires |
 | [Cleanup Orchestration](cleanup-orchestration/README.md) | In Review | `wb cleanup` is one top-level entry point that retires a repository's |
+| [Operations Journal](operations-journal/README.md) | Draft | Append-only journal of every wb operation, bundle-backed preservation for unreachable commits, and a wb restore command that reads reports and journal records back into a branch. |
 
 ## Open Questions
 
