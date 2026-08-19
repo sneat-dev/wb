@@ -309,6 +309,71 @@ func TestBranchCleanupRefusesMovedLocalBranchWithoutAbortingSweep(t *testing.T) 
 	}
 }
 
+// TestBranchCleanupUnreadableSkipRowNamesRepositoryAndUnderlyingReason is the
+// regression for the founder's `wb branch cleanup --scope all` report: a
+// repository whose exact origin target cannot be fetched (for example no
+// refs/heads/<base> at all, as with a repository whose default branch is not
+// "main") yields a single whole-repository `unreadable` BranchCleanupResult
+// with empty Scope and Branch — it is not about one branch. Before the fix,
+// skipReasonForDisposition dropped the entry's real Evidence (the exact `git
+// fetch` failure `wb branch list` already surfaces for the same entry) and
+// substituted a generic "disposition unreadable is never eligible" message
+// that names neither the repository nor the underlying cause. The
+// Repository field itself was always populated; only the printed skip
+// reason discarded it.
+func TestBranchCleanupUnreadableSkipRowNamesRepositoryAndUnderlyingReason(t *testing.T) {
+	fixture := newGitFixture(t)
+	ctx := context.Background()
+
+	// "does-not-exist" is never pushed, so fetching refs/heads/does-not-exist
+	// from origin fails exactly as specscore/winget-pkgs did for "main".
+	options, err := normalizeBranchCleanupOptions(BranchCleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "does-not-exist", Scope: "all", Apply: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sweep := branchSweepOptions{ProjectsRoot: options.ProjectsRoot, Base: options.Base, Scope: options.Scope, Now: time.Now()}
+	entries, _, _, err := classifyFleetBranchesWithPaths(ctx, sweep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("whole-repository fetch failure entries = %d, want exactly 1: %#v", len(entries), entries)
+	}
+	entry := entries[0]
+	if entry.Repository == "" {
+		t.Fatal("unreadable entry carries no repository")
+	}
+	if entry.Disposition != BranchUnreadable {
+		t.Fatalf("disposition = %q, want %q", entry.Disposition, BranchUnreadable)
+	}
+	if !strings.Contains(entry.Evidence, "fetch exact origin/does-not-exist target") {
+		t.Fatalf("evidence = %q, want it to name the failed fetch", entry.Evidence)
+	}
+
+	results := planBranchCleanup(entries, sweep)
+	if len(results) != 1 {
+		t.Fatalf("cleanup results = %d, want exactly 1", len(results))
+	}
+	result := results[0]
+	if result.Repository == "" {
+		t.Fatal("BranchCleanupResult carries no repository")
+	}
+	if result.Eligible {
+		t.Fatal("unreadable repository must never be eligible for --apply")
+	}
+	// The regression: the printed skip reason must be the real fetch
+	// failure, not the generic disposition boilerplate that names neither
+	// the repository nor the cause.
+	if !strings.Contains(result.SkipReason, "fetch exact origin/does-not-exist target") {
+		t.Fatalf("skip reason = %q, want it to surface the underlying fetch failure", result.SkipReason)
+	}
+	if result.SkipReason == "disposition unreadable is never eligible for --apply" {
+		t.Fatal("skip reason regressed to the generic message that drops the repository's real evidence")
+	}
+}
+
 // TestBranchCleanupAppliesRemoteDeletionWhenNoOpenPullRequestExists is the
 // AC-4 positive case: a contained remote branch with no open pull request is
 // deleted with force-with-lease against its observed SHA, proving the

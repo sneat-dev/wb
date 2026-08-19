@@ -171,9 +171,21 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 	return results
 }
 
+// skipReasonForDisposition prefers the entry's own tailored Reason, then its
+// classification Evidence, before falling back to a generic disposition
+// message. contained/absorbed/in-use dispositions already carry a tailored
+// Reason. unreadable, unique, and protected never do — they carry only the
+// Evidence gathered while classifying them (for example the exact `git
+// fetch` failure that made a repository's whole branch set unreadable). That
+// Evidence is exactly what `wb branch list` already prints for the same
+// entry, so dropping it here silently discarded the one actionable detail an
+// operator needs to act on a skip row.
 func skipReasonForDisposition(entry BranchEntry) string {
 	if entry.Reason != "" {
 		return entry.Reason
+	}
+	if entry.Evidence != "" {
+		return entry.Evidence
 	}
 	return fmt.Sprintf("disposition %s is never eligible for --apply", entry.Disposition)
 }
