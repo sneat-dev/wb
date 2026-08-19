@@ -2998,7 +2998,8 @@
                 "--older-than",
                 "--remote",
                 "--report-dir",
-                "--resume-interrupted"
+                "--resume-interrupted",
+                "--retire-shells"
               ],
               "modes": [
                 "Exact fetched origin target proves integration with or without a merged PR",
@@ -3008,7 +3009,8 @@
                 "Coordinated task preflight and durable seal precede every deletion",
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
-                "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog"
+                "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
+                "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default"
               ]
             }
           ],
@@ -3095,6 +3097,21 @@
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
               "name": "TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_integration_test.go",
+              "name": "TestCleanupRetiresTaskNamespaceResidueOnTerminalApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/shell_retirement_test.go",
+              "name": "TestRetireTaskShellsAppliesToEmptyPreExistingShell",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_test.go",
+              "name": "TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell",
               "kind": "integration"
             }
           ],

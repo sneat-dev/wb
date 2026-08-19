@@ -257,7 +257,13 @@ func printBranchCleanup(command *cobra.Command, outcome worktrees.BranchCleanupO
 				return err
 			}
 		default:
-			if _, err := fmt.Fprintf(out, "  skip         %s %s (%s): %s\n", result.Scope, result.Branch, result.Disposition, result.SkipReason); err != nil {
+			// A whole-repository disposition (for example unreadable, when the
+			// exact origin target itself could not be fetched) carries no Scope
+			// or Branch — it is the only row printed for that repository, so it
+			// must name the repository inline rather than relying solely on the
+			// group header above, which is easy to lose when rows are grepped or
+			// scrolled past.
+			if _, err := fmt.Fprintf(out, "  skip         %s %s %s (%s): %s\n", result.Repository, result.Scope, result.Branch, result.Disposition, result.SkipReason); err != nil {
 				return err
 			}
 		}

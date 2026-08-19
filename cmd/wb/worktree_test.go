@@ -113,6 +113,77 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	if err := command.Args(command, nil); err == nil || !strings.Contains(err.Error(), "--all-merged") {
 		t.Fatalf("cleanup without selection error = %v", err)
 	}
+	retireShells := command.Flags().Lookup("retire-shells")
+	if retireShells == nil || retireShells.DefValue != "false" {
+		t.Fatalf("--retire-shells = %#v, want default false", retireShells)
+	}
+}
+
+// TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors proves
+// --retire-shells sweeps every task on its own: it cannot be pointed at one
+// named task or combined with --all-merged, both of which select worktrees
+// to inspect rather than task directories to sweep.
+func TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors(t *testing.T) {
+	command := newWorktreeCleanupCmd()
+	if err := command.Flags().Set("retire-shells", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Args(command, []string{"some-task"}); err == nil || !strings.Contains(err.Error(), "--retire-shells") {
+		t.Fatalf("--retire-shells with a task argument error = %v", err)
+	}
+	if err := command.Flags().Set("all-merged", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Args(command, nil); err == nil || !strings.Contains(err.Error(), "--all-merged") {
+		t.Fatalf("--retire-shells with --all-merged error = %v", err)
+	}
+}
+
+// TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell is
+// the CLI-level regression for the founder's fleet audit: 626 of 755 task
+// directories had no real checkout under them, each left with an empty
+// owner-namespace directory by a cleanup that predates the terminal-
+// namespace-residue fix. `wb worktree cleanup --retire-shells` is the
+// retroactive fix for those pre-existing shells, dry-run by default.
+func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	worktreesRoot := filepath.Join(home, "worktrees")
+	shellDir := filepath.Join(worktreesRoot, "old-task", "sneat-co")
+	if err := os.MkdirAll(shellDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvMigrationCompat, "")
+
+	var stdout, stderr bytes.Buffer
+	planArgs := []string{"worktree", "cleanup", "--retire-shells", "--projects-root", filepath.Join(root, "projects")}
+	if code := run(planArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s stderr=%s", planArgs, code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "would retire") || !strings.Contains(stdout.String(), "old-task") {
+		t.Fatalf("dry-run stdout = %q, want it to name old-task as would-retire", stdout.String())
+	}
+	if _, statErr := os.Stat(shellDir); statErr != nil {
+		t.Fatalf("dry run removed the shell: %v", statErr)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	applyArgs := []string{"worktree", "cleanup", "--retire-shells", "--apply", "--projects-root", filepath.Join(root, "projects")}
+	if code := run(applyArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("run(%q) exit = %d, stdout=%s stderr=%s", applyArgs, code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "retired") || !strings.Contains(stdout.String(), "old-task") || !strings.Contains(stdout.String(), "1 retired") {
+		t.Fatalf("apply stdout = %q, want it to name old-task as retired", stdout.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(worktreesRoot, "old-task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("task namespace still has residue after --retire-shells --apply: %#v", entries)
+	}
 }
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
