@@ -630,7 +630,157 @@ exists.
 
 ## Acceptance Criteria
 
-TODO: Define acceptance criteria.
+### AC: every-operation-produces-one-small-indexed-record
+
+**Requirements:** operations-journal#req:journal-scope-is-operations-not-invocations, operations-journal#req:journal-record-fields, operations-journal#req:journal-is-an-index-not-a-replacement
+
+Given a fixture repository and worktree, when `wb worktree create`, `wb sync`,
+`wb cleanup --apply` retiring three branches in one unit, and `wb audit`
+(read-only) each run, then `wb worktree create` and `wb sync` each produce
+exactly one journal record with `destructive: false`; the `wb cleanup --apply`
+run produces exactly three journal records, one per branch, each with
+`destructive: true`, its own `before_sha`/`after_sha`/`outcome`, and an
+`evidence_path` pointing at the one `cleanup.json` all three share, with no
+record inlining another branch's SHA or diff; `wb audit` produces no journal
+record at all; and every record produced carries `schema_version`,
+`sequence`, `recorded_at`, `operation`, `repository`, `run_id`, `command`,
+and `actor`, with `task` populated when the operation ran under a Work Log
+claim and empty otherwise. A record for a refused branch (`--stages
+local-branch,remote-branch` on a checked-out branch) MUST carry
+`outcome: refused` and an empty `after_sha`.
+
+### AC: concurrent-and-interrupted-writers-never-corrupt-the-journal
+
+**Requirements:** operations-journal#req:one-global-append-only-journal, operations-journal#req:concurrent-appends-stay-uncorrupted, operations-journal#req:journal-write-is-best-effort-and-never-blocks-the-operation, operations-journal#req:journal-append-ordering-around-the-destructive-act
+
+Given twenty concurrent WB processes across different repositories each
+appending one operation record at the same moment, when all twenty complete,
+then the current month's `operations-<YYYY-MM>.jsonl` contains exactly twenty
+well-formed JSON lines, each parses independently, none is interleaved with
+another, and a byte-level diff confirms no line was partially overwritten.
+Given a process that is `SIGKILL`ed after completing a destructive operation
+but before its journal append flushes, when the journal file is read, then
+either the record is absent or the trailing line is a torn fragment that a
+reader discards without failing the read of every prior line — and `wb
+journal reindex` (`#req:journal-backfill`) subsequently recovers that
+operation from its durable report. Given the journal directory made
+read-only so every append fails, when `wb cleanup --apply` runs against a
+fixture with eligible branches, then every eligible branch is still retired
+exactly as it would be with a writable journal, one stderr warning per failed
+append names the operation it could not index, and the run's exit code and
+durable report are unaffected by the journal failure.
+
+### AC: the-founders-question-is-answerable-in-one-command
+
+**Requirements:** operations-journal#req:journal-query-command, operations-journal#req:journal-audit-scope, operations-journal#req:journal-retention-is-a-human-decision
+
+Given a journal spanning three months and covering ten repositories with at
+least one operation each, when `wb journal show --repository
+sneat-co/competios --since 168h` runs, then stdout contains every operation
+recorded against that repository within the last week and no operation
+against any other repository, in chronological order, without opening any
+report directory. When `--format json` is given, stdout parses as a single
+document obeying `cleanup-orchestration#req:stdout-is-the-report-only`.
+Given `wb audit --scope journal` runs, then it reports each monthly file's
+path, age, record count, and byte size. Given the journal directory made to
+exceed the configured size threshold, when any journal-writing command runs,
+then a stderr warning names the directory, its size, and that removal is a
+manual decision; and a test asserts no WB command ever deletes a journal
+file, in any flag combination, across every command in this feature and in
+`cleanup-orchestration`.
+
+### AC: pre-existing-history-is-backfilled-without-duplication
+
+**Requirements:** operations-journal#req:journal-backfill
+
+Given a fixture `<wb-home>` containing fifty pre-existing
+`reports/worktree-cleanup/<timestamp>/cleanup.json` directories, a dozen
+hash-named `reports/worktree-cleanup/backlog/<hash>.json` files, and no
+journal, when `wb journal reindex` runs, then the journal gains one record
+per operation reconstructable from those reports, each with `evidence_path`
+pointing at its source report; `wb journal show --repository <owner>/<repo>`
+then answers correctly for that pre-existing history. Running `wb journal
+reindex` a second time with no new reports added produces zero additional
+records, proving idempotency, and a record's deterministic ID is confirmed
+identical across both runs.
+
+### AC: restorability-follows-reachability-and-artifacts-are-self-naming
+
+**Requirements:** operations-journal#req:reachability-determines-what-restore-can-promise, operations-journal#req:preserved-artifacts-are-self-describing-by-name
+
+Given a `contained` branch and an `absorbed` branch, both retired by `wb
+cleanup --apply` per `cleanup-preconditions#req:preservation-content`, when
+both branches' object availability is checked after the target's history has
+been repacked and the branch refs deleted, then the `contained` branch's
+commits remain reachable from the target with no bundle required, while the
+`absorbed` branch's original commits are confirmed to depend on its captured
+bundle for recoverability. A directory listing of the preservation run's
+`<owner>/<repository>/` directory, with no manifest opened, identifies each
+bundle's branch from its filename alone (`<branch-slug>-<short-sha>.bundle`);
+a branch name containing `/` and characters outside `[A-Za-z0-9._-]` produces
+a filename with `/` replaced by `--` and the other characters
+percent-encoded, and the manifest's recorded path for that entry matches the
+file actually on disk byte for byte.
+
+### AC: wb-restore-recreates-a-branch-and-never-clobbers
+
+**Requirements:** operations-journal#req:wb-restore, operations-journal#req:restore-dry-run-default, operations-journal#req:restore-verifies-before-promising, operations-journal#req:restore-refuses-to-clobber-a-diverged-branch, operations-journal#req:restore-local-and-remote-are-independent
+
+Given a repository from which branch `feature-x` was deleted locally and on
+`origin` by a `wb cleanup --apply` run that captured a verified bundle, when
+`wb restore --repository <owner>/<repo> --branch feature-x --local --remote`
+runs without `--apply`, then the plan resolves the branch via its journal
+record without any other flag supplied, states it will recreate both refs at
+the bundled tip SHA, and creates nothing. When `--apply` then runs, then
+`git bundle verify` is executed and passes before either ref is created, both
+the local and remote `feature-x` exist at the exact original SHA with an
+identical tree, and re-running the same command reports the branch already
+restored rather than erroring or duplicating work. Given the bundle file is
+corrupted before a second such restore, when `wb restore --apply` runs for a
+different branch backed only by a recorded SHA that is no longer reachable
+from any ref, then both are refused, each stating plainly that the branch
+cannot be restored and why, and no ref is created for either. Given a branch
+`feature-y` already exists locally at a different SHA than the one being
+restored, when `wb restore --branch feature-y --apply` runs, then it refuses,
+names `--as <new-name>` as the remedy, no flag overrides the refusal, and
+`wb restore --branch feature-y --as feature-y-restored --apply` then succeeds
+without touching the existing `feature-y`. Given the remote name is taken by
+different content while the local name is free, when `wb restore --local
+--remote --apply` runs, then the local restore succeeds and the remote
+restore is refused independently, and the exit code reflects the partial
+outcome.
+
+### AC: a-user-can-discover-what-is-restorable
+
+**Requirements:** operations-journal#req:restore-discoverability
+
+Given a repository with three branches retired over the past month at
+different dispositions, when `wb restore --repository <owner>/<repo>` runs
+with no `--branch`, then stdout lists all three candidates with their
+disposition, age, and whether a bundle or only a SHA backs each, and creates
+nothing. The same information is confirmed reachable independently via `wb
+audit --scope preserved` and `wb journal show --destructive-only --repository
+<owner>/<repo>`, so a test can assert all three discovery paths agree on the
+same candidate set.
+
+### AC: bulk-restore-streams-progress-and-respects-non-goals
+
+**Requirements:** operations-journal#req:restore-bulk-mode-inherits-liveness-and-incrementality, operations-journal#req:restore-non-goals
+
+Given a preservation run that captured twelve branches, each restore taking a
+measurable, unequal interval to verify, when `wb restore --run-id <id>
+--apply` runs with stdout and stderr captured and timestamped, then a
+liveness event appears on stderr for each branch as its verification begins,
+flushed at that moment rather than buffered; each branch's restore outcome
+appears no later than shortly after that branch completes rather than held
+until the run ends; and killing the run after five branches have completed
+leaves stdout already containing all five outcomes. Given one of the twelve
+branches has a pull request that was closed when its base was deleted, when
+the restore for that branch completes, then the pull request is reported as
+closed and unaffected, and no call is made to reopen or retarget it. Given
+the repository's exact target cannot be freshly fetched, when `wb restore
+--apply` runs for any branch in that repository, then it refuses for every
+branch in that repository and states the fetch failure as the reason.
 
 ## Open Questions
 
