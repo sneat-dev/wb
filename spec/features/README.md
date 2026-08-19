@@ -19,7 +19,7 @@ format: https://specscore.md/features-index-specification
 | [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |
 | [Work Log Recovery](work-log/README.md) | Approved | `wb worktree log` gives every WB-managed effort a private, durable journal that |
 | [Branch Hygiene](branch-hygiene/README.md) | In Review | `wb branch` is a top-level command family that inventories and safely retires |
-| [Cleanup Orchestration](cleanup-orchestration/README.md) | Draft | wb cleanup orchestrates worktree, local-branch and remote-branch retirement as one lifecycle. |
+| [Cleanup Orchestration](cleanup-orchestration/README.md) | Draft | `wb cleanup` is one top-level entry point that retires a repository's |
 
 ## Open Questions
 
