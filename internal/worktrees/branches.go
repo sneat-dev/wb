@@ -515,10 +515,10 @@ func isProtectedBranch(branch, base, canonicalHEAD string) bool {
 }
 
 func protectedEvidence(branch, base, canonicalHEAD string) string {
-	switch {
-	case branch == base:
+	switch branch {
+	case base:
 		return fmt.Sprintf("is the base branch %q", base)
-	case branch == canonicalHEAD:
+	case canonicalHEAD:
 		return "is the canonical clone's current HEAD"
 	default:
 		return "matches a configured protected branch name"
