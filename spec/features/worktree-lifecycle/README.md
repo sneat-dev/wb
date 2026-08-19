@@ -300,6 +300,32 @@ MAY be supplied by a deterministic test double.
 ## Open Questions
 
 - Should a future cleanup mode archive reports after a retention period?
+- **Should there be an explicit, evidence-recording "retired as superseded"
+  disposition for a branch whose intent landed but whose commits never can?**
+  Worked example: `specscore/specscore-cli`, branch
+  `codex/specscore-task-annotation-amend`
+  (`/Users/alex/.wb/worktrees/specscore-task-annotation-amend/specscore/specscore-cli`),
+  two commits. One commit's valuable half (the `pkg/lifecycle` primitives) was
+  ported by hand into `origin/main` at `7c71397` via PR #152 — not
+  patch-equivalent and not an ancestor, so no existing evidence class proves
+  it. The other commit (1029 lines across `internal/cli/exclusive_publish.go`
+  and `task.go`) is superseded by a different design `main` evolved
+  independently (`ownedMarkerOps`, absent from the branch); the branch is 71
+  commits behind and unrebasable against the design that replaced it.
+  `wb worktree cleanup` correctly refuses today — "current branch head is not
+  integrated into the exact origin target (awaiting push)" — and that refusal
+  must not weaken. `--absorbed-by` does not cover this case either: it still
+  requires the named commit to be exactly where the work entered the target,
+  and here nothing entered the target from this branch at all. The gap is
+  real and currently unaddressed: the only exits today are a raw
+  `git branch -D` behind WB's back, or leaving the branch to rot. A candidate
+  shape, informed by manually archiving this exact branch (a patch file plus
+  local tag `archive/superseded/specscore-task-annotation-amend`): an
+  explicit, opt-in-per-branch `retire-as-superseded` disposition that never
+  claims the work landed, requires a human-supplied reason and a durable
+  archive receipt (patch + tag) written *before* deletion, reports visibly
+  distinct from a merged retirement, and must never be reachable from a
+  fleet-wide `--all-merged`-style sweep. Not implemented; a follow-up.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

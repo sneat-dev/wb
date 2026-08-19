@@ -1,13 +1,13 @@
 ---
 format: https://specscore.md/feature-specification
-status: In Review
+status: Implementing
 ---
 
 # Feature: Branch Hygiene
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/branch-hygiene?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/branch-hygiene?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/branch-hygiene?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/branch-hygiene?op=request-change) |
 
-**Status:** In Review
+**Status:** Implementing
 **Source Ideas:** —
 
 ## Summary

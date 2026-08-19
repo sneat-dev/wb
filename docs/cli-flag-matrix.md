@@ -37,6 +37,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
+| `branch list`, `cleanup` | yes | yes | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
 
 ## Precedence and non-interactive contract

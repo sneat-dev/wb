@@ -51,6 +51,9 @@
       "wb-worktrees",
       "wb-change",
       "wb-merge"
+    ],
+    "branch": [
+      "wb-branches"
     ]
   }
 }

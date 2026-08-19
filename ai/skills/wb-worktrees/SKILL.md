@@ -25,7 +25,9 @@ recognizes legacy linked worktrees there during migration.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
 - Read [cleanup.md](references/cleanup.md) for ANY hygiene request — deleting
   merged branches, removing stale or leftover worktrees, or sweeping historic
-  leftovers across the whole fleet. Start there before touching raw Git.
+  leftovers across the whole fleet. Start there before touching raw Git. If
+  the branch in question has no worktree, it hands you to the `wb-branches`
+  skill (`wb branch list` / `wb branch cleanup`) instead.
 - Read [lifecycle.md](references/lifecycle.md) to inspect live tasks,
   finalize merged work, recycle caches safely, or abort interrupted claims.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
@@ -63,7 +65,9 @@ Four traps decide whether a sweep finds anything at all:
 1. **`cleanup` only considers WB-managed tasks.** A worktree created by
    `git worktree add`, or one predating WB, is not skipped with a reason — it
    is outside the sweep entirely. Run `wb worktree backfill` first so it has a
-   reconstructed manifest.
+   reconstructed manifest. A branch with no worktree at all is never in scope
+   here — use `wb branch list` / `wb branch cleanup` (the `wb-branches` skill)
+   instead.
 2. **Eligibility needs a merge receipt**, not merged-looking content: the head
    is an ancestor of the freshly fetched exact `origin/<base>`, or GitHub's
    commit-to-PR index names a merged PR whose landing WB then proves locally.
