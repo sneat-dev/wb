@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: In Review
 ---
 
 # Feature: Cleanup Orchestration
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration?op=request-change) |
-**Status:** Draft
+**Status:** In Review
 **Source Ideas:** —
 
 ## Summary
@@ -192,6 +192,9 @@ Flags, all of which MUST be accepted exactly as named:
 | `--apply` | bool | `false` | perform deletions; without it the run is a plan |
 | `--older-than` | duration | `24h` | minimum age of landing evidence; `0` disables |
 | `--parallel` | int | `4` | maximum cleanup units in flight; `<1` is a usage error |
+| `--fetch-parallel` | int | `8` | maximum canonical clones fetched concurrently |
+| `--api-parallel` | int | `4` | maximum concurrent hosted API requests |
+| `--api-reserve` | int | `1000` | hosted core-quota floor below which the run refuses to start |
 | `--timeout` | duration | `5m` | deadline for one unit; `0` is a usage error |
 | `--preserve-dir` | string | `<wb-home>/preserved/<run-id>` | where preservation artifacts are written |
 | `--report-dir` | string | `<wb-home>/reports/cleanup/<run-id>` | where the audit report is written |
@@ -337,17 +340,86 @@ set of ref locks; fetching into it concurrently races Git's own locking and can
 corrupt or lose a ref. This is the same disjointness `#req:cleanup-unit-partitioning`
 guarantees for units, applied to the inspection phase.
 
-#### REQ: bounded-rate-limit-aware-hosted-queries
+#### REQ: two-independent-concurrency-bounds
 
-The hosted pull-request query issued per candidate MUST run under a bounded
-pool sized independently of `--parallel`, and MUST back off on a rate-limit or
-secondary-rate-limit response rather than retrying immediately.
+Fetching and hosted queries throttle different resources and MUST be bounded by
+**two separate semaphores that never share a counter**:
+
+| Bound | Flag | Default | Keyed on | Constrains |
+|---|---|---|---|---|
+| Fetch pool | `--fetch-parallel` | `8` | canonical clone | network and disk |
+| Hosted API pool | `--api-parallel` | `4` | the shared hosted token | the hosted request budget |
+
+Both MUST be configurable flags with these defaults, so a slower link or a
+tighter token can be dialled down without a rebuild. Neither MUST be derived
+from `--parallel`, which bounds cleanup units.
+
+The measurements that produced these defaults, taken on 2026-08-19: the
+machine has 18 CPUs and 38.7 GB of RAM and is not the binding constraint,
+because `git fetch` is network- and disk-bound rather than CPU-bound; and the
+fetch unit is the canonical clone, not the worktree, where the observed
+deduplication is roughly four worktrees per distinct clone. Sizing one shared
+pool for the hosted budget would needlessly serialise fetches; sizing it for
+fetches would hammer the API.
+
+The fetch pool MUST be keyed on the canonical clone so the same `.git` is never
+fetched concurrently, as `#req:concurrency-lives-in-the-shared-inspection-path`
+requires.
+
+#### REQ: hosted-budget-preflight
+
+Concurrency limits the request **rate**; it does not limit the **total**. The
+hosted quota is shared, and that is the non-obvious hazard: the same token
+serves every concurrent agent lane, every `gh` call in
+`internal/orchestrate/ciwait.go`, and this sweep. A bounded sweep can still
+starve the agent fleet mid-flight, or be starved by it.
+
+Measured on 2026-08-19: the REST core quota is 5,000 per hour, of which roughly
+1,000 had already been consumed within the hour by the concurrent agent lanes
+sharing the token — 3,973 remained with 44 minutes left in the window. WB's
+own per-candidate cost is confirmed in code: `githubPullRequests` in
+`internal/worktrees/lifecycle.go` runs `gh api --paginate
+repos/{repo}/commits/{head}/pulls` for every candidate, and a second call to
+`repos/{slug}/pulls/{number}` runs whenever a pull request is found. That is
+one to two-plus requests per candidate before pagination, so a single
+several-hundred-candidate sweep costs on the order of 6–11% of the hourly
+budget.
+
+Therefore, before starting any run that will query the host, WB MUST:
+
+1. read the current remaining core quota and its reset time;
+2. estimate the run's cost as at least two requests per selected candidate;
+3. refuse to start if the estimate would take the remaining quota below a
+   reserve floor (`--api-reserve`, default `1000`), and instead print the
+   remaining quota, the estimate, the reserve floor, and the reset time, and
+   name the degraded no-hosted-evidence mode as the alternative.
+
+Refusing up front is required rather than proceeding: a sweep that exhausts the
+budget half way through leaves an arbitrary subset of candidates classified and
+the rest `unreadable`, while also breaking every other lane on the token. A
+clear refusal naming the reset time is a better outcome than a half-complete
+sweep.
+
+#### REQ: secondary-rate-limits-fail-to-unreadable
+
+Secondary rate limits, not the hourly quota, are the failure mode a bounded
+sweep actually meets: GitHub answers a burst of concurrent requests with `403`
+and a `Retry-After` header well before 5,000 requests are spent.
+
+WB MUST honour `Retry-After`, MUST back off exponentially on repeated
+throttling rather than retrying immediately, and MUST surface throttling in the
+streamed progress so an operator can see it happening rather than infer it from
+slowness.
 
 A candidate whose hosted evidence was not obtained — rate-limited, timed out,
-unauthenticated, or dropped for any reason — MUST surface as `unreadable`.
-It MUST NEVER surface as `eligible`, and it MUST NEVER be silently omitted from
-the report. Silence and eligibility are the two failure modes that turn a
-throttled API into a deletion.
+unauthenticated, or abandoned after retries — MUST surface as `unreadable`. It
+MUST NEVER surface as `eligible`, and it MUST NEVER be silently omitted from
+the report.
+
+The specific defect to prevent is a throttled query degrading into "no merged
+pull request found", which is indistinguishable from a real negative answer: it
+would turn a transient throttling event into a wrong disposition, and in the
+worst direction a deletion.
 
 #### REQ: partial-failure-is-per-candidate
 
@@ -497,6 +569,9 @@ By default a run's stderr MUST consist only of:
 - one run-start line naming the selection and the unit count;
 - one progress line per unit, carrying the unit identity and a running `[n/N]`
   count, flushed as the event happens rather than buffered to the end;
+- one line per **candidate decision**, emitted at the moment that candidate is
+  decided rather than held until the run finishes, carrying the candidate
+  identity and its disposition, plus any throttling wait in progress;
 - one warning line per genuine anomaly, each naming a remedy
   (`#req:every-warning-names-a-remedy`);
 - **one aggregate line** summarising WB-internal artifact classification for
@@ -506,6 +581,15 @@ By default a run's stderr MUST consist only of:
 Per-artifact informational lines MUST be emitted only under `--verbose`, and
 MUST always be present in the `--format json` envelope regardless of
 `--verbose`, so suppressing the noise never loses the data.
+
+The per-candidate decision line is bounded by the size of the report itself,
+not by the number of internal artifacts, so it is signal rather than the noise
+`#req:filter-scopes-work-not-output` removes. It is required because the
+current command buffers its entire plan until completion: an observed run
+produced zero bytes for over four minutes and then blew a 120-second foreground
+timeout with nothing to show for the work it had done. Streaming decisions also
+gives an operator a live view of throttling
+(`#req:secondary-rate-limits-fail-to-unreadable`).
 
 Progress MUST NOT be suppressed because stderr is not a terminal. An agent
 reads stderr, and a multi-minute silence is indistinguishable from a hang; the
@@ -639,7 +723,7 @@ stdout despite differing completion order.
 
 ### AC: inspection-is-parallel-and-mutation-is-not
 
-**Requirements:** cleanup-orchestration#req:concurrency-lives-in-the-shared-inspection-path, cleanup-orchestration#req:bounded-rate-limit-aware-hosted-queries, cleanup-orchestration#req:partial-failure-is-per-candidate
+**Requirements:** cleanup-orchestration#req:concurrency-lives-in-the-shared-inspection-path, cleanup-orchestration#req:two-independent-concurrency-bounds, cleanup-orchestration#req:secondary-rate-limits-fail-to-unreadable, cleanup-orchestration#req:partial-failure-is-per-candidate
 
 Given a fixture fleet of twelve canonical clones, several of them backing more
 than one linked worktree, and a Git wrapper and hosted double that both record
@@ -653,15 +737,36 @@ Work Log archive write, worktree removal, and ref deletion strictly serialized,
 with each unit's Work Log archive write ordered before that unit's first
 deletion, and no two mutating operations overlapping anywhere in the run.
 
-Given the same fixture with the hosted double returning a secondary
-rate-limit response for two candidates, when the run completes, then those two
-candidates are reported `unreadable`, neither is reported `eligible`, neither is
-omitted, the double records increasing delays rather than immediate retries,
-and the number of concurrent hosted requests never exceeds the configured
-hosted bound regardless of `--parallel`. Given one clone whose fetch fails and
-one worker made to panic, then each is reported as a diagnostic against its own
-clone only, every other clone reaches its normal disposition, and the process
-exits having reported them all.
+Given the same fixture with the hosted double returning `403` with a
+`Retry-After` header for two candidates until it has been retried several
+times, when the run completes, then those two candidates are reported
+`unreadable`, neither is reported `eligible`, neither is omitted, neither is
+reported as "no merged pull request found"; the double records a wait of at
+least `Retry-After` and increasing delays across retries rather than immediate
+ones; a throttling event appears in the streamed stderr progress while the run
+is still going; and running with `--fetch-parallel 8 --api-parallel 2` shows
+concurrent fetches reaching eight while concurrent hosted requests never exceed
+two, proving the two bounds are independent counters and that neither is
+derived from `--parallel`. Given one clone whose fetch fails and one worker
+made to panic, then each is reported as a diagnostic against its own clone
+only, every other clone reaches its normal disposition, and the process exits
+having reported them all.
+
+### AC: a-sweep-refuses-rather-than-exhausting-the-shared-quota
+
+**Requirements:** cleanup-orchestration#req:hosted-budget-preflight
+
+Given a hosted double reporting 3,973 remaining core requests with a reset 44
+minutes away, and a selection of 269 candidates, when `wb cleanup` runs with
+the default `--api-reserve 1000`, then WB reads the rate limit before issuing
+any candidate query; with an estimate of at least two requests per candidate
+the run proceeds, because the projected remainder stays above the floor. When
+the double instead reports 1,200 remaining, then the run refuses before issuing
+any candidate query, exits `2`, and prints the remaining quota, the estimate,
+the reserve floor, the reset time, and the no-hosted-evidence mode as the
+alternative; a request counter confirms no candidate query was made. When
+`--api-reserve 0` is given, then the same run proceeds. The refusal path MUST
+be asserted to happen before the first candidate query, not part way through.
 
 ### AC: orchestrator-cannot-outreach-the-scoped-commands
 
@@ -731,6 +836,23 @@ format sums `contained` and `absorbed`; and the exit code is `0` for a
 completed plan containing refusals and `1` for the same run with
 `--fail-on refusals`. Repeating the run with `--format ndjson` yields one JSON
 object per stdout line whose union carries the same fields as the envelope.
+
+### AC: the-capability-is-discoverable
+
+**Requirements:** cleanup-orchestration#req:dedicated-cleanup-skill
+
+Given the four commands exist and pass their own acceptance criteria, when the
+repository's capability validator runs, then `ai/skills/wb-cleanup/SKILL.md`
+and `ai/skills/wb-cleanup/agents/openai.yaml` exist; the `SKILL.md`
+frontmatter `description` equals the normative trigger text byte for byte;
+`ai/skills/commands.json` routes `audit`, `cleanup`, `recover`, and `unpushed`
+to `wb-cleanup`; `ai/capabilities.json` carries `wb.audit`, `wb.cleanup`,
+`wb.recover`, and `wb.unpushed` rows whose declared flags equal each command's
+non-inherited public help exactly, each with a resolving help anchor, a skill
+example that parses, and an executable test reference; and the `wb-worktrees`
+and `wb-branches` skills each contain a pointer to `wb-cleanup`. A test MUST
+assert that the skill files are absent while any of the four commands is
+absent.
 
 ## Open Questions
 

@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: In Review
 ---
 
 # Feature: Preservation and Pre-Flight
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/cleanup-preconditions?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/cleanup-preconditions?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/cleanup-preconditions?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/cleanup-preconditions?op=request-change) |
-**Status:** Draft
+**Status:** In Review
 **Source Ideas:** —
 
 ## Summary

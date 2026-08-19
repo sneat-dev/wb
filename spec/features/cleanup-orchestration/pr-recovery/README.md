@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Draft
+status: In Review
 ---
 
 # Feature: Pull Request Recovery Forensics
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/pr-recovery?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/pr-recovery?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/pr-recovery?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/cleanup-orchestration/pr-recovery?op=request-change) |
-**Status:** Draft
+**Status:** In Review
 **Source Ideas:** —
 
 ## Summary
@@ -191,7 +191,7 @@ fleet scale. A tool that reproduces its per-pull-request request pattern
 reproduces its cost and will be abandoned the same way.
 
 Hosted queries MUST obey
-`cleanup-orchestration#req:bounded-rate-limit-aware-hosted-queries`: bounded
+`cleanup-orchestration#req:secondary-rate-limits-fail-to-unreadable`: bounded
 concurrency, backoff on rate limits, and a candidate whose evidence was not
 obtained surfacing as `unknown` rather than being dropped.
 
