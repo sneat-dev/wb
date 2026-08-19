@@ -440,6 +440,194 @@ against), naming the directory, its size, and that compaction or archival is a
 manual decision. The exact default threshold and any automatic archival
 policy are recorded in Open Questions.
 
+### Bundle-Backed Preservation
+
+This section extends, and does not restate,
+[cleanup-preconditions](../cleanup-orchestration/cleanup-preconditions/README.md),
+which already normatively requires a Git bundle for every branch a cleanup
+run is about to delete
+(`cleanup-preconditions#req:preservation-content`, item 4), verified before
+it counts (`cleanup-preconditions#req:preservation-is-verified-before-it-counts`),
+with its own restore command recorded in its manifest
+(`cleanup-preconditions#req:manifest-carries-its-own-restore`). Everything
+below is additional.
+
+#### REQ: reachability-determines-what-restore-can-promise
+
+The distinction the founder asked for — a bundle required versus a recorded
+SHA sufficient — is a property of **reachability**, and this feature states
+it explicitly because `wb restore` (`#req:wb-restore`) must act on it even for
+evidence written before this feature existed:
+
+- A `contained` branch (`branch-hygiene#req:evidence-class-taxonomy`) has
+  every commit already an ancestor of the fetched exact target. Those commits
+  remain reachable through the target ref after the branch's own ref is
+  deleted, so **a recorded `before_sha` is sufficient**; a bundle is
+  redundant but never wrong to have.
+- An `absorbed` or `unique` branch's commits are not proven reachable from
+  any surviving ref. For those, **only a verified Git bundle — or the branch
+  ref itself, still intact — is a restore path**; a recorded SHA alone is a
+  promise WB cannot keep once garbage collection runs.
+
+Because `cleanup-preconditions#req:preservation-content` already bundles
+every branch a cleanup run deletes regardless of class, every operation this
+feature's journal indexes from that path already satisfies the stronger
+requirement. This rule matters at the boundary that requirement does not
+cover: history that predates it (`#req:journal-backfill`, where only a
+`head_sha` was ever recorded) and any future destructive surface that deletes
+a ref without routing through cleanup-preconditions' gates. `wb restore`
+(`#req:restore-verifies-before-promising`) MUST check reachability itself
+rather than trust a record's age or origin.
+
+#### REQ: preserved-artifacts-are-self-describing-by-name
+
+`reports/worktree-cleanup/backlog/<64-hex>.json`, named only by a content
+hash, is a documented anti-pattern: nothing about the filename says what
+repository, branch, or task it concerns, so identifying it requires opening
+it. No artifact this feature governs may repeat that pattern.
+
+Preservation artifacts already live under a self-describing directory path,
+`<run-id>/<owner>/<repository>/`
+(`cleanup-preconditions#req:preservation-location-and-retention`). This
+feature additionally requires that within that directory, a Git bundle file
+name itself carry the branch: `<branch-slug>-<short-sha>.bundle`, where
+`<branch-slug>` is the branch name with `/` replaced by `--` and any
+character outside `[A-Za-z0-9._-]` percent-encoded. A directory listing alone
+— without opening the manifest — MUST identify which branch each bundle
+holds. `wb journal reindex` (`#req:journal-backfill`) MUST NOT retroactively
+rename existing hash-named files; it indexes them by reading their content
+once, and the naming rule binds new artifacts going forward.
+
+### wb restore
+
+#### REQ: wb-restore
+
+WB MUST expose `wb restore` as a top-level command that recreates a branch —
+local, remote, or both — from a journal record, a durable report, or a
+preservation manifest.
+
+| Flag | Type | Default | Meaning |
+|---|---|---|---|
+| `--repository` | string | required | exact `owner/name` |
+| `--branch` | string | required unless `--from-bundle` names one | branch to restore |
+| `--from-bundle` | string | none | explicit bundle path, overriding discovery |
+| `--from-sha` | string | none | explicit SHA, overriding discovery |
+| `--as` | string | `--branch` value | name the restored branch, when it must differ from the original to avoid collision |
+| `--local` / `--remote` | bool | `--local` only | which ref(s) to recreate |
+| `--apply` | bool | `false` | perform the restore; without it the run is a plan |
+| `--format` | string | `text` | `text` or `json` |
+
+Given only `--repository` and `--branch`, WB MUST resolve the most recent
+matching journal record itself (`#req:journal-record-fields`), following its
+`evidence_path` to the report or manifest, rather than requiring the caller
+to already know a run ID — the discovery flow
+`#req:restore-discoverability` names is the default path, not a fallback.
+
+#### REQ: restore-dry-run-default
+
+`wb restore` MUST be a plan unless `--apply` is explicit, following the same
+convention `cleanup-orchestration#req:dry-run-default` states for its
+sibling commands (adopted here as a design choice, not inherited by document
+structure — see `#req:wb-restore`'s note on why this feature is not a child).
+A plan MUST perform every read and verification step — locating the record,
+checking reachability, checking for a collision — and state exactly what
+`--apply` would do, without creating or touching any ref.
+
+#### REQ: restore-verifies-before-promising
+
+Before reporting a branch as restorable, in a plan or under `--apply`, WB
+MUST verify the object actually exists and is usable:
+
+- For a bundle source: run `git bundle verify` and confirm it lists the
+  expected tip SHA, exactly as
+  `cleanup-preconditions#req:preservation-is-verified-before-it-counts`
+  already requires at capture time — this is the same check, re-run at
+  restore time, because a bundle's presence on disk is not proof it is still
+  intact.
+- For a SHA-only source (no bundle recorded or found): confirm the object is
+  present and reachable from some existing ref in the target repository
+  (`git cat-file -e <sha>` plus a reachability check against every local and
+  remote ref), per `#req:reachability-determines-what-restore-can-promise`.
+
+If verification fails, WB MUST refuse and state plainly that the branch
+cannot be restored and why — object missing, bundle corrupt, or unreachable
+and unbundled — rather than attempting a partial restore or promising
+something it cannot deliver. A false claim of recoverability is worse than an
+honest refusal, because it is discovered only when it is too late to matter.
+
+#### REQ: restore-refuses-to-clobber-a-diverged-branch
+
+If the target branch name already exists — locally for `--local`, on
+`origin` for `--remote` — at a SHA different from the one being restored, WB
+MUST refuse rather than overwrite it, in a plan and under `--apply` alike. No
+flag may force an overwrite. The remedy WB MUST name is `--as <new-name>`, to
+restore the same content under a name that does not collide, or an explicit
+instruction to remove or rename the existing branch first. This mirrors the
+compare-and-delete discipline
+`worktree-lifecycle#req:recheck-and-compare-delete` and
+`branch-hygiene#req:compare-and-delete` already apply to deletion, applied in
+reverse to creation: WB MUST NOT mutate a ref out from under state it did not
+expect to find there.
+
+A target branch that already exists at the **same** SHA is a no-op, reported
+as already-restored, not a refusal.
+
+#### REQ: restore-local-and-remote-are-independent
+
+`--local` and `--remote` MAY be combined; each MUST be verified and applied
+independently, and a refusal on one (for example, the remote name is taken by
+different content) MUST NOT block the other when it is clean. Restoring
+`--remote` MUST use a compare-and-create push (`git push origin
+<sha>:refs/heads/<name>`, refusing if the ref already exists with different
+content) rather than a bare force-push, so a concurrent legitimate push to
+that name cannot be silently clobbered.
+
+#### REQ: restore-discoverability
+
+Running `wb restore --repository <owner>/<name>` with no `--branch` MUST list
+every candidate the journal and preservation store know about for that
+repository — recently retired branches, their disposition, whether a bundle
+or only a SHA backs them, and their age — so a user does not need to already
+know what to restore before asking. This is the same discoverability
+principle `cleanup-orchestration#req:every-warning-names-a-remedy` states for
+refusals, applied to recovery: a restore command that only works once you
+already know the exact record to cite is not a recovery path for the common
+case of "I think I deleted something, what can I get back."
+
+`wb audit --scope preserved` and `wb journal show --destructive-only` remain
+the two entry points into this discovery; `wb restore` without a branch is a
+third, scoped to one repository and phrased as an answer to "what can I
+restore here" rather than "what did WB do here."
+
+#### REQ: restore-bulk-mode-inherits-liveness-and-incrementality
+
+`wb restore --run-id <id> --apply`, restoring every branch one preservation
+run captured in a single invocation, is the long-running case this feature
+defines. It MUST inherit
+`cleanup-orchestration#req:progress-liveness` and
+`cleanup-orchestration#req:incremental-findings` unchanged: a liveness event
+per branch as it is verified, flushed as it happens, and each branch's
+restore outcome emitted as soon as that branch completes rather than held
+until the whole run ends. These are referenced, not restated, because
+[Cleanup Orchestration](../cleanup-orchestration/README.md) already states
+why a fleet-scale WB command that buffers its output until the end is a
+defect, and repeating the argument here would only invite the two documents
+to drift.
+
+#### REQ: restore-non-goals
+
+`wb restore` MUST NOT reopen or retarget a pull request — that is
+[Pull Request Recovery Forensics](../cleanup-orchestration/pr-recovery/README.md)'
+concern, not this feature's, and a restored branch with a closed pull request
+based on it is reported as such, not acted on. `wb restore` MUST NOT restore
+a worktree or a Work Log claim; it recreates a ref, and re-attaching a
+worktree to it is `wb worktree create --resume` or a manual checkout, not a
+restore-command responsibility. `wb restore` MUST NOT run against a repository
+whose exact target could not be freshly fetched — the same fail-closed
+default `cleanup-orchestration#req:fetch-before-every-decision` requires for
+deletion applies here to avoid restoring against a stale view of what already
+exists.
+
 ## Acceptance Criteria
 
 TODO: Define acceptance criteria.
