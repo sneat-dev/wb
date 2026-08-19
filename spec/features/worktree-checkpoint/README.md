@@ -144,18 +144,37 @@ explicitly allowed, this call is the primary mechanism that preserves the
 dirty state the outgoing claim is about to hand off, and its result MUST be
 surfaced in the abort result so a successor can find it.
 
+#### REQ: fleet-wide-sweep-primitive
+
+`wb worktree checkpoint sweep` MUST checkpoint every locally known WB
+worktree in one invocation, continuing past one repository's failure so a
+fleet-wide run is never all-or-nothing. It is the single primitive an
+external, non-WB-managed scheduler drives on an interval — see REQ:
+no-daemon — rather than a mechanism WB itself schedules or supervises.
+
 #### REQ: no-daemon
 
 WB MUST NOT run a background process to checkpoint a worktree on a timer.
 `wb worktree create` MUST NOT arrange periodic checkpointing via a daemon or
-any other long-lived process. A per-worktree daemon needs process
-supervision, a crash-safe lifecycle of its own, and cleanup coordinated with
-worktree teardown — a heavyweight mechanism disabled at the first sign of
-trouble protects nothing, while every existing Git hook invocation already
-gives WB a zero-process opportunity to call checkpoint opportunistically.
-Time-based cadence between hook invocations is the calling agent's
-responsibility, exactly as it is already expected to call
-`wb worktree log checkpoint` between steps.
+any other long-lived process it supervises. A per-worktree daemon needs
+process supervision, a crash-safe lifecycle of its own, and cleanup
+coordinated with worktree teardown — a heavyweight mechanism disabled at the
+first sign of trouble protects nothing.
+
+This is not merely "the calling agent should remember to call checkpoint
+between steps": later evidence in the same session that motivated this
+feature showed a machine sleeping four times in one hour and a *separate*
+connection-loss failure while sleep was actively being prevented — proving
+prevention alone does not remove the need for checkpointing, and that a
+dying agent by definition never gets to run its own final command. Relying solely on the in-process caller is therefore not sufficient. REQ:
+fleet-wide-sweep-primitive exists exactly to be driven by something outside
+the dying agent's own process: an OS-level scheduler — launchd on macOS, cron
+or a systemd timer on Linux — calling `wb worktree checkpoint sweep` on an
+interval. That scheduler entry is supervised by the OS, not by WB, so it
+carries none of a custom daemon's process-lifecycle cost, and a WB upgrade or
+crash cannot silently disable it. Every existing Git hook invocation is a
+second, complementary zero-process opportunity to call checkpoint
+opportunistically.
 
 ### Detecting the gone-upstream failure directly
 
@@ -181,7 +200,7 @@ the only surviving copy.
 
 ### AC: checkpoint-survives-broken-and-crashed-work
 
-**Requirements:** worktree-checkpoint#req:broken-work-always-succeeds, worktree-checkpoint#req:dedicated-non-branch-namespace, worktree-checkpoint#req:idempotent-no-op, worktree-checkpoint#req:push-default-on-best-effort, worktree-checkpoint#req:checkpoint-push-bypasses-verification-hooks, worktree-checkpoint#req:discoverable-checkpoints, worktree-checkpoint#req:explicit-non-destructive-recovery, worktree-checkpoint#req:auto-checkpoint-before-destructive-worktree-operations, worktree-checkpoint#req:no-daemon, worktree-checkpoint#req:gone-upstream-warning
+**Requirements:** worktree-checkpoint#req:broken-work-always-succeeds, worktree-checkpoint#req:dedicated-non-branch-namespace, worktree-checkpoint#req:idempotent-no-op, worktree-checkpoint#req:push-default-on-best-effort, worktree-checkpoint#req:checkpoint-push-bypasses-verification-hooks, worktree-checkpoint#req:discoverable-checkpoints, worktree-checkpoint#req:explicit-non-destructive-recovery, worktree-checkpoint#req:auto-checkpoint-before-destructive-worktree-operations, worktree-checkpoint#req:fleet-wide-sweep-primitive, worktree-checkpoint#req:no-daemon, worktree-checkpoint#req:gone-upstream-warning
 
 Real Git fixtures prove: a checkpoint of a worktree containing Go source that
 fails to compile succeeds and is pushable without running verification; a
@@ -193,12 +212,19 @@ enumerates local and (with `--remote`) remote checkpoints after the
 originating worktree is deleted; `restore --apply --branch` creates an
 inspectable branch without mutating the caller's current branch, index, or
 working tree; `wb worktree abort --disposition handoff` preserves dirty state
-via an automatic checkpoint before transferring the claim; and a worktree
-whose upstream remote-tracking ref is missing while HEAD carries unpushed
-commits is flagged on every checkpoint call.
+via an automatic checkpoint before transferring the claim; `sweep` covers
+every known worktree in one run and one repository's failure does not stop
+the rest; and a worktree whose upstream remote-tracking ref is missing while
+HEAD carries unpushed commits is flagged on every checkpoint call.
 
 ## Open Questions
 
+- `sweep` ships as the primitive; an actual `wb worktree checkpoint schedule
+  install` (launchd on macOS, cron/systemd timer on Linux) that registers it
+  on an interval does not, in this pass. Founder priority was landing the
+  simple thing that protects every other lane first; the installer is
+  natural follow-up work, not a redesign, once real usage shows the wanted
+  interval.
 - Should `wb worktree list`/`wb status` surface the same `upstream_gone`
   signal fleet-wide, independent of whether checkpoint has ever been called
   in that worktree? Checkpoint gives the signal a home immediately; a
