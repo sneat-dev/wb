@@ -283,7 +283,17 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	// another process is still refused.
 	task, err := acquireCleanupTaskAtReclaimingInterrupted(record.WorktreesRoot, record.Task, true)
 	if err != nil {
-		return fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
+		lockErr := fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return lockErr
+		}
+		// The task namespace itself is gone, so there is nothing left to lock —
+		// and, if every subject this record names is also already absent,
+		// nothing left to do but close the journal. Completing it then is a
+		// private write, not a deletion, which is why it is allowed without the
+		// lock that guards deletions. A record that still owes any of them
+		// keeps the original error: work needs the lock WB can no longer take.
+		return completeVacantLifecycleBacklog(ctx, home, record, lockErr)
 	}
 	defer func() {
 		_ = task.lock.release()
@@ -349,6 +359,42 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+record.Branch, record.HeadSHA); err != nil {
 			return fmt.Errorf("resume exact local branch deletion %s: %w", record.Branch, err)
 		}
+	}
+	if record.RecoveryKind == "create_work_log_failed" && record.WorkLogClaim != "" {
+		if err := sealCreateFailureBacklogClaim(home, *record); err != nil {
+			return err
+		}
+	}
+	return persistLifecycleBacklog(home, record, lifecycleStageComplete)
+}
+
+// completeVacantLifecycleBacklog closes a record whose task namespace no longer
+// exists, and only when the record has nothing left to act on: no checkout at
+// the recorded path, no registration, no remote source branch, and no local
+// ref. Every check is read-only, and the single write is to WB's own private
+// journal. Anything still present returns lockErr unchanged, so a record that
+// still owes a deletion is never quietly marked done.
+func completeVacantLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord, lockErr error) error {
+	if _, err := os.Lstat(record.WorktreeDir); !errors.Is(err, os.ErrNotExist) {
+		return lockErr
+	}
+	canonical, err := openCanonicalRepository(record.CanonicalDir)
+	if err != nil {
+		return lockErr
+	}
+	defer canonical.close()
+	if err := canonical.validate(); err != nil {
+		return lockErr
+	}
+	registrations, err := registeredWorktreePathsCanonical(ctx, canonical)
+	if err != nil || registrations[filepath.Clean(record.WorktreeDir)] {
+		return lockErr
+	}
+	if remoteHead, err := remoteBranchHead(ctx, record.CanonicalDir, record.Branch); err != nil || (remoteHead != "" && !record.PreserveLocalBranch) {
+		return lockErr
+	}
+	if exists, err := localBranchExistsCanonical(ctx, canonical, record.Branch); err != nil || (exists && !record.PreserveLocalBranch) {
+		return lockErr
 	}
 	if record.RecoveryKind == "create_work_log_failed" && record.WorkLogClaim != "" {
 		if err := sealCreateFailureBacklogClaim(home, *record); err != nil {
