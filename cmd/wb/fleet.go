@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -61,7 +63,11 @@ func fleet(projectsRoot, filter string, resolveOwners func() []string) ([]discov
 			defer rwg.Done()
 			repos, err := discover.ListRemote(owner)
 			if err != nil {
-				return // owner may not be accessible; local data still used
+				// owner may not be accessible; local data still used, but say
+				// so — otherwise repos that only exist remotely for this
+				// owner (new repos included) silently vanish from the run.
+				fmt.Fprintf(os.Stderr, "wb: could not list repos for %s, using local data only: %v\n", owner, err)
+				return
 			}
 			mu.Lock()
 			remoteByOrg[owner] = repos
