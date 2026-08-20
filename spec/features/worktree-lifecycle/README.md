@@ -226,10 +226,34 @@ recovery stage carrying the exact task, repository, worktree registration,
 branch, head, remote-ref evidence, and disposition. If the process stops after
 worktree removal but before compare-and-delete of the local branch, the same
 named cleanup or discarded-abort journey MUST expose that backlog and resume
-only after proving the worktree path and registration are absent, the remote
-source branch is absent, and the local ref is either absent or still equals the
-recorded head. Completion MUST remain discoverable even when live worktree
-inventory no longer contains the task.
+only after proving the worktree registration is absent, the remote source
+branch is absent, and the local ref is either absent or still equals the
+recorded head. A worktree path that still exists MUST NOT by itself withhold
+the backlog from resumption: registration, not the path, distinguishes a
+refused removal from residue (see
+worktree-lifecycle#req:unregistered-residue-removal). Completion MUST remain
+discoverable even when live worktree inventory no longer contains the task.
+
+#### REQ: unregistered-residue-removal
+
+Git removes a linked worktree's registration even when it fails partway through
+deleting the working tree, and exits non-zero. On a failed removal WB MUST
+distinguish the two outcomes by the registration: a worktree Git still
+registers was refused and MUST still fail the task, and one Git no longer
+registers MUST be treated as WB's own residue and removed by WB itself, after
+which the lifecycle MUST continue to the exact local branch deletion rather
+than stranding the task.
+
+Residue removal derives its authority from the gates the task already passed —
+clean checkout, head integrated into the exact origin target, and a path WB
+created below its own worktrees root and still holds a validated descriptor
+for. WB MUST NOT gate it on the names of directories inside the checkout;
+ignored build output is in scope exactly as it is when Git's own removal
+succeeds. WB MUST descend through retained descriptors, MUST NOT follow a
+symlink out of the checkout, and MAY grant itself write permission on a
+directory of the residue that denies an unlink. A residue directory WB cannot
+open MUST be reported with the permission needed, never worked around by name.
+An apply report MUST record that WB, rather than Git, removed the checkout.
 
 #### REQ: internal-stage-terminalization
 
@@ -280,7 +304,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -293,7 +317,9 @@ rejected while a live rebase is accepted only transiently; prior-release hooks
 remain compatible without persisting an ephemeral executable; dry runs preserve state; exact merged heads can be cleaned;
 dirty or advanced branches survive; a fleet sweep writes incremental per-repository progress to stderr before its report and leaves stdout parseable as JSON; local and optional remote refs are removed
 with comparison guards; interruption after worktree removal is resumed from a
-durable exact-ref backlog; exact empty internal stages are archived while
+durable exact-ref backlog; a removal Git unregisters but cannot finish deleting
+is completed by WB and the task still reaches its branch deletion, while a
+removal Git refused still fails; exact empty internal stages are archived while
 non-empty ones remain blocking backlog; and apply writes durable evidence. Hosted PR metadata
 MAY be supplied by a deterministic test double.
 

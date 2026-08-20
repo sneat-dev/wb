@@ -166,6 +166,12 @@ type CleanupOptions struct {
 	// the checkout but before the exact local branch deletion. The durable
 	// lifecycle backlog must make the next identical cleanup resumable.
 	afterCleanupWorktreeRemoval func(worktree string) error
+	// beforeCleanupResidueRemoval simulates a crash/failure after Git
+	// unregistered a worktree it could not finish deleting and before WB
+	// removes what was left. It produces the one state no other seam can: an
+	// unregistered checkout still on disk, with a backlog record stranded at
+	// removing_worktree.
+	beforeCleanupResidueRemoval func(worktree string) error
 	// beforeCleanupNetworkBranchOperation is a test-only seam after cleanup's
 	// final pre-network authorization. It proves a substituted worktree blocks
 	// the optional remote-branch deletion as well as local removal.
@@ -192,13 +198,18 @@ type CleanupOptions struct {
 // CleanupResult records one repository's cleanup decision and outcome.
 type CleanupResult struct {
 	ListResult
-	Eligible      bool   `json:"eligible"`
-	Applied       bool   `json:"applied"`
-	RemoteDeleted bool   `json:"remote_deleted"`
-	WorktreeGone  bool   `json:"worktree_gone"`
-	BranchDeleted bool   `json:"branch_deleted"`
-	BacklogID     string `json:"backlog_id,omitempty"`
-	Reason        string `json:"reason,omitempty"`
+	Eligible      bool `json:"eligible"`
+	Applied       bool `json:"applied"`
+	RemoteDeleted bool `json:"remote_deleted"`
+	WorktreeGone  bool `json:"worktree_gone"`
+	// WorktreeResidueRemoved records that Git unregistered the worktree, failed
+	// to finish deleting it, and WB removed what was left. It is audit
+	// evidence, not a warning: the task completes either way, and the operator
+	// deserves to know which of the two paths deleted the checkout.
+	WorktreeResidueRemoved bool   `json:"worktree_residue_removed,omitempty"`
+	BranchDeleted          bool   `json:"branch_deleted"`
+	BacklogID              string `json:"backlog_id,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
 }
 
 // CleanupOutcome contains the decisions plus the durable audit report written
@@ -835,7 +846,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	for _, layout := range resolution.Read {
 		recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 	}
-	backlog, err := loadResumableLifecycleBacklog(resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, normalized.Task, normalized.Filter, "removed")
+	backlog, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, normalized.Task, normalized.Filter, "removed")
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -855,7 +866,14 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		eligible, reason := cleanupEligibility(entry, normalized.OlderThan, now)
 		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
 	}
+	// Residue reads back as a candidate that is no longer a Git worktree root,
+	// which is exactly the malformed-candidate shape blockDiagnosedTasks blocks
+	// a whole task on. A backlog record naming that exact path is the record of
+	// WB's own interrupted removal of it, and blocking the task on it would
+	// block the one run able to finish it.
+	backlogPaths := make(map[string]bool, len(backlog))
 	for _, record := range backlog {
+		backlogPaths[filepath.Clean(record.WorktreeDir)] = true
 		results = append(results, CleanupResult{ListResult: ListResult{
 			Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 			WorktreeDir: record.WorktreeDir, WorktreesRoot: record.WorktreesRoot,
@@ -863,7 +881,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		}, Eligible: true, WorktreeGone: true, BacklogID: record.ID,
 			Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
-	blockDiagnosedTasks(results, listed.Diagnostics)
+	blockDiagnosedTasks(results, listed.Diagnostics, backlogPaths)
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
@@ -890,6 +908,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		return outcome, cleanupErr
 	}
 	for backlogIndex := range backlog {
+		// A record whose worktree path is still present is one Git unregistered
+		// and could not finish deleting. Note that before resuming, because a
+		// successful resume is what removes it.
+		_, residueErr := os.Lstat(backlog[backlogIndex].WorktreeDir)
+		residuePresent := residueErr == nil
 		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex]); err != nil {
 			return fail(err)
 		}
@@ -897,6 +920,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			if outcome.Results[resultIndex].BacklogID == backlog[backlogIndex].ID {
 				outcome.Results[resultIndex].Applied = true
 				outcome.Results[resultIndex].BranchDeleted = true
+				outcome.Results[resultIndex].WorktreeResidueRemoved = residuePresent
 				// resumeLifecycleBacklog never deletes a remote branch itself: it
 				// refuses to proceed unless a fresh `git ls-remote` already shows
 				// origin/<branch> gone (see its remoteBranchHead check). A record
@@ -1125,10 +1149,36 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					worktree.close()
 					return fail(err)
 				}
-				if err := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); err != nil {
-					closeCanonical()
-					worktree.close()
-					return fail(fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, err))
+				if removeErr := runSecureCleanupGitHelper(ctx, canonical, worktree.parent, worktree.worktree, worktree.parentPath, refreshed.WorktreeDir, "worktree", "remove", refreshed.WorktreeDir); removeErr != nil {
+					// Git deletes the working tree first and the registration
+					// second, and it deletes the registration even when the
+					// tree delete failed partway. Ask which of the two failures
+					// this was before deciding whether the task is finishable.
+					residue, residueErr := worktreeRemovalLeftResidue(ctx, canonical, refreshed.WorktreeDir)
+					if residueErr != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(fmt.Errorf("remove worktree %s: %w; inspect its registration afterwards: %v", refreshed.WorktreeDir, removeErr, residueErr))
+					}
+					if !residue {
+						closeCanonical()
+						worktree.close()
+						return fail(fmt.Errorf("remove worktree %s: %w", refreshed.WorktreeDir, removeErr))
+					}
+					if normalized.beforeCleanupResidueRemoval != nil {
+						if err := normalized.beforeCleanupResidueRemoval(refreshed.WorktreeDir); err != nil {
+							closeCanonical()
+							worktree.close()
+							return fail(err)
+						}
+					}
+					removed, repairErr := removeUnregisteredWorktreeResidue(worktree, refreshed.WorktreeDir)
+					if repairErr != nil {
+						closeCanonical()
+						worktree.close()
+						return fail(fmt.Errorf("remove worktree %s: %w; %v", refreshed.WorktreeDir, removeErr, repairErr))
+					}
+					outcome.Results[index].WorktreeResidueRemoved = removed
 				}
 				outcome.Results[index].WorktreeGone = true
 				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageWorktreeRemoved); err != nil {
@@ -1980,12 +2030,18 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 // outside the coordination that is supposed to cover its whole task; every
 // other task, and every other candidate within the current --filter
 // selection, is unaffected.
-func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic) {
+// A diagnostic whose path a resumable backlog record already names is excluded:
+// it is WB's own residue, and the run holding that record is the one that
+// removes it.
+func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, backlogPaths map[string]bool) {
 	if len(diagnostics) == 0 {
 		return
 	}
 	reasonByTask := map[string]string{}
 	for _, diagnostic := range diagnostics {
+		if backlogPaths[filepath.Clean(diagnostic.Path)] {
+			continue
+		}
 		key := cleanupTaskKey(diagnostic.WorktreesRoot, diagnostic.Task)
 		if reasonByTask[key] == "" {
 			reasonByTask[key] = diagnostic.Path + ": " + diagnostic.Message
