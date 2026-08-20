@@ -76,13 +76,18 @@ type ListResult struct {
 	// receipt did not hold. An operator pointer that fails verification is a
 	// precise, reportable refusal of that candidate, never a malformed
 	// worktree and never a reason to abort a fleet-wide sweep.
-	AbsorbedByRejection string       `json:"absorbed_by_rejection,omitempty"`
-	Clean               bool         `json:"clean"`
-	LocallyMerged       bool         `json:"locally_merged"`
-	Locked              bool         `json:"locked"`
-	LastCommit          time.Time    `json:"last_commit"`
-	OpenPullRequest     *PullRequest `json:"open_pull_request,omitempty"`
-	MergedPullRequest   *PullRequest `json:"merged_pull_request,omitempty"`
+	AbsorbedByRejection string `json:"absorbed_by_rejection,omitempty"`
+	Clean               bool   `json:"clean"`
+	LocallyMerged       bool   `json:"locally_merged"`
+	Locked              bool   `json:"locked"`
+	// LockOwner and LockOwnerPID describe who holds Locked, so a refusal
+	// can distinguish a peer operation still running from a recoverable
+	// remnant of one that was interrupted. See diagnoseTaskLock.
+	LockOwner         LockOwnerState `json:"lock_owner,omitempty"`
+	LockOwnerPID      int            `json:"lock_owner_pid,omitempty"`
+	LastCommit        time.Time      `json:"last_commit"`
+	OpenPullRequest   *PullRequest   `json:"open_pull_request,omitempty"`
+	MergedPullRequest *PullRequest   `json:"merged_pull_request,omitempty"`
 }
 
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
@@ -1429,11 +1434,20 @@ func inspectLifecycleWorktree(
 	if err != nil {
 		return ListResult{}, fmt.Errorf("parse last commit time for %s: %w", slug, err)
 	}
+	// Diagnose the holder here, beside where Locked is set, so every caller
+	// of this inspector gets an explainable lock without threading two more
+	// parameters through its nine call sites.
+	var lockOwner LockOwnerState
+	var lockOwnerPID int
+	if locked {
+		lockOwner, lockOwnerPID = diagnoseTaskLock(filepath.Join(layout.WorktreesRoot, task), task)
+	}
 	result := ListResult{
 		Task: task, Repository: slug, CanonicalDir: canonical, WorktreeDir: worktree,
 		WorktreesRoot: layout.WorktreesRoot,
 		Branch:        branch, Base: base, HeadSHA: head,
-		Clean: clean, LocallyMerged: locallyMerged, Locked: locked, LastCommit: lastCommit,
+		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
+		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
 	}
 	if withGitHub {
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, base)
@@ -1939,7 +1953,7 @@ func commitTree(ctx context.Context, repository, revision string) (string, error
 func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time) (bool, string) {
 	switch {
 	case entry.Locked:
-		return false, "task is locked by an active or interrupted operation"
+		return false, lockedReason(entry, resumeInterruptedCommand(entry.Task))
 	case !entry.Clean:
 		return false, "worktree has local changes"
 	case entry.OpenPullRequest != nil:

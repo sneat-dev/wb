@@ -1958,9 +1958,16 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 	// A live worktree carrying a stray lock is reported locked and left alone;
 	// reclaiming is reserved for a remnant a backlog record can describe, and
 	// this one still has its whole checkout.
+	// The lock is empty, so it carries no operation/PID metadata: WB cannot
+	// establish an owner, and must say so rather than offer a recovery that
+	// would itself refuse this lock.
 	if len(planned.Results) != 1 || planned.Results[0].Eligible || planned.Results[0].Applied ||
-		!strings.Contains(planned.Results[0].Reason, "locked by an active or interrupted operation") {
+		planned.Results[0].LockOwner != LockOwnerUnreadable ||
+		!strings.Contains(planned.Results[0].Reason, "does not carry WB's operation/PID metadata") {
 		t.Fatalf("undescribable interruption must keep demanding attention: %#v", planned.Results)
+	}
+	if strings.Contains(planned.Results[0].Reason, "--resume-interrupted") {
+		t.Fatalf("an unestablishable owner must not advertise recovery: %q", planned.Results[0].Reason)
 	}
 	if _, statErr := os.Stat(created.WorktreeDir); statErr != nil {
 		t.Fatalf("refused cleanup must preserve the worktree: %v", statErr)

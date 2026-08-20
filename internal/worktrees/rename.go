@@ -735,7 +735,7 @@ func resolveRenameBranch(ctx context.Context, options RenameOptions, entry ListR
 func renameEligibility(entry ListResult) (bool, string) {
 	switch {
 	case entry.Locked:
-		return false, "task is locked by an active or interrupted operation"
+		return false, lockedReason(entry, resumeInterruptedCommand(entry.Task))
 	case !entry.Clean:
 		return false, "worktree has local changes"
 	default:

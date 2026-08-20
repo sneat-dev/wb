@@ -113,7 +113,9 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		eligible := !entry.Locked && (options.Disposition != AbortDiscarded || entry.Clean)
 		reason := ""
 		if entry.Locked {
-			reason = "task is locked by an active or interrupted operation"
+			// Abort has no recovery authority of its own; point at the one
+			// command that does rather than leaving a dead lock unexplained.
+			reason = lockedReason(entry, resumeInterruptedCommand(task))
 		} else if !entry.Clean && options.Disposition == AbortDiscarded {
 			reason = "discarded worktree has local changes; use handoff/not_landed or checkpoint it"
 		}
