@@ -234,6 +234,14 @@ refused removal from residue (see
 worktree-lifecycle#req:unregistered-residue-removal). Completion MUST remain
 discoverable even when live worktree inventory no longer contains the task.
 
+A record whose task namespace no longer exists cannot be locked at all. When
+every subject it names is also already absent — no checkout at the recorded
+path, no registration, no remote source branch, no local ref — WB MUST close
+the record without that lock, because the only remaining operation is a write
+to WB's own private journal rather than a deletion. If any subject is still
+present WB MUST refuse, so that one unresumable record cannot fail every later
+fleet sweep and no record still owing a deletion is quietly marked done.
+
 #### REQ: unregistered-residue-removal
 
 Git removes a linked worktree's registration even when it fails partway through
