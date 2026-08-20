@@ -202,7 +202,7 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	return nil
 }
 
-func loadResumableLifecycleBacklog(home, projectsRoot string, worktreesRoots []string, task, filter, disposition string) ([]lifecycleBacklogRecord, error) {
+func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, task, filter, disposition string) ([]lifecycleBacklogRecord, error) {
 	directory, err := openLifecycleBacklogDirectory(home, false)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
 		return nil, nil
@@ -241,10 +241,22 @@ func loadResumableLifecycleBacklog(home, projectsRoot string, worktreesRoots []s
 		switch record.Stage {
 		case lifecycleStageRemovingWorktree, lifecycleStageWorktreeRemoved, lifecycleStageRemovingLocalBranch:
 			if _, statErr := os.Lstat(record.WorktreeDir); statErr == nil {
-				// The destructive command either never ran or refused. Live
-				// inventory remains authoritative and the normal lifecycle path
-				// will recheck it; do not create a duplicate pseudo-result.
-				continue
+				// A path that still exists is not proof the destructive command
+				// never ran. Git removes a worktree's registration even when it
+				// fails partway through deleting the tree, so the registration
+				// is what separates a refusal from residue. Only a worktree Git
+				// still knows about is left to the live inventory, which
+				// remains authoritative for it and will recheck it; residue is
+				// invisible to that inventory and would otherwise strand here
+				// forever.
+				registered, registrationErr := worktreeStillRegistered(ctx, record.CanonicalDir, record.WorktreeDir)
+				if registrationErr != nil || registered {
+					// An unreadable canonical repository is legitimate history
+					// (a rename, a relocation), never grounds to fail every
+					// other task's cleanup. Leaving the record is exactly
+					// today's behavior for it.
+					continue
+				}
 			} else if !errors.Is(statErr, os.ErrNotExist) {
 				return nil, fmt.Errorf("inspect lifecycle backlog worktree %s: %w", record.WorktreeDir, statErr)
 			}
@@ -255,10 +267,11 @@ func loadResumableLifecycleBacklog(home, projectsRoot string, worktreesRoots []s
 	return records, nil
 }
 
-// resumeLifecycleBacklog finishes only the exact final local-ref deletion.
-// It refuses if the worktree path/registration or remote branch still exists,
-// or if the local ref moved. The private record is therefore a recovery hint,
-// never authority to delete a different checkout or branch.
+// resumeLifecycleBacklog finishes the exact residual checkout and local-ref
+// deletion this record's own interrupted run left behind. It refuses if the
+// worktree registration or remote branch still exists, or if the local ref
+// moved. The private record is therefore a recovery hint, never authority to
+// delete a different checkout or branch.
 func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord) error {
 	if err := validateLifecycleBacklog(*record); err != nil {
 		return err
@@ -289,18 +302,34 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	} else if remoteHead != "" && !record.PreserveLocalBranch {
 		return fmt.Errorf("resume lifecycle backlog %s: origin/%s still exists at %s", record.ID, record.Branch, remoteHead)
 	}
-	if _, err := os.Lstat(record.WorktreeDir); !errors.Is(err, os.ErrNotExist) {
-		if err == nil {
-			return fmt.Errorf("resume lifecycle backlog %s: worktree path still exists", record.ID)
-		}
-		return err
-	}
 	registrations, err := registeredWorktreePathsCanonical(ctx, canonical)
 	if err != nil {
 		return err
 	}
 	if registrations[filepath.Clean(record.WorktreeDir)] {
 		return fmt.Errorf("resume lifecycle backlog %s: worktree remains registered", record.ID)
+	}
+	// A path that still exists here is residue: this record's own removal step
+	// unregistered the worktree and could not finish deleting it. The record
+	// named the exact path, and the registration check above proved Git has
+	// already let go of it, so finishing that deletion is what resuming means.
+	// Anything still registered was refused and returned above.
+	if _, err := os.Lstat(record.WorktreeDir); err == nil {
+		worktree, openErr := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir}})
+		if openErr != nil {
+			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, openErr)
+		}
+		if _, removeErr := removeUnregisteredWorktreeResidue(worktree, record.WorktreeDir); removeErr != nil {
+			worktree.close()
+			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, removeErr)
+		}
+		parentErr := worktree.removeEmptyParent(nil)
+		worktree.close()
+		if parentErr != nil {
+			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, parentErr)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	exists, err := localBranchExistsCanonical(ctx, canonical, record.Branch)
 	if err != nil {

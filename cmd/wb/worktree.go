@@ -1770,7 +1770,14 @@ func printWorktreeCleanup(command *cobra.Command, results []worktrees.CleanupRes
 			if result.RemoteDeleted {
 				remote = " and remote branch"
 			}
-			if _, err := fmt.Fprintf(command.OutOrStdout(), "removed %s %s%s\n", result.Task, result.Repository, remote); err != nil {
+			// Say when WB, not Git, deleted the checkout. The task finished
+			// either way, and an operator reading this line is the person who
+			// would otherwise have found the directory still on disk.
+			residue := ""
+			if result.WorktreeResidueRemoved {
+				residue = " (WB removed the checkout Git unregistered but could not delete)"
+			}
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "removed %s %s%s%s\n", result.Task, result.Repository, remote, residue); err != nil {
 				return err
 			}
 		case result.Eligible:
