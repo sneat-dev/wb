@@ -1,0 +1,527 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Terminal from '../components/Terminal.astro';
+---
+
+<BaseLayout
+  title="wb deps policy — Architecture boundaries you declare once"
+  description="Declare which kinds of repository may depend on which kinds of dependency, in one central policy. WB enforces it per repo in CI — no regexes, no per-repo allowlists, no invisible exceptions."
+  path="/deps-policy/"
+>
+  <section class="page-hero why-hero">
+    <div class="container why-hero-inner" data-reveal>
+      <p class="eyebrow">wb deps policy</p>
+      <h1>Architecture rules stop being regexes.</h1>
+      <p class="lead">
+        Most fleets enforce dependency boundaries with a <code>git grep</code> in
+        a workflow file, and an allowlist baked into the pattern.{' '}
+        <strong>Declare the rule once instead</strong> — which kinds of
+        repository may depend on which kinds of dependency — and let every repo
+        be held to the same policy.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn-primary" href="#anatomy">How a policy is written</a>
+        <a class="btn btn-secondary" href="#commands">Subcommands</a>
+      </div>
+      <p class="why-claim">
+        <strong>Status: proposed, not yet shipped.</strong> This page describes a
+        design under review. Everything below is the intended surface, not a
+        released command — the rest of <code>wb deps</code> (<code>set</code>,{' '}
+        <code>bump</code>, <code>drift</code>, <code>graph</code>) is shipping today.
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container why-essay">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">The failure it fixes</p>
+        <h2>An exception that looks exactly like a rule.</h2>
+        <p>
+          Four repositories in one fleet, four hand-written guards, four
+          allowlists. Widening one is a one-word diff that nobody reviews as a
+          decision — because it doesn’t read like one.
+        </p>
+      </header>
+
+      <Terminal
+        label="the state of the art"
+        status="4 repos · 4 guards"
+        lines={[
+          { kind: 'muted', html: '# calendarius/.github/workflows/ci.yml' },
+          { kind: 'output', html: 'git grep -nE \'"github\\.com/sneat-co/[^" ]+/backend\' -- backend/**/*.go \\' },
+          { kind: 'output', html: '  | grep -vE \'(calendarius|ext-calendarius|<b>ext-contactus</b>)/backend\'' },
+          { kind: 'blank', html: '' },
+          { kind: 'warning', html: 'Which of those three is the exception?' },
+          { kind: 'muted', html: 'No owner. No reason. No expiry. No way to count them fleet-wide.' },
+        ]}
+      />
+
+      <div class="why-fit-grid">
+        <article class="why-fit why-fit-no" data-reveal>
+          <p class="why-fit-label">What a regex cannot say</p>
+          <ul>
+            <li>“Any <em>sibling</em> implementation repo” — only a literal list</li>
+            <li>Anything about the <em>importing</em> package’s role</li>
+            <li>A different rule for test code than for source</li>
+            <li>Which repos are clean, without running all of them</li>
+          </ul>
+        </article>
+        <article class="why-fit why-fit-yes" data-reveal>
+          <p class="why-fit-label">What a policy says instead</p>
+          <ul>
+            <li>Classify every import into a <strong>group</strong></li>
+            <li>Classify every repo into a <strong>type</strong></li>
+            <li>Allow groups per type, per <strong>scope</strong></li>
+            <li>Order package roles into <strong>layers</strong></li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section section-alt" id="anatomy">
+    <div class="container why-essay">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">Anatomy</p>
+        <h2>Four concepts, one file, zero fleet knowledge in WB.</h2>
+        <p>
+          The engine understands groups, types, scopes and layers. Your
+          vocabulary lives in your own policy file, so one fleet’s rules never
+          become everyone’s rules.
+        </p>
+      </header>
+
+      <ol class="why-pillars">
+        <li data-reveal>
+          <span class="why-pillar-index">01</span>
+          <div>
+            <h3>Groups — ordered, first match wins</h3>
+            <p>
+              A pattern list that classifies any import path. Ordering carries
+              meaning: <code>ext-*</code> must precede the org catch-all, which
+              is exactly what lets a rule name “any sibling implementation”
+              without enumerating the organisation.
+            </p>
+          </div>
+        </li>
+        <li data-reveal>
+          <span class="why-pillar-index">02</span>
+          <div>
+            <h3>Types — deduced from the module path</h3>
+            <p>
+              A repository’s kind comes from its own module path by default, so
+              most repos need no configuration at all. An explicit{' '}
+              <code>type:</code> is available where the name isn’t enough.
+            </p>
+          </div>
+        </li>
+        <li data-reveal>
+          <span class="why-pillar-index">03</span>
+          <div>
+            <h3>Scopes — source and tests differ, honestly</h3>
+            <p>
+              Emulator-backed repository tests legitimately import database
+              adapters that production code must not. That’s a second declared
+              scope, written once centrally — not an exception filed per repo.
+            </p>
+          </div>
+        </li>
+        <li data-reveal>
+          <span class="why-pillar-index">04</span>
+          <div>
+            <h3>Layers — direction inside a repository</h3>
+            <p>
+              Package roles get an order, and imports may only travel downward.{' '}
+              <code>api → dal</code> skips the facade;{' '}
+              <code>dal → api</code> inverts the stack. Both become findings
+              rather than folklore.
+            </p>
+          </div>
+        </li>
+      </ol>
+
+      <Terminal
+        label="policy.yaml"
+        status="central"
+        lines={[
+          { kind: 'muted', html: 'groups:                       <i># ordered — first match wins</i>' },
+          { kind: 'output', html: '  - {name: own-repo,                 match: ["&lt;self&gt;/..."]}' },
+          { kind: 'output', html: '  - {name: extension-contract,       match: ["github.com/acme/ext-*/..."]}' },
+          { kind: 'output', html: '  - {name: extension-implementation, match: ["github.com/acme/*/..."]}' },
+          { kind: 'blank', html: '' },
+          { kind: 'muted', html: 'types:' },
+          { kind: 'output', html: '  extension-implementation:' },
+          { kind: 'output', html: '    detect: ["github.com/acme/*/backend"]' },
+          { kind: 'output', html: '    scopes:' },
+          { kind: 'accent', html: '      source: {allow: [own-repo, extension-contract, dalgo-core]}' },
+          { kind: 'accent', html: '      tests:  {allow: [own-repo, extension-contract, dalgo-core, dalgo-adapter]}' },
+          { kind: 'blank', html: '' },
+          { kind: 'success', html: 'No deny list. Anything absent is forbidden; unmatched imports fail closed.' },
+        ]}
+      />
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container why-essay">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">Two invariants</p>
+        <h2>A repository cannot grant itself an exception.</h2>
+        <p>
+          Central policy only works if central really means central. Two rules
+          in the engine make the loosening path unavailable rather than
+          discouraged.
+        </p>
+      </header>
+
+      <div class="why-gap-grid">
+        <article data-reveal>
+          <h3>Tighten, never loosen</h3>
+          <p>
+            A repo file may add <code>strict: true</code>, promoting
+            report-mode rules to errors locally. Extending an <code>allow</code>{' '}
+            list, declaring a group, or setting a rule mode is a configuration
+            error — exit <code>2</code>, not a weaker rule.
+          </p>
+        </article>
+        <article data-reveal>
+          <h3>Name the source, not the version</h3>
+          <p>
+            A repo says <em>which</em> policy governs it. It cannot pin{' '}
+            <em>which release</em> — a repo frozen on last quarter’s policy is
+            an exception with extra steps. The caller resolves the version.
+          </p>
+        </article>
+        <article data-reveal>
+          <h3>No baseline, no severity dial</h3>
+          <p>
+            There is no per-repo allowlist to widen and no violations file to
+            append to. The only way to make a forbidden dependency legal is to
+            legitimise its group centrally, in a reviewed diff.
+          </p>
+        </article>
+        <article data-reveal>
+          <h3>Report mode is central too</h3>
+          <p>
+            New rules can ship non-blocking while a fleet cleans up — but the
+            mode lives in the policy, so no repository can quietly demote a rule
+            that binds everyone else.
+          </p>
+        </article>
+      </div>
+
+      <Terminal
+        label="the whole per-repo file"
+        status="2 lines"
+        lines={[
+          { kind: 'command', html: 'cat backend/.wb-deps-policy.yaml' },
+          { kind: 'accent', html: 'policy: acme/cicd//policy/backend.yaml' },
+          { kind: 'output', html: 'type: extension-implementation   <i># optional — deduced from module path</i>' },
+        ]}
+      />
+    </div>
+  </section>
+
+  <section class="section section-alt" id="commands">
+    <div class="container command-catalog">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">Subcommands</p>
+        <h2>Gate it, explain it, author it, watch it.</h2>
+        <p>
+          A gate that only says “no” is a gate people route around. The surface
+          splits four ways: enforcing in one repo, understanding a verdict,
+          authoring the policy safely, and watching the fleet converge.
+        </p>
+      </header>
+
+      <div class="catalog-grid">
+        <article class="catalog-card" id="check" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy check</code><span>the gate</span></p>
+            <h3>One repo, one verdict, no credentials.</h3>
+            <p>
+              Scans import blocks and <code>go.mod</code> lexically — no
+              type-checking, no module download. It still reports when the build
+              itself cannot start, which is when you need it most.
+            </p>
+          </div>
+          <Terminal
+            label="ci · architecture"
+            status="exit 1"
+            lines={[
+              { kind: 'command', html: 'wb deps policy check ./backend' },
+              { kind: 'warning', html: '✗ extension-implementation must not import extension-implementation' },
+              { kind: 'blank', html: '' },
+              { kind: 'output', html: '  backend/facade4gametable/facade.go:7' },
+              { kind: 'output', html: '      github.com/acme/calendarius/backend/dbo4calendarius' },
+              { kind: 'muted', html: '      └─ group: extension-implementation' },
+              { kind: 'output', html: '  backend/ports4gametable/ports.go:6' },
+              { kind: 'muted', html: '      └─ group: extension-implementation' },
+              { kind: 'blank', html: '' },
+              { kind: 'accent', html: '  fix: import github.com/acme/ext-calendarius/backend/... instead' },
+              { kind: 'warning', html: '3 violations in 2 packages' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="explain" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy explain</code><span>why?</span></p>
+            <h3>Every verdict shows its work.</h3>
+            <p>
+              Which group matched, via which pattern, at which precedence; the
+              repo’s detected type; the scope; and the rule that decided. The
+              answer to “why is CI red” shouldn’t be a reading of the policy file.
+            </p>
+          </div>
+          <Terminal
+            label="explain"
+            lines={[
+              { kind: 'command', html: 'wb deps policy explain github.com/acme/ext-contactus/backend/dal4contactus' },
+              { kind: 'output', html: 'import  github.com/acme/ext-contactus/backend/dal4contactus' },
+              { kind: 'output', html: 'group   extension-contract' },
+              { kind: 'muted', html: '        ← pattern #2  "github.com/acme/ext-*/..."' },
+              { kind: 'muted', html: '        (pattern #5 "github.com/acme/*/..." would also match — shadowed)' },
+              { kind: 'output', html: 'repo    extension-implementation  <i>(detected from module path)</i>' },
+              { kind: 'output', html: 'scope   source' },
+              { kind: 'success', html: 'ALLOWED — extension-contract ∈ source.allow' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="show" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy show</code><span>effective</span></p>
+            <h3>What am I actually held to?</h3>
+            <p>
+              Central policy is opaque unless a repo can print its own resolved
+              rules: the source and release in force, the detected type, the
+              allow-list per scope, and which rules are enforcing today.
+            </p>
+          </div>
+          <Terminal
+            label="effective policy"
+            lines={[
+              { kind: 'command', html: 'wb deps policy show' },
+              { kind: 'output', html: 'source   acme/cicd//policy/backend.yaml' },
+              { kind: 'output', html: 'release  v1.2.0  <i>(resolved by caller — repo cannot pin)</i>' },
+              { kind: 'output', html: 'type     extension-implementation' },
+              { kind: 'blank', html: '' },
+              { kind: 'accent', html: 'source.allow  own-repo · extension-contract · shared-kernel · dalgo-core' },
+              { kind: 'accent', html: 'tests.allow   … + dalgo-adapter' },
+              { kind: 'output', html: 'layers        report  <i>(fleet-wide; not settable here)</i>' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="validate" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy validate</code><span>the policy itself</span></p>
+            <h3>Ordering bugs are silent by nature.</h3>
+            <p>
+              A group pattern fully shadowed by an earlier one misclassifies
+              everything downstream and never errors. <code>validate</code> catches
+              that, plus unknown groups in an <code>allow</code>, types without{' '}
+              <code>detect</code>, and roles missing from the layer order.
+            </p>
+          </div>
+          <Terminal
+            label="policy lint"
+            status="exit 1"
+            lines={[
+              { kind: 'command', html: 'wb deps policy validate policy/backend.yaml' },
+              { kind: 'warning', html: '✗ group #5 "extension-implementation" is unreachable' },
+              { kind: 'muted', html: '  every path matching it is claimed by #2 "github.com/acme/ext-*/..."' },
+              { kind: 'warning', html: '✗ type "host" allows group "dalgo-adaptor" — no such group' },
+              { kind: 'muted', html: '  did you mean "dalgo-adapter"?' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="test" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy test</code><span>assertions</span></p>
+            <h3>A policy carries its own examples.</h3>
+            <p>
+              Classification is the part that breaks quietly, so a policy file
+              declares what it expects: this import is that group, this module is
+              that type. Run them like unit tests, in the policy repo’s CI.
+            </p>
+          </div>
+          <Terminal
+            label="policy assertions"
+            status="passing"
+            lines={[
+              { kind: 'command', html: 'wb deps policy test policy/backend.yaml' },
+              { kind: 'success', html: '✓ github.com/acme/ext-calendarius/backend  → extension-contract' },
+              { kind: 'success', html: '✓ github.com/acme/calendarius/backend      → extension-implementation' },
+              { kind: 'success', html: '✓ github.com/dal-go/dalgo2firestore        → dalgo-adapter' },
+              { kind: 'success', html: '✓ github.com/dal-go/dalgo                  → dalgo-core' },
+              { kind: 'output', html: '12 assertions · 12 passed' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="impact" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy impact</code><span>before you tag</span></p>
+            <h3>A policy edit is a fleet-wide change.</h3>
+            <p>
+              Because repos can’t pin a release, a tightened rule reaches every
+              repository at once. <code>impact</code> dry-runs the candidate across
+              the fleet and diffs verdicts against the current release — so the
+              blast radius lands in the policy’s pull request, not on a Friday.
+            </p>
+          </div>
+          <Terminal
+            label="candidate vs. released"
+            status="review"
+            lines={[
+              { kind: 'command', html: 'wb deps policy impact policy/backend.yaml --fleet --against v1.2.0' },
+              { kind: 'warning', html: 'newly failing   2 repositories' },
+              { kind: 'output', html: '  acme/listus      1 violation   api → dbo' },
+              { kind: 'output', html: '  acme/contactus   1 violation   api → dal' },
+              { kind: 'success', html: 'newly passing   1 repository' },
+              { kind: 'output', html: '  acme/gameboard   dalgo-adapter now allowed in tests scope' },
+              { kind: 'accent', html: 'unchanged       6 repositories' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="report" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy report</code><span>burn-down</span></p>
+            <h3>Report mode with a number attached.</h3>
+            <p>
+              Non-blocking rules are invisible unless someone counts them. This
+              is the fleet view that turns “layering ships in report mode” into a
+              figure that reaches zero — and the signal to flip it to enforcing.
+            </p>
+          </div>
+          <Terminal
+            label="fleet burn-down"
+            status="report mode"
+            lines={[
+              { kind: 'command', html: 'wb deps policy report --fleet --match \'acme/*\'' },
+              { kind: 'accent', html: 'enforcing · cross-repo imports' },
+              { kind: 'success', html: '  6 repositories clean · 1 failing' },
+              { kind: 'blank', html: '' },
+              { kind: 'accent', html: 'report · package layering' },
+              { kind: 'output', html: '  dal → api        3   acme/competios' },
+              { kind: 'output', html: '  dal → dto        4   3 repositories' },
+              { kind: 'output', html: '  botsvc → dbo     2   acme/calendarius' },
+              { kind: 'output', html: '  api → dal|dbo    2   acme/contactus, acme/listus' },
+              { kind: 'warning', html: '  22 edges remaining' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="drift" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy drift</code><span>coverage</span></p>
+            <h3>Which repos are actually governed?</h3>
+            <p>
+              The quiet failure of central policy is a repository nobody wired
+              up. <code>drift</code> lists who runs which release, who declares a
+              type that contradicts detection, and who has no policy at all.
+            </p>
+          </div>
+          <Terminal
+            label="policy coverage"
+            lines={[
+              { kind: 'command', html: 'wb deps policy drift --fleet' },
+              { kind: 'success', html: '✓ 7 repositories on backend.yaml v1.2.0' },
+              { kind: 'warning', html: '! 2 repositories have no policy file' },
+              { kind: 'muted', html: '    acme/hospitalius · acme/logistus' },
+              { kind: 'warning', html: '! 1 declares a type detection disagrees with' },
+              { kind: 'muted', html: '    acme/gameboard  declared: library  detected: extension-implementation' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="graph" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy graph</code><span>documentation</span></p>
+            <h3>An architecture diagram that cannot drift.</h3>
+            <p>
+              Render the permitted type→group edges through the same SVG
+              machinery as <code>wb deps graph</code>. The picture is generated
+              from the rules being enforced, so it is never a stale drawing of an
+              architecture you no longer have.
+            </p>
+          </div>
+          <Terminal
+            label="generated from the enforced rules"
+            lines={[
+              { kind: 'command', html: 'wb deps policy graph --format svg &gt; architecture.svg' },
+              { kind: 'output', html: 'extension-implementation' },
+              { kind: 'success', html: '  → extension-contract · shared-kernel · dalgo-core' },
+              { kind: 'warning', html: '  ⊘ extension-implementation · host · bot-framework · dalgo-adapter' },
+              { kind: 'blank', html: '' },
+              { kind: 'output', html: 'extension-contract' },
+              { kind: 'success', html: '  → extension-contract · shared-kernel · dalgo-core' },
+            ]}
+          />
+        </article>
+
+        <article class="catalog-card" id="init" data-reveal>
+          <div class="catalog-copy">
+            <p class="catalog-command"><code>wb deps policy init</code><span>adoption</span></p>
+            <h3>Two lines, written for you.</h3>
+            <p>
+              Detects the repository’s type from its module path, writes the
+              file, and immediately runs <code>check</code> so adoption starts
+              with an honest verdict rather than a green tick.
+            </p>
+          </div>
+          <Terminal
+            label="adopt"
+            lines={[
+              { kind: 'command', html: 'wb deps policy init --policy acme/cicd//policy/backend.yaml' },
+              { kind: 'success', html: '✓ wrote backend/.wb-deps-policy.yaml' },
+              { kind: 'output', html: '  detected type: extension-implementation' },
+              { kind: 'blank', html: '' },
+              { kind: 'muted', html: 'running check…' },
+              { kind: 'warning', html: '✗ 3 violations — not ready to gate' },
+            ]}
+          />
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container why-essay">
+      <header class="section-head" data-reveal>
+        <p class="eyebrow">In CI</p>
+        <h2>One step. No secrets. Seconds.</h2>
+        <p>
+          The scan reads source and manifests, never the resolved module graph —
+          so private dependencies need no credentials and a broken build still
+          produces a verdict.
+        </p>
+      </header>
+
+      <Terminal
+        label=".github/workflows/ci.yml"
+        lines={[
+          { kind: 'muted', html: 'architecture:' },
+          { kind: 'output', html: '  runs-on: ubuntu-latest' },
+          { kind: 'output', html: '  steps:' },
+          { kind: 'output', html: '    - uses: actions/checkout@v6' },
+          { kind: 'accent', html: '    - run: wb deps policy check ./backend --format github' },
+          { kind: 'blank', html: '' },
+          { kind: 'success', html: 'Violations arrive as file/line annotations on the pull request.' },
+        ]}
+      />
+
+      <div class="hero-actions" data-reveal>
+        <a class="btn btn-primary" href="/#install">Install WB</a>
+        <a class="btn btn-secondary" href="https://github.com/sneat-dev/wb" target="_blank" rel="noopener">
+          Source <span aria-hidden="true">↗</span>
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>
