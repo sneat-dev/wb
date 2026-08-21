@@ -13,10 +13,15 @@ Choose the narrowest operation:
 | Find version divergence, replaces, or major-path splits | `wb deps drift` | [drift.md](references/drift.md) |
 | Set one known version in existing references | `wb deps set` | [set.md](references/set.md) |
 | Propagate published Go releases through consumers | `wb deps bump` | [bump.md](references/bump.md) |
+| Enforce which dependencies and import directions are allowed | `wb deps policy` | [policy.md](references/policy.md) |
 
 Use `$wb-dependency-campaign` for a breaking or multi-release rollout.
 
-Start read-only. `graph` and `drift` are read-only; `set` and `bump` provide `--dry-run`.
+Note that `deps policy` is about which dependencies are *permitted*; the
+other verbs are about which *versions* are selected.
+
+Start read-only. `graph`, `drift` and every `policy` verb except `init` are
+read-only; `set` and `bump` provide `--dry-run`.
 Inspect scope and reports before publication flags.
 
 WB mutation happens in operation worktrees, not canonical clones. `--push`

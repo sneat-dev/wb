@@ -24,10 +24,10 @@ import Terminal from '../components/Terminal.astro';
         <a class="btn btn-secondary" href="#commands">Subcommands</a>
       </div>
       <p class="why-claim">
-        <strong>Status: proposed, not yet shipped.</strong> This page describes a
-        design under review. Everything below is the intended surface, not a
-        released command — the rest of <code>wb deps</code> (<code>set</code>,{' '}
-        <code>bump</code>, <code>drift</code>, <code>graph</code>) is shipping today.
+        Part of <a href="https://github.com/sneat-dev/wb"><code>wb deps</code></a>,
+        alongside <code>set</code>, <code>bump</code>, <code>drift</code> and
+        <code>graph</code>. Those manage which <em>versions</em> are selected;
+        this one manages which dependencies are <em>permitted</em>.
       </p>
     </div>
   </section>
@@ -132,10 +132,11 @@ import Terminal from '../components/Terminal.astro';
           <div>
             <h3>Layers — direction inside a repository</h3>
             <p>
-              Package roles get an order, and imports may only travel downward.{' '}
-              <code>api → dal</code> skips the facade;{' '}
-              <code>dal → api</code> inverts the stack. Both become findings
-              rather than folklore.
+              Package roles get an order, and imports may only travel downward,
+              so <code>dal → api</code> inverts the stack and is reported. The
+              depth rule cannot say "delivery must go through the facade" —{' '}
+              <code>api → dal</code> does travel down — so such edges are named
+              explicitly, with a reason, in the policy.
             </p>
           </div>
         </li>
@@ -150,12 +151,13 @@ import Terminal from '../components/Terminal.astro';
           { kind: 'output', html: '  - {name: extension-contract,       match: ["github.com/acme/ext-*/..."]}' },
           { kind: 'output', html: '  - {name: extension-implementation, match: ["github.com/acme/*/..."]}' },
           { kind: 'blank', html: '' },
-          { kind: 'muted', html: 'types:' },
-          { kind: 'output', html: '  extension-implementation:' },
+          { kind: 'muted', html: 'types:                        <i># ordered too — ext-* above the catch-all</i>' },
+          { kind: 'output', html: '  - name: extension-implementation' },
           { kind: 'output', html: '    detect: ["github.com/acme/*/backend"]' },
           { kind: 'output', html: '    scopes:' },
           { kind: 'accent', html: '      source: {allow: [own-repo, extension-contract, dalgo-core]}' },
-          { kind: 'accent', html: '      tests:  {allow: [own-repo, extension-contract, dalgo-core, dalgo-adapter]}' },
+          { kind: 'accent', html: '      tests:  {allow: [..., dalgo-adapter]}   <i># emulator-backed repo tests</i>' },
+          { kind: 'accent', html: '      main:   {allow: [..., dalgo-adapter]}   <i># composition roots wire drivers</i>' },
           { kind: 'blank', html: '' },
           { kind: 'success', html: 'No deny list. Anything absent is forbidden; unmatched imports fail closed.' },
         ]}
@@ -251,16 +253,19 @@ import Terminal from '../components/Terminal.astro';
             status="exit 1"
             lines={[
               { kind: 'command', html: 'wb deps policy check ./backend' },
-              { kind: 'warning', html: '✗ extension-implementation must not import extension-implementation' },
+              { kind: 'output', html: 'github.com/acme/gametable/backend' },
+              { kind: 'muted', html: '  type extension-implementation (detected from the module path)' },
               { kind: 'blank', html: '' },
-              { kind: 'output', html: '  backend/facade4gametable/facade.go:7' },
+              { kind: 'warning', html: 'x extension-implementation must not import extension-implementation in the source scope' },
+              { kind: 'blank', html: '' },
+              { kind: 'output', html: '  facade4gametable/facade.go:7' },
               { kind: 'output', html: '      github.com/acme/calendarius/backend/dbo4calendarius' },
-              { kind: 'muted', html: '      └─ group: extension-implementation' },
-              { kind: 'output', html: '  backend/ports4gametable/ports.go:6' },
-              { kind: 'muted', html: '      └─ group: extension-implementation' },
+              { kind: 'muted', html: '      |- group: extension-implementation' },
+              { kind: 'output', html: '  go.mod:6' },
+              { kind: 'muted', html: '      |- group: extension-implementation  (required in go.mod)' },
               { kind: 'blank', html: '' },
-              { kind: 'accent', html: '  fix: import github.com/acme/ext-calendarius/backend/... instead' },
-              { kind: 'warning', html: '3 violations in 2 packages' },
+              { kind: 'accent', html: '  fix: import github.com/acme/ext-*/... instead' },
+              { kind: 'warning', html: '7 blocking, 0 reported' },
             ]}
           />
         </article>

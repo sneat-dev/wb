@@ -1218,6 +1218,615 @@
       "notes": "Strict discovery errors remain visible rather than producing a silently incomplete rollout graph."
     },
     {
+      "id": "wb.deps.policy.check",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy check",
+              "flags": [
+                "--format",
+                "--policy",
+                "--strict",
+                "--type"
+              ],
+              "modes": [
+                "Gates one Go module against the central policy, reading import blocks and go.mod lexically with no type-checking, module download, or credentials.",
+                "Exits 0 clean, 1 on an enforcing violation, 2 on an unusable invocation or policy; report-mode findings print and count without changing the exit code, and --strict promotes them for one run."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy check --help",
+              "contains": [
+                "--strict",
+                "--format",
+                "--policy"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy check ./backend --format github"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyCheckExitsOneOnBlockingViolation",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyCheckStrictPromotesReportFindings",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/policy/check_test.go",
+              "name": "TestCheckSeparatesTestScope",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.drift",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy drift",
+              "flags": [
+                "--format",
+                "--match",
+                "--policy",
+                "--regex"
+              ],
+              "modes": [
+                "Lists every Go module in the selected repositories with the policy governing it, and flags modules nobody wired up or whose declared type disagrees with detection.",
+                "Read-only; exits 1 when any module needs attention. Version drift is out of scope here because repositories cannot pin a policy release."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy drift --help",
+              "contains": [
+                "--match",
+                "--policy"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy drift --match 'acme/*'"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicySubcommandsAndFlagsArePresent",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.explain",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy explain",
+              "flags": [
+                "--policy",
+                "--type"
+              ],
+              "modes": [
+                "Explains one classification: the winning group, the matching pattern and its position in declaration order, every later pattern that would also have matched, the repository type and how it was chosen, and the verdict in each scope.",
+                "Read-only; the shadowed-match list is what makes a first-match-wins ordering mistake findable."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy explain --help",
+              "contains": [
+                "--policy",
+                "--type"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy explain github.com/dal-go/dalgo2firestore ./backend"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyExplainShowsPatternPrecedenceAndShadowing",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyExplainSeparatesScopeVerdicts",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.impact",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy impact",
+              "flags": [
+                "--format",
+                "--match",
+                "--regex"
+              ],
+              "modes": [
+                "Dry-runs a candidate policy across the selected repositories and diffs its verdicts against the policy each repository runs today.",
+                "Read-only; exits 1 when the candidate would newly fail any repository. Intended to run in the policy document's own pull request."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy impact --help",
+              "contains": [
+                "--match",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy impact policy/backend.yaml --match 'acme/*'"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicySubcommandsAndFlagsArePresent",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.init",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy init",
+              "flags": [
+                "--policy"
+              ],
+              "modes": [
+                "Writes the two-line repository declaration with the type detected from the module path, then runs check immediately so adoption starts with an honest verdict.",
+                "Refuses to overwrite an existing declaration; exits 1 when the repository is not yet clean."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy init --help",
+              "contains": [
+                "--policy"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy init ./backend --policy acme/cicd//policy/backend.yaml"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyInitWritesTheDeclarationAndThenChecks",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyInitRefusesToOverwrite",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.report",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy report",
+              "flags": [
+                "--format",
+                "--match",
+                "--policy",
+                "--regex"
+              ],
+              "modes": [
+                "Aggregates findings by rule across the selected repositories, separating enforcing from report-only rules and counting modules that no policy governs.",
+                "Read-only; exits 1 when any enforcing rule is violated anywhere. The report-only count is what must reach zero before such a rule can be promoted."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy report --help",
+              "contains": [
+                "--match",
+                "--policy"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy report --match 'acme/*'"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicySubcommandsAndFlagsArePresent",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.show",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy show",
+              "flags": [
+                "--policy",
+                "--type"
+              ],
+              "modes": [
+                "Prints the rules a repository is actually held to: policy source, module, detected or declared type, the allow list per scope, and the layer order and mode.",
+                "Read-only."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy show --help",
+              "contains": [
+                "--policy",
+                "--type"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy show ./backend"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyShowPrintsEffectiveRules",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/policy/verbs_test.go",
+              "name": "TestDescribeResolvesEffectiveRules",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.test",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy test",
+              "flags": [],
+              "modes": [
+                "Runs the expect: assertions a policy declares about itself, asserting that a given import resolves to a given group and a given module to a given type.",
+                "Exits 1 when an assertion fails and when a policy declares none, because reordering two patterns otherwise changes every verdict downstream silently."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy test --help",
+              "contains": [
+                "assertions"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy test policy/backend.yaml"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyTestRunsAssertions",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyTestFailsWhenAPolicyDeclaresNoAssertions",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
+      "id": "wb.deps.policy.validate",
+      "feature_refs": [
+        "spec/features/dependency-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps policy validate",
+              "flags": [],
+              "modes": [
+                "Lints a policy document for mistakes that do not otherwise surface, chiefly a group or detect pattern an earlier declaration already claims in full.",
+                "Exits 1 when any problem is reported. A group no type allows is never reported: that is how a policy forbids something."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps policy validate --help",
+              "contains": [
+                "unreachable"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/policy.md",
+              "marker": "# Dependency and layering policy",
+              "examples": [
+                "wb deps policy validate policy/backend.yaml"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_policy_test.go",
+              "name": "TestPolicyValidateAcceptsAGoodPolicyAndRejectsAShadowedOne",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/policy/load_test.go",
+              "name": "TestValidateReportsShadowedPatternAndUnusedRole",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
+    },
+    {
       "id": "wb.deps.set",
       "feature_refs": [],
       "since": "existing",
