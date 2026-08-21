@@ -1,11 +1,11 @@
 ---
 format: https://specscore.md/idea-specification
-status: Draft
+status: Approved
 ---
 
 # Idea: Declarative dependency and layering policy check
 
-**Status:** Draft
+**Status:** Approved
 **Date:** 2026-08-21
 **Owner:** alex
 **Promotes To:** —
