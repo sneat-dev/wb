@@ -37,6 +37,7 @@ wb deps set <kind> <dep>@<v> # set existing dependency references to an exact ve
 wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
 wb deps drift [path] [flags] # report Go dependency convergence / replaces / major-path splits
+wb deps policy <verb> [flags] # enforce which dependencies and import directions are allowed
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
 wb verify [path] [flags]     # run conventional lint, test, and build checks
@@ -823,6 +824,131 @@ TypeScript evidence can later feed the same report model.
 
 See the [Dependency Graph feature specification](spec/features/dependency-graph/README.md)
 for synthetic use cases and acceptance criteria.
+
+### `wb deps policy` — which dependencies are allowed, not which versions
+
+The other `deps` verbs are about *versions*. This one is about *permission*:
+which kinds of repository may depend on which kinds of dependency, and which
+direction imports may travel between packages inside a repository.
+
+Most fleets enforce this with a `git grep` in each repository's workflow, with
+the allowlist written into the pattern. That cannot express "any *sibling*
+implementation repository", knows nothing about the importing package, and — the
+part that compounds — makes an exception typographically identical to a rule.
+Widening one reviews as a typo fix rather than as taking on architectural debt.
+
+One central document says it instead:
+
+```yaml
+groups:                       # ordered — first match wins
+  - {name: own-repo,                 match: ["<self>/..."]}
+  - {name: extension-contract,       match: ["github.com/acme/ext-*/..."]}
+  - {name: extension-implementation, match: ["github.com/acme/*/..."]}
+  - {name: dalgo-adapter,            match: ["github.com/dal-go/dalgo{2,4}*/..."]}
+  - {name: third-party,              match: ["..."]}
+
+types:                        # also ordered; ext-* above the catch-all
+  - name: extension-implementation
+    detect: ["github.com/acme/*/backend"]
+    scopes:
+      source: {allow: [own-repo, extension-contract, third-party]}
+      tests:  {allow: [own-repo, extension-contract, dalgo-adapter, third-party]}
+      main:   {allow: [own-repo, extension-contract, dalgo-adapter, third-party]}
+```
+
+Rules are **allow lists with no deny list**. Anything absent is forbidden, and
+an import no group classifies fails closed — so a policy that meets a new kind
+of dependency refuses it rather than quietly permitting it. There is no
+baseline, no per-repository severity, and no exception mechanism: the only way
+to make a forbidden dependency legal is to change the central document.
+
+Three scopes, because the same import can be legitimate in one place and wrong
+in another: `source`, `tests` (emulator-backed repository tests do reach for a
+concrete driver), and `main` (a composition root wires concrete drivers — that
+is what it is for). A direct `go.mod` requirement is judged in the scope it is
+actually imported in; indirect requirements are ignored, since no repository
+can act on them.
+
+A repository declares two lines, and may tighten but never loosen:
+
+```yaml
+# .wb-deps-policy.yaml
+policy: acme/cicd//policy/backend.yaml
+type: extension-implementation      # optional — detected from the module path
+```
+
+`strict: true` is the one other key it may set, and it only ever promotes
+report-mode findings to failures. Declaring groups or types, extending an allow
+list, or setting a rule mode is refused with exit 2. It names the policy
+**source** and never a release: a repository frozen on last quarter's policy
+would be carrying an exception nobody wrote down.
+
+#### Gate a repository
+
+```sh
+wb deps policy check ./backend --format github
+```
+
+The scan is lexical — import blocks and `go.mod`, never a resolved module
+graph. No credentials, no downloads, and a verdict even when the build cannot
+start, which is when a boundary is most likely to be under discussion. Exit `0`
+clean, `1` on an enforcing violation, `2` on an unusable invocation or policy.
+
+#### Understand a verdict
+
+```text
+$ wb deps policy explain github.com/acme/ext-cal/backend/dto ./backend
+import  github.com/acme/ext-cal/backend/dto
+group   extension-contract
+        <- pattern #2  "github.com/acme/ext-*/..."
+        (pattern #3 "github.com/acme/*/..." would also match, for group
+         "extension-implementation" — shadowed)
+repo    extension-implementation  (detected from the module path)
+source  ALLOWED — extension-contract is in source.allow
+```
+
+The shadowed-match line is the point. Groups are first-match-wins, so a broad
+pattern above a narrow one silently takes every path the narrow one was written
+for. `wb deps policy validate` reports that as an unreachable pattern, and
+`wb deps policy test` runs the `expect:` assertions a policy declares about
+itself — a policy with none is refused, because nothing else would catch a
+classification regression.
+
+#### Layers
+
+Package roles are ordered outermost-first and imports travel down, never up:
+
+```yaml
+layers:
+  mode: report                # central; a repository cannot demote a rule
+  roles: {api: ["api4*"], facade: ["facade4*"], dal: ["dal4*"], dbo: ["dbo4*"]}
+  order: [[api], [facade], [dal], [dbo]]
+  forbid:
+    - {from: api, to: dal, reason: "delivery must go through the facade"}
+```
+
+The depth rule alone cannot say "delivery must go through the facade" —
+`api → dal` does travel downward — so such edges are named explicitly, with a
+reason, in the policy rather than hidden in the tool.
+
+`mode` lives in the central document, so a new rule can ship non-blocking while
+a fleet cleans up without any repository being able to opt itself out.
+
+#### Watch the fleet
+
+```sh
+wb deps policy report --match 'acme/*'    # burn-down by rule; counts ungoverned modules
+wb deps policy drift  --match 'acme/*'    # who is governed, and where a declared type disagrees
+wb deps policy impact policy/backend.yaml --match 'acme/*'
+```
+
+`report` is what turns a report-mode rule into a number that has to reach zero.
+`impact` matters because repositories cannot pin a release: a tightened rule
+reaches all of them at once, so the blast radius belongs in the policy's own
+pull request rather than in nine repositories on a Friday morning.
+
+See the [Dependency and layering policy feature specification](spec/features/dependency-policy/README.md)
+for requirements and acceptance criteria.
 
 ### `wb migrate` — declarative source migrations
 
