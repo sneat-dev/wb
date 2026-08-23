@@ -50,6 +50,7 @@ type LocalWorkLogEvent struct {
 	Usage      *LocalUsageEvidence  `json:"usage,omitempty"`
 	Result     string               `json:"result,omitempty"`
 	Conflict   string               `json:"conflict,omitempty"`
+	Owner      *OwnerRegistration   `json:"owner,omitempty"`
 	Extra      map[string]any       `json:"extra,omitempty"`
 }
 

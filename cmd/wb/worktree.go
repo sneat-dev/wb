@@ -189,7 +189,7 @@ func worktreeLogPath(args []string) string {
 }
 
 func newWorktreeLogInitCmd() *cobra.Command {
-	var prompt, promptFile, source, runtime, model, cli, provider, format string
+	var prompt, promptFile, source, runtime, agentID, model, cli, provider, format string
 	command := &cobra.Command{
 		Use:   "init [worktree-path]",
 		Short: "Initialize or attach the local work-log journal",
@@ -209,6 +209,7 @@ func newWorktreeLogInitCmd() *cobra.Command {
 			result, err := worktrees.LogInit(command.Context(), worktrees.LogInitOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
 				Prompt: body, Source: source, Runtime: runtime, Model: model, CLI: cli, Provider: provider,
+				AgentID: agentID,
 			})
 			if err != nil {
 				return err
@@ -220,6 +221,7 @@ func newWorktreeLogInitCmd() *cobra.Command {
 	command.Flags().StringVar(&promptFile, "prompt-file", "", "read optional initial instruction from a file")
 	command.Flags().StringVar(&source, "source", "", "prompt source when recording --prompt")
 	command.Flags().StringVar(&runtime, "agent-runtime", "", "recording runtime, when known")
+	command.Flags().StringVar(&agentID, "agent", "", "agent identity when known")
 	command.Flags().StringVar(&model, "model", "", "recording model, when known")
 	command.Flags().StringVar(&cli, "cli", "", "recording CLI identifier, when known")
 	command.Flags().StringVar(&provider, "provider", "", "routing/billing provider identifier, never a credential")
@@ -1116,7 +1118,7 @@ func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) er
 }
 
 func newWorktreeListCmd() *cobra.Command {
-	var base, format, absorbedBy string
+	var base, format, absorbedBy, ownerState string
 	var github bool
 	command := &cobra.Command{
 		Use:   "list [task]",
@@ -1147,6 +1149,7 @@ joined into this command.`,
 				Task:         task,
 				Base:         base,
 				Filter:       filterFlag,
+				OwnerState:   ownerState,
 				AbsorbedBy:   absorbedBy,
 				GitHub:       github,
 			})
@@ -1179,6 +1182,7 @@ joined into this command.`,
 	command.Flags().BoolVar(&github, "github", false, "include pull request state from GitHub")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "with --github, verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().StringVar(&ownerState, "only", "", "only worktrees with owner PID state: active or orphaned")
 	return command
 }
 
@@ -1652,8 +1656,8 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 		}
 		if _, err := fmt.Fprintf(
 			command.OutOrStdout(),
-			"%s  %s  %s  %s  %s\n",
-			result.Task, result.Repository, result.Branch, state, pr,
+			"%s  %s  %s  %s  owners=%s  %s\n",
+			result.Task, result.Repository, result.Branch, state, result.OwnerState, pr,
 		); err != nil {
 			return err
 		}

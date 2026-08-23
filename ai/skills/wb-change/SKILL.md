@@ -19,6 +19,10 @@ Compose the low-level skills; do not restate their command details.
 8. After every coordinated PR merges, use `$wb-worktrees` to inspect the
    cleanup dry run, then apply safe task cleanup.
 
+Read [completion.md](references/completion.md) before reporting a terminal
+result. It is the canonical definition of done for this workflow; always state
+whether the outcome is `implemented`, `published`, `landed`, or `blocked`.
+
 Keep read-only sibling repositories on clean, freshly synchronized canonical
 `main`. If a sibling needs any modification, include it in the task's WB
 worktrees.

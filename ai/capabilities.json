@@ -752,7 +752,8 @@
                 "--absorbed-by",
                 "--base",
                 "--format",
-                "--github"
+                "--github",
+                "--only"
               ],
               "modes": [
                 "Inventories managed candidate efforts without a branch-prefix assumption"
@@ -4119,7 +4120,8 @@
                 "--absorbed-by",
                 "--base",
                 "--format",
-                "--github"
+                "--github",
+                "--only"
               ],
               "modes": [
                 "Live managed Git worktrees only",
@@ -4579,6 +4581,7 @@
             {
               "path": "wb worktree log init",
               "flags": [
+                "--agent",
                 "--agent-runtime",
                 "--cli",
                 "--format",
