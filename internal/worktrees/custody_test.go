@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
@@ -11,7 +12,16 @@ import (
 // the repository's info/exclude and cannot be written outside one.
 func custodyWorktree(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	// t.TempDir() returns a path under /var on macOS, and /var is a symlink to
+	// /private/var. WB's secure directory walk opens each segment O_NOFOLLOW
+	// and refuses a symlinked one — correctly, since that is the property it
+	// exists to enforce. Resolve the fixture path so the test exercises the
+	// refusal on real symlinks rather than tripping over the temp directory.
+	// Linux CI has no such symlink, which is why this only bites locally.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
 	command := exec.Command("git", "init", "-q", "-b", "main", dir)
 	if out, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
