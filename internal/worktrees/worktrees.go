@@ -3006,6 +3006,26 @@ func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 		_ = file.Close()
 		return operationLock{}, err
 	}
+	// The lock proves no other WB process is working in this directory. It does
+	// not prove the directory is still reachable: an empty task namespace can be
+	// retired between the moment this operation opened it and the moment it took
+	// the lock, and creating .lock inside an unlinked directory succeeds, so
+	// without this check the operation would build a whole task hierarchy no
+	// path can reach. A directory that has been unlinked has no links left —
+	// neither its entry in the parent nor its own "." — which is exactly the
+	// distinction the descriptor can still make after the name is gone.
+	// Refusing here makes the race a retryable error instead of silent loss,
+	// and is what allows a terminal cleanup to retire the namespace it emptied
+	// rather than leaving one empty shell behind per finished task.
+	var directory unix.Stat_t
+	if err := unix.Fstat(int(operationDirectory.Fd()), &directory); err != nil {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf("inspect secure worktree operation directory: %w", err)
+	}
+	if directory.Nlink == 0 {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf("worktree operation directory was retired while this operation was starting; run the command again")
+	}
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
 		_ = file.Close()

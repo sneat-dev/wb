@@ -281,6 +281,11 @@ func prepareCleanupLifecycleArtifacts(
 		if !artifact.Eligible || cleanupTaskKey(artifact.WorktreesRoot, artifact.Task) != taskKey {
 			continue
 		}
+		// A task namespace is retired in place, not archived: it has no
+		// reserved WB name and is not a directory inside the task.
+		if artifact.Kind == lifecycleArtifactKindTaskNamespace {
+			continue
+		}
 		name := filepath.Base(artifact.Path)
 		if _, _, recognized := lifecycleArtifactName(name); !recognized {
 			closeCleanupLifecycleArtifacts(handles)
@@ -850,6 +855,14 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	// A task directory with no repositories under it yields no candidate and no
+	// diagnostic, so it is invisible to inventory. Discover it here, before any
+	// apply, so a dry run states it and an apply acts only on what was planned.
+	namespaces, err := emptyTaskNamespaces(resolution.Read, normalized.Task, normalized.Filter)
+	if err != nil {
+		return CleanupOutcome{}, err
+	}
+	listed.Artifacts = append(listed.Artifacts, namespaces...)
 	// A malformed candidate never aborts the run — see blockDiagnosedTasks. It
 	// is legitimate history (for example a renamed canonical repository, see
 	// RepositoryRenameMismatchError), not evidence that anyone's work is at
@@ -978,6 +991,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 					task.preserveLock()
 				} else if releaseErr := task.lock.release(); releaseErr == nil {
 					purgeTerminalTaskLockDebris(task)
+					removeEmptyTaskDirectory(task)
 				}
 				task.close()
 			}()
@@ -1252,10 +1266,15 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			return cleanupOutcome, cleanupErr
 		}
 	}
-	// Keep the now-empty task root while its descriptor lock is live. Removing
-	// it after releasing that lock creates an ABA window where a concurrent
-	// create can make a new, unreachable task directory at the same pathname.
-	// Future creation reuses this harmless empty root under its normal lock.
+	// Retire the namespaces earlier releases left behind, under the same
+	// per-task lock. Removing an empty task root after releasing its lock used
+	// to open an ABA window where a concurrent create could build an
+	// unreachable task directory at the same pathname; every operation now
+	// refuses a directory that was unlinked while it was starting (see
+	// acquireLockAtReclaimingInterrupted), which turns that race into a
+	// retryable error and lets the namespace be retired instead of accumulating
+	// one empty shell per finished task.
+	retireEmptyTaskNamespaces(outcome.Artifacts)
 	if normalized.ReportDir != "" {
 		phase := "applied"
 		if outcome.Recovery != nil && !outcome.Recovery.Applied {
@@ -2059,7 +2078,9 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 func blockArtifactTasks(results []CleanupResult, artifacts []LifecycleArtifact) {
 	reasonByTask := make(map[string]string)
 	for _, artifact := range artifacts {
-		if artifact.Eligible {
+		// An empty task namespace has no repository under it to coordinate
+		// with, so its own ineligibility never blocks a task.
+		if artifact.Eligible || artifact.Kind == lifecycleArtifactKindTaskNamespace {
 			continue
 		}
 		key := cleanupTaskKey(artifact.WorktreesRoot, artifact.Task)
