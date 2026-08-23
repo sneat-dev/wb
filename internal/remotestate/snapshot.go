@@ -6,6 +6,7 @@ package remotestate
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -17,6 +18,12 @@ import (
 // SchemaVersion is the snapshot format this binary writes and the newest it
 // can read.
 const SchemaVersion = 1
+
+// Status constants for RepositoryState.
+const (
+	StatusAttention = "attention"
+	StatusError     = "error"
+)
 
 // Redaction selects how unpushed commits are published.
 type Redaction string
@@ -92,6 +99,41 @@ func (in RepositoryInput) needsAttention() bool {
 	return in.Tracking.Branch != "" && in.Tracking.Upstream == ""
 }
 
+// buildSummary combines Status.Summary() and Tracking.Summary() into one line.
+// It joins non-empty parts with "; " and appends "no upstream" if a branch
+// has no upstream and the tracking summary doesn't already describe it.
+func buildSummary(in RepositoryInput) string {
+	statusSummary := in.Status.Summary()
+	trackingSummary := in.Tracking.Summary()
+
+	var parts []string
+	if statusSummary != "" {
+		parts = append(parts, statusSummary)
+	}
+	if trackingSummary != "" {
+		parts = append(parts, trackingSummary)
+	}
+
+	summary := ""
+	if len(parts) > 0 {
+		summary = fmt.Sprintf("%s", parts[0])
+		for _, p := range parts[1:] {
+			summary += "; " + p
+		}
+	}
+
+	// If branch has no upstream and tracking summary doesn't already mention it, append note
+	if in.Tracking.Branch != "" && in.Tracking.Upstream == "" && !strings.Contains(trackingSummary, "no upstream") {
+		if summary != "" {
+			summary += "; no upstream"
+		} else {
+			summary = "no upstream"
+		}
+	}
+
+	return summary
+}
+
 // Build assembles a snapshot. identity supplies Login, Machine, PublishedAt,
 // WBVersion, and ProjectsRoot; everything else is derived here. Clean
 // repositories are counted but not listed. Output is sorted by repository.
@@ -103,17 +145,21 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 	snap.Worktrees = make([]WorktreeState, 0, len(wts))
 	for _, in := range repos {
 		if in.Err != nil {
-			snap.Repositories = append(snap.Repositories, RepositoryState{Repository: in.Repository, Path: in.Path, Status: "error", Error: in.Err.Error()})
+			snap.Repositories = append(snap.Repositories, RepositoryState{Repository: in.Repository, Path: in.Path, Status: StatusError, Error: in.Err.Error()})
 			continue
 		}
 		if !in.needsAttention() {
 			continue
 		}
+
+		// Combine status and tracking summaries
+		summary := buildSummary(in)
+
 		state := RepositoryState{
 			Repository:    in.Repository,
 			Path:          in.Path,
-			Status:        "attention",
-			Summary:       in.Status.Summary(),
+			Status:        StatusAttention,
+			Summary:       summary,
 			Branch:        in.Tracking.Branch,
 			Upstream:      in.Tracking.Upstream,
 			Ahead:         in.Tracking.Ahead,

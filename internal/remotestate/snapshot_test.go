@@ -1,6 +1,7 @@
 package remotestate
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +17,7 @@ func identity() Snapshot {
 func TestBuildListsOnlyNonCleanRepositoriesAndCountsAll(t *testing.T) {
 	repos := []RepositoryInput{
 		{Repository: "acme/clean", Path: "/p/clean", Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main"}},
-		{Repository: "acme/dirty", Path: "/p/dirty", Status: gitops.RepoStatus{Modified: []string{"a.go"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main"}},
+		{Repository: "acme/dirty", Path: "/p/dirty", Status: gitops.RepoStatus{Modified: []string{"a.go"}, Untracked: []string{"b.txt"}, Conflicted: []string{"c.md"}, Stashed: []string{"stash@{0}"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 1, Behind: 2}},
 		{Repository: "acme/ahead", Path: "/p/ahead", Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}},
 		{Repository: "acme/noup", Path: "/p/noup", Tracking: gitops.TrackingState{Branch: "feature", Configured: true}},
 		{Repository: "acme/broken", Path: "/p/broken", Err: errOops},
@@ -40,6 +41,54 @@ func TestBuildListsOnlyNonCleanRepositoriesAndCountsAll(t *testing.T) {
 	if snap.Key() != "alice/laptop" {
 		t.Fatalf("Key() = %q", snap.Key())
 	}
+
+	// Field-level assertions for acme/dirty
+	dirtyIdx := -1
+	for i, r := range snap.Repositories {
+		if r.Repository == "acme/dirty" {
+			dirtyIdx = i
+			break
+		}
+	}
+	if dirtyIdx < 0 {
+		t.Fatal("acme/dirty not found")
+	}
+	expected := RepositoryState{
+		Repository:    "acme/dirty",
+		Path:          "/p/dirty",
+		Status:        "attention",
+		Summary:       "1 modified file, 1 untracked file, 1 conflict, 1 stash entry; main is 1 ahead, 2 behind origin/main",
+		Branch:        "main",
+		Upstream:      "origin/main",
+		Ahead:         1,
+		Behind:        2,
+		Modified:      []string{"a.go"},
+		Untracked:     []string{"b.txt"},
+		Conflicted:    []string{"c.md"},
+		UnpushedCount: 0,
+		Stashed:       []string{"stash@{0}"},
+	}
+	if !reflect.DeepEqual(snap.Repositories[dirtyIdx], expected) {
+		t.Fatalf("acme/dirty mismatch:\n got: %+v\nwant: %+v", snap.Repositories[dirtyIdx], expected)
+	}
+
+	// Field-level assertion for acme/broken
+	brokenIdx := -1
+	for i, r := range snap.Repositories {
+		if r.Repository == "acme/broken" {
+			brokenIdx = i
+			break
+		}
+	}
+	if brokenIdx < 0 {
+		t.Fatal("acme/broken not found")
+	}
+	if snap.Repositories[brokenIdx].Error != "git status: boom" {
+		t.Fatalf("acme/broken Error = %q, want %q", snap.Repositories[brokenIdx].Error, "git status: boom")
+	}
+	if snap.Repositories[brokenIdx].Path != "/p/broken" {
+		t.Fatalf("acme/broken Path = %q, want %q", snap.Repositories[brokenIdx].Path, "/p/broken")
+	}
 }
 
 func TestBuildRedactsUnpushedSubjectsToCounts(t *testing.T) {
@@ -55,11 +104,51 @@ func TestBuildRedactsUnpushedSubjectsToCounts(t *testing.T) {
 	}
 }
 
+func TestBuildSummarisesTrackingOnlyAttention(t *testing.T) {
+	repos := []RepositoryInput{
+		{Repository: "acme/ahead", Path: "/p/ahead", Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}},
+		{Repository: "acme/noup", Path: "/p/noup", Tracking: gitops.TrackingState{Branch: "feature", Configured: true}},
+	}
+	snap := Build(identity(), repos, nil, RedactNone)
+
+	for _, r := range snap.Repositories {
+		if r.Repository == "acme/ahead" {
+			if r.Summary == "" {
+				t.Fatalf("acme/ahead Summary is empty, expected to contain ahead info")
+			}
+			if !strings.Contains(r.Summary, "ahead") {
+				t.Fatalf("acme/ahead Summary %q should mention 'ahead'", r.Summary)
+			}
+		}
+		if r.Repository == "acme/noup" {
+			if r.Summary == "" {
+				t.Fatalf("acme/noup Summary is empty, expected to mention missing upstream")
+			}
+			if !strings.Contains(r.Summary, "no upstream") {
+				t.Fatalf("acme/noup Summary %q should mention 'no upstream'", r.Summary)
+			}
+		}
+	}
+}
+
 func TestBuildCarriesWorktrees(t *testing.T) {
-	wts := []worktrees.ListResult{{Task: "task-7", Repository: "acme/x", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/x"}}
+	wts := []worktrees.ListResult{
+		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/z"},
+		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/a"},
+		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", WorktreeDir: "/wt/task-1/acme/m"},
+	}
 	snap := Build(identity(), nil, wts, RedactNone)
-	if len(snap.Worktrees) != 1 || snap.Worktrees[0] != (WorktreeState{Task: "task-7", Repository: "acme/x", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/x"}) {
-		t.Fatalf("Worktrees = %+v", snap.Worktrees)
+	if len(snap.Worktrees) != 3 {
+		t.Fatalf("expected 3 worktrees, got %d", len(snap.Worktrees))
+	}
+	// Verify sort order: task-1 first, then task-7 sorted by repository
+	expected := []WorktreeState{
+		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", Dir: "/wt/task-1/acme/m"},
+		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/a"},
+		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/z"},
+	}
+	if !reflect.DeepEqual(snap.Worktrees, expected) {
+		t.Fatalf("Worktrees mismatch:\n got: %+v\nwant: %+v", snap.Worktrees, expected)
 	}
 }
 
