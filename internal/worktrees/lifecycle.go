@@ -513,6 +513,15 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		return ListOutcome{}, err
 	}
 	outcome := ListOutcome{SchemaVersion: 1}
+	// One inventory walk asks the same question once per worktree, and a fleet
+	// keeps many worktrees per repository — 262 worktrees across 71 repositories
+	// on the fleet this was measured against, so 73% of the fetches re-learned a
+	// SHA already in hand. Scope the memo to this walk: every task in a
+	// repository is then judged against one consistent target instead of
+	// whichever SHA happened to be current when its own fetch ran, and the
+	// pre-deletion recheck in preflightCleanupRepository still runs on the
+	// caller's own context, so it stays a genuinely fresh fetch.
+	ctx = withTargetHeadCache(ctx)
 	for _, layout := range resolution.Read {
 		results, diagnostics, artifacts, listErr := listLayout(
 			ctx, projectsRoot, layout, task, base, filter, options.AbsorbedBy, options.GitHub,
@@ -1672,6 +1681,15 @@ func remoteBranchHead(ctx context.Context, repository, branch string) (string, e
 // a possibly stale origin/<base> tracking ref. Cleanup repeats this immediately
 // before deletion, so a force-pushed target cannot reuse old evidence.
 func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (string, error) {
+	if cache := targetHeadCacheFrom(ctx); cache != nil {
+		return cache.resolve(repository, branch, func() (string, error) {
+			return fetchRemoteTargetHeadUncached(ctx, repository, branch)
+		})
+	}
+	return fetchRemoteTargetHeadUncached(ctx, repository, branch)
+}
+
+func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
 	if _, err := git(ctx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
 		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
 	}
