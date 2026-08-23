@@ -48,6 +48,15 @@ func machineRows(entries []remotestate.Entry, now time.Time, stale time.Duration
 
 // humanAge renders a duration the way `wb fleet status` ages things: coarse
 // enough to be stable in tests, fine enough to be useful.
+// publishedAgo phrases an age for prose: "just now" stays as is, "2h"
+// becomes "2h ago".
+func publishedAgo(age string) string {
+	if age == "just now" {
+		return age
+	}
+	return age + " ago"
+}
+
 func humanAge(d time.Duration) string {
 	switch {
 	case d < time.Minute:
@@ -95,7 +104,7 @@ func writeStatusWorklist(out io.Writer, entries []remotestate.Entry, rows []remo
 			_, _ = fmt.Fprintf(out, "%s\n  error: %s\n\n", header, row.Error)
 			continue
 		}
-		_, _ = fmt.Fprintf(out, "%s (published %s ago, %d scanned)\n", header, row.Age, entry.Snapshot.RepositoriesScanned)
+		_, _ = fmt.Fprintf(out, "%s (published %s, %d scanned)\n", header, publishedAgo(row.Age), entry.Snapshot.RepositoriesScanned)
 		for _, repo := range entry.Snapshot.Repositories {
 			tracking := repo.Branch
 			if repo.Ahead > 0 || repo.Behind > 0 {
