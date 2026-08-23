@@ -7,9 +7,11 @@ import (
 func newRepoCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "repo",
-		Short: "Inspect a single local repository",
+		Short: "Inspect or configure a single local repository",
 	}
 	command.AddCommand(newRepoStatusCmd())
+	command.AddCommand(newRepoIgnoreCmd())
+	command.AddCommand(newRepoInitRemoteCmd())
 	return command
 }
 

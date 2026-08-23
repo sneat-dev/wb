@@ -5,6 +5,7 @@
 package gitops
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -215,6 +216,111 @@ func lastLine(s string) string {
 // repoPath.
 func Pull(repoPath string) error {
 	_, err := run(repoPath, "git", "pull", "--quiet")
+	return err
+}
+
+// SkipSyncKey is the git config key marking a repo that wb sync must leave
+// alone. It is always read and written with --local: a plain read falls back
+// to ~/.gitconfig, where one stray key would silently disable sync for the
+// whole fleet.
+const SkipSyncKey = "wb.skip-sync"
+
+// SkipSync reports whether repoPath is marked to be skipped by sync.
+//
+// Exactly one git exit status means "not marked": 1, for an absent key. Every
+// other failure is a real error and is returned as one — notably 128, which
+// covers both a malformed value and a path that is not a git repository.
+// Swallowing those (as internal/hooks treats `git config --get` failures)
+// would silently resume pulling a repo the user asked wb to leave alone.
+func SkipSync(repoPath string) (bool, error) {
+	out, err := run(repoPath, "git", "config", "--local", "--bool", SkipSyncKey)
+	if err != nil {
+		if exitCode(err) == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return strings.TrimSpace(out) == "true", nil
+}
+
+// SetSkipSync marks repoPath to be skipped by sync.
+func SetSkipSync(repoPath string) error {
+	_, err := run(repoPath, "git", "config", "--local", SkipSyncKey, "true")
+	return err
+}
+
+// UnsetSkipSync clears the skip marker from repoPath, and is idempotent.
+//
+// --unset-all rather than --unset: on a key that somehow holds multiple
+// values, --unset exits 5 and leaves every value in place, so the caller
+// would report success on a repo that is still marked. --unset-all clears
+// them all, and exits 5 only when the key is genuinely absent — the no-op
+// case, which is success here.
+func UnsetSkipSync(repoPath string) error {
+	_, err := run(repoPath, "git", "config", "--local", "--unset-all", SkipSyncKey)
+	if err != nil && exitCode(err) == 5 {
+		return nil
+	}
+	return err
+}
+
+// exitCode digs the process exit status out of an error wrapped by run.
+// It returns -1 when err did not come from a finished process.
+func exitCode(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+// CurrentBranch returns the checked-out branch name of repoPath. A detached
+// HEAD reports an empty name rather than an error, because `git branch
+// --show-current` succeeds there and prints nothing; callers that need a
+// branch to push must reject the empty string themselves.
+func CurrentBranch(repoPath string) (string, error) {
+	out, err := run(repoPath, "git", "branch", "--show-current")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// HasCommits reports whether repoPath's HEAD resolves, i.e. whether the
+// checked-out branch has any commits yet. --verify --quiet exits 1 silently
+// on an unborn branch, where a bare `rev-parse HEAD` would exit 128 and print
+// "fatal: ambiguous argument 'HEAD'" into the error text.
+func HasCommits(repoPath string) (bool, error) {
+	_, err := run(repoPath, "git", "rev-parse", "--verify", "--quiet", "HEAD")
+	if err != nil {
+		if exitCode(err) == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// OriginURL returns repoPath's origin remote URL, erroring when no origin is
+// configured.
+func OriginURL(repoPath string) (string, error) {
+	out, err := run(repoPath, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// CommitEmpty creates an empty commit, used to give an unborn branch
+// something to push.
+func CommitEmpty(repoPath, message string) error {
+	_, err := run(repoPath, "git", "commit", "--allow-empty", "-m", message)
+	return err
+}
+
+// PushSetUpstream pushes branch to origin and sets it as the upstream.
+func PushSetUpstream(repoPath, branch string) error {
+	_, err := run(repoPath, "git", "push", "-u", "origin", branch)
 	return err
 }
 

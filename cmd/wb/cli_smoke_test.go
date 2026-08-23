@@ -67,6 +67,14 @@ type smokeResult struct {
 // killed, because that is precisely the defect being guarded against.
 func runWB(t *testing.T, args ...string) smokeResult {
 	t.Helper()
+	return runWBIn(t, "", args...)
+}
+
+// runWBIn is runWB with an explicit working directory. Commands that default
+// to "." must be exercised from a scratch directory: run from the suite's own
+// cwd they would operate on the wb checkout itself.
+func runWBIn(t *testing.T, dir string, args ...string) smokeResult {
+	t.Helper()
 	binary := buildWB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), smokeDeadline)
@@ -80,12 +88,17 @@ func runWB(t *testing.T, args ...string) smokeResult {
 
 	var stdout, stderr bytes.Buffer
 	command := exec.CommandContext(ctx, binary, args...)
+	command.Dir = dir
 	command.Stdin = devNull // never a terminal, and already at EOF
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	// A terminal-detecting command must see no terminal here, and must not be
-	// nudged into interactive mode by the developer's own environment.
-	command.Env = append(os.Environ(), "TERM=dumb")
+	// nudged into interactive mode by the developer's own environment. The git
+	// identity keeps `wb repo init-remote` from depending on whether the
+	// machine running the suite has one configured.
+	command.Env = append(os.Environ(), "TERM=dumb",
+		"GIT_AUTHOR_NAME=wb-test", "GIT_AUTHOR_EMAIL=wb-test@example.com",
+		"GIT_COMMITTER_NAME=wb-test", "GIT_COMMITTER_EMAIL=wb-test@example.com")
 
 	started := time.Now()
 	runErr := command.Run()

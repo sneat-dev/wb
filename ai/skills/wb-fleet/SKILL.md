@@ -10,6 +10,7 @@ Choose one command that answers the question:
 | Need | Command | Reference |
 |---|---|---|
 | Reconcile canonical clones with GitHub | `wb sync` | [sync.md](references/sync.md) |
+| Fix a repository sync cannot pull | `wb repo init-remote` / `wb repo ignore` | [unsynced.md](references/unsynced.md) |
 | One glance at fleet size and attention | `wb fleet` / `wb fleet overview` | [status.md](references/status.md) |
 | Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
 | Find local changes, stashes, conflicts, or unpushed commits | `wb fleet status` | [status.md](references/status.md) |

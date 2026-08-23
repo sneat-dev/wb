@@ -2660,6 +2660,147 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.repo.ignore",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb repo ignore",
+              "flags": [
+                "--unset"
+              ],
+              "modes": [
+                "Marks or unmarks a repository so wb sync leaves it alone entirely."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb repo ignore --help",
+              "contains": [
+                "--unset"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/unsynced.md",
+              "marker": "# Handle repositories sync cannot pull",
+              "examples": [
+                "wb repo ignore --unset ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/repo_ignore_test.go",
+              "name": "TestRepoIgnoreSetsAndUnsetsMarker",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/repo_ignore_test.go",
+              "name": "TestRepoIgnoreUnsetClearsDuplicateValues",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/fleetsync/skipignored_test.go",
+              "name": "TestSyncSkipsMarkedRepo",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/fleetsync/skipignored_test.go",
+              "name": "TestSyncKeepsMarkedArchivedClone",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The marker is wb.skip-sync in the repository's own git config, read with --local so a global key cannot disable sync fleet-wide. It also protects the clone from archived-repository cleanup, and is distinct from the detected local-only count."
+    },
+    {
+      "id": "wb.repo.init-remote",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb repo init-remote",
+              "flags": [],
+              "modes": [
+                "Publishes a branch that was never pushed, creating an empty initial commit when the branch has no commits."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb repo init-remote --help",
+              "contains": [
+                "init-remote"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/unsynced.md",
+              "marker": "# Handle repositories sync cannot pull",
+              "examples": [
+                "wb repo init-remote ."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/repo_init_remote_test.go",
+              "name": "TestRepoInitRemotePublishesUnbornBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/repo_init_remote_test.go",
+              "name": "TestRepoInitRemoteRejectsDetachedHead",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/repo_init_remote_test.go",
+              "name": "TestRepoInitRemoteRefusesMarkedRepo",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Validates origin, branch, and marker before mutating, so a rejected run never leaves a stray empty commit. Not a publish-and-merge tool: a push onto unrelated history fails with git's own error."
+    },
+    {
       "id": "wb.repo.status",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
