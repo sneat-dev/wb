@@ -36,7 +36,7 @@ and CI evidence.
 ## Commands
 
 ```
-wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel
+wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in parallel (--publish shares state after)
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
@@ -52,6 +52,7 @@ wb fleet [overview|stats|status] # fleet inventory, counts, or attention worklis
 wb layout audit|clean            # audit/clean non-canonical clone placement
 wb repo status [path]        # local Git state for one repository
 wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a path is given
+wb remote publish|status|machines # share fleet state across machines via a git state repo
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
 wb worktree summary <task>   # brief overview of a task's worktrees, branches, optional PRs
@@ -285,6 +286,26 @@ relative, repository-local, non-regular, or non-executable result. A GUI Git
 client with a reduced `PATH` should set `WB_EXECUTABLE` to an installed
 launcher in its hook environment; package upgrades then do not require a
 repository-by-repository repair.
+
+### `wb remote` — fleet state across machines
+
+Configure once in `~/.config/wb/wb.yaml`:
+
+```yaml
+remote:
+  provider: git
+  repo: <owner>/<name>
+  machine: <unique-name-for-this-machine>
+  publish:
+    unpushed: subjects   # or: counts
+```
+
+`wb remote publish` scans this machine's attention repositories and live task
+worktrees and publishes one snapshot keyed `<login>/<machine>`. `wb remote
+status` (and `wb remote machines`) read that store to show every machine's
+attention worklist, with `STALE` flags for old snapshots. The store is a
+private git repository holding one `snapshot.yaml` file per machine, so its
+commit history is the audit trail.
 
 ### `wb sync`
 

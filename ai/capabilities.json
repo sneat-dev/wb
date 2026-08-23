@@ -2660,6 +2660,199 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.remote.machines",
+      "feature_refs": [
+        "spec/features/remote-state/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote machines",
+              "flags": [
+                "--json",
+                "--stale"
+              ],
+              "modes": [
+                "Lists every machine in the remote store with its publish age."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote machines --help",
+              "contains": [
+                "--json",
+                "--stale"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote machines --json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_test.go",
+              "name": "TestRemoteMachinesFlagsStaleEntries",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Reads the state repository clone only; it never scans or mutates this machine's fleet."
+    },
+    {
+      "id": "wb.remote.publish",
+      "feature_refs": [
+        "spec/features/remote-state/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote publish",
+              "flags": [
+                "--dry-run",
+                "--json",
+                "--parallel"
+              ],
+              "modes": [
+                "Scans the projects-root fleet plus live task worktrees and publishes one snapshot keyed <login>/<machine>.",
+                "--dry-run prints the snapshot and writes nothing, locally or remotely."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote publish --help",
+              "contains": [
+                "--dry-run",
+                "--json",
+                "<login>/<machine>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote publish --dry-run"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_test.go",
+              "name": "TestRemotePublishWritesSnapshotToStore",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Only the state repository clone is written; fleet clones are read."
+    },
+    {
+      "id": "wb.remote.status",
+      "feature_refs": [
+        "spec/features/remote-state/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote status",
+              "flags": [
+                "--json",
+                "--machine",
+                "--stale"
+              ],
+              "modes": [
+                "Renders the cross-machine worklist from the remote store; entries that cannot be decoded become error rows and do not change the exit code."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote status --help",
+              "contains": [
+                "--stale",
+                "--machine"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote status --stale 12h"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_test.go",
+              "name": "TestRemoteStatusRendersCrossMachineWorklist",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "wb remote status exits 0 even when some entries have errors."
+    },
+    {
       "id": "wb.repo.ignore",
       "feature_refs": [],
       "since": "unreleased",
@@ -3348,10 +3541,12 @@
               "flags": [
                 "--dry-run",
                 "--org",
+                "--publish",
                 "--workers"
               ],
               "modes": [
-                "Clones, fast-forwards, and safely prunes canonical owner/repository clones, with dry-run preview."
+                "Clones, fast-forwards, and safely prunes canonical owner/repository clones, with dry-run preview.",
+                "--publish runs wb remote publish after a clean sync; a publish failure is reported and does not change the sync exit code."
               ]
             }
           ],
@@ -3365,6 +3560,7 @@
               "contains": [
                 "--dry-run",
                 "--org",
+                "--publish",
                 "--workers"
               ]
             }
@@ -3400,6 +3596,11 @@
             {
               "path": "internal/fleetsync/fleetsync_test.go",
               "name": "TestSyncArchivedRemoveSafeDryRun",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/remote_test.go",
+              "name": "TestFinishSyncPublishesAfterCleanSync",
               "kind": "integration"
             }
           ],

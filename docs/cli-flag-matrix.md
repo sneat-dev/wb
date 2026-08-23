@@ -30,6 +30,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
+| `remote publish`, `remote status`, `remote machines` | yes | `publish` only | rejected | yes |
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
