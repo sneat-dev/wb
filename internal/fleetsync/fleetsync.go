@@ -24,10 +24,11 @@ const (
 	AbsentArchived
 	NoOp
 	Failed
-	// SkippedIgnored is appended last deliberately: Status is rendered only
-	// through String() and never persisted numerically, but appending keeps
-	// the existing values stable regardless.
+	// SkippedIgnored and EmptyRemote are appended last deliberately: Status is
+	// rendered only through String() and never persisted numerically, but
+	// appending keeps the existing values stable regardless.
 	SkippedIgnored
+	EmptyRemote
 )
 
 func (s Status) String() string {
@@ -50,6 +51,8 @@ func (s Status) String() string {
 		return "failed"
 	case SkippedIgnored:
 		return "skipped (ignored)"
+	case EmptyRemote:
+		return "empty remote"
 	default:
 		return "unknown"
 	}
@@ -165,6 +168,19 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		return res
 	}
 	if err := gitops.Pull(repo.Path); err != nil {
+		// A remote publishing no branches at all has nothing to pull, so the
+		// failure is expected rather than a fault: the repository was created
+		// on GitHub and never pushed to. Reporting it as an error would make
+		// every sync red until someone pushes.
+		//
+		// Probed only after a pull has already failed, so the extra round trip
+		// costs nothing on the normal path. A remote that does have branches,
+		// just not the tracked one, stays an error — that is a renamed or
+		// deleted branch and needs a human.
+		if hasBranches, probeErr := gitops.RemoteHasBranches(repo.Path); probeErr == nil && !hasBranches {
+			res.Status = EmptyRemote
+			return res
+		}
 		res.Status = Failed
 		res.Err = err
 		return res

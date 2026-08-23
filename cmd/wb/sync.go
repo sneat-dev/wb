@@ -210,6 +210,7 @@ func printSyncSummary(results []fleetsync.Result) {
 	fmt.Printf("Pulled            %d\n", counts[fleetsync.Pulled])
 	fmt.Printf("Skipped (dirty)   %d\n", counts[fleetsync.SkippedDirty])
 	fmt.Printf("Skipped (ignored) %d\n", counts[fleetsync.SkippedIgnored])
+	fmt.Printf("Empty remote      %d\n", counts[fleetsync.EmptyRemote])
 	fmt.Printf("Archived removed  %d\n", counts[fleetsync.RemovedArchived])
 	fmt.Printf("Archived kept     %d\n", counts[fleetsync.KeptArchived])
 	fmt.Printf("Archived absent   %d\n", counts[fleetsync.AbsentArchived])

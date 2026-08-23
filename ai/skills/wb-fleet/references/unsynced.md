@@ -2,16 +2,25 @@
 
 `wb sync` fast-forwards every owned, non-fork repository it finds. A clone
 whose branch was never pushed has nothing to fast-forward, so `git pull` fails
-on it every run:
+on it:
 
 ```
 Your configuration specifies to merge with the ref 'refs/heads/main'
 from the remote, but no such ref was fetched.
 ```
 
-That happens when the GitHub repository exists but is still empty, or when the
-branch has simply never been published. Pick one of the two commands below;
-both are one-shot and per-repository.
+## Nothing to do: the remote is empty
+
+Handled automatically. When a pull fails, WB checks whether origin publishes
+any branch at all; if it publishes none, the repository was created on the
+host and never pushed to, there is genuinely nothing to pull, and sync reports
+it as `Empty remote` rather than an error. The moment someone pushes a first
+commit, the next sync pulls it normally — no marker to set and none to clear.
+
+Do not mark such a repository as ignored. That would keep it out of sync even
+after it gains content.
+
+The two commands below are for the cases automation cannot decide.
 
 ## Publish the branch
 
@@ -33,8 +42,10 @@ error is reported; resolve that by hand.
 
 ## Leave the repository alone
 
-When there is nothing to sync yet and that is fine — an empty placeholder
-repository, or one deliberately kept local:
+For a repository that must stay out of sync as a standing decision — one kept
+deliberately local, or whose remote must not be touched. This is a policy
+choice, not a description of the remote's current state; an empty remote needs
+no marker because the case above already covers it.
 
 ```sh
 wb repo ignore ~/projects/<owner>/<repository>
@@ -54,6 +65,10 @@ wb repo ignore --unset .
 The marker is `wb.skip-sync` in the repository's own git config, so it travels
 with the checkout and never leaks to other repositories.
 
-Note this is distinct from the `local-only` count in `wb fleet --remote`, which
-means "found on disk, absent from GitHub" — something WB detects, not something
-you declare. Ignored repositories are counted separately as `ignored`.
+Three nearby counts in `wb fleet --remote` mean different things:
+
+| Count | Meaning | Who decided |
+|---|---|---|
+| `ignored` | Marked with `wb repo ignore` | You |
+| `empty-remote` | Origin publishes no branches yet | Detected |
+| `local-only` | Found on disk, absent from the host entirely | Detected |

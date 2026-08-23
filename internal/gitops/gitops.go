@@ -219,6 +219,21 @@ func Pull(repoPath string) error {
 	return err
 }
 
+// RemoteHasBranches reports whether origin publishes any branch at all.
+//
+// A repository created on GitHub but never pushed to has none, and there is
+// nothing for sync to pull from it — now or on any future run, until someone
+// pushes. That is distinct from a remote that has branches but not the one
+// the local branch tracks, which is a real problem (a renamed or deleted
+// branch) and must keep failing loudly.
+func RemoteHasBranches(repoPath string) (bool, error) {
+	out, err := run(repoPath, "git", "ls-remote", "--heads", "origin")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "", nil
+}
+
 // SkipSyncKey is the git config key marking a repo that wb sync must leave
 // alone. It is always read and written with --local: a plain read falls back
 // to ~/.gitconfig, where one stray key would silently disable sync for the
