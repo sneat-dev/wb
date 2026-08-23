@@ -100,38 +100,20 @@ func (in RepositoryInput) needsAttention() bool {
 }
 
 // buildSummary combines Status.Summary() and Tracking.Summary() into one line.
-// It joins non-empty parts with "; " and appends "no upstream" if a branch
-// has no upstream and the tracking summary doesn't already describe it.
+// It joins non-empty parts with "; " and includes the tracking line only when
+// tracking itself is an attention cause (ahead/behind or configured-but-unresolved upstream).
 func buildSummary(in RepositoryInput) string {
-	statusSummary := in.Status.Summary()
-	trackingSummary := in.Tracking.Summary()
-
-	var parts []string
-	if statusSummary != "" {
-		parts = append(parts, statusSummary)
+	parts := make([]string, 0, 2)
+	if s := in.Status.Summary(); s != "" {
+		parts = append(parts, s)
 	}
-	if trackingSummary != "" {
-		parts = append(parts, trackingSummary)
-	}
-
-	summary := ""
-	if len(parts) > 0 {
-		summary = fmt.Sprintf("%s", parts[0])
-		for _, p := range parts[1:] {
-			summary += "; " + p
+	trackingMatters := in.Tracking.Ahead > 0 || in.Tracking.Behind > 0 || (in.Tracking.Branch != "" && in.Tracking.Upstream == "")
+	if trackingMatters {
+		if s := in.Tracking.Summary(); s != "" {
+			parts = append(parts, s)
 		}
 	}
-
-	// If branch has no upstream and tracking summary doesn't already mention it, append note
-	if in.Tracking.Branch != "" && in.Tracking.Upstream == "" && !strings.Contains(trackingSummary, "no upstream") {
-		if summary != "" {
-			summary += "; no upstream"
-		} else {
-			summary = "no upstream"
-		}
-	}
-
-	return summary
+	return strings.Join(parts, "; ")
 }
 
 // Build assembles a snapshot. identity supplies Login, Machine, PublishedAt,

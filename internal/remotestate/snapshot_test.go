@@ -108,26 +108,44 @@ func TestBuildSummarisesTrackingOnlyAttention(t *testing.T) {
 	repos := []RepositoryInput{
 		{Repository: "acme/ahead", Path: "/p/ahead", Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}},
 		{Repository: "acme/noup", Path: "/p/noup", Tracking: gitops.TrackingState{Branch: "feature", Configured: true}},
+		{Repository: "acme/noup-unconfigured", Path: "/p/noup-unconfigured", Tracking: gitops.TrackingState{Branch: "feature", Configured: false, Upstream: ""}},
 	}
 	snap := Build(identity(), repos, nil, RedactNone)
 
 	for _, r := range snap.Repositories {
 		if r.Repository == "acme/ahead" {
-			if r.Summary == "" {
-				t.Fatalf("acme/ahead Summary is empty, expected to contain ahead info")
-			}
-			if !strings.Contains(r.Summary, "ahead") {
-				t.Fatalf("acme/ahead Summary %q should mention 'ahead'", r.Summary)
+			expected := "main is 2 ahead, 0 behind origin/main"
+			if r.Summary != expected {
+				t.Fatalf("acme/ahead Summary = %q, want %q", r.Summary, expected)
 			}
 		}
 		if r.Repository == "acme/noup" {
-			if r.Summary == "" {
-				t.Fatalf("acme/noup Summary is empty, expected to mention missing upstream")
-			}
-			if !strings.Contains(r.Summary, "no upstream") {
-				t.Fatalf("acme/noup Summary %q should mention 'no upstream'", r.Summary)
+			expected := "feature tracks an upstream that no longer resolves"
+			if r.Summary != expected {
+				t.Fatalf("acme/noup Summary = %q, want %q", r.Summary, expected)
 			}
 		}
+		if r.Repository == "acme/noup-unconfigured" {
+			expected := "feature has no upstream"
+			if r.Summary != expected {
+				t.Fatalf("acme/noup-unconfigured Summary = %q, want %q", r.Summary, expected)
+			}
+		}
+	}
+}
+
+func TestBuildSummaryOmitsCleanTracking(t *testing.T) {
+	repos := []RepositoryInput{
+		{Repository: "acme/dirty", Path: "/p/dirty", Status: gitops.RepoStatus{Modified: []string{"a.go"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main"}},
+	}
+	snap := Build(identity(), repos, nil, RedactNone)
+
+	if len(snap.Repositories) != 1 {
+		t.Fatalf("expected 1 repository, got %d", len(snap.Repositories))
+	}
+	expected := "1 modified file"
+	if snap.Repositories[0].Summary != expected {
+		t.Fatalf("Summary = %q, want %q", snap.Repositories[0].Summary, expected)
 	}
 }
 
