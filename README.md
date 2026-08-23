@@ -207,6 +207,29 @@ below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
 before removing exact worktree and branch refs; remote retirement uses
 force-with-lease against the observed source-branch SHA.
 
+The inventory walk that `wb worktree list --github` and `wb worktree cleanup`
+both build resolves each repository's exact `origin/<target>` over the network,
+so a large fleet spends nearly all of its wall time waiting rather than
+computing. `--parallel` bounds how many repositories are inspected at once:
+
+```sh
+wb worktree cleanup --all-merged --parallel 16
+wb worktree list --github --parallel 4
+wb worktree cleanup --all-merged --parallel 1   # fully sequential
+```
+
+It defaults to `8`, matching `wb sync`, which does the same `git`/`gh` work per
+candidate. The ceiling is deliberate: unbounded inspection would open one SSH
+connection per repository at once and trade a slow sweep for a rate-limited
+one. Pair it with `--verbose` to stream per-candidate progress.
+
+Two properties make the concurrency safe rather than merely fast. The exact
+target is resolved once per `(repository, base)` for the whole walk — and that
+single-flight is per repository, so N worktrees in one repository cost one
+fetch while *different* repositories still overlap. And each fetch is bounded
+by a 90-second deadline, so a remote that never answers is reported as
+unreachable instead of parking a worker.
+
 Before worktree removal WB also writes a private lifecycle recovery stage under
 `<wb-home>/reports/worktree-cleanup/backlog/`. If the process stops after the
 worktree disappears but before the exact local ref is deleted, the same named
@@ -342,7 +365,7 @@ Flags:
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--dry-run`, `-n` | off | Print the plan; change nothing. |
-| `--workers`, `-j` | `8` | Max concurrent git/gh operations. |
+| `--parallel` | `8` | Maximum repositories to inspect concurrently. (`--workers`/`-j` is a deprecated alias.) |
 | `--org`, `-o` | — (all your orgs + your account) | Only sync this org (repeatable). Restricts, rather than adds — unlike the persistent `--org` on `run`. |
 
 ```sh

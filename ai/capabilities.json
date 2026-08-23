@@ -773,7 +773,7 @@
                 "--resume-interrupted",
                 "--retire-shells",
                 "--verbose",
-                "--workers"
+                "--parallel"
               ],
               "modes": [
                 "Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt",
@@ -3546,7 +3546,7 @@
                 "--dry-run",
                 "--org",
                 "--publish",
-                "--workers"
+                "--parallel"
               ],
               "modes": [
                 "Clones, fast-forwards, and safely prunes canonical owner/repository clones, with dry-run preview.",
@@ -3565,7 +3565,7 @@
                 "--dry-run",
                 "--org",
                 "--publish",
-                "--workers"
+                "--parallel"
               ]
             }
           ],
@@ -3957,7 +3957,7 @@
                 "--resume-interrupted",
                 "--retire-shells",
                 "--verbose",
-                "--workers"
+                "--parallel"
               ],
               "modes": [
                 "Exact fetched origin target proves integration with or without a merged PR",
@@ -4469,7 +4469,8 @@
                 "--base",
                 "--format",
                 "--github",
-                "--only"
+                "--only",
+                "--parallel"
               ],
               "modes": [
                 "Live managed Git worktrees only",
@@ -4486,9 +4487,10 @@
             {
               "command": "wb worktree list --help",
               "contains": [
-                "linked checkout",
-                "--github",
                 "--format",
+                "--github",
+                "--parallel",
+                "linked checkout",
                 "versioned control-plane envelope"
               ]
             }

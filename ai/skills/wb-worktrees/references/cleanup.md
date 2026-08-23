@@ -245,3 +245,37 @@ queries GitHub for every candidate and prints its whole report at the end, so
 several minutes of silence is expected progress, not a hang. Run it in the
 foreground and let it finish; do not kill and retry it, which leaves task locks
 behind for `--resume-interrupted` to clear.
+
+## Bounding the network cost of a fleet sweep
+
+`wb worktree cleanup --all-merged` and `wb worktree list --github` build an
+inventory that resolves each repository's exact `origin/<target>` over the
+network. On a real fleet that walk was 262 worktrees across 71 repositories and
+spent 1.7s of CPU across six minutes — it is almost entirely waiting.
+
+`--parallel N` bounds how many repositories are inspected at once (default `8`,
+matching `wb sync`, which does the same `git`/`gh` work per candidate). Add
+`--verbose` to stream per-candidate progress instead of waiting in silence.
+
+```sh
+wb worktree cleanup --all-merged --parallel 16 --verbose
+wb worktree list --github --parallel 4
+wb worktree cleanup --all-merged --parallel 1   # fully sequential
+```
+
+Do not treat a large value as free: unbounded inspection opens one SSH
+connection per repository at once and trades a slow sweep for a rate-limited
+one. `--workers`/`-j` is a deprecated alias kept only for existing scripts.
+
+Three properties hold regardless of the value chosen:
+
+- **One fetch per repository, but repositories still overlap.** The exact target
+  is memoised per `(repository, base)`, and that single-flight is per key — so
+  51 worktrees in one repository cost one fetch, while distinct repositories
+  fetch concurrently. A cache-wide lock here would preserve the dedupe and
+  silently destroy the concurrency.
+- **No fetch can hang the sweep.** Each is bounded by a 90-second deadline; a
+  remote that never answers is reported as unreachable and the walk continues.
+  A sweep once sat 38 minutes on a single unanswered fetch.
+- **Output is deterministic.** Discovery is local filesystem work and stays
+  sequential; results keep walk order regardless of which worker finishes first.

@@ -21,12 +21,18 @@ import (
 // walk should pay for it once rather than once per task in that repository.
 type targetHeadCache struct {
 	mu      sync.Mutex
-	entries map[string]targetHeadEntry
+	entries map[string]*targetHeadEntry
 }
 
+// targetHeadEntry carries its own once so single-flight is per repository. A
+// single cache-wide lock held across the fetch single-flights correctly but
+// serialises every repository behind whichever one is currently fetching, which
+// silently neuters concurrent inspection: three distinct repositories with a
+// ceiling of three peaked at one concurrent fetch.
 type targetHeadEntry struct {
-	sha string
-	err error
+	once sync.Once
+	sha  string
+	err  error
 }
 
 type targetHeadCacheKey struct{}
@@ -35,7 +41,7 @@ type targetHeadCacheKey struct{}
 // shared. Callers that must see a live fetch simply do not install one.
 func withTargetHeadCache(ctx context.Context) context.Context {
 	return context.WithValue(ctx, targetHeadCacheKey{}, &targetHeadCache{
-		entries: make(map[string]targetHeadEntry),
+		entries: make(map[string]*targetHeadEntry),
 	})
 }
 
@@ -45,19 +51,20 @@ func targetHeadCacheFrom(ctx context.Context) *targetHeadCache {
 }
 
 // resolve returns the memoised target for this repository and branch, calling
-// fetch at most once per key. The lock is held across fetch so that a later
-// bounded-parallel walk cannot start N identical fetches for one repository
-// before the first records its answer — the single-flight property is the
-// whole point, and without it concurrency would reintroduce the duplication
-// this cache exists to remove.
+// fetch at most once per key even when many workers ask at the same moment.
+// The cache lock is held only long enough to find or create the entry; the
+// fetch happens under that entry's own once, so one repository single-flights
+// while other repositories proceed concurrently. Holding the cache lock across
+// the fetch instead would preserve single-flight and destroy the concurrency.
 func (c *targetHeadCache) resolve(repository, branch string, fetch func() (string, error)) (string, error) {
 	key := repository + "\x00" + branch
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if entry, ok := c.entries[key]; ok {
-		return entry.sha, entry.err
+	entry, ok := c.entries[key]
+	if !ok {
+		entry = &targetHeadEntry{}
+		c.entries[key] = entry
 	}
-	sha, err := fetch()
-	c.entries[key] = targetHeadEntry{sha: sha, err: err}
-	return sha, err
+	c.mu.Unlock()
+	entry.once.Do(func() { entry.sha, entry.err = fetch() })
+	return entry.sha, entry.err
 }

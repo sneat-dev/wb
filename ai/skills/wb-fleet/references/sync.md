@@ -12,7 +12,7 @@ Review planned removals and skipped dirty repositories, then repeat without
 `--dry-run`:
 
 ```sh
-wb sync --org <owner> --workers 8
+wb sync --org <owner> --parallel 8
 ```
 
 Use repeatable sync-local `--org` (`-o`) to restrict owners. It differs from

@@ -37,7 +37,13 @@ func newSyncCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the plan; change nothing")
-	cmd.Flags().IntVarP(&workers, "workers", "j", 8, "max concurrent git/gh operations")
+	// --parallel is the fleet-wide name for this ceiling: six other commands
+	// already spell it that way, and "workers" reads as a second noun beside
+	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so
+	// existing scripts and muscle memory keep working.
+	cmd.Flags().IntVar(&workers, "parallel", 8, "maximum repositories to inspect concurrently")
+	cmd.Flags().IntVarP(&workers, "workers", "j", 8, "maximum repositories to inspect concurrently")
+	_ = cmd.Flags().MarkDeprecated("workers", "use --parallel instead")
 	cmd.Flags().StringArrayVarP(&only, "org", "o", nil, "only sync this org (repeatable); default: all your orgs + your own account")
 	cmd.Flags().BoolVar(&publish, "publish", false, "after a successful sync, run wb remote publish")
 	return cmd
@@ -147,7 +153,7 @@ func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDep
 }
 
 // runSyncPlain runs the worker pool without a TUI, for non-interactive
-// (piped/CI) runs. Still parallel — --workers applies regardless of TTY.
+// (piped/CI) runs. Still parallel — --parallel applies regardless of TTY.
 func runSyncPlain(repos []discover.Repo, projectsRoot string, workers int, dryRun bool) []fleetsync.Result {
 	jobs := make(chan discover.Repo)
 	go func() {
