@@ -34,7 +34,7 @@ task-7?" — needs every machine's state in one place with history.
 ## Acceptance criteria
 
 - Publishing writes only the state repository clone; never another clone.
-- An unchanged snapshot produces no commit.
+- Every publish creates a commit: `published_at` advances even when fleet state is unchanged, because `wb remote status --stale` uses it as the machine's heartbeat. A byte-identical snapshot (same timestamp) is the only no-op.
 - Two machines publishing concurrently both land (rebase on rejection, once).
 - `machine` must be configured explicitly; there is no hostname fallback.
 - `wb remote status` exits 0 when some entries are undecodable.

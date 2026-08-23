@@ -302,10 +302,11 @@ remote:
 
 `wb remote publish` scans this machine's attention repositories and live task
 worktrees and publishes one snapshot keyed `<login>/<machine>`. `wb remote
-status` (and `wb remote machines`) read that store to show every machine's
-attention worklist, with `STALE` flags for old snapshots. The store is a
-private git repository holding one `snapshot.yaml` file per machine, so its
-commit history is the audit trail.
+status` reads that store to show every machine's cross-machine attention
+worklist, with `STALE` flags for old snapshots. `wb remote machines` prints
+one line per machine with publish age and counts (repos, worktrees). The store
+is a private git repository holding one `snapshot.yaml` file per machine, so
+its commit history is the audit trail.
 
 ### `wb sync`
 

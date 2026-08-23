@@ -150,7 +150,7 @@ placement. If the clone is absent, `Publish`/`Fetch` clones it. From then on
 
 1. `Fetch` (pull --rebase on the default branch).
 2. Write `snapshot.yaml`; write `README.md` if missing.
-3. `git add` those paths; if nothing changed, return without committing.
+3. `git add` those paths; if nothing changed, return without committing. In practice `published_at` changes on every run, so each publish commits; that is intentional — the timestamp is the staleness heartbeat.
 4. Commit: `wb: publish <login>/<machine> @ <published_at RFC3339>`.
 5. `git push`. On rejection: `pull --rebase`, push again, once. A second
    rejection returns an error; the local commit is kept so the next publish
