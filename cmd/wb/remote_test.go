@@ -287,4 +287,25 @@ func TestMachineRowsTreatsZeroPublishedAtAsError(t *testing.T) {
 	}
 }
 
+func TestSyncPublishFlagIsRegistered(t *testing.T) {
+	cmd := newSyncCmd()
+	flag := cmd.Flags().Lookup("publish")
+	if flag == nil || flag.DefValue != "false" {
+		t.Fatalf("--publish flag = %+v, want bool default false", flag)
+	}
+}
+
+func TestSyncPublishAfterSuccessfulSyncDoesNotChangeExitCode(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	deps := f.deps("alice", time.Now().UTC())
+	deps.open = func(remotestate.Config, string) (remotestate.Provider, error) {
+		return nil, errors.New("store unreachable")
+	}
+	// No repos discoverable without gh: runSync returns 0 with "no repos found",
+	// and publish must then fail without turning that into a non-zero exit.
+	if code := runSync(f.projectsRoot, "zzz-no-match", nil, 1, true, true, deps); code != 0 {
+		t.Fatalf("exit = %d, want 0: a publish failure is reported, not fatal", code)
+	}
+}
+
 var _ = context.Background

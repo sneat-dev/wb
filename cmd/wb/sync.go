@@ -19,13 +19,14 @@ func newSyncCmd() *cobra.Command {
 		dryRun  bool
 		workers int
 		only    []string
+		publish bool
 	)
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Clone/pull/prune local clones to match GitHub (parallel, with a live progress UI)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			owners := requestedSyncOwners(cmd, only)
-			if code := runSync(projectsRoot, filterFlag, owners, workers, dryRun); code != 0 {
+			if code := runSync(projectsRoot, filterFlag, owners, workers, dryRun, publish, defaultRemoteDeps()); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "one or more repositories failed to sync; each failure is listed after the summary above",
@@ -37,6 +38,7 @@ func newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the plan; change nothing")
 	cmd.Flags().IntVarP(&workers, "workers", "j", 8, "max concurrent git/gh operations")
 	cmd.Flags().StringArrayVarP(&only, "org", "o", nil, "only sync this org (repeatable); default: all your orgs + your own account")
+	cmd.Flags().BoolVar(&publish, "publish", false, "after a successful sync, run wb remote publish")
 	return cmd
 }
 
@@ -70,55 +72,65 @@ func syncOwners(only []string) []string {
 	return owners
 }
 
-func runSync(projectsRoot, filter string, only []string, workers int, dryRun bool) int {
+func runSync(projectsRoot, filter string, only []string, workers int, dryRun, publish bool, deps remoteDeps) int {
 	repos, err := fleet(projectsRoot, filter, func() []string { return syncOwners(only) })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discovery error:", err)
 		return 1
 	}
-	if len(repos) == 0 {
-		fmt.Println("no repos found")
-		return 0
-	}
-
-	orgTotal := map[string]int{}
-	for _, r := range repos {
-		orgTotal[r.Org]++
-	}
-
-	// The live progress UI and the results browser both take over the terminal
-	// and wait for keystrokes, so they run only when there is a human at one.
-	interactive := console.Interactive(os.Stdout, nonInteractive)
 
 	var results []fleetsync.Result
-	if interactive {
-		results = runSyncTUI(repos, orgTotal, projectsRoot, workers, dryRun)
+	if len(repos) == 0 {
+		fmt.Println("no repos found")
 	} else {
-		results = runSyncPlain(repos, projectsRoot, workers, dryRun)
+		orgTotal := map[string]int{}
+		for _, r := range repos {
+			orgTotal[r.Org]++
+		}
+
+		// The live progress UI and the results browser both take over the terminal
+		// and wait for keystrokes, so they run only when there is a human at one.
+		interactive := console.Interactive(os.Stdout, nonInteractive)
+
+		if interactive {
+			results = runSyncTUI(repos, orgTotal, projectsRoot, workers, dryRun)
+		} else {
+			results = runSyncPlain(repos, projectsRoot, workers, dryRun)
+		}
+
+		printSyncSummary(results)
+
+		needsReview := false
+		for _, res := range results {
+			if tui.Reviewable(res) {
+				needsReview = true
+			}
+		}
+
+		if interactive && needsReview {
+			if err := runResultsBrowser(results); err != nil {
+				fmt.Fprintln(os.Stderr, "results browser error:", err)
+			}
+		}
 	}
 
-	printSyncSummary(results)
-
 	hasErrors := false
-	needsReview := false
 	for _, res := range results {
 		if res.Status == fleetsync.Failed {
 			hasErrors = true
-		}
-		if tui.Reviewable(res) {
-			needsReview = true
-		}
-	}
-
-	if interactive && needsReview {
-		if err := runResultsBrowser(results); err != nil {
-			fmt.Fprintln(os.Stderr, "results browser error:", err)
 		}
 	}
 
 	if hasErrors {
 		return 1
 	}
+
+	if publish {
+		if err := runRemotePublish(deps, projectsRoot, filter, workers, false, false, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "remote publish failed (sync itself succeeded):", err)
+		}
+	}
+
 	return 0
 }
 
