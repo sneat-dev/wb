@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,6 +45,143 @@ type ListOptions struct {
 	// substitutes for one: every containment proof still runs, so a wrong or
 	// dishonest pointer can only fail closed. See absorbedLandingReceipt.
 	AbsorbedBy string
+	// Progress, when set, is called as the walk reaches and finishes each
+	// candidate. The inventory is one long blocking call — with GitHub set it
+	// fetches from the network once per candidate, serially — so without this
+	// hook a fleet-wide run is indistinguishable from a hang for as long as it
+	// takes. It is observation only: nothing about the walk depends on it, and
+	// a nil Progress costs nothing.
+	Progress func(ListProgress)
+	// Workers caps concurrent candidate inspections, mirroring wb sync's
+	// --workers. Zero means the default; one makes the walk serial again,
+	// which is the behaviour to fall back to if a repository ever proves
+	// unsafe to inspect alongside its siblings.
+	Workers int
+}
+
+// DefaultInspectWorkers is the default cap on concurrent candidate
+// inspections, matching wb sync's default worker count.
+const DefaultInspectWorkers = 8
+
+// ListProgress is one step of the inventory walk, reported to
+// ListOptions.Progress.
+type ListProgress struct {
+	// Index counts candidates inspected in this run, 1-based, across every
+	// layout. The total is not known in advance: it takes reading each task
+	// directory to learn how many repositories are under it, which is most of
+	// the walk itself.
+	Index      int
+	Task       string
+	Repository string // empty until inspection identifies it
+	Path       string
+	// Done distinguishes reaching a candidate from finishing it. Both are
+	// reported because the gap between them is the part that takes the time,
+	// and a candidate that never reports Done is the one that is stuck.
+	Done    bool
+	Elapsed time.Duration
+	// Network is true when this candidate's inspection contacts origin, which
+	// is what makes the walk slow.
+	Network bool
+}
+
+// pendingInspect is one candidate the filesystem walk found, queued for the
+// inspection phase. The walk itself is local and fast; inspection is what
+// contacts origin, so only inspection is worth parallelising.
+type pendingInspect struct {
+	task      string
+	path      string
+	ownerName string // current-layout owner segment, empty for legacy
+	slug      string
+	locked    bool
+	commonDir string // canonical .git this worktree belongs to
+}
+
+// cloneLocks serialises git work per canonical clone.
+//
+// This is the one way the worktree inventory differs from wb sync's worker
+// pool: sync's unit of work is a repository, so no two workers ever touch the
+// same clone. Here many worktrees share one — twenty sneat-go tasks all fetch
+// ~/projects/sneat-co/sneat-go — and concurrent fetches into a single clone
+// contend on git's ref and index locks. Parallel across clones, serial within
+// one, keyed on the resolved common .git directory so a renamed or oddly
+// nested checkout still lands in the right lane.
+type cloneLocks struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func newCloneLocks() *cloneLocks { return &cloneLocks{locks: map[string]*sync.Mutex{}} }
+
+func (c *cloneLocks) get(key string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	lock, ok := c.locks[key]
+	if !ok {
+		lock = &sync.Mutex{}
+		c.locks[key] = lock
+	}
+	return lock
+}
+
+// gitCommonDir resolves the canonical .git directory a worktree belongs to.
+// It is a local call with no network, so the walk can afford it per candidate
+// in order to shard the inspection phase safely. An unreadable answer yields
+// the path itself, which is conservative: that candidate simply gets its own
+// lane rather than sharing one it might have needed.
+func gitCommonDir(ctx context.Context, worktreePath string) string {
+	out, err := git(ctx, worktreePath, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return worktreePath
+	}
+	if resolved := strings.TrimSpace(out); resolved != "" {
+		return resolved
+	}
+	return worktreePath
+}
+
+// listProgressReporter carries the shared candidate counter across layouts so// listProgressReporter carries the shared candidate counter across layouts so
+// the index a caller sees is continuous over the whole run, not per layout.
+//
+// Every worker reports through one reporter, so the counter and the callback
+// are both guarded. Serialising the callback rather than only the counter is
+// deliberate: it means a caller's Progress function is never entered twice at
+// once and can be written as ordinary single-threaded rendering code. The lock
+// is held only for the callback, never across an inspection.
+type listProgressReporter struct {
+	mu     sync.Mutex
+	report func(ListProgress)
+	index  int
+}
+
+// progressToken ties a finish back to the start that issued it. The index
+// cannot be re-read at finish time — by then other workers have moved the
+// counter on, and the candidate would be reported under a stranger's number.
+type progressToken struct {
+	index   int
+	started time.Time
+}
+
+func (r *listProgressReporter) start(task, path string, network bool) progressToken {
+	if r == nil || r.report == nil {
+		return progressToken{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.index++
+	r.report(ListProgress{Index: r.index, Task: task, Path: path, Network: network})
+	return progressToken{index: r.index, started: time.Now()}
+}
+
+func (r *listProgressReporter) finish(token progressToken, task, repository, path string, network bool) {
+	if r == nil || r.report == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.report(ListProgress{
+		Index: token.index, Task: task, Repository: repository, Path: path,
+		Done: true, Elapsed: time.Since(token.started), Network: network,
+	})
 }
 
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
@@ -149,8 +287,13 @@ type CleanupOptions struct {
 	// AbsorbedBy is the optional landing receipt pointer described on
 	// ListOptions.AbsorbedBy. It is verified, never trusted.
 	AbsorbedBy string
-	AllMerged  bool
-	Apply      bool
+	// Progress and Workers are passed straight through to the inventory walk;
+	// see ListOptions. Cleanup's whole cost is that walk, so a fleet-wide run
+	// is unobservable and unbounded without them.
+	Progress  func(ListProgress)
+	Workers   int
+	AllMerged bool
+	Apply     bool
 	// ResumeInterrupted authorizes recovery of exactly the named task's
 	// descriptor-validated interrupted lock before normal terminal cleanup.
 	// It is deliberately unavailable to fleet cleanup.
@@ -522,9 +665,13 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	// pre-deletion recheck in preflightCleanupRepository still runs on the
 	// caller's own context, so it stays a genuinely fresh fetch.
 	ctx = withTargetHeadCache(ctx)
+	if options.Workers < 1 {
+		options.Workers = DefaultInspectWorkers
+	}
+	reporter := &listProgressReporter{report: options.Progress}
 	for _, layout := range resolution.Read {
 		results, diagnostics, artifacts, listErr := listLayout(
-			ctx, projectsRoot, layout, task, base, filter, options.AbsorbedBy, options.GitHub,
+			ctx, projectsRoot, layout, task, base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter,
 		)
 		if listErr != nil {
 			return ListOutcome{}, listErr
@@ -567,6 +714,8 @@ func listLayout(
 	layout wbhome.Layout,
 	task, base, filter, absorbedBy string,
 	withGitHub bool,
+	workers int,
+	reporter *listProgressReporter,
 ) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, error) {
 	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -578,6 +727,10 @@ func listLayout(
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
 	artifacts := make([]LifecycleArtifact, 0)
+	// The walk below is local and cheap; inspection is what contacts origin.
+	// Collect candidates first, then inspect them concurrently, so one slow
+	// remote cannot hold up the other several hundred.
+	pending := make([]pendingInspect, 0)
 	for _, taskEntry := range taskEntries {
 		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || (task != "" && taskEntry.Name() != task) {
 			continue
@@ -623,17 +776,10 @@ func listLayout(
 				continue
 			}
 			if hasGitMetadata(candidate) && isGitRoot(ctx, candidate) {
-				result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), candidate, base, absorbedBy, withGitHub, locked)
-				if inspectErr != nil {
-					if filterMatches(filter, inspectErrorFilterCandidates("", candidate, entry.Name(), inspectErr)...) {
-						diagnostics = append(diagnostics, listDiagnosticForInspectError(layout.WorktreesRoot, taskEntry.Name(), candidate, "", inspectErr))
-					}
-					continue
-				}
-				if !filterMatches(filter, result.Repository) {
-					continue
-				}
-				results = append(results, result)
+				pending = append(pending, pendingInspect{
+					task: taskEntry.Name(), path: candidate, slug: entry.Name(),
+					locked: locked, commonDir: gitCommonDir(ctx, candidate),
+				})
 				// A repository boundary is terminal. Never inspect its source or
 				// tool directories as candidate repositories.
 				continue
@@ -674,17 +820,10 @@ func listLayout(
 					continue
 				}
 				if hasGitMetadata(repositoryPath) && isGitRoot(ctx, repositoryPath) {
-					result, inspectErr := inspectLifecycleWorktree(ctx, projectsRoot, layout, taskEntry.Name(), repositoryPath, base, absorbedBy, withGitHub, locked)
-					if inspectErr != nil {
-						if filterMatches(filter, inspectErrorFilterCandidates(entry.Name(), repositoryPath, slug, inspectErr)...) {
-							diagnostics = append(diagnostics, listDiagnosticForInspectError(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, entry.Name(), inspectErr))
-						}
-						continue
-					}
-					if !filterMatches(filter, result.Repository) {
-						continue
-					}
-					results = append(results, result)
+					pending = append(pending, pendingInspect{
+						task: taskEntry.Name(), path: repositoryPath, ownerName: entry.Name(),
+						slug: slug, locked: locked, commonDir: gitCommonDir(ctx, repositoryPath),
+					})
 					continue
 				}
 				if strings.HasPrefix(repositoryEntry.Name(), ".") {
@@ -698,7 +837,89 @@ func listLayout(
 			}
 		}
 	}
+	inspected, inspectDiagnostics := runInspections(
+		ctx, pending, projectsRoot, layout, base, filter, absorbedBy, withGitHub, workers, reporter,
+	)
+	results = append(results, inspected...)
+	diagnostics = append(diagnostics, inspectDiagnostics...)
 	return results, diagnostics, artifacts, nil
+}
+
+// runInspections inspects every queued candidate, up to workers at a time,
+// serialised per canonical clone.
+//
+// Output order is not preserved and does not need to be: ListWithDiagnostics
+// sorts results and diagnostics by (task, repository, path) before returning,
+// so this concurrent phase produces exactly what the serial one did.
+func runInspections(
+	ctx context.Context,
+	pending []pendingInspect,
+	projectsRoot string,
+	layout wbhome.Layout,
+	base, filter, absorbedBy string,
+	withGitHub bool,
+	workers int,
+	reporter *listProgressReporter,
+) ([]ListResult, []ListDiagnostic) {
+	if len(pending) == 0 {
+		return nil, nil
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > len(pending) {
+		workers = len(pending)
+	}
+
+	locks := newCloneLocks()
+	jobs := make(chan pendingInspect)
+	var (
+		mu          sync.Mutex
+		results     []ListResult
+		diagnostics []ListDiagnostic
+		wg          sync.WaitGroup
+	)
+
+	go func() {
+		defer close(jobs)
+		for _, job := range pending {
+			jobs <- job
+		}
+	}()
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				token := reporter.start(job.task, job.path, withGitHub)
+
+				lock := locks.get(job.commonDir)
+				lock.Lock()
+				result, inspectErr := inspectLifecycleWorktree(
+					ctx, projectsRoot, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked,
+				)
+				lock.Unlock()
+
+				reporter.finish(token, job.task, result.Repository, job.path, withGitHub)
+
+				mu.Lock()
+				switch {
+				case inspectErr != nil:
+					if filterMatches(filter, inspectErrorFilterCandidates(job.ownerName, job.path, job.slug, inspectErr)...) {
+						diagnostics = append(diagnostics, listDiagnosticForInspectError(
+							layout.WorktreesRoot, job.task, job.path, job.ownerName, inspectErr,
+						))
+					}
+				case filterMatches(filter, result.Repository):
+					results = append(results, result)
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return results, diagnostics
 }
 
 func inspectLifecycleArtifact(worktreesRoot, task, path string, entry os.DirEntry) (LifecycleArtifact, bool) {
@@ -884,6 +1105,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		Filter:       normalized.Filter,
 		AbsorbedBy:   normalized.AbsorbedBy,
 		GitHub:       true,
+		Progress:     normalized.Progress,
+		Workers:      normalized.Workers,
 	})
 	if err != nil {
 		return CleanupOutcome{}, err

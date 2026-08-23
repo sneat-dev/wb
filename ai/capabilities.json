@@ -770,10 +770,14 @@
                 "--older-than",
                 "--remote",
                 "--report-dir",
-                "--resume-interrupted"
+                "--resume-interrupted",
+                "--retire-shells",
+                "--verbose",
+                "--workers"
               ],
               "modes": [
                 "Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt",
+                "Streams per-candidate inventory progress and bounds concurrent inspections so a fleet-wide sweep is observable and not serial on the network",
                 "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted"
               ]
             }
@@ -3951,7 +3955,9 @@
                 "--remote",
                 "--report-dir",
                 "--resume-interrupted",
-                "--retire-shells"
+                "--retire-shells",
+                "--verbose",
+                "--workers"
               ],
               "modes": [
                 "Exact fetched origin target proves integration with or without a merged PR",
