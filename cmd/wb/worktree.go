@@ -1270,8 +1270,9 @@ for per-checkout journal detail.`,
 
 func newWorktreeCleanupCmd() *cobra.Command {
 	var base, format, reportDir, absorbedBy string
-	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells bool
+	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, verbose bool
 	var olderThan time.Duration
+	var workers int
 	command := &cobra.Command{
 		Use:   "cleanup [task]",
 		Short: "Plan or remove clean WB tasks integrated into the exact origin target",
@@ -1393,6 +1394,8 @@ required to remove anything.`,
 				return fmt.Errorf("--resume-interrupted requires one explicit task")
 			}
 			now := time.Now()
+			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
+			defer progress.finish()
 			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
 				ProjectsRoot:      projectsRoot,
 				Task:              task,
@@ -1405,6 +1408,8 @@ required to remove anything.`,
 				DeleteRemote:      deleteRemote,
 				OlderThan:         olderThan,
 				ReportDir:         reportDir,
+				Progress:          progress.report,
+				Workers:           workers,
 				Now:               func() time.Time { return now },
 			})
 			if err != nil {
@@ -1466,6 +1471,8 @@ required to remove anything.`,
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&retireShells, "retire-shells", false, "sweep every task for an empty pre-existing shell (owner directory and/or retired lock, no live checkout) and retire it")
+	command.Flags().IntVarP(&workers, "workers", "j", worktrees.DefaultInspectWorkers, "max concurrent candidate inspections")
+	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream per-candidate inspection progress to stderr, even when not on a terminal")
 	return command
 }
 
