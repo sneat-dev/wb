@@ -37,6 +37,14 @@ const (
 	// NoUpstream: the checked-out branch tracks nothing, so there is nowhere
 	// to pull from.
 	NoUpstream
+	// Unpushed: the pull succeeded, but the clone holds commits that exist on
+	// no remote. Nothing is wrong with the sync; the work has simply never
+	// left this machine.
+	Unpushed
+	// ArchivedUnlandable: an archived clone holding unpushed commits. The
+	// remote is read-only, so those commits can never be pushed — unlike
+	// KeptArchived, this state cannot resolve itself and needs a decision.
+	ArchivedUnlandable
 )
 
 func (s Status) String() string {
@@ -65,6 +73,10 @@ func (s Status) String() string {
 		return "diverged"
 	case NoUpstream:
 		return "no upstream"
+	case Unpushed:
+		return "unpushed commits"
+	case ArchivedUnlandable:
+		return "archived, holds unpushed commits"
 	default:
 		return "unknown"
 	}
@@ -130,6 +142,19 @@ func syncArchived(repo discover.Repo, res Result, dryRun bool) Result {
 	if err != nil {
 		res.Status = Failed
 		res.Err = err
+		return res
+	}
+	unpushed, unpushedErr := gitops.UnpushedCommits(repo.Path)
+	if unpushedErr == nil && len(unpushed) > 0 {
+		// The remote is read-only, so these commits can never be pushed. That
+		// makes this the one "kept" reason that will never clear on its own:
+		// every future sync reports it again, unchanged, until someone either
+		// discards the commits or unarchives the repo. Naming it separately is
+		// the difference between a standing reminder and a decision nobody
+		// knows is outstanding.
+		res.Status = ArchivedUnlandable
+		res.Detail = status
+		res.Detail.Unpushed = unpushed
 		return res
 	}
 	if status.Dirty() {
@@ -220,6 +245,20 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		}
 		res.Status = Failed
 		res.Err = err
+		return res
+	}
+	// A successful pull says the clone is not BEHIND. It says nothing about
+	// what the clone is holding that origin has never seen: an ahead-only
+	// branch pulls cleanly and reports "Already up to date", so unlanded work
+	// used to be indistinguishable from a clean sync. strongo/slices hid a
+	// commit that way for five weeks; its sibling strongo/gamp was only
+	// noticed because origin happened to move underneath it.
+	//
+	// Re-read rather than reusing the pre-pull Status: the pull may have just
+	// landed some of those commits from elsewhere. One local git command.
+	if unpushed, err := gitops.UnpushedCommits(repo.Path); err == nil && len(unpushed) > 0 {
+		res.Status = Unpushed
+		res.Detail.Unpushed = unpushed
 		return res
 	}
 	res.Status = Pulled

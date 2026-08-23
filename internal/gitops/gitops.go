@@ -242,6 +242,39 @@ func RemoteHasBranches(repoPath string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// UnpushedCommits lists commits present on some local branch and on no
+// remote-tracking branch, newest first, as `<short-sha> <subject>` lines.
+//
+// Deliberately every local branch, not just the checked-out one: work is
+// abandoned on a side branch at least as often as on the default one, and a
+// clone holding either is holding work that exists nowhere else.
+func UnpushedCommits(repoPath string) ([]string, error) {
+	// With no remote-tracking refs, `--branches --not --remotes` subtracts
+	// nothing and returns the entire history — a clone that has never fetched
+	// would be reported as holding thousands of unpushed commits. "Unpushed"
+	// only means anything relative to a known remote state, so say nothing
+	// rather than something false.
+	refs, err := run(repoPath, "git", "for-each-ref", "--count=1", "refs/remotes")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(refs) == "" {
+		return nil, nil
+	}
+
+	out, err := run(repoPath, "git", "log", "--branches", "--not", "--remotes", "--oneline")
+	if err != nil {
+		return nil, err
+	}
+	var commits []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			commits = append(commits, line)
+		}
+	}
+	return commits, nil
+}
+
 // TrackingState is the checked-out branch's relationship to its upstream, as
 // of the last fetch. It is what sync needs in order to tell a divergence
 // ("each side has commits the other lacks") apart from a genuine fault.

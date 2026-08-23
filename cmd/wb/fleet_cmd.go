@@ -211,10 +211,14 @@ type fleetRemoteStats struct {
 	// EmptyRemote counts repos whose origin publishes no branches yet, so
 	// there is nothing to pull until someone pushes.
 	EmptyRemote int `yaml:"empty_remote" json:"empty_remote"`
-	LocalOnly   int `yaml:"local_only" json:"local_only"`
-	RemoteOnly  int `yaml:"remote_only" json:"remote_only"`
-	NoOp        int `yaml:"noop" json:"noop"`
-	Error       int `yaml:"error" json:"error"`
+	// ArchivedUnlandable counts archived repos whose clone holds commits that
+	// exist on no remote. The remote is read-only, so they can never be
+	// pushed: the state needs a decision and will not clear on its own.
+	ArchivedUnlandable int `yaml:"archived_unlandable" json:"archived_unlandable"`
+	LocalOnly          int `yaml:"local_only" json:"local_only"`
+	RemoteOnly         int `yaml:"remote_only" json:"remote_only"`
+	NoOp               int `yaml:"noop" json:"noop"`
+	Error              int `yaml:"error" json:"error"`
 }
 
 type fleetHooksStats struct {
@@ -344,6 +348,8 @@ func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRe
 			stats.Ignored++
 		case fleetsync.EmptyRemote:
 			stats.EmptyRemote++
+		case fleetsync.ArchivedUnlandable:
+			stats.ArchivedUnlandable++
 		case fleetsync.NoOp:
 			stats.NoOp++
 		case fleetsync.Failed:
@@ -580,8 +586,8 @@ func fleetLayoutSummary(stats fleetLayoutStats) string {
 }
 
 func fleetRemoteSummary(stats fleetRemoteStats) string {
-	return fmt.Sprintf("%d would-clone · %d would-pull · %d skipped-dirty · %d ignored · %d empty-remote · %d local-only · %d remote-only · %d noop · %d error",
-		stats.WouldClone, stats.WouldPull, stats.SkippedDirty, stats.Ignored, stats.EmptyRemote, stats.LocalOnly, stats.RemoteOnly, stats.NoOp, stats.Error)
+	return fmt.Sprintf("%d would-clone · %d would-pull · %d skipped-dirty · %d ignored · %d empty-remote · %d archived-unlandable · %d local-only · %d remote-only · %d noop · %d error",
+		stats.WouldClone, stats.WouldPull, stats.SkippedDirty, stats.Ignored, stats.EmptyRemote, stats.ArchivedUnlandable, stats.LocalOnly, stats.RemoteOnly, stats.NoOp, stats.Error)
 }
 
 func fleetHooksSummary(stats fleetHooksStats) string {
