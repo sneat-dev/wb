@@ -94,3 +94,37 @@ func TestTrackingSeparatesUnconfiguredFromUnresolvableUpstream(t *testing.T) {
 		t.Fatalf("Summary() = %q, want %q", got.Summary(), want)
 	}
 }
+
+// A clone with no remote-tracking refs has no baseline to call anything
+// "unpushed" against: `--branches --not --remotes` subtracts nothing and
+// yields the whole history. Reporting that as unlanded work would be worse
+// than silence.
+func TestUnpushedCommitsIsSilentWithoutRemoteRefs(t *testing.T) {
+	local := t.TempDir()
+	git(t, local, "init", "-q", "-b", "main")
+	git(t, local, "commit", "-q", "--allow-empty", "-m", "one")
+	git(t, local, "commit", "-q", "--allow-empty", "-m", "two")
+
+	got, err := UnpushedCommits(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("UnpushedCommits = %v, want none; the whole history is not unlanded work", got)
+	}
+}
+
+func TestUnpushedCommitsListsWorkOnAnyLocalBranch(t *testing.T) {
+	local, _ := setupTracking(t)
+	git(t, local, "switch", "-q", "-c", "side")
+	git(t, local, "commit", "-q", "--allow-empty", "-m", "only here")
+	git(t, local, "switch", "-q", "main")
+
+	got, err := UnpushedCommits(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("UnpushedCommits = %v, want the one side-branch commit", got)
+	}
+}

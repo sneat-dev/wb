@@ -214,12 +214,18 @@ func printSyncSummary(results []fleetsync.Result) {
 	fmt.Printf("Archived removed  %d\n", counts[fleetsync.RemovedArchived])
 	fmt.Printf("Archived kept     %d\n", counts[fleetsync.KeptArchived])
 	fmt.Printf("Archived absent   %d\n", counts[fleetsync.AbsentArchived])
-	fmt.Printf("Needs attention   %d\n", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream])
+	fmt.Printf("Needs attention   %d\n", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream]+
+		counts[fleetsync.Unpushed]+counts[fleetsync.ArchivedUnlandable])
 	fmt.Printf("Errors            %d\n", counts[fleetsync.Failed])
 	for _, r := range results {
 		switch r.Status {
 		case fleetsync.Diverged, fleetsync.NoUpstream:
 			fmt.Printf("  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
+		case fleetsync.Unpushed:
+			fmt.Printf("  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
+		case fleetsync.ArchivedUnlandable:
+			fmt.Printf("  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
+				r.Repo.Slug(), r.Detail.Summary())
 		}
 	}
 	for _, r := range results {

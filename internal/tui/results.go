@@ -40,8 +40,9 @@ type ResultsModel struct {
 }
 
 // NewResultsModel builds a ResultsModel over the reviewable results —
-// Failed, SkippedDirty, KeptArchived, Diverged, or NoUpstream. Results in
-// other states are omitted; they synced cleanly and need no review.
+// Failed, SkippedDirty, KeptArchived, Diverged, NoUpstream, Unpushed, or
+// ArchivedUnlandable. Results in other states are omitted; they synced
+// cleanly and need no review.
 func NewResultsModel(results []fleetsync.Result) ResultsModel {
 	items := make([]list.Item, 0, len(results))
 	for _, r := range results {
@@ -58,7 +59,8 @@ func NewResultsModel(results []fleetsync.Result) ResultsModel {
 func Reviewable(r fleetsync.Result) bool {
 	switch r.Status {
 	case fleetsync.Failed, fleetsync.SkippedDirty, fleetsync.KeptArchived,
-		fleetsync.Diverged, fleetsync.NoUpstream:
+		fleetsync.Diverged, fleetsync.NoUpstream,
+		fleetsync.Unpushed, fleetsync.ArchivedUnlandable:
 		return true
 	default:
 		return false
