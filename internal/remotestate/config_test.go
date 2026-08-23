@@ -62,3 +62,33 @@ func TestLoadConfigRejectsBadValues(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadConfigFileWithoutRemoteSectionIsUnconfigured(t *testing.T) {
+	path := writeConfig(t, "recipes: {}\n")
+	_, err := LoadConfig(path)
+	var unconfigured *UnconfiguredError
+	if !errors.As(err, &unconfigured) {
+		t.Fatalf("err = %v, want UnconfiguredError", err)
+	}
+	if len(unconfigured.Missing) != 1 || unconfigured.Missing[0] != "remote section" {
+		t.Fatalf("Missing = %v, want [\"remote section\"]", unconfigured.Missing)
+	}
+	if !strings.Contains(err.Error(), ConfigSnippet) {
+		t.Fatalf("ConfigSnippet missing from %q", err.Error())
+	}
+}
+
+func TestLoadConfigMalformedYAMLIsPlainError(t *testing.T) {
+	path := writeConfig(t, "remote: [unclosed\n")
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("expected error for malformed YAML")
+	}
+	var unconfigured *UnconfiguredError
+	if errors.As(err, &unconfigured) {
+		t.Fatalf("err should not be UnconfiguredError, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("\"parse config\" missing from %q", err.Error())
+	}
+}
