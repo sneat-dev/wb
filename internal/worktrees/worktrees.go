@@ -1393,10 +1393,23 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return gitWithExtraFiles(ctx, dir, nil, args...)
 }
 
+// gitCancellationGraceDelay is how long a cancelled git may keep its output
+// pipes before they are force-closed. Long enough for a well-behaved git to
+// flush its own diagnostics, short enough that a hung remote cannot outlive
+// the deadline that cancelled it.
+const gitCancellationGraceDelay = 5 * time.Second
+
 func gitWithExtraFiles(ctx context.Context, dir string, extraFiles []*os.File, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = extraFiles
+	// Killing git is not enough to unblock CombinedOutput: git's own child (ssh,
+	// for a remote operation) inherits the output pipes and can hold them open
+	// long after its parent is gone, which is exactly what an aborted fleet
+	// sweep left behind — a dead wb, a reaped git, and an ssh still running.
+	// WaitDelay force-closes those descriptors shortly after cancellation so a
+	// deadline actually ends the call.
+	command.WaitDelay = gitCancellationGraceDelay
 	output, err := command.CombinedOutput()
 	if err != nil {
 		detail := strings.TrimSpace(string(output))

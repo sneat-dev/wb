@@ -513,6 +513,15 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		return ListOutcome{}, err
 	}
 	outcome := ListOutcome{SchemaVersion: 1}
+	// One inventory walk asks the same question once per worktree, and a fleet
+	// keeps many worktrees per repository — 262 worktrees across 71 repositories
+	// on the fleet this was measured against, so 73% of the fetches re-learned a
+	// SHA already in hand. Scope the memo to this walk: every task in a
+	// repository is then judged against one consistent target instead of
+	// whichever SHA happened to be current when its own fetch ran, and the
+	// pre-deletion recheck in preflightCleanupRepository still runs on the
+	// caller's own context, so it stays a genuinely fresh fetch.
+	ctx = withTargetHeadCache(ctx)
 	for _, layout := range resolution.Read {
 		results, diagnostics, artifacts, listErr := listLayout(
 			ctx, projectsRoot, layout, task, base, filter, options.AbsorbedBy, options.GitHub,
@@ -1672,7 +1681,34 @@ func remoteBranchHead(ctx context.Context, repository, branch string) (string, e
 // a possibly stale origin/<base> tracking ref. Cleanup repeats this immediately
 // before deletion, so a force-pushed target cannot reuse old evidence.
 func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (string, error) {
-	if _, err := git(ctx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+	if cache := targetHeadCacheFrom(ctx); cache != nil {
+		return cache.resolve(repository, branch, func() (string, error) {
+			return fetchRemoteTargetHeadUncached(ctx, repository, branch)
+		})
+	}
+	return fetchRemoteTargetHeadUncached(ctx, repository, branch)
+}
+
+// remoteTargetFetchTimeout bounds one exact-target fetch. A fleet walk makes one
+// of these per repository and a healthy fetch of a single ref answers in
+// seconds, so this is generous rather than tight — its job is to convert a
+// remote that will never answer into a reported state, not to police slow ones.
+// A live sweep once sat 38 minutes on a single unanswered fetch, holding a task
+// lock, with no output and no way to tell it apart from ordinary slowness.
+//
+// It is a var so tests can shorten it.
+var remoteTargetFetchTimeout = 90 * time.Second
+
+func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, remoteTargetFetchTimeout)
+	defer cancel()
+	if _, err := git(fetchCtx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+		// Distinguish our own deadline from a caller who cancelled the whole run:
+		// the operator needs to know this one remote never answered, and which
+		// budget it blew, rather than reading a bare "signal: killed".
+		if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return "", fmt.Errorf("fetch exact origin/%s target: remote did not answer within %s", branch, remoteTargetFetchTimeout)
+		}
 		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
 	}
 	head, err := git(ctx, repository, "rev-parse", "FETCH_HEAD")
