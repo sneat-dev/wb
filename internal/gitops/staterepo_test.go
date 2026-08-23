@@ -8,11 +8,18 @@ import (
 	"testing"
 )
 
+func setGitIdentity(t *testing.T) {
+	t.Helper()
+	for k, v := range map[string]string{"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null"} {
+		t.Setenv(k, v)
+	}
+}
+
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
@@ -24,6 +31,7 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 // clone of it.
 func seededOriginAndClone(t *testing.T) (origin, clone string) {
 	t.Helper()
+	setGitIdentity(t)
 	origin = t.TempDir()
 	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
 	clone = filepath.Join(t.TempDir(), "clone")
@@ -87,5 +95,21 @@ func TestPullRebaseReplaysLocalCommitOnTopOfRemote(t *testing.T) {
 	}
 	if log := gitIn(t, origin, "log", "--format=%s", "main"); !strings.HasPrefix(log, "local work\nremote work") {
 		t.Fatalf("origin log = %q", log)
+	}
+}
+
+func TestAddCommitReportsInspectionFailure(t *testing.T) {
+	setGitIdentity(t)
+	notGitRepo := t.TempDir()
+	filePath := filepath.Join(notGitRepo, "a.txt")
+	if err := os.WriteFile(filePath, []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	committed, err := AddCommit(notGitRepo, "add a", "a.txt")
+	if err == nil {
+		t.Fatalf("AddCommit on non-git repo should error, got committed=%v", committed)
+	}
+	if committed {
+		t.Fatalf("AddCommit should return committed=false on error")
 	}
 }

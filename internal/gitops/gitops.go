@@ -590,8 +590,15 @@ func AddCommit(repoPath, message string, paths ...string) (bool, error) {
 	if _, err := run(repoPath, "git", args...); err != nil {
 		return false, err
 	}
-	if _, err := run(repoPath, "git", "diff", "--cached", "--quiet"); err == nil {
+	_, err := run(repoPath, "git", "diff", "--cached", "--quiet")
+	if err == nil {
 		return false, nil
+	}
+	switch exitCode(err) {
+	case 1:
+		// staged changes exist
+	default:
+		return false, fmt.Errorf("inspect staged changes: %w", err)
 	}
 	if _, err := run(repoPath, "git", "commit", "--quiet", "-m", message); err != nil {
 		return false, err
