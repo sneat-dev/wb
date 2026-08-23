@@ -109,6 +109,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newBranchCmd())
 	root.AddCommand(newSelfUpdateCmd())
+	root.AddCommand(newRemoteCmd())
 
 	return root
 }
