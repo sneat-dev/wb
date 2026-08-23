@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/remotestate"
 	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
 )
@@ -295,16 +296,41 @@ func TestSyncPublishFlagIsRegistered(t *testing.T) {
 	}
 }
 
-func TestSyncPublishAfterSuccessfulSyncDoesNotChangeExitCode(t *testing.T) {
+func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	deps := f.deps("alice", time.Now().UTC())
 	deps.open = func(remotestate.Config, string) (remotestate.Provider, error) {
 		return nil, errors.New("store unreachable")
 	}
-	// No repos discoverable without gh: runSync returns 0 with "no repos found",
-	// and publish must then fail without turning that into a non-zero exit.
-	if code := runSync(f.projectsRoot, "zzz-no-match", nil, 1, true, true, deps); code != 0 {
-		t.Fatalf("exit = %d, want 0: a publish failure is reported, not fatal", code)
+	var out, errOut bytes.Buffer
+	if code := finishSync(nil, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(errOut.String(), "remote publish failed (sync itself succeeded): store unreachable") {
+		t.Fatalf("stderr = %q, want the publish failure reported", errOut.String())
+	}
+}
+
+func TestFinishSyncPublishesAfterCleanSync(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	var out, errOut bytes.Buffer
+	if code := finishSync(nil, true, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "published alice/laptop") {
+		t.Fatalf("stdout = %q, want publish confirmation", out.String())
+	}
+}
+
+func TestFinishSyncSkipsPublishWhenSyncFailed(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	var out, errOut bytes.Buffer
+	failed := []fleetsync.Result{{Status: fleetsync.Failed}}
+	if code := finishSync(failed, true, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if strings.Contains(out.String(), "published") || strings.Contains(errOut.String(), "publish") {
+		t.Fatalf("publish must not run after a failed sync: out=%q err=%q", out.String(), errOut.String())
 	}
 }
 
