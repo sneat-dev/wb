@@ -74,5 +74,7 @@ configured in ~/.config/wb/wb.yaml:
   wb remote machines   one line per machine with publish age`,
 	}
 	cmd.AddCommand(newRemotePublishCmd())
+	cmd.AddCommand(newRemoteStatusCmd())
+	cmd.AddCommand(newRemoteMachinesCmd())
 	return cmd
 }

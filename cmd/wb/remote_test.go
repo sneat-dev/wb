@@ -152,4 +152,100 @@ func TestRemotePublishAcceptsProjectsRootAndFilterFlags(t *testing.T) {
 	}
 }
 
+func TestPersistentFlagMatrixRemoteCommands(t *testing.T) {
+	for _, cmd := range []string{"remote publish", "remote status", "remote machines"} {
+		if !persistentFlagSupport["projects-root"][cmd] {
+			t.Errorf("%s must accept --projects-root: it locates the state-repo clone", cmd)
+		}
+	}
+	for cmd, want := range map[string]bool{"remote publish": true, "remote status": false, "remote machines": false} {
+		if persistentFlagSupport["filter"][cmd] != want {
+			t.Errorf("persistentFlagSupport[filter][%q] = %v, want %v", cmd, persistentFlagSupport["filter"][cmd], want)
+		}
+	}
+}
+
+func publishTwo(t *testing.T) (remoteFixture, time.Time) {
+	t.Helper()
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := runRemotePublish(f.deps("alice", at), f.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	// Second machine: same store, a different projects root and machine name.
+	g := remoteFixture{projectsRoot: filepath.Join(t.TempDir(), "projects"), origin: f.origin, configPath: filepath.Join(t.TempDir(), "wb.yaml")}
+	if err := os.MkdirAll(g.projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(g.configPath, []byte("remote:\n  repo: team/wb-state\n  machine: vm\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(g.deps("bob", at.Add(-48*time.Hour)), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	return f, at
+}
+
+func TestRemoteMachinesFlagsStaleEntries(t *testing.T) {
+	f, at := publishTwo(t)
+	var out bytes.Buffer
+	if err := runRemoteMachines(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	var rows []remoteMachineRow
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if len(rows) != 2 || rows[0].Key != "alice/laptop" || rows[0].Stale || rows[1].Key != "bob/vm" || !rows[1].Stale {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
+	f, at := publishTwo(t)
+	var out bytes.Buffer
+	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "", false, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"alice/laptop", "acme/widgets", "1 untracked file", "bob/vm", "STALE"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("status output lacks %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestRemoteStatusMachineFilterAndErrorRowsDoNotFail(t *testing.T) {
+	f, at := publishTwo(t)
+	other := filepath.Join(t.TempDir(), "other")
+	remoteGit(t, t.TempDir(), "clone", "-q", f.origin, other)
+	bad := filepath.Join(other, "machines", "carol", "desk", "snapshot.yaml")
+	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("schema_version: 99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remoteGit(t, other, "add", "-A")
+	remoteGit(t, other, "commit", "-q", "-m", "corrupt")
+	remoteGit(t, other, "push", "-q", "origin", "main")
+
+	var out bytes.Buffer
+	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "", true, &out); err != nil {
+		t.Fatalf("error rows must not fail the command: %v", err)
+	}
+	if !strings.Contains(out.String(), "schema_version 99") {
+		t.Fatalf("error row missing: %s", out.String())
+	}
+
+	out.Reset()
+	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "bob/vm", false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "alice/laptop") || !strings.Contains(out.String(), "bob/vm") {
+		t.Fatalf("--machine filter not applied: %s", out.String())
+	}
+}
+
 var _ = context.Background

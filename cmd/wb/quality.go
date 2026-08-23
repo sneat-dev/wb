@@ -31,6 +31,12 @@ type qualityOptions struct {
 	timeout   time.Duration
 	retry     int
 	resume    bool
+	// allowEmpty lets fleet mode return zero targets instead of erroring.
+	// Quality commands (coverage/verify/check/fleet) want the error: an
+	// empty match is almost always a typo'd --filter. wb remote publish
+	// wants a clean, freshly-cloned machine with no repositories yet to
+	// publish an empty-but-valid snapshot instead of failing.
+	allowEmpty bool
 }
 
 type qualityTarget struct {
@@ -269,7 +275,7 @@ func qualityTargets(singlePath, root, filter string, options qualityOptions) ([]
 		targets = append(targets, qualityTarget{repository: repository.Slug(), path: repository.Path})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].repository < targets[j].repository })
-	if len(targets) == 0 {
+	if len(targets) == 0 && !options.allowEmpty {
 		return nil, fmt.Errorf("no local repositories match the selected filters")
 	}
 	return targets, nil
