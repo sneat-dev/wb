@@ -24,11 +24,19 @@ const (
 	AbsentArchived
 	NoOp
 	Failed
-	// SkippedIgnored and EmptyRemote are appended last deliberately: Status is
-	// rendered only through String() and never persisted numerically, but
-	// appending keeps the existing values stable regardless.
+	// SkippedIgnored, EmptyRemote, Diverged and NoUpstream are appended last
+	// deliberately: Status is rendered only through String() and never
+	// persisted numerically, but appending keeps the existing values stable
+	// regardless.
 	SkippedIgnored
 	EmptyRemote
+	// Diverged: the branch and its upstream each hold commits the other
+	// lacks, so no fast-forward is possible and sync must not guess a
+	// reconciliation.
+	Diverged
+	// NoUpstream: the checked-out branch tracks nothing, so there is nowhere
+	// to pull from.
+	NoUpstream
 )
 
 func (s Status) String() string {
@@ -53,6 +61,10 @@ func (s Status) String() string {
 		return "skipped (ignored)"
 	case EmptyRemote:
 		return "empty remote"
+	case Diverged:
+		return "diverged"
+	case NoUpstream:
+		return "no upstream"
 	default:
 		return "unknown"
 	}
@@ -63,7 +75,10 @@ type Result struct {
 	Repo   discover.Repo
 	Status Status
 	Detail gitops.RepoStatus
-	Err    error
+	// Tracking is filled in only for Diverged and NoUpstream, whose reports
+	// are meaningless without the branch names and ahead/behind counts.
+	Tracking gitops.TrackingState
+	Err      error
 }
 
 // Sync reconciles a single repo's local clone with its GitHub state: clone
@@ -180,6 +195,28 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		if hasBranches, probeErr := gitops.RemoteHasBranches(repo.Path); probeErr == nil && !hasBranches {
 			res.Status = EmptyRemote
 			return res
+		}
+		// The other two expected refusals. A divergence and a branch that
+		// tracks nothing are states the fleet owner has to decide about, not
+		// faults sync can fix, and neither should turn a whole run red or
+		// bury the real failures under git's multi-line reconciliation hint.
+		// Read after the failed pull, which has already fetched, so the
+		// counts are current and cost no extra round trip.
+		//
+		// A branch that IS configured to track a ref the remote no longer
+		// publishes is deliberately not absorbed here: that is a renamed or
+		// deleted branch, and it keeps failing loudly.
+		if track, probeErr := gitops.Tracking(repo.Path); probeErr == nil {
+			switch {
+			case track.Diverged():
+				res.Status = Diverged
+				res.Tracking = track
+				return res
+			case !track.Configured:
+				res.Status = NoUpstream
+				res.Tracking = track
+				return res
+			}
 		}
 		res.Status = Failed
 		res.Err = err
