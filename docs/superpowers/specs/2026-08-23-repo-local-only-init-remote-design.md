@@ -1,7 +1,7 @@
 # Design: `wb repo local-only` and `wb repo init-remote`
 
 **Date:** 2026-08-23
-**Status:** Approved
+**Status:** Draft — revised after two review rounds; one open naming question
 
 ## Problem
 
@@ -52,24 +52,56 @@ repos will keep failing every `wb sync` run indefinitely.
   "never pushed" case; anything with real conflicting history needs manual
   resolution.
 
+## OPEN QUESTION — feature naming
+
+The marker means **"don't sync this repo"**. Naming it *local-only*
+collides with an existing, unrelated concept in the same command family:
+`fleetRemoteStats.LocalOnly` (`cmd/wb/fleet_cmd.go:208`, incremented at
+line 324 when `repository.Local && !repository.Remote`) means *"cloned
+locally, absent from GitHub"* — a **detected** condition, not a declared
+one. Both are surfaced by `fleetRemoteSummary` (line 572), which would read:
+
+```
+… 3 local-only · 2 skipped-local-only …
+```
+
+Two unrelated meanings, one vocabulary. Options:
+
+- **(A)** Keep `wb repo local-only`; internal status `SkippedLocalOnly`.
+  Preserves the vocabulary originally chosen, accepts the summary collision.
+- **(B)** Rename to `wb repo ignore` / `git config wb.skip-sync` /
+  status `SkippedIgnored`. Removes the collision rather than encoding it.
+
+**This spec is written against (B)** — see the naming note in each section
+for the (A) spelling. Resolve before implementation.
+
 ## Design
 
-### 1. `wb repo local-only [path]`
+### 1. `wb repo ignore [path]`
 
-Sets `git config wb.local-only true` in the given repo's local
+Sets `git config --local wb.skip-sync true` in the given repo's
 `.git/config`. Defaults to `.` like `wb repo status`. A `--unset` flag
-removes the key (`git config --unset wb.local-only`).
+clears it.
 
-`--unset` must be idempotent: `git config --unset` exits **5** when the key
-was never set (verified empirically). Treat exit 5 as success, not an error,
-so unsetting an unmarked repo is a no-op rather than a failure.
+*(Option A spelling: `wb repo local-only`, key `wb.local-only`.)*
 
-This is a per-clone marker, not a fleet-wide config: it only exists once a
-repo is cloned locally, and does not survive a fresh re-clone. That's an
-accepted tradeoff — this feature is for repos you already have checked out
-and want `wb` to stop touching.
+**`--local` is mandatory on both read and write.** Verified: a plain
+`git config --bool wb.skip-sync` read falls back to `~/.gitconfig` and
+system config, so a single stray global key would silently disable sync
+across the entire fleet.
 
-### 2. `fleetsync.Sync` gains a local-only check
+**`--unset` must use `--unset-all`.** Verified on git 2.43: with a
+duplicated key, plain `git config --unset` exits **5**
+(`warning: … has multiple values`) and **leaves both values in place** —
+so treating exit 5 as success would report success on a repo that is still
+marked. `--unset-all` clears all values (exit 0) and returns exit 5 only
+when the key is genuinely absent, which is the idempotent no-op case and
+should be treated as success.
+
+(Related: a `--bool` read of a multi-valued key silently returns the *last*
+value. `--unset-all` on write keeps that state from arising.)
+
+### 2. `fleetsync.Sync` gains a skip check
 
 In `internal/fleetsync/fleetsync.go`, `Sync` currently starts with:
 
@@ -80,123 +112,180 @@ if !repo.Remote || repo.IsFork {
 }
 ```
 
-Add, right after that (only meaningful once a path exists):
+Add, right after that:
 
 ```go
 if repo.Path != "" {
-    localOnly, err := gitops.LocalOnly(repo.Path)
+    skip, err := gitops.SkipSync(repo.Path)
     if err != nil {
         res.Status = Failed
         res.Err = err
         return res
     }
-    if localOnly {
-        res.Status = SkippedLocalOnly
+    if skip {
+        res.Status = SkippedIgnored
         return res
     }
 }
 ```
 
-#### `gitops.LocalOnly` error handling
+#### Placement vs. archived repos — deliberate
 
-`gitops.LocalOnly(path string) (bool, error)` runs
-`git config --bool wb.local-only`. Exit codes differ meaningfully and must
-be distinguished (all verified empirically):
+The check sits **before** the `repo.Archived` branch, so the marker wins
+over archived-clone cleanup. This is intended: wb must never delete a clone
+the user explicitly told it to leave alone. The cost is that a
+marked-then-archived repo disappears from the `Archived kept` /
+`Archived removed` / `Archived absent` accounting — it reports as skipped
+instead. Accepted; documented here so it isn't later "fixed" as a bug.
 
-| Situation | Exit code | `LocalOnly` returns |
+#### `gitops.SkipSync` error handling
+
+`gitops.SkipSync(path string) (bool, error)` runs
+`git config --local --bool wb.skip-sync`. Exit codes (all verified
+empirically against git 2.43):
+
+| Situation | Exit code | Returns |
 |---|---|---|
 | Key absent | 1 | `false, nil` |
 | Key set to a bool (`true`/`false`/`1`/`0`/`yes`…) | 0 | parsed value, `nil` |
 | Key set to a non-bool (e.g. `garbage`) | 128 (`fatal: bad boolean config value`) | `false, err` |
+| Path is not a git repo | 128 (with `--local`) | `false, err` |
 
 Only exit 1 means "absent". Because `gitops.run()` wraps errors with
 `fmt.Errorf(...%w...)`, the implementation must `errors.As` down to
-`*exec.ExitError` and check `ExitCode() == 1` specifically — it must **not**
+`*exec.ExitError` and check `ExitCode() == 1` specifically. It must **not**
 follow the looser convention in `internal/hooks/git.go`'s
 `configuredHooksPath`, which swallows *all* `git config --get` errors as
-"absent". Swallowing exit 128 here would silently treat a malformed marker
-as unmarked and resume pulling a repo the user asked wb to leave alone.
+"absent" — swallowing exit 128 here would treat a malformed marker as
+unmarked and resume pulling a repo the user asked wb to leave alone.
 
-#### Status naming
+Note the `--local` flag also disambiguates the not-a-repo case: **without**
+`--local` that exits 1 (indistinguishable from "absent"); **with** it, 128.
 
-New `fleetsync.Status` value **`SkippedLocalOnly`**, with
-`String() == "skipped (local-only)"`.
+#### Status naming and enum safety
 
-Deliberately *not* named `LocalOnly`: `cmd/wb/fleet_cmd.go:208` already has
-`fleetRemoteStats.LocalOnly`, paired with `RemoteOnly` and incremented at
-line 324 when `repository.Local && !repository.Remote` — i.e. "cloned
-locally, absent from GitHub", a *detected* condition. The new status is a
-*declared* marker and means something different. `SkippedLocalOnly` also
-parallels the existing `SkippedDirty` / `"skipped (dirty)"` convention.
+New `fleetsync.Status` value **`SkippedIgnored`**, `String() == "skipped
+(ignored)"`. *(Option A: `SkippedLocalOnly` / `"skipped (local-only)"`.)*
+
+**Append after `Failed`.** Verified safe: `fleetsync.Status` is never
+marshalled or persisted numerically — only `String()` is used — so iota
+reordering is not a concern, but appending avoids renumbering regardless.
 
 (The pre-existing `TestSyncLocalOnlyNoOp` in `fleetsync_test.go:209` tests
-the `repo.Remote == false` NoOp path and is unrelated; leave it alone, but
-do not mirror its name for the new test.)
+the unrelated `repo.Remote == false` NoOp path. Leave it alone and do not
+mirror its name for the new test.)
 
-`printSyncSummary` (in `cmd/wb/sync.go`) gets one more line:
+### 3. Consumers of the new Status — full blast radius
 
-```go
-fmt.Printf("Skipped (local)   %d\n", counts[fleetsync.SkippedLocalOnly])
-```
+Every consumer of `fleetsync.Status` was traced:
 
-placed next to the other skip-style rows (`Not owned/fork`, `Skipped
-(dirty)`, `Archived kept`).
+| Consumer | Effect of a new variant | Action |
+|---|---|---|
+| `cmd/wb/fleet_cmd.go:330` switch | **No `default:` case** — the variant is silently dropped, so `wb fleet --remote` counts stop summing to the filtered repo count | **Must fix:** add a `SkippedIgnored int \`yaml:"skipped_ignored" json:"skipped_ignored"\`` field to `fleetRemoteStats`, a `case` in the switch, and a token in `fleetRemoteSummary` (line 572) |
+| `cmd/wb/sync.go printSyncSummary` | Map-based (`counts[...]`), safe | Add one line: `fmt.Printf("Skipped (ignored) %d\n", counts[fleetsync.SkippedIgnored])`, next to the other skip rows |
+| `tui.Reviewable` | `default: false` — correctly treats it as not reviewable | None |
+| `internal/tui/progress.go` | Status-agnostic | None |
 
-### 3. `wb repo init-remote [path]`
+The `fleet_cmd.go` gap is the one genuine integration bug; without it the
+new status silently corrupts fleet dry-run accounting.
+
+### 4. `wb repo init-remote [path]`
 
 Bootstraps a repo whose current branch has never been pushed. Defaults to
-`.`. Steps:
+`.`. Steps, in this order:
 
-1. Verify an `origin` remote exists (`git remote get-url origin`). If not,
-   fail early with a clear message rather than letting `git push` produce
+1. **Refuse if the repo is marked.** If `SkipSync` is true, fail with a
+   message telling the user to `wb repo ignore --unset` first — otherwise
+   the promise "sync starts working normally afterwards" is false, because
+   `Sync` would still skip it.
+2. Verify an `origin` remote exists (`git remote get-url origin`); fail
+   early with a clear message rather than letting `git push` emit
    `'origin' does not appear to be a git repository`.
-2. Determine the current branch name (`git branch --show-current`).
-   **Guard against detached HEAD:** on a detached HEAD this exits 0 but
-   prints an empty string (verified), which would otherwise produce a
-   malformed `git push -u origin ""`. Empty output must abort with an
-   explicit "detached HEAD; check out a branch first" error.
-3. `git rev-parse HEAD` — if it fails (unborn branch, no commits; exits 128,
-   verified), run `git commit --allow-empty -m "Initial commit"`.
-4. `git push -u origin <branch>`.
+3. Determine the branch name (`git branch --show-current`). **Guard against
+   detached HEAD:** verified to exit 0 printing an empty string, which would
+   produce a malformed `git push -u origin ""`. Empty output must abort with
+   an explicit "detached HEAD; check out a branch first" error.
+4. `git rev-parse --verify --quiet HEAD` — if it fails, the branch is
+   unborn, so run `git commit --allow-empty -m "Initial commit"`.
+   Use `--verify --quiet` (verified: exit 1, silent) rather than bare
+   `rev-parse HEAD` (exit 128 plus `fatal: ambiguous argument 'HEAD'`,
+   which `run()` would fold into the error string).
+5. `git push -u origin <branch>`.
 
-Note the ordering: the branch-name and origin checks come *before* the
-commit, so a misconfigured repo isn't left with a stray empty commit after
-a failed run.
+Checks 1–3 precede the commit so a misconfigured repo isn't left with a
+stray empty commit. Note this is **not** a full guarantee: if step 5 fails
+(e.g. the remote already has unrelated history), the empty commit from
+step 4 remains. That is acceptable — it is a legitimate local commit the
+user can push later or reset — but the spec should not claim otherwise.
 
-If step 4 fails (e.g. because the remote branch already has unrelated
-history), the command surfaces the git error as-is rather than trying to
-guess a resolution — this is a one-shot convenience for the empty/never-
-pushed case, not a general publish-and-merge tool.
+`git commit` inherits the user's identity via `console.Env()`. With
+`user.email` unset, git emits its raw "Please tell me who you are" error;
+surfacing that as-is is fine.
 
-Running from a linked git worktree is safe and needs no special handling:
-worktrees share the canonical repo's object and ref store, so commit and
-push behave normally.
+If step 5 fails the command surfaces the git error as-is rather than
+guessing a resolution — this is a one-shot convenience for the
+empty/never-pushed case, not a general publish-and-merge tool.
+
+Running from a linked git worktree needs no special handling: worktrees
+share the canonical repo's object and ref store, so commit and push behave
+normally.
+
+### 5. `wb repo` command description
+
+`newRepoCmd`'s `Short` is currently "Inspect a single local repository".
+With two mutating subcommands it becomes inaccurate — update to something
+like "Inspect or configure a single local repository".
 
 ## Applying this now
 
-- `trakhimenok/datatug-proj-1`: `wb repo local-only` (leave empty on both
-  ends; sync stops erroring).
+- `trakhimenok/datatug-proj-1`: `wb repo ignore` (leave empty on both ends;
+  sync stops erroring).
 - `trakhimenok/webrtc-relay`: `wb repo init-remote` (pushes an empty initial
-  commit to `origin/main`; sync starts working normally from then on).
+  commit to `origin/main`; sync works normally from then on).
 
 ## Testing
 
-- `internal/gitops`: table-driven tests for `LocalOnly` covering all three
-  rows of the exit-code table above — key absent (exit 1 → `false, nil`),
-  key set true/false (exit 0 → parsed, `nil`), and key set to a non-bool
-  (exit 128 → error, **not** silently `false`). That last case is the
-  regression guard against copying the looser `configuredHooksPath`
-  convention.
-- `internal/fleetsync`: extend `fleetsync_test.go` with a case where a repo
-  path has `wb.local-only` set, asserting `Status == SkippedLocalOnly` and
-  that no git command is invoked against the remote. Name it distinctly
-  from the existing `TestSyncLocalOnlyNoOp`, which covers the unrelated
-  `repo.Remote == false` path.
-- `cmd/wb`: extend `cli_smoke_test.go` with smoke tests for:
-  - `wb repo local-only` — set, verified via `git config --get`.
-  - `wb repo local-only --unset` — run twice, asserting the second run
-    still succeeds (exit-5 idempotency).
+### Harness prerequisite (blocker)
+
+`runWB` (`cmd/wb/cli_smoke_test.go:68`) sets neither `Dir` nor extra env, so
+it inherits the test process's cwd — **the wb repo itself**. Since both new
+subcommands default to `.`, naive smoke tests would write `wb.skip-sync`
+into the real wb checkout and could push to wb's own origin. Before writing
+these tests, add a cwd/env-capable `runWB` variant (or require explicit
+temp paths in every invocation) and set `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+for the commit. Reuse the `git(t, dir, …)` helper in
+`internal/gitops/gitops_test.go`, which already sets `Dir` and identity env.
+
+### Cases
+
+- `internal/gitops`: table-driven tests for `SkipSync` covering all four
+  rows of the exit-code table — absent (1 → `false, nil`), set true/false
+  (0 → parsed), non-bool (128 → error, **not** silently `false`), and path
+  not a git repo (128 → error). The non-bool row is the regression guard
+  against copying the looser `configuredHooksPath` convention.
+- `internal/gitops`: a test that a **global** `wb.skip-sync true` does
+  **not** leak into a repo without a local key — the `--local` guard.
+- `internal/fleetsync`: a case where a repo has the marker set, asserting
+  `Status == SkippedIgnored`. Name it distinctly from the existing
+  `TestSyncLocalOnlyNoOp`. Note: "assert no git command runs against the
+  remote" is **not** achievable — there is no seam over `gitops` to observe
+  calls. Instead assert `SkippedIgnored` on a repo configured with **no
+  origin**, which would fail loudly if a pull were attempted.
+- `internal/fleetsync`: a marked **and archived** repo, asserting the clone
+  survives and status is `SkippedIgnored` (locks in the placement decision).
+- `cmd/wb` smoke tests, all with explicit temp paths:
+  - `wb repo ignore` — set, verified via `git config --local --get`.
+  - `wb repo ignore --unset` — run twice; second run still succeeds.
+  - `wb repo ignore --unset` on a duplicated key — asserts the key is
+    actually gone (the `--unset-all` regression guard).
   - `wb repo init-remote` — against a bare-repo fixture as origin,
     asserting the branch ends up pushed.
-  - `wb repo init-remote` on a detached HEAD — asserting it fails with the
-    explicit error and leaves no stray empty commit.
+  - `wb repo init-remote` on a detached HEAD — fails with the explicit
+    error, leaves no commit.
+  - `wb repo init-remote` on a marked repo — refuses (step 1).
+
+## Performance note (optional)
+
+The check adds one `git config` subprocess per repo per sync. If that
+matters at fleet scale it could fold into the existing `gitops.Status`
+call, which already shells out per repo. Not required for correctness.
