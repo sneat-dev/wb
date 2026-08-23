@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/spf13/cobra"
@@ -11,6 +10,7 @@ import (
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/recipe"
+	"github.com/sneat-dev/wb/internal/wbconfig"
 )
 
 func newRunCmd() *cobra.Command {
@@ -43,16 +43,9 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-// defaultConfigPath returns the default recipe-config location,
-// ~/.config/wb/wb.yaml.
-func defaultConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "wb", "wb.yaml")
-}
-
 func runRun(projectsRoot, filter string, extraOrgs []string, configPath, name string, list, apply bool) int {
 	if configPath == "" {
-		configPath = defaultConfigPath()
+		configPath = wbconfig.DefaultPath()
 	}
 	cfg, err := recipe.LoadConfig(configPath)
 	if err != nil {
