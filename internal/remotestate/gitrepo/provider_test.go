@@ -209,6 +209,92 @@ func TestTwoMachinesPublishConcurrentlyViaRebase(t *testing.T) {
 	}
 }
 
+// TestEnsureCloneRejectsForeignRepository proves ensureClone does not treat
+// any directory holding a `.git` as the state repo: a clone of a different
+// origin already sitting at ClonePath must be rejected, not silently reused.
+func TestEnsureCloneRejectsForeignRepository(t *testing.T) {
+	origin := bareOrigin(t)
+	foreign := bareOrigin(t)
+
+	p := machine(t, origin)
+	if err := os.MkdirAll(filepath.Dir(p.opts.ClonePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, filepath.Dir(p.opts.ClonePath), "clone", "-q", foreign, p.opts.ClonePath)
+
+	err := p.Fetch(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "not the configured remote store") {
+		t.Fatalf("Fetch = %v, want error mentioning 'not the configured remote store'", err)
+	}
+}
+
+// TestEnsureCloneAcceptsExistingCorrectClone proves a second Provider built
+// with the same options as one that already published reuses the existing
+// clone instead of erroring, since its origin matches CloneURL.
+func TestEnsureCloneAcceptsExistingCorrectClone(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+
+	p2 := New(Options{ClonePath: p.opts.ClonePath, CloneURL: origin})
+	if _, err := p2.List(context.Background()); err != nil {
+		t.Fatalf("List with existing correct clone: %v", err)
+	}
+}
+
+// TestPublishAbortsRebaseOnConflict proves that when a rebase inside Publish
+// hits a real conflict, the clone is not left mid-rebase: Publish's error
+// reports the abort, and a subsequent Fetch never trips over a leftover
+// rebase state.
+func TestPublishAbortsRebaseOnConflict(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+
+	// First publish creates p's clone (with README.md written and pushed).
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second clone changes README.md - the one file every clone shares -
+	// and pushes, so origin's main diverges from p's clone.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	if err := os.WriteFile(filepath.Join(other, "README.md"), []byte("# remote change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, other, "commit", "-q", "-am", "remote readme change")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	// p's own clone edits the same line of README.md differently and
+	// commits locally, without fetching first, so the rebase that Publish
+	// (via Fetch) is about to attempt collides.
+	readmePath := filepath.Join(p.opts.ClonePath, "README.md")
+	if err := os.WriteFile(readmePath, []byte("# local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, p.opts.ClonePath, "commit", "-q", "-am", "local readme change")
+
+	_, err := p.Publish(context.Background(), snap("bob", "vm", time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "rebase aborted") {
+		t.Fatalf("Publish = %v, want error mentioning 'rebase aborted'", err)
+	}
+
+	// The clone must not be left mid-rebase: a subsequent Fetch may still
+	// fail on the same underlying conflict, but never with a "rebase in
+	// progress" style error.
+	if err := p.Fetch(context.Background()); err != nil {
+		lower := strings.ToLower(err.Error())
+		if strings.Contains(lower, "rebase-merge") || strings.Contains(lower, "in progress") {
+			t.Fatalf("Fetch after aborted rebase = %v, want no rebase-in-progress error", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, ".git", "rebase-merge")); !os.IsNotExist(err) {
+		t.Fatalf(".git/rebase-merge still present after abort: err=%v", err)
+	}
+}
+
 func TestListSurfacesCorruptEntryAsError(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)

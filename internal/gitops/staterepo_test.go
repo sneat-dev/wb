@@ -98,6 +98,59 @@ func TestPullRebaseReplaysLocalCommitOnTopOfRemote(t *testing.T) {
 	}
 }
 
+// TestRebaseAbortClearsConflictAndKeepsLocalCommit creates a genuine
+// rebase conflict (two clones editing the same line of the same file, one
+// pushes, the other commits locally and then PullRebase fails) and proves
+// RebaseAbort clears the in-progress rebase without discarding the local
+// commit.
+func TestRebaseAbortClearsConflictAndKeepsLocalCommit(t *testing.T) {
+	origin, clone := seededOriginAndClone(t)
+
+	// Seed a shared file both sides will edit, so the conflict is a real
+	// content collision rather than an add/add conflict.
+	if err := os.WriteFile(filepath.Join(clone, "shared.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "add", "shared.txt")
+	gitIn(t, clone, "commit", "-q", "-m", "seed shared.txt")
+	gitIn(t, clone, "push", "-q", "origin", "main")
+
+	// A second clone edits the same line and pushes first.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	if err := os.WriteFile(filepath.Join(other, "shared.txt"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, other, "commit", "-q", "-am", "remote change")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	// The original clone edits the same line differently and commits
+	// locally, without fetching first, so the upcoming rebase collides.
+	if err := os.WriteFile(filepath.Join(clone, "shared.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "commit", "-q", "-am", "local change")
+	localHead := gitIn(t, clone, "rev-parse", "HEAD")
+
+	if err := PullRebase(clone); err == nil {
+		t.Fatal("PullRebase should fail on conflict")
+	}
+
+	if err := RebaseAbort(clone); err != nil {
+		t.Fatalf("RebaseAbort: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(clone, ".git", "rebase-merge")); !os.IsNotExist(err) {
+		t.Fatalf(".git/rebase-merge still present after abort: err=%v", err)
+	}
+	if _, err := run(clone, "git", "rev-parse", "--verify", "REBASE_HEAD"); err == nil {
+		t.Fatal("REBASE_HEAD should not resolve after abort")
+	}
+	if head := gitIn(t, clone, "rev-parse", "HEAD"); head != localHead {
+		t.Fatalf("HEAD = %s, want local commit %s preserved", head, localHead)
+	}
+}
+
 func TestAddCommitReportsInspectionFailure(t *testing.T) {
 	setGitIdentity(t)
 	notGitRepo := t.TempDir()

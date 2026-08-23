@@ -583,6 +583,14 @@ func Push(repoPath string) error {
 	return err
 }
 
+// RebaseAbort aborts an in-progress rebase, restoring repoPath to the state
+// it was in before the rebase started. Callers use it after a failed
+// PullRebase so a conflict never leaves the clone wedged mid-rebase.
+func RebaseAbort(repoPath string) error {
+	_, err := run(repoPath, "git", "rebase", "--abort")
+	return err
+}
+
 // AddCommit stages paths and commits them. It reports false without
 // committing when the stage is empty, so callers can publish idempotently.
 func AddCommit(repoPath, message string, paths ...string) (bool, error) {

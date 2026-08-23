@@ -44,12 +44,49 @@ One file per machine under machines/<login>/<machine>/snapshot.yaml.
 Do not edit by hand; run wb remote status to read it.
 `
 
-// ensureClone clones the store when the clone path is missing.
+// ensureClone clones the store when the clone path is missing, and verifies
+// the origin of an existing clone against the configured remote when it is
+// already present — otherwise any directory that happens to hold a `.git`
+// would silently be treated as the state repo.
 func (p *Provider) ensureClone() error {
 	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, ".git")); err == nil {
+		got, err := gitops.OriginURL(p.opts.ClonePath)
+		if err != nil {
+			return err
+		}
+		if !sameRemote(got, p.opts.CloneURL) {
+			return fmt.Errorf("%s is a clone of %s, not the configured remote store %s; move it aside or fix remote.repo", p.opts.ClonePath, got, p.opts.CloneURL)
+		}
 		return nil
 	}
 	return gitops.Clone(p.opts.CloneURL, p.opts.ClonePath)
+}
+
+// sameRemote reports whether a and b name the same git remote, tolerating a
+// trailing "/" and a ".git" suffix on either side. Local clone sources (no
+// "://" scheme and no scp-like "user@host:" prefix) are additionally run
+// through filepath.Clean, so "/tmp/x" and "/tmp/x/" compare equal.
+func sameRemote(a, b string) bool {
+	norm := func(s string) string {
+		s = strings.TrimSuffix(s, ".git")
+		if !strings.Contains(s, "://") && !strings.Contains(s, "@") {
+			s = filepath.Clean(s)
+		}
+		return s
+	}
+	return norm(a) == norm(b)
+}
+
+// rebaseAbortDetail attempts to abort an in-progress rebase after a failed
+// PullRebase, so a conflict never leaves the clone wedged mid-rebase. It
+// returns a phrase describing the outcome for the caller's wrapped error;
+// RebaseAbort's own error, if any, is folded into that phrase rather than
+// replacing the PullRebase error that triggered it.
+func rebaseAbortDetail(clonePath string) string {
+	if err := gitops.RebaseAbort(clonePath); err != nil {
+		return fmt.Sprintf("rebase abort also failed: %v; local commit kept", err)
+	}
+	return "rebase aborted, local commit kept"
 }
 
 // Fetch clones if needed and rebases local state onto origin.
@@ -57,7 +94,10 @@ func (p *Provider) Fetch(_ context.Context) error {
 	if err := p.ensureClone(); err != nil {
 		return err
 	}
-	return gitops.PullRebase(p.opts.ClonePath)
+	if err := gitops.PullRebase(p.opts.ClonePath); err != nil {
+		return fmt.Errorf("pull rebase failed (%s): %w", rebaseAbortDetail(p.opts.ClonePath), err)
+	}
+	return nil
 }
 
 // Publish writes the snapshot, commits, and pushes, rebasing once on a
@@ -92,8 +132,8 @@ func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (
 	}
 	if committed {
 		if err := gitops.Push(p.opts.ClonePath); err != nil {
-			if err := gitops.PullRebase(p.opts.ClonePath); err != nil {
-				return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed; local commit kept: %w", err)
+			if rebaseErr := gitops.PullRebase(p.opts.ClonePath); rebaseErr != nil {
+				return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed (%s): %w", rebaseAbortDetail(p.opts.ClonePath), rebaseErr)
 			}
 			if err := gitops.Push(p.opts.ClonePath); err != nil {
 				return remotestate.PublishResult{}, fmt.Errorf("push rejected twice; local commit kept for the next publish: %w", err)
