@@ -38,7 +38,6 @@ type remotePublishReport struct {
 	Attention           int    `json:"attention"`
 	Worktrees           int    `json:"worktrees"`
 	Location            string `json:"location,omitempty"`
-	DryRun              bool   `json:"dry_run,omitempty"`
 }
 
 func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out io.Writer) error {
@@ -55,7 +54,7 @@ func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int
 	if err != nil {
 		return err
 	}
-	report := remotePublishReport{Key: snapshot.Key(), RepositoriesScanned: snapshot.RepositoriesScanned, Attention: len(snapshot.Repositories), Worktrees: len(snapshot.Worktrees), DryRun: dryRun}
+	report := remotePublishReport{Key: snapshot.Key(), RepositoriesScanned: snapshot.RepositoriesScanned, Attention: len(snapshot.Repositories), Worktrees: len(snapshot.Worktrees)}
 	if dryRun {
 		data, err := remotestate.Encode(snapshot)
 		if err != nil {

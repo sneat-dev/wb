@@ -141,4 +141,15 @@ func TestRemotePublishDryRunTouchesNothing(t *testing.T) {
 	}
 }
 
+func TestRemotePublishAcceptsProjectsRootAndFilterFlags(t *testing.T) {
+	for _, flag := range []string{"projects-root", "filter"} {
+		if !persistentFlagSupport[flag]["remote publish"] {
+			t.Errorf("remote publish must accept --%s: it scans the fleet under --projects-root honouring --filter", flag)
+		}
+	}
+	if persistentFlagSupport["org"]["remote publish"] {
+		t.Error("remote publish must reject --org; it publishes local state, not GitHub-listed repos")
+	}
+}
+
 var _ = context.Background
