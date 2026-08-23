@@ -1,7 +1,7 @@
-# Design: `wb repo local-only` and `wb repo init-remote`
+# Design: `wb repo ignore` and `wb repo init-remote`
 
 **Date:** 2026-08-23
-**Status:** Draft — revised after two review rounds; one open naming question
+**Status:** Approved — revised after two review rounds; naming resolved
 
 ## Problem
 
@@ -52,28 +52,25 @@ repos will keep failing every `wb sync` run indefinitely.
   "never pushed" case; anything with real conflicting history needs manual
   resolution.
 
-## OPEN QUESTION — feature naming
+## Naming decision
 
-The marker means **"don't sync this repo"**. Naming it *local-only*
-collides with an existing, unrelated concept in the same command family:
-`fleetRemoteStats.LocalOnly` (`cmd/wb/fleet_cmd.go:208`, incremented at
-line 324 when `repository.Local && !repository.Remote`) means *"cloned
-locally, absent from GitHub"* — a **detected** condition, not a declared
-one. Both are surfaced by `fleetRemoteSummary` (line 572), which would read:
+The marker means **"don't sync this repo"** — a choice the user declares.
+It was initially called *local-only*, but that collides with an existing,
+unrelated concept in the same command family: `fleetRemoteStats.LocalOnly`
+(`cmd/wb/fleet_cmd.go:208`, incremented at line 324 when
+`repository.Local && !repository.Remote`) means *"cloned locally, absent
+from GitHub"* — a condition wb **detects**.
 
-```
-… 3 local-only · 2 skipped-local-only …
-```
+The two are genuinely different. `datatug-proj-1`, the repo that motivated
+this feature, **does** exist on GitHub (it is simply empty), so wb does not
+count it as local-only — yet it is exactly the repo we want to mark. A
+command named `local-only` would assert something factually false about it.
+Both counts also appear in the same `fleetRemoteSummary` line (line 572),
+which would have read `0 local-only · … · 2 skipped-local-only`.
 
-Two unrelated meanings, one vocabulary. Options:
-
-- **(A)** Keep `wb repo local-only`; internal status `SkippedLocalOnly`.
-  Preserves the vocabulary originally chosen, accepts the summary collision.
-- **(B)** Rename to `wb repo ignore` / `git config wb.skip-sync` /
-  status `SkippedIgnored`. Removes the collision rather than encoding it.
-
-**This spec is written against (B)** — see the naming note in each section
-for the (A) spelling. Resolve before implementation.
+**Resolved: `wb repo ignore`**, git key `wb.skip-sync`, status
+`SkippedIgnored`, summary token `ignored`. Names the action rather than a
+mistaken property of the repo.
 
 ## Design
 
@@ -82,8 +79,6 @@ for the (A) spelling. Resolve before implementation.
 Sets `git config --local wb.skip-sync true` in the given repo's
 `.git/config`. Defaults to `.` like `wb repo status`. A `--unset` flag
 clears it.
-
-*(Option A spelling: `wb repo local-only`, key `wb.local-only`.)*
 
 **`--local` is mandatory on both read and write.** Verified: a plain
 `git config --bool wb.skip-sync` read falls back to `~/.gitconfig` and
@@ -165,7 +160,7 @@ Note the `--local` flag also disambiguates the not-a-repo case: **without**
 #### Status naming and enum safety
 
 New `fleetsync.Status` value **`SkippedIgnored`**, `String() == "skipped
-(ignored)"`. *(Option A: `SkippedLocalOnly` / `"skipped (local-only)"`.)*
+(ignored)"`.
 
 **Append after `Failed`.** Verified safe: `fleetsync.Status` is never
 marshalled or persisted numerically — only `String()` is used — so iota
