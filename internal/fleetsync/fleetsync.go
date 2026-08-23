@@ -24,6 +24,10 @@ const (
 	AbsentArchived
 	NoOp
 	Failed
+	// SkippedIgnored is appended last deliberately: Status is rendered only
+	// through String() and never persisted numerically, but appending keeps
+	// the existing values stable regardless.
+	SkippedIgnored
 )
 
 func (s Status) String() string {
@@ -44,6 +48,8 @@ func (s Status) String() string {
 		return "noop"
 	case Failed:
 		return "failed"
+	case SkippedIgnored:
+		return "skipped (ignored)"
 	default:
 		return "unknown"
 	}
@@ -62,14 +68,33 @@ type Result struct {
 // For archived repos: remove the local clone if it is safe to (clean, no
 // stash, nothing unpushed), otherwise keep it and report why. Forks and
 // repos not owned by the authenticated user or their orgs (repo.Remote ==
-// false) are left untouched (NoOp). In dryRun mode no mutation happens;
-// Status still reports what would be done.
+// false) are left untouched (NoOp). Repos marked with `wb repo ignore` are
+// left untouched too (SkippedIgnored), including archived ones. In dryRun
+// mode no mutation happens; Status still reports what would be done.
 func Sync(repo discover.Repo, projectsRoot string, dryRun bool) Result {
 	res := Result{Repo: repo}
 
 	if !repo.Remote || repo.IsFork {
 		res.Status = NoOp
 		return res
+	}
+
+	// Checked before the archived branch on purpose: the marker must also
+	// protect the clone from archived-repo cleanup. wb never deletes a
+	// checkout the user explicitly told it to leave alone. The cost is that a
+	// marked-then-archived repo reports as skipped rather than appearing in
+	// the archived kept/removed/absent tallies.
+	if repo.Path != "" {
+		skip, err := gitops.SkipSync(repo.Path)
+		if err != nil {
+			res.Status = Failed
+			res.Err = err
+			return res
+		}
+		if skip {
+			res.Status = SkippedIgnored
+			return res
+		}
 	}
 
 	if repo.Archived {
