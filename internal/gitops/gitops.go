@@ -568,3 +568,39 @@ func Status(repoPath string) (RepoStatus, error) {
 
 	return s, nil
 }
+
+// PullRebase replays local commits on top of the freshly fetched upstream.
+// It is the retry primitive for shared state repositories where several
+// machines push small non-conflicting commits.
+func PullRebase(repoPath string) error {
+	_, err := run(repoPath, "git", "pull", "--rebase", "--quiet")
+	return err
+}
+
+// Push publishes the current branch to its upstream.
+func Push(repoPath string) error {
+	_, err := run(repoPath, "git", "push", "--quiet")
+	return err
+}
+
+// AddCommit stages paths and commits them. It reports false without
+// committing when the stage is empty, so callers can publish idempotently.
+func AddCommit(repoPath, message string, paths ...string) (bool, error) {
+	args := append([]string{"add", "--all", "--"}, paths...)
+	if _, err := run(repoPath, "git", args...); err != nil {
+		return false, err
+	}
+	if _, err := run(repoPath, "git", "diff", "--cached", "--quiet"); err == nil {
+		return false, nil
+	}
+	if _, err := run(repoPath, "git", "commit", "--quiet", "-m", message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// HeadSHA returns the full SHA of HEAD.
+func HeadSHA(repoPath string) (string, error) {
+	out, err := run(repoPath, "git", "rev-parse", "HEAD")
+	return strings.TrimSpace(out), err
+}
