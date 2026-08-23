@@ -469,7 +469,7 @@ func writeCreationJournal(effort, run, claimID string, result CreateResult, opti
 			return err
 		}
 	}
-	if _, err := recordOwner(result.WorktreeDir, effort, ownerAgent(options.AgentRuntime, options.AgentID), strings.TrimSpace(options.Model), currentProcessID()); err != nil {
+	if _, err := recordOwner(result.WorktreeDir, effort, ownerAgent(options.AgentRuntime, options.AgentID), strings.TrimSpace(options.Model), IdentityFromEnv().PID); err != nil {
 		return err
 	}
 	if len(options.originalPromptContents) == 0 {

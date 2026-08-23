@@ -678,7 +678,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if model == "" {
 			model = plan.resumeClaim.Model
 		}
-		if _, err := recordOwner(plan.result.WorktreeDir, effort, agent, model, currentProcessID()); err != nil {
+		if _, err := recordOwner(plan.result.WorktreeDir, effort, agent, model, IdentityFromEnv().PID); err != nil {
 			return nil, fmt.Errorf("record resumed worktree owner for %s: %w", plan.result.Repository, err)
 		}
 	}

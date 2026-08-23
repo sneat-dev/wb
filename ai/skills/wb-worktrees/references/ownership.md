@@ -1,9 +1,38 @@
 # Worktree ownership and liveness
 
 WB records worktree ownership as append-only local metadata. An owner record
-contains the agent/runtime, model, effort, caller PID, and attachment time.
-It never replaces the creator or an earlier session: creating a worktree,
-resuming it, or attaching with `log init` adds another owner record.
+contains the agent/runtime, model, effort, the declared agent session PID, the
+WB version and command that wrote it, and the time. It never replaces the
+creator or an earlier session: each attachment adds another record, so a
+worktree keeps its full chain of custody.
+
+## Declare who is working
+
+The PID is the **agent session's**, never WB's own. WB is a short-lived
+command: its process is dead moments after it runs, and a recycled id would
+later report an abandoned worktree as active. Only the driving session knows
+its identity, so it declares it.
+
+Once per session, through the environment — every later WB command picks it up:
+
+```sh
+export WB_AGENT_PID=$$ WB_AGENT_RUNTIME=claude-code
+export WB_AGENT_MODEL=<model> WB_AGENT_ID=<session-id>
+```
+
+Or for a single worktree:
+
+```sh
+wb worktree own <worktree-path> --pid <agent-pid> --runtime <harness> --model <model>
+wb worktree own . --pid 12345 --runtime claude-code --model claude-sonnet-5
+```
+
+WB carries the chain forward by itself: any command that writes to a worktree
+records the current identity first, appending only when custody actually
+changed, so a session doing repeated work leaves one record rather than a
+command trace. Writing without a declaration is allowed — the entry still
+carries the WB version and command — but WB warns on stderr and the owner's
+liveness stays `unknown`.
 
 Create with explicit execution identity:
 

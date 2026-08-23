@@ -8,6 +8,8 @@ import (
 	"runtime/debug"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sneat-dev/wb/internal/buildinfo"
 )
 
 // version is overridden at link time by the release build
@@ -68,14 +70,11 @@ func printVersion(out io.Writer, asJSON bool) int {
 
 func collectVersion() versionInfo {
 	info := versionInfo{
-		Version:  version,
+		Version:  buildinfo.Version(),
 		Go:       runtime.Version(),
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
 	}
 	if build, ok := debug.ReadBuildInfo(); ok {
-		if info.Version == "" && build.Main.Version != "" {
-			info.Version = build.Main.Version
-		}
 		for _, setting := range build.Settings {
 			switch setting.Key {
 			case "vcs.revision":
@@ -86,9 +85,6 @@ func collectVersion() versionInfo {
 				info.Modified = setting.Value == "true"
 			}
 		}
-	}
-	if info.Version == "" {
-		info.Version = "unknown"
 	}
 	return info
 }

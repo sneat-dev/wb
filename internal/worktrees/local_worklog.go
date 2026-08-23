@@ -194,6 +194,13 @@ func appendLocalEvent(worktree string, event LocalWorkLogEvent) (LocalWorkLogEve
 		event.At = event.At.UTC()
 	}
 
+	// Every worktree write funnels through here, which makes it the one place
+	// that can keep the owner chain honest. Owner events are excluded, both to
+	// avoid recursing and because they are the custody record itself.
+	if event.Type != LocalEventOwner {
+		ensureCustody(worktree)
+	}
+
 	directory, err := openLocalWorkLogDir(worktree, true)
 	if err != nil {
 		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
