@@ -1689,8 +1689,26 @@ func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (stri
 	return fetchRemoteTargetHeadUncached(ctx, repository, branch)
 }
 
+// remoteTargetFetchTimeout bounds one exact-target fetch. A fleet walk makes one
+// of these per repository and a healthy fetch of a single ref answers in
+// seconds, so this is generous rather than tight — its job is to convert a
+// remote that will never answer into a reported state, not to police slow ones.
+// A live sweep once sat 38 minutes on a single unanswered fetch, holding a task
+// lock, with no output and no way to tell it apart from ordinary slowness.
+//
+// It is a var so tests can shorten it.
+var remoteTargetFetchTimeout = 90 * time.Second
+
 func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
-	if _, err := git(ctx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+	fetchCtx, cancel := context.WithTimeout(ctx, remoteTargetFetchTimeout)
+	defer cancel()
+	if _, err := git(fetchCtx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+		// Distinguish our own deadline from a caller who cancelled the whole run:
+		// the operator needs to know this one remote never answered, and which
+		// budget it blew, rather than reading a bare "signal: killed".
+		if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return "", fmt.Errorf("fetch exact origin/%s target: remote did not answer within %s", branch, remoteTargetFetchTimeout)
+		}
 		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
 	}
 	head, err := git(ctx, repository, "rev-parse", "FETCH_HEAD")
