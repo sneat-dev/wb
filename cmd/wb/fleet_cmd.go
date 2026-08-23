@@ -207,11 +207,14 @@ type fleetRemoteStats struct {
 	SkippedDirty int `yaml:"skipped_dirty" json:"skipped_dirty"`
 	// Ignored counts repos marked with `wb repo ignore`. Distinct from
 	// LocalOnly below, which counts repos wb found on disk but not on GitHub.
-	Ignored    int `yaml:"ignored" json:"ignored"`
-	LocalOnly  int `yaml:"local_only" json:"local_only"`
-	RemoteOnly int `yaml:"remote_only" json:"remote_only"`
-	NoOp       int `yaml:"noop" json:"noop"`
-	Error      int `yaml:"error" json:"error"`
+	Ignored int `yaml:"ignored" json:"ignored"`
+	// EmptyRemote counts repos whose origin publishes no branches yet, so
+	// there is nothing to pull until someone pushes.
+	EmptyRemote int `yaml:"empty_remote" json:"empty_remote"`
+	LocalOnly   int `yaml:"local_only" json:"local_only"`
+	RemoteOnly  int `yaml:"remote_only" json:"remote_only"`
+	NoOp        int `yaml:"noop" json:"noop"`
+	Error       int `yaml:"error" json:"error"`
 }
 
 type fleetHooksStats struct {
@@ -339,6 +342,8 @@ func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRe
 			stats.SkippedDirty++
 		case fleetsync.SkippedIgnored:
 			stats.Ignored++
+		case fleetsync.EmptyRemote:
+			stats.EmptyRemote++
 		case fleetsync.NoOp:
 			stats.NoOp++
 		case fleetsync.Failed:
@@ -575,8 +580,8 @@ func fleetLayoutSummary(stats fleetLayoutStats) string {
 }
 
 func fleetRemoteSummary(stats fleetRemoteStats) string {
-	return fmt.Sprintf("%d would-clone · %d would-pull · %d skipped-dirty · %d ignored · %d local-only · %d remote-only · %d noop · %d error",
-		stats.WouldClone, stats.WouldPull, stats.SkippedDirty, stats.Ignored, stats.LocalOnly, stats.RemoteOnly, stats.NoOp, stats.Error)
+	return fmt.Sprintf("%d would-clone · %d would-pull · %d skipped-dirty · %d ignored · %d empty-remote · %d local-only · %d remote-only · %d noop · %d error",
+		stats.WouldClone, stats.WouldPull, stats.SkippedDirty, stats.Ignored, stats.EmptyRemote, stats.LocalOnly, stats.RemoteOnly, stats.NoOp, stats.Error)
 }
 
 func fleetHooksSummary(stats fleetHooksStats) string {
