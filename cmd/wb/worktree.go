@@ -1091,6 +1091,27 @@ func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) er
 			}
 		}
 	}
+	// Residue is not a family: nothing registers it, so it has no branch, no
+	// effort, and no disposition to group by. Print it as its own section so a
+	// sweep that finds one cannot be read as a clean sweep.
+	if len(report.Residue) > 0 && (only == "" || only == worktrees.DispositionReview) {
+		if _, err := fmt.Fprintf(out, "\nunregistered checkouts (%d)\n", len(report.Residue)); err != nil {
+			return err
+		}
+		for _, residue := range report.Residue {
+			if _, err := fmt.Fprintf(out, "  %s %s (%s)\n", residue.Task, residue.Repository, residue.Layout); err != nil {
+				return err
+			}
+			for _, evidence := range residue.Evidence {
+				if _, err := fmt.Fprintf(out, "           - %s\n", evidence); err != nil {
+					return err
+				}
+			}
+			if _, err := fmt.Fprintf(out, "           > %s\n", residue.Remedy); err != nil {
+				return err
+			}
+		}
+	}
 	totals := report.Totals
 	if _, err := fmt.Fprintf(out,
 		"\n%d worktrees in %d efforts (%d shown): %d current, %d legacy, %d external; %d without a manifest, %d dirty\n",
