@@ -263,6 +263,23 @@ directory of the residue that denies an unlink. A residue directory WB cannot
 open MUST be reported with the permission needed, never worked around by name.
 An apply report MUST record that WB, rather than Git, removed the checkout.
 
+#### REQ: empty-task-namespace-retirement
+
+A terminal cleanup MUST retire the `<worktrees-root>/<task>` directory it
+empties, and MUST report and retire under `--apply` any task namespace an
+earlier release left behind, so a finished task leaves no directory at all
+rather than one empty shell. Retirement MUST be atomic against any other
+writer: a namespace holding anything — a repository, a live lock, a file a
+person left — MUST survive untouched. `--filter` selects by owner/repository
+slug and cannot scope a namespace with no repository under it, so a filtered
+run MUST report such a namespace without retiring it.
+
+Because a namespace can now be retired between the moment an operation opens
+its task directory and the moment it takes that directory's lock, every
+operation MUST refuse a task directory that was unlinked while it was
+starting, rather than build a task hierarchy under a pathname nothing can
+reach. That refusal MUST be a retryable error, not a silent success.
+
 #### REQ: internal-stage-terminalization
 
 Inventory MUST classify reserved `.wb-stage-*` and `.wb-retired-stage-*`
@@ -312,7 +329,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -328,7 +345,9 @@ with comparison guards; interruption after worktree removal is resumed from a
 durable exact-ref backlog; a removal Git unregisters but cannot finish deleting
 is completed by WB and the task still reaches its branch deletion, while a
 removal Git refused still fails; exact empty internal stages are archived while
-non-empty ones remain blocking backlog; and apply writes durable evidence. Hosted PR metadata
+non-empty ones remain blocking backlog; a terminal task leaves no namespace
+directory behind and an operation whose namespace is retired underneath it
+refuses instead of writing where nothing can reach; and apply writes durable evidence. Hosted PR metadata
 MAY be supplied by a deterministic test double.
 
 ## Open Questions

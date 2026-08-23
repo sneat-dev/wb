@@ -484,8 +484,8 @@ func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	if _, err := os.Stat(result.WorktreeDir); !os.IsNotExist(err) {
 		t.Fatalf("worktree still exists after cleanup: %v", err)
 	}
-	if info, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "cleanup-real")); statErr != nil || !info.IsDir() {
-		t.Fatalf("empty cleanup task root was not retained safely: info=%v err=%v", info, statErr)
+	if _, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "cleanup-real")); !os.IsNotExist(statErr) {
+		t.Fatalf("emptied cleanup task root was not retired: %v", statErr)
 	}
 	if gitRefExists(fixture.canonical, "refs/heads/"+result.Branch) {
 		t.Fatal("local branch still exists after cleanup")
@@ -543,21 +543,20 @@ func TestCleanupRetiresTaskNamespaceResidueOnTerminalApply(t *testing.T) {
 		t.Fatalf("worktree still exists after cleanup: %v", err)
 	}
 
+	// The task root itself is residue too, and is now retired with everything
+	// under it. It used to be retained deliberately, because removing it after
+	// releasing its lock let a concurrent create build an unreachable task
+	// directory at the same pathname; that race is now refused by every
+	// operation instead (see TestOperationLockRefusesRetiredDirectory), so the
+	// namespace no longer has to survive as an empty shell.
 	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-residue")
-	info, statErr := os.Stat(taskDir)
-	if statErr != nil || !info.IsDir() {
-		t.Fatalf("task root was not retained: info=%v err=%v", info, statErr)
-	}
-	entries, err := os.ReadDir(taskDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
+	if _, statErr := os.Stat(taskDir); !os.IsNotExist(statErr) {
+		entries, _ := os.ReadDir(taskDir)
 		names := make([]string, len(entries))
 		for i, entry := range entries {
 			names[i] = entry.Name()
 		}
-		t.Fatalf("terminal task namespace left residue behind: %v", names)
+		t.Fatalf("terminal task namespace was not retired: err=%v holding=%v", statErr, names)
 	}
 }
 
