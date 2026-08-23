@@ -411,3 +411,65 @@ func TestListSurfacesCorruptEntryAsError(t *testing.T) {
 		t.Fatalf("corrupt entry = %+v", carol)
 	}
 }
+
+// TestEnsureCloneAcceptsInsteadOfRewrite proves that ensureClone accepts an
+// existing clone whose configured remote URL matches CloneURL even when git's
+// url.<base>.insteadOf rewriting has transformed the effective URL. This tests
+// the fix for the bug where OriginURL (which returns the rewritten URL) was
+// compared instead of ConfiguredOriginURL (which returns the original).
+func TestEnsureCloneAcceptsInsteadOfRewrite(t *testing.T) {
+	// Create a bare origin and clone it with the actual origin path
+	origin := bareOrigin(t)
+	clonePath := filepath.Join(t.TempDir(), "projects", "team", "wb-state")
+	if err := os.MkdirAll(filepath.Dir(clonePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, filepath.Dir(clonePath), "clone", "-q", origin, clonePath)
+
+	// The configured remote URL points to the actual origin path
+	configuredBefore := gitIn(t, clonePath, "config", "remote.origin.url")
+	if configuredBefore != origin {
+		t.Fatalf("configured URL = %q, want %q", configuredBefore, origin)
+	}
+
+	// Now set up a url.<sometmpdir>.insteadOf rewrite in the clone's local config
+	// so that git operations on the clone will be redirected to the actual origin
+	tmpRewrite := filepath.Join(t.TempDir(), "elsewhere")
+	gitIn(t, clonePath, "config", "url."+tmpRewrite+".insteadOf", origin)
+
+	// Verify that OriginURL now returns the rewritten URL
+	rewritten := gitIn(t, clonePath, "remote", "get-url", "origin")
+	if rewritten != tmpRewrite {
+		t.Fatalf("OriginURL (rewritten) = %q, want %q", rewritten, tmpRewrite)
+	}
+
+	// Create a Provider with the *fake* URL from the test (what a user with a
+	// global insteadOf config might have), not the actual origin path
+	fakeURL := "git@example.com:team/wb-state.git"
+	gitIn(t, clonePath, "remote", "set-url", "origin", fakeURL)
+	gitIn(t, clonePath, "config", "url."+origin+".insteadOf", fakeURL)
+
+	// Construct a Provider with the fake URL
+	p := New(Options{ClonePath: clonePath, CloneURL: fakeURL})
+
+	// List must succeed without a "not the configured remote store" error.
+	// This proves ensureClone is using ConfiguredOriginURL (which compares against
+	// the fake URL) rather than OriginURL (which would see the rewritten path).
+	_, err := p.List(context.Background())
+	if err != nil {
+		t.Fatalf("List with insteadOf rewrite: %v", err)
+	}
+
+	// Publish must succeed, and git push must successfully route to the actual
+	// origin via the insteadOf rewrite.
+	_, err = p.Publish(context.Background(), snap("alice", "laptop", time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("Publish with insteadOf rewrite: %v", err)
+	}
+
+	// Verify that the commit landed on the actual origin
+	files := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	if !strings.Contains(files, "machines/alice/laptop/snapshot.yaml") {
+		t.Fatalf("publish via insteadOf rewrite did not land on origin: %q", files)
+	}
+}

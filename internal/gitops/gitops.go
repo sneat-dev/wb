@@ -435,10 +435,23 @@ func HasCommits(repoPath string) (bool, error) {
 	return true, nil
 }
 
-// OriginURL returns repoPath's origin remote URL, erroring when no origin is
-// configured.
+// OriginURL returns repoPath's origin remote URL after any url.<base>.insteadOf
+// rewriting. Use it for the URL git will actually contact; use ConfiguredOriginURL
+// when comparing against a URL the user configured elsewhere.
 func OriginURL(repoPath string) (string, error) {
 	out, err := run(repoPath, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ConfiguredOriginURL returns repoPath's remote.origin.url exactly as written in
+// the repository config, before any url.<base>.insteadOf rewriting. Use it when
+// comparing against a URL the user configured elsewhere; OriginURL returns the
+// effective (rewritten) URL git will actually contact.
+func ConfiguredOriginURL(repoPath string) (string, error) {
+	out, err := run(repoPath, "git", "config", "--get", "remote.origin.url")
 	if err != nil {
 		return "", err
 	}

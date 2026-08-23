@@ -261,3 +261,45 @@ func TestRebaseInProgressTrueDuringConflict(t *testing.T) {
 		t.Fatal("RebaseInProgress = true after abort, want false")
 	}
 }
+
+// TestConfiguredOriginURLDiffersFromOriginURLAfterInsteadOf proves that
+// ConfiguredOriginURL returns the original remote.origin.url before url.<base>.insteadOf
+// rewriting, while OriginURL returns the rewritten URL.
+func TestConfiguredOriginURLDiffersFromOriginURLAfterInsteadOf(t *testing.T) {
+	origin, clone := seededOriginAndClone(t)
+
+	// Get the original configured URL
+	configuredBefore, err := ConfiguredOriginURL(clone)
+	if err != nil {
+		t.Fatalf("ConfiguredOriginURL: %v", err)
+	}
+	originBefore, err := OriginURL(clone)
+	if err != nil {
+		t.Fatalf("OriginURL: %v", err)
+	}
+	if configuredBefore != originBefore {
+		t.Fatalf("before rewrite: ConfiguredOriginURL=%q, OriginURL=%q, want equal", configuredBefore, originBefore)
+	}
+
+	// Now set up a url.<somewhere>.insteadOf rewrite in the clone's local config
+	tmpRewrite := filepath.Join(t.TempDir(), "elsewhere")
+	gitIn(t, clone, "config", "url."+tmpRewrite+".insteadOf", origin)
+
+	// OriginURL should return the rewritten URL
+	rewrittenOriginURL, err := OriginURL(clone)
+	if err != nil {
+		t.Fatalf("OriginURL after rewrite: %v", err)
+	}
+	if rewrittenOriginURL != tmpRewrite {
+		t.Fatalf("OriginURL after rewrite = %q, want %q", rewrittenOriginURL, tmpRewrite)
+	}
+
+	// ConfiguredOriginURL should still return the original URL
+	configuredAfter, err := ConfiguredOriginURL(clone)
+	if err != nil {
+		t.Fatalf("ConfiguredOriginURL after rewrite: %v", err)
+	}
+	if configuredAfter != origin {
+		t.Fatalf("ConfiguredOriginURL after rewrite = %q, want original %q", configuredAfter, origin)
+	}
+}

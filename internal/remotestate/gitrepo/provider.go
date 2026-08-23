@@ -50,7 +50,7 @@ Do not edit by hand; run wb remote status to read it.
 // would silently be treated as the state repo.
 func (p *Provider) ensureClone() error {
 	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, ".git")); err == nil {
-		got, err := gitops.OriginURL(p.opts.ClonePath)
+		got, err := gitops.ConfiguredOriginURL(p.opts.ClonePath)
 		if err != nil {
 			return err
 		}
