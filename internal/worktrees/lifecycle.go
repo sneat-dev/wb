@@ -584,12 +584,25 @@ func listLayout(
 		taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
 		_, lockErr := os.Stat(filepath.Join(taskRoot, ".lock"))
 		locked := lockErr == nil
-		if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
-			return nil, nil, nil, fmt.Errorf("inspect task lock %s: %w", taskRoot, lockErr)
+		if lockErr != nil && !vanishedDuringWalk(lockErr) {
+			// A task retired by another run reports ErrNotExist here and is
+			// indistinguishable from an unlocked task, so it falls through to the
+			// directory read below, which recognises the vanished task for what it
+			// is. Anything else is a real inspection failure, and it is scoped to
+			// this task rather than discarding every other task in the sweep.
+			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), taskRoot, fmt.Sprintf("inspect task lock: %v", lockErr)))
+			continue
 		}
 		entries, readErr := os.ReadDir(taskRoot)
 		if readErr != nil {
-			return nil, nil, nil, fmt.Errorf("read task %s: %w", taskEntry.Name(), readErr)
+			// A task directory that disappeared mid-walk has already reached the
+			// state cleanup exists to produce, so converging on it is success and
+			// stays silent. Any other read failure is scoped to this task alone.
+			if vanishedDuringWalk(readErr) {
+				continue
+			}
+			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), taskRoot, fmt.Sprintf("read task directory: %v", readErr)))
+			continue
 		}
 		for _, entry := range entries {
 			candidate := filepath.Join(taskRoot, entry.Name())
@@ -726,6 +739,15 @@ func lifecycleArtifactName(name string) (kind, state string, recognized bool) {
 	default:
 		return "", "", false
 	}
+}
+
+// vanishedDuringWalk reports whether err means the path stopped existing while
+// the sweep was walking it. A concurrent cleanup retiring a task is the normal
+// state of a fleet with more than one agent on it, and the retired task is
+// precisely the outcome this command converges on, so callers skip it rather
+// than failing the whole run.
+func vanishedDuringWalk(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func listDiagnostic(worktreesRoot, task, path, message string) ListDiagnostic {
