@@ -29,13 +29,17 @@ func machineRows(entries []remotestate.Entry, now time.Time, stale time.Duration
 	for _, entry := range entries {
 		row := remoteMachineRow{Key: entry.Snapshot.Key(), Error: entry.Error}
 		if entry.Error == "" {
-			age := now.Sub(entry.Snapshot.PublishedAt)
-			row.PublishedAt = entry.Snapshot.PublishedAt
-			row.Age = humanAge(age)
-			row.Stale = stale > 0 && age > stale
-			row.WBVersion = entry.Snapshot.WBVersion
-			row.Attention = len(entry.Snapshot.Repositories)
-			row.Worktrees = len(entry.Snapshot.Worktrees)
+			if entry.Snapshot.PublishedAt.IsZero() {
+				row.Error = "snapshot has no published_at (truncated or empty file)"
+			} else {
+				age := now.Sub(entry.Snapshot.PublishedAt)
+				row.PublishedAt = entry.Snapshot.PublishedAt
+				row.Age = humanAge(age)
+				row.Stale = stale > 0 && age > stale
+				row.WBVersion = entry.Snapshot.WBVersion
+				row.Attention = len(entry.Snapshot.Repositories)
+				row.Worktrees = len(entry.Snapshot.Worktrees)
+			}
 		}
 		rows = append(rows, row)
 	}

@@ -32,10 +32,9 @@ type qualityOptions struct {
 	retry     int
 	resume    bool
 	// allowEmpty lets fleet mode return zero targets instead of erroring.
-	// Quality commands (coverage/verify/check/fleet) want the error: an
-	// empty match is almost always a typo'd --filter. wb remote publish
-	// wants a clean, freshly-cloned machine with no repositories yet to
-	// publish an empty-but-valid snapshot instead of failing.
+	// an empty fleet with no filter publishes an empty-but-valid snapshot;
+	// an unmatched filter is still an error. Quality commands (coverage/verify/check/fleet)
+	// want the error: an empty match is almost always a typo'd --filter.
 	allowEmpty bool
 }
 

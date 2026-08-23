@@ -11,7 +11,7 @@ import (
 // collectSnapshot scans the local fleet the way wb fleet status does and
 // lists live task worktrees, then assembles the snapshot to publish.
 func collectSnapshot(projectsRoot, filter string, parallel int, identity remotestate.Snapshot, redaction remotestate.Redaction) (remotestate.Snapshot, error) {
-	targets, err := qualityTargets("", projectsRoot, filter, qualityOptions{fleet: true, parallel: parallel, allowEmpty: true})
+	targets, err := qualityTargets("", projectsRoot, filter, qualityOptions{fleet: true, parallel: parallel, allowEmpty: filter == ""})
 	if err != nil {
 		return remotestate.Snapshot{}, err
 	}

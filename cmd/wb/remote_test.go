@@ -248,4 +248,43 @@ func TestRemoteStatusMachineFilterAndErrorRowsDoNotFail(t *testing.T) {
 	}
 }
 
+func TestRemotePublishFilterNoMatchStillErrors(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	var out bytes.Buffer
+	err := runRemotePublish(f.deps("alice", time.Now().UTC()), f.projectsRoot, "definitely-no-match", 2, false, false, &out)
+	if err == nil || !strings.Contains(err.Error(), "no local repositories match") {
+		t.Fatalf("err = %v, want unmatched-filter error (a typo must not publish a false clean snapshot)", err)
+	}
+	if files := remoteGit(t, f.origin, "ls-tree", "-r", "--name-only", "main"); strings.Contains(files, "machines/") {
+		t.Fatalf("unmatched filter must not publish: %s", files)
+	}
+}
+
+func TestMachineRowsTreatsZeroPublishedAtAsError(t *testing.T) {
+	entries := []remotestate.Entry{
+		{
+			Snapshot: remotestate.Snapshot{
+				SchemaVersion: 1,
+				Login:         "test",
+				Machine:       "machine",
+				PublishedAt:   time.Time{}, // zero time
+			},
+			Error: "",
+		},
+	}
+	rows := machineRows(entries, time.Now(), 24*time.Hour)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Error == "" {
+		t.Fatalf("row.Error must be non-empty for zero PublishedAt")
+	}
+	if rows[0].Stale {
+		t.Fatalf("row.Stale must be false when there's an error")
+	}
+	if rows[0].Age != "" {
+		t.Fatalf("row.Age must be empty when there's an error")
+	}
+}
+
 var _ = context.Background
