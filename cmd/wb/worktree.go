@@ -31,6 +31,7 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeAbortCmd())
 	command.AddCommand(newWorktreeCorrectIdentityCmd())
 	command.AddCommand(newWorktreeSetCmd())
+	command.AddCommand(newWorktreeOwnCmd())
 	command.AddCommand(newWorktreeInfoCmd())
 	command.AddCommand(newWorktreeWorkLogCmd())
 	command.AddCommand(newWorktreeOrphansCmd())

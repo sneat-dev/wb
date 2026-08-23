@@ -2,10 +2,13 @@ package worktrees
 
 import (
 	"errors"
-	"os"
 	"sort"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/buildinfo"
 )
 
 const LocalEventOwner = "owner_attached"
@@ -14,11 +17,31 @@ const LocalEventOwner = "owner_attached"
 // attached itself to a worktree. It is intentionally append-only: a later
 // session never overwrites the creator or a previous owner.
 type OwnerRegistration struct {
-	Agent  string    `json:"agent,omitempty"`
-	Model  string    `json:"model,omitempty"`
-	Effort string    `json:"effort,omitempty"`
-	PID    int       `json:"pid,omitempty"`
-	At     time.Time `json:"at"`
+	Agent  string `json:"agent,omitempty"`
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+	// PID is the declared agent session's process, never WB's own. WB is a
+	// short-lived CLI: its PID is dead moments after it would be written, and
+	// once recycled it would report an abandoned worktree as active. An
+	// absent PID therefore reads as unknown, which is the honest answer.
+	PID int `json:"pid,omitempty"`
+	// WBVersion and Command are always populated, because WB always knows
+	// them. They give a worktree provenance even when no agent identity was
+	// declared.
+	WBVersion string    `json:"wb_version,omitempty"`
+	Command   string    `json:"command,omitempty"`
+	At        time.Time `json:"at"`
+}
+
+// sameCustody reports whether two registrations describe the same session
+// doing the same kind of work. It deliberately ignores At and Effort: a
+// session writing ten times should leave one custody record, not ten, but a
+// changed model or a WB upgrade is worth a new entry.
+func (o OwnerRegistration) sameCustody(other OwnerRegistration) bool {
+	return o.Agent == other.Agent &&
+		o.PID == other.PID &&
+		o.Model == other.Model &&
+		o.WBVersion == other.WBVersion
 }
 
 // OwnerView is the live presentation of one registration. PIDStatus is
@@ -29,11 +52,108 @@ type OwnerView struct {
 }
 
 func recordOwner(worktree, effort, agent, model string, pid int) (OwnerRegistration, error) {
-	owner := OwnerRegistration{Agent: agent, Model: model, Effort: effort, PID: pid, At: time.Now().UTC()}
+	owner := OwnerRegistration{
+		Agent: agent, Model: model, Effort: effort, PID: pid,
+		WBVersion: buildinfo.Version(), At: time.Now().UTC(),
+	}
 	_, _, err := appendLocalEvent(worktree, LocalWorkLogEvent{
 		Type: LocalEventOwner, Message: "agent session attached", Owner: &owner,
 	})
 	return owner, err
+}
+
+// lastOwner returns the most recently appended owner registration, if any.
+func lastOwner(worktree string) (OwnerRegistration, bool, error) {
+	owners, err := ownerViews(worktree)
+	if err != nil || len(owners) == 0 {
+		return OwnerRegistration{}, false, err
+	}
+	return owners[len(owners)-1].OwnerRegistration, true, nil
+}
+
+// RecordCustody records who is driving a worktree, appending only when custody
+// actually changed. A session doing repeated writes therefore leaves one record
+// rather than a command trace, while a new session, model, or WB version starts
+// a new link in the chain.
+//
+// An entry is written even for an undeclared identity: the WB version and
+// command are real provenance, and the absent PID keeps liveness honestly
+// unknown rather than asserting a dead or recycled process is alive. An empty
+// effort inherits the previous owner's, so an automatic write does not erase
+// what the creator recorded.
+func RecordCustody(worktree, effort, command string, identity AgentIdentity) error {
+	if !identity.Declared() {
+		noteUndeclared(worktree)
+	}
+
+	previous, found, err := lastOwner(worktree)
+	if err != nil {
+		return err
+	}
+
+	candidate := OwnerRegistration{
+		Agent: identity.Agent(), Model: strings.TrimSpace(identity.Model),
+		Effort: effort, PID: identity.PID,
+		WBVersion: buildinfo.Version(), Command: command,
+	}
+	if found && previous.sameCustody(candidate) {
+		return nil
+	}
+	if candidate.Effort == "" && found {
+		candidate.Effort = previous.Effort
+	}
+	candidate.At = time.Now().UTC()
+
+	_, _, err = appendLocalEvent(worktree, LocalWorkLogEvent{
+		Type: LocalEventOwner, Message: custodyMessage(identity), Owner: &candidate,
+	})
+	return err
+}
+
+func custodyMessage(identity AgentIdentity) string {
+	if identity.Declared() {
+		return "agent session attached"
+	}
+	return "wb wrote here; no agent identity declared"
+}
+
+// pendingWarnings collects worktrees this invocation wrote to without a
+// declared owner. The write path is deep in the library and must not print;
+// the command layer drains this once and reports it on stderr.
+var (
+	warningsMu      sync.Mutex
+	pendingWarnings []string
+)
+
+func noteUndeclared(worktree string) {
+	warningsMu.Lock()
+	defer warningsMu.Unlock()
+	for _, existing := range pendingWarnings {
+		if existing == worktree {
+			return
+		}
+	}
+	pendingWarnings = append(pendingWarnings, worktree)
+}
+
+// TakeOwnerWarnings returns the worktrees written to without a declared owner
+// and clears the list, so a caller reports each one once.
+func TakeOwnerWarnings() []string {
+	warningsMu.Lock()
+	defer warningsMu.Unlock()
+	taken := pendingWarnings
+	pendingWarnings = nil
+	return taken
+}
+
+// ensureCustody keeps the owner chain current on every worktree write. It runs
+// before the caller's own event is appended, so the record of who was driving
+// precedes the work they did.
+//
+// Its error is deliberately dropped: provenance must never be the reason a real
+// operation fails, and a missing entry is itself visible as a gap in the chain.
+func ensureCustody(worktree string) {
+	_ = RecordCustody(worktree, "", InvokedCommand(), IdentityFromEnv())
 }
 
 func ownerViews(worktree string) ([]OwnerView, error) {
@@ -83,7 +203,3 @@ func worktreeOwnerState(owners []OwnerView) string {
 	}
 	return "orphaned"
 }
-
-// currentProcessID is isolated for tests and documents that a PID records the
-// WB caller which attached the owner record, not a Git process it later starts.
-func currentProcessID() int { return os.Getpid() }

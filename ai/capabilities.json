@@ -5278,6 +5278,87 @@
       "notes": "Removal is recommended only for branches already contained in the remote target, and never for a worktree holding uncommitted work."
     },
     {
+      "id": "wb.worktree.own",
+      "feature_refs": [
+        "spec/features/work-log/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree own",
+              "flags": [
+                "--agent-id",
+                "--model",
+                "--pid",
+                "--runtime"
+              ],
+              "modes": [
+                "Declares the agent session driving a worktree so its liveness becomes knowable."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree own --help",
+              "contains": [
+                "--pid",
+                "--runtime",
+                "--model"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "# Worktree ownership and liveness",
+              "examples": [
+                "wb worktree own . --pid 12345 --runtime claude-code --model claude-sonnet-5"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/custody_test.go",
+              "name": "TestRecordCustodyAppendsOnceForOneSession",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/custody_test.go",
+              "name": "TestRecordCustodyAppendsOnHandover",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/custody_test.go",
+              "name": "TestWorktreeWritesRecordCustodyAutomatically",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/identity_test.go",
+              "name": "TestIdentityFromEnvReadsADeclaration",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The PID recorded is the declared agent session's, never WB's own: WB is short-lived, so its PID is dead moments after writing and a recycled PID would report an abandoned worktree as active. Undeclared writes still record WB version and command, and warn on stderr."
+    },
+    {
       "id": "wb.worktree.prompt-export",
       "feature_refs": [
         "spec/features/work-log/README.md",

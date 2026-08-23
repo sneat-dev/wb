@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
@@ -75,6 +76,10 @@ func newRootCmd() *cobra.Command {
 				return err
 			}
 			commandStarted = true
+			// Publish which command is running so anything it writes into a
+			// worktree records what touched it, without each call site having
+			// to thread the name through.
+			worktrees.SetInvokedCommand(persistentCommandID(cmd))
 			return nil
 		},
 	}
@@ -124,7 +129,8 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
-		"branch list": true, "branch cleanup": true,
+		"worktree own": true,
+		"branch list":  true, "branch cleanup": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
 		"worktree log handoff": true, "worktree log recover": true, "worktree log finalize": true,
@@ -222,6 +228,9 @@ func persistentCommandID(cmd *cobra.Command) string {
 }
 
 func main() {
+	// Publish the link-time version before anything can record provenance, so
+	// a release build stamps its own version into whatever it writes.
+	buildinfo.Set(version)
 	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)
 		os.Exit(exitFindings)
@@ -290,6 +299,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	root.SetErr(stderr)
 
 	err := root.Execute()
+	// Always on stderr, and always after the command's own output, so a
+	// --format json or yaml document on stdout stays machine-parseable.
+	reportUndeclaredOwners(stderr)
 	if err == nil {
 		return exitOK
 	}
@@ -336,4 +348,15 @@ func hasVersionFlag(args []string) bool {
 		}
 	}
 	return false
+}
+
+// reportUndeclaredOwners tells an agent how to identify itself, once per
+// worktree this invocation wrote to without a declared owner. It is the only
+// way WB can learn who is working where: WB is short-lived, so its own process
+// id is dead moments after it writes, and only the driving session knows its
+// identity.
+func reportUndeclaredOwners(stderr io.Writer) {
+	for _, worktree := range worktrees.TakeOwnerWarnings() {
+		_, _ = fmt.Fprintln(stderr, worktrees.UndeclaredOwnerWarning(worktree))
+	}
 }
