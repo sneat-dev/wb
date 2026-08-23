@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"path/filepath"
 	"time"
 
@@ -45,14 +44,12 @@ func openRemote(cfg remotestate.Config, projectsRoot string) (remotestate.Provid
 	}
 }
 
-// loadRemote reads config and opens the provider, mapping "not configured"
-// to the usage exit code so the snippet reaches the operator.
+// loadRemote reads config and opens the provider. Both an unconfigured
+// remote section and any other config error map to the usage exit code, so
+// the snippet (for the former) or the parse/validation message (for the
+// latter) reaches the operator the same way.
 func loadRemote(deps remoteDeps, projectsRoot string) (remotestate.Config, remotestate.Provider, error) {
 	cfg, err := remotestate.LoadConfig(deps.configPath)
-	var unconfigured *remotestate.UnconfiguredError
-	if errors.As(err, &unconfigured) {
-		return cfg, nil, &exitError{code: exitUsage, message: err.Error()}
-	}
 	if err != nil {
 		return cfg, nil, &exitError{code: exitUsage, message: err.Error()}
 	}

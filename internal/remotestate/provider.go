@@ -19,11 +19,12 @@ type Entry struct {
 // safe to call from several machines at once; the git provider relies on
 // per-machine files plus rebase for that.
 type Provider interface {
-	// Publish overwrites the caller's own login/machine entry.
+	// Publish overwrites the caller's own login/machine entry. It is
+	// self-contained: implementations refresh their own view of the store
+	// before writing, so callers never need a separate refresh step first.
 	Publish(ctx context.Context, snapshot Snapshot) (PublishResult, error)
-	// Fetch refreshes the local view of the store. A hub provider may no-op.
-	Fetch(ctx context.Context) error
 	// List returns every machine currently in the store, including the
-	// caller's own last-published entry, sorted by Key().
+	// caller's own last-published entry, sorted by Key(). It is also
+	// self-contained, refreshing the store view itself before reading.
 	List(ctx context.Context) ([]Entry, error)
 }

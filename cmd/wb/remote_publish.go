@@ -56,12 +56,12 @@ func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int
 	}
 	report := remotePublishReport{Key: snapshot.Key(), RepositoriesScanned: snapshot.RepositoriesScanned, Attention: len(snapshot.Repositories), Worktrees: len(snapshot.Worktrees)}
 	if dryRun {
+		if jsonOut {
+			return json.NewEncoder(out).Encode(snapshot)
+		}
 		data, err := remotestate.Encode(snapshot)
 		if err != nil {
 			return err
-		}
-		if jsonOut {
-			return json.NewEncoder(out).Encode(snapshot)
 		}
 		_, err = out.Write(data)
 		return err

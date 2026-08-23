@@ -62,9 +62,11 @@ func humanAge(d time.Duration) string {
 }
 
 // writeMachinesTable renders one fixed-width row per machine for `wb remote
-// machines`.
+// machines`. PUBLISHED_AT carries the exact RFC3339 UTC instant; PUBLISHED
+// stays the coarse relative age next to it, so a row is readable at a
+// glance but still comparable exactly across machines.
 func writeMachinesTable(out io.Writer, rows []remoteMachineRow) {
-	_, _ = fmt.Fprintf(out, "%-32s %-10s %-6s %-10s %9s %9s\n", "MACHINE", "PUBLISHED", "STALE", "WB", "ATTENTION", "WORKTREES")
+	_, _ = fmt.Fprintf(out, "%-32s %-20s %-10s %-6s %-10s %9s %9s\n", "MACHINE", "PUBLISHED_AT", "PUBLISHED", "STALE", "WB", "ATTENTION", "WORKTREES")
 	for _, row := range rows {
 		if row.Error != "" {
 			_, _ = fmt.Fprintf(out, "%-32s error: %s\n", row.Key, row.Error)
@@ -74,7 +76,8 @@ func writeMachinesTable(out io.Writer, rows []remoteMachineRow) {
 		if row.Stale {
 			stale = "STALE"
 		}
-		_, _ = fmt.Fprintf(out, "%-32s %-10s %-6s %-10s %9d %9d\n", row.Key, row.Age, stale, row.WBVersion, row.Attention, row.Worktrees)
+		_, _ = fmt.Fprintf(out, "%-32s %-20s %-10s %-6s %-10s %9d %9d\n",
+			row.Key, row.PublishedAt.UTC().Format(time.RFC3339), row.Age, stale, row.WBVersion, row.Attention, row.Worktrees)
 	}
 }
 

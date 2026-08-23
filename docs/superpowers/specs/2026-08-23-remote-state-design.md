@@ -74,13 +74,14 @@ type RepositoryState struct {
     Error         string   `yaml:"error,omitempty"`
 }
 
+// WorktreeState has no CreatedAt: worktrees.ListResult does not expose a
+// creation time, so there is nothing to carry here.
 type WorktreeState struct {
-    Task       string    `yaml:"task"`
-    Repository string    `yaml:"repository"`
-    Branch     string    `yaml:"branch"`
-    HeadSHA    string    `yaml:"head_sha"`
-    Dir        string    `yaml:"dir"`
-    CreatedAt  time.Time `yaml:"created_at,omitempty"`
+    Task       string `yaml:"task"`
+    Repository string `yaml:"repository"`
+    Branch     string `yaml:"branch"`
+    HeadSHA    string `yaml:"head_sha"`
+    Dir        string `yaml:"dir"`
 }
 ```
 
@@ -96,9 +97,13 @@ Rules:
    keeps `unpushed_count` only. Modified/untracked path lists are always
    included — they are the audit signal.
 3. **`RepositoryState` is built from the same scan `wb status` uses**
-   (`gitops.RepoStatus`, `gitops.TrackingState`). The CLI-side
-   `repositoryStatusInfo` either moves into `remotestate` or gains a
-   converter; there must not be two independent status models.
+   (`gitops.RepoStatus`, `gitops.TrackingState`). The scan
+   (`gitops.Status`/`gitops.Tracking` over `qualityTargets`) is shared. The
+   `wb status` row model is intentionally NOT unified with `RepositoryState`
+   in this iteration: `wb status` attention ignores tracking, `remote`
+   includes it, and changing `wb status` is out of scope. Follow-up: derive
+   `repositoryStatusInfo` from `RepositoryState` when `wb status` gains
+   tracking.
 4. **Worktrees come from `worktrees.List`** (active owner state only).
    The snapshot records what is checked out, not the journal or prompts.
 
@@ -106,13 +111,13 @@ Rules:
 
 ```go
 type Provider interface {
-    // Publish overwrites the caller's own login/machine entry.
+    // Publish overwrites the caller's own login/machine entry. Self-contained:
+    // implementations refresh their own view of the store first.
     Publish(ctx context.Context, snapshot Snapshot) (PublishResult, error)
-    // Fetch refreshes the local view of the store. A hub provider may no-op.
-    Fetch(ctx context.Context) error
     // List returns every machine currently in the store, including the
     // caller's own last-published entry. Entries that fail to parse are
     // returned as Entry{Error: ...} with Login/Machine taken from the path.
+    // Also self-contained: it refreshes the store view before reading.
     List(ctx context.Context) ([]Entry, error)
 }
 

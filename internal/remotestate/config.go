@@ -51,6 +51,13 @@ func (e *UnconfiguredError) Error() string {
 
 var machineName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// repoPart matches a single valid GitHub owner or repository name segment.
+// Requiring a leading alphanumeric rejects "." and ".." outright (both start
+// with a dot), which is what keeps ClonePath — built by joining
+// projects-root/owner/name — from ever being coaxed outside the projects
+// root by a crafted remote.repo value.
+var repoPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
 type configFile struct {
 	Remote *Config `yaml:"remote"`
 }
@@ -92,8 +99,8 @@ func LoadConfig(path string) (Config, error) {
 	if cfg.Provider != "git" {
 		return Config{}, fmt.Errorf("remote.provider %q is not supported; only \"git\" is available", cfg.Provider)
 	}
-	if cfg.RepoOwner() == "" || cfg.RepoName() == "" || strings.Count(cfg.Repo, "/") != 1 {
-		return Config{}, fmt.Errorf("remote.repo %q must be <owner>/<name>", cfg.Repo)
+	if strings.Count(cfg.Repo, "/") != 1 || !repoPart.MatchString(cfg.RepoOwner()) || !repoPart.MatchString(cfg.RepoName()) {
+		return Config{}, fmt.Errorf("remote.repo %q must be <owner>/<name>, each matching %s", cfg.Repo, repoPart)
 	}
 	if !machineName.MatchString(cfg.Machine) {
 		return Config{}, fmt.Errorf("remote.machine %q must match %s", cfg.Machine, machineName)

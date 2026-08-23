@@ -203,10 +203,44 @@ func TestRemoteMachinesFlagsStaleEntries(t *testing.T) {
 	}
 }
 
-func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
+// TestRemoteMachinesTableHasPublishedAtColumn proves the human-readable
+// table carries the exact RFC3339 UTC publish timestamp, not just the
+// coarse relative age: an operator diffing snapshots across machines needs
+// the real instant, and "9h" alone cannot be compared across two rows
+// published on different days.
+func TestRemoteMachinesTableHasPublishedAtColumn(t *testing.T) {
 	f, at := publishTwo(t)
 	var out bytes.Buffer
-	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "", false, &out); err != nil {
+	if err := runRemoteMachines(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	header := strings.SplitN(text, "\n", 2)[0]
+	fields := strings.Fields(header)
+	atCol, ageCol := -1, -1
+	for i, f := range fields {
+		switch f {
+		case "PUBLISHED_AT":
+			atCol = i
+		case "PUBLISHED":
+			ageCol = i
+		}
+	}
+	if atCol == -1 {
+		t.Fatalf("header = %q, want a PUBLISHED_AT column", header)
+	}
+	if ageCol == -1 || atCol >= ageCol {
+		t.Fatalf("header = %q, want PUBLISHED_AT before the PUBLISHED (age) column", header)
+	}
+	if !strings.Contains(text, at.Format(time.RFC3339)) {
+		t.Fatalf("table = %q, want alice's RFC3339 published_at %s", text, at.Format(time.RFC3339))
+	}
+}
+
+func TestRemoteStatusRendersCrossMachineWorklist(t *testing.T) {
+	f, at := publishTwo(t)
+	var out, errOut bytes.Buffer
+	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "", false, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
@@ -232,8 +266,8 @@ func TestRemoteStatusMachineFilterAndErrorRowsDoNotFail(t *testing.T) {
 	remoteGit(t, other, "commit", "-q", "-m", "corrupt")
 	remoteGit(t, other, "push", "-q", "origin", "main")
 
-	var out bytes.Buffer
-	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "", true, &out); err != nil {
+	var out, errOut bytes.Buffer
+	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "", true, &out, &errOut); err != nil {
 		t.Fatalf("error rows must not fail the command: %v", err)
 	}
 	if !strings.Contains(out.String(), "schema_version 99") {
@@ -241,11 +275,29 @@ func TestRemoteStatusMachineFilterAndErrorRowsDoNotFail(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "bob/vm", false, &out); err != nil {
+	if err := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "bob/vm", false, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "alice/laptop") || !strings.Contains(out.String(), "bob/vm") {
 		t.Fatalf("--machine filter not applied: %s", out.String())
+	}
+}
+
+// TestRemoteStatusMachineFilterNoMatchWritesToStderr proves an unmatched
+// --machine reports on stderr (a typo'd key must not look like "everyone is
+// clean") without failing the command: the store itself is fine, only the
+// filter matched nothing.
+func TestRemoteStatusMachineFilterNoMatchWritesToStderr(t *testing.T) {
+	f, at := publishTwo(t)
+	var out, errOut bytes.Buffer
+	if code := runRemoteStatus(f.deps("alice", at), f.projectsRoot, 24*time.Hour, "carol/desk", false, &out, &errOut); code != nil {
+		t.Fatalf("err = %v, want nil (exit code stays 0)", code)
+	}
+	if out.String() != "" {
+		t.Fatalf("stdout = %q, want empty when nothing matched", out.String())
+	}
+	if !strings.Contains(errOut.String(), "no machine carol/desk in the remote store") {
+		t.Fatalf("stderr = %q, want the no-match message", errOut.String())
 	}
 }
 
@@ -303,7 +355,7 @@ func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 		return nil, errors.New("store unreachable")
 	}
 	var out, errOut bytes.Buffer
-	if code := finishSync(nil, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(nil, true, false, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(errOut.String(), "remote publish failed (sync itself succeeded): store unreachable") {
@@ -314,7 +366,7 @@ func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 func TestFinishSyncPublishesAfterCleanSync(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out, errOut bytes.Buffer
-	if code := finishSync(nil, true, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(nil, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "published alice/laptop") {
@@ -326,11 +378,33 @@ func TestFinishSyncSkipsPublishWhenSyncFailed(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out, errOut bytes.Buffer
 	failed := []fleetsync.Result{{Status: fleetsync.Failed}}
-	if code := finishSync(failed, true, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
+	if code := finishSync(failed, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if strings.Contains(out.String(), "published") || strings.Contains(errOut.String(), "publish") {
 		t.Fatalf("publish must not run after a failed sync: out=%q err=%q", out.String(), errOut.String())
+	}
+}
+
+// TestFinishSyncDryRunSkipsPublish proves `wb sync --dry-run --publish` never
+// calls the remote publish path at all — deps.open would fail loudly if it
+// were invoked, so reaching a clean exit with the "skipping" message and no
+// stderr output proves the guard runs before anything provider-shaped.
+func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	deps := f.deps("alice", time.Now().UTC())
+	deps.open = func(remotestate.Config, string) (remotestate.Provider, error) {
+		return nil, errors.New("must not be called")
+	}
+	var out, errOut bytes.Buffer
+	if code := finishSync(nil, true, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "skipping remote publish") {
+		t.Fatalf("stdout = %q, want dry-run skip message", out.String())
+	}
+	if errOut.String() != "" {
+		t.Fatalf("stderr = %q, want empty", errOut.String())
 	}
 }
 

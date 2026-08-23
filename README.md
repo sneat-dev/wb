@@ -308,6 +308,10 @@ one line per machine with publish age and counts (repos, worktrees). The store
 is a private git repository holding one `snapshot.yaml` file per machine, so
 its commit history is the audit trail.
 
+Create the store with `gh repo create <owner>/wb-state --private` (no README
+needed; the first publish creates `main`), and SSH access to GitHub is
+required — the clone URL is `git@github.com:<owner>/<name>.git`.
+
 ### `wb sync`
 
 Reconciles `~/projects/{org}/{repo}` with GitHub:

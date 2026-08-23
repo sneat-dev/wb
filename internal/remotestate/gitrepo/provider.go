@@ -77,27 +77,70 @@ func sameRemote(a, b string) bool {
 	return norm(a) == norm(b)
 }
 
-// rebaseAbortDetail attempts to abort an in-progress rebase after a failed
-// PullRebase, so a conflict never leaves the clone wedged mid-rebase. It
-// returns a phrase describing the outcome for the caller's wrapped error;
-// RebaseAbort's own error, if any, is folded into that phrase rather than
-// replacing the PullRebase error that triggered it.
-func rebaseAbortDetail(clonePath string) string {
-	if err := gitops.RebaseAbort(clonePath); err != nil {
-		return fmt.Sprintf("rebase abort also failed: %v; local commit kept", err)
+// abortDetailIfRebasing aborts a rebase left in progress by a failed
+// PullRebase, so a conflict never leaves the clone wedged mid-rebase — but
+// only when one is actually running. A PullRebase failure often never
+// starts a rebase at all (e.g. a dirty tracked file, or nothing fetched yet
+// because the upstream branch does not exist), and calling RebaseAbort then
+// would itself fail with an unrelated "no rebase in progress" error that
+// would mask the real cause. wasRebasing is false in exactly that case, and
+// callers must then wrap the original error alone.
+func abortDetailIfRebasing(clonePath string) (detail string, wasRebasing bool) {
+	inProgress, err := gitops.RebaseInProgress(clonePath)
+	if err != nil || !inProgress {
+		return "", false
 	}
-	return "rebase aborted, local commit kept"
+	if err := gitops.RebaseAbort(clonePath); err != nil {
+		return fmt.Sprintf("rebase abort also failed: %v; local commits kept", err), true
+	}
+	return "rebase aborted, local commits kept", true
 }
 
 // Fetch clones if needed and rebases local state onto origin.
+//
+// A store with no branches yet (a freshly created, genuinely empty
+// repository) has nothing to rebase onto: HasUpstream is false, and Fetch
+// returns nil rather than attempting a rebase that git would reject with a
+// misleading "no such ref was fetched". The first Publish then creates the
+// branch with a plain push.
 func (p *Provider) Fetch(_ context.Context) error {
 	if err := p.ensureClone(); err != nil {
 		return err
 	}
+	has, err := gitops.HasUpstream(p.opts.ClonePath)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return nil
+	}
 	if err := gitops.PullRebase(p.opts.ClonePath); err != nil {
-		return fmt.Errorf("pull rebase failed (%s): %w", rebaseAbortDetail(p.opts.ClonePath), err)
+		if detail, wasRebasing := abortDetailIfRebasing(p.opts.ClonePath); wasRebasing {
+			return fmt.Errorf("pull --rebase failed (%s): %w", detail, err)
+		}
+		return fmt.Errorf("pull --rebase failed: %w", err)
 	}
 	return nil
+}
+
+// push publishes the clone's current branch. A branch with an upstream
+// (the ordinary case, and every case after the first publish into a given
+// store) pushes plainly; a branch with none — the first publish into a
+// store that had no branches at all — pushes with -u so the branch and its
+// upstream both come into existence in the same push.
+func (p *Provider) push() error {
+	has, err := gitops.HasUpstream(p.opts.ClonePath)
+	if err != nil {
+		return err
+	}
+	if has {
+		return gitops.Push(p.opts.ClonePath)
+	}
+	branch, err := gitops.CurrentBranch(p.opts.ClonePath)
+	if err != nil {
+		return err
+	}
+	return gitops.PushSetUpstream(p.opts.ClonePath, branch)
 }
 
 // Publish writes the snapshot, commits, and pushes, rebasing once on a
@@ -131,9 +174,13 @@ func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (
 		return remotestate.PublishResult{}, err
 	}
 	if committed {
-		if err := gitops.Push(p.opts.ClonePath); err != nil {
+		pushErr := p.push()
+		if pushErr != nil {
 			if rebaseErr := gitops.PullRebase(p.opts.ClonePath); rebaseErr != nil {
-				return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed (%s): %w", rebaseAbortDetail(p.opts.ClonePath), rebaseErr)
+				if detail, wasRebasing := abortDetailIfRebasing(p.opts.ClonePath); wasRebasing {
+					return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed (%s): %w", detail, rebaseErr)
+				}
+				return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed: %w", rebaseErr)
 			}
 			if err := gitops.Push(p.opts.ClonePath); err != nil {
 				return remotestate.PublishResult{}, fmt.Errorf("push rejected twice; local commit kept for the next publish: %w", err)

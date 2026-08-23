@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -292,6 +293,89 @@ func TestPublishAbortsRebaseOnConflict(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, ".git", "rebase-merge")); !os.IsNotExist(err) {
 		t.Fatalf(".git/rebase-merge still present after abort: err=%v", err)
+	}
+}
+
+// TestPublishIntoEmptyStoreCreatesMain proves a first publish works against
+// a genuinely empty store: a bare repository with no seed commit at all, the
+// shape `gh repo create` leaves behind. `git clone` of that produces a clone
+// with no branches and no upstream to rebase onto, so Publish must push
+// (with -u) rather than assume a rebase is possible. A second, independent
+// provider instance (simulating a second machine) must then be able to
+// clone that same store and publish alongside the first entry.
+func TestPublishIntoEmptyStoreCreatesMain(t *testing.T) {
+	setGitIdentity(t)
+	origin := t.TempDir()
+	gitIn(t, origin, "init", "-q", "--bare", "-b", "main")
+	p := machine(t, origin)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", at)); err != nil {
+		t.Fatalf("first publish into an empty store: %v", err)
+	}
+	files := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	for _, want := range []string{"README.md", "machines/alice/laptop/snapshot.yaml"} {
+		if !strings.Contains(files, want) {
+			t.Fatalf("origin tree %q lacks %s", files, want)
+		}
+	}
+
+	p2 := New(Options{ClonePath: filepath.Join(t.TempDir(), "projects", "team", "wb-state"), CloneURL: origin})
+	if _, err := p2.Publish(context.Background(), snap("bob", "vm", at.Add(time.Minute))); err != nil {
+		t.Fatalf("second machine's publish against the now-non-empty store: %v", err)
+	}
+
+	entries, err := p2.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, len(entries))
+	for _, e := range entries {
+		keys = append(keys, e.Snapshot.Key())
+	}
+	if strings.Join(keys, " ") != "alice/laptop bob/vm" {
+		t.Fatalf("List keys = %v, want both machines", keys)
+	}
+}
+
+// TestFetchReportsRealCauseWhenNoRebaseInProgress proves Fetch does not
+// blame a rebase-abort failure for an ordinary PullRebase failure that never
+// started a rebase at all: a dirty tracked file makes `git pull --rebase`
+// refuse before it creates .git/rebase-merge, so RebaseAbort must not be
+// attempted (it would itself fail with an unrelated "no rebase in progress"
+// error, masking the real cause).
+func TestFetchReportsRealCauseWhenNoRebaseInProgress(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second clone changes the one file every clone shares and pushes, so
+	// there is something new for Fetch to rebase onto.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	if err := os.WriteFile(filepath.Join(other, "README.md"), []byte("# remote change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, other, "commit", "-q", "-am", "remote readme change")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	// Dirty the tracked file locally without committing: `git pull --rebase`
+	// refuses immediately, before ever starting a rebase.
+	if err := os.WriteFile(filepath.Join(p.opts.ClonePath, "README.md"), []byte("dirty, uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := p.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("Fetch should fail: uncommitted local changes block the pull")
+	}
+	if strings.Contains(err.Error(), "rebase abort also failed") {
+		t.Fatalf("Fetch = %v, want the real cause, not a misattributed rebase-abort failure", err)
+	}
+	if inProgress, ierr := gitops.RebaseInProgress(p.opts.ClonePath); ierr != nil || inProgress {
+		t.Fatalf("RebaseInProgress = (%v, %v), want (false, nil): no rebase should have started", inProgress, ierr)
 	}
 }
 

@@ -115,13 +115,15 @@ func runSync(projectsRoot, filter string, only []string, workers int, dryRun, pu
 		}
 	}
 
-	return finishSync(results, publish, deps, projectsRoot, filter, workers, os.Stdout, os.Stderr)
+	return finishSync(results, publish, dryRun, deps, projectsRoot, filter, workers, os.Stdout, os.Stderr)
 }
 
 // finishSync maps sync results to an exit code and, when asked, publishes
 // this machine's state. A publish failure is reported to errOut and never
-// changes the sync exit code.
-func finishSync(results []fleetsync.Result, publish bool, deps remoteDeps, projectsRoot, filter string, workers int, out, errOut io.Writer) int {
+// changes the sync exit code. dryRun short-circuits publish entirely: a
+// `--dry-run --publish` sync changed nothing, so publishing its (unreal)
+// outcome would be a lie.
+func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDeps, projectsRoot, filter string, workers int, out, errOut io.Writer) int {
 	hasErrors := false
 	for _, res := range results {
 		if res.Status == fleetsync.Failed {
@@ -134,7 +136,9 @@ func finishSync(results []fleetsync.Result, publish bool, deps remoteDeps, proje
 	}
 
 	if publish {
-		if err := runRemotePublish(deps, projectsRoot, filter, workers, false, false, out); err != nil {
+		if dryRun {
+			_, _ = fmt.Fprintln(out, "dry-run: skipping remote publish")
+		} else if err := runRemotePublish(deps, projectsRoot, filter, workers, false, false, out); err != nil {
 			_, _ = fmt.Fprintln(errOut, "remote publish failed (sync itself succeeded):", err)
 		}
 	}

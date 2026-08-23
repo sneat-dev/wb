@@ -25,3 +25,7 @@ per machine, so history is the audit trail. Snapshots older than `--stale`
 (default 24h) are flagged `STALE`. Entries that cannot be decoded are shown as
 error rows and do not change the exit code. Exit `2` means the `remote`
 section is missing; the message includes the snippet to add.
+
+Create the store with `gh repo create <owner>/wb-state --private` (no README
+needed; the first publish creates `main`), and SSH access to GitHub is
+required — the clone URL is `git@github.com:<owner>/<name>.git`.

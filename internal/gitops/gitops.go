@@ -614,6 +614,47 @@ func AddCommit(repoPath, message string, paths ...string) (bool, error) {
 	return true, nil
 }
 
+// HasUpstream reports whether the checked-out branch has a resolvable
+// upstream (`@{u}`). A branch that has never been pushed, or one cloned from
+// a bare repository with no branches yet, resolves to false rather than an
+// error — that is the ordinary state of a first publish into an empty store,
+// not a fault.
+func HasUpstream(repoPath string) (bool, error) {
+	_, err := run(repoPath, "git", "rev-parse", "--verify", "--quiet", "@{u}")
+	if err != nil {
+		if exitCode(err) == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// RebaseInProgress reports whether repoPath has a rebase underway, by
+// checking for the two directories git creates while one is in progress
+// (rebase-merge for interactive/merge-based rebases, rebase-apply for the
+// classic am-based one). It resolves the paths with `git rev-parse
+// --git-path` rather than assuming <repoPath>/.git, so it also works from a
+// linked worktree, whose git-dir lives elsewhere.
+func RebaseInProgress(repoPath string) (bool, error) {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		out, err := run(repoPath, "git", "rev-parse", "--git-path", name)
+		if err != nil {
+			return false, err
+		}
+		p := strings.TrimSpace(out)
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(repoPath, p)
+		}
+		if _, err := os.Stat(p); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 // HeadSHA returns the full SHA of HEAD.
 func HeadSHA(repoPath string) (string, error) {
 	out, err := run(repoPath, "git", "rev-parse", "HEAD")

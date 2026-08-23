@@ -52,10 +52,13 @@ func TestLoadConfigRequiresRepoAndMachine(t *testing.T) {
 
 func TestLoadConfigRejectsBadValues(t *testing.T) {
 	for name, body := range map[string]string{
-		"provider": "remote:\n  provider: ftp\n  repo: a/b\n  machine: m\n",
-		"repo":     "remote:\n  repo: just-a-name\n  machine: m\n",
-		"machine":  "remote:\n  repo: a/b\n  machine: 'has space'\n",
-		"unpushed": "remote:\n  repo: a/b\n  machine: m\n  publish:\n    unpushed: maybe\n",
+		"provider":                 "remote:\n  provider: ftp\n  repo: a/b\n  machine: m\n",
+		"repo":                     "remote:\n  repo: just-a-name\n  machine: m\n",
+		"machine":                  "remote:\n  repo: a/b\n  machine: 'has space'\n",
+		"unpushed":                 "remote:\n  repo: a/b\n  machine: m\n  publish:\n    unpushed: maybe\n",
+		"repo owner traversal":     "remote:\n  repo: ../x\n  machine: m\n",
+		"repo name traversal":      "remote:\n  repo: a/..\n  machine: m\n",
+		"repo too many separators": "remote:\n  repo: a/b/c\n  machine: m\n",
 	} {
 		if _, err := LoadConfig(writeConfig(t, body)); err == nil {
 			t.Errorf("%s: expected validation error", name)

@@ -166,3 +166,98 @@ func TestAddCommitReportsInspectionFailure(t *testing.T) {
 		t.Fatalf("AddCommit should return committed=false on error")
 	}
 }
+
+func TestHasUpstreamTrueWhenBranchTracksRemote(t *testing.T) {
+	_, clone := seededOriginAndClone(t)
+	has, err := HasUpstream(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("HasUpstream = false, want true for a freshly cloned branch")
+	}
+}
+
+func TestHasUpstreamFalseWhenBranchHasNoUpstream(t *testing.T) {
+	setGitIdentity(t)
+	local := t.TempDir()
+	gitIn(t, local, "init", "-q", "-b", "main")
+	gitIn(t, local, "commit", "-q", "--allow-empty", "-m", "seed")
+	has, err := HasUpstream(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Fatal("HasUpstream = true, want false: no remote is configured at all")
+	}
+}
+
+func TestHasUpstreamErrorsOnNonRepo(t *testing.T) {
+	setGitIdentity(t)
+	notGitRepo := t.TempDir()
+	if _, err := HasUpstream(notGitRepo); err == nil {
+		t.Fatal("HasUpstream on a non-git directory should error, not report false")
+	}
+}
+
+func TestRebaseInProgressFalseNormally(t *testing.T) {
+	_, clone := seededOriginAndClone(t)
+	inProgress, err := RebaseInProgress(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inProgress {
+		t.Fatal("RebaseInProgress = true, want false: no rebase was started")
+	}
+}
+
+// TestRebaseInProgressTrueDuringConflict reuses the same conflict setup as
+// TestRebaseAbortClearsConflictAndKeepsLocalCommit to prove RebaseInProgress
+// detects the in-progress rebase before it is aborted, and reports false
+// again afterward.
+func TestRebaseInProgressTrueDuringConflict(t *testing.T) {
+	origin, clone := seededOriginAndClone(t)
+
+	if err := os.WriteFile(filepath.Join(clone, "shared.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "add", "shared.txt")
+	gitIn(t, clone, "commit", "-q", "-m", "seed shared.txt")
+	gitIn(t, clone, "push", "-q", "origin", "main")
+
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	if err := os.WriteFile(filepath.Join(other, "shared.txt"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, other, "commit", "-q", "-am", "remote change")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	if err := os.WriteFile(filepath.Join(clone, "shared.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "commit", "-q", "-am", "local change")
+
+	if err := PullRebase(clone); err == nil {
+		t.Fatal("PullRebase should fail on conflict")
+	}
+
+	inProgress, err := RebaseInProgress(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inProgress {
+		t.Fatal("RebaseInProgress = false, want true: a rebase is mid-conflict")
+	}
+
+	if err := RebaseAbort(clone); err != nil {
+		t.Fatal(err)
+	}
+	inProgress, err = RebaseInProgress(clone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inProgress {
+		t.Fatal("RebaseInProgress = true after abort, want false")
+	}
+}

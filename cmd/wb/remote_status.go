@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -25,7 +26,7 @@ local view. Entries that cannot be decoded are rendered as error rows and do
 not change the exit code.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemoteStatus(defaultRemoteDeps(), projectsRoot, stale, machine, jsonOut, os.Stdout)
+			return runRemoteStatus(defaultRemoteDeps(), projectsRoot, stale, machine, jsonOut, os.Stdout, os.Stderr)
 		},
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print entries as JSON")
@@ -39,7 +40,7 @@ type remoteStatusReport struct {
 	Entries  []remotestate.Entry `json:"entries"`
 }
 
-func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, machine string, jsonOut bool, out io.Writer) error {
+func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, machine string, jsonOut bool, out, errOut io.Writer) error {
 	_, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
 		return err
@@ -56,6 +57,9 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 			}
 		}
 		entries = filtered
+		if len(entries) == 0 {
+			_, _ = fmt.Fprintf(errOut, "no machine %s in the remote store\n", machine)
+		}
 	}
 	rows := machineRows(entries, deps.now(), stale)
 	if jsonOut {
