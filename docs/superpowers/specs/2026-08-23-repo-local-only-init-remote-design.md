@@ -60,6 +60,10 @@ Sets `git config wb.local-only true` in the given repo's local
 `.git/config`. Defaults to `.` like `wb repo status`. A `--unset` flag
 removes the key (`git config --unset wb.local-only`).
 
+`--unset` must be idempotent: `git config --unset` exits **5** when the key
+was never set (verified empirically). Treat exit 5 as success, not an error,
+so unsetting an unmarked repo is a no-op rather than a failure.
+
 This is a per-clone marker, not a fleet-wide config: it only exists once a
 repo is cloned locally, and does not survive a fresh re-clone. That's an
 accepted tradeoff — this feature is for repos you already have checked out
@@ -87,40 +91,86 @@ if repo.Path != "" {
         return res
     }
     if localOnly {
-        res.Status = LocalOnly
+        res.Status = SkippedLocalOnly
         return res
     }
 }
 ```
 
-`gitops.LocalOnly(path string) (bool, error)` runs
-`git config --bool wb.local-only` and reports `true` only when the value is
-set and true; a missing key (git's "key not found" exit status) is not an
-error — it means `false`.
+#### `gitops.LocalOnly` error handling
 
-New `fleetsync.Status` value `LocalOnly`, with `String() == "local-only"`.
+`gitops.LocalOnly(path string) (bool, error)` runs
+`git config --bool wb.local-only`. Exit codes differ meaningfully and must
+be distinguished (all verified empirically):
+
+| Situation | Exit code | `LocalOnly` returns |
+|---|---|---|
+| Key absent | 1 | `false, nil` |
+| Key set to a bool (`true`/`false`/`1`/`0`/`yes`…) | 0 | parsed value, `nil` |
+| Key set to a non-bool (e.g. `garbage`) | 128 (`fatal: bad boolean config value`) | `false, err` |
+
+Only exit 1 means "absent". Because `gitops.run()` wraps errors with
+`fmt.Errorf(...%w...)`, the implementation must `errors.As` down to
+`*exec.ExitError` and check `ExitCode() == 1` specifically — it must **not**
+follow the looser convention in `internal/hooks/git.go`'s
+`configuredHooksPath`, which swallows *all* `git config --get` errors as
+"absent". Swallowing exit 128 here would silently treat a malformed marker
+as unmarked and resume pulling a repo the user asked wb to leave alone.
+
+#### Status naming
+
+New `fleetsync.Status` value **`SkippedLocalOnly`**, with
+`String() == "skipped (local-only)"`.
+
+Deliberately *not* named `LocalOnly`: `cmd/wb/fleet_cmd.go:208` already has
+`fleetRemoteStats.LocalOnly`, paired with `RemoteOnly` and incremented at
+line 324 when `repository.Local && !repository.Remote` — i.e. "cloned
+locally, absent from GitHub", a *detected* condition. The new status is a
+*declared* marker and means something different. `SkippedLocalOnly` also
+parallels the existing `SkippedDirty` / `"skipped (dirty)"` convention.
+
+(The pre-existing `TestSyncLocalOnlyNoOp` in `fleetsync_test.go:209` tests
+the `repo.Remote == false` NoOp path and is unrelated; leave it alone, but
+do not mirror its name for the new test.)
+
 `printSyncSummary` (in `cmd/wb/sync.go`) gets one more line:
 
 ```go
-fmt.Printf("Local only        %d\n", counts[fleetsync.LocalOnly])
+fmt.Printf("Skipped (local)   %d\n", counts[fleetsync.SkippedLocalOnly])
 ```
 
-placed next to the other skip-style rows (`Not owned/fork`, `Archived kept`).
+placed next to the other skip-style rows (`Not owned/fork`, `Skipped
+(dirty)`, `Archived kept`).
 
 ### 3. `wb repo init-remote [path]`
 
 Bootstraps a repo whose current branch has never been pushed. Defaults to
 `.`. Steps:
 
-1. `git rev-parse HEAD` — if it fails (unborn branch, no commits), run
-   `git commit --allow-empty -m "Initial commit"`.
+1. Verify an `origin` remote exists (`git remote get-url origin`). If not,
+   fail early with a clear message rather than letting `git push` produce
+   `'origin' does not appear to be a git repository`.
 2. Determine the current branch name (`git branch --show-current`).
-3. `git push -u origin <branch>`.
+   **Guard against detached HEAD:** on a detached HEAD this exits 0 but
+   prints an empty string (verified), which would otherwise produce a
+   malformed `git push -u origin ""`. Empty output must abort with an
+   explicit "detached HEAD; check out a branch first" error.
+3. `git rev-parse HEAD` — if it fails (unborn branch, no commits; exits 128,
+   verified), run `git commit --allow-empty -m "Initial commit"`.
+4. `git push -u origin <branch>`.
 
-If step 3 fails (e.g. because the remote branch already has unrelated
+Note the ordering: the branch-name and origin checks come *before* the
+commit, so a misconfigured repo isn't left with a stray empty commit after
+a failed run.
+
+If step 4 fails (e.g. because the remote branch already has unrelated
 history), the command surfaces the git error as-is rather than trying to
 guess a resolution — this is a one-shot convenience for the empty/never-
 pushed case, not a general publish-and-merge tool.
+
+Running from a linked git worktree is safe and needs no special handling:
+worktrees share the canonical repo's object and ref store, so commit and
+push behave normally.
 
 ## Applying this now
 
@@ -131,12 +181,22 @@ pushed case, not a general publish-and-merge tool.
 
 ## Testing
 
-- `internal/gitops`: table-driven tests for `LocalOnly` (unset, true,
-  false, non-bool value) alongside existing `gitops_test.go` style.
+- `internal/gitops`: table-driven tests for `LocalOnly` covering all three
+  rows of the exit-code table above — key absent (exit 1 → `false, nil`),
+  key set true/false (exit 0 → parsed, `nil`), and key set to a non-bool
+  (exit 128 → error, **not** silently `false`). That last case is the
+  regression guard against copying the looser `configuredHooksPath`
+  convention.
 - `internal/fleetsync`: extend `fleetsync_test.go` with a case where a repo
-  path has `wb.local-only` set, asserting `Status == LocalOnly` and that no
-  git command is invoked against the remote.
-- `cmd/wb`: extend `cli_smoke_test.go` with smoke tests for
-  `wb repo local-only` (set + `--unset`, verified via `git config --get`)
-  and `wb repo init-remote` (against a scratch repo with a real but empty
-  remote, or a bare repo fixture, asserting the branch ends up pushed).
+  path has `wb.local-only` set, asserting `Status == SkippedLocalOnly` and
+  that no git command is invoked against the remote. Name it distinctly
+  from the existing `TestSyncLocalOnlyNoOp`, which covers the unrelated
+  `repo.Remote == false` path.
+- `cmd/wb`: extend `cli_smoke_test.go` with smoke tests for:
+  - `wb repo local-only` — set, verified via `git config --get`.
+  - `wb repo local-only --unset` — run twice, asserting the second run
+    still succeeds (exit-5 idempotency).
+  - `wb repo init-remote` — against a bare-repo fixture as origin,
+    asserting the branch ends up pushed.
+  - `wb repo init-remote` on a detached HEAD — asserting it fails with the
+    explicit error and leaves no stray empty commit.
