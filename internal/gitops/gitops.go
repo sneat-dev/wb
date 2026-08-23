@@ -435,10 +435,23 @@ func HasCommits(repoPath string) (bool, error) {
 	return true, nil
 }
 
-// OriginURL returns repoPath's origin remote URL, erroring when no origin is
-// configured.
+// OriginURL returns repoPath's origin remote URL after any url.<base>.insteadOf
+// rewriting. Use it for the URL git will actually contact; use ConfiguredOriginURL
+// when comparing against a URL the user configured elsewhere.
 func OriginURL(repoPath string) (string, error) {
 	out, err := run(repoPath, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ConfiguredOriginURL returns repoPath's remote.origin.url exactly as written in
+// the repository config, before any url.<base>.insteadOf rewriting. Use it when
+// comparing against a URL the user configured elsewhere; OriginURL returns the
+// effective (rewritten) URL git will actually contact.
+func ConfiguredOriginURL(repoPath string) (string, error) {
+	out, err := run(repoPath, "git", "config", "--get", "remote.origin.url")
 	if err != nil {
 		return "", err
 	}
@@ -567,4 +580,96 @@ func Status(repoPath string) (RepoStatus, error) {
 	}
 
 	return s, nil
+}
+
+// PullRebase replays local commits on top of the freshly fetched upstream.
+// It is the retry primitive for shared state repositories where several
+// machines push small non-conflicting commits.
+func PullRebase(repoPath string) error {
+	_, err := run(repoPath, "git", "pull", "--rebase", "--quiet")
+	return err
+}
+
+// Push publishes the current branch to its upstream.
+func Push(repoPath string) error {
+	_, err := run(repoPath, "git", "push", "--quiet")
+	return err
+}
+
+// RebaseAbort aborts an in-progress rebase, restoring repoPath to the state
+// it was in before the rebase started. Callers use it after a failed
+// PullRebase so a conflict never leaves the clone wedged mid-rebase.
+func RebaseAbort(repoPath string) error {
+	_, err := run(repoPath, "git", "rebase", "--abort")
+	return err
+}
+
+// AddCommit stages paths and commits them. It reports false without
+// committing when the stage is empty, so callers can publish idempotently.
+func AddCommit(repoPath, message string, paths ...string) (bool, error) {
+	args := append([]string{"add", "--all", "--"}, paths...)
+	if _, err := run(repoPath, "git", args...); err != nil {
+		return false, err
+	}
+	_, err := run(repoPath, "git", "diff", "--cached", "--quiet")
+	if err == nil {
+		return false, nil
+	}
+	switch exitCode(err) {
+	case 1:
+		// staged changes exist
+	default:
+		return false, fmt.Errorf("inspect staged changes: %w", err)
+	}
+	if _, err := run(repoPath, "git", "commit", "--quiet", "-m", message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// HasUpstream reports whether the checked-out branch has a resolvable
+// upstream (`@{u}`). A branch that has never been pushed, or one cloned from
+// a bare repository with no branches yet, resolves to false rather than an
+// error — that is the ordinary state of a first publish into an empty store,
+// not a fault.
+func HasUpstream(repoPath string) (bool, error) {
+	_, err := run(repoPath, "git", "rev-parse", "--verify", "--quiet", "@{u}")
+	if err != nil {
+		if exitCode(err) == 1 {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// RebaseInProgress reports whether repoPath has a rebase underway, by
+// checking for the two directories git creates while one is in progress
+// (rebase-merge for interactive/merge-based rebases, rebase-apply for the
+// classic am-based one). It resolves the paths with `git rev-parse
+// --git-path` rather than assuming <repoPath>/.git, so it also works from a
+// linked worktree, whose git-dir lives elsewhere.
+func RebaseInProgress(repoPath string) (bool, error) {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		out, err := run(repoPath, "git", "rev-parse", "--git-path", name)
+		if err != nil {
+			return false, err
+		}
+		p := strings.TrimSpace(out)
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(repoPath, p)
+		}
+		if _, err := os.Stat(p); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+// HeadSHA returns the full SHA of HEAD.
+func HeadSHA(repoPath string) (string, error) {
+	out, err := run(repoPath, "git", "rev-parse", "HEAD")
+	return strings.TrimSpace(out), err
 }

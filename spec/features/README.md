@@ -14,6 +14,7 @@ format: https://specscore.md/features-index-specification
 | [Exact Dependency Set](dependency-set/README.md) | Implementing | `wb deps set <ecosystem> <dependency>@<version>` changes existing references |
 | [Fleet Quality](fleet-quality/README.md) | Implementing | WB measures Go test coverage and runs conventional lint, test, and build checks for one repository or a selected fleet of local clones. The commands continue through every selected repository and produce a reviewable Markdown index plus deterministic YAML or JSON for tools. |
 | [Fleet Status](fleet-status/README.md) | Implementing | Fleet inspection uses explicit nouns: |
+| [Remote State](remote-state/README.md) | Implementing | `wb remote` shares fleet state across machines through a pluggable store: |
 | [Hierarchical Migration Campaigns](hierarchical-migration-campaigns/README.md) | Implementing | WB migrates a dependency hierarchy through dedicated local worktrees, then can |
 | [Worktree Lifecycle](worktree-lifecycle/README.md) | Implementing | `wb worktree` creates, guards, inventories, and safely cleans task worktrees |
 | [Self-Update](self-update/README.md) | Implementing | `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest |

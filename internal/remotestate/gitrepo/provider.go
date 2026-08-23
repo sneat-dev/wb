@@ -1,0 +1,237 @@
+// Package gitrepo stores machine snapshots in a git repository: one file per
+// machine, history for free, no server.
+package gitrepo
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/sneat-dev/wb/internal/gitops"
+	"github.com/sneat-dev/wb/internal/remotestate"
+)
+
+// Options locate the state repository clone and its origin.
+type Options struct {
+	// ClonePath is <projects-root>/<owner>/<name>; created by cloning when absent.
+	ClonePath string
+	// CloneURL is what git clone receives when ClonePath does not exist yet.
+	CloneURL string
+}
+
+// Provider implements remotestate.Provider over a git clone.
+type Provider struct {
+	opts Options
+}
+
+// New returns a provider; nothing touches disk until Publish/Fetch/List.
+func New(opts Options) *Provider { return &Provider{opts: opts} }
+
+// SnapshotPath is the store-relative path of one machine's snapshot.
+func SnapshotPath(login, machine string) string {
+	return path.Join("machines", login, machine, "snapshot.yaml")
+}
+
+const readme = `# WB remote state
+
+Machine snapshots published by [wb remote publish](https://wb.sneat.dev).
+One file per machine under machines/<login>/<machine>/snapshot.yaml.
+Do not edit by hand; run wb remote status to read it.
+`
+
+// ensureClone clones the store when the clone path is missing, and verifies
+// the origin of an existing clone against the configured remote when it is
+// already present — otherwise any directory that happens to hold a `.git`
+// would silently be treated as the state repo.
+func (p *Provider) ensureClone() error {
+	if _, err := os.Stat(filepath.Join(p.opts.ClonePath, ".git")); err == nil {
+		got, err := gitops.ConfiguredOriginURL(p.opts.ClonePath)
+		if err != nil {
+			return err
+		}
+		if !sameRemote(got, p.opts.CloneURL) {
+			return fmt.Errorf("%s is a clone of %s, not the configured remote store %s; move it aside or fix remote.repo", p.opts.ClonePath, got, p.opts.CloneURL)
+		}
+		return nil
+	}
+	return gitops.Clone(p.opts.CloneURL, p.opts.ClonePath)
+}
+
+// sameRemote reports whether a and b name the same git remote, tolerating a
+// trailing "/" and a ".git" suffix on either side. Local clone sources (no
+// "://" scheme and no scp-like "user@host:" prefix) are additionally run
+// through filepath.Clean, so "/tmp/x" and "/tmp/x/" compare equal.
+func sameRemote(a, b string) bool {
+	norm := func(s string) string {
+		s = strings.TrimSuffix(s, ".git")
+		if !strings.Contains(s, "://") && !strings.Contains(s, "@") {
+			s = filepath.Clean(s)
+		}
+		return s
+	}
+	return norm(a) == norm(b)
+}
+
+// abortDetailIfRebasing aborts a rebase left in progress by a failed
+// PullRebase, so a conflict never leaves the clone wedged mid-rebase — but
+// only when one is actually running. A PullRebase failure often never
+// starts a rebase at all (e.g. a dirty tracked file, or nothing fetched yet
+// because the upstream branch does not exist), and calling RebaseAbort then
+// would itself fail with an unrelated "no rebase in progress" error that
+// would mask the real cause. wasRebasing is false in exactly that case, and
+// callers must then wrap the original error alone.
+func abortDetailIfRebasing(clonePath string) (detail string, wasRebasing bool) {
+	inProgress, err := gitops.RebaseInProgress(clonePath)
+	if err != nil || !inProgress {
+		return "", false
+	}
+	if err := gitops.RebaseAbort(clonePath); err != nil {
+		return fmt.Sprintf("rebase abort also failed: %v; local commits kept", err), true
+	}
+	return "rebase aborted, local commits kept", true
+}
+
+// Fetch clones if needed and rebases local state onto origin.
+//
+// A store with no branches yet (a freshly created, genuinely empty
+// repository) has nothing to rebase onto: HasUpstream is false, and Fetch
+// returns nil rather than attempting a rebase that git would reject with a
+// misleading "no such ref was fetched". The first Publish then creates the
+// branch with a plain push.
+func (p *Provider) Fetch(_ context.Context) error {
+	if err := p.ensureClone(); err != nil {
+		return err
+	}
+	has, err := gitops.HasUpstream(p.opts.ClonePath)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return nil
+	}
+	if err := gitops.PullRebase(p.opts.ClonePath); err != nil {
+		if detail, wasRebasing := abortDetailIfRebasing(p.opts.ClonePath); wasRebasing {
+			return fmt.Errorf("pull --rebase failed (%s): %w", detail, err)
+		}
+		return fmt.Errorf("pull --rebase failed: %w", err)
+	}
+	return nil
+}
+
+// push publishes the clone's current branch. A branch with an upstream
+// (the ordinary case, and every case after the first publish into a given
+// store) pushes plainly; a branch with none — the first publish into a
+// store that had no branches at all — pushes with -u so the branch and its
+// upstream both come into existence in the same push.
+func (p *Provider) push() error {
+	has, err := gitops.HasUpstream(p.opts.ClonePath)
+	if err != nil {
+		return err
+	}
+	if has {
+		return gitops.Push(p.opts.ClonePath)
+	}
+	branch, err := gitops.CurrentBranch(p.opts.ClonePath)
+	if err != nil {
+		return err
+	}
+	return gitops.PushSetUpstream(p.opts.ClonePath, branch)
+}
+
+// Publish writes the snapshot, commits, and pushes, rebasing once on a
+// rejected push. An unchanged snapshot returns the current HEAD without a
+// new commit.
+func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (remotestate.PublishResult, error) {
+	if err := p.Fetch(ctx); err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	data, err := remotestate.Encode(snapshot)
+	if err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	rel := SnapshotPath(snapshot.Login, snapshot.Machine)
+	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	if err := os.WriteFile(abs, data, 0o644); err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	readmePath := filepath.Join(p.opts.ClonePath, "README.md")
+	if _, err := os.Stat(readmePath); errors.Is(err, os.ErrNotExist) {
+		if err := os.WriteFile(readmePath, []byte(readme), 0o644); err != nil {
+			return remotestate.PublishResult{}, err
+		}
+	}
+	message := fmt.Sprintf("wb: publish %s @ %s", snapshot.Key(), snapshot.PublishedAt.UTC().Format("2006-01-02T15:04:05Z07:00"))
+	committed, err := gitops.AddCommit(p.opts.ClonePath, message, rel, "README.md")
+	if err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	if committed {
+		pushErr := p.push()
+		if pushErr != nil {
+			if rebaseErr := gitops.PullRebase(p.opts.ClonePath); rebaseErr != nil {
+				if detail, wasRebasing := abortDetailIfRebasing(p.opts.ClonePath); wasRebasing {
+					return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed (%s): %w", detail, rebaseErr)
+				}
+				return remotestate.PublishResult{}, fmt.Errorf("push rejected and rebase failed: %w", rebaseErr)
+			}
+			if err := gitops.Push(p.opts.ClonePath); err != nil {
+				return remotestate.PublishResult{}, fmt.Errorf("push rejected twice; local commit kept for the next publish: %w", err)
+			}
+		}
+	}
+	sha, err := gitops.HeadSHA(p.opts.ClonePath)
+	if err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	return remotestate.PublishResult{Location: sha}, nil
+}
+
+// List fetches and then reads every machines/<login>/<machine>/snapshot.yaml.
+func (p *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
+	if err := p.Fetch(ctx); err != nil {
+		return nil, err
+	}
+	root := filepath.Join(p.opts.ClonePath, "machines")
+	var entries []remotestate.Entry
+	err := filepath.WalkDir(root, func(file string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && file == root {
+				return nil
+			}
+			return err
+		}
+		if d.IsDir() || d.Name() != "snapshot.yaml" {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, file)
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) != 3 {
+			return nil
+		}
+		entry := remotestate.Entry{Snapshot: remotestate.Snapshot{Login: parts[0], Machine: parts[1]}}
+		data, readErr := os.ReadFile(file)
+		if readErr != nil {
+			entry.Error = readErr.Error()
+		} else if snapshot, decodeErr := remotestate.Decode(data); decodeErr != nil {
+			entry.Error = decodeErr.Error()
+		} else {
+			snapshot.Login, snapshot.Machine = parts[0], parts[1]
+			entry.Snapshot = snapshot
+		}
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Snapshot.Key() < entries[j].Snapshot.Key() })
+	return entries, nil
+}

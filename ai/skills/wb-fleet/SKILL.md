@@ -19,6 +19,8 @@ Choose one command that answers the question:
 | Measure Go coverage | `wb coverage` | [quality.md](references/quality.md) |
 | Run conventional lint/test/build | `wb verify` | [quality.md](references/quality.md) |
 | Run a stable local CI profile | `wb check` | [quality.md](references/quality.md) |
+| Publish this machine's state for other machines | `wb remote publish` | [remote.md](references/remote.md) |
+| See every machine's attention worklist | `wb remote status` / `wb remote machines` | [remote.md](references/remote.md) |
 
 Do not run overlapping `verify` and `check` commands unless they answer
 different questions. Start with one repository; add `--fleet` and a filter

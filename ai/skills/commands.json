@@ -47,6 +47,9 @@
     "repo": [
       "wb-fleet"
     ],
+    "remote": [
+      "wb-fleet"
+    ],
     "worktree": [
       "wb-worktrees",
       "wb-change",

@@ -109,6 +109,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newBranchCmd())
 	root.AddCommand(newSelfUpdateCmd())
+	root.AddCommand(newRemoteCmd())
 
 	return root
 }
@@ -124,7 +125,8 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
-		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
+		"remote status": true, "remote machines": true,
 		"layout audit": true, "layout clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
@@ -143,7 +145,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
-		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true,
+		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree summary": true,
 		"branch list":      true, "branch cleanup": true,
