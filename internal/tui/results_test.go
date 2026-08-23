@@ -18,6 +18,9 @@ func TestReviewable(t *testing.T) {
 	}{
 		{fleetsync.Failed, true},
 		{fleetsync.SkippedDirty, true},
+		{fleetsync.Diverged, true},
+		{fleetsync.NoUpstream, true},
+		{fleetsync.EmptyRemote, false},
 		{fleetsync.KeptArchived, true},
 		{fleetsync.Cloned, false},
 		{fleetsync.Pulled, false},

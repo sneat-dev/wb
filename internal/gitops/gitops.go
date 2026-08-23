@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/console"
@@ -212,10 +213,17 @@ func lastLine(s string) string {
 	return strings.TrimSpace(lines[len(lines)-1])
 }
 
-// Pull runs `git pull --quiet` on the currently checked-out branch of
-// repoPath.
+// Pull runs `git pull --ff-only --quiet` on the currently checked-out branch
+// of repoPath.
+//
+// Fast-forward-only is deliberate. A canonical clone must never acquire a
+// merge commit from an unattended fleet sync, and whether a plain `git pull`
+// would merge, rebase, or refuse depends on the machine's pull.rebase
+// setting — so without --ff-only the same divergence rewrites history on one
+// machine and errors on another. Refusing is the only safe answer; the caller
+// classifies the refusal.
 func Pull(repoPath string) error {
-	_, err := run(repoPath, "git", "pull", "--quiet")
+	_, err := run(repoPath, "git", "pull", "--ff-only", "--quiet")
 	return err
 }
 
@@ -232,6 +240,84 @@ func RemoteHasBranches(repoPath string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+// TrackingState is the checked-out branch's relationship to its upstream, as
+// of the last fetch. It is what sync needs in order to tell a divergence
+// ("each side has commits the other lacks") apart from a genuine fault.
+type TrackingState struct {
+	Branch   string // checked-out branch, empty when HEAD is detached
+	Upstream string // e.g. "origin/main", empty when it does not resolve
+	Ahead    int    // local commits the upstream does not have
+	Behind   int    // upstream commits the local branch does not have
+	// Configured records whether the branch names an upstream in git config,
+	// which is not the same as Upstream resolving. A branch configured to
+	// track a ref the remote no longer publishes has Configured true and
+	// Upstream empty — a renamed or deleted branch, and a real problem —
+	// while a branch that names no upstream at all simply has nowhere to
+	// pull from. Callers must not conflate the two.
+	Configured bool
+}
+
+// Diverged reports whether the branch and its upstream have each moved on
+// with commits the other lacks, so no fast-forward is possible.
+func (t TrackingState) Diverged() bool { return t.Ahead > 0 && t.Behind > 0 }
+
+// Summary renders the state as one short line for a sync report, e.g.
+// "main is 1 ahead, 2 behind origin/main".
+func (t TrackingState) Summary() string {
+	switch {
+	case t.Branch == "":
+		return "detached HEAD"
+	case t.Configured && t.Upstream == "":
+		return t.Branch + " tracks an upstream that no longer resolves"
+	case t.Upstream == "":
+		return t.Branch + " has no upstream"
+	default:
+		return fmt.Sprintf("%s is %d ahead, %d behind %s", t.Branch, t.Ahead, t.Behind, t.Upstream)
+	}
+}
+
+// Tracking reads the checked-out branch's divergence from its upstream.
+//
+// The counts are only as current as the last fetch. Callers read it after a
+// failed Pull, which has already fetched, so they see current numbers without
+// a second round trip. A missing branch, upstream, or merge base is a state
+// to report, not an error: the zero-ish TrackingState it returns describes
+// exactly the situation the caller has to explain to a human.
+func Tracking(repoPath string) (TrackingState, error) {
+	var t TrackingState
+
+	if out, err := run(repoPath, "git", "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		t.Branch = strings.TrimSpace(out)
+	}
+	if t.Branch != "" {
+		if _, err := run(repoPath, "git", "config", "--get", "branch."+t.Branch+".merge"); err == nil {
+			t.Configured = true
+		}
+	}
+
+	out, err := run(repoPath, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	if err != nil {
+		return t, nil
+	}
+	t.Upstream = strings.TrimSpace(out)
+
+	out, err = run(repoPath, "git", "rev-list", "--left-right", "--count", "HEAD...@{u}")
+	if err != nil {
+		return t, nil
+	}
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return t, fmt.Errorf("unexpected rev-list output for %s: %q", repoPath, strings.TrimSpace(out))
+	}
+	if t.Ahead, err = strconv.Atoi(fields[0]); err != nil {
+		return t, fmt.Errorf("unexpected ahead count for %s: %w", repoPath, err)
+	}
+	if t.Behind, err = strconv.Atoi(fields[1]); err != nil {
+		return t, fmt.Errorf("unexpected behind count for %s: %w", repoPath, err)
+	}
+	return t, nil
 }
 
 // SkipSyncKey is the git config key marking a repo that wb sync must leave

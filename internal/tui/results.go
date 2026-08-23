@@ -22,6 +22,10 @@ func (i resultItem) Description() string {
 	if s := i.Detail.Summary(); s != "" {
 		return s
 	}
+	switch i.Status {
+	case fleetsync.Diverged, fleetsync.NoUpstream:
+		return i.Status.String() + ": " + i.Tracking.Summary()
+	}
 	return i.Status.String()
 }
 
@@ -36,8 +40,8 @@ type ResultsModel struct {
 }
 
 // NewResultsModel builds a ResultsModel over the reviewable results —
-// Failed, SkippedDirty, or KeptArchived. Results in other states are
-// omitted; they synced cleanly and need no review.
+// Failed, SkippedDirty, KeptArchived, Diverged, or NoUpstream. Results in
+// other states are omitted; they synced cleanly and need no review.
 func NewResultsModel(results []fleetsync.Result) ResultsModel {
 	items := make([]list.Item, 0, len(results))
 	for _, r := range results {
@@ -53,7 +57,8 @@ func NewResultsModel(results []fleetsync.Result) ResultsModel {
 // Reviewable reports whether a result belongs in the drill-down list.
 func Reviewable(r fleetsync.Result) bool {
 	switch r.Status {
-	case fleetsync.Failed, fleetsync.SkippedDirty, fleetsync.KeptArchived:
+	case fleetsync.Failed, fleetsync.SkippedDirty, fleetsync.KeptArchived,
+		fleetsync.Diverged, fleetsync.NoUpstream:
 		return true
 	default:
 		return false
