@@ -121,6 +121,7 @@ type LogInitOptions struct {
 	CLI          string
 	Provider     string
 	Runtime      string
+	AgentID      string
 }
 
 // LogInit ensures the local journal exists, reconstructs a missing manifest,
@@ -184,6 +185,9 @@ func LogInit(ctx context.Context, options LogInitOptions) (LogVerbResult, error)
 		Git:     ptrLocalGit(observeLocalGit(ctx, root)),
 	})
 	if err != nil {
+		return LogVerbResult{}, err
+	}
+	if _, err := recordOwner(root, manifest.EffortID, ownerAgent(options.Runtime, options.AgentID), strings.TrimSpace(options.Model), currentProcessID()); err != nil {
 		return LogVerbResult{}, err
 	}
 	return LogVerbResult{

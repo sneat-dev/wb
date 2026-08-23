@@ -661,6 +661,27 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, publicationErr
 		}
 	}
+	// Resuming an existing checkout is a new process/session attachment even
+	// though its immutable claim remains authoritative. Preserve every owner
+	// rather than overwriting the creator identity in the claim or manifest.
+	for index := range plans {
+		plan := &plans[index]
+		if !plan.resumed || plan.resumeClaim == nil {
+			continue
+		}
+		effort := plan.resumeClaim.EffortID
+		agent := ownerAgent(normalized.WorkLog.AgentRuntime, normalized.WorkLog.AgentID)
+		model := strings.TrimSpace(normalized.WorkLog.Model)
+		if agent == "" {
+			agent = ownerAgent(plan.resumeClaim.AgentRuntime, plan.resumeClaim.AgentID)
+		}
+		if model == "" {
+			model = plan.resumeClaim.Model
+		}
+		if _, err := recordOwner(plan.result.WorktreeDir, effort, agent, model, currentProcessID()); err != nil {
+			return nil, fmt.Errorf("record resumed worktree owner for %s: %w", plan.result.Repository, err)
+		}
+	}
 	results := make([]CreateResult, len(plans))
 	for index := range plans {
 		results[index] = plans[index].result

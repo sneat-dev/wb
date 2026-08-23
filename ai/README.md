@@ -30,6 +30,15 @@ source, not proof that a harness has installed them. An installed `wb-merge`
 adapter supersedes copied legacy merger prompts, which should be removed or
 disabled so they cannot compete with the canonical contract.
 
+## Completion contract
+
+[`wb-change/references/completion.md`](skills/wb-change/references/completion.md)
+is the single definition of done for implementation work. It requires an agent
+to report the achieved outcome as `implemented`, `published`, `landed`, or
+`blocked`; it must never imply a push or merge happened without evidence. The
+Codex default prompt routes to `$wb-change`, and Claude Code discovers the same
+skill recursively, so neither harness maintains a competing copy.
+
 [`skills/commands.json`](skills/commands.json) maps every public WB top-level
 command to at least one skill. `go test ./cmd/wb` enforces that coverage as the
 CLI evolves.

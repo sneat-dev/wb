@@ -35,7 +35,9 @@ type ListOptions struct {
 	// diagnostic or result is retained, so a candidate outside the selection
 	// can neither appear in the report nor influence it.
 	Filter string
-	GitHub bool
+	// OwnerState limits results by current owner PID liveness: active or orphaned.
+	OwnerState string
+	GitHub     bool
 	// AbsorbedBy points at the merged pull request or exact landing commit
 	// that carried a candidate's work into the target inside a differently
 	// named integration branch. It selects which receipt to verify and never
@@ -86,6 +88,8 @@ type ListResult struct {
 	LockOwner         LockOwnerState `json:"lock_owner,omitempty"`
 	LockOwnerPID      int            `json:"lock_owner_pid,omitempty"`
 	LastCommit        time.Time      `json:"last_commit"`
+	Owners            []OwnerView    `json:"owners,omitempty"`
+	OwnerState        string         `json:"owner_state"`
 	OpenPullRequest   *PullRequest   `json:"open_pull_request,omitempty"`
 	MergedPullRequest *PullRequest   `json:"merged_pull_request,omitempty"`
 }
@@ -491,6 +495,10 @@ func List(ctx context.Context, options ListOptions) ([]ListResult, error) {
 // such as .claude, .github, source, and generated trees from being re-read as
 // task-level repositories.
 func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome, error) {
+	options.OwnerState = strings.TrimSpace(options.OwnerState)
+	if options.OwnerState != "" && options.OwnerState != "active" && options.OwnerState != "orphaned" {
+		return ListOutcome{}, fmt.Errorf("unsupported owner state %q; use active or orphaned", options.OwnerState)
+	}
 	projectsRoot, task, base, filter, err := normalizeListOptions(options)
 	if err != nil {
 		return ListOutcome{}, err
@@ -510,6 +518,15 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		outcome.Results = append(outcome.Results, results...)
 		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
 		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
+	}
+	if options.OwnerState != "" {
+		filtered := outcome.Results[:0]
+		for _, result := range outcome.Results {
+			if result.OwnerState == options.OwnerState {
+				filtered = append(filtered, result)
+			}
+		}
+		outcome.Results = filtered
 	}
 	sort.Slice(outcome.Results, func(i, j int) bool {
 		if outcome.Results[i].Task == outcome.Results[j].Task {
@@ -1499,6 +1516,11 @@ func inspectLifecycleWorktree(
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
 	}
+	owners, ownerErr := ownerViews(worktree)
+	if ownerErr != nil {
+		return ListResult{}, fmt.Errorf("read owner metadata for %s: %w", worktree, ownerErr)
+	}
+	result.Owners, result.OwnerState = owners, worktreeOwnerState(owners)
 	if withGitHub {
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, base)
 		if err != nil {

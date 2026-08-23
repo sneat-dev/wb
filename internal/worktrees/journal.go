@@ -469,6 +469,9 @@ func writeCreationJournal(effort, run, claimID string, result CreateResult, opti
 			return err
 		}
 	}
+	if _, err := recordOwner(result.WorktreeDir, effort, ownerAgent(options.AgentRuntime, options.AgentID), strings.TrimSpace(options.Model), currentProcessID()); err != nil {
+		return err
+	}
 	if len(options.originalPromptContents) == 0 {
 		return nil
 	}
@@ -491,8 +494,17 @@ func writeCreationJournal(effort, run, claimID string, result CreateResult, opti
 	if strings.TrimSpace(options.Initiator) != "" {
 		header.Source = PromptSourceHuman
 	}
-	_, err = AppendPrompt(result.WorktreeDir, header, options.originalPromptContents)
-	return err
+	if _, err = AppendPrompt(result.WorktreeDir, header, options.originalPromptContents); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ownerAgent(runtime, agentID string) string {
+	if runtime = strings.TrimSpace(runtime); runtime != "" {
+		return runtime
+	}
+	return strings.TrimSpace(agentID)
 }
 
 // ReconstructManifest derives a manifest for a worktree that predates the

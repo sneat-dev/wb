@@ -32,6 +32,8 @@ recognizes legacy linked worktrees there during migration.
   finalize merged work, recycle caches safely, or abort interrupted claims.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
   (checkpoint, steer, refresh, handoff, recover, finalize, sync).
+- Read [ownership.md](references/ownership.md) to attach an agent session,
+  inspect owner metadata and PID liveness, or triage active/orphaned worktrees.
 - Consult [capabilities.json](../../capabilities.json) before assuming a WB
   surface exists; execute only commands whose runtime evidence is present.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.
@@ -49,6 +51,8 @@ wb worktree orphans --only remove
 wb worktree backfill
 wb worktree backfill --apply
 wb worktree list
+wb worktree list --only active
+wb worktree list --only orphaned
 wb worktree cleanup <task>
 wb worktree cleanup --all-merged
 wb worktree cleanup <task> --apply --remote --older-than 0
@@ -137,7 +141,9 @@ wb worktree info . --format json
 ```
 
 That summary includes claim identity, prompt ordinals/digests, and live Git
-state. Prompt bodies stay omitted.
+state, plus append-only owner metadata and live PID status. Prompt bodies stay
+omitted. See [ownership.md](references/ownership.md) before treating a dead PID
+as authority to discard work.
 
 To overview every live worktree for one task/effort:
 
