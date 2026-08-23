@@ -27,6 +27,12 @@ skills defer detailed flags until needed; workflow skills compose safe code
 changes and dependency campaigns without making agents rediscover the process.
 Every harness reads the same `ai/skills/*/SKILL.md` files.
 
+Implementation completion is defined once in
+[`wb-change`'s completion contract](ai/skills/wb-change/references/completion.md).
+WB agents report whether work is `implemented`, `published`, `landed`, or
+`blocked`; they do not claim that a change reached `main` without exact merge
+and CI evidence.
+
 ## Commands
 
 ```
@@ -165,7 +171,9 @@ only while Git has a real active `rebase-merge` or `rebase-apply` state.
 Inspect live task worktrees without contacting GitHub:
 
 ```sh
-wb worktree list
+wb worktree list                    # includes owner agent/model/PID liveness
+wb worktree list --only active      # at least one recorded PID is live
+wb worktree list --only orphaned    # no recorded live PID
 wb worktree list bots-e2e --github
 ```
 

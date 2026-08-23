@@ -81,6 +81,7 @@ type WorkLogView struct {
 	Prompts        []PromptRecord      `json:"prompts"`
 	OriginalPrompt *OriginalPromptView `json:"original_prompt,omitempty"`
 	Claim          *WorkLogClaimView   `json:"claim,omitempty"`
+	Owners         []OwnerView         `json:"owners,omitempty"`
 	Git            WorkLogGitEvidence  `json:"git"`
 	Notes          []string            `json:"notes,omitempty"`
 }
@@ -109,6 +110,11 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		return WorkLogView{}, err
 	}
 	view := WorkLogView{Worktree: root, Prompts: []PromptRecord{}}
+	owners, ownersErr := ownerViews(root)
+	if ownersErr != nil {
+		return WorkLogView{}, ownersErr
+	}
+	view.Owners = owners
 
 	if manifest, manifestErr := ReadManifest(root); manifestErr == nil {
 		copy := manifest
@@ -339,6 +345,16 @@ func FormatWorkLogViewText(view WorkLogView) string {
 		}
 		if view.Claim.PromptDigest != "" {
 			fmt.Fprintf(&b, "prompt_sha256: %s\n", view.Claim.PromptDigest)
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("## Owners\n")
+	if len(view.Owners) == 0 {
+		b.WriteString("(none recorded; treated as orphaned)\n\n")
+	} else {
+		for _, owner := range view.Owners {
+			fmt.Fprintf(&b, "- agent=%s model=%s effort=%s pid=%d status=%s at=%s\n", owner.Agent, owner.Model, owner.Effort, owner.PID, owner.PIDStatus, owner.At.Format(time.RFC3339))
 		}
 		b.WriteString("\n")
 	}

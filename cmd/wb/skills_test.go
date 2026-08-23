@@ -142,6 +142,64 @@ func TestAgentSkillsCoverPublicCommands(t *testing.T) {
 	assertCodexManifestExposesSkills(t, repoRoot)
 }
 
+func TestWBChangeCompletionContractIsSharedAcrossHarnesses(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	contractPath := filepath.Join(repoRoot, "ai", "skills", "wb-change", "references", "completion.md")
+	contract, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"`implemented`", "`published`", "`landed`", "`blocked`", "Do not infer permission"} {
+		if !strings.Contains(string(contract), required) {
+			t.Errorf("completion contract missing %q", required)
+		}
+	}
+
+	skill, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-change", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), "[completion.md](references/completion.md)") {
+		t.Fatal("wb-change skill does not route agents to the completion contract")
+	}
+	ownership, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-worktrees", "references", "ownership.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"append-only", "`active`", "`orphaned`", "`unknown`", "wb worktree list --only active", "wb worktree list --only orphaned"} {
+		if !strings.Contains(string(ownership), required) {
+			t.Errorf("ownership reference missing %q", required)
+		}
+	}
+	worktreeSkill, err := os.ReadFile(filepath.Join(repoRoot, "ai", "skills", "wb-worktrees", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(worktreeSkill), "[ownership.md](references/ownership.md)") {
+		t.Fatal("wb-worktrees skill does not route agents to the ownership reference")
+	}
+
+	codexContents, err := os.ReadFile(filepath.Join(repoRoot, ".codex-plugin", "plugin.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var codex codexPluginManifest
+	if err := json.Unmarshal(codexContents, &codex); err != nil {
+		t.Fatalf("parse Codex plugin manifest: %v", err)
+	}
+	if codex.Skills != "./ai/skills/" || !strings.Contains(strings.Join(codex.Interface.DefaultPrompt, "\n"), "$wb-change") {
+		t.Fatal("Codex must expose ai/skills and route implementation work to the shared wb-change skill")
+	}
+
+	aiReadme, err := os.ReadFile(filepath.Join(repoRoot, "ai", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(aiReadme), "Claude Code recursively auto-discovers the same skills") || !strings.Contains(string(aiReadme), "single definition of done") {
+		t.Fatal("AI README must document Claude's shared skill discovery and the canonical completion contract")
+	}
+}
+
 func TestWorktreeSkillExamplesCaptureMandatoryPrivatePrompt(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	skillsRoot := filepath.Join(repoRoot, "ai", "skills")
@@ -321,8 +379,8 @@ func TestWBMergeSkillIsOnePortableContract(t *testing.T) {
 		}
 	}
 	codex, err := os.ReadFile(filepath.Join(repoRoot, ".codex-plugin", "plugin.json"))
-	if err != nil || !strings.Contains(string(codex), "WB merger workflow") || !strings.Contains(string(codex), "reconcile the canonical checkout after every PR merge into main—including only the verified registered nested-worktree exception—before release/tag, installation, cleanup, or the next merge-cycle action") || !strings.Contains(string(codex), "Never use a distribution channel the owning product marks blocked or unverified") {
-		t.Fatalf("Codex adapter does not expose wb-merge: %v", err)
+	if err != nil || !strings.Contains(string(codex), "$wb-merge") || strings.Contains(string(codex), "reconcile the canonical checkout after every PR merge into main") {
+		t.Fatalf("Codex adapter must route to, not duplicate, the canonical wb-merge contract: %v", err)
 	}
 	copilot, err := os.ReadFile(filepath.Join(repoRoot, ".github", "agents", "wb-merger.agent.md"))
 	if err != nil {
