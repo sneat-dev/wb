@@ -86,9 +86,12 @@ type OrphanFamily struct {
 
 // OrphanReport is the whole read-only sweep.
 type OrphanReport struct {
-	Families  []OrphanFamily `json:"families"`
-	Totals    OrphanTotals   `json:"totals"`
-	Unscanned []string       `json:"unscanned,omitempty"`
+	Families []OrphanFamily `json:"families"`
+	// Residue is the checkouts no registry mentions, which the family sweep is
+	// structurally unable to see. See orphans_residue.go.
+	Residue   []OrphanResidue `json:"residue,omitempty"`
+	Totals    OrphanTotals    `json:"totals"`
+	Unscanned []string        `json:"unscanned,omitempty"`
 }
 
 type OrphanTotals struct {
@@ -98,6 +101,7 @@ type OrphanTotals struct {
 	ByDispositn map[string]int `json:"by_disposition"`
 	NoManifest  int            `json:"without_manifest"`
 	Dirty       int            `json:"dirty"`
+	Residue     int            `json:"residue"`
 }
 
 // Orphans enumerates every linked worktree reachable from the canonical clones
@@ -139,6 +143,7 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 	report.Totals.ByDispositn = map[string]int{}
 
 	families := map[string][]OrphanWorktree{}
+	registered := map[string]bool{}
 	for _, clone := range clones {
 		linked, err := linkedWorktreesOf(ctx, clone.path)
 		if err != nil {
@@ -146,10 +151,19 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 			continue
 		}
 		for _, worktree := range linked {
+			registered[filepath.Clean(worktree.path)] = true
 			entry := inspectOrphan(ctx, clone, worktree, currentRoot, legacyRoot, base, staleAfter, now)
 			families[entry.RootEffort] = append(families[entry.RootEffort], entry)
 		}
 	}
+	// Everything above discovered through Git and therefore cannot see a
+	// checkout Git no longer registers. WB owns the roots below, so a directory
+	// there that nothing lists is WB's residue to explain.
+	report.Residue = residueSweep(projectsRoot, map[string]string{
+		currentRoot: LayoutCurrent, legacyRoot: LayoutLegacy,
+	}, registered)
+	sort.Slice(report.Residue, func(i, j int) bool { return report.Residue[i].Path < report.Residue[j].Path })
+	report.Totals.Residue = len(report.Residue)
 
 	for root, worktrees := range families {
 		sort.Slice(worktrees, func(i, j int) bool {

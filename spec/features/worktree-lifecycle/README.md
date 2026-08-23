@@ -263,6 +263,16 @@ directory of the residue that denies an unlink. A residue directory WB cannot
 open MUST be reported with the permission needed, never worked around by name.
 An apply report MUST record that WB, rather than Git, removed the checkout.
 
+Because a checkout Git no longer registers is invisible to every enumeration
+that reads Git's worktree registry, `wb worktree orphans` MUST additionally
+walk WB's own worktrees roots and report each checkout there that no canonical
+clone lists, with the evidence for the claim and the exact command that
+finishes it. That sweep MUST stay read-only and MUST NOT gain a removal path
+of its own: removal is owned by the backlog record and `wb worktree cleanup`.
+It MUST report only a recognizable repository checkout — one carrying Git
+metadata, or one whose path names a repository that has a canonical clone — so
+that a task's own working directories are never reported as lost work.
+
 #### REQ: internal-stage-terminalization
 
 Inventory MUST classify reserved `.wb-stage-*` and `.wb-retired-stage-*`
