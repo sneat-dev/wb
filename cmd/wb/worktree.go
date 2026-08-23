@@ -1142,6 +1142,7 @@ func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) er
 func newWorktreeListCmd() *cobra.Command {
 	var base, format, absorbedBy, ownerState string
 	var github bool
+	var parallel int
 	command := &cobra.Command{
 		Use:   "list [task]",
 		Short: "List live WB-managed task worktrees and their lifecycle state",
@@ -1174,6 +1175,7 @@ joined into this command.`,
 				OwnerState:   ownerState,
 				AbsorbedBy:   absorbedBy,
 				GitHub:       github,
+				Workers:      parallel,
 			})
 			if err != nil {
 				return err
@@ -1201,6 +1203,7 @@ joined into this command.`,
 		},
 	}
 	command.Flags().StringVar(&base, "base", "main", "base branch used to assess local merge state")
+	command.Flags().IntVar(&parallel, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
 	command.Flags().BoolVar(&github, "github", false, "include pull request state from GitHub")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "with --github, verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -1471,7 +1474,13 @@ required to remove anything.`,
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&retireShells, "retire-shells", false, "sweep every task for an empty pre-existing shell (owner directory and/or retired lock, no live checkout) and retire it")
-	command.Flags().IntVarP(&workers, "workers", "j", worktrees.DefaultInspectWorkers, "max concurrent candidate inspections")
+	// --parallel is the fleet-wide name for this ceiling: six other commands
+	// already spell it that way, and "workers" reads as a second noun beside
+	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so
+	// existing scripts and muscle memory keep working.
+	command.Flags().IntVar(&workers, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
+	command.Flags().IntVarP(&workers, "workers", "j", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
+	_ = command.Flags().MarkDeprecated("workers", "use --parallel instead")
 	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream per-candidate inspection progress to stderr, even when not on a terminal")
 	return command
 }

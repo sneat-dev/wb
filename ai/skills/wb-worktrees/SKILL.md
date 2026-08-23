@@ -83,7 +83,8 @@ Four traps decide whether a sweep finds anything at all:
 4. **Dry run is the default.** `--apply` is required to act, and for a named
    task `--apply` refuses without `--remote`.
 
-Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--apply`,
+Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--parallel`,
+`--verbose`, `--apply`,
 `--remote`, `--older-than`, `--report-dir`, `--absorbed-by`,
 `--resume-interrupted`, `--format`, plus root `--filter` and
 `--projects-root`. Apply writes durable audit evidence below
