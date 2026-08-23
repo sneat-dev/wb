@@ -1302,7 +1302,34 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			return outcome, nil
 		}()
 		if cleanupErr != nil {
-			return cleanupOutcome, cleanupErr
+			// A named task is the operator's exact subject, so its failure is the
+			// answer to what they asked and still ends the command.
+			if !normalized.AllMerged {
+				return cleanupOutcome, cleanupErr
+			}
+			// A fleet sweep is a different question. One task that cannot be
+			// corroborated — a branch that no longer matches its Work Log claim, a
+			// head that moved, a sibling gone unclean — says nothing about the
+			// other tasks already proven eligible, and discarding them costs a
+			// `git fetch` each to rebuild. Scope the failure to its own task,
+			// exactly as CleanupOutcome documents for a malformed candidate, and
+			// let the rest of the run finish.
+			outcome.Diagnostics = append(outcome.Diagnostics, listDiagnostic(
+				selection.WorktreesRoot,
+				selection.Task,
+				filepath.Join(selection.WorktreesRoot, selection.Task),
+				cleanupErr.Error(),
+			))
+			for index := range outcome.Results {
+				if cleanupTaskKey(outcome.Results[index].WorktreesRoot, outcome.Results[index].Task) != taskKey {
+					continue
+				}
+				if outcome.Results[index].Applied {
+					continue
+				}
+				outcome.Results[index].Reason = cleanupErr.Error()
+			}
+			continue
 		}
 	}
 	// Retire the namespaces earlier releases left behind, under the same
