@@ -71,6 +71,13 @@ type OrphanWorktree struct {
 	Missing    bool      `json:"missing"`
 	Merged     bool      `json:"merged_into_target"`
 
+	// Owner evidence, when a session declared itself. OwnerState is live,
+	// gone, or unstated; only a declared PID counts, so a worktree nobody
+	// claimed is unstated rather than falsely reported as abandoned.
+	OwnerState string `json:"owner_state"`
+	OwnerAgent string `json:"owner_agent,omitempty"`
+	OwnerPID   int    `json:"owner_pid,omitempty"`
+
 	Disposition string   `json:"disposition"`
 	Evidence    []string `json:"evidence"`
 }
@@ -347,6 +354,7 @@ func inspectOrphan(
 			entry.Merged = merged
 		}
 	}
+	entry.OwnerState, entry.OwnerAgent, entry.OwnerPID = DeclaredOwner(worktree.path)
 	entry.Disposition, entry.Evidence = orphanDisposition(entry, base, staleAfter, now)
 	return entry
 }
@@ -360,17 +368,44 @@ func orphanDisposition(entry OrphanWorktree, base string, staleAfter time.Durati
 	case entry.Merged:
 		return DispositionRemove, append(evidence,
 			fmt.Sprintf("its branch is already contained in origin/%s, so nothing would be lost", base))
+
+	// A running declared session is proof, not a guess, so it outranks every
+	// age heuristic below — including the no-commit case, since a session that
+	// has not committed yet is working rather than abandoned.
+	case entry.OwnerState == OwnerLive:
+		return DispositionActive, append(evidence, fmt.Sprintf(
+			"declared owner %s (PID %d) is running", ownerLabel(entry), entry.OwnerPID))
+
 	case entry.LastCommit.IsZero():
 		return DispositionDecide, append(evidence,
 			"carries no commit of its own; it may never have started")
+
+	// A declared session that has exited settles the question the age
+	// heuristic can only guess at. Recent work whose owner is gone is exactly
+	// what used to be reported as "likely still in use".
+	case entry.OwnerState == OwnerGone:
+		return DispositionDecide, append(evidence, fmt.Sprintf(
+			"declared owner %s (PID %d) has exited, leaving unmerged work from %d days ago; it needs a decision",
+			ownerLabel(entry), entry.OwnerPID, entry.AgeDays))
+
 	case now.Sub(entry.LastCommit) < staleAfter:
-		return DispositionActive, append(evidence,
-			fmt.Sprintf("committed %d days ago; likely still in use", entry.AgeDays))
+		return DispositionActive, append(evidence, fmt.Sprintf(
+			"committed %d days ago and no session declared itself, so this is inferred from age alone; run wb worktree own to make it knowable",
+			entry.AgeDays))
 	default:
 		return DispositionDecide, append(evidence, fmt.Sprintf(
 			"unmerged and idle for %d days; it needs a decision, and WB will not make it",
 			entry.AgeDays))
 	}
+}
+
+// ownerLabel names the declared owner, falling back to its PID when the
+// harness declared no agent name.
+func ownerLabel(entry OrphanWorktree) string {
+	if entry.OwnerAgent != "" {
+		return entry.OwnerAgent
+	}
+	return "an unnamed session"
 }
 
 // familyDisposition is deliberately conservative: a family is only removable

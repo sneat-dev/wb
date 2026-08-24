@@ -203,3 +203,50 @@ func worktreeOwnerState(owners []OwnerView) string {
 	}
 	return "orphaned"
 }
+
+// Declared-owner states used when triaging a worktree. They are deliberately
+// distinct from worktreeOwnerState, which treats "no records at all" as
+// orphaned. For triage that conflation is the whole problem: never having said
+// who you are is not the same as having said so and then exiting.
+const (
+	OwnerLive     = "live"     // a declared session is running
+	OwnerGone     = "gone"     // every declared session has exited
+	OwnerUnstated = "unstated" // nobody declared a session
+)
+
+// DeclaredOwner reports whether a live session is declared for a worktree, and
+// names the most recent declaration.
+//
+// Only records carrying a PID count. An entry written by a WB command with no
+// declaration is provenance, not a claim of ownership, so it must not be read
+// as a dead session.
+func DeclaredOwner(worktree string) (state, agent string, pid int) {
+	views, err := ownerViews(worktree)
+	if err != nil || len(views) == 0 {
+		return OwnerUnstated, "", 0
+	}
+	state = OwnerUnstated
+	for _, view := range views {
+		if view.PID <= 0 {
+			continue
+		}
+		// Any live declared session makes the worktree live, whichever link in
+		// the chain it sits at: a running process is running whether or not a
+		// later session declared itself and then exited. Among dead sessions
+		// the most recent is reported, since that is the one that left the
+		// work behind.
+		switch view.PIDStatus {
+		case "active":
+			state, agent, pid = OwnerLive, view.Agent, view.PID
+		case "orphaned":
+			if state != OwnerLive {
+				state, agent, pid = OwnerGone, view.Agent, view.PID
+			}
+		default:
+			if state == OwnerUnstated {
+				agent, pid = view.Agent, view.PID
+			}
+		}
+	}
+	return state, agent, pid
+}

@@ -1081,6 +1081,16 @@ func renderOrphans(out io.Writer, report worktrees.OrphanReport, only string) er
 			if worktree.Missing {
 				marks = append(marks, "missing")
 			}
+			// Owner state is the difference between proof and a guess, so it
+			// belongs on the row rather than only in the evidence lines.
+			switch worktree.OwnerState {
+			case worktrees.OwnerLive:
+				marks = append(marks, "owner live")
+			case worktrees.OwnerGone:
+				marks = append(marks, "owner gone")
+			default:
+				marks = append(marks, "owner unstated")
+			}
 			if _, err := fmt.Fprintf(out, "  %-8s %s %s (%s)\n",
 				worktree.Disposition, worktree.Repository, worktree.Branch, strings.Join(marks, ", ")); err != nil {
 				return err
