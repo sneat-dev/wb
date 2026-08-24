@@ -17,6 +17,10 @@ func TestClaimEncodeDecodeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !back.ClaimedAt.Equal(claim.ClaimedAt) {
+		t.Fatalf("ClaimedAt round trip: %v != %v", back.ClaimedAt, claim.ClaimedAt)
+	}
+	back.ClaimedAt, claim.ClaimedAt = time.Time{}, time.Time{}
 	if back != claim {
 		t.Fatalf("round trip: %+v != %+v", back, claim)
 	}
