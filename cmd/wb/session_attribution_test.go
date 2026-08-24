@@ -88,3 +88,30 @@ func TestCondense(t *testing.T) {
 		}
 	}
 }
+
+func TestAttributeSessionsEmptyEffortAloneStillAttributes(t *testing.T) {
+	started := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
+	views := []session.View{sessionAt(41, started)}
+	results := []worktrees.ListResult{{Task: "t", Branch: "b", WorktreeDir: "/wt/t/a/r",
+		Owners: []worktrees.OwnerView{ownerAt(41, "", started.Add(time.Minute))}}}
+	row := attributeSessions(views, results)[0]
+	if len(row.Efforts) != 0 || len(row.Worktrees) != 1 || len(row.Branches) != 1 {
+		t.Fatalf("empty-effort owner must attribute the worktree without an effort entry: %+v", row)
+	}
+}
+
+func TestAttributeSessionsExactStartBoundaryCounts(t *testing.T) {
+	started := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
+	views := []session.View{sessionAt(41, started)}
+	results := []worktrees.ListResult{{Task: "t", Branch: "b", WorktreeDir: "/wt/t/a/r",
+		Owners: []worktrees.OwnerView{ownerAt(41, "e", started)}}}
+	if row := attributeSessions(views, results)[0]; len(row.Efforts) != 1 {
+		t.Fatalf("an owner entry at exactly StartedAt must attribute: %+v", row)
+	}
+}
+
+func TestCondenseTruncatesRunesNotBytes(t *testing.T) {
+	if got := condense([]string{"héllo wörld effort"}, 11); got != "héllo wörld…" {
+		t.Fatalf("condense = %q, want rune-aware truncation", got)
+	}
+}
