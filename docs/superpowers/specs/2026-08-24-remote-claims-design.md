@@ -199,7 +199,7 @@ Claims(ctx context.Context) ([]ClaimEntry, error)
 - `cmd/wb`: exit codes per the table; `claims`/`status` rendering; JSON
   shapes; auto-claim outcomes in `worktree create` including the
   unreachable-store path (point the store URL at a nonexistent path) and
-  `--no-claim`; auto-release in cleanup/abort; work-log line recorded.
+  `--no-claim`; auto-release in cleanup/abort; outcome asserted on stdout and in `--format json` (the Work Log is not written).
 - All tests hermetic: bare local origins, `t.Setenv` git identity, no `gh`.
 
 ## Open questions
