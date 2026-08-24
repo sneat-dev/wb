@@ -51,6 +51,12 @@ type WorkLogOptions struct {
 	Provider              string
 	OriginalPrompt        string // readable local file, copied to the private archive
 	RequireOriginalPrompt bool   // public create/recycle commands require exact local recovery input
+	// AcquiredVia records how this claim came to exist when it is not an
+	// ordinary `wb worktree create`. "adopted" marks a claim written for a
+	// pre-WB worktree by `wb worktree adopt`, so the claim itself — not just
+	// the manifest beside it — says the identity was reconstructed rather than
+	// created. Empty for a normal create.
+	AcquiredVia string
 
 	// originalPromptContents is an immutable preflight snapshot. Keeping it in
 	// the options passed through one create/recycle call closes the usual
@@ -590,7 +596,8 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		AgentRuntime: strings.TrimSpace(options.AgentRuntime), Model: model,
 		ModelProvenance: provenance, ModelDeclaredBy: declaredBy(options),
 		CLI: strings.TrimSpace(options.CLI), Provider: strings.TrimSpace(options.Provider),
-		PromptArchive: promptArchive, PromptDigest: promptDigest}
+		PromptArchive: promptArchive, PromptDigest: promptDigest,
+		AcquiredVia: strings.TrimSpace(options.AcquiredVia)}
 	claims, err := openPrivateChild(runDir, "claims", true)
 	if err != nil {
 		return outcome, err

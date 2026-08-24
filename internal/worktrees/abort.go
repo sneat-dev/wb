@@ -126,6 +126,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 			WorktreeDir: record.WorktreeDir, WorktreesRoot: record.WorktreesRoot,
 			Branch: record.Branch, Base: record.Base, HeadSHA: record.HeadSHA,
+			External: record.External,
 		}, Disposition: AbortDiscarded, Eligible: true, WorktreeGone: true,
 			BacklogID: record.ID, Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
@@ -171,7 +172,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	// preflight: a bad second repository cannot be discovered after the first
 	// one has already been destroyed.
 	for i := range listed.Results {
-		refreshed, remoteHead, preflightErr := preflightAbortRepository(ctx, options, taskHandle, results[i], resolution.Write.Home)
+		refreshed, remoteHead, preflightErr := preflightAbortRepository(ctx, projectsRoot, options, taskHandle, results[i], resolution.Write.Home)
 		if preflightErr != nil {
 			return results, preflightErr
 		}
@@ -181,7 +182,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	for i := range listed.Results {
 		result := &results[i]
 		if options.Disposition == AbortDiscarded {
-			if err := applyDiscardedAbort(ctx, options, taskHandle, resolution.Write.Home, result); err != nil {
+			if err := applyDiscardedAbort(ctx, projectsRoot, options, taskHandle, resolution.Write.Home, result); err != nil {
 				return results, err
 			}
 		} else if err := transferWorkLogClaim(resolution.Write.Home, result.WorktreeDir, result.HeadSHA, string(options.Disposition), options.Successor, options.SuccessorIdentity); err != nil {
@@ -194,6 +195,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 
 func preflightAbortRepository(
 	ctx context.Context,
+	projectsRoot string,
 	options AbortOptions,
 	task *cleanupTaskHandle,
 	result AbortResult,
@@ -209,7 +211,7 @@ func preflightAbortRepository(
 	}
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
-		options.ProjectsRoot,
+		projectsRoot,
 		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
 		result.Task,
 		result.WorktreeDir,
@@ -217,6 +219,7 @@ func preflightAbortRepository(
 		"", // Abort discards work outright; no landing receipt applies.
 		false,
 		false,
+		result.External,
 	)
 	if err != nil {
 		return ListResult{}, "", fmt.Errorf("preflight abort %s: %w", result.Repository, err)
@@ -256,6 +259,7 @@ func preflightAbortRepository(
 
 func applyDiscardedAbort(
 	ctx context.Context,
+	projectsRoot string,
 	options AbortOptions,
 	task *cleanupTaskHandle,
 	home string,
@@ -277,7 +281,7 @@ func applyDiscardedAbort(
 	// independent guard if a non-WB writer races after this inspection.
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
-		options.ProjectsRoot,
+		projectsRoot,
 		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
 		result.Task,
 		result.WorktreeDir,
@@ -285,6 +289,7 @@ func applyDiscardedAbort(
 		"",
 		false,
 		false,
+		result.External,
 	)
 	if err != nil {
 		return fmt.Errorf("recheck discarded worktree %s: %w", result.Repository, err)
@@ -316,7 +321,7 @@ func applyDiscardedAbort(
 	if err := sealWorkLogForRecycle(home, refreshed.WorktreeDir, refreshed.HeadSHA, string(options.Disposition)); err != nil {
 		return fmt.Errorf("seal discarded work log for %s: %w", refreshed.Repository, err)
 	}
-	backlogRecord := newLifecycleBacklogRecord(options.ProjectsRoot, refreshed, string(AbortDiscarded))
+	backlogRecord := newLifecycleBacklogRecord(projectsRoot, refreshed, string(AbortDiscarded))
 	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageSealed); err != nil {
 		return err
 	}
@@ -366,6 +371,15 @@ func applyDiscardedAbort(
 		return fmt.Errorf("delete discarded branch %s: %w", refreshed.Branch, err)
 	}
 	result.BranchDeleted = true
+	if refreshed.External {
+		owner, repository, splitErr := splitRepository(refreshed.Repository)
+		if splitErr != nil {
+			return fmt.Errorf("resolve adopted worktree registration identity for %s: %w", refreshed.Repository, splitErr)
+		}
+		if err := removeAdoptedRegistration(task, owner, repository); err != nil {
+			return err
+		}
+	}
 	return persistLifecycleBacklog(home, &backlogRecord, lifecycleStageComplete)
 }
 

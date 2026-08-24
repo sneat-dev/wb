@@ -51,6 +51,8 @@ wb worktree orphans
 wb worktree orphans --only remove
 wb worktree backfill
 wb worktree backfill --apply
+wb worktree adopt --all-external
+wb worktree adopt --all-external --apply
 wb worktree list
 wb worktree list --only active
 wb worktree list --only orphaned

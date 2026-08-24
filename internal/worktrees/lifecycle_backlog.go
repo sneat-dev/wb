@@ -33,17 +33,22 @@ const (
 // checkout, so a crash cannot make the remaining exact local branch invisible
 // merely because live worktree inventory no longer finds it.
 type lifecycleBacklogRecord struct {
-	Version             int       `json:"version"`
-	ID                  string    `json:"id"`
-	Task                string    `json:"task"`
-	Repository          string    `json:"repository"`
-	ProjectsRoot        string    `json:"projects_root"`
-	CanonicalDir        string    `json:"canonical_dir"`
-	WorktreesRoot       string    `json:"worktrees_root"`
-	WorktreeDir         string    `json:"worktree_dir"`
-	Branch              string    `json:"branch"`
-	Base                string    `json:"base"`
-	HeadSHA             string    `json:"head_sha"`
+	Version       int    `json:"version"`
+	ID            string `json:"id"`
+	Task          string `json:"task"`
+	Repository    string `json:"repository"`
+	ProjectsRoot  string `json:"projects_root"`
+	CanonicalDir  string `json:"canonical_dir"`
+	WorktreesRoot string `json:"worktrees_root"`
+	WorktreeDir   string `json:"worktree_dir"`
+	Branch        string `json:"branch"`
+	Base          string `json:"base"`
+	HeadSHA       string `json:"head_sha"`
+	// External marks a backlog record for a worktree `wb worktree adopt`
+	// registered without relocating it under WorktreesRoot — see
+	// ListResult.External. It changes only which shape
+	// validateLifecycleBacklog accepts for WorktreeDir.
+	External            bool      `json:"external,omitempty"`
 	Disposition         string    `json:"disposition"`
 	RecoveryKind        string    `json:"recovery_kind,omitempty"`
 	WorkLogEffort       string    `json:"work_log_effort_id,omitempty"`
@@ -72,6 +77,7 @@ func newLifecycleBacklogRecord(projectsRoot string, result ListResult, dispositi
 		Task: result.Task, Repository: result.Repository, ProjectsRoot: filepath.Clean(projectsRoot),
 		CanonicalDir: result.CanonicalDir, WorktreesRoot: result.WorktreesRoot, WorktreeDir: result.WorktreeDir,
 		Branch: result.Branch, Base: result.Base, HeadSHA: result.HeadSHA, RemoteHeadSHA: result.RemoteHeadSHA,
+		External:    result.External,
 		Disposition: disposition, Stage: lifecycleStageSealed, CreatedAt: now, UpdatedAt: now,
 	}
 }
@@ -138,19 +144,31 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	if filepath.Clean(record.CanonicalDir) != filepath.Join(filepath.Clean(record.ProjectsRoot), owner, repository) {
 		return fmt.Errorf("lifecycle backlog canonical path does not match repository")
 	}
-	relativeWorktree, err := filepath.Rel(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
-	if err != nil {
-		return fmt.Errorf("resolve lifecycle backlog worktree: %w", err)
-	}
-	parts := strings.Split(relativeWorktree, string(filepath.Separator))
-	managedPath := len(parts) == 3 && parts[0] == record.Task && validRepositorySegment(parts[1]) && validRepositorySegment(parts[2])
-	legacyPath := len(parts) == 2 && parts[0] == record.Task && validRepositorySegment(parts[1])
-	// The final on-disk repository segment may legitimately differ from the
-	// canonical slug after a historical repository rename. Inventory already
-	// corroborated the Git common directory; recovery only needs to prove this
-	// private path remained inside the exact managed task hierarchy.
-	if !managedPath && !legacyPath {
-		return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+	if record.External {
+		// An adopted worktree was never relocated under WorktreesRoot — see
+		// ListResult.External — so it has no <task>/<owner>/<repository>
+		// shape to check here. The one thing recovery can and must still
+		// prove from this record alone is that it is not lying about being
+		// external: a genuinely external path never lands inside the WB
+		// worktrees root it names.
+		if pathWithin(record.WorktreesRoot, record.WorktreeDir) {
+			return fmt.Errorf("lifecycle backlog marked external but its worktree is nested under the WB worktrees root")
+		}
+	} else {
+		relativeWorktree, err := filepath.Rel(filepath.Clean(record.WorktreesRoot), filepath.Clean(record.WorktreeDir))
+		if err != nil {
+			return fmt.Errorf("resolve lifecycle backlog worktree: %w", err)
+		}
+		parts := strings.Split(relativeWorktree, string(filepath.Separator))
+		managedPath := len(parts) == 3 && parts[0] == record.Task && validRepositorySegment(parts[1]) && validRepositorySegment(parts[2])
+		legacyPath := len(parts) == 2 && parts[0] == record.Task && validRepositorySegment(parts[1])
+		// The final on-disk repository segment may legitimately differ from the
+		// canonical slug after a historical repository rename. Inventory already
+		// corroborated the Git common directory; recovery only needs to prove this
+		// private path remained inside the exact managed task hierarchy.
+		if !managedPath && !legacyPath {
+			return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
+		}
 	}
 	if !validBranch(context.Background(), record.Branch) {
 		return fmt.Errorf("invalid lifecycle backlog branch identity")
@@ -351,7 +369,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	// already let go of it, so finishing that deletion is what resuming means.
 	// Anything still registered was refused and returned above.
 	if _, err := os.Lstat(record.WorktreeDir); err == nil {
-		worktree, openErr := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir}})
+		worktree, openErr := openCleanupWorktree(task, CleanupResult{ListResult: ListResult{WorktreeDir: record.WorktreeDir, External: record.External}})
 		if openErr != nil {
 			return fmt.Errorf("resume lifecycle backlog %s: %w", record.ID, openErr)
 		}

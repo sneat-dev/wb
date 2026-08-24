@@ -52,6 +52,7 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeWorkLogCmd())
 	command.AddCommand(newWorktreeOrphansCmd())
 	command.AddCommand(newWorktreeBackfillCmd())
+	command.AddCommand(newWorktreeAdoptCmd())
 	return command
 }
 
@@ -1041,6 +1042,103 @@ The default is a dry run.`,
 	command.Flags().BoolVar(&apply, "apply", false, "write the reconstructed manifests")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+func newWorktreeAdoptCmd() *cobra.Command {
+	var base, format string
+	var allExternal, apply bool
+	command := &cobra.Command{
+		Use:   "adopt [path]",
+		Short: "Bring an external (pre-WB) worktree under WB management",
+		Long: `Give wb worktree cleanup and abort a task to act on for a worktree they
+currently refuse with "task ... was not found".
+
+wb worktree orphans already discovers and classifies every worktree with
+layout "external" — a linked worktree Git knows about that was never created
+by wb. wb worktree backfill already gives one a manifest, but that is only
+the identity half of adoption: no task directory or Work Log claim exists for
+cleanup/abort's own preflight to resolve. Adopt writes that task directory,
+manifest, and claim, reusing backfill's reconstruction (see wb worktree
+backfill) rather than duplicating it, and it never fabricates a prompt.
+
+It is additive, exactly like backfill: the working tree, its index, and its
+checked-out branch are never moved, modified, or otherwise touched. Only a
+small registration entry is created under the WB home. A worktree that
+already belongs to a WB task — adopted before, or created directly by
+wb worktree create — is a no-op, so re-running a sweep after an interruption
+is safe.
+
+After adoption, wb worktree cleanup <task> and wb worktree abort <task> apply
+their full existing safety checks unchanged: dirty, unlanded, an open pull
+request, a held lock, and awaiting_push are all still refused exactly as they
+are for a worktree wb created directly.
+
+Pass a worktree path to adopt exactly one, or --all-external to sweep every
+external worktree (narrow it with --filter). The default is a dry run.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			path := ""
+			if len(args) == 1 {
+				path = args[0]
+			}
+			if (path == "") == !allExternal {
+				return fmt.Errorf("supply exactly one of a worktree path or --all-external")
+			}
+			results, err := worktrees.Adopt(command.Context(), worktrees.AdoptOptions{
+				ProjectsRoot: projectsRoot, Base: base, Path: path,
+				AllExternal: allExternal, Filter: filterFlag, Apply: apply,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(results)
+			}
+			return renderAdopt(command.OutOrStdout(), results, apply)
+		},
+	}
+	command.Flags().StringVar(&base, "base", "main", "remote target used while reconstructing a base ref")
+	command.Flags().BoolVar(&allExternal, "all-external", false, "adopt every worktree wb worktree orphans classifies as external")
+	command.Flags().BoolVar(&apply, "apply", false, "write the task directory, manifest, and Work Log claim")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func renderAdopt(out io.Writer, results []worktrees.AdoptResult, apply bool) error {
+	counts := map[string]int{}
+	for _, result := range results {
+		counts[result.Action]++
+		switch result.Action {
+		case worktrees.AdoptSkipped:
+			if _, err := fmt.Fprintf(out, "skipped %s: %s\n", result.Path, result.Reason); err != nil {
+				return err
+			}
+		case worktrees.AdoptAdopted, worktrees.AdoptWouldAdopt:
+			if _, err := fmt.Fprintf(out, "%-13s %-30s %s\n", result.Action, result.Task, result.Path); err != nil {
+				return err
+			}
+		}
+	}
+	actions := make([]string, 0, len(counts))
+	for action := range counts {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+	for _, action := range actions {
+		if _, err := fmt.Fprintf(out, "%-15s %d\n", action, counts[action]); err != nil {
+			return err
+		}
+	}
+	if !apply {
+		_, err := fmt.Fprintln(out, "dry-run only, pass --apply to write")
+		return err
+	}
+	return nil
 }
 
 func newWorktreeOrphansCmd() *cobra.Command {

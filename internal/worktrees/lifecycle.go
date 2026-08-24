@@ -94,6 +94,10 @@ type pendingInspect struct {
 	slug      string
 	locked    bool
 	commonDir string // canonical .git this worktree belongs to
+	// external is true when path was resolved from a `wb worktree adopt`
+	// registration entry rather than being itself nested under the WB
+	// worktrees root. See listLayout's adoption-pointer branch.
+	external bool
 }
 
 // cloneLocks serialises git work per canonical clone.
@@ -230,6 +234,12 @@ type ListResult struct {
 	OwnerState        string         `json:"owner_state"`
 	OpenPullRequest   *PullRequest   `json:"open_pull_request,omitempty"`
 	MergedPullRequest *PullRequest   `json:"merged_pull_request,omitempty"`
+	// External marks a worktree adopted by `wb worktree adopt` from outside
+	// every WB worktrees root. Its WorktreeDir is the real, never-relocated
+	// checkout path; only a small registration entry — never the checkout
+	// itself — lives under the WB task directory. See openAdoptedCleanupWorktree
+	// and locateAdoptedWorktree.
+	External bool `json:"external,omitempty"`
 }
 
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
@@ -550,18 +560,30 @@ func (handle *cleanupTaskHandle) close() {
 }
 
 type cleanupWorktreeHandle struct {
-	task         *cleanupTaskHandle
-	parentPath   string
-	parentName   string
-	parent       *os.File
+	task       *cleanupTaskHandle
+	parentPath string
+	parentName string
+	parent     *os.File
+	// closeParent means the parent is a WB-owned <task>/<owner> directory to
+	// retire once empty — see removeEmptyParent. ownParent means this handle
+	// opened parent itself and must close its descriptor regardless; the two
+	// differ for an adopted worktree, whose parent is a real directory
+	// outside every WB task that must never be retired, but whose freshly
+	// opened descriptor still has to be closed like any other.
 	closeParent  bool
+	ownParent    bool
 	worktreePath string
 	worktree     *os.File
 }
 
 func (handle *cleanupWorktreeHandle) validate() error {
-	if err := handle.task.validate(); err != nil {
-		return err
+	// An adopted worktree's handle carries no task: it was never relocated
+	// under one, so there is no held task descriptor to reauthorize here —
+	// see openAdoptedCleanupWorktree.
+	if handle.task != nil {
+		if err := handle.task.validate(); err != nil {
+			return err
+		}
 	}
 	if !directoryStillMatches(handle.parentPath, handle.parent) {
 		return fmt.Errorf("cleanup worktree parent path changed: %s", handle.parentPath)
@@ -613,7 +635,7 @@ func (handle *cleanupWorktreeHandle) close() {
 	if handle.worktree != nil {
 		_ = handle.worktree.Close()
 	}
-	if handle.closeParent && handle.parent != nil {
+	if handle.ownParent && handle.parent != nil {
 		_ = handle.parent.Close()
 	}
 }
@@ -831,6 +853,26 @@ func listLayout(
 					})
 					continue
 				}
+				// An adopted external worktree registers here as a plain
+				// directory holding one pointer file instead of Git metadata —
+				// see readAdoptedWorktreePointer. Everything past this point
+				// operates on the real, never-relocated checkout the pointer
+				// names, exactly as if it had been created there directly.
+				if external, ok := readAdoptedWorktreePointer(repositoryPath); ok {
+					if !filterMatches(filter, external, slug) {
+						continue
+					}
+					if !hasGitMetadata(external) || !isGitRoot(ctx, external) {
+						diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath,
+							fmt.Sprintf("adopted worktree registration points at %s, which is no longer a Git worktree root", external)))
+						continue
+					}
+					pending = append(pending, pendingInspect{
+						task: taskEntry.Name(), path: external, ownerName: entry.Name(),
+						slug: slug, locked: locked, commonDir: gitCommonDir(ctx, external), external: true,
+					})
+					continue
+				}
 				if strings.HasPrefix(repositoryEntry.Name(), ".") {
 					continue
 				}
@@ -902,7 +944,7 @@ func runInspections(
 				lock := locks.get(job.commonDir)
 				lock.Lock()
 				result, inspectErr := inspectLifecycleWorktree(
-					ctx, projectsRoot, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked,
+					ctx, projectsRoot, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external,
 				)
 				lock.Unlock()
 
@@ -1167,6 +1209,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 			WorktreeDir: record.WorktreeDir, WorktreesRoot: record.WorktreesRoot,
 			Branch: record.Branch, Base: record.Base, HeadSHA: record.HeadSHA,
+			External: record.External,
 		}, Eligible: true, WorktreeGone: true, BacklogID: record.ID,
 			Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
@@ -1320,6 +1363,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				normalized.AbsorbedBy,
 				true,
 				false, // The task is locked by this cleanup operation.
+				outcome.Results[index].External,
 			)
 			if err != nil {
 				worktree.close()
@@ -1522,6 +1566,19 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				closeCanonical()
 				worktree.close()
 				return err
+			}
+			if refreshed.External {
+				owner, repository, splitErr := splitRepository(refreshed.Repository)
+				if splitErr != nil {
+					closeCanonical()
+					worktree.close()
+					return fmt.Errorf("resolve adopted worktree registration identity for %s: %w", refreshed.Repository, splitErr)
+				}
+				if err := removeAdoptedRegistration(task, owner, repository); err != nil {
+					closeCanonical()
+					worktree.close()
+					return err
+				}
 			}
 			if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageComplete); err != nil {
 				closeCanonical()
@@ -1778,7 +1835,7 @@ func inspectLifecycleWorktree(
 	projectsRoot string,
 	layout wbhome.Layout,
 	task, worktree, base, absorbedBy string,
-	withGitHub, locked bool,
+	withGitHub, locked, external bool,
 ) (ListResult, error) {
 	root, err := git(ctx, worktree, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -1787,7 +1844,19 @@ func inspectLifecycleWorktree(
 	if filepath.Clean(root) != filepath.Clean(worktree) {
 		return ListResult{}, fmt.Errorf("WB worktree %s has Git root %s", worktree, root)
 	}
-	location, err := locateManagedWorktree(ctx, projectsRoot, worktree, []wbhome.Layout{layout})
+	var location managedWorktreeLocation
+	if external {
+		// An adopted worktree carries no task/owner/repository segment in its
+		// own path — it was never moved under a WB worktrees root — so its
+		// task is exactly what the WB-home registration directory it was
+		// discovered under is named. Owner/repository identity is still
+		// derived and verified independently from the worktree's own Git
+		// plumbing, precisely as locateManagedWorktree does for a nested
+		// worktree; only the source of "task" differs.
+		location, err = locateAdoptedWorktree(ctx, projectsRoot, worktree, layout, task)
+	} else {
+		location, err = locateManagedWorktree(ctx, projectsRoot, worktree, []wbhome.Layout{layout})
+	}
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -1848,6 +1917,7 @@ func inspectLifecycleWorktree(
 		Branch:        branch, Base: base, HeadSHA: head,
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
+		External: external,
 	}
 	owners, ownerErr := ownerViews(worktree)
 	if ownerErr != nil {
@@ -2553,6 +2623,7 @@ func preflightCleanupRepository(
 		options.AbsorbedBy,
 		true,
 		false,
+		entry.External,
 	)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s: %w", entry.Repository, err)
@@ -2987,6 +3058,15 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 	if err := task.validate(); err != nil {
 		return nil, err
 	}
+	if result.External {
+		// An adopted worktree was never relocated under this held task, so it
+		// carries no path relationship to task.taskPath to open descriptor-
+		// relative to it. It gets the same no-follow, descriptor-anchored
+		// discipline anyway — see openAdoptedCleanupWorktree — just anchored
+		// independently from the filesystem root instead of from the task
+		// directory's own descriptor.
+		return openAdoptedCleanupWorktree(result.WorktreeDir)
+	}
 	relative, err := filepath.Rel(task.taskPath, result.WorktreeDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve cleanup worktree relative path: %w", err)
@@ -3022,6 +3102,7 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		handle.parentPath = filepath.Join(task.taskPath, parts[0])
 		handle.parentName = parts[0]
 		handle.closeParent = true
+		handle.ownParent = true
 		repository = parts[1]
 	default:
 		return nil, fmt.Errorf("cleanup worktree %s has unsupported hierarchy", result.WorktreeDir)
@@ -3042,6 +3123,89 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		return nil, err
 	}
 	return handle, nil
+}
+
+// openAdoptedCleanupWorktree opens an adopted external worktree's parent and
+// leaf directories with the exact same no-follow, descriptor-anchored
+// discipline openCleanupWorktree uses for a worktree nested under a held WB
+// task. closeParent stays false: this checkout's parent directory belongs to
+// whatever created it externally, never to WB, so removeEmptyParent's normal
+// "retire the now-empty owner directory" step must never run against it — see
+// removeAdoptedRegistration for the WB-owned registration entry that really
+// does get retired once the checkout itself is gone.
+func openAdoptedCleanupWorktree(worktreePath string) (*cleanupWorktreeHandle, error) {
+	worktreePath = filepath.Clean(worktreePath)
+	parentPath := filepath.Dir(worktreePath)
+	leaf := filepath.Base(worktreePath)
+	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
+		return nil, fmt.Errorf("adopted worktree path %s has no repository segment to open", worktreePath)
+	}
+	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("open adopted worktree parent %s without following links: %w", parentPath, err)
+	}
+	handle := &cleanupWorktreeHandle{worktreePath: worktreePath, parent: parent, parentPath: parentPath, closeParent: false, ownParent: true}
+	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		handle.close()
+		return nil, fmt.Errorf("open adopted worktree %s without following links: %w", worktreePath, err)
+	}
+	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-adopted-worktree")
+	if handle.worktree == nil {
+		_ = unix.Close(worktreeFD)
+		handle.close()
+		return nil, fmt.Errorf("wrap adopted worktree %s", worktreePath)
+	}
+	if err := handle.validate(); err != nil {
+		handle.close()
+		return nil, err
+	}
+	return handle, nil
+}
+
+// removeAdoptedRegistration retires the small WB-home registration entry an
+// adopted external worktree leaves behind — the <owner>/<repository>
+// directory holding its pointer file — once the real checkout it named is
+// already gone. It never touches the checkout itself or its own parent
+// directory, both of which are outside WB's ownership; only the registration
+// this package created is retired here, exactly the counterpart of
+// removeEmptyParent for a worktree that was never relocated under the task.
+// Best-effort and idempotent: a name already gone (a prior interrupted
+// attempt) is success, and a non-empty owner directory (a sibling repository
+// still registered under it) is left in place.
+func removeAdoptedRegistration(task *cleanupTaskHandle, owner, repository string) error {
+	if err := task.validate(); err != nil {
+		return err
+	}
+	ownerFD, err := unix.Openat(int(task.task.Fd()), owner, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open adopted worktree registration owner %s without following links: %w", owner, err)
+	}
+	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-adopted-registration-owner")
+	defer func() { _ = ownerDirectory.Close() }()
+	repositoryFD, err := unix.Openat(ownerFD, repository, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil && !errors.Is(err, unix.ENOENT) {
+		return fmt.Errorf("open adopted worktree registration %s/%s without following links: %w", owner, repository, err)
+	}
+	if err == nil {
+		repositoryDirectory := os.NewFile(uintptr(repositoryFD), "wb-adopted-registration")
+		unlinkErr := unix.Unlinkat(repositoryFD, adoptedWorktreePointerName, 0)
+		_ = repositoryDirectory.Close()
+		if unlinkErr != nil && !errors.Is(unlinkErr, unix.ENOENT) {
+			return fmt.Errorf("remove adopted worktree registration pointer for %s/%s: %w", owner, repository, unlinkErr)
+		}
+		if err := unix.Unlinkat(ownerFD, repository, unix.AT_REMOVEDIR); err != nil && !errors.Is(err, unix.ENOENT) {
+			return fmt.Errorf("remove adopted worktree registration directory for %s/%s: %w", owner, repository, err)
+		}
+	}
+	// Best-effort, exactly like removeEmptyParent: retire the owner directory
+	// once it is empty. ENOTEMPTY (a sibling repository still registered
+	// under it) is not an error here.
+	_ = unix.Unlinkat(int(task.task.Fd()), owner, unix.AT_REMOVEDIR)
+	return nil
 }
 
 func writeCleanupReport(
