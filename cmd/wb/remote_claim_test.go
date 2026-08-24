@@ -961,32 +961,19 @@ func TestWorktreeAbortCLIDiscardedRunsAutoReleaseWithoutBreakingSuccess(t *testi
 	}
 }
 
-// TestAutoReleaseWriter ensures that the autoReleaseWriter helper returns
-// stderr for json format (so the release line does not corrupt the JSON
-// document on stdout) and stdout for text format.
-func TestAutoReleaseWriter(t *testing.T) {
-	tests := []struct {
-		format     string
-		wantStderr bool
-	}{
-		{"json", true},
-		{"text", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.format, func(t *testing.T) {
+// TestRemoteClaimWriterAlwaysUsesStderr pins the contract that remote-claim
+// notes are diagnostics, not results. They previously went to stdout in text
+// format, which padded a text result with unrelated lines and, worse, left
+// output on stdout from a command that had failed.
+func TestRemoteClaimWriterAlwaysUsesStderr(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		t.Run(format, func(t *testing.T) {
 			cmd := &cobra.Command{}
 			cmd.SetOut(&bytes.Buffer{})
 			cmd.SetErr(&bytes.Buffer{})
-			writer := autoReleaseWriter(tt.format, cmd)
 
-			if tt.wantStderr {
-				if writer != cmd.ErrOrStderr() {
-					t.Errorf("format=%q: want stderr, got stdout", tt.format)
-				}
-			} else {
-				if writer != cmd.OutOrStdout() {
-					t.Errorf("format=%q: want stdout, got stderr", tt.format)
-				}
+			if writer := remoteClaimWriter(cmd); writer != cmd.ErrOrStderr() {
+				t.Errorf("format=%q: remote-claim notes must go to stderr", format)
 			}
 		})
 	}
