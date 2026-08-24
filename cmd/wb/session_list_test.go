@@ -206,3 +206,19 @@ func TestSessionListWithRealWorktreesLister(t *testing.T) {
 		t.Fatalf("EFFORTS/WORKTREES/BRANCHES = %v, want all '-' on an empty home: row=%q", columns[:3], lines[1])
 	}
 }
+
+func TestSessionListJSONWithZeroSessionsEmitsEmptyArray(t *testing.T) {
+	withSessionWorktreeLister(t, func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error) {
+		panic("worktrees.List must not be called when no sessions have registered")
+	})
+	var out, errOut bytes.Buffer
+	if err := runSessionList(t.TempDir(), t.TempDir(), false, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Fatalf("stdout = %q, want []", got)
+	}
+	if !strings.Contains(errOut.String(), "no session has registered") {
+		t.Fatalf("stderr = %q, want guidance", errOut.String())
+	}
+}

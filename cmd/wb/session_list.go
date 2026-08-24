@@ -71,6 +71,12 @@ func runSessionList(directory, projectsRoot string, onlyLive, jsonOut bool, out,
 		views = live
 	}
 	if len(views) == 0 {
+		// A JSON consumer gets a parseable empty list; the guidance goes to a
+		// human on stderr either way it cannot corrupt the document.
+		if jsonOut {
+			_, _ = fmt.Fprintln(errOut, "no session has registered; run wb session register at session start")
+			return json.NewEncoder(out).Encode([]sessionRow{})
+		}
 		_, err := fmt.Fprintln(out, "no session has registered; run wb session register at session start")
 		return err
 	}
