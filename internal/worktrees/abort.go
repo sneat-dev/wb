@@ -144,7 +144,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		}
 	}
 	for backlogIndex := range backlog {
-		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex]); err != nil {
+		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex], false); err != nil {
 			return results, err
 		}
 		for resultIndex := range results {
