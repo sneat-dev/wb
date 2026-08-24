@@ -903,3 +903,50 @@ func TestWorktreeCreateReportsCanonicalSyncFailureAsFindings(t *testing.T) {
 		t.Errorf("a failed create wrote %q to stdout", stdout.String())
 	}
 }
+
+// TestWorktreeCreateKeepsRemoteClaimNotesOffStdout pins the stream, not just
+// the helper that chooses it. A remote-claim note is a diagnostic about a side
+// channel: routed to stdout it pads a text result with unrelated lines, and on
+// a failing command it leaves output on stdout that callers parse as a result.
+func TestWorktreeCreateKeepsRemoteClaimNotesOffStdout(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	canonical := filepath.Join(projects, "acme", "app")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
+
+	runCanonicalGit := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", canonical}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	if output, err := exec.Command("git", "-C", canonical, "init", "-b", "main").CombinedOutput(); err != nil {
+		t.Fatalf("init canonical: %v\n%s", err, output)
+	}
+	runCanonicalGit("config", "user.name", "WB Test")
+	runCanonicalGit("config", "user.email", "wb-test@example.test")
+	if err := os.WriteFile(filepath.Join(canonical, "README.md"), []byte("# app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runCanonicalGit("add", "README.md")
+	runCanonicalGit("commit", "-m", "initial")
+	runCanonicalGit("remote", "add", "origin", filepath.Join(root, "does-not-exist.git"))
+
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	prompt := writeOriginalPromptFixture(t, "create request that emits a remote-claim note")
+
+	var stdout, stderr bytes.Buffer
+	run([]string{"--projects-root", projects, "worktree", "create", "claim-stream", "acme/app",
+		"--non-interactive", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr)
+
+	if strings.Contains(stdout.String(), "remote claim") {
+		t.Errorf("a remote-claim note reached stdout: %q", stdout.String())
+	}
+}

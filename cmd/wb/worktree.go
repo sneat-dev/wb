@@ -21,11 +21,15 @@ import (
 // stderr to keep stdout as pure JSON (matching worktree create's pattern of
 // routing auto-claim output to io.Discard in json mode). For text output,
 // stdout is correct.
-func autoReleaseWriter(format string, cmd *cobra.Command) io.Writer {
-	if format == "json" {
-		return cmd.ErrOrStderr()
-	}
-	return cmd.OutOrStdout()
+// remoteClaimWriter returns the stream remote-claim notes belong on.
+//
+// They are diagnostics about a side channel, not the result of the command the
+// user asked for, and wb's contract puts diagnostics on stderr. Keeping them
+// off stdout means a json document is never corrupted, a text result is never
+// padded with unrelated lines, and a command that fails writes nothing to
+// stdout at all.
+func remoteClaimWriter(cmd *cobra.Command) io.Writer {
+	return cmd.ErrOrStderr()
 }
 
 func newWorktreeCmd() *cobra.Command {
@@ -650,7 +654,7 @@ The default is a dry-run plan.`,
 			// here, so the claim must stay put.
 			disp := worktrees.AbortDisposition(disposition)
 			if apply && (disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff) {
-				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], autoReleaseWriter(format, command))
+				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], remoteClaimWriter(command))
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -762,15 +766,12 @@ text never enters the worktree projection, source Git, or normal output.`,
 				return err
 			}
 			// In text mode the hook's own printed line on stdout is the
-			// record (see the RunE's "text" branch below). In json mode
-			// that free-text line would corrupt the single JSON document
-			// this command emits on stdout, so the outcome travels only
-			// inside the json branch's remote_claim field instead.
-			claimOut := io.Writer(command.OutOrStdout())
-			if format == "json" {
-				claimOut = io.Discard
-			}
-			claimResult := worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, projectsRoot, args[0], claimOut)
+			// record (see the RunE's "text" branch below). The note goes to
+			// stderr in every format: it is a diagnostic about a side
+			// channel rather than this command's result, so it must not
+			// land in the json document or in text stdout. In json mode the
+			// outcome also travels structurally in the remote_claim field.
+			claimResult := worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, projectsRoot, args[0], remoteClaimWriter(command))
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
 				ProjectsRoot:       projectsRoot,
 				Operation:          args[0],
@@ -1502,7 +1503,7 @@ required to remove anything.`,
 			if apply && task != "" {
 				for _, result := range outcome.Results {
 					if result.Applied {
-						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, autoReleaseWriter(format, command))
+						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
 						return nil
 					}
 				}
