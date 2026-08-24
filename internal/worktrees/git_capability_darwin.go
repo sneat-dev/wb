@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -66,32 +68,61 @@ func runPlatformGitWithFilesystemCapability(capability gitFilesystemCapability, 
 type darwinCapabilityParentGuard struct {
 	directory *os.File
 	mode      os.FileMode
+	frozen    bool
 }
 
+// lockDarwinCapabilityParents freezes each retained root's parent for the
+// duration of one sandboxed Git call, under an exclusive lock on that parent.
+//
+// The lock is not an optimisation. A capability root's parent is a directory
+// WB shares rather than owns: the parent of <projects-root>/<owner>/<repo> is
+// one owner directory holding every repository that owner has. Two secure Git
+// helpers under one owner — two tasks of a fleet sweep applying concurrently,
+// or simply two wb processes — otherwise both enter this window, and the
+// second reads the mode the first has already cleared. It then "restores"
+// 0555, and the owner directory stays read-only after both succeed, so no
+// clone or worktree can ever be created under it again. flock is the right
+// primitive because the helpers are separate processes: the freeze happens in
+// a short-lived child, so no in-process mutex could see its siblings. The
+// kernel drops the lock if a helper dies.
+//
+// Parents are taken in sorted order. One operation can retain roots under two
+// different parents, and two operations retaining the same pair in opposite
+// orders would deadlock — the same resource-hierarchy argument the cleanup
+// scheduler makes for its per-repository locks.
 func lockDarwinCapabilityParents(capability gitFilesystemCapability) ([]darwinCapabilityParentGuard, error) {
-	guards := make([]darwinCapabilityParentGuard, 0, len(capability.writeRoots))
+	parentPaths := make([]string, 0, len(capability.writeRoots))
+	seen := make(map[string]bool, len(capability.writeRoots))
 	for _, root := range capability.writeRoots {
 		parentPath := filepath.Dir(root.path)
 		if parentPath == root.path {
-			restoreDarwinCapabilityParents(guards)
 			return nil, fmt.Errorf("secure Git capability root has no mutable parent: %s", root.path)
 		}
+		if !seen[parentPath] {
+			seen[parentPath] = true
+			parentPaths = append(parentPaths, parentPath)
+		}
+	}
+	sort.Strings(parentPaths)
+
+	guards := make([]darwinCapabilityParentGuard, 0, len(parentPaths))
+	byPath := make(map[string]*os.File, len(parentPaths))
+	for _, parentPath := range parentPaths {
 		parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
 		if err != nil {
 			restoreDarwinCapabilityParents(guards)
 			return nil, fmt.Errorf("open secure Git capability parent %s: %w", parentPath, err)
 		}
-		if !directoryEntryStillMatches(parent, filepath.Base(root.path), root.directory) {
-			_ = parent.Close()
-			restoreDarwinCapabilityParents(guards)
-			return nil, fmt.Errorf("secure Git capability root changed before sandbox profile: %s", root.path)
-		}
+		// Two spellings can name one directory. Detect that before locking:
+		// flock is per open file description, so a second descriptor for the
+		// same directory would block on this process's own lock forever.
 		duplicate := false
 		for _, guard := range guards {
 			guardInfo, guardErr := guard.directory.Stat()
 			parentInfo, parentErr := parent.Stat()
 			if guardErr == nil && parentErr == nil && os.SameFile(guardInfo, parentInfo) {
 				duplicate = true
+				byPath[parentPath] = guard.directory
 				break
 			}
 		}
@@ -99,33 +130,91 @@ func lockDarwinCapabilityParents(capability gitFilesystemCapability) ([]darwinCa
 			_ = parent.Close()
 			continue
 		}
-		info, err := parent.Stat()
-		if err != nil {
+		if err := lockCapabilityParent(parent); err != nil {
 			_ = parent.Close()
 			restoreDarwinCapabilityParents(guards)
-			return nil, fmt.Errorf("inspect secure Git capability parent %s: %w", parentPath, err)
+			return nil, fmt.Errorf("serialize secure Git capability parent %s: %w", parentPath, err)
+		}
+		guards = append(guards, darwinCapabilityParentGuard{directory: parent})
+		byPath[parentPath] = parent
+	}
+
+	// Verify every root against its held parent before the mutation, and again
+	// after it, so a swap in either gap is refused rather than sandboxed.
+	if err := verifyDarwinCapabilityRoots(capability, byPath); err != nil {
+		restoreDarwinCapabilityParents(guards)
+		return nil, fmt.Errorf("secure Git capability root changed before sandbox profile: %w", err)
+	}
+	for index := range guards {
+		info, err := guards[index].directory.Stat()
+		if err != nil {
+			restoreDarwinCapabilityParents(guards)
+			return nil, fmt.Errorf("inspect secure Git capability parent: %w", err)
 		}
 		originalMode := info.Mode().Perm()
-		lockedMode := originalMode &^ 0o222
-		if err := unix.Fchmod(int(parent.Fd()), uint32(lockedMode)); err != nil {
-			_ = parent.Close()
+		if err := unix.Fchmod(int(guards[index].directory.Fd()), uint32(originalMode&^0o222)); err != nil {
 			restoreDarwinCapabilityParents(guards)
-			return nil, fmt.Errorf("freeze secure Git capability parent %s: %w", parentPath, err)
+			return nil, fmt.Errorf("freeze secure Git capability parent: %w", err)
 		}
-		if !directoryEntryStillMatches(parent, filepath.Base(root.path), root.directory) {
-			_ = unix.Fchmod(int(parent.Fd()), uint32(originalMode))
-			_ = parent.Close()
-			restoreDarwinCapabilityParents(guards)
-			return nil, fmt.Errorf("secure Git capability root changed while freezing parent: %s", root.path)
-		}
-		guards = append(guards, darwinCapabilityParentGuard{directory: parent, mode: originalMode})
+		guards[index].mode = originalMode
+		guards[index].frozen = true
+	}
+	if err := verifyDarwinCapabilityRoots(capability, byPath); err != nil {
+		restoreDarwinCapabilityParents(guards)
+		return nil, fmt.Errorf("secure Git capability root changed while freezing parent: %w", err)
 	}
 	return guards, nil
 }
 
+// capabilityParentLockTimeout bounds how long one helper waits for a parent
+// another helper is inside. Legitimate contention is one Git call — well under
+// a second — so this never fires for it. What it does bound is the one shape a
+// plain blocking lock could not survive: the sandbox permits Git hooks to
+// invoke WB itself, so a hook that reached a WB worktree operation on this same
+// owner directory would wait on its own ancestor forever, holding a task lock
+// and stranding a transaction. A bounded wait turns that into a reported error.
+//
+// It is a var so tests can shorten it.
+var capabilityParentLockTimeout = 2 * time.Minute
+
+func lockCapabilityParent(parent *os.File) error {
+	deadline := time.Now().Add(capabilityParentLockTimeout)
+	for {
+		err := unix.Flock(int(parent.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("another WB Git helper held it for %s", capabilityParentLockTimeout)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func verifyDarwinCapabilityRoots(capability gitFilesystemCapability, byPath map[string]*os.File) error {
+	for _, root := range capability.writeRoots {
+		parent, ok := byPath[filepath.Dir(root.path)]
+		if !ok {
+			return fmt.Errorf("%s has no held parent", root.path)
+		}
+		if !directoryEntryStillMatches(parent, filepath.Base(root.path), root.directory) {
+			return fmt.Errorf("%s", root.path)
+		}
+	}
+	return nil
+}
+
+// restoreDarwinCapabilityParents puts every frozen mode back and releases the
+// locks in reverse acquisition order. Closing the descriptor releases its
+// flock, so a guard that never reached the freeze still unlocks correctly.
 func restoreDarwinCapabilityParents(guards []darwinCapabilityParentGuard) {
 	for index := len(guards) - 1; index >= 0; index-- {
-		_ = unix.Fchmod(int(guards[index].directory.Fd()), uint32(guards[index].mode))
+		if guards[index].frozen {
+			_ = unix.Fchmod(int(guards[index].directory.Fd()), uint32(guards[index].mode))
+		}
 		_ = guards[index].directory.Close()
 	}
 }

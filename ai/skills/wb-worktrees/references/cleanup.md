@@ -279,3 +279,55 @@ Three properties hold regardless of the value chosen:
   A sweep once sat 38 minutes on a single unanswered fetch.
 - **Output is deterministic.** Discovery is local filesystem work and stays
   sequential; results keep walk order regardless of which worker finishes first.
+
+### `--parallel` bounds the apply phase too
+
+Once inspection is concurrent, removal is where the wall clock goes. The
+2026-08-24 fleet sweep inspected 262 candidates in about two minutes and then
+spent ten more removing 86 of them, one at a time.
+
+The unit that can overlap is the **repository**, not the task. Git allows one
+writer per clone — `worktree remove`, `update-ref -d` and the ref updates a
+push implies all mutate the same `.git` — so two tasks in `sneat-co/sneat-go`
+still take turns while a task in `sneat-games/chess` proceeds beside them.
+
+That bounds the gain to the largest per-repository group. Of those 86 removals
+across 34 repositories the biggest single repository held 14, so the realistic
+improvement is around 3x — roughly twelve minutes down to four. Raising
+`--parallel` past that buys nothing; the extra workers wait on the same clone.
+
+- A **coordinated task** spanning several repositories holds all of them for
+  its whole transaction, acquired in one global order so two such tasks over
+  the same pair cannot deadlock.
+- **Remote branch deletions** are bounded more tightly than `--parallel`,
+  because they contend for GitHub's per-account secondary rate limit rather
+  than for a local clone.
+- A **per-task failure** still costs only that task, exactly as in the serial
+  sweep, and the report reads in walk order whatever order tasks finish in.
+- `--parallel 1` restores the fully serial apply.
+
+### `--parallel` bounds the apply phase too
+
+Once inspection is concurrent, removal is where the wall clock goes. The
+2026-08-24 fleet sweep inspected 262 candidates in about two minutes and then
+spent ten more removing 86 of them, one at a time.
+
+The unit that can overlap is the **repository**, not the task. Git allows one
+writer per clone — `worktree remove`, `update-ref -d` and the ref updates a
+push implies all mutate the same `.git` — so two tasks in `sneat-co/sneat-go`
+still take turns while a task in `sneat-games/chess` proceeds beside them.
+
+That bounds the gain to the largest per-repository group. Of those 86 removals
+across 34 repositories the biggest single repository held 14, so the realistic
+improvement is around 3x — roughly twelve minutes down to four. Raising
+`--parallel` past that buys nothing; the extra workers wait on the same clone.
+
+- A **coordinated task** spanning several repositories holds all of them for
+  its whole transaction, acquired in one global order so two such tasks over
+  the same pair cannot deadlock.
+- **Remote branch deletions** are bounded more tightly than `--parallel`,
+  because they contend for GitHub's per-account secondary rate limit rather
+  than for a local clone.
+- A **per-task failure** still costs only that task, exactly as in the serial
+  sweep, and the report reads in walk order whatever order tasks finish in.
+- `--parallel 1` restores the fully serial apply.
