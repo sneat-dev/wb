@@ -62,6 +62,12 @@ An owner entry belongs to a session when **both**:
    recorded before the session registered was written by a previous holder
    of that PID and must not be attributed to the new session.
 
+Re-registering a session (allowed, e.g. to correct its model) re-stamps
+`StartedAt`, so the guard also resets the attribution window: entries the
+same session wrote before re-registering stop counting. Under-attribution
+is the safe direction; preserving the old start would over-attribute after
+PID reuse.
+
 Entries written from explicit `WB_AGENT_PID` env declarations join the same
 way — they are declarations too. Owner entries whose PID matches no listed
 session simply don't surface here (orphan triage is `wb worktree`'s job).

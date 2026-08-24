@@ -115,3 +115,19 @@ func TestCondenseTruncatesRunesNotBytes(t *testing.T) {
 		t.Fatalf("condense = %q, want rune-aware truncation", got)
 	}
 }
+
+func TestAttributeSessionsMultipleSessionsPartition(t *testing.T) {
+	started := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
+	views := []session.View{sessionAt(41, started), sessionAt(42, started)}
+	results := []worktrees.ListResult{
+		{Task: "t1", Branch: "b1", WorktreeDir: "/wt/t1/a/r",
+			Owners: []worktrees.OwnerView{ownerAt(41, "e-41", started.Add(time.Minute))}},
+		{Task: "t2", Branch: "b2", WorktreeDir: "/wt/t2/a/r",
+			Owners: []worktrees.OwnerView{ownerAt(42, "e-42", started.Add(time.Minute))}},
+	}
+	rows := attributeSessions(views, results)
+	if len(rows) != 2 || rows[0].Efforts[0] != "e-41" || rows[1].Efforts[0] != "e-42" ||
+		len(rows[0].Branches) != 1 || rows[0].Branches[0] != "b1" || rows[1].Branches[0] != "b2" {
+		t.Fatalf("sessions must partition attribution: %+v", rows)
+	}
+}
