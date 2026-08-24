@@ -118,10 +118,14 @@ wb worktree list --only active
 wb worktree list --only orphaned
 ```
 
-`--only active` returns worktrees with at least one live owner PID.
-`--only orphaned` returns worktrees without a live owner PID; a worktree with
-only unknown PID evidence is intentionally excluded from both filters and
-needs review.
+`--only active` returns worktrees with at least one live declared owner PID.
+`--only orphaned` returns worktrees whose declared owners have all exited.
+
+A worktree nobody ever declared is `unknown`, and both filters exclude it: it
+needs review, not a verdict. Silence is not evidence of abandonment, and an
+entry WB wrote carrying only provenance is not a dead session. These are the
+same three states `wb worktree orphans` reports as live, gone, and unstated —
+the two commands answer one question and always agree.
 
 ## How triage uses owner state
 
