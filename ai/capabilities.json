@@ -4272,6 +4272,98 @@
       "notes": "Remote Synchestra receipt remains outbox-backed and is not required for local cleanup."
     },
     {
+      "id": "wb.worktree.adopt",
+      "feature_refs": [
+        "spec/features/work-log/README.md",
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree adopt",
+              "flags": [
+                "--all-external",
+                "--apply",
+                "--base",
+                "--format"
+              ],
+              "modes": [
+                "Writes a task directory, reconstructed manifest, and Work Log claim for an external (pre-WB) worktree, reusing backfill's ReconstructManifest rather than duplicating it",
+                "Additive like backfill: the working tree, its index, and its checked-out branch are never moved, modified, or otherwise touched; only a small registration entry is created under the WB home",
+                "Selects a single worktree path or --all-external, honours root --filter; an already-claimed worktree is a no-op reported already_adopted",
+                "After adoption, wb worktree cleanup/abort apply their full existing safety checks unchanged: dirty, unlanded, an open pull request, a held lock, and awaiting_push are all still refused",
+                "Dry run by default"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree adopt --help",
+              "contains": [
+                "--all-external",
+                "task ... was not found",
+                "never moved, modified, or otherwise touched",
+                "already belongs to a WB task"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/cleanup.md",
+              "marker": "## Trap 1: cleanup only sees WB-managed tasks",
+              "examples": [
+                "wb worktree adopt --all-external --filter acme/ --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/adopt_test.go",
+              "name": "TestAdoptDryRunDoesNotMutate",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/adopt_test.go",
+              "name": "TestAdoptIsIdempotentAcrossInterruptedSweeps",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/adopt_test.go",
+              "name": "TestAdoptSkipsMissingWorktree",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/adopt_test.go",
+              "name": "TestAdoptedWorktreeCleanupAppliesExistingSafetyChecks",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/adopt_test.go",
+              "name": "TestAdoptedWorktreeAbortAppliesExistingSafetyChecks",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Registration is a small task/owner/repository directory under the WB home holding one pointer file to the real, unmoved worktree; List/Cleanup/Abort resolve it back to that real path and apply their ordinary no-follow, descriptor-anchored removal to it. Rename refuses an adopted worktree: it relocates a checkout, which adoption's whole point is not doing."
+    },
+    {
       "id": "wb.worktree.backfill",
       "feature_refs": [
         "spec/features/work-log/README.md"

@@ -877,6 +877,27 @@ func locateManagedWorktree(
 	return managedWorktreeLocation{}, fmt.Errorf("linked worktree %s must be below a resolver-recognized .wb/worktrees hierarchy at <task>/<owner>/<repository> or legacy <task>/<repository>; recreate it with `wb worktree create`", root)
 }
 
+// locateAdoptedWorktree resolves identity for a worktree `wb worktree adopt`
+// registered without relocating it, so it sits nowhere under any WB
+// worktrees root and locateManagedWorktree's path-nesting check cannot apply
+// to it. Owner/repository identity is derived and verified exactly as
+// locateManagedWorktree does — from the worktree's own Git plumbing, matched
+// against a canonical clone actually present at <projects-root>/<owner>/
+// <repository> — so an adopted worktree's identity rests on the same trust
+// anchor as a nested one. Only "task" differs: there is no path segment to
+// parse it from, so the caller supplies it from the WB-home registration
+// directory the adoption pointer was read from.
+func locateAdoptedWorktree(ctx context.Context, projectsRoot, root string, layout wbhome.Layout, task string) (managedWorktreeLocation, error) {
+	if !validSafeSegment(task) {
+		return managedWorktreeLocation{}, fmt.Errorf("adopted worktree %s has an invalid task identity %q", root, task)
+	}
+	owner, repository, err := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+	if err != nil {
+		return managedWorktreeLocation{}, fmt.Errorf("derive adopted worktree identity for %s: %w", root, err)
+	}
+	return managedWorktreeLocation{Layout: layout, Worktree: root, Task: task, Owner: owner, Repository: repository}, nil
+}
+
 func isWorktreeStagingDirectory(name string) bool {
 	return strings.HasPrefix(name, ".wb-stage-") && len(name) > len(".wb-stage-")
 }

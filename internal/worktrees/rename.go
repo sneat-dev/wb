@@ -736,6 +736,11 @@ func renameEligibility(entry ListResult) (bool, string) {
 	switch {
 	case entry.Locked:
 		return false, lockedReason(entry, resumeInterruptedCommand(entry.Task))
+	case entry.External:
+		// Rename relocates the worktree onto a new task/owner/repository path.
+		// An adopted worktree's entire point is staying exactly where it is;
+		// recycle it with `wb worktree cleanup`/`abort` instead.
+		return false, "adopted worktree cannot be renamed; it is not relocated under a WB worktrees root"
 	case !entry.Clean:
 		return false, "worktree has local changes"
 	default:
@@ -811,7 +816,9 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 	refreshed, err := inspectLifecycleWorktree(
 		ctx, options.ProjectsRoot, wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot},
 		// Rename never consults GitHub, so no landing receipt applies here.
-		options.OldTask, plan.entry.WorktreeDir, options.Base, "", false, false,
+		// renameEligibility already refuses an adopted worktree, so this is
+		// never reached for one; a nested, non-external recheck is correct.
+		options.OldTask, plan.entry.WorktreeDir, options.Base, "", false, false, false,
 	)
 	if err != nil {
 		return fmt.Errorf("recheck %s before renaming: %w", plan.entry.Repository, err)
@@ -1194,7 +1201,7 @@ func resetRenameResultAfterRollback(plan *renamePlan) {
 func preflightRename(ctx context.Context, options RenameOptions, plan *renamePlan) error {
 	refreshed, err := inspectLifecycleWorktree(ctx, options.ProjectsRoot,
 		wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot}, options.OldTask,
-		plan.entry.WorktreeDir, options.Base, "", false, false)
+		plan.entry.WorktreeDir, options.Base, "", false, false, false)
 	if err != nil {
 		return fmt.Errorf("preflight %s: %w", plan.entry.Repository, err)
 	}

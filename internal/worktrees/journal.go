@@ -521,6 +521,36 @@ func ReconstructManifest(ctx context.Context, worktree string) (Manifest, error)
 	} else if !errors.Is(err, errManifestNotFound) {
 		return Manifest{}, err
 	}
+	manifest, err := computeReconstructedManifest(ctx, worktree)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := WriteManifest(worktree, manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
+// PreviewReconstructedManifest returns exactly what ReconstructManifest would
+// return, without ever writing to disk: a worktree that already has a
+// manifest gets that manifest back unchanged (there is nothing to preview —
+// it is already persisted), and one that doesn't gets the same reconstruction
+// held only in memory. `wb worktree adopt`'s dry run uses this so it can
+// report an accurate effort/repository/branch preview without the side effect
+// a manifest write would be.
+func PreviewReconstructedManifest(ctx context.Context, worktree string) (Manifest, error) {
+	if existing, err := ReadManifest(worktree); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, errManifestNotFound) {
+		return Manifest{}, err
+	}
+	return computeReconstructedManifest(ctx, worktree)
+}
+
+// computeReconstructedManifest is the pure reconstruction ReconstructManifest
+// and PreviewReconstructedManifest share; only their caller decides whether
+// the result is ever persisted.
+func computeReconstructedManifest(ctx context.Context, worktree string) (Manifest, error) {
 	branch, err := git(ctx, worktree, "branch", "--show-current")
 	if err != nil {
 		return Manifest{}, fmt.Errorf("reconstruct manifest: %w", err)
@@ -578,9 +608,6 @@ func ReconstructManifest(ctx context.Context, worktree string) (Manifest, error)
 	}
 	manifest.InferredFields = inferred
 	manifest.Evidence = evidence
-	if err := WriteManifest(worktree, manifest); err != nil {
-		return Manifest{}, err
-	}
 	return manifest, nil
 }
 

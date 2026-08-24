@@ -126,6 +126,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 			WorktreeDir: record.WorktreeDir, WorktreesRoot: record.WorktreesRoot,
 			Branch: record.Branch, Base: record.Base, HeadSHA: record.HeadSHA,
+			External: record.External,
 		}, Disposition: AbortDiscarded, Eligible: true, WorktreeGone: true,
 			BacklogID: record.ID, Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
@@ -217,6 +218,7 @@ func preflightAbortRepository(
 		"", // Abort discards work outright; no landing receipt applies.
 		false,
 		false,
+		result.External,
 	)
 	if err != nil {
 		return ListResult{}, "", fmt.Errorf("preflight abort %s: %w", result.Repository, err)
@@ -285,6 +287,7 @@ func applyDiscardedAbort(
 		"",
 		false,
 		false,
+		result.External,
 	)
 	if err != nil {
 		return fmt.Errorf("recheck discarded worktree %s: %w", result.Repository, err)
@@ -366,6 +369,15 @@ func applyDiscardedAbort(
 		return fmt.Errorf("delete discarded branch %s: %w", refreshed.Branch, err)
 	}
 	result.BranchDeleted = true
+	if refreshed.External {
+		owner, repository, splitErr := splitRepository(refreshed.Repository)
+		if splitErr != nil {
+			return fmt.Errorf("resolve adopted worktree registration identity for %s: %w", refreshed.Repository, splitErr)
+		}
+		if err := removeAdoptedRegistration(task, owner, repository); err != nil {
+			return err
+		}
+	}
 	return persistLifecycleBacklog(home, &backlogRecord, lifecycleStageComplete)
 }
 

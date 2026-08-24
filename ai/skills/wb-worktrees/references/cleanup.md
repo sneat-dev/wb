@@ -18,7 +18,7 @@ cannot tell content that landed from content that was reverted after landing.
 | "audit worktree/branch hygiene" | `wb worktree orphans --only review` |
 | "this task's PRs merged, tidy it up" | `wb worktree cleanup <task>` |
 | "delete every merged branch and worktree" | `wb worktree cleanup --all-merged` |
-| "the sweep sees nothing, these are not WB worktrees" | `wb worktree backfill` |
+| "the sweep sees nothing, these are not WB worktrees" | `wb worktree adopt --all-external` |
 | "the work is unfinished / never merged" | `wb worktree abort <task>` |
 | "reuse this worktree for the next task" | `wb worktree rename <old> <new>` |
 
@@ -61,29 +61,46 @@ wb worktree summary <task> --github
 
 ## Trap 1: cleanup only sees WB-managed tasks
 
-`wb worktree cleanup` inventories `<wb-home>/worktrees/<task>/...`. A linked
-worktree created by `git worktree add`, or by an older tool, is not a candidate
-at all — it is silently outside the sweep, not skipped with a reason. This is
-the single most common reason a fleet-wide sweep reports far fewer eligible
-tasks than `orphans` reports removable worktrees.
+`wb worktree cleanup`/`abort` inventory `<wb-home>/worktrees/<task>/...`. A
+linked worktree created by `git worktree add`, or by an older tool, is not a
+candidate at all — it is silently outside the sweep, not skipped with a
+reason. This is the single most common reason a fleet-wide sweep reports far
+fewer eligible tasks than `orphans` reports removable worktrees.
 
-Give those worktrees an identity first:
+Give those worktrees an identity, then a task, before expecting `cleanup`/
+`abort` to see them:
 
 ```sh
 wb worktree backfill
 wb worktree backfill --base main --format json
 wb worktree backfill --apply
+wb worktree adopt --all-external
+wb worktree adopt --all-external --filter acme/ --apply
+wb worktree adopt <path> --apply
 ```
 
 `backfill` writes a reconstructed manifest into every reachable worktree that
-lacks one. It is additive by construction — `.wb/local/` is a new path, nothing
-moves, no working tree is touched — so it is safe to run against a fleet with
-live agents and safe to re-run after an interruption. A reconstructed manifest
-records which fields were inferred and from what evidence, so triage never
-mistakes an inference for a creation record. It never fabricates a prompt;
-`wb worktree set --prompt` gives a worktree its first real one.
+lacks one — the identity half of adoption alone. It does **not** give
+`cleanup`/`abort` a task to resolve; they still refuse with `task ... was not
+found` afterward. `adopt` writes that task directory, manifest, and Work Log
+claim, reusing `backfill`'s reconstruction rather than duplicating it. Both
+are additive by construction — nothing moves, no working tree is touched — so
+either is safe to run against a fleet with live agents and safe to re-run
+after an interruption; an already-adopted worktree is reported
+`already_adopted` and left alone. Neither fabricates a prompt; `wb worktree
+set --prompt` gives a worktree its first real one.
 
-Flags: `--base` (default `main`), `--apply`, `--format text|json`. Dry run by
+`adopt` selects with either exactly one worktree path, or `--all-external` to
+sweep every worktree `orphans` classifies `layout: "external"`; honour
+`--filter` to narrow a sweep. After `adopt --apply`, `wb worktree cleanup
+<task>` and `wb worktree abort <task>` apply their full existing safety checks
+to that worktree unchanged — dirty, unlanded, an open pull request, a held
+lock, and `awaiting_push` are all still refused exactly as for a worktree WB
+created directly.
+
+Flags: `wb worktree backfill` — `--base` (default `main`), `--apply`, `--format
+text|json`. `wb worktree adopt` — `--base` (default `main`), `--all-external`,
+`--apply`, `--format text|json`, plus root `--filter`. Both are dry runs by
 default.
 
 ## Trap 2: cleanup requires a merge receipt, not merged-looking content
