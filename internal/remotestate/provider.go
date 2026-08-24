@@ -31,7 +31,18 @@ type Provider interface {
 	// implementations refresh the store view before acting. The provider never
 	// judges staleness; ClaimTakeOverStale merely authorizes replacing another
 	// holder — commands establish staleness first.
-	Claim(ctx context.Context, claim Claim, mode ClaimMode) (ClaimOutcome, error)
+	//
+	// expectedHolder is the "<login>/<machine>" the caller judged stale and
+	// is authorizing replacement of; it is "" for ClaimNormal and
+	// ClaimForce, which do not need one. For ClaimTakeOverStale it is a
+	// precondition: a hub provider maps this to a conditional PUT keyed on
+	// the current holder, and a git-backed provider re-checks it against
+	// the freshly fetched store before writing. If the actual current
+	// holder no longer matches (they released and a third party claimed,
+	// or refreshed away their own staleness, between the caller's judgment
+	// and this call), the provider must not replace them — it reports an
+	// ordinary ClaimHeld naming the real current holder instead.
+	Claim(ctx context.Context, claim Claim, mode ClaimMode, expectedHolder string) (ClaimOutcome, error)
 	// Release removes a claim. It is self-contained, refreshing the store view
 	// before acting.
 	Release(ctx context.Context, task, login, machine string, force bool) (ReleaseOutcome, error)

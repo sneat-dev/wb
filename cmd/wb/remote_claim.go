@@ -65,7 +65,7 @@ func runRemoteClaim(deps remoteDeps, projectsRoot, task, note string, takeOver, 
 	}
 	ctx := context.Background()
 
-	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal)
+	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal, "")
 	if err != nil {
 		if !force {
 			return &exitError{code: exitFindings, message: "claim " + task + ": " + err.Error()}
@@ -73,7 +73,7 @@ func runRemoteClaim(deps remoteDeps, projectsRoot, task, note string, takeOver, 
 		// The current claim file could not even be read (e.g. a newer schema
 		// version); --force proceeds anyway, but there is no coherent holder
 		// to name.
-		return forceClaim(ctx, provider, mine, "unreadable claim", jsonOut, out)
+		return forceClaim(ctx, provider, mine, "", jsonOut, out)
 	}
 
 	switch outcome.Kind {
@@ -99,12 +99,26 @@ func handleClaimHeld(ctx context.Context, provider remotestate.Provider, deps re
 	case force:
 		return forceClaim(ctx, provider, mine, holderDesc(mine, holder), jsonOut, out)
 	case takeOver && isStale:
-		outcome, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale)
+		outcome, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale, holder.Holder())
 		if err != nil {
 			return &exitError{code: exitFindings, message: "claim " + mine.Task + ": " + err.Error()}
 		}
-		hb := heartbeatPhrase(machines, holder.Login, holder.Machine, deps.now(), "never")
-		text := fmt.Sprintf("took over %s from %s (their heartbeat: %s)\n", mine.Task, holderDesc(mine, holder), hb)
+		if outcome.Kind == remotestate.ClaimHeld {
+			// The holder judged stale above already changed hands (released
+			// and reclaimed, or refreshed) before this call landed; the
+			// provider refused the take-over and named the actual current
+			// holder instead of replacing them.
+			return &exitError{code: exitFindings, message: fmt.Sprintf("remote claim on %s changed to %s before the take-over landed; retry", mine.Task, holderDesc(mine, outcome.Current))}
+		}
+		// Render from outcome.Previous, not the earlier-judged holder
+		// variable: onLostRace's retry path can land a take-over against a
+		// different previous state than what was judged stale up front.
+		prev := holder
+		if outcome.Previous != nil {
+			prev = *outcome.Previous
+		}
+		hb := heartbeatPhrase(machines, prev.Login, prev.Machine, deps.now(), "never")
+		text := fmt.Sprintf("took over %s from %s (their heartbeat: %s)\n", mine.Task, holderDesc(mine, prev), hb)
 		return writeClaimOutcome(out, jsonOut, outcome, text)
 	case takeOver:
 		return &exitError{code: exitFindings, message: fmt.Sprintf("claim is fresh; ask %s to release, or use --force", holderDesc(mine, holder))}
@@ -119,17 +133,24 @@ func handleClaimHeld(ctx context.Context, provider remotestate.Provider, deps re
 }
 
 // forceClaim replaces whatever claim is there with mine, then prints the
-// OVERRIDING banner (holderLabel names who is being overridden, or
-// "unreadable claim" when the prior claim file couldn't be decoded at all)
-// only on success.
+// OVERRIDING banner only on success. holderLabel names who is being
+// overridden, or "" when the prior claim file couldn't even be decoded (so
+// there is no coherent holder to name); forceClaim renders each case with
+// wording that actually matches what happened — the prior claim was not
+// necessarily fresh, "fresh" only ever described the ordinary case where
+// staleness was never in question because --force bypasses it entirely.
 func forceClaim(ctx context.Context, provider remotestate.Provider, mine remotestate.Claim, holderLabel string, jsonOut bool, out io.Writer) error {
-	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimForce)
+	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimForce, "")
 	if err != nil {
 		return &exitError{code: exitFindings, message: "claim " + mine.Task + ": " + err.Error()}
 	}
 	text := ""
 	if !jsonOut {
-		text = fmt.Sprintf("OVERRIDING fresh remote claim by %s on %s\n", holderLabel, mine.Task)
+		if holderLabel == "" {
+			text = fmt.Sprintf("OVERRIDING unreadable remote claim on %s\n", mine.Task)
+		} else {
+			text = fmt.Sprintf("OVERRIDING remote claim by %s on %s\n", holderLabel, mine.Task)
+		}
 	}
 	return writeClaimOutcome(out, jsonOut, outcome, text)
 }

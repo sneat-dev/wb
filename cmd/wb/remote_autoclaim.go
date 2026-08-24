@@ -59,7 +59,7 @@ func tryAutoClaim(deps remoteDeps, projectsRoot, task string, stale time.Duratio
 		ClaimedAt:     deps.now(),
 	}
 	ctx := context.Background()
-	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal)
+	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimNormal, "")
 	if err != nil {
 		return skippedAutoClaim(out, task, err.Error())
 	}
@@ -88,9 +88,25 @@ func tryAutoTakeOverStale(ctx context.Context, provider remotestate.Provider, de
 		_, _ = fmt.Fprintf(out, "remote claim: %s is held by %s — proceeding without the remote claim\n", mine.Task, who)
 		return autoClaimResult{Outcome: "held", Detail: who}
 	}
-	if _, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale); err != nil {
+	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimTakeOverStale, holder.Holder())
+	if err != nil {
 		return skippedAutoClaim(out, mine.Task, err.Error())
 	}
+	if outcome.Kind == remotestate.ClaimHeld {
+		// The holder judged stale above already changed hands before this
+		// call landed; behave like any other held-fresh claim and proceed
+		// without it, naming the actual current holder.
+		who = holderDesc(mine, outcome.Current)
+		_, _ = fmt.Fprintf(out, "remote claim: %s is held by %s — proceeding without the remote claim\n", mine.Task, who)
+		return autoClaimResult{Outcome: "held", Detail: who}
+	}
+	// Render from outcome.Previous, not the earlier-judged holder variable
+	// (see the equivalent note in cmd/wb/remote_claim.go).
+	prev := holder
+	if outcome.Previous != nil {
+		prev = *outcome.Previous
+	}
+	who = holderDesc(mine, prev)
 	_, _ = fmt.Fprintf(out, "remote claim: took over %s from %s (stale)\n", mine.Task, who)
 	return autoClaimResult{Outcome: "took_over", Detail: who}
 }

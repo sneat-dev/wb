@@ -70,8 +70,14 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 		if len(entries) == 0 {
 			_, _ = fmt.Fprintf(errOut, "no machine %s in the remote store\n", machine)
 		}
-		// Filter claims to match the machine filter in JSON mode.
-		filteredClaims := claimRowsAll[:0]
+		// Filter claims to match the machine filter in JSON mode. Allocate a
+		// fresh slice rather than claimRowsAll[:0]: that in-place compaction
+		// shares claimRowsAll's backing array, and since claimRowsAll is
+		// still read below (writeStatusWorklist filters it itself, per
+		// machine section), overwriting through the alias corrupted it —
+		// e.g. a single kept entry got duplicated into every slot it didn't
+		// overwrite, rendering "remote claims: b-task, b-task" in TEXT mode.
+		filteredClaims := make([]claimRow, 0, len(claimRowsAll))
 		for _, cr := range claimRowsAll {
 			if cr.Error == "" && cr.Holder == machine {
 				filteredClaims = append(filteredClaims, cr)

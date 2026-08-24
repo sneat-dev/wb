@@ -182,7 +182,7 @@ Claims(ctx context.Context) ([]ClaimEntry, error)
 | Claim held by another (no flag) | exit 1, names holder + heartbeat age |
 | `--take-over` on a fresh claim | exit 1: "claim is fresh; ask <holder> to release, or use --force" |
 | Lost the CAS race | exit 1, local commit rolled back on the state clone |
-| Push rejected twice | exit 1, local commit kept (next attempt carries it) |
+| Push rejected twice | claim/release: exit 1; the local change is discarded (claims are re-creatable) so the clone stays healthy; publish keeps its commit as before |
 | Malformed claim file | error row in `claims`; `claim` on that task refuses without `--force` (unreadable ≠ unheld) |
 | Store unreachable in auto paths | printed `skipped`/`release skipped` line; exit code of the host command unchanged |
 | Store unreachable in explicit commands | exit 1 (an explicit claim that didn't happen must fail loudly) |

@@ -176,6 +176,34 @@ exit 0
 	}
 }
 
+// installRejectAlwaysPushHook rigs origin's bare repo so that every push it
+// receives is rejected, unconditionally, until removed (see
+// clearRejectPushHook). Unlike installRejectFirstPushHook, it never
+// promotes a competing commit onto main — it exists to reproduce a
+// persistently failing push (e.g. a server-side permission problem)
+// distinct from a lost CAS race, so a second rejection in a row is not
+// itself evidence of a conflicting concurrent writer.
+func installRejectAlwaysPushHook(t *testing.T, origin string) {
+	t.Helper()
+	hooksDir := filepath.Join(origin, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(hooksDir, "pre-receive"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// clearRejectPushHook removes a hook installed by installRejectAlwaysPushHook
+// (or installRejectFirstPushHook), letting subsequent pushes land normally.
+func clearRejectPushHook(t *testing.T, origin string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(origin, "hooks", "pre-receive")); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+}
+
 // TestTwoMachinesPublishConcurrentlyViaRebase proves the "push rejected ->
 // PullRebase -> push again" branch inside Publish: bob's own push is
 // rejected by origin (rigged via installRejectFirstPushHook to simulate

@@ -158,11 +158,21 @@ func TestRemoteClaimTakeOverRequiresStaleness(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, false, 24*time.Hour, &out); err != nil {
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, true, 24*time.Hour, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "took over") || !strings.Contains(out.String(), "bob/desktop") {
-		t.Fatalf("out = %q, want took over bob/desktop", out.String())
+	// The takeover message must name the PREVIOUS holder from
+	// outcome.Previous, not the earlier-judged holder variable: assert it
+	// directly off the JSON outcome rather than the rendered prose.
+	var outcome remotestate.ClaimOutcome
+	if err := json.Unmarshal(out.Bytes(), &outcome); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if outcome.Kind != remotestate.ClaimTookOver {
+		t.Fatalf("Kind = %v, want took_over", outcome.Kind)
+	}
+	if outcome.Previous == nil || outcome.Previous.Holder() != "bob/desktop" {
+		t.Fatalf("Previous = %+v, want bob/desktop", outcome.Previous)
 	}
 }
 
@@ -178,11 +188,21 @@ func TestRemoteClaimNoSnapshotHolderIsStale(t *testing.T) {
 	// bob never publishes: no snapshot at all, so his claim is stale from the start.
 
 	out.Reset()
-	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, false, 24*time.Hour, &out); err != nil {
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, true, 24*time.Hour, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "took over") || !strings.Contains(out.String(), "bob/desktop") {
-		t.Fatalf("out = %q, want took over bob/desktop", out.String())
+	// The takeover message must name the PREVIOUS holder from
+	// outcome.Previous, not the earlier-judged holder variable: assert it
+	// directly off the JSON outcome rather than the rendered prose.
+	var outcome remotestate.ClaimOutcome
+	if err := json.Unmarshal(out.Bytes(), &outcome); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if outcome.Kind != remotestate.ClaimTookOver {
+		t.Fatalf("Kind = %v, want took_over", outcome.Kind)
+	}
+	if outcome.Previous == nil || outcome.Previous.Holder() != "bob/desktop" {
+		t.Fatalf("Previous = %+v, want bob/desktop", outcome.Previous)
 	}
 }
 
@@ -256,8 +276,8 @@ func TestRemoteClaimForceOnUnreadableFile(t *testing.T) {
 	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, true, false, 24*time.Hour, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "OVERRIDING") || !strings.Contains(out.String(), "unreadable claim") {
-		t.Fatalf("out = %q, want OVERRIDING unreadable claim", out.String())
+	if !strings.Contains(out.String(), "OVERRIDING unreadable remote claim") {
+		t.Fatalf("out = %q, want OVERRIDING unreadable remote claim", out.String())
 	}
 }
 
@@ -517,6 +537,40 @@ func TestRemoteStatusShowsClaims(t *testing.T) {
 	}
 	if len(report.Claims) != 1 || report.Claims[0].Task != "task-7" || report.Claims[0].Holder != "alice/laptop" {
 		t.Fatalf("report.Claims with --machine = %+v", report.Claims)
+	}
+}
+
+// TestRemoteStatusMachineFilterTextClaimsNotDuplicated proves the fix for
+// the reviewer's bug: `claimsForJSON := claimRowsAll[:0]` inside the
+// --machine branch used to compact in place, corrupting claimRowsAll (which
+// the TEXT-mode renderer reads unfiltered, doing its own per-machine
+// filtering). With bob holding a-task and alice holding b-task, a
+// --machine alice/laptop TEXT run used to render alice's section as
+// "remote claims: b-task, b-task" instead of "remote claims: b-task".
+func TestRemoteStatusMachineFilterTextClaimsNotDuplicated(t *testing.T) {
+	f, at := publishTwo(t) // alice/laptop + bob/vm, both published
+	g := secondMachine(t, f, "vm")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "a-task", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "b-task", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	var errOut bytes.Buffer
+	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "alice/laptop", false, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if got := strings.Count(text, "b-task"); got != 1 {
+		t.Fatalf("text = %q, want b-task exactly once, got %d", text, got)
+	}
+	if strings.Contains(text, "a-task") {
+		t.Fatalf("text = %q, want a-task absent (filtered to alice/laptop)", text)
 	}
 }
 

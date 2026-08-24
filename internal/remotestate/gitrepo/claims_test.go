@@ -49,7 +49,7 @@ func TestClaimAcquiresWhenAbsent(t *testing.T) {
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 
-	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal)
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,12 +72,12 @@ func TestClaimRefreshesOwnClaim(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
 	later := at.Add(time.Hour)
-	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", later), remotestate.ClaimNormal)
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", later), remotestate.ClaimNormal, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,12 +112,12 @@ func TestClaimHeldByOtherRefusesWithoutForce(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 	before := gitIn(t, origin, "rev-parse", "main")
 
-	outcome, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal)
+	outcome, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal, "")
 	if err != nil {
 		t.Fatalf("claim held by another is a refusal, not an error: %v", err)
 	}
@@ -138,11 +138,11 @@ func TestClaimTakeOverRecordsPrevious(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	outcome, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at.Add(time.Hour)), remotestate.ClaimTakeOverStale)
+	outcome, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at.Add(time.Hour)), remotestate.ClaimTakeOverStale, "alice/laptop")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestClaimLosesRaceAfterRebase(t *testing.T) {
 	installRejectFirstPushHook(t, origin, bobSHA)
 
 	p := machine(t, origin)
-	_, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal)
+	_, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal, "")
 	if err == nil || !strings.Contains(err.Error(), "lost the race for task-7 to") {
 		t.Fatalf("Claim = %v, want error mentioning 'lost the race for task-7 to'", err)
 	}
@@ -229,7 +229,7 @@ func TestClaimRaceWithDifferentTaskStillLands(t *testing.T) {
 	installRejectFirstPushHook(t, origin, bobSHA)
 
 	p := machine(t, origin)
-	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal)
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal, "")
 	if err != nil {
 		t.Fatalf("Claim with induced push rejection for a different task: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestClaimTakeOverRacingReleaseAcquires(t *testing.T) {
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 
 	bob := machine(t, origin)
-	if _, err := bob.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := bob.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -287,7 +287,7 @@ func TestClaimTakeOverRacingReleaseAcquires(t *testing.T) {
 	installRejectFirstPushHook(t, origin, releaseSHA)
 
 	alice := machine(t, origin)
-	outcome, err := alice.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Hour)), remotestate.ClaimTakeOverStale)
+	outcome, err := alice.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Hour)), remotestate.ClaimTakeOverStale, "bob/vm")
 	if err != nil {
 		t.Fatalf("Claim racing a release: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestReleaseRacingReleaseIsNoop(t *testing.T) {
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 
 	alice := machine(t, origin)
-	if _, err := alice.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := alice.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -379,13 +379,13 @@ func TestClaimRefreshIdenticalBytesMakesNoCommit(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 	before := gitIn(t, origin, "rev-parse", "main")
 	beforeCount := gitIn(t, origin, "rev-list", "--count", "main")
 
-	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal)
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestReleaseDeletesOwnClaim(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -440,7 +440,7 @@ func TestReleaseIsIdempotent(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.Release(context.Background(), "task-7", "alice", "laptop", false); err != nil {
@@ -465,7 +465,7 @@ func TestReleaseRefusesOtherHolderWithoutForce(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -487,7 +487,7 @@ func TestReleaseForceRemovesOtherHolder(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -508,10 +508,10 @@ func TestClaimsListsAndSortsByTask(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
-	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-9", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-9", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-2", at), remotestate.ClaimNormal); err != nil {
+	if _, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-2", at), remotestate.ClaimNormal, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -574,13 +574,13 @@ func TestClaimOnMalformedFileRefusesWithoutForce(t *testing.T) {
 
 	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
 	for _, mode := range []remotestate.ClaimMode{remotestate.ClaimNormal, remotestate.ClaimTakeOverStale} {
-		_, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-5", at), mode)
+		_, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-5", at), mode, "")
 		if err == nil || !strings.Contains(err.Error(), "unreadable") {
 			t.Fatalf("mode %v: Claim = %v, want error mentioning 'unreadable'", mode, err)
 		}
 	}
 
-	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-5", at), remotestate.ClaimForce)
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-5", at), remotestate.ClaimForce, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,5 +601,89 @@ func TestClaimOnMalformedFileRefusesWithoutForce(t *testing.T) {
 	}
 	if claim.Holder() != "alice/laptop" {
 		t.Fatalf("holder = %q, want alice/laptop", claim.Holder())
+	}
+}
+
+// TestClaimDoubleRejectionResetsCloneAndCanRetry proves the fix for the
+// reviewer's bug: unlike Publish, a claims mutation must not keep its local
+// commit after a second push rejection in a row, because a kept claims
+// commit can go on to conflict with a competing same-task commit on origin,
+// and Provider.Fetch has no recovery for a wedged rebase — every later
+// remote command on the machine would fail until someone manually reset the
+// clone. With every push rejected, Claim must fail mentioning "retry", but
+// leave the clone clean and reset to upstream so it stays healthy; once
+// pushes are allowed again, a plain Fetch and a fresh Claim on the SAME
+// Provider must succeed.
+func TestClaimDoubleRejectionResetsCloneAndCanRetry(t *testing.T) {
+	origin := bareOrigin(t)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	installRejectAlwaysPushHook(t, origin)
+
+	p := machine(t, origin)
+	_, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, "")
+	if err == nil || !strings.Contains(err.Error(), "retry") {
+		t.Fatalf("Claim = %v, want an error mentioning 'retry'", err)
+	}
+
+	if status := gitIn(t, p.opts.ClonePath, "status", "--porcelain"); status != "" {
+		t.Fatalf("clone status = %q, want clean after the reset", status)
+	}
+	head := gitIn(t, p.opts.ClonePath, "rev-parse", "HEAD")
+	originMain := gitIn(t, origin, "rev-parse", "main")
+	if head != originMain {
+		t.Fatalf("clone HEAD = %s, want reset to origin main %s", head, originMain)
+	}
+
+	clearRejectPushHook(t, origin)
+
+	if err := p.Fetch(context.Background()); err != nil {
+		t.Fatalf("Fetch after the reset: %v", err)
+	}
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal, "")
+	if err != nil {
+		t.Fatalf("Claim once pushes are allowed again: %v", err)
+	}
+	if outcome.Kind != remotestate.ClaimAcquired {
+		t.Fatalf("Kind = %v, want acquired", outcome.Kind)
+	}
+}
+
+// TestClaimTakeOverExpectedHolderMismatchReturnsHeld proves the fix for the
+// reviewer's holder-swap accuracy bug: a caller judges bob's claim stale,
+// but by the time its ClaimTakeOverStale call lands, bob has released and
+// carol has claimed the same task. The provider must not blindly replace
+// carol just because the caller's earlier judgment named bob — it must
+// report ClaimHeld naming carol, the actual current holder, and it must not
+// write anything.
+func TestClaimTakeOverExpectedHolderMismatchReturnsHeld(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+
+	if _, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Release(context.Background(), "task-7", "bob", "vm", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Claim(context.Background(), mkClaim("carol", "desktop", "task-7", at.Add(time.Minute)), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+	before := gitIn(t, origin, "rev-parse", "main")
+
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(2*time.Minute)), remotestate.ClaimTakeOverStale, "bob/vm")
+	if err != nil {
+		t.Fatalf("Claim with a stale expectedHolder mismatch: %v", err)
+	}
+	if outcome.Kind != remotestate.ClaimHeld {
+		t.Fatalf("Kind = %v, want held", outcome.Kind)
+	}
+	if outcome.Current.Holder() != "carol/desktop" {
+		t.Fatalf("Current.Holder() = %q, want carol/desktop", outcome.Current.Holder())
+	}
+
+	after := gitIn(t, origin, "rev-parse", "main")
+	if before != after {
+		t.Fatalf("origin main moved from %s to %s; a held mismatch must not commit", before, after)
 	}
 }

@@ -43,7 +43,8 @@ func (p *Provider) readClaim(task string) (claim remotestate.Claim, exists bool,
 // deletes the one claim file it owns and returns the commit message plus
 // whether it actually changed anything on disk — a byte-identical refresh
 // changes nothing, so no commit or push happens and the current HEAD is
-// returned as-is.
+// returned as-is. claimPath names the claim file mutate touches; it is used
+// only to name the mutation in error messages.
 //
 // onLostRace runs only when a rebase after a rejected push fails with a
 // genuine conflict. Since every commit this function makes touches exactly
@@ -54,7 +55,21 @@ func (p *Provider) readClaim(task string) (claim remotestate.Claim, exists bool,
 // error. A rebase that completes cleanly (e.g. a concurrent commit for a
 // different task) is not a race for THIS claim, so mutateStore simply
 // pushes again.
-func (p *Provider) mutateStore(mutate func() (message string, changed bool, err error), onLostRace func() error) (sha string, err error) {
+//
+// A second push rejection (after that rebase-and-retry) is handled
+// differently here than in Provider.Publish, which keeps its local commit
+// for the next attempt. Publish can afford that: a snapshot publish owns a
+// private per-machine file that never conflicts with anyone else's commit,
+// so retrying later is always safe. A claims commit has no such guarantee —
+// it touches a shared task path — so a claim/release commit left sitting
+// locally after two rejections can go on to conflict with whatever a
+// competing machine lands on that same path next, and Provider.Fetch has no
+// recovery for a wedged rebase: every later remote command on this machine
+// would fail until someone manually reset the clone. Claims are trivially
+// re-creatable (just claim/release again), so mutateStore instead discards
+// the local commit and resets the clone to upstream, leaving it healthy for
+// the next attempt.
+func (p *Provider) mutateStore(claimPath string, mutate func() (message string, changed bool, err error), onLostRace func() error) (sha string, err error) {
 	message, changed, err := mutate()
 	if err != nil {
 		return "", err
@@ -80,7 +95,16 @@ func (p *Provider) mutateStore(mutate func() (message string, changed bool, err 
 			return "", fmt.Errorf("push rejected and rebase failed: %w", rebaseErr)
 		}
 		if err := p.push(); err != nil {
-			return "", fmt.Errorf("push rejected twice; local commit kept for the next attempt: %w", err)
+			// Second rejection: discard the local commit rather than keep
+			// it, per the doc comment above. abortDetailIfRebasing is
+			// defensive here — the PullRebase above already completed
+			// cleanly, so no rebase should be in progress — but calling it
+			// keeps this branch safe even if that assumption ever breaks.
+			abortDetailIfRebasing(p.opts.ClonePath)
+			if resetErr := gitops.ResetHardUpstream(p.opts.ClonePath); resetErr != nil {
+				return "", fmt.Errorf("push rejected twice for %s; local change discarded — retry (reset to upstream also failed: %w)", claimPath, resetErr)
+			}
+			return "", fmt.Errorf("push rejected twice for %s; local change discarded — retry: %w", claimPath, err)
 		}
 	}
 	return gitops.HeadSHA(p.opts.ClonePath)
@@ -94,15 +118,15 @@ func (p *Provider) mutateStore(mutate func() (message string, changed bool, err 
 var errStorePathFreed = errors.New("gitrepo: claim path freed by a concurrent operation")
 
 // Claim acquires or refreshes a claim on a task.
-func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode) (remotestate.ClaimOutcome, error) {
-	return p.claim(ctx, claim, mode, false)
+func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode, expectedHolder string) (remotestate.ClaimOutcome, error) {
+	return p.claim(ctx, claim, mode, expectedHolder, false)
 }
 
 // claim implements Claim. retried is true only on the one bounded retry
 // triggered by onLostRace finding the claim path freed by a concurrent
 // Release (see errStorePathFreed) — it prevents an unbounded retry loop if
 // the store keeps changing out from under us.
-func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode, retried bool) (remotestate.ClaimOutcome, error) {
+func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode, expectedHolder string, retried bool) (remotestate.ClaimOutcome, error) {
 	if err := remotestate.ValidTaskName(claim.Task); err != nil {
 		return remotestate.ClaimOutcome{}, err
 	}
@@ -137,9 +161,18 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 		message = fmt.Sprintf("wb: claim %s by %s", claim.Task, claim.Holder())
 	case mode == remotestate.ClaimNormal:
 		return remotestate.ClaimOutcome{Kind: remotestate.ClaimHeld, Current: current}, nil
+	case mode == remotestate.ClaimTakeOverStale && expectedHolder != "" && current.Holder() != expectedHolder:
+		// The holder the caller judged stale is no longer the current
+		// holder: they released and a fresh third party claimed the task
+		// (or refreshed away their own staleness) between the caller's
+		// staleness judgment and this call landing. Replacing whoever holds
+		// it NOW would be wrong — report it as an ordinary ClaimHeld naming
+		// the actual current holder instead, exactly like ClaimNormal would.
+		return remotestate.ClaimOutcome{Kind: remotestate.ClaimHeld, Current: current}, nil
 	default:
-		// ClaimTakeOverStale or ClaimForce: the provider never judges
-		// staleness itself, it just authorizes replacing another holder.
+		// ClaimTakeOverStale (holder confirmed, or no expectedHolder given)
+		// or ClaimForce: the provider never judges staleness itself, it
+		// just authorizes replacing another holder.
 		held := current
 		previous = &held
 		kind = remotestate.ClaimTookOver
@@ -190,10 +223,10 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 		return errStorePathFreed
 	}
 
-	sha, err := p.mutateStore(mutate, onLostRace)
+	sha, err := p.mutateStore(rel, mutate, onLostRace)
 	if err != nil {
 		if errors.Is(err, errStorePathFreed) {
-			return p.claim(ctx, claim, mode, true)
+			return p.claim(ctx, claim, mode, expectedHolder, true)
 		}
 		return remotestate.ClaimOutcome{}, err
 	}
@@ -267,7 +300,7 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 		return errStorePathFreed
 	}
 
-	sha, err := p.mutateStore(mutate, onLostRace)
+	sha, err := p.mutateStore(rel, mutate, onLostRace)
 	if err != nil {
 		if errors.Is(err, errStorePathFreed) {
 			return p.release(ctx, task, login, machine, force, true)
