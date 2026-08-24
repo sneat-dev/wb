@@ -153,7 +153,7 @@ func TakeOwnerWarnings() []string {
 // Its error is deliberately dropped: provenance must never be the reason a real
 // operation fails, and a missing entry is itself visible as a gap in the chain.
 func ensureCustody(worktree string) {
-	_ = RecordCustody(worktree, "", InvokedCommand(), IdentityFromEnv())
+	_ = RecordCustody(worktree, "", InvokedCommand(), CurrentIdentity())
 }
 
 func ownerViews(worktree string) ([]OwnerView, error) {

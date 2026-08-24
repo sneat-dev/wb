@@ -88,3 +88,49 @@ func TestUndeclaredOwnerWarningNamesBothRoutes(t *testing.T) {
 		}
 	}
 }
+
+// The environment is the most specific thing a caller said, so a per-command
+// override must beat a session-wide registration.
+func TestCurrentIdentityPrefersTheEnvironment(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "1111")
+	t.Setenv(EnvAgentRuntime, "claude-code")
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{Runtime: "codex", PID: 2222}, true
+	})
+
+	if got := CurrentIdentity(); got.PID != 1111 || got.Runtime != "claude-code" {
+		t.Fatalf("CurrentIdentity() = %+v, want the environment declaration", got)
+	}
+}
+
+// With nothing in the environment, a session registered once at start-up
+// attributes the write — which is the point of registering.
+func TestCurrentIdentityFallsBackToTheRegisteredSession(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "")
+	t.Setenv(EnvAgentRuntime, "")
+	t.Setenv(EnvAgentModel, "")
+	t.Setenv(EnvAgentID, "")
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{Runtime: "codex", AgentID: "s1", Model: "m", PID: 2222}, true
+	})
+
+	got := CurrentIdentity()
+	if got.PID != 2222 || got.Agent() != "codex/s1" {
+		t.Fatalf("CurrentIdentity() = %+v, want the registered session", got)
+	}
+}
+
+func TestCurrentIdentityIsUndeclaredWithNoEnvAndNoSession(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "")
+	t.Setenv(EnvAgentRuntime, "")
+	t.Setenv(EnvAgentModel, "")
+	t.Setenv(EnvAgentID, "")
+	SetSessionResolver(func() (AgentIdentity, bool) { return AgentIdentity{}, false })
+
+	if got := CurrentIdentity(); got.Declared() {
+		t.Fatalf("CurrentIdentity() = %+v, want undeclared", got)
+	}
+}
