@@ -38,6 +38,7 @@ not change the exit code.`,
 type remoteStatusReport struct {
 	Machines []remoteMachineRow  `json:"machines"`
 	Entries  []remotestate.Entry `json:"entries"`
+	Claims   []claimRow          `json:"claims"`
 }
 
 func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, machine string, jsonOut bool, out, errOut io.Writer) error {
@@ -49,6 +50,15 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 	if err != nil {
 		return &exitError{code: exitFindings, message: "read remote store: " + err.Error()}
 	}
+	claims, err := provider.Claims(context.Background())
+	if err != nil {
+		return &exitError{code: exitFindings, message: "read remote store: " + err.Error()}
+	}
+	// claimRowsAll is computed from the unfiltered entries, before --machine
+	// narrows the slice below: a claim's staleness depends on ITS holder's
+	// snapshot, which the --machine filter may otherwise have dropped.
+	claimRowsAll := claimRows(claims, entries, deps.now(), stale)
+	claimsForJSON := claimRowsAll
 	if machine != "" {
 		filtered := entries[:0]
 		for _, entry := range entries {
@@ -60,11 +70,25 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 		if len(entries) == 0 {
 			_, _ = fmt.Fprintf(errOut, "no machine %s in the remote store\n", machine)
 		}
+		// Filter claims to match the machine filter in JSON mode. Allocate a
+		// fresh slice rather than claimRowsAll[:0]: that in-place compaction
+		// shares claimRowsAll's backing array, and since claimRowsAll is
+		// still read below (writeStatusWorklist filters it itself, per
+		// machine section), overwriting through the alias corrupted it —
+		// e.g. a single kept entry got duplicated into every slot it didn't
+		// overwrite, rendering "remote claims: b-task, b-task" in TEXT mode.
+		filteredClaims := make([]claimRow, 0, len(claimRowsAll))
+		for _, cr := range claimRowsAll {
+			if cr.Error == "" && cr.Holder == machine {
+				filteredClaims = append(filteredClaims, cr)
+			}
+		}
+		claimsForJSON = filteredClaims
 	}
 	rows := machineRows(entries, deps.now(), stale)
 	if jsonOut {
-		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries})
+		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries, Claims: claimsForJSON})
 	}
-	writeStatusWorklist(out, entries, rows)
+	writeStatusWorklist(out, entries, rows, claimRowsAll)
 	return nil
 }

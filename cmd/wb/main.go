@@ -128,6 +128,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
 		"remote status": true, "remote machines": true,
+		"remote claim": true, "remote release": true, "remote claims": true,
 		"layout audit": true, "layout clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,

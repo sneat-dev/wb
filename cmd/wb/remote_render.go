@@ -92,8 +92,10 @@ func writeMachinesTable(out io.Writer, rows []remoteMachineRow) {
 
 // writeStatusWorklist renders one section per machine for `wb remote
 // status`: rows and entries are index-aligned (both come from machineRows'
-// same-order entries slice).
-func writeStatusWorklist(out io.Writer, entries []remotestate.Entry, rows []remoteMachineRow) {
+// same-order entries slice). claims lists every claim in the store; a
+// machine's section gets a "remote claims:" line naming the tasks whose
+// Holder matches that machine's key.
+func writeStatusWorklist(out io.Writer, entries []remotestate.Entry, rows []remoteMachineRow, claims []claimRow) {
 	for i, entry := range entries {
 		row := rows[i]
 		header := fmt.Sprintf("## %s", row.Key)
@@ -125,6 +127,115 @@ func writeStatusWorklist(out io.Writer, entries []remotestate.Entry, rows []remo
 		if len(entry.Snapshot.Repositories) == 0 && len(entry.Snapshot.Worktrees) == 0 {
 			_, _ = fmt.Fprintln(out, "  clean")
 		}
+		var tasks []string
+		for _, c := range claims {
+			if c.Error == "" && c.Holder == row.Key {
+				tasks = append(tasks, c.Task)
+			}
+		}
+		if len(tasks) > 0 {
+			_, _ = fmt.Fprintf(out, "  remote claims: %s\n", strings.Join(tasks, ", "))
+		}
 		_, _ = fmt.Fprintln(out)
+	}
+}
+
+// claimRow is one claim's summary line, shared by `wb remote claims` and the
+// "remote claims:" line under a machine's `wb remote status` section.
+type claimRow struct {
+	Task         string    `json:"task"`
+	Holder       string    `json:"holder"`
+	ClaimedAt    time.Time `json:"claimed_at"`
+	HeartbeatAge string    `json:"heartbeat_age"`
+	Stale        bool      `json:"stale"`
+	Note         string    `json:"note,omitempty"`
+	Error        string    `json:"error,omitempty"`
+}
+
+// findSnapshot returns the decodable snapshot published by login/machine, if
+// any. An entry with a decode error is skipped: a corrupt snapshot cannot
+// say whether its holder is stale, so it must not be mistaken for silence.
+func findSnapshot(machines []remotestate.Entry, login, machine string) (remotestate.Snapshot, bool) {
+	for _, m := range machines {
+		if m.Error != "" {
+			continue
+		}
+		if m.Snapshot.Login == login && m.Snapshot.Machine == machine {
+			return m.Snapshot, true
+		}
+	}
+	return remotestate.Snapshot{}, false
+}
+
+// holderStale judges staleness in the command layer, never the provider: a
+// holder with no snapshot at all is stale, and one whose snapshot is older
+// than the --stale window is stale.
+func holderStale(machines []remotestate.Entry, login, machine string, now time.Time, stale time.Duration) bool {
+	snap, ok := findSnapshot(machines, login, machine)
+	if !ok {
+		return true
+	}
+	return stale > 0 && now.Sub(snap.PublishedAt) > stale
+}
+
+// heartbeatPhrase renders a holder's last-publish age for prose messages,
+// falling back to none (e.g. "never published" or "never") when the holder
+// has no snapshot in the store at all.
+func heartbeatPhrase(machines []remotestate.Entry, login, machine string, now time.Time, none string) string {
+	snap, ok := findSnapshot(machines, login, machine)
+	if !ok {
+		return none
+	}
+	return publishedAgo(humanAge(now.Sub(snap.PublishedAt)))
+}
+
+// holderDesc softens the holder key when it names the caller's own login on
+// a different machine: "you on <machine>" rather than the bare "<login>/
+// <machine>" key, since that machine is not this one.
+func holderDesc(mine, theirs remotestate.Claim) string {
+	if theirs.Login == mine.Login && theirs.Machine != mine.Machine {
+		return "you on " + theirs.Machine
+	}
+	return theirs.Holder()
+}
+
+// claimRows summarizes claim entries for rendering, matching machineRows'
+// shape: an entry with a decode error becomes an error row carrying only
+// its task name.
+func claimRows(claims []remotestate.ClaimEntry, machines []remotestate.Entry, now time.Time, stale time.Duration) []claimRow {
+	rows := make([]claimRow, 0, len(claims))
+	for _, entry := range claims {
+		if entry.Error != "" {
+			rows = append(rows, claimRow{Task: entry.Claim.Task, Error: entry.Error})
+			continue
+		}
+		c := entry.Claim
+		rows = append(rows, claimRow{
+			Task:         c.Task,
+			Holder:       c.Holder(),
+			ClaimedAt:    c.ClaimedAt,
+			HeartbeatAge: heartbeatPhrase(machines, c.Login, c.Machine, now, "never published"),
+			Stale:        holderStale(machines, c.Login, c.Machine, now, stale),
+			Note:         c.Note,
+		})
+	}
+	return rows
+}
+
+// writeClaimsTable renders one fixed-width row per claim for `wb remote
+// claims`, matching writeMachinesTable's error-row convention.
+func writeClaimsTable(out io.Writer, rows []claimRow) {
+	_, _ = fmt.Fprintf(out, "%-20s %-24s %-20s %-16s %-6s %s\n", "TASK", "HOLDER", "CLAIMED_AT", "HEARTBEAT", "STALE", "NOTE")
+	for _, row := range rows {
+		if row.Error != "" {
+			_, _ = fmt.Fprintf(out, "%-20s error: %s\n", row.Task, row.Error)
+			continue
+		}
+		stale := ""
+		if row.Stale {
+			stale = "STALE"
+		}
+		_, _ = fmt.Fprintf(out, "%-20s %-24s %-20s %-16s %-6s %s\n",
+			row.Task, row.Holder, row.ClaimedAt.UTC().Format(time.RFC3339), row.HeartbeatAge, stale, row.Note)
 	}
 }

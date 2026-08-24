@@ -27,4 +27,26 @@ type Provider interface {
 	// caller's own last-published entry, sorted by Key(). It is also
 	// self-contained, refreshing the store view itself before reading.
 	List(ctx context.Context) ([]Entry, error)
+	// Claim acquires or refreshes a claim on a task. It is self-contained:
+	// implementations refresh the store view before acting. The provider never
+	// judges staleness; ClaimTakeOverStale merely authorizes replacing another
+	// holder — commands establish staleness first.
+	//
+	// expectedHolder is the "<login>/<machine>" the caller judged stale and
+	// is authorizing replacement of; it is "" for ClaimNormal and
+	// ClaimForce, which do not need one. For ClaimTakeOverStale it is a
+	// precondition: a hub provider maps this to a conditional PUT keyed on
+	// the current holder, and a git-backed provider re-checks it against
+	// the freshly fetched store before writing. If the actual current
+	// holder no longer matches (they released and a third party claimed,
+	// or refreshed away their own staleness, between the caller's judgment
+	// and this call), the provider must not replace them — it reports an
+	// ordinary ClaimHeld naming the real current holder instead.
+	Claim(ctx context.Context, claim Claim, mode ClaimMode, expectedHolder string) (ClaimOutcome, error)
+	// Release removes a claim. It is self-contained, refreshing the store view
+	// before acting.
+	Release(ctx context.Context, task, login, machine string, force bool) (ReleaseOutcome, error)
+	// Claims returns every claim currently in the store, sorted by task name.
+	// It is self-contained, refreshing the store view itself before reading.
+	Claims(ctx context.Context) ([]ClaimEntry, error)
 }

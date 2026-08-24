@@ -53,6 +53,7 @@ wb layout audit|clean            # audit/clean non-canonical clone placement
 wb repo status [path]        # local Git state for one repository
 wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a path is given
 wb remote publish|status|machines # share fleet state across machines via a git state repo
+wb remote claim|release|claims <task> # reserve, give up, or list fleet-wide task claims
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
 wb worktree summary <task>   # brief overview of a task's worktrees, branches, optional PRs
@@ -342,6 +343,19 @@ its commit history is the audit trail.
 Create the store with `gh repo create <owner>/wb-state --private` (no README
 needed; the first publish creates `main`), and SSH access to GitHub is
 required — the clone URL is `git@github.com:<owner>/<name>.git`.
+
+The same store reserves fleet-wide task claims at `claims/<task>.yaml` — the
+file's existence is the claim, and release deletes it, so the store's git
+history is the audit trail. `wb remote claim <task> [--note <text>]
+[--take-over | --force] [--json]` acquires, refreshes, or takes over a claim
+(staleness is derived from the holder machine's publish heartbeat, default
+`--stale 24h`, never a separate TTL). `wb remote release <task> [--force]
+[--json]` gives one up. `wb remote claims [--json] [--stale <dur>]` lists
+every claim with its holder and staleness. `wb worktree create <task>`
+claims best-effort automatically (`--no-claim` opts out), and `wb worktree
+cleanup`/`abort --apply` release best-effort — neither ever fails the host
+command; the create outcome is printed and included in `--format json`
+output.
 
 ### `wb sync`
 

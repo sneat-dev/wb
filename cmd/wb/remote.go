@@ -68,10 +68,16 @@ configured in ~/.config/wb/wb.yaml:
 
   wb remote publish    scan this machine and publish its snapshot
   wb remote status     cross-machine worklist from the store
-  wb remote machines   one line per machine with publish age`,
+  wb remote machines   one line per machine with publish age
+  wb remote claim      claim a task, or refresh your own claim on it
+  wb remote release    release this machine's remote claim on a task
+  wb remote claims     list every claim in the store, with staleness`,
 	}
 	cmd.AddCommand(newRemotePublishCmd())
 	cmd.AddCommand(newRemoteStatusCmd())
 	cmd.AddCommand(newRemoteMachinesCmd())
+	cmd.AddCommand(newRemoteClaimCmd())
+	cmd.AddCommand(newRemoteReleaseCmd())
+	cmd.AddCommand(newRemoteClaimsCmd())
 	return cmd
 }
