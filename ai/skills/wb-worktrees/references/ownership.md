@@ -20,6 +20,32 @@ export WB_AGENT_PID=$$ WB_AGENT_RUNTIME=claude-code
 export WB_AGENT_MODEL=<model> WB_AGENT_ID=<session-id>
 ```
 
+Best of all, register the session once at start-up and let WB attribute
+everything afterwards:
+
+```sh
+wb session register --pid $PPID --runtime claude-code --model <model>
+wb session register --pid 12345 --runtime claude-code --model claude-sonnet-5
+```
+
+`$PPID` from a harness tool call is the agent process itself. WB then resolves
+later writes by matching its own ancestors against registered sessions — which
+confirms a declaration rather than guessing an owner, since an unregistered
+ancestor is never treated as one.
+
+A start-up hook cannot do this on the session's behalf: hooks run in an
+isolated subprocess whose parent is an intermediate shell, not the agent, and
+they cannot export variables into the session either. A hook should prompt the
+agent to register rather than invent a PID.
+
+Inspect what registered:
+
+```sh
+wb session list
+wb session list --live
+wb session prune
+```
+
 Or for a single worktree:
 
 ```sh

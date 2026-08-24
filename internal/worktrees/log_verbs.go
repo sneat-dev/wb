@@ -187,7 +187,7 @@ func LogInit(ctx context.Context, options LogInitOptions) (LogVerbResult, error)
 	if err != nil {
 		return LogVerbResult{}, err
 	}
-	if _, err := recordOwner(root, manifest.EffortID, ownerAgent(options.Runtime, options.AgentID), strings.TrimSpace(options.Model), IdentityFromEnv().PID); err != nil {
+	if _, err := recordOwner(root, manifest.EffortID, ownerAgent(options.Runtime, options.AgentID), strings.TrimSpace(options.Model), CurrentIdentity().PID); err != nil {
 		return LogVerbResult{}, err
 	}
 	return LogVerbResult{

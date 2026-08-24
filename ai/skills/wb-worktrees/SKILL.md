@@ -32,8 +32,9 @@ recognizes legacy linked worktrees there during migration.
   finalize merged work, recycle caches safely, or abort interrupted claims.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
   (checkpoint, steer, refresh, handoff, recover, finalize, sync).
-- Read [ownership.md](references/ownership.md) to attach an agent session,
-  inspect owner metadata and PID liveness, or triage active/orphaned worktrees.
+- Read [ownership.md](references/ownership.md) to register a session
+  (`wb session register`), attach an agent to a worktree, inspect owner
+  metadata and PID liveness, or triage active/orphaned worktrees.
 - Consult [capabilities.json](../../capabilities.json) before assuming a WB
   surface exists; execute only commands whose runtime evidence is present.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.

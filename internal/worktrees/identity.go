@@ -53,6 +53,44 @@ func (a AgentIdentity) Agent() string {
 	return ownerAgent(runtime, id)
 }
 
+// sessionResolver, when installed, returns the identity of a registered agent
+// session that owns this process. It is injected rather than imported so the
+// worktree layer keeps no dependency on how sessions are stored.
+var (
+	resolverMu      sync.RWMutex
+	sessionResolver func() (AgentIdentity, bool)
+)
+
+// SetSessionResolver installs the lookup used when the environment carries no
+// declaration.
+func SetSessionResolver(resolve func() (AgentIdentity, bool)) {
+	resolverMu.Lock()
+	defer resolverMu.Unlock()
+	sessionResolver = resolve
+}
+
+// CurrentIdentity is who WB should attribute this invocation to.
+//
+// An explicit environment declaration wins: it is the most specific thing the
+// caller said, and a session that overrides it for one command means it. Only
+// when nothing is declared does WB consult the registered sessions, which is
+// still a declaration — made once at session start rather than per command.
+func CurrentIdentity() AgentIdentity {
+	if identity := IdentityFromEnv(); identity.Declared() {
+		return identity
+	}
+	resolverMu.RLock()
+	resolve := sessionResolver
+	resolverMu.RUnlock()
+	if resolve == nil {
+		return AgentIdentity{}
+	}
+	if identity, ok := resolve(); ok {
+		return identity
+	}
+	return AgentIdentity{}
+}
+
 // IdentityFromEnv reads a declaration from the process environment. A PID
 // that is absent, non-numeric, or non-positive is treated as undeclared
 // rather than as an error: a malformed declaration must not block the work,

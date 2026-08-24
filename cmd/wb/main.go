@@ -109,6 +109,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newBranchCmd())
 	root.AddCommand(newSelfUpdateCmd())
+	root.AddCommand(newSessionCmd())
 	root.AddCommand(newRemoteCmd())
 
 	return root
@@ -131,8 +132,9 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
-		"worktree own": true,
-		"branch list":  true, "branch cleanup": true,
+		"worktree own":     true,
+		"session register": true, "session list": true, "session prune": true,
+		"branch list": true, "branch cleanup": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
 		"worktree log handoff": true, "worktree log recover": true, "worktree log finalize": true,
@@ -233,6 +235,7 @@ func main() {
 	// Publish the link-time version before anything can record provenance, so
 	// a release build stamps its own version into whatever it writes.
 	buildinfo.Set(version)
+	installSessionResolver()
 	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)
 		os.Exit(exitFindings)
