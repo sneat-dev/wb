@@ -890,7 +890,7 @@ func isSHA(value string) bool {
 		return false
 	}
 	for _, char := range value {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
 			return false
 		}
 	}
