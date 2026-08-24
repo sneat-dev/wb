@@ -103,7 +103,7 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("remote.repo %q must be <owner>/<name>, each matching %s", cfg.Repo, repoPart)
 	}
 	if !machineName.MatchString(cfg.Machine) {
-		return Config{}, fmt.Errorf("remote.machine %q must match %s", cfg.Machine, machineName)
+		return Config{}, fmt.Errorf("remote.machine %q must start with a letter or digit and contain only letters, digits, dots, underscores, or dashes", cfg.Machine)
 	}
 	if cfg.Publish.Unpushed != RedactNone && cfg.Publish.Unpushed != RedactUnpushed {
 		return Config{}, fmt.Errorf("remote.publish.unpushed %q must be %q or %q", cfg.Publish.Unpushed, RedactNone, RedactUnpushed)

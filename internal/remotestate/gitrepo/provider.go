@@ -62,19 +62,73 @@ func (p *Provider) ensureClone() error {
 	return gitops.Clone(p.opts.CloneURL, p.opts.ClonePath)
 }
 
-// sameRemote reports whether a and b name the same git remote, tolerating a
-// trailing "/" and a ".git" suffix on either side. Local clone sources (no
-// "://" scheme and no scp-like "user@host:" prefix) are additionally run
-// through filepath.Clean, so "/tmp/x" and "/tmp/x/" compare equal.
+// sameRemote reports whether a and b name the same git remote, tolerating
+// case, a trailing "/", a ".git" suffix, and the https/ssh/scp spellings
+// GitHub (and most git hosts) accept interchangeably for the same
+// repository: "https://github.com/o/r", "ssh://git@github.com/o/r" and
+// "git@github.com:o/r.git" all normalize to "github.com/o/r". Local clone
+// sources (no scheme and no scp-like "user@host:" prefix) are additionally
+// run through filepath.Clean, so "/tmp/x" and "/tmp/x/" compare equal.
 func sameRemote(a, b string) bool {
-	norm := func(s string) string {
-		s = strings.TrimSuffix(s, ".git")
-		if !strings.Contains(s, "://") && !strings.Contains(s, "@") {
-			s = filepath.Clean(s)
+	return normalizeRemote(a) == normalizeRemote(b)
+}
+
+// remoteSchemes lists the URL schemes normalizeRemote strips before
+// comparison.
+var remoteSchemes = []string{"https://", "http://", "ssh://", "git://"}
+
+// normalizeRemote reduces a git remote URL (or local path) to a
+// scheme-independent, case-insensitive form for sameRemote to compare.
+func normalizeRemote(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimSuffix(s, "/")
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.TrimSuffix(s, "/")
+
+	for _, scheme := range remoteSchemes {
+		if rest, ok := strings.CutPrefix(s, scheme); ok {
+			return stripUserPrefix(rest)
 		}
-		return s
 	}
-	return norm(a) == norm(b)
+	if host, path, ok := scpHostPath(s); ok {
+		return host + "/" + path
+	}
+	return filepath.Clean(s)
+}
+
+// stripUserPrefix removes a "user@" prefix from a URL-style "host/path" (as
+// left after stripping a scheme from e.g. ssh://git@github.com/o/r),
+// yielding "host/path".
+func stripUserPrefix(s string) string {
+	if at := strings.Index(s, "@"); at != -1 {
+		if slash := strings.Index(s, "/"); slash == -1 || at < slash {
+			return s[at+1:]
+		}
+	}
+	return s
+}
+
+// scpHostPath recognizes git's scp-like syntax "user@host:path" (e.g.
+// git@github.com:o/r) and splits it into host and path. It rejects an "@"
+// that belongs to something else (no following ":") and a colon that is
+// actually a Windows drive letter local path (e.g. "c:/foo" has no "@", so
+// it never reaches here anyway; this guard is for hosts containing "/",
+// which a real hostname never does).
+func scpHostPath(s string) (host, path string, ok bool) {
+	at := strings.Index(s, "@")
+	if at == -1 {
+		return "", "", false
+	}
+	rest := s[at+1:]
+	colon := strings.Index(rest, ":")
+	if colon == -1 {
+		return "", "", false
+	}
+	host = rest[:colon]
+	if host == "" || strings.Contains(host, "/") {
+		return "", "", false
+	}
+	return host, rest[colon+1:], true
 }
 
 // abortDetailIfRebasing aborts a rebase left in progress by a failed
@@ -212,8 +266,13 @@ func (p *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, file)
-		parts := strings.Split(filepath.ToSlash(rel), "/")
+		relSlash := filepath.ToSlash(rel)
+		parts := strings.Split(relSlash, "/")
 		if len(parts) != 3 {
+			entries = append(entries, remotestate.Entry{
+				Snapshot: remotestate.Snapshot{Login: "?", Machine: relSlash},
+				Error:    fmt.Sprintf("unexpected path %s: want machines/<login>/<machine>/snapshot.yaml", relSlash),
+			})
 			return nil
 		}
 		entry := remotestate.Entry{Snapshot: remotestate.Snapshot{Login: parts[0], Machine: parts[1]}}

@@ -144,6 +144,12 @@ func pushSnapshotToRef(t *testing.T, origin string, snapshot remotestate.Snapsho
 // Fetch and our own Push. A pre-receive hook runs server-side even for a
 // same-machine (file path) remote, so this needs no real concurrency and no
 // timing assumptions.
+// The GIT_QUARANTINE_PATH env var the hook script below un-sets is part of
+// git's ref-update quarantine mechanism for pre-receive hooks, present since
+// git 2.11 (released 2016). If this test starts failing after a git upgrade
+// on the runner, check that assumption first: a later git may quarantine ref
+// updates differently, which would make `env -u GIT_QUARANTINE_PATH git
+// update-ref ...` no longer be enough to land the "concurrent" commit.
 func installRejectFirstPushHook(t *testing.T, origin, promoteSHA string) {
 	t.Helper()
 	hooksDir := filepath.Join(origin, "hooks")
@@ -409,6 +415,85 @@ func TestListSurfacesCorruptEntryAsError(t *testing.T) {
 	carol := entries[1]
 	if carol.Snapshot.Login != "carol" || carol.Snapshot.Machine != "desk" || !strings.Contains(carol.Error, "schema_version 99") {
 		t.Fatalf("corrupt entry = %+v", carol)
+	}
+}
+
+// TestSameRemoteEquivalence proves sameRemote treats the https, ssh:// and
+// scp-style spellings of the same GitHub remote as equal (ensureClone relies
+// on this so a clone made with one spelling is not rejected as "foreign" when
+// the configured remote.repo happens to use another), while still telling
+// genuinely different remotes apart.
+func TestSameRemoteEquivalence(t *testing.T) {
+	equal := [][2]string{
+		{"https://github.com/o/r", "git@github.com:o/r.git"},
+		{"ssh://git@github.com/o/r", "git@github.com:o/r"},
+		{"https://github.com/o/r.git", "https://github.com/o/r"},
+		{"https://github.com/o/r/", "https://github.com/o/r"},
+		{"HTTPS://GitHub.com/o/r", "https://github.com/o/r"},
+		{"http://github.com/o/r", "git://github.com/o/r"},
+	}
+	for _, pair := range equal {
+		if !sameRemote(pair[0], pair[1]) {
+			t.Errorf("sameRemote(%q, %q) = false, want true", pair[0], pair[1])
+		}
+	}
+
+	notEqual := [][2]string{
+		{"https://github.com/o/r", "https://github.com/o/other"},
+		{"https://github.com/o/r", "https://gitlab.com/o/r"},
+		{"/tmp/local/r", "https://github.com/o/r"},
+		{"git@github.com:o/r.git", "git@github.com:o2/r.git"},
+	}
+	for _, pair := range notEqual {
+		if sameRemote(pair[0], pair[1]) {
+			t.Errorf("sameRemote(%q, %q) = true, want false", pair[0], pair[1])
+		}
+	}
+}
+
+// TestListSurfacesWrongDepthSnapshot proves a snapshot.yaml that does not
+// sit at machines/<login>/<machine>/snapshot.yaml (e.g. a stray file dropped
+// one level too shallow) is reported as an error entry rather than silently
+// skipped, so a malformed store is visible instead of quietly losing data.
+func TestListSurfacesWrongDepthSnapshot(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	// Drop a snapshot.yaml at the wrong depth (machines/orphan/snapshot.yaml,
+	// depth 2) directly in a second clone.
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	bad := filepath.Join(other, "machines", "orphan", "snapshot.yaml")
+	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("schema_version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, other, "add", "-A")
+	gitIn(t, other, "commit", "-q", "-m", "orphan snapshot")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	entries, err := p.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2 (good machine + bad-path entry)", len(entries))
+	}
+	var found bool
+	for _, e := range entries {
+		if e.Error != "" && strings.Contains(e.Error, "unexpected path") {
+			found = true
+			if !strings.Contains(e.Error, "orphan/snapshot.yaml") {
+				t.Errorf("error %q does not mention the bad relative path", e.Error)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("entries = %+v, want one entry with an 'unexpected path' error", entries)
 	}
 }
 
