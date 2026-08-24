@@ -802,6 +802,49 @@ report directory.
 See the [Dependency Bump Waves feature specification](spec/features/dependency-bump-waves/README.md)
 for synthetic use cases and acceptance criteria.
 
+### `wb deps publish npm` — workflow-owned publication and propagation
+
+Use one explicit campaign when approved npm packages must be published by
+their repository-owned GitHub Actions workflows and then propagated through
+consumers. WB is plan-only by default; `--apply` is the publication approval.
+WB never accepts npm credentials or runs `npm publish` itself.
+
+```sh
+# One plan covers the Assetus release and both Eventius packages.
+wb deps publish npm \
+  --repo sneat-co/assetus \
+  --repo sneat-co/eventius --repo sneat-co/eventius \
+  --workflow release-frontend.yml \
+  --workflow release-frontend.yml --workflow release-frontend.yml \
+  --package @sneat/extension-assetus \
+  --package @sneat/extension-eventius --package @sneat/extension-eventius-ui \
+  --version 0.1.0 --version 0.0.1 --version 0.0.1 \
+  --workflow-input 1:package=runtime --workflow-input 2:package=ui \
+  --fleet --match 'sneat-co/*' --format json
+```
+
+Each repeated provider flag is aligned by tuple. `--workflow-input` uses
+`INDEX:KEY=VALUE` (zero-based) so packages sharing one workflow cannot receive
+another package's inputs; a bare `KEY=VALUE` is allowed only for one tuple.
+`--match 'sneat-co/*'` bounds downstream consumer discovery to the intended
+organization instead of scanning unrelated fleet repositories.
+The default plan invokes the same shared dependency-wave engine in dry-run
+mode, so it retains real fleet findings and the durable wave report. It never
+dispatches a release workflow, queries the npm registry, or changes dependency
+files. To prevent a plan from overwriting an apply/resume handoff, its wave
+report is stored under `<report-dir>/plan`; apply and resume use the base
+report directory.
+The apply report waits for the exact workflow run at the resolved provider
+head, verifies the exact package version in the npm registry, and then invokes
+the same recalculated `wb deps bump npm` wave engine. Add `--merge` only as a
+separate explicit approval for downstream consumer changes. If publication or
+registry evidence times out, retain `--report-dir` and use the same tuples
+with `--resume --apply`; WB reuses receipted runs without redispatching them.
+
+See the [NPM release propagation feature specification](spec/features/npm-release-propagation/README.md)
+and the [publish-npm reference](ai/skills/wb-deps/references/publish-npm.md)
+for the machine-readable receipt and resume contract.
+
 ### `wb deps drift` — dependency convergence
 
 Use drift when the question is whether selected checkouts agree on Go module

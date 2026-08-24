@@ -31,6 +31,9 @@ func (report BumpReport) Markdown() string {
 		output.WriteByte('\n')
 	}
 	fmt.Fprintf(&output, "- Base ref: `%s`\n", report.BaseRef)
+	if report.RegistryLookupsSkipped {
+		output.WriteString("- Registry carrier and stale-event lookups: `skipped` (no-registry plan policy)\n")
+	}
 	fmt.Fprintf(&output, "- Waves: `%d`\n\n", len(report.Waves))
 	output.WriteString("## Seed release events\n\n")
 	for _, event := range report.SeedEvents {

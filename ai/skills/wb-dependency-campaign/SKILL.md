@@ -8,7 +8,10 @@ description: Plan and execute dependency release waves with the fewest safe GitH
 Optimize for one truthful build per ready consumer wave, not one campaign per
 dependency.
 
-1. Inventory all already-published root `module@version` events.
+1. Inventory all already-published root `module@version` events. If the
+   provider package is approved but not yet published, use
+   `wb deps publish npm` so the repository-owned workflow supplies the release
+   and the registry receipt becomes the first event.
 2. Search for existing campaign branches and PRs; resume them instead of
    opening duplicates.
 3. If source compatibility must change before release, prepare paired PRs with

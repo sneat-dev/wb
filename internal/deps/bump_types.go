@@ -31,6 +31,10 @@ type BumpOptions struct {
 	RefreshAfter time.Duration
 	Previous     *BumpReport
 	Persist      func(BumpReport) error
+	// NoRegistry forbids every registry lookup while retaining the shared
+	// fleet-graph and wave-planning algorithm. Composite publication plans use
+	// it before a provider workflow has published the proposed version.
+	NoRegistry bool
 
 	// Now is injectable for deterministic event-refresh tests.
 	Now func() time.Time
@@ -57,19 +61,22 @@ type PublishedGoRelease struct {
 
 // BumpReport is the persistent Markdown/YAML state of a wave campaign.
 type BumpReport struct {
-	SchemaVersion  int                  `yaml:"schema_version"`
-	Operation      string               `yaml:"operation"`
-	Status         string               `yaml:"status"`
-	Phase          BumpPhase            `yaml:"phase"`
-	Progress       BumpProgress         `yaml:"progress"`
-	Ecosystem      Ecosystem            `yaml:"ecosystem"`
-	SeedEvents     []ReleaseEvent       `yaml:"seed_events"`
-	GitHubDir      string               `yaml:"github_dir"`
-	BaseRef        string               `yaml:"base_ref"`
-	Verification   []quality.Check      `yaml:"verification,omitempty"`
-	Parallel       int                  `yaml:"parallel"`
-	DiscoverySkips []GraphDiscoverySkip `yaml:"discovery_skips,omitempty"`
-	Waves          []BumpWaveReport     `yaml:"waves"`
+	SchemaVersion int             `yaml:"schema_version"`
+	Operation     string          `yaml:"operation"`
+	Status        string          `yaml:"status"`
+	Phase         BumpPhase       `yaml:"phase"`
+	Progress      BumpProgress    `yaml:"progress"`
+	Ecosystem     Ecosystem       `yaml:"ecosystem"`
+	SeedEvents    []ReleaseEvent  `yaml:"seed_events"`
+	GitHubDir     string          `yaml:"github_dir"`
+	BaseRef       string          `yaml:"base_ref"`
+	Verification  []quality.Check `yaml:"verification,omitempty"`
+	Parallel      int             `yaml:"parallel"`
+	// RegistryLookupsSkipped records that this plan intentionally omitted
+	// registry-derived carrier and stale-event evidence.
+	RegistryLookupsSkipped bool                 `yaml:"registry_lookups_skipped,omitempty"`
+	DiscoverySkips         []GraphDiscoverySkip `yaml:"discovery_skips,omitempty"`
+	Waves                  []BumpWaveReport     `yaml:"waves"`
 }
 
 // BumpPhase identifies the operation currently represented by a persisted
