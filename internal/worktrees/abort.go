@@ -172,7 +172,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	// preflight: a bad second repository cannot be discovered after the first
 	// one has already been destroyed.
 	for i := range listed.Results {
-		refreshed, remoteHead, preflightErr := preflightAbortRepository(ctx, options, taskHandle, results[i], resolution.Write.Home)
+		refreshed, remoteHead, preflightErr := preflightAbortRepository(ctx, projectsRoot, options, taskHandle, results[i], resolution.Write.Home)
 		if preflightErr != nil {
 			return results, preflightErr
 		}
@@ -182,7 +182,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	for i := range listed.Results {
 		result := &results[i]
 		if options.Disposition == AbortDiscarded {
-			if err := applyDiscardedAbort(ctx, options, taskHandle, resolution.Write.Home, result); err != nil {
+			if err := applyDiscardedAbort(ctx, projectsRoot, options, taskHandle, resolution.Write.Home, result); err != nil {
 				return results, err
 			}
 		} else if err := transferWorkLogClaim(resolution.Write.Home, result.WorktreeDir, result.HeadSHA, string(options.Disposition), options.Successor, options.SuccessorIdentity); err != nil {
@@ -195,6 +195,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 
 func preflightAbortRepository(
 	ctx context.Context,
+	projectsRoot string,
 	options AbortOptions,
 	task *cleanupTaskHandle,
 	result AbortResult,
@@ -210,7 +211,7 @@ func preflightAbortRepository(
 	}
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
-		options.ProjectsRoot,
+		projectsRoot,
 		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
 		result.Task,
 		result.WorktreeDir,
@@ -258,6 +259,7 @@ func preflightAbortRepository(
 
 func applyDiscardedAbort(
 	ctx context.Context,
+	projectsRoot string,
 	options AbortOptions,
 	task *cleanupTaskHandle,
 	home string,
@@ -279,7 +281,7 @@ func applyDiscardedAbort(
 	// independent guard if a non-WB writer races after this inspection.
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
-		options.ProjectsRoot,
+		projectsRoot,
 		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
 		result.Task,
 		result.WorktreeDir,
@@ -319,7 +321,7 @@ func applyDiscardedAbort(
 	if err := sealWorkLogForRecycle(home, refreshed.WorktreeDir, refreshed.HeadSHA, string(options.Disposition)); err != nil {
 		return fmt.Errorf("seal discarded work log for %s: %w", refreshed.Repository, err)
 	}
-	backlogRecord := newLifecycleBacklogRecord(options.ProjectsRoot, refreshed, string(AbortDiscarded))
+	backlogRecord := newLifecycleBacklogRecord(projectsRoot, refreshed, string(AbortDiscarded))
 	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageSealed); err != nil {
 		return err
 	}

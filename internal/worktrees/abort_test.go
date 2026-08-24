@@ -106,6 +106,45 @@ func TestAbortDiscardedUnusedWorktreesIsAudited(t *testing.T) {
 	}
 }
 
+// TestAbortDiscardedResolvesSymlinkedProjectsRoot is the regression for a bug
+// where preflightAbortRepository and applyDiscardedAbort's
+// inspectLifecycleWorktree calls used the caller's raw options.ProjectsRoot
+// instead of Abort's own resolved projectsRoot (the one normalizeListOptions
+// already produced via absoluteProjectsRoot, exactly as Cleanup's equivalent
+// preflight already did). A canonical clone's Git-plumbing-derived owner is
+// resolved through any ancestor symlink, so whenever the caller passes an
+// unresolved --projects-root that reaches its clones through one -- which the
+// CLI does naturally, and which macOS's own tmp directory does via
+// /var -> /private/var -- the two sides disagreed and abort refused every
+// worktree with "canonical clone owner \"\"". Using an explicit symlink here
+// keeps the regression deterministic on any platform, not only macOS.
+func TestAbortDiscardedResolvesSymlinkedProjectsRoot(t *testing.T) {
+	fixture := newGitFixture(t)
+	alias := filepath.Join(filepath.Dir(fixture.projectsRoot), "projects-alias")
+	if err := os.Symlink(fixture.projectsRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: alias, Operation: "symlinked-abort", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: alias, Task: "symlinked-abort", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || !results[0].Applied || !results[0].WorktreeGone || !results[0].BranchDeleted {
+		t.Fatalf("abort through a symlinked projects root = %#v", results)
+	}
+	if _, err := os.Stat(created[0].WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("discarded worktree remains: %v", err)
+	}
+}
+
 func TestAbortDiscardedRetiresExactRemoteBranchOnlyWithExplicitAuthorization(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
