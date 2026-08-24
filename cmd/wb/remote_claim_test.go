@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/remotestate"
+	"github.com/sneat-dev/wb/internal/remotestate/gitrepo"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // secondMachine builds a second fixture that shares f's origin (the same
@@ -531,5 +533,374 @@ func TestPersistentFlagMatrixRemoteClaimCommands(t *testing.T) {
 		if persistentFlagSupport["org"][cmd] {
 			t.Errorf("%s must reject --org: it operates on the remote store, not GitHub-listed repos", cmd)
 		}
+	}
+}
+
+// unreachableRemoteDeps builds deps whose provider points at a nonexistent
+// clone URL, so any Claim/Release call fails the way an offline machine or
+// a dead store would — without any network access, since the failure
+// happens at `git clone`, before anything is even attempted over the wire.
+func unreachableRemoteDeps(t *testing.T, machine string) remoteDeps {
+	t.Helper()
+	base := t.TempDir()
+	configPath := filepath.Join(base, "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: "+machine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return remoteDeps{
+		configPath: configPath,
+		login:      func() (string, error) { return "alice", nil },
+		open: func(cfg remotestate.Config, projectsRoot string) (remotestate.Provider, error) {
+			return gitrepo.New(gitrepo.Options{
+				ClonePath: filepath.Join(projectsRoot, cfg.RepoOwner(), cfg.RepoName()),
+				CloneURL:  filepath.Join(base, "does-not-exist"),
+			}), nil
+		},
+		now: func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func TestTryAutoClaimDisabledWithoutConfig(t *testing.T) {
+	deps := defaultRemoteDeps()
+	deps.configPath = filepath.Join(t.TempDir(), "none.yaml")
+	var out bytes.Buffer
+	result := tryAutoClaim(deps, t.TempDir(), "task-7", 24*time.Hour, &out)
+	if result.Outcome != "disabled" {
+		t.Fatalf("result = %+v, want disabled", result)
+	}
+	if out.String() != "" {
+		t.Fatalf("out = %q, want silence when unconfigured", out.String())
+	}
+}
+
+func TestTryAutoClaimAcquires(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	result := tryAutoClaim(f.deps("alice", at), f.projectsRoot, "task-7", 24*time.Hour, &out)
+	if result.Outcome != "acquired" {
+		t.Fatalf("result = %+v, want acquired", result)
+	}
+	if !strings.HasPrefix(out.String(), "remote claim: acquired task-7") {
+		t.Fatalf("out = %q, want it to start with 'remote claim: acquired task-7'", out.String())
+	}
+	stored := remoteGit(t, f.origin, "show", "main:claims/task-7.yaml")
+	if !strings.Contains(stored, "task: task-7") || !strings.Contains(stored, "login: alice") {
+		t.Fatalf("stored claim = %s", stored)
+	}
+}
+
+func TestTryAutoClaimHeldFreshWarnsAndProceeds(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "vm")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(g.deps("bob", at), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	result := tryAutoClaim(f.deps("alice", at.Add(time.Minute)), f.projectsRoot, "task-7", 24*time.Hour, &out)
+	if result.Outcome != "held" {
+		t.Fatalf("result = %+v, want held", result)
+	}
+	text := out.String()
+	if !strings.Contains(text, "remote claim: task-7 is held by bob/vm") || !strings.Contains(text, "proceeding") {
+		t.Fatalf("out = %q, want held-by bob/vm and proceeding", text)
+	}
+	stored := remoteGit(t, f.origin, "show", "main:claims/task-7.yaml")
+	if !strings.Contains(stored, "login: bob") {
+		t.Fatalf("stored claim = %s, want it still bob's (untouched)", stored)
+	}
+}
+
+func TestTryAutoClaimHeldByYouElsewhere(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "vm")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(f.deps("alice", at), f.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	result := tryAutoClaim(g.deps("alice", at.Add(time.Minute)), g.projectsRoot, "task-7", 24*time.Hour, &out)
+	if result.Outcome != "held" {
+		t.Fatalf("result = %+v, want held", result)
+	}
+	if !strings.Contains(out.String(), "held by you on laptop") {
+		t.Fatalf("out = %q, want 'held by you on laptop'", out.String())
+	}
+}
+
+func TestTryAutoClaimTakesOverStale(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	// bob never publishes: no snapshot at all, so his claim is stale from the start.
+
+	out.Reset()
+	result := tryAutoClaim(f.deps("alice", at), f.projectsRoot, "task-7", 24*time.Hour, &out)
+	if result.Outcome != "took_over" {
+		t.Fatalf("result = %+v, want took_over", result)
+	}
+	if !strings.Contains(result.Detail, "bob/desktop") {
+		t.Fatalf("result.Detail = %q, want it to name bob/desktop", result.Detail)
+	}
+	if !strings.Contains(out.String(), "bob/desktop") {
+		t.Fatalf("out = %q, want it to name the previous holder bob/desktop", out.String())
+	}
+	stored := remoteGit(t, f.origin, "show", "main:claims/task-7.yaml")
+	if !strings.Contains(stored, "login: alice") {
+		t.Fatalf("stored claim = %s, want it to now be alice's", stored)
+	}
+}
+
+func TestTryAutoClaimSkippedWhenUnreachable(t *testing.T) {
+	deps := unreachableRemoteDeps(t, "laptop")
+	var out bytes.Buffer
+	result := tryAutoClaim(deps, t.TempDir(), "task-7", 24*time.Hour, &out)
+	if result.Outcome != "skipped" {
+		t.Fatalf("result = %+v, want skipped", result)
+	}
+	if !strings.Contains(out.String(), "remote claim skipped:") {
+		t.Fatalf("out = %q, want a 'remote claim skipped:' line", out.String())
+	}
+}
+
+func TestTryAutoClaimSkippedWhenLoginFails(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	deps := f.deps("alice", time.Now().UTC())
+	deps.login = func() (string, error) { return "", errors.New("gh auth status failed") }
+	var out bytes.Buffer
+	result := tryAutoClaim(deps, f.projectsRoot, "task-7", 24*time.Hour, &out)
+	if result.Outcome != "skipped" {
+		t.Fatalf("result = %+v, want skipped", result)
+	}
+	if !strings.Contains(out.String(), "remote claim skipped:") {
+		t.Fatalf("out = %q, want a 'remote claim skipped:' line", out.String())
+	}
+}
+
+func TestTryAutoReleaseOnlyOwnClaim(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-7", &out)
+	if !strings.Contains(out.String(), "remote claim: released task-7") {
+		t.Fatalf("out = %q, want 'remote claim: released task-7'", out.String())
+	}
+	if files := remoteGit(t, f.origin, "ls-tree", "-r", "--name-only", "main"); strings.Contains(files, "claims/task-7.yaml") {
+		t.Fatalf("auto-release did not delete our own claim file: %s", files)
+	}
+
+	// bob holds task-9 on another machine: alice's auto-release must refuse
+	// it and leave the claim file untouched.
+	g := secondMachine(t, f, "vm")
+	out.Reset()
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-9", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-9", &out)
+	if !strings.Contains(out.String(), "remote claim release skipped: held by bob/vm") {
+		t.Fatalf("out = %q, want 'remote claim release skipped: held by bob/vm'", out.String())
+	}
+	stored := remoteGit(t, f.origin, "show", "main:claims/task-9.yaml")
+	if !strings.Contains(stored, "login: bob") {
+		t.Fatalf("stored claim = %s, want it to remain bob's", stored)
+	}
+}
+
+func TestTryAutoReleaseNoopIsSilent(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-7", &out)
+	if out.String() != "" {
+		t.Fatalf("out = %q, want silence when there was nothing of ours to release", out.String())
+	}
+}
+
+func TestTryAutoReleaseDisabledWithoutConfig(t *testing.T) {
+	deps := defaultRemoteDeps()
+	deps.configPath = filepath.Join(t.TempDir(), "none.yaml")
+	var out bytes.Buffer
+	tryAutoRelease(deps, t.TempDir(), "task-7", &out)
+	if out.String() != "" {
+		t.Fatalf("out = %q, want silence when unconfigured", out.String())
+	}
+}
+
+func TestTryAutoReleaseSkippedWhenUnreachable(t *testing.T) {
+	deps := unreachableRemoteDeps(t, "laptop")
+	var out bytes.Buffer
+	tryAutoRelease(deps, t.TempDir(), "task-7", &out)
+	if !strings.Contains(out.String(), "remote claim release skipped:") {
+		t.Fatalf("out = %q, want a 'remote claim release skipped:' line", out.String())
+	}
+}
+
+func TestWorktreeCreateHasNoClaimFlag(t *testing.T) {
+	flag := newWorktreeCreateCmd().Flags().Lookup("no-claim")
+	if flag == nil {
+		t.Fatal("newWorktreeCreateCmd() has no --no-claim flag")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--no-claim default = %q, want false", flag.DefValue)
+	}
+}
+
+// TestWorktreeCreateAutoClaimWiring exercises the extracted `worktree
+// create` hook directly: the RunE calls tryAutoClaim exactly when a
+// `remote:` config is present and --no-claim was not passed.
+func TestWorktreeCreateAutoClaimWiring(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+
+	var out bytes.Buffer
+	result := worktreeCreateAutoClaim(f.deps("alice", at), false, f.projectsRoot, "task-7", &out)
+	if result.Outcome != "acquired" {
+		t.Fatalf("result = %+v, want acquired (config present, --no-claim absent)", result)
+	}
+	if !strings.Contains(out.String(), "remote claim: acquired task-7") {
+		t.Fatalf("out = %q", out.String())
+	}
+
+	out.Reset()
+	result = worktreeCreateAutoClaim(f.deps("alice", at), true, f.projectsRoot, "task-9", &out)
+	if result.Outcome != "disabled" {
+		t.Fatalf("result = %+v, want disabled when --no-claim is set", result)
+	}
+	if out.String() != "" {
+		t.Fatalf("out = %q, want silence when --no-claim is set", out.String())
+	}
+	if files := remoteGit(t, f.origin, "ls-tree", "-r", "--name-only", "main"); strings.Contains(files, "claims/task-9.yaml") {
+		t.Fatalf("--no-claim must skip the attempt entirely, not just the message: %s", files)
+	}
+
+	out.Reset()
+	unconfigured := defaultRemoteDeps()
+	unconfigured.configPath = filepath.Join(t.TempDir(), "none.yaml")
+	result = worktreeCreateAutoClaim(unconfigured, false, t.TempDir(), "task-11", &out)
+	if result.Outcome != "disabled" {
+		t.Fatalf("result = %+v, want disabled when unconfigured", result)
+	}
+}
+
+func TestWorktreeCreateJSONDisabledShapeIsPlainArray(t *testing.T) {
+	results := []worktrees.CreateResult{{Repository: "acme/app"}}
+	got := worktreeCreateJSON(autoClaimResult{Outcome: "disabled"}, results)
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var arr []worktrees.CreateResult
+	if err := json.Unmarshal(data, &arr); err != nil {
+		t.Fatalf("disabled shape must be the plain array exactly as before: %v: %s", err, data)
+	}
+	if len(arr) != 1 || arr[0].Repository != "acme/app" {
+		t.Fatalf("arr = %+v", arr)
+	}
+}
+
+func TestWorktreeCreateJSONAttemptedShapeWrapsResult(t *testing.T) {
+	results := []worktrees.CreateResult{{Repository: "acme/app"}}
+	got := worktreeCreateJSON(autoClaimResult{Outcome: "acquired"}, results)
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wrapped struct {
+		RemoteClaim autoClaimResult          `json:"remote_claim"`
+		Worktrees   []worktrees.CreateResult `json:"worktrees"`
+	}
+	if err := json.Unmarshal(data, &wrapped); err != nil {
+		t.Fatalf("attempted shape must wrap remote_claim + worktrees: %v: %s", err, data)
+	}
+	if wrapped.RemoteClaim.Outcome != "acquired" || len(wrapped.Worktrees) != 1 || wrapped.Worktrees[0].Repository != "acme/app" {
+		t.Fatalf("wrapped = %+v", wrapped)
+	}
+}
+
+// TestWorktreeCreateCLINoClaimKeepsPlainJSONArray drives the whole verb
+// through run(), the same entry point main() uses, proving --no-claim
+// actually threads from the flag into the RunE and that its JSON output
+// stays the plain worktree-results array (the "disabled" shape) rather than
+// the remote_claim wrapper. A full end-to-end exercise of the wrapper shape
+// itself would need a reachable `remote:` store (git@github.com in
+// production, since openRemote hardcodes the SSH URL pattern), which is not
+// hermetic here; TestWorktreeCreateJSONAttemptedShapeWrapsResult above pins
+// that shape directly instead.
+func TestWorktreeCreateCLINoClaimKeepsPlainJSONArray(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+	prompt := writeOriginalPromptFixture(t, "no-claim original request")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"--projects-root", projects, "worktree", "create", "cli-no-claim", "acme/app",
+		"--model", "unknown", "--original-prompt-file", prompt, "--no-claim", "--format", "json",
+	}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("worktree create --no-claim failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var results []worktrees.CreateResult
+	if err := json.Unmarshal(stdout.Bytes(), &results); err != nil {
+		t.Fatalf("--no-claim json must stay the plain array shape: %v: %s", err, stdout.String())
+	}
+	if len(results) != 1 || results[0].Repository != "acme/app" {
+		t.Fatalf("results = %+v", results)
+	}
+}
+
+// TestWorktreeAbortCLIDiscardedRunsAutoReleaseWithoutBreakingSuccess drives
+// `worktree abort --apply --disposition discarded` through run(), proving
+// the new tryAutoRelease call site added to that RunE does not disturb the
+// command's own success path. HOME is isolated to a directory with no
+// `remote:` config, so tryAutoRelease itself takes its already-unit-tested
+// "disabled" branch (TestTryAutoReleaseDisabledWithoutConfig covers its
+// behavior directly); reaching its "released"/"skipped" branches through
+// this CLI entry point would need a reachable remote store, which — like
+// worktree create's JSON wrapper shape above — is not hermetic here.
+func TestWorktreeAbortCLIDiscardedRunsAutoReleaseWithoutBreakingSuccess(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	t.Setenv("HOME", filepath.Join(t.TempDir(), "fakehome"))
+	prompt := writeOriginalPromptFixture(t, "abort discarded original request")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-discard", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code := run([]string{"--projects-root", projects, "worktree", "abort", "cli-discard", "--apply", "--disposition", "discarded", "--remote"}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("worktree abort --apply discarded failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }

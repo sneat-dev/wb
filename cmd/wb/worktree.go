@@ -632,6 +632,14 @@ The default is a dry-run plan.`,
 			if err != nil {
 				return err
 			}
+			// Release only follows a disposition that actually ends the
+			// task on this machine: discarded drops it, handoff moves it to
+			// a successor. not_landed leaves the task expected to resume
+			// here, so the claim must stay put.
+			disp := worktrees.AbortDisposition(disposition)
+			if apply && (disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff) {
+				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], command.OutOrStdout())
+			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
@@ -665,7 +673,7 @@ The default is a dry-run plan.`,
 
 func newWorktreeCreateCmd() *cobra.Command {
 	var branch, branchPrefix, base, format string
-	var resume bool
+	var resume, noClaim bool
 	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
@@ -741,6 +749,16 @@ text never enters the worktree projection, source Git, or normal output.`,
 			if err := refreshManagedHooksBeforeWorktreeCreate(repositories); err != nil {
 				return err
 			}
+			// In text mode the hook's own printed line on stdout is the
+			// record (see the RunE's "text" branch below). In json mode
+			// that free-text line would corrupt the single JSON document
+			// this command emits on stdout, so the outcome travels only
+			// inside the json branch's remote_claim field instead.
+			claimOut := io.Writer(command.OutOrStdout())
+			if format == "json" {
+				claimOut = io.Discard
+			}
+			claimResult := worktreeCreateAutoClaim(defaultRemoteDeps(), noClaim, projectsRoot, args[0], claimOut)
 			results, err := worktrees.Create(command.Context(), repositories, worktrees.CreateOptions{
 				ProjectsRoot:       projectsRoot,
 				Operation:          args[0],
@@ -766,7 +784,7 @@ text never enters the worktree projection, source Git, or normal output.`,
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				if err := encoder.Encode(results); err != nil {
+				if err := encoder.Encode(worktreeCreateJSON(claimResult, results)); err != nil {
 					return err
 				}
 			default:
@@ -779,6 +797,7 @@ text never enters the worktree projection, source Git, or normal output.`,
 	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
 	command.Flags().BoolVar(&resume, "resume", false, "reuse only the exact expected branch and worktree")
+	command.Flags().BoolVar(&noClaim, "no-claim", false, "skip the best-effort fleet-wide remote claim for this task")
 	command.Flags().StringVar(&effortID, "effort", "", "stable Synchestra/WB effort id (default task)")
 	command.Flags().StringVar(&runID, "run", "", "agent run id (default generated locally)")
 	command.Flags().StringVar(&initiator, "initiator", "", "human or agent that started the effort")
@@ -1471,6 +1490,7 @@ required to remove anything.`,
 			if apply && task != "" {
 				for _, result := range outcome.Results {
 					if result.Applied {
+						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, command.OutOrStdout())
 						return nil
 					}
 				}
