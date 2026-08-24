@@ -46,6 +46,19 @@ wb session list --live
 wb session prune
 ```
 
+`wb session list` joins each session to the worktree owner entries recorded
+under its declared PID (guarded by registration time, so an entry from a
+previous holder of a recycled PID is never attributed to the new session) and
+adds three columns: `EFFORTS`, `WORKTREES`, and `BRANCHES`. In text mode each
+shows `-` for none, the single value (effort ID or branch name, truncated to
+24 runes) when there is exactly one, or a plain count when there are several;
+`WORKTREES` is always a count (or `-`). `--format json` carries the full
+sorted, distinct lists for all three, untruncated. Attribution matches owner
+entries by the session's declared PID, recorded at or after the session's
+registration time; re-registering a session (same PID) re-stamps that start
+time, so entries written before the re-registration stop counting toward its
+columns.
+
 Or for a single worktree:
 
 ```sh
