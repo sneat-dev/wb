@@ -122,7 +122,7 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
-		"deps graph": true, "deps set": true, "deps bump": true, "deps drift": true,
+		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
@@ -144,7 +144,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 	},
 	"filter": {
 		"sync": true, "run": true,
-		"deps graph": true, "deps set": true, "deps bump": true, "deps drift": true,
+		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
@@ -153,7 +153,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree summary": true,
 		"branch list":      true, "branch cleanup": true,
 	},
-	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps drift": true},
+	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
 	// still consume it by inheriting the non-blocking contract; rejecting it
 	// would make scripts need command-specific conditionals for no benefit.

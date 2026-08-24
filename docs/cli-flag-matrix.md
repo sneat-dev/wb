@@ -22,6 +22,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps bump` | yes | yes | yes (`--fleet` is mandatory) | yes |
+| `deps publish npm` | yes | yes | yes (`--fleet` is mandatory) | yes |
 | `ci audit` | `--fleet` only | `--fleet` only | rejected | yes |
 | `ci wait` | rejected | rejected | rejected | yes |
 | `hooks install`, `check`, `repair` | yes | `--fleet` only | rejected | yes |

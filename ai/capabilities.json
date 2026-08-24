@@ -1833,6 +1833,133 @@
       "notes": "Lexical scan only: Go import blocks and go.mod, never a resolved module graph. Indirect requirements are ignored; a direct requirement is judged in the scope it is actually imported in. A repository may tighten its rules and never loosen them, and names the policy source but never a release."
     },
     {
+      "id": "wb.deps.publish.npm",
+      "feature_refs": [
+        "spec/features/npm-release-propagation/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps publish npm",
+              "flags": [
+                "--allow-downgrade",
+                "--apply",
+                "--checks",
+                "--commit",
+                "--dry-run",
+                "--fleet",
+                "--format",
+                "--match",
+                "--max-waves",
+                "--merge",
+                "--no-verify",
+                "--package",
+                "--parallel",
+                "--pr",
+                "--push",
+                "--ref",
+                "--refresh-after",
+                "--regex",
+                "--registry",
+                "--release-poll",
+                "--repo",
+                "--report-dir",
+                "--resume",
+                "--retry",
+                "--timeout",
+                "--version",
+                "--workflow",
+                "--workflow-input",
+                "--workflow-poll"
+              ],
+              "modes": [
+                "Plans explicit repository/workflow/package/version tuples by default and dispatches only with --apply.",
+                "Waits for an exact workflow run at the resolved provider head, verifies exact npm registry evidence, and hands confirmed events to the shared recalculated dependency-wave engine.",
+                "Supports tuple-scoped workflow inputs and resumable receipts without handling npm credentials."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps publish npm --help",
+              "contains": [
+                "--apply",
+                "--resume",
+                "repository-owned",
+                "exact workflow run",
+                "npm registry",
+                "tuple-scoped"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/publish-npm.md",
+              "marker": "# Publish and propagate npm releases",
+              "examples": [
+                "wb deps publish npm --fleet",
+                "wb deps publish npm --workflow-input 1:package=runtime --workflow-input 2:package=ui"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_test.go",
+              "name": "TestDepsPublishCommandExposesExplicitPublicationAndPropagationFlags",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/deps_test.go",
+              "name": "TestParseWorkflowInputsScopesValuesToAlignedTuples",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/deps_test.go",
+              "name": "TestNpmPublishPlanUsesSharedWaveEngineAndPersistsItsReport",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/npmrelease/release_test.go",
+              "name": "TestRunDispatchesTupleScopedInputsForSameWorkflow",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/npmrelease/release_test.go",
+              "name": "TestRunPollsForDelayedWorkflowVisibility",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/npmrelease/release_test.go",
+              "name": "TestRunRegistryFailureResumesWithoutDispatchingAgain",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/npmrelease/release_test.go",
+              "name": "TestRunRefusesAmbiguousExactWorkflowRuns",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Repository-owned workflows remain the only publisher. Each receipt records the resolved provider head and exact workflow run before registry-confirmed events enter deps bump waves."
+    },
+    {
       "id": "wb.deps.set",
       "feature_refs": [],
       "since": "existing",

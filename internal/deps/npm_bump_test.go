@@ -2,10 +2,12 @@ package deps
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newNpmBumpRepository mirrors newBumpRepository (see bump_test.go) for the
@@ -73,6 +75,52 @@ func TestRunBumpNpmDryRunPlansOnlyDirectConsumers(t *testing.T) {
 	}
 	if markdown := report.Markdown(); !strings.Contains(markdown, "@acme/provider") || !strings.Contains(markdown, "npm") {
 		t.Fatalf("dry-run decisions are missing from Markdown:\n%s", markdown)
+	}
+}
+
+// TestRunBumpNpmNoRegistrySkipsCurrentCarrierEvidence proves the explicit
+// no-registry policy used by `wb deps publish npm` plans. The adapter is
+// already current for the provider event and has an external consumer, which
+// would normally make discoverExistingReleaseCarriers invoke pnpm view.
+func TestRunBumpNpmNoRegistrySkipsCurrentCarrierEvidence(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newNpmBumpRepository(t, root, githubDir, "provider", map[string]string{
+			"package.json": npmPackageJSONWithDependency("@acme/provider", "left-pad", "^1.0.0"),
+		}),
+		newNpmBumpRepository(t, root, githubDir, "adapter", map[string]string{
+			"package.json": npmPackageJSONWithDependency("@acme/adapter", "@acme/provider", "0.2.0"),
+		}),
+		newNpmBumpRepository(t, root, githubDir, "consumer", map[string]string{
+			"package.json": npmPackageJSONWithDependency("@acme/consumer", "@acme/adapter", "0.1.0"),
+		}),
+	}
+	calledRegistry := false
+	report, err := RunBump(context.Background(), []ReleaseEvent{{
+		Dependency: "@acme/provider", Version: "0.2.0", Source: "planned", CheckedAt: time.Unix(1, 0),
+	}}, repositories, BumpOptions{
+		Ecosystem:  EcosystemNPM,
+		Options:    Options{GitHubDir: githubDir, Ref: "main", Parallel: 2, DryRun: true},
+		NoRegistry: true, RefreshAfter: time.Nanosecond,
+		Now: func() time.Time { return time.Unix(2, 0) },
+		LatestNpmVersion: func(context.Context, string) (string, error) {
+			calledRegistry = true
+			return "", errors.New("registry must not be called")
+		},
+		LatestNpmRelease: func(context.Context, string) (PublishedGoRelease, error) {
+			calledRegistry = true
+			return PublishedGoRelease{}, errors.New("registry must not be called")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calledRegistry {
+		t.Fatal("no-registry npm plan invoked a registry resolver")
+	}
+	if !report.RegistryLookupsSkipped || !strings.Contains(report.Markdown(), "Registry carrier and stale-event lookups: `skipped`") {
+		t.Fatalf("no-registry report does not disclose its policy: %+v", report)
 	}
 }
 

@@ -62,6 +62,11 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Every later preflight and cleanup path must use the same normalized root
+	// as ListWithDiagnostics. On macOS, keeping a caller's /var spelling here
+	// while Git reports /private/var made a valid canonical clone look outside
+	// the projects root during the second abort pass.
+	options.ProjectsRoot = projectsRoot
 	if task == "" {
 		return nil, fmt.Errorf("task is required")
 	}

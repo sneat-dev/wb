@@ -443,7 +443,10 @@ var npmPackageNamePattern = regexp.MustCompile(`^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-
 // validateNpmPackageName performs the same light structural validation for a
 // `deps bump npm --changed` event that ParseTarget already relies on being
 // well-formed for `deps set npm`.
-func validateNpmPackageName(name string) error {
+// ValidateNpmPackageName validates one exact npm package identity. Commands
+// outside the dependency adapter (for example workflow-owned publication)
+// must use this same validator before contacting a registry or GitHub.
+func ValidateNpmPackageName(name string) error {
 	if name == "" || len(name) > 214 {
 		return fmt.Errorf("npm package name %q must be 1-214 characters", name)
 	}
@@ -451,4 +454,8 @@ func validateNpmPackageName(name string) error {
 		return fmt.Errorf("npm package name %q must be lowercase and optionally scoped as @scope/name", name)
 	}
 	return nil
+}
+
+func validateNpmPackageName(name string) error {
+	return ValidateNpmPackageName(name)
 }

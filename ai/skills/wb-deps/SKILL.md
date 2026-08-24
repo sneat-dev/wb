@@ -12,7 +12,8 @@ Choose the narrowest operation:
 | Understand consumers, versions, or release order | `wb deps graph` | [graph.md](references/graph.md) |
 | Find version divergence, replaces, or major-path splits | `wb deps drift` | [drift.md](references/drift.md) |
 | Set one known version in existing references | `wb deps set` | [set.md](references/set.md) |
-| Propagate published Go releases through consumers | `wb deps bump` | [bump.md](references/bump.md) |
+| Propagate published Go or npm releases through consumers | `wb deps bump` | [bump.md](references/bump.md) |
+| Publish approved npm packages, verify the registry, and propagate consumers | `wb deps publish npm` | [publish-npm.md](references/publish-npm.md) |
 | Enforce which dependencies and import directions are allowed | `wb deps policy` | [policy.md](references/policy.md) |
 
 Use `$wb-dependency-campaign` for a breaking or multi-release rollout.

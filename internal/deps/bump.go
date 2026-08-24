@@ -38,6 +38,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
 		Ecosystem: options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, Parallel: lifecycle.Parallel,
+		RegistryLookupsSkipped: options.NoRegistry,
 	}
 	if lifecycle.Verify {
 		report.Verification = append(report.Verification, lifecycle.Checks...)
@@ -253,6 +254,15 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	}
 }
 
+// ValidateBumpOptions applies the exact no-I/O normalization used by RunBump.
+// Composite commands call it before an irreversible provider action so an
+// invalid downstream checks/filter/retry/timeout/merge contract cannot leave
+// a provider published but unable to enter the shared wave engine.
+func ValidateBumpOptions(options BumpOptions, events []ReleaseEvent) error {
+	_, _, _, err := normalizeBumpOptions(options, events)
+	return err
+}
+
 func resumeBumpReport(ctx context.Context, empty BumpReport, seedEvents []ReleaseEvent, options BumpOptions) (BumpReport, []ReleaseEvent, int, error) {
 	previous := *options.Previous
 	if previous.SchemaVersion != empty.SchemaVersion {
@@ -324,7 +334,7 @@ func bumpNow(options BumpOptions) time.Time {
 
 func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, options BumpOptions) ([]ReleaseEvent, []ReleaseEventRefresh, error) {
 	events = append([]ReleaseEvent(nil), events...)
-	if options.RefreshAfter == 0 {
+	if options.NoRegistry || options.RefreshAfter == 0 {
 		return events, nil, nil
 	}
 	now := bumpNow(options)
@@ -702,6 +712,12 @@ func mergedReleaseBaselines(results []orchestrate.Result[[]Decision], affected m
 // pieces of evidence are required: a source manifest alone does not prove that
 // dependants can consume a published version.
 func discoverExistingReleaseCarriers(ctx context.Context, graph bumpFleetGraph, events []ReleaseEvent, options BumpOptions) ([]ReleaseObservation, error) {
+	if options.NoRegistry {
+		// A manifest that is already current cannot be treated as a published
+		// carrier without registry evidence. Leave it out of this plan rather
+		// than consulting pnpm/npm or inventing a downstream release.
+		return nil, nil
+	}
 	expectedByModule := map[string]map[string]string{}
 	repositoryByModule := map[string]string{}
 	for _, event := range events {
@@ -893,6 +909,9 @@ func cloneStringMap(input map[string]string) map[string]string {
 // calls through, so none of them need to know which ecosystem is running —
 // exactly like adapterFor is the seam Inspect/Apply call through.
 func latestReleaseVersion(ctx context.Context, module string, options BumpOptions) (string, error) {
+	if options.NoRegistry {
+		return "", errors.New("registry lookup is disabled for this dependency plan")
+	}
 	if options.Ecosystem == EcosystemNPM {
 		return latestNpmVersion(ctx, module, options)
 	}
@@ -900,6 +919,9 @@ func latestReleaseVersion(ctx context.Context, module string, options BumpOption
 }
 
 func latestPublishedRelease(ctx context.Context, module string, options BumpOptions) (PublishedGoRelease, error) {
+	if options.NoRegistry {
+		return PublishedGoRelease{}, errors.New("registry lookup is disabled for this dependency plan")
+	}
 	if options.Ecosystem == EcosystemNPM {
 		return latestPublishedNpmRelease(ctx, module, options)
 	}

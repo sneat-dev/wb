@@ -153,6 +153,55 @@ func TestBuildGraphPreservesNpmManifestEvidenceIncludingPnpmOverrides(t *testing
 	}
 }
 
+func TestBuildGraphIgnoresTestdataPackageJSONFixtures(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repository := seedNpmGraphRepository(t, root, githubDir, "fixture-safe", map[string]string{
+		"package.json": "{\n  \"name\": \"@sneat/fixture-safe\"\n}\n",
+		"internal/example/testdata/broken/package.json": "{ this is deliberately not JSON }\n",
+	})
+
+	graph, err := BuildGraph(context.Background(), []Repository{{Slug: "sneat-co/fixture-safe", Path: repository}}, GraphOptions{
+		Ecosystem: EcosystemNPM, GitHubDir: githubDir, Ref: "main", Parallel: 1, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+	if len(graph.Modules) != 1 {
+		t.Fatalf("modules = %+v, want only the production package", graph.Modules)
+	}
+	if got := graph.Modules[0]; got.Path != "@sneat/fixture-safe" || got.Manifest != "package.json" {
+		t.Fatalf("production package = %+v", got)
+	}
+}
+
+func TestBuildGraphIgnoresDistPackageJSONButKeepsDistinguishedSource(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repository := seedNpmGraphRepository(t, root, githubDir, "generated-safe", map[string]string{
+		"package.json":               "{\n  \"name\": \"@sneat/generated-safe\"\n}\n",
+		"dist/broken/package.json":   "{ this is generated output, not JSON }\n",
+		"distinguished/package.json": "{\n  \"name\": \"@sneat/distinguished-source\"\n}\n",
+	})
+
+	graph, err := BuildGraph(context.Background(), []Repository{{Slug: "sneat-co/generated-safe", Path: repository}}, GraphOptions{
+		Ecosystem: EcosystemNPM, GitHubDir: githubDir, Ref: "main", Parallel: 1, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("BuildGraph() error = %v", err)
+	}
+	if len(graph.Modules) != 2 {
+		t.Fatalf("modules = %+v, want production and distinguished source packages", graph.Modules)
+	}
+	got := map[string]string{}
+	for _, module := range graph.Modules {
+		got[module.Path] = module.Manifest
+	}
+	if got["@sneat/generated-safe"] != "package.json" || got["@sneat/distinguished-source"] != "distinguished/package.json" {
+		t.Fatalf("modules = %+v, want distinguished source package retained", graph.Modules)
+	}
+}
+
 func seedNpmGraphRepository(t *testing.T, root, githubDir, name string, files map[string]string) string {
 	t.Helper()
 	seed := filepath.Join(root, name+"-seed")
