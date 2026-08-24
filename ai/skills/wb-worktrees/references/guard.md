@@ -17,7 +17,12 @@ A passing linked checkout is safe for feature work.
 WB rejects:
 
 - feature branches or changes in canonical clones;
-- linked worktrees outside a resolver-recognized `.wb/worktrees` hierarchy;
+- linked worktrees outside a resolver-recognized `.wb/worktrees` hierarchy —
+  **unless** the worktree carries an active Work Log claim from
+  `wb worktree adopt --apply` (see [cleanup.md](cleanup.md)). Adoption's whole
+  point is never relocating the checkout, so guard resolves that one exact
+  case from the worktree's own claim instead of its path, then applies every
+  other check — admission included — unchanged;
 - base branches or arbitrary detached HEADs in linked worktrees;
 - mismatched projects roots.
 

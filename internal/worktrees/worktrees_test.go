@@ -1497,6 +1497,98 @@ func TestGuardRejectsLinkedWorktreeOutsideCentralHierarchy(t *testing.T) {
 	}
 }
 
+// TestGuardStillRefusesUnadoptedExternalWorktree is the safety-property
+// regression for TestGuardAdmitsCommitInAnAdoptedWorktree below: a worktree
+// that looks exactly like something adopt could reach — same external
+// layout, same canonical clone — but was never actually adopted must keep
+// getting guard's original, unweakened path-shaped refusal. Only a genuine
+// active Work Log claim, written by `wb worktree adopt --apply`, may unlock
+// the fallback resolution.
+func TestGuardStillRefusesUnadoptedExternalWorktree(t *testing.T) {
+	fixture := newGitFixture(t)
+	path := fixture.externalWorktree(t, "feature/never-adopted")
+	if _, err := Guard(context.Background(), path, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), ".wb/worktrees") {
+		t.Fatalf("unadopted external guard error = %v", err)
+	}
+}
+
+// TestGuardAdmitsCommitInAnAdoptedWorktree is the regression for the gap
+// found immediately after wb worktree adopt shipped: cleanup/abort learned
+// to resolve an adopted worktree's task from its own Work Log claim, but
+// Guard — what the pre-commit (and pre-push) hook actually calls — still
+// only tried the path-shaped resolution, so it refused every commit in an
+// adopted worktree with "must be below a resolver-recognized .wb/worktrees
+// hierarchy ... recreate it with `wb worktree create`" — exactly what
+// adoption exists to avoid. This proves Guard now resolves the same task
+// cleanup/abort do, and that doing so does not weaken the existing
+// admission (recorded-instruction) check: the adopted worktree must still
+// carry a recorded prompt to be admitted.
+func TestGuardAdmitsCommitInAnAdoptedWorktree(t *testing.T) {
+	fixture := newGitFixture(t)
+	path := fixture.externalWorktree(t, "feature/adopt-guard-commit")
+	adopted, err := Adopt(context.Background(), AdoptOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Path: path, Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adopted) != 1 || adopted[0].Action != AdoptAdopted {
+		t.Fatalf("adopt = %+v", adopted)
+	}
+
+	// Admission is not weakened: an adopted worktree with no recorded
+	// instruction is refused exactly like a created one would be.
+	if _, err := Guard(context.Background(), path, GuardOptions{
+		ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce,
+	}); err == nil || !strings.Contains(err.Error(), "no recorded instruction") {
+		t.Fatalf("adopted worktree with no recorded instruction = %v, want a refusal naming it", err)
+	}
+
+	// Pre-push runs the identical `wb worktree guard` call with admission
+	// off (recording an instruction is a pre-commit concern, never a push
+	// one), so the same worktree must already clear guard in that mode —
+	// proving push is not blocked one step after commit would be.
+	pushResult, err := Guard(context.Background(), path, GuardOptions{
+		ProjectsRoot: fixture.projectsRoot, Admission: AdmissionOff,
+	})
+	if err != nil {
+		t.Fatalf("adopted worktree guard with admission off: %v", err)
+	}
+	if !pushResult.External || pushResult.Kind != "linked" {
+		t.Fatalf("adopted worktree guard result = %#v", pushResult)
+	}
+
+	if _, err := AppendPrompt(path, PromptHeader{Source: PromptSourceHuman, Slug: "initial"}, []byte("do the refactor")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Guard(context.Background(), path, GuardOptions{
+		ProjectsRoot: fixture.projectsRoot, Admission: AdmissionEnforce,
+	})
+	if err != nil {
+		t.Fatalf("adopted worktree with a recorded instruction: %v", err)
+	}
+	if !result.External {
+		t.Fatalf("guard result did not mark the adopted worktree external: %#v", result)
+	}
+	if result.Kind != "linked" || result.Branch != "feature/adopt-guard-commit" {
+		t.Fatalf("adopted worktree guard result = %#v", result)
+	}
+	if result.Admission == nil || !result.Admission.Admitted {
+		t.Fatalf("adopted worktree admission = %#v", result.Admission)
+	}
+
+	// A real commit is exactly what the pre-commit hook exists to admit or
+	// refuse; prove the worktree can actually take one now.
+	if err := os.WriteFile(filepath.Join(path, "committed.txt"), []byte("landed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, path, "add", "committed.txt")
+	gitTest(t, path, "commit", "-m", "refactor(core): adopted worktree can commit")
+	if head := gitTestOutput(t, path, "rev-parse", "HEAD"); head == "" {
+		t.Fatal("commit in the adopted worktree did not produce a head")
+	}
+}
+
 func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 	for _, mode := range []struct {
 		name  string
