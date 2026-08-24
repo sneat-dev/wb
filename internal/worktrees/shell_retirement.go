@@ -306,6 +306,22 @@ func applyTaskShellRetirement(result *RetiredShell) {
 		return
 	}
 	purgeTerminalTaskLockDebris(task)
+
+	// The task directory itself is the last piece of residue: everything
+	// under it is gone (owner directories above, retired-lock debris just
+	// now), so the shell is only actually retired once the directory that
+	// held it is gone too. Without this, a sweep only ever empties a shell,
+	// never removes it, and the next sweep reports the same "empty" task
+	// forever. If something appeared between the purge above and here, this
+	// fails with ENOTEMPTY (or any other error os.Remove reports); either
+	// way that is recorded as an unapplied error rather than a false
+	// "retired", and the directory — whatever is now in it — is left
+	// exactly as-is for the next sweep or an operator to inspect.
+	if rmErr := os.Remove(result.Path); rmErr != nil {
+		result.Error = fmt.Sprintf("remove empty task directory: %v", rmErr)
+		return
+	}
+
 	settled = true // the deferred cleanup above still closes the descriptors.
 	result.Applied = true
 	result.Reason = "retired empty WB task shell"
