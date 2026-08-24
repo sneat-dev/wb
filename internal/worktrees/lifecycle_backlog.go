@@ -239,7 +239,8 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 			continue
 		}
 		switch record.Stage {
-		case lifecycleStageRemovingWorktree, lifecycleStageWorktreeRemoved, lifecycleStageRemovingLocalBranch:
+		case lifecycleStageRetiringRemote, lifecycleStageRemoteRetired,
+			lifecycleStageRemovingWorktree, lifecycleStageWorktreeRemoved, lifecycleStageRemovingLocalBranch:
 			if _, statErr := os.Lstat(record.WorktreeDir); statErr == nil {
 				// A path that still exists is not proof the destructive command
 				// never ran. Git removes a worktree's registration even when it
@@ -272,7 +273,7 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 // worktree registration or remote branch still exists, or if the local ref
 // moved. The private record is therefore a recovery hint, never authority to
 // delete a different checkout or branch.
-func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord) error {
+func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleBacklogRecord, deleteRemote bool) error {
 	if err := validateLifecycleBacklog(*record); err != nil {
 		return err
 	}
@@ -310,7 +311,32 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	if remoteHead, err := remoteBranchHead(ctx, record.CanonicalDir, record.Branch); err != nil {
 		return err
 	} else if remoteHead != "" && !record.PreserveLocalBranch {
-		return fmt.Errorf("resume lifecycle backlog %s: origin/%s still exists at %s", record.ID, record.Branch, remoteHead)
+		// A record sealed at retiring_remote was interrupted *during* the remote
+		// deletion its own run had already authorized, so the surviving branch
+		// is the unfinished step rather than evidence something else owns it.
+		// Finishing it is the only way that record ever reaches complete: every
+		// other stage refuses a live remote, which is why such a record stayed
+		// unresumable — and invisible, because the loader did not admit its
+		// stage either.
+		//
+		// The lease is the whole safety argument. Deleting only when origin
+		// still stands exactly where the record observed it proves nothing has
+		// landed on the branch since, so a resume can never discard work that
+		// arrived after the interruption.
+		if record.Stage != lifecycleStageRetiringRemote || !deleteRemote {
+			return fmt.Errorf("resume lifecycle backlog %s: origin/%s still exists at %s", record.ID, record.Branch, remoteHead)
+		}
+		if record.RemoteHeadSHA == "" || remoteHead != record.RemoteHeadSHA {
+			return fmt.Errorf("resume lifecycle backlog %s: origin/%s advanced from %s to %s since the interrupted run observed it", record.ID, record.Branch, record.RemoteHeadSHA, remoteHead)
+		}
+		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "",
+			"push", "--force-with-lease=refs/heads/"+record.Branch+":"+record.RemoteHeadSHA,
+			"origin", ":refs/heads/"+record.Branch); err != nil {
+			return fmt.Errorf("resume exact remote branch retirement %s: %w", record.Branch, err)
+		}
+		if err := persistLifecycleBacklog(home, record, lifecycleStageRemoteRetired); err != nil {
+			return err
+		}
 	}
 	registrations, err := registeredWorktreePathsCanonical(ctx, canonical)
 	if err != nil {
