@@ -136,7 +136,8 @@ func TestRemotePublishWritesSnapshotToStore(t *testing.T) {
 // This worktree is created with a raw `git worktree add` (the same
 // technique cmd/wb/worktree_test.go's setUpMismatchedWorktreeFixture uses),
 // not through worktrees.Create, so no owner-claim metadata is ever written
-// for it — worktreeOwnerState treats "no records at all" as "orphaned".
+// for it — since #154, "no owner records at all" reports as "unknown"
+// (orphaned is reserved for a registered owner whose PID is gone).
 // That is the cheapest fixture that honestly exercises the real
 // worktrees.List/OwnerState filtering path end to end through the CLI,
 // rather than mocking the seam.
@@ -192,8 +193,8 @@ func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
 	if !strings.Contains(stored, "task: orphan-task") {
 		t.Fatalf("stored snapshot is missing the orphaned worktree: %s", stored)
 	}
-	if !strings.Contains(stored, "owner_state: orphaned") {
-		t.Fatalf("stored snapshot does not record the worktree's owner_state as orphaned: %s", stored)
+	if !strings.Contains(stored, "owner_state: unknown") {
+		t.Fatalf("stored snapshot does not record the worktree's owner_state (want unknown for an ownerless worktree): %s", stored)
 	}
 }
 
