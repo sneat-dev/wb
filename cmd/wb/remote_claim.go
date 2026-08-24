@@ -118,20 +118,20 @@ func handleClaimHeld(ctx context.Context, provider remotestate.Provider, deps re
 	}
 }
 
-// forceClaim prints the OVERRIDING warning (holderLabel names who is being
-// overridden, or "unreadable claim" when the prior claim file couldn't be
-// decoded at all) and then replaces whatever is there with mine.
+// forceClaim replaces whatever claim is there with mine, then prints the
+// OVERRIDING banner (holderLabel names who is being overridden, or
+// "unreadable claim" when the prior claim file couldn't be decoded at all)
+// only on success.
 func forceClaim(ctx context.Context, provider remotestate.Provider, mine remotestate.Claim, holderLabel string, jsonOut bool, out io.Writer) error {
-	if !jsonOut {
-		if _, err := fmt.Fprintf(out, "OVERRIDING fresh remote claim by %s on %s\n", holderLabel, mine.Task); err != nil {
-			return err
-		}
-	}
 	outcome, err := provider.Claim(ctx, mine, remotestate.ClaimForce)
 	if err != nil {
 		return &exitError{code: exitFindings, message: "claim " + mine.Task + ": " + err.Error()}
 	}
-	return writeClaimOutcome(out, jsonOut, outcome, "")
+	text := ""
+	if !jsonOut {
+		text = fmt.Sprintf("OVERRIDING fresh remote claim by %s on %s\n", holderLabel, mine.Task)
+	}
+	return writeClaimOutcome(out, jsonOut, outcome, text)
 }
 
 func writeClaimOutcome(out io.Writer, jsonOut bool, outcome remotestate.ClaimOutcome, text string) error {

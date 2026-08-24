@@ -58,6 +58,7 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 	// narrows the slice below: a claim's staleness depends on ITS holder's
 	// snapshot, which the --machine filter may otherwise have dropped.
 	claimRowsAll := claimRows(claims, entries, deps.now(), stale)
+	claimsForJSON := claimRowsAll
 	if machine != "" {
 		filtered := entries[:0]
 		for _, entry := range entries {
@@ -69,10 +70,18 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 		if len(entries) == 0 {
 			_, _ = fmt.Fprintf(errOut, "no machine %s in the remote store\n", machine)
 		}
+		// Filter claims to match the machine filter in JSON mode.
+		filteredClaims := claimRowsAll[:0]
+		for _, cr := range claimRowsAll {
+			if cr.Error == "" && cr.Holder == machine {
+				filteredClaims = append(filteredClaims, cr)
+			}
+		}
+		claimsForJSON = filteredClaims
 	}
 	rows := machineRows(entries, deps.now(), stale)
 	if jsonOut {
-		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries, Claims: claimRowsAll})
+		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries, Claims: claimsForJSON})
 	}
 	writeStatusWorklist(out, entries, rows, claimRowsAll)
 	return nil

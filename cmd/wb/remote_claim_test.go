@@ -182,6 +182,38 @@ func TestRemoteClaimNoSnapshotHolderIsStale(t *testing.T) {
 	}
 }
 
+func TestRemoteClaimHeldByYouOnOtherMachine(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "vm")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	err := runRemoteClaim(g.deps("alice", at.Add(time.Minute)), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings {
+		t.Fatalf("err = %v, want exitFindings", err)
+	}
+	if !strings.Contains(err.Error(), "held by you on laptop") {
+		t.Fatalf("err = %q, want 'held by you on laptop'", err.Error())
+	}
+
+	out.Reset()
+	err = runRemoteRelease(g.deps("alice", at), g.projectsRoot, "task-7", false, false, &out)
+	var exit2 *exitError
+	if !errors.As(err, &exit2) || exit2.code != exitFindings {
+		t.Fatalf("err = %v, want exitFindings", err)
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "held by you on laptop") && !strings.Contains(errText, "alice/laptop") {
+		t.Fatalf("err = %q, want softened holder text", errText)
+	}
+}
+
 func TestRemoteClaimForceOverridesFresh(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
@@ -469,6 +501,18 @@ func TestRemoteStatusShowsClaims(t *testing.T) {
 	}
 	if len(report.Claims) != 1 || report.Claims[0].Task != "task-7" || report.Claims[0].Holder != "alice/laptop" {
 		t.Fatalf("report.Claims = %+v", report.Claims)
+	}
+
+	// With --machine filter, JSON claims should contain only that machine's claims.
+	out.Reset()
+	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "alice/laptop", true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if len(report.Claims) != 1 || report.Claims[0].Task != "task-7" || report.Claims[0].Holder != "alice/laptop" {
+		t.Fatalf("report.Claims with --machine = %+v", report.Claims)
 	}
 }
 
