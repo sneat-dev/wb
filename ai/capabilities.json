@@ -3681,7 +3681,8 @@
                 "--live"
               ],
               "modes": [
-                "Lists agent sessions that registered on this machine, with liveness evaluated from the declared PID."
+                "Lists agent sessions that registered on this machine, with liveness evaluated from the declared PID.",
+                "Derives per-session EFFORTS, WORKTREES, and BRANCHES columns from worktree owner registrations (PID match with a registration-time reuse guard); --format json carries the full lists."
               ]
             }
           ],
