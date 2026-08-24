@@ -14,8 +14,9 @@ status: Implementing
 
 `wb remote` shares fleet state across machines through a pluggable store:
 
-- `wb remote publish` — scan this machine (attention repositories + live task
-  worktrees) and publish one snapshot keyed `<login>/<machine>`
+- `wb remote publish` — scan this machine (attention repositories + every
+  task worktree, active or orphaned, each with its owner state) and publish
+  one snapshot keyed `<login>/<machine>`
 - `wb remote status` — cross-machine worklist from the store, with `STALE`
   flags for old snapshots and error rows for undecodable entries
 - `wb remote machines` — one line per machine with publish age

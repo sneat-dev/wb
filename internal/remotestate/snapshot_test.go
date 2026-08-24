@@ -151,19 +151,21 @@ func TestBuildSummaryOmitsCleanTracking(t *testing.T) {
 
 func TestBuildCarriesWorktrees(t *testing.T) {
 	wts := []worktrees.ListResult{
-		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/z"},
-		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/a"},
-		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", WorktreeDir: "/wt/task-1/acme/m"},
+		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/z", OwnerState: "active"},
+		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", WorktreeDir: "/wt/task-7/acme/a", OwnerState: "orphaned"},
+		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", WorktreeDir: "/wt/task-1/acme/m", OwnerState: "unknown"},
 	}
 	snap := Build(identity(), nil, wts, RedactNone)
 	if len(snap.Worktrees) != 3 {
 		t.Fatalf("expected 3 worktrees, got %d", len(snap.Worktrees))
 	}
-	// Verify sort order: task-1 first, then task-7 sorted by repository
+	// Verify sort order: task-1 first, then task-7 sorted by repository, and
+	// that each worktree's owner state (active/orphaned/unknown liveness of
+	// its owning session) survives Build unchanged.
 	expected := []WorktreeState{
-		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", Dir: "/wt/task-1/acme/m"},
-		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/a"},
-		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/z"},
+		{Task: "task-1", Repository: "acme/m", Branch: "agent/task-1", HeadSHA: "abc123", Dir: "/wt/task-1/acme/m", OwnerState: "unknown"},
+		{Task: "task-7", Repository: "acme/a", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/a", OwnerState: "orphaned"},
+		{Task: "task-7", Repository: "acme/z", Branch: "agent/task-7", HeadSHA: "abc123", Dir: "/wt/task-7/acme/z", OwnerState: "active"},
 	}
 	if !reflect.DeepEqual(snap.Worktrees, expected) {
 		t.Fatalf("Worktrees mismatch:\n got: %+v\nwant: %+v", snap.Worktrees, expected)
