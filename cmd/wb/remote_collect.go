@@ -26,7 +26,12 @@ func collectSnapshot(projectsRoot, filter string, parallel int, identity remotes
 		input.Tracking, input.Err = gitops.Tracking(target.path)
 		inputs[index] = input
 	})
-	wts, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: projectsRoot, Filter: filter, OwnerState: "active"})
+	// No OwnerState filter: this snapshot is a fleet-audit artifact, and
+	// abandoned worktrees (sessions that exited without cleanup) are exactly
+	// what cross-machine reconciliation needs to see. Filtering to "active"
+	// here made `wb remote publish` under-report worktree counts on any
+	// machine holding orphaned worktrees.
+	wts, err := worktrees.List(context.Background(), worktrees.ListOptions{ProjectsRoot: projectsRoot, Filter: filter})
 	if err != nil {
 		return remotestate.Snapshot{}, err
 	}

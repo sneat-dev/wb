@@ -125,6 +125,79 @@ func TestRemotePublishWritesSnapshotToStore(t *testing.T) {
 	}
 }
 
+// TestRemotePublishIncludesOrphanedWorktrees is the regression test for the
+// production bug where `wb remote publish` reported 0 worktrees on fleets
+// holding hundreds of them: collectSnapshot called worktrees.List with
+// OwnerState: "active", silently dropping every worktree whose owning
+// session had already exited. For a fleet-audit snapshot those abandoned
+// worktrees are exactly what matters, so publish must include them along
+// with their owner state.
+//
+// This worktree is created with a raw `git worktree add` (the same
+// technique cmd/wb/worktree_test.go's setUpMismatchedWorktreeFixture uses),
+// not through worktrees.Create, so no owner-claim metadata is ever written
+// for it — since #154, "no owner records at all" reports as "unknown"
+// (orphaned is reserved for a registered owner whose PID is gone).
+// That is the cheapest fixture that honestly exercises the real
+// worktrees.List/OwnerState filtering path end to end through the CLI,
+// rather than mocking the seam.
+func TestRemotePublishIncludesOrphanedWorktrees(t *testing.T) {
+	setGitIdentity(t)
+	base := t.TempDir()
+	projectsRoot := filepath.Join(base, "projects")
+	canonical := filepath.Join(projectsRoot, "acme", "widgets")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A real origin remote with a resolvable origin/main ref: worktree
+	// inspection checks whether the worktree's HEAD is an ancestor of
+	// origin/<base>, which fails outright without one.
+	upstream := filepath.Join(base, "widgets-origin.git")
+	remoteGit(t, base, "init", "-q", "--bare", "-b", "main", upstream)
+	remoteGit(t, base, "clone", "-q", upstream, canonical)
+	remoteGit(t, canonical, "commit", "-q", "--allow-empty", "-m", "seed")
+	remoteGit(t, canonical, "push", "-q", "-u", "origin", "main")
+
+	home := filepath.Join(base, "wbhome")
+	t.Setenv("WB_HOME", home)
+	orphanWorktree := filepath.Join(home, "worktrees", "orphan-task", "acme", "widgets")
+	remoteGit(t, canonical, "worktree", "add", "-q", "-b", "agent/orphan-task", orphanWorktree, "main")
+
+	stateOrigin := filepath.Join(base, "origin.git")
+	remoteGit(t, base, "init", "-q", "--bare", "-b", "main", stateOrigin)
+	seed := filepath.Join(base, "seed")
+	remoteGit(t, base, "clone", "-q", stateOrigin, seed)
+	remoteGit(t, seed, "commit", "-q", "--allow-empty", "-m", "init")
+	remoteGit(t, seed, "push", "-q", "origin", "main")
+	configPath := filepath.Join(base, "wb.yaml")
+	if err := os.WriteFile(configPath, []byte("remote:\n  repo: team/wb-state\n  machine: laptop\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := remoteFixture{projectsRoot: projectsRoot, origin: stateOrigin, configPath: configPath}
+
+	var out bytes.Buffer
+	at := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
+	if err := runRemotePublish(f.deps("alice", at), f.projectsRoot, "", 2, false, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Worktrees int `json:"worktrees"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if report.Worktrees != 1 {
+		t.Fatalf("report.Worktrees = %d, want 1 (an orphaned worktree with no live owner must still be published)", report.Worktrees)
+	}
+	stored := remoteGit(t, f.origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+	if !strings.Contains(stored, "task: orphan-task") {
+		t.Fatalf("stored snapshot is missing the orphaned worktree: %s", stored)
+	}
+	if !strings.Contains(stored, "owner_state: unknown") {
+		t.Fatalf("stored snapshot does not record the worktree's owner_state (want unknown for an ownerless worktree): %s", stored)
+	}
+}
+
 func TestRemotePublishDryRunTouchesNothing(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out bytes.Buffer
