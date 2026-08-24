@@ -214,6 +214,10 @@ type GuardResult struct {
 	Kind          string     `json:"kind"`
 	Transient     bool       `json:"transient,omitempty"`
 	Admission     *Admission `json:"admission,omitempty"`
+	// External marks a worktree `wb worktree adopt` registered without
+	// relocating it under a WB worktrees root — see ListResult.External. Its
+	// task was resolved from its own Work Log claim, not from its path.
+	External bool `json:"external,omitempty"`
 }
 
 // managedWorktreeLocation is the shared, boundary-aware interpretation of a
@@ -779,12 +783,25 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		return GuardResult{}, err
 	}
 	location, err := locateManagedWorktree(ctx, projectsRoot, root, resolution.Read)
+	external := false
 	if err != nil {
-		return GuardResult{}, err
+		// A worktree `wb worktree adopt` registered was never relocated under
+		// a WB worktrees root, so the path-shaped resolution above can never
+		// succeed for it — that is adoption's whole point. Its task lives in
+		// its own Work Log claim instead, corroborated against live Git
+		// exactly as cleanup/abort already trust it (see locateAdoptedWorktree
+		// and activeWorkLogClaim's own corroboration). Only a worktree with a
+		// real active claim is admitted this way; anything else keeps the
+		// original path-shaped refusal below, unweakened.
+		if adopted, adoptedErr := locateGuardedAdoptedWorktree(ctx, projectsRoot, resolution.Write, root); adoptedErr == nil {
+			location, external = adopted, true
+		} else {
+			return GuardResult{}, err
+		}
 	}
 	result := GuardResult{
 		Path: root, Branch: branch, WorktreesRoot: location.Layout.WorktreesRoot,
-		Kind: "linked",
+		Kind: "linked", External: external,
 	}
 	canonical := filepath.Join(projectsRoot, location.Owner, location.Repository)
 	result.CanonicalDir = canonical
@@ -896,6 +913,23 @@ func locateAdoptedWorktree(ctx context.Context, projectsRoot, root string, layou
 		return managedWorktreeLocation{}, fmt.Errorf("derive adopted worktree identity for %s: %w", root, err)
 	}
 	return managedWorktreeLocation{Layout: layout, Worktree: root, Task: task, Owner: owner, Repository: repository}, nil
+}
+
+// locateGuardedAdoptedWorktree resolves an adopted worktree's task for Guard
+// the same way Cleanup/Abort already do: from its own private Work Log
+// claim, corroborated against live Git (see activeWorkLogClaim), rather than
+// from where it physically sits. It is tried only after locateManagedWorktree
+// has already failed, so a worktree with no real claim — adopted or not —
+// still gets that original, unweakened refusal; only a worktree with an
+// active claim reaches here and is admitted through it. The registration a
+// successful `wb worktree adopt --apply` writes always lives under the
+// resolver's write layout, so that is the only layout this checks.
+func locateGuardedAdoptedWorktree(ctx context.Context, projectsRoot string, writeLayout wbhome.Layout, root string) (managedWorktreeLocation, error) {
+	claim, _, _, err := activeWorkLogClaim(writeLayout.Home, root)
+	if err != nil {
+		return managedWorktreeLocation{}, err
+	}
+	return locateAdoptedWorktree(ctx, projectsRoot, root, writeLayout, claim.Task)
 }
 
 func isWorktreeStagingDirectory(name string) bool {

@@ -853,9 +853,11 @@ func newWorktreeGuardCmd() *cobra.Command {
 		Long: `Validate the checkout policy used by agents and WB Git hooks.
 
 A canonical clone is valid only when it is clean and on the base branch. A
-linked checkout is valid only when it uses a non-base branch and lives at
-<wb-home>/worktrees/<task>/<owner>/<repository> (see 'wb worktree create --help'
-for how <wb-home> is resolved).
+linked checkout is valid only when it uses a non-base branch and either lives
+at <wb-home>/worktrees/<task>/<owner>/<repository> (see 'wb worktree create
+--help' for how <wb-home> is resolved) or carries an active Work Log claim
+from 'wb worktree adopt --apply' — adoption's whole point is never relocating
+the checkout, so that one case is resolved from its claim instead of its path.
 
 --admission additionally requires a managed worktree to carry its own record: a
 manifest and at least one recorded instruction. It binds on the worktree's
@@ -896,7 +898,11 @@ journal and enforce once it has.`,
 				if result.Transient {
 					checkout = "detached HEAD (active rebase)"
 				}
-				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s\n", result.Kind, result.Path, checkout)
+				kind := result.Kind
+				if result.External {
+					kind += " (adopted)"
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s\n", kind, result.Path, checkout)
 				return err
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
