@@ -80,17 +80,21 @@ var remoteSchemes = []string{"https://", "http://", "ssh://", "git://"}
 // normalizeRemote reduces a git remote URL (or local path) to a
 // scheme-independent, case-insensitive form for sameRemote to compare.
 func normalizeRemote(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimSpace(s)
 	s = strings.TrimSuffix(s, "/")
 	s = strings.TrimSuffix(s, ".git")
 	s = strings.TrimSuffix(s, "/")
 
+	// Hosted forms are case-insensitive in practice (GitHub resolves either
+	// spelling), so they compare lowercased. Local paths stay case-sensitive:
+	// on Linux /tmp/X and /tmp/x are different directories.
+	lowered := strings.ToLower(s)
 	for _, scheme := range remoteSchemes {
-		if rest, ok := strings.CutPrefix(s, scheme); ok {
+		if rest, ok := strings.CutPrefix(lowered, scheme); ok {
 			return stripUserPrefix(rest)
 		}
 	}
-	if host, path, ok := scpHostPath(s); ok {
+	if host, path, ok := scpHostPath(lowered); ok {
 		return host + "/" + path
 	}
 	return filepath.Clean(s)

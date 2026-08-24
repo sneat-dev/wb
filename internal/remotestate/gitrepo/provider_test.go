@@ -558,3 +558,12 @@ func TestEnsureCloneAcceptsInsteadOfRewrite(t *testing.T) {
 		t.Fatalf("publish via insteadOf rewrite did not land on origin: %q", files)
 	}
 }
+
+func TestSameRemoteLocalPathsStayCaseSensitive(t *testing.T) {
+	if sameRemote("/tmp/Store", "/tmp/store") {
+		t.Fatal("local paths differing only in case must not compare equal on a case-sensitive filesystem")
+	}
+	if !sameRemote("HTTPS://GitHub.com/Team/WB-State.git", "git@github.com:team/wb-state") {
+		t.Fatal("hosted forms compare case-insensitively")
+	}
+}
