@@ -66,6 +66,23 @@ func TestLoadConfigRejectsBadValues(t *testing.T) {
 	}
 }
 
+// TestLoadConfigMachineErrorIsHumanReadable proves an invalid remote.machine
+// produces a message describing the rule in words, not the raw regexp
+// pattern, so a user hitting it does not need to read Go regexp syntax to
+// understand what to fix.
+func TestLoadConfigMachineErrorIsHumanReadable(t *testing.T) {
+	_, err := LoadConfig(writeConfig(t, "remote:\n  repo: a/b\n  machine: 'has space'\n"))
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "letters, digits") {
+		t.Fatalf("err = %q, want it to contain %q", err.Error(), "letters, digits")
+	}
+	if strings.Contains(err.Error(), "[A-Za-z0-9]") {
+		t.Fatalf("err = %q, should not leak the raw regexp", err.Error())
+	}
+}
+
 func TestLoadConfigFileWithoutRemoteSectionIsUnconfigured(t *testing.T) {
 	path := writeConfig(t, "recipes: {}\n")
 	_, err := LoadConfig(path)
