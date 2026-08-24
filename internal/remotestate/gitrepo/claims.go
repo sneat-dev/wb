@@ -86,8 +86,23 @@ func (p *Provider) mutateStore(mutate func() (message string, changed bool, err 
 	return gitops.HeadSHA(p.opts.ClonePath)
 }
 
+// errStorePathFreed is onLostRace's internal signal that the rebase
+// conflict was actually a competing Release: the post-reset re-read found
+// the claim path gone, not held by someone else. It never escapes this
+// file — claim/release catch it and retry the whole operation once against
+// the now-current store state before it can reach a caller.
+var errStorePathFreed = errors.New("gitrepo: claim path freed by a concurrent operation")
+
 // Claim acquires or refreshes a claim on a task.
 func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode) (remotestate.ClaimOutcome, error) {
+	return p.claim(ctx, claim, mode, false)
+}
+
+// claim implements Claim. retried is true only on the one bounded retry
+// triggered by onLostRace finding the claim path freed by a concurrent
+// Release (see errStorePathFreed) — it prevents an unbounded retry loop if
+// the store keeps changing out from under us.
+func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode, retried bool) (remotestate.ClaimOutcome, error) {
 	if err := remotestate.ValidTaskName(claim.Task); err != nil {
 		return remotestate.ClaimOutcome{}, err
 	}
@@ -151,15 +166,35 @@ func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remo
 		return message, true, nil
 	}
 	onLostRace := func() error {
-		other, _, _, rErr := p.readClaim(claim.Task)
+		other, stillExists, dErr, rErr := p.readClaim(claim.Task)
 		if rErr != nil {
 			return fmt.Errorf("lost the race for %s: %w", claim.Task, rErr)
 		}
-		return fmt.Errorf("lost the race for %s to %s", claim.Task, other.Holder())
+		// A concurrent write we can't coherently attribute a holder to:
+		// either an unreadable file we're not authorized to force over, or
+		// one we are — either way it still holds the path, so it's not the
+		// "freed by a release" case below.
+		heldOrUnreadable := stillExists && (dErr == nil || mode != remotestate.ClaimForce)
+		if heldOrUnreadable {
+			if dErr != nil {
+				return fmt.Errorf("%s is unreadable after losing the race for %s (%v); use --force to replace it", ClaimPath(claim.Task), claim.Task, dErr)
+			}
+			return fmt.Errorf("lost the race for %s to %s", claim.Task, other.Holder())
+		}
+		// The path is free (a competing Release landed) or force-overwritable.
+		// Retry once against current store state rather than reporting a
+		// phantom winner; a second lost race means the store is thrashing.
+		if retried {
+			return fmt.Errorf("store is changing too fast for %s; retry", claim.Task)
+		}
+		return errStorePathFreed
 	}
 
 	sha, err := p.mutateStore(mutate, onLostRace)
 	if err != nil {
+		if errors.Is(err, errStorePathFreed) {
+			return p.claim(ctx, claim, mode, true)
+		}
 		return remotestate.ClaimOutcome{}, err
 	}
 	return remotestate.ClaimOutcome{Kind: kind, Current: claim, Previous: previous, Location: sha}, nil
@@ -167,6 +202,13 @@ func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remo
 
 // Release removes a claim.
 func (p *Provider) Release(ctx context.Context, task, login, machine string, force bool) (remotestate.ReleaseOutcome, error) {
+	return p.release(ctx, task, login, machine, force, false)
+}
+
+// release implements Release. retried mirrors claim's bounded-retry flag:
+// true only on the one retry triggered by onLostRace finding the claim
+// path already gone (see errStorePathFreed).
+func (p *Provider) release(ctx context.Context, task, login, machine string, force, retried bool) (remotestate.ReleaseOutcome, error) {
 	if err := remotestate.ValidTaskName(task); err != nil {
 		return remotestate.ReleaseOutcome{}, err
 	}
@@ -205,15 +247,31 @@ func (p *Provider) Release(ctx context.Context, task, login, machine string, for
 		return message, true, nil
 	}
 	onLostRace := func() error {
-		other, _, _, rErr := p.readClaim(task)
+		other, stillExists, dErr, rErr := p.readClaim(task)
 		if rErr != nil {
 			return fmt.Errorf("lost the race for %s: %w", task, rErr)
 		}
-		return fmt.Errorf("lost the race for %s to %s", task, other.Holder())
+		heldOrUnreadable := stillExists && (dErr == nil || !force)
+		if heldOrUnreadable {
+			if dErr != nil {
+				return fmt.Errorf("%s is unreadable after losing the race for %s (%v); use --force to remove it", ClaimPath(task), task, dErr)
+			}
+			return fmt.Errorf("lost the race for %s to %s", task, other.Holder())
+		}
+		// The path is already gone (a competing Release beat us to it) or
+		// force-removable. Retry once: the retried call's own !exists check
+		// naturally reports this as the idempotent ReleaseNoop.
+		if retried {
+			return fmt.Errorf("store is changing too fast for %s; retry", task)
+		}
+		return errStorePathFreed
 	}
 
 	sha, err := p.mutateStore(mutate, onLostRace)
 	if err != nil {
+		if errors.Is(err, errStorePathFreed) {
+			return p.release(ctx, task, login, machine, force, true)
+		}
 		return remotestate.ReleaseOutcome{}, err
 	}
 	return remotestate.ReleaseOutcome{Kind: remotestate.Released, Location: sha}, nil

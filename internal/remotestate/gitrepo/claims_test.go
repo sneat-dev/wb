@@ -245,6 +245,167 @@ func TestClaimRaceWithDifferentTaskStillLands(t *testing.T) {
 	}
 }
 
+// pushReleaseToRef commits the deletion of task's claim file in a throwaway
+// clone of origin and pushes it to ref, synthesizing "another machine's
+// release commit is ready to land" the same way pushClaimToRef synthesizes
+// a competing claim.
+func pushReleaseToRef(t *testing.T, origin, task, message, ref string) {
+	t.Helper()
+	work := filepath.Join(t.TempDir(), "prep-release")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, work)
+	abs := filepath.Join(work, filepath.FromSlash(ClaimPath(task)))
+	if err := os.Remove(abs); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, work, "add", "-A")
+	gitIn(t, work, "commit", "-q", "-m", message)
+	gitIn(t, work, "push", "-q", "origin", "HEAD:"+ref)
+}
+
+// TestClaimTakeOverRacingReleaseAcquires proves the fix for the reviewer's
+// bug: bob holds task-7, alice calls Claim with ClaimTakeOverStale, and
+// bob's Release is rigged (via installRejectFirstPushHook) to land on main
+// between alice's fetch and her push. Her takeover commit (which MODIFIES
+// claims/task-7.yaml) then rebases onto bob's release commit (which
+// DELETES the same file) — a genuine modify/delete conflict, so
+// mutateStore aborts, resets to upstream, and re-reads the path as gone.
+// Before the fix, onLostRace called .Holder() on a zero Claim and returned
+// the nonsense "lost the race for task-7 to /". After the fix, it retries
+// the whole Claim once against the now-current (empty) store state, which
+// simply acquires the now-free task for alice.
+func TestClaimTakeOverRacingReleaseAcquires(t *testing.T) {
+	origin := bareOrigin(t)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+
+	bob := machine(t, origin)
+	if _, err := bob.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at), remotestate.ClaimNormal); err != nil {
+		t.Fatal(err)
+	}
+
+	pushReleaseToRef(t, origin, "task-7", "wb: release task-7 by bob/vm", "refs/staging/bob-release")
+	releaseSHA := gitIn(t, origin, "rev-parse", "refs/staging/bob-release")
+	installRejectFirstPushHook(t, origin, releaseSHA)
+
+	alice := machine(t, origin)
+	outcome, err := alice.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at.Add(time.Hour)), remotestate.ClaimTakeOverStale)
+	if err != nil {
+		t.Fatalf("Claim racing a release: %v", err)
+	}
+	if outcome.Kind != remotestate.ClaimAcquired {
+		t.Fatalf("Kind = %v, want acquired (the task was free by the time alice landed)", outcome.Kind)
+	}
+	if outcome.Previous != nil {
+		t.Fatalf("Previous = %+v, want nil", outcome.Previous)
+	}
+	if outcome.Current.Holder() != "alice/laptop" {
+		t.Fatalf("Current.Holder() = %q, want alice/laptop", outcome.Current.Holder())
+	}
+
+	data, ok, err := gitops.ShowFile(origin, "main", "claims/task-7.yaml")
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	claim, err := remotestate.DecodeClaim([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim.Holder() != "alice/laptop" {
+		t.Fatalf("origin claim holder = %q, want alice/laptop", claim.Holder())
+	}
+
+	if status := gitIn(t, alice.opts.ClonePath, "status", "--porcelain"); status != "" {
+		t.Fatalf("alice's clone status = %q, want clean", status)
+	}
+	if inProgress, err := gitops.RebaseInProgress(alice.opts.ClonePath); err != nil || inProgress {
+		t.Fatalf("rebase in progress = %v (err %v), want false", inProgress, err)
+	}
+}
+
+// TestReleaseRacingReleaseIsNoop documents the reviewer-verified delete/
+// delete behaviour for Release: two commits deleting the exact same path
+// are, to git's three-way merge, identical outcomes regardless of the
+// content each side started from, so PullRebase auto-skips alice's
+// now-empty commit and never even reaches onLostRace (verified directly:
+// `git pull --rebase` on a delete rebased onto an unrelated concurrent
+// delete of the same path exits 0 with no rebase in progress). This test
+// pins that behaviour end to end through Provider.Release: racing a
+// concurrent release of the same claim must not error, and must leave the
+// store and the clone in a clean, released state.
+func TestReleaseRacingReleaseIsNoop(t *testing.T) {
+	origin := bareOrigin(t)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+
+	alice := machine(t, origin)
+	if _, err := alice.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+		t.Fatal(err)
+	}
+
+	pushReleaseToRef(t, origin, "task-7", "wb: release task-7 by alice/laptop (concurrent)", "refs/staging/concurrent-release")
+	releaseSHA := gitIn(t, origin, "rev-parse", "refs/staging/concurrent-release")
+	installRejectFirstPushHook(t, origin, releaseSHA)
+
+	outcome, err := alice.Release(context.Background(), "task-7", "alice", "laptop", false)
+	if err != nil {
+		t.Fatalf("Release racing a release: %v", err)
+	}
+	if outcome.Kind != remotestate.Released {
+		t.Fatalf("Kind = %v, want released", outcome.Kind)
+	}
+
+	files := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	if strings.Contains(files, "claims/task-7.yaml") {
+		t.Fatalf("origin tree %q still has claims/task-7.yaml", files)
+	}
+	if status := gitIn(t, alice.opts.ClonePath, "status", "--porcelain"); status != "" {
+		t.Fatalf("alice's clone status = %q, want clean", status)
+	}
+
+	// Idempotent: releasing again is now a genuine no-op.
+	again, err := alice.Release(context.Background(), "task-7", "alice", "laptop", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Kind != remotestate.ReleaseNoop {
+		t.Fatalf("second Release Kind = %v, want noop", again.Kind)
+	}
+}
+
+// TestClaimRefreshIdenticalBytesMakesNoCommit proves the mutate-detects-
+// byte-identical-refresh short circuit in mutateStore: refreshing with the
+// exact same holder and ClaimedAt encodes to the exact same bytes already
+// on disk, so mutate reports changed=false and mutateStore never commits
+// or pushes.
+func TestClaimRefreshIdenticalBytesMakesNoCommit(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal); err != nil {
+		t.Fatal(err)
+	}
+	before := gitIn(t, origin, "rev-parse", "main")
+	beforeCount := gitIn(t, origin, "rev-list", "--count", "main")
+
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Kind != remotestate.ClaimRefreshed {
+		t.Fatalf("Kind = %v, want refreshed", outcome.Kind)
+	}
+
+	after := gitIn(t, origin, "rev-parse", "main")
+	afterCount := gitIn(t, origin, "rev-list", "--count", "main")
+	if before != after {
+		t.Fatalf("origin main moved from %s to %s; identical refresh must not commit", before, after)
+	}
+	if beforeCount != afterCount {
+		t.Fatalf("commit count changed from %s to %s; identical refresh must not commit", beforeCount, afterCount)
+	}
+	if outcome.Location != after {
+		t.Fatalf("Location = %q, want current HEAD %q", outcome.Location, after)
+	}
+}
+
 func TestReleaseDeletesOwnClaim(t *testing.T) {
 	origin := bareOrigin(t)
 	p := machine(t, origin)
