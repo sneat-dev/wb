@@ -134,8 +134,12 @@ func tryAutoRelease(deps remoteDeps, projectsRoot, task string, out io.Writer) {
 		// Nothing was ours to release; there is nothing worth telling the
 		// operator about, so this stays silent like the "disabled" case.
 	default: // remotestate.ReleaseHeldByOther
-		mine := remotestate.Claim{Login: login, Machine: cfg.Machine}
-		skippedAutoRelease(out, "held by "+holderDesc(mine, *outcome.Current))
+		if outcome.Current == nil {
+			skippedAutoRelease(out, "held by another machine")
+		} else {
+			mine := remotestate.Claim{Login: login, Machine: cfg.Machine}
+			skippedAutoRelease(out, "held by "+holderDesc(mine, *outcome.Current))
+		}
 	}
 }
 

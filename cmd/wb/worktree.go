@@ -16,6 +16,18 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
+// autoReleaseWriter selects the output stream for auto-release lines based on
+// format. For json output, the release line is informational and belongs on
+// stderr to keep stdout as pure JSON (matching worktree create's pattern of
+// routing auto-claim output to io.Discard in json mode). For text output,
+// stdout is correct.
+func autoReleaseWriter(format string, cmd *cobra.Command) io.Writer {
+	if format == "json" {
+		return cmd.ErrOrStderr()
+	}
+	return cmd.OutOrStdout()
+}
+
 func newWorktreeCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:     "worktree",
@@ -638,7 +650,7 @@ The default is a dry-run plan.`,
 			// here, so the claim must stay put.
 			disp := worktrees.AbortDisposition(disposition)
 			if apply && (disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff) {
-				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], command.OutOrStdout())
+				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], autoReleaseWriter(format, command))
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -1490,7 +1502,7 @@ required to remove anything.`,
 			if apply && task != "" {
 				for _, result := range outcome.Results {
 					if result.Applied {
-						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, command.OutOrStdout())
+						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, autoReleaseWriter(format, command))
 						return nil
 					}
 				}
