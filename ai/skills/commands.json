@@ -1,62 +1,65 @@
 {
   "version": 1,
   "commands": {
-    "version": [
-      "wb-install"
+    "branch": [
+      "wb-branches"
     ],
-    "self-update": [
-      "wb-install"
-    ],
-    "sync": [
+    "check": [
       "wb-fleet"
     ],
-    "run": [
-      "wb-run"
+    "ci": [
+      "wb-ci"
     ],
-    "migrate": [
-      "wb-migrate"
+    "coverage": [
+      "wb-fleet"
     ],
     "deps": [
       "wb-deps",
       "wb-dependency-campaign"
     ],
-    "ci": [
-      "wb-ci"
+    "fleet": [
+      "wb-fleet"
     ],
     "hooks": [
       "wb-hooks"
     ],
-    "coverage": [
-      "wb-fleet"
-    ],
-    "verify": [
-      "wb-fleet"
-    ],
-    "check": [
-      "wb-fleet"
-    ],
-    "status": [
-      "wb-fleet"
-    ],
-    "fleet": [
-      "wb-fleet"
-    ],
     "layout": [
+      "wb-fleet"
+    ],
+    "migrate": [
+      "wb-migrate"
+    ],
+    "remote": [
       "wb-fleet"
     ],
     "repo": [
       "wb-fleet"
     ],
-    "remote": [
+    "run": [
+      "wb-run"
+    ],
+    "self-update": [
+      "wb-install"
+    ],
+    "session": [
+      "wb-worktrees"
+    ],
+    "status": [
       "wb-fleet"
+    ],
+    "sync": [
+      "wb-fleet"
+    ],
+    "verify": [
+      "wb-fleet"
+    ],
+    "version": [
+      "wb-install"
     ],
     "worktree": [
       "wb-worktrees",
       "wb-change",
       "wb-merge"
-    ],
-    "branch": [
-      "wb-branches"
     ]
   }
 }

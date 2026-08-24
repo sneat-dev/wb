@@ -3457,6 +3457,205 @@
       "notes": "Ambiguous install provenance fails closed instead of guessing which installation to overwrite."
     },
     {
+      "id": "wb.session.list",
+      "feature_refs": [
+        "spec/features/work-log/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session list",
+              "flags": [
+                "--format",
+                "--live"
+              ],
+              "modes": [
+                "Lists agent sessions that registered on this machine, with liveness evaluated from the declared PID."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session list --help",
+              "contains": [
+                "--live",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "# Worktree ownership and liveness",
+              "examples": [
+                "wb session list",
+                "wb session list --live"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/session/session_test.go",
+              "name": "TestListReportsLiveness",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Only sessions that registered appear; WB reports what it was told, never what it guessed."
+    },
+    {
+      "id": "wb.session.prune",
+      "feature_refs": [
+        "spec/features/work-log/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session prune",
+              "flags": [],
+              "modes": [
+                "Removes records for sessions whose process has exited."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session prune --help",
+              "contains": [
+                "prune"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "# Worktree ownership and liveness",
+              "examples": [
+                "wb session prune"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/session/session_test.go",
+              "name": "TestPruneRemovesOnlyExitedSessions",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Housekeeping only: a stale record reports as gone rather than misleading anyone, and a live session is never removed."
+    },
+    {
+      "id": "wb.session.register",
+      "feature_refs": [
+        "spec/features/work-log/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session register",
+              "flags": [
+                "--agent-id",
+                "--model",
+                "--pid",
+                "--runtime"
+              ],
+              "modes": [
+                "Announces an agent session so later WB writes are attributed to it without per-command declaration."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session register --help",
+              "contains": [
+                "--pid",
+                "--runtime",
+                "--model"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "# Worktree ownership and liveness",
+              "examples": [
+                "wb session register --pid 12345 --runtime claude-code --model claude-sonnet-5"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/session/session_test.go",
+              "name": "TestRegisterRecordsWhatWBKnowsAboutItself",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/session/session_test.go",
+              "name": "TestResolveForProcessFindsAnAncestorSession",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/identity_test.go",
+              "name": "TestCurrentIdentityFallsBackToTheRegisteredSession",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The PID must be the agent process, not the shell running the command; $PPID from a harness tool call is correct. A start-up hook cannot supply it, because a hook's parent is an intermediate shell rather than the agent."
+    },
+    {
       "id": "wb.status",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
