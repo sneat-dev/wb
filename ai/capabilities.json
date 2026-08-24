@@ -5838,7 +5838,7 @@
                 "--format"
               ],
               "modes": [
-                "Read-only enumeration of every linked worktree across all layout generations, grouped by root effort, with a recommended disposition and its evidence."
+                "Read-only enumeration of every linked worktree across all layout generations, grouped by root effort, with a recommended disposition and its evidence. A declared owner's liveness is preferred over the commit-age heuristic."
               ]
             }
           ],
@@ -5894,7 +5894,7 @@
           "limitation": null
         }
       },
-      "notes": "Removal is recommended only for branches already contained in the remote target, and never for a worktree holding uncommitted work."
+      "notes": "Triage prefers declared owner liveness over commit age: a live session is proof and reports active, an exited one reports decide, and an unstated owner falls back to age with evidence that says it is inferred. Unstated is deliberately distinct from gone. Removal is recommended only for branches already contained in the remote target, and never for a worktree holding uncommitted work."
     },
     {
       "id": "wb.worktree.own",
