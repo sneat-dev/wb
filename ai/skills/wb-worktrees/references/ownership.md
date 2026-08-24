@@ -109,3 +109,26 @@ wb worktree list --only orphaned
 `--only orphaned` returns worktrees without a live owner PID; a worktree with
 only unknown PID evidence is intentionally excluded from both filters and
 needs review.
+
+## How triage uses owner state
+
+`wb worktree orphans` prefers a declared owner over the commit-age heuristic,
+because one is proof and the other is a guess. Each row is marked
+`owner live`, `owner gone`, or `owner unstated`.
+
+| Owner state | Disposition | Basis |
+|---|---|---|
+| live | `active` | a declared session is running |
+| gone | `decide` | its session exited, leaving unmerged work |
+| unstated | falls back to commit age | inference, and the evidence says so |
+
+A live owner outranks the age heuristic *and* the no-commit case: a session
+that has not committed yet is working, not abandoned. `dirty` and `merged`
+still outrank owner state — uncommitted work is most at risk exactly when its
+session exits, and merged work is removable whoever owns it.
+
+`unstated` is not the same as `gone`. Never having said who you are is not the
+same as having said so and exited, and an entry carrying only WB provenance is
+not a dead session. A worktree created with plain `git worktree add` is
+`unstated` until someone registers, which is why the evidence for those rows
+names `wb worktree own` as the fix.
