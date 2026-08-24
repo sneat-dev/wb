@@ -733,7 +733,7 @@ func TestCreateRecoveryBacklogPreservesPreexistingLocalAndRemoteBranch(t *testin
 	if err := persistLifecycleBacklog(fixture.home, &backlog, lifecycleStageRemovingWorktree); err != nil {
 		t.Fatal(err)
 	}
-	if err := resumeLifecycleBacklog(context.Background(), fixture.home, &backlog); err != nil {
+	if err := resumeLifecycleBacklog(context.Background(), fixture.home, &backlog, false); err != nil {
 		t.Fatalf("resume completed create recovery with preserved remote branch: %v", err)
 	}
 	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, branch); branchErr != nil || !exists {

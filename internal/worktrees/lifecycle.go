@@ -1197,7 +1197,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		// successful resume is what removes it.
 		_, residueErr := os.Lstat(backlog[backlogIndex].WorktreeDir)
 		residuePresent := residueErr == nil
-		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex]); err != nil {
+		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex], normalized.DeleteRemote); err != nil {
 			return fail(err)
 		}
 		for resultIndex := range outcome.Results {
