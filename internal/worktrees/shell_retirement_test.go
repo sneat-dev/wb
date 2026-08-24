@@ -71,15 +71,12 @@ func TestRetireTaskShellsAppliesToEmptyPreExistingShell(t *testing.T) {
 	if len(applied.Results) != 1 || !applied.Results[0].Applied || applied.Results[0].Error != "" {
 		t.Fatalf("applied sweep = %#v", applied.Results)
 	}
-	if info, statErr := os.Stat(taskDir); statErr != nil || !info.IsDir() {
-		t.Fatalf("task root was not retained: info=%v err=%v", info, statErr)
-	}
-	entries, err := os.ReadDir(taskDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("task namespace still has residue after retirement: %#v", entries)
+	// The shell itself must be gone, not merely emptied: a retained-but-empty
+	// task directory is exactly the fleet bug this guards against — the next
+	// sweep would see it again forever. See
+	// TestRetireTaskShellsIsIdempotent for the full two-sweep regression.
+	if _, statErr := os.Stat(taskDir); !os.IsNotExist(statErr) {
+		t.Fatalf("task directory was not removed: err=%v", statErr)
 	}
 }
 
@@ -103,12 +100,67 @@ func TestRetireTaskShellsAppliesToNestedEmptyRepositoryDirectory(t *testing.T) {
 	if len(applied.Results) != 1 || !applied.Results[0].Applied {
 		t.Fatalf("applied sweep = %#v", applied.Results)
 	}
-	entries, err := os.ReadDir(taskDir)
+	if _, statErr := os.Stat(taskDir); !os.IsNotExist(statErr) {
+		t.Fatalf("nested empty repository shell's task directory was not removed: err=%v", statErr)
+	}
+}
+
+// TestRetireTaskShellsIsIdempotent is the fleet regression this fix exists
+// for: 33 empty shells swept with --apply reported "33 retired" but left 33
+// completely empty task directories behind, so the very next sweep reported
+// the same 33 as eligible again, forever. One shell here has the classic
+// pre-fix residue (an empty owner directory plus a retired-lock file still
+// on disk); the other is already fully empty, the shape the very first
+// --apply of this fix leaves behind on a fleet that has never run it before.
+// Both must be gone after one --apply, and a second sweep — dry or applied —
+// must find nothing left to do.
+func TestRetireTaskShellsIsIdempotent(t *testing.T) {
+	projectsRoot, worktreesRoot := setUpShellRetirementFixture(t)
+	residueTaskDir := filepath.Join(worktreesRoot, "residue-task")
+	ownerDir := filepath.Join(residueTaskDir, "sneat-co")
+	if err := os.MkdirAll(ownerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRetiredLock(t, residueTaskDir, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	emptyTaskDir := filepath.Join(worktreesRoot, "already-empty-task")
+	if err := os.MkdirAll(emptyTaskDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	firstApply, err := RetireTaskShells(context.Background(), RetireShellsOptions{ProjectsRoot: projectsRoot, Apply: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("nested empty repository shell left residue: %#v", entries)
+	if len(firstApply.Results) != 2 || firstApply.Totals["retired"] != 2 {
+		t.Fatalf("first apply sweep = %#v totals=%#v", firstApply.Results, firstApply.Totals)
+	}
+	for _, result := range firstApply.Results {
+		if !result.Applied || result.Error != "" {
+			t.Fatalf("first apply did not retire %s: %#v", result.Task, result)
+		}
+	}
+	if _, statErr := os.Stat(residueTaskDir); !os.IsNotExist(statErr) {
+		t.Fatalf("residue task directory was not removed: err=%v", statErr)
+	}
+	if _, statErr := os.Stat(emptyTaskDir); !os.IsNotExist(statErr) {
+		t.Fatalf("already-empty task directory was not removed: err=%v", statErr)
+	}
+
+	secondDry, err := RetireTaskShells(context.Background(), RetireShellsOptions{ProjectsRoot: projectsRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondDry.Results) != 0 || secondDry.Totals["would_retire"] != 0 {
+		t.Fatalf("second dry-run sweep still found eligible shells: %#v totals=%#v", secondDry.Results, secondDry.Totals)
+	}
+
+	secondApply, err := RetireTaskShells(context.Background(), RetireShellsOptions{ProjectsRoot: projectsRoot, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondApply.Results) != 0 || secondApply.Totals["retired"] != 0 {
+		t.Fatalf("second apply sweep still found something to retire: %#v totals=%#v", secondApply.Results, secondApply.Totals)
 	}
 }
 

@@ -177,12 +177,8 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 	if !strings.Contains(stdout.String(), "retired") || !strings.Contains(stdout.String(), "old-task") || !strings.Contains(stdout.String(), "1 retired") {
 		t.Fatalf("apply stdout = %q, want it to name old-task as retired", stdout.String())
 	}
-	entries, err := os.ReadDir(filepath.Join(worktreesRoot, "old-task"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("task namespace still has residue after --retire-shells --apply: %#v", entries)
+	if _, statErr := os.Stat(filepath.Join(worktreesRoot, "old-task")); !os.IsNotExist(statErr) {
+		t.Fatalf("task directory still exists after --retire-shells --apply: err=%v", statErr)
 	}
 }
 

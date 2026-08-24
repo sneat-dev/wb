@@ -262,7 +262,16 @@ func UnpushedCommits(repoPath string) ([]string, error) {
 		return nil, nil
 	}
 
-	out, err := run(repoPath, "git", "log", "--branches", "--not", "--remotes", "--oneline")
+	branches, err := unpushableBranches(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(branches) == 0 {
+		return nil, nil
+	}
+
+	args := append([]string{"log", "--oneline"}, branches...)
+	out, err := run(repoPath, "git", append(args, "--not", "--remotes")...)
 	if err != nil {
 		return nil, err
 	}
@@ -273,6 +282,41 @@ func UnpushedCommits(repoPath string) ([]string, error) {
 		}
 	}
 	return commits, nil
+}
+
+// unpushableBranches lists the local branches whose commits could genuinely
+// exist nowhere else.
+//
+// A branch whose upstream is configured but gone is excluded. Git reports
+// "gone" only once a branch has had a remote counterpart that was later
+// deleted — which is exactly what a merged pull request leaves behind, and
+// which is proof the commits were pushed. Counting them as unpushed reports
+// every completed piece of work as though it were at risk, and a warning that
+// fires on success is one people learn to ignore.
+//
+// A branch with no upstream at all is kept: it may never have been pushed.
+func unpushableBranches(repoPath string) ([]string, error) {
+	out, err := run(repoPath, "git", "for-each-ref",
+		"--format=%(refname)%09%(upstream)%09%(upstream:track,nobracket)", "refs/heads/")
+	if err != nil {
+		return nil, err
+	}
+	var branches []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 3 {
+			continue
+		}
+		ref, upstream, track := fields[0], fields[1], strings.TrimSpace(fields[2])
+		if upstream != "" && track == "gone" {
+			continue
+		}
+		branches = append(branches, ref)
+	}
+	return branches, nil
 }
 
 // TrackingState is the checked-out branch's relationship to its upstream, as
