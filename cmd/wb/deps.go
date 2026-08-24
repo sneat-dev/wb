@@ -38,6 +38,7 @@ func newDepsCmd() *cobra.Command {
 	}
 	command.AddCommand(newDepsSetCmd())
 	command.AddCommand(newDepsBumpCmd())
+	command.AddCommand(newDepsPublishCmd())
 	command.AddCommand(newDepsGraphCmd())
 	command.AddCommand(newDepsDriftCmd())
 	command.AddCommand(newDepsPolicyCmd())
@@ -444,40 +445,67 @@ func parseReleaseEvents(ecosystem deps.Ecosystem, values []string) ([]deps.Relea
 }
 
 func runDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
+	report, _, runErr := executeDepsBump(command, ecosystem, events, repositories, options, lifecycle)
+	if report.Operation == "" {
+		return runErr
+	}
+	if err := writeDepsBumpReport(command, report, options.format); err != nil {
+		return err
+	}
+	return runErr
+}
+
+// executeDepsBump runs the shared persisted wave engine without committing its
+// report to stdout. Composite release commands use this seam to embed the
+// exact same BumpReport alongside provider publication receipts rather than
+// cloning or reimplementing wave orchestration.
+func executeDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) (deps.BumpReport, string, error) {
+	return executeDepsBumpWithRegistryPolicy(command, ecosystem, events, repositories, options, lifecycle, false)
+}
+
+// executeDepsBumpWithRegistryPolicy keeps composite commands on the existing
+// wave engine while allowing a publication plan to prove that it did not
+// consult an npm registry before a provider workflow has run.
+func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options, noRegistry bool) (deps.BumpReport, string, error) {
 	operation := deps.BumpOperationIDFor(ecosystem, events)
 	reportDirectory := options.reportDir
 	if reportDirectory == "" {
 		home, err := wbhome.EnsureRoot(projectsRoot)
 		if err != nil {
-			return err
+			return deps.BumpReport{}, "", err
 		}
 		reportDirectory = filepath.Join(home, "reports", operation)
 	}
 	bumpOptions := deps.BumpOptions{
 		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
-		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
+		NoRegistry: noRegistry,
+		Persist:    func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	if options.resume {
 		if previous, err := deps.LoadBumpReport(reportDirectory); err == nil {
 			bumpOptions.Previous = &previous
 		} else {
 			if os.IsNotExist(err) {
-				return fmt.Errorf("--resume requires %s: %w", filepath.Join(reportDirectory, "deps-bump.yaml"), err)
+				return deps.BumpReport{}, reportDirectory, fmt.Errorf("--resume requires %s: %w", filepath.Join(reportDirectory, "deps-bump.yaml"), err)
 			}
-			return err
+			return deps.BumpReport{}, reportDirectory, err
 		}
 	}
-	report, runErr := deps.RunBump(context.Background(), events, repositories, bumpOptions)
+	report, runErr := deps.RunBump(commandExecutionContext(command), events, repositories, bumpOptions)
 	if report.Operation == "" {
-		return runErr
+		return report, reportDirectory, runErr
 	}
 	if err := deps.WriteBumpReports(reportDirectory, report); err != nil {
-		return err
+		return report, reportDirectory, err
 	}
-	if err := writeDepsBumpReport(command, report, options.format); err != nil {
-		return err
+	return report, reportDirectory, runErr
+}
+
+func commandExecutionContext(command *cobra.Command) context.Context {
+	if command != nil && command.Context() != nil {
+		return command.Context()
 	}
-	return runErr
+	return context.Background()
 }
 
 func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repository, error) {

@@ -190,6 +190,13 @@ func ignoredManifestPath(path string) bool {
 		switch part {
 		case "vendor", "node_modules", ".git":
 			return true
+		// testdata is Go's conventional fixture directory. Manifests beneath it
+		// and dist are fixture/generated output, not declarations owned by the
+		// repository's production dependency graph. Keep this shared policy so
+		// local scans and Git-tree scans make the same decision for both Go and
+		// npm manifests.
+		case "testdata", "dist":
+			return true
 		}
 	}
 	return false
