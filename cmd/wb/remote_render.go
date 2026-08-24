@@ -122,7 +122,11 @@ func writeStatusWorklist(out io.Writer, entries []remotestate.Entry, rows []remo
 			_, _ = fmt.Fprintf(out, "  %-40s %-28s %s\n", repo.Repository, strings.TrimSpace(tracking), detail)
 		}
 		for _, wt := range entry.Snapshot.Worktrees {
-			_, _ = fmt.Fprintf(out, "  worktree %-30s %-40s %s\n", wt.Task, wt.Repository, wt.Branch)
+			line := fmt.Sprintf("  worktree %-30s %-40s %s", wt.Task, wt.Repository, wt.Branch)
+			if wt.OwnerState != "" {
+				line += fmt.Sprintf(" (%s)", wt.OwnerState)
+			}
+			_, _ = fmt.Fprintln(out, line)
 		}
 		if len(entry.Snapshot.Repositories) == 0 && len(entry.Snapshot.Worktrees) == 0 {
 			_, _ = fmt.Fprintln(out, "  clean")

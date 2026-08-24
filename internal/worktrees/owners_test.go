@@ -23,7 +23,10 @@ func TestOwnerViewsAppendAndEvaluateLivePID(t *testing.T) {
 	if got := worktreeOwnerState(owners); got != "active" {
 		t.Fatalf("owner state = %q, want active", got)
 	}
-	if got := worktreeOwnerState(nil); got != "orphaned" {
-		t.Fatalf("no-owner state = %q, want orphaned", got)
+	// Silence is not evidence of abandonment: nobody has claimed this
+	// worktree, which is what unknown means and why both --only filters
+	// exclude it. See TestListAndOrphansAgreeOnOwnerState.
+	if got := worktreeOwnerState(nil); got != "unknown" {
+		t.Fatalf("no-owner state = %q, want unknown", got)
 	}
 }

@@ -70,13 +70,17 @@ type RepositoryState struct {
 	Error         string   `yaml:"error,omitempty" json:"error,omitempty"`
 }
 
-// WorktreeState is one live WB task worktree on the publishing machine.
+// WorktreeState is one WB task worktree on the publishing machine, whether
+// or not its owning session is still alive.
 type WorktreeState struct {
 	Task       string `yaml:"task" json:"task"`
 	Repository string `yaml:"repository" json:"repository"`
 	Branch     string `yaml:"branch" json:"branch"`
 	HeadSHA    string `yaml:"head_sha" json:"head_sha"`
 	Dir        string `yaml:"dir" json:"dir"`
+	// OwnerState is worktrees.ListResult.OwnerState: "active", "orphaned", or
+	// "unknown". Empty only if the underlying scan left it unset.
+	OwnerState string `yaml:"owner_state,omitempty" json:"owner_state,omitempty"`
 }
 
 // RepositoryInput is the per-repository scan result Build consumes. Err set
@@ -159,7 +163,7 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 	}
 	sort.Slice(snap.Repositories, func(i, j int) bool { return snap.Repositories[i].Repository < snap.Repositories[j].Repository })
 	for _, wt := range wts {
-		snap.Worktrees = append(snap.Worktrees, WorktreeState{Task: wt.Task, Repository: wt.Repository, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Dir: wt.WorktreeDir})
+		snap.Worktrees = append(snap.Worktrees, WorktreeState{Task: wt.Task, Repository: wt.Repository, Branch: wt.Branch, HeadSHA: wt.HeadSHA, Dir: wt.WorktreeDir, OwnerState: wt.OwnerState})
 	}
 	sort.Slice(snap.Worktrees, func(i, j int) bool {
 		if snap.Worktrees[i].Task != snap.Worktrees[j].Task {

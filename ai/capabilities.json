@@ -2883,7 +2883,7 @@
                 "--parallel"
               ],
               "modes": [
-                "Scans the projects-root fleet plus live task worktrees and publishes one snapshot keyed <login>/<machine>.",
+                "Scans the projects-root fleet plus every task worktree (active or orphaned, each tagged with its owner state) and publishes one snapshot keyed <login>/<machine>.",
                 "--dry-run prints the snapshot and writes nothing, locally or remotely."
               ]
             }

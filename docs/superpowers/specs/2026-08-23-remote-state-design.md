@@ -82,6 +82,7 @@ type WorktreeState struct {
     Branch     string `yaml:"branch"`
     HeadSHA    string `yaml:"head_sha"`
     Dir        string `yaml:"dir"`
+    OwnerState string `yaml:"owner_state,omitempty"` // active | orphaned | unknown
 }
 ```
 
@@ -104,8 +105,13 @@ Rules:
    includes it, and changing `wb status` is out of scope. Follow-up: derive
    `repositoryStatusInfo` from `RepositoryState` when `wb status` gains
    tracking.
-4. **Worktrees come from `worktrees.List`** (active owner state only).
-   The snapshot records what is checked out, not the journal or prompts.
+4. **Worktrees come from `worktrees.List`, unfiltered by owner state.** Every
+   task worktree is published, active or orphaned, with its `owner_state`
+   carried alongside — abandoned worktrees (sessions that exited without
+   cleanup) are precisely what cross-machine reconciliation needs to see, so
+   filtering them out of the snapshot would hide the thing it exists to
+   surface. The snapshot records what is checked out, not the journal or
+   prompts.
 
 ## Provider interface
 
