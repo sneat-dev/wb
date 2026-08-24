@@ -187,21 +187,35 @@ func ownerPIDStatus(pid int) string {
 	return "unknown"
 }
 
+// worktreeOwnerState classifies a worktree for `wb worktree list`, using that
+// command's established vocabulary: active, orphaned, or unknown.
+//
+// It answers the same question as DeclaredOwner and must agree with it. Only a
+// record carrying a PID is a claim of ownership; an entry written by WB with
+// no declaration is provenance, and no entry at all is silence. Neither is
+// evidence that a session ran and exited, so both report unknown — which
+// `--only active` and `--only orphaned` deliberately exclude, because a
+// worktree nobody has claimed needs review rather than a verdict.
+//
+// Reporting silence as orphaned is what made `list` contradict `orphans`,
+// where the same worktree is correctly unstated.
 func worktreeOwnerState(owners []OwnerView) string {
-	if len(owners) == 0 {
-		return "orphaned"
-	}
+	state := "unknown"
 	for _, owner := range owners {
+		if owner.PID <= 0 {
+			continue
+		}
+		// A live session anywhere in the chain settles it: a running process
+		// is running whether or not a later session declared itself and then
+		// exited.
 		if owner.PIDStatus == "active" {
 			return "active"
 		}
-	}
-	for _, owner := range owners {
-		if owner.PIDStatus == "unknown" {
-			return "unknown"
+		if owner.PIDStatus == "orphaned" {
+			state = "orphaned"
 		}
 	}
-	return "orphaned"
+	return state
 }
 
 // Declared-owner states used when triaging a worktree. They are deliberately
