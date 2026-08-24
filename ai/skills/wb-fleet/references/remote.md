@@ -29,3 +29,35 @@ section is missing; the message includes the snippet to add.
 Create the store with `gh repo create <owner>/wb-state --private` (no README
 needed; the first publish creates `main`), and SSH access to GitHub is
 required — the clone URL is `git@github.com:<owner>/<name>.git`.
+
+## Task claims
+
+The same store reserves `claims/<task>.yaml` — the file's existence IS the
+claim; releasing deletes it, so git history is the audit trail (no `state:`
+field, no tombstones).
+
+| Need | Command |
+|---|---|
+| Claim a task for this login/machine | `wb remote claim task-7 --note rehearsal` |
+| Take over a stale claim | `wb remote claim task-7 --take-over` |
+| Take over any claim, loudly | `wb remote claim task-7 --force` |
+| Release your own claim | `wb remote release task-7` |
+| Release someone else's claim | `wb remote release task-7 --force` |
+| List every claim with staleness | `wb remote claims --stale 12h` |
+
+Staleness has no separate TTL: a claim is stale exactly when its holder
+machine's publish heartbeat (`published_at`) is stale, or the holder never
+published at all. `--take-over` only replaces a stale claim; `--force`
+replaces any claim and prints who is being overridden — never used by any
+automatic path. Same `login` on a different `machine` is still another
+holder (only the wording softens to "you").
+
+`wb worktree create <task>` claims best-effort automatically when `remote:`
+is configured: it prints the outcome (acquired, refreshed, held by another
+— warn and proceed, held by you elsewhere — warn and proceed, took over a
+stale claim, or skipped because the store is unreachable) and includes it
+as the `remote_claim` field of `--format json` output; it never fails the
+command. Pass `--no-claim` to skip the attempt. `wb worktree cleanup
+--apply` and `wb worktree abort --apply` release the claim best-effort the
+same way, printing `release skipped: …` on failure without changing the
+exit code.

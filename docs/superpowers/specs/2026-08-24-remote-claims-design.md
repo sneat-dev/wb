@@ -78,7 +78,10 @@ Claiming:
 
 This is the same publish machinery with one addition: the post-rebase
 re-read. The race window between re-read and push is closed by the next
-rejection cycle, not by locking.
+rejection cycle, not by locking. Observed behaviour: because every
+claim/release commit touches only the claimant's own `claims/<task>.yaml`,
+a same-task race surfaces as an actual rebase conflict on that path (a
+different-task commit rebases cleanly instead).
 
 ### Same login, different machine
 
@@ -139,8 +142,9 @@ When a `remote:` store is configured:
     holder's machine stopped publishing), noting the previous holder.
   - `skipped: store unreachable` — printed clearly, command proceeds.
     Offline never blocks starting work.
-  The outcome line is printed and recorded in the task's work log, so the
-  audit trail shows whether mutual exclusion was actually in effect.
+  The outcome is printed and included in `worktree create --format json`
+  output; the store's git history is the durable audit (the Work Log stays
+  a prompt journal and is not written).
   `--no-claim` skips the attempt (scratch/experimental worktrees).
   When no `remote:` store is configured, nothing changes at all.
 - **`wb worktree cleanup <task> --apply`** and **`wb worktree abort <task>`**

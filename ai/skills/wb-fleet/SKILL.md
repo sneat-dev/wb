@@ -21,6 +21,9 @@ Choose one command that answers the question:
 | Run a stable local CI profile | `wb check` | [quality.md](references/quality.md) |
 | Publish this machine's state for other machines | `wb remote publish` | [remote.md](references/remote.md) |
 | See every machine's attention worklist | `wb remote status` / `wb remote machines` | [remote.md](references/remote.md) |
+| Reserve a task fleet-wide before starting work | `wb remote claim <task>` | [remote.md](references/remote.md) |
+| Give up a task claim | `wb remote release <task>` | [remote.md](references/remote.md) |
+| See who holds every task claim | `wb remote claims` | [remote.md](references/remote.md) |
 
 Do not run overlapping `verify` and `check` commands unless they answer
 different questions. Start with one repository; add `--fleet` and a filter

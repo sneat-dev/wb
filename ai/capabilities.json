@@ -2665,6 +2665,144 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.remote.claim",
+      "feature_refs": [
+        "spec/features/remote-claims/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote claim",
+              "flags": [
+                "--force",
+                "--json",
+                "--note",
+                "--stale",
+                "--take-over"
+              ],
+              "modes": [
+                "Refreshing your own login/machine claim always succeeds; claiming over another holder needs --take-over (stale claims only) or --force (any claim, loudly)",
+                "Concurrency is resolved by compare-and-swap over git: a rejected push is rebased and re-read; a competing claim for the same task loses the local commit and fails 'lost the race'"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote claim --help",
+              "contains": [
+                "--take-over",
+                "--force",
+                "stale",
+                "loudly"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote claim task-7 --note rehearsal"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_claim_test.go",
+              "name": "TestRemoteClaimAcquireReleaseRoundTrip",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/remote_claim_test.go",
+              "name": "TestRemoteClaimTakeOverRequiresStaleness",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Claim staleness is derived from the holder machine's publish heartbeat; there is no separate claim TTL."
+    },
+    {
+      "id": "wb.remote.claims",
+      "feature_refs": [
+        "spec/features/remote-claims/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote claims",
+              "flags": [
+                "--json",
+                "--stale"
+              ],
+              "modes": [
+                "Lists every task claim with holder, claimed_at, holder-heartbeat age, and a STALE flag; claim files that cannot be decoded render as error rows"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote claims --help",
+              "contains": [
+                "--stale",
+                "error rows",
+                "do not change the exit code"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote claims --stale 12h"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_claim_test.go",
+              "name": "TestRemoteClaimsListsWithStaleness",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "wb remote claims exits 0 even when some claim files are undecodable."
+    },
+    {
       "id": "wb.remote.machines",
       "feature_refs": [
         "spec/features/remote-state/README.md"
@@ -2792,6 +2930,76 @@
         }
       },
       "notes": "Only the state repository clone is written; fleet clones are read."
+    },
+    {
+      "id": "wb.remote.release",
+      "feature_refs": [
+        "spec/features/remote-claims/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb remote release",
+              "flags": [
+                "--force",
+                "--json"
+              ],
+              "modes": [
+                "Releases the claim only when held by this exact login/machine; releasing a non-existent claim is a no-op; --force removes another holder's claim, loudly",
+                "Release deletes claims/<task>.yaml; the store's git history is the durable audit trail"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb remote release --help",
+              "contains": [
+                "--force",
+                "no-op",
+                "another login/machine holds it"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/remote.md",
+              "marker": "# Share fleet state across machines",
+              "examples": [
+                "wb remote release task-7"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/remote_claim_test.go",
+              "name": "TestRemoteReleaseHeldByOtherRefusesWithoutForce",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/remote_claim_test.go",
+              "name": "TestRemoteReleaseJSONOutcome",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Release never touches any clone but the state repository."
     },
     {
       "id": "wb.remote.status",
@@ -4380,6 +4588,7 @@
                 "--format",
                 "--initiator",
                 "--model",
+                "--no-claim",
                 "--original-prompt-file",
                 "--provider",
                 "--resume",
