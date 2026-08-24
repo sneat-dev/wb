@@ -728,6 +728,14 @@ func TestCleanupDryRunWithExplicitReportDirDoesNotMutate(t *testing.T) {
 	}
 }
 
+// A sweep must not retain every task's lock for its whole duration: it takes a
+// task's lock when it reaches that task and gives it back when the task is
+// done. The probe below reads the *next* task's lock while the current one is
+// mid-removal, which only says anything about retention while apply is serial
+// — with workers the next task may legitimately be held by one of them, or
+// already finished. Pin the serial sweep here, where the property is exactly
+// expressible, and assert the parallel ceiling separately in
+// TestCleanupAllMergedNeverExceedsTheWorkerCeiling.
 func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
 	fixture := newGitFixture(t)
 	first, firstHead, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-a")
@@ -740,6 +748,7 @@ func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
 		ProjectsRoot: fixture.projectsRoot,
 		AllMerged:    true,
 		Apply:        true,
+		Workers:      1,
 		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
 		beforeCleanupWorktreeRemoval: func(path string) {
 			if path != first.WorktreeDir || probedSecondTask {

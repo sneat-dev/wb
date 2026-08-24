@@ -1327,6 +1327,16 @@ requires --remote: definition of done includes retirement of the source remote
 branch as well as the local worktree/branch. --all-merged fleet sweeping keeps
 the 24-hour merged-PR grace window unless --older-than overrides it.
 
+--parallel bounds both phases. The inventory walk inspects that many
+candidates at once; the apply phase removes that many worktrees at once, one
+task per canonical repository. Git allows a single writer per clone, so two
+tasks in one repository still take turns and a task spanning several
+repositories holds all of them for its whole transaction. The achievable gain
+is therefore the size of the largest per-repository group, not the worker
+count. Remote branch deletions are bounded more tightly still, against
+GitHub's per-account secondary rate limit. --parallel 1 restores the fully
+serial apply. Whatever order tasks finish in, the report reads in walk order.
+
 --filter (see the root flag) and a named [task] both narrow which candidates
 are inspected at all, before any of the above safety checks run. A malformed
 candidate outside that selection is invisible to the run. One inside it is
@@ -1488,8 +1498,8 @@ required to remove anything.`,
 	// already spell it that way, and "workers" reads as a second noun beside
 	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so
 	// existing scripts and muscle memory keep working.
-	command.Flags().IntVar(&workers, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
-	command.Flags().IntVarP(&workers, "workers", "j", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
+	command.Flags().IntVar(&workers, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect, and to apply, concurrently")
+	command.Flags().IntVarP(&workers, "workers", "j", worktrees.DefaultInspectWorkers, "maximum repositories to inspect, and to apply, concurrently")
 	_ = command.Flags().MarkDeprecated("workers", "use --parallel instead")
 	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream per-candidate inspection progress to stderr, even when not on a terminal")
 	return command

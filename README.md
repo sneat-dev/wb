@@ -223,6 +223,14 @@ candidate. The ceiling is deliberate: unbounded inspection would open one SSH
 connection per repository at once and trade a slow sweep for a rate-limited
 one. Pair it with `--verbose` to stream per-candidate progress.
 
+`--parallel` bounds the apply phase as well. Removals overlap across canonical
+repositories and stay serial within one, because Git allows a single writer per
+clone; a task spanning several repositories takes them all in one global order.
+The gain is therefore capped by the largest per-repository group — on the
+fleet this was measured against, 86 removals over 34 repositories with 14 in
+the biggest, worth roughly 3x. Remote branch deletions are bounded more tightly
+still, against GitHub's per-account secondary rate limit.
+
 Two properties make the concurrency safe rather than merely fast. The exact
 target is resolved once per `(repository, base)` for the whole walk — and that
 single-flight is per repository, so N worktrees in one repository cost one

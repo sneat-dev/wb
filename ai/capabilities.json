@@ -778,6 +778,7 @@
               "modes": [
                 "Corroborates exact direct-push or pull-request integration and terminalizes managed worktree/branch debt",
                 "Streams per-candidate inventory progress and bounds concurrent inspections so a fleet-wide sweep is observable and not serial on the network",
+                "--parallel bounds the apply phase as well as inspection: tasks are applied concurrently across canonical repositories and serially within one, a coordinated task takes every repository it spans in one global order, and concurrent remote branch deletions stay bounded",
                 "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted"
               ]
             }
@@ -3965,6 +3966,7 @@
                 "--absorbed-by names which landing receipt to verify for a cherry-picked absorption and additionally requires the named commit to be exactly where the work entered the target",
                 "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement",
                 "Coordinated task preflight and durable seal precede every deletion",
+                "Apply is bounded-parallel by canonical repository under --parallel; one Git writer per clone is preserved and the report stays in walk order regardless of completion order",
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
