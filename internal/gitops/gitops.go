@@ -673,3 +673,11 @@ func HeadSHA(repoPath string) (string, error) {
 	out, err := run(repoPath, "git", "rev-parse", "HEAD")
 	return strings.TrimSpace(out), err
 }
+
+// ResetHardUpstream discards local commits and tree state, returning the
+// branch to its upstream. Used only on the state-repo clone to roll back a
+// claim commit that lost its CAS race.
+func ResetHardUpstream(repoPath string) error {
+	_, err := run(repoPath, "git", "reset", "--hard", "@{u}")
+	return err
+}

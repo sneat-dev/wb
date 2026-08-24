@@ -303,3 +303,49 @@ func TestConfiguredOriginURLDiffersFromOriginURLAfterInsteadOf(t *testing.T) {
 		t.Fatalf("ConfiguredOriginURL after rewrite = %q, want original %q", configuredAfter, origin)
 	}
 }
+
+// TestResetHardUpstreamDiscardsLocalCommitAndDirt proves ResetHardUpstream
+// returns the clone to exactly @{u}: a local commit the upstream never saw,
+// plus an uncommitted change to a tracked file, are both discarded and HEAD
+// lands on the upstream SHA with a clean tracked-file state. This is the
+// primitive claims CAS uses to roll back a commit that lost its race.
+// (`git reset --hard` deliberately does not touch untracked files, so this
+// does not claim to remove those — only tracked-file and commit state.)
+func TestResetHardUpstreamDiscardsLocalCommitAndDirt(t *testing.T) {
+	origin, clone := seededOriginAndClone(t)
+
+	// Seed a tracked file both sides know about, then push, so there is a
+	// tracked file to dirty locally afterward.
+	if err := os.WriteFile(filepath.Join(clone, "tracked.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "add", "tracked.txt")
+	gitIn(t, clone, "commit", "-q", "-m", "seed tracked.txt")
+	gitIn(t, clone, "push", "-q", "origin", "main")
+	upstreamSHA := gitIn(t, origin, "rev-parse", "main")
+
+	// A local-only commit @{u} never saw.
+	gitIn(t, clone, "commit", "-q", "--allow-empty", "-m", "local only")
+	// Plus an uncommitted change to the tracked file.
+	if err := os.WriteFile(filepath.Join(clone, "tracked.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ResetHardUpstream(clone); err != nil {
+		t.Fatalf("ResetHardUpstream: %v", err)
+	}
+
+	if head := gitIn(t, clone, "rev-parse", "HEAD"); head != upstreamSHA {
+		t.Fatalf("HEAD = %s, want upstream %s", head, upstreamSHA)
+	}
+	if status := gitIn(t, clone, "status", "--porcelain"); status != "" {
+		t.Fatalf("status = %q, want clean tree after reset", status)
+	}
+	content, err := os.ReadFile(filepath.Join(clone, "tracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "base\n" {
+		t.Fatalf("tracked.txt = %q, want the upstream content restored", content)
+	}
+}
