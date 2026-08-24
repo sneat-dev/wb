@@ -38,6 +38,7 @@ not change the exit code.`,
 type remoteStatusReport struct {
 	Machines []remoteMachineRow  `json:"machines"`
 	Entries  []remotestate.Entry `json:"entries"`
+	Claims   []claimRow          `json:"claims"`
 }
 
 func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, machine string, jsonOut bool, out, errOut io.Writer) error {
@@ -49,6 +50,14 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 	if err != nil {
 		return &exitError{code: exitFindings, message: "read remote store: " + err.Error()}
 	}
+	claims, err := provider.Claims(context.Background())
+	if err != nil {
+		return &exitError{code: exitFindings, message: "read remote store: " + err.Error()}
+	}
+	// claimRowsAll is computed from the unfiltered entries, before --machine
+	// narrows the slice below: a claim's staleness depends on ITS holder's
+	// snapshot, which the --machine filter may otherwise have dropped.
+	claimRowsAll := claimRows(claims, entries, deps.now(), stale)
 	if machine != "" {
 		filtered := entries[:0]
 		for _, entry := range entries {
@@ -63,8 +72,8 @@ func runRemoteStatus(deps remoteDeps, projectsRoot string, stale time.Duration, 
 	}
 	rows := machineRows(entries, deps.now(), stale)
 	if jsonOut {
-		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries})
+		return json.NewEncoder(out).Encode(remoteStatusReport{Machines: rows, Entries: entries, Claims: claimRowsAll})
 	}
-	writeStatusWorklist(out, entries, rows)
+	writeStatusWorklist(out, entries, rows, claimRowsAll)
 	return nil
 }

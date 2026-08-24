@@ -1,0 +1,491 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/remotestate"
+)
+
+// secondMachine builds a second fixture that shares f's origin (the same
+// remote store) but has its own projects root, config, and machine name —
+// mirroring publishTwo's inline pattern in remote_test.go, so claim tests
+// can put two independent holders against one store.
+func secondMachine(t *testing.T, f remoteFixture, machine string) remoteFixture {
+	t.Helper()
+	g := remoteFixture{projectsRoot: filepath.Join(t.TempDir(), "projects"), origin: f.origin, configPath: filepath.Join(t.TempDir(), "wb.yaml")}
+	if err := os.MkdirAll(g.projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(g.configPath, []byte("remote:\n  repo: team/wb-state\n  machine: "+machine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// pushCorruptClaim writes an unreadable claims/<task>.yaml directly into the
+// store, through a fresh clone, so a Claim/Claims call encounters a
+// decode error without going through this package's Claim/Publish paths.
+func pushCorruptClaim(t *testing.T, f remoteFixture, task string) {
+	t.Helper()
+	other := filepath.Join(t.TempDir(), "other")
+	remoteGit(t, t.TempDir(), "clone", "-q", f.origin, other)
+	bad := filepath.Join(other, "claims", task+".yaml")
+	if err := os.MkdirAll(filepath.Dir(bad), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bad, []byte("schema_version: 99\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	remoteGit(t, other, "add", "-A")
+	remoteGit(t, other, "commit", "-q", "-m", "corrupt claim")
+	remoteGit(t, other, "push", "-q", "origin", "main")
+}
+
+func TestRemoteClaimAcquireReleaseRoundTrip(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "claimed task-7") {
+		t.Fatalf("out = %q, want claimed task-7", out.String())
+	}
+	stored := remoteGit(t, f.origin, "show", "main:claims/task-7.yaml")
+	if !strings.Contains(stored, "task: task-7") || !strings.Contains(stored, "login: alice") {
+		t.Fatalf("stored claim = %s", stored)
+	}
+
+	out.Reset()
+	if err := runRemoteRelease(f.deps("alice", at), f.projectsRoot, "task-7", false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "released task-7") {
+		t.Fatalf("out = %q, want released task-7", out.String())
+	}
+	if files := remoteGit(t, f.origin, "ls-tree", "-r", "--name-only", "main"); strings.Contains(files, "claims/task-7.yaml") {
+		t.Fatalf("release did not delete the claim file: %s", files)
+	}
+
+	out.Reset()
+	if err := runRemoteRelease(f.deps("alice", at), f.projectsRoot, "task-7", false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no remote claim") {
+		t.Fatalf("out = %q, want no remote claim (idempotent release)", out.String())
+	}
+}
+
+func TestRemoteClaimRefreshSameHolder(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "refreshed your remote claim on task-7") {
+		t.Fatalf("out = %q, want refresh message", out.String())
+	}
+}
+
+func TestRemoteClaimHeldByOtherExitsFindings(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(g.deps("bob", at), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	err := runRemoteClaim(f.deps("alice", at.Add(time.Minute)), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings {
+		t.Fatalf("err = %v, want exitFindings", err)
+	}
+	for _, want := range []string{"bob/desktop", "heartbeat", "it is fresh", "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+func TestRemoteClaimTakeOverRequiresStaleness(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(g.deps("bob", at), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings || !strings.Contains(err.Error(), "claim is fresh") {
+		t.Fatalf("err = %v, want exitFindings 'claim is fresh'", err)
+	}
+
+	// bob's heartbeat goes stale: republish with an old published_at.
+	if err := runRemotePublish(g.deps("bob", at.Add(-48*time.Hour)), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "took over") || !strings.Contains(out.String(), "bob/desktop") {
+		t.Fatalf("out = %q, want took over bob/desktop", out.String())
+	}
+}
+
+func TestRemoteClaimNoSnapshotHolderIsStale(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	// bob never publishes: no snapshot at all, so his claim is stale from the start.
+
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "took over") || !strings.Contains(out.String(), "bob/desktop") {
+		t.Fatalf("out = %q, want took over bob/desktop", out.String())
+	}
+}
+
+func TestRemoteClaimForceOverridesFresh(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(g.deps("bob", at), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, true, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "OVERRIDING") || !strings.Contains(out.String(), "bob/desktop") {
+		t.Fatalf("out = %q, want OVERRIDING bob/desktop", out.String())
+	}
+}
+
+func TestRemoteClaimForceOnUnreadableFile(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	pushCorruptClaim(t, f, "task-7")
+
+	var out bytes.Buffer
+	err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings || !strings.Contains(err.Error(), "unreadable") {
+		t.Fatalf("err = %v, want exitFindings mentioning unreadable", err)
+	}
+
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, true, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "OVERRIDING") || !strings.Contains(out.String(), "unreadable claim") {
+		t.Fatalf("out = %q, want OVERRIDING unreadable claim", out.String())
+	}
+}
+
+func TestRemoteClaimBadTaskNameIsUsage(t *testing.T) {
+	deps := remoteDeps{
+		configPath: filepath.Join(t.TempDir(), "wb.yaml"),
+		login:      func() (string, error) { return "alice", nil },
+		open: func(remotestate.Config, string) (remotestate.Provider, error) {
+			panic("deps.open must not be called for a bad task name")
+		},
+		now: func() time.Time { return time.Now().UTC() },
+	}
+	var out bytes.Buffer
+	err := runRemoteClaim(deps, t.TempDir(), "a/b", "", false, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage {
+		t.Fatalf("err = %v, want exitUsage", err)
+	}
+}
+
+func TestRemoteReleaseBadTaskNameIsUsage(t *testing.T) {
+	deps := remoteDeps{
+		configPath: filepath.Join(t.TempDir(), "wb.yaml"),
+		login:      func() (string, error) { return "alice", nil },
+		open: func(remotestate.Config, string) (remotestate.Provider, error) {
+			panic("deps.open must not be called for a bad task name")
+		},
+		now: func() time.Time { return time.Now().UTC() },
+	}
+	var out bytes.Buffer
+	err := runRemoteRelease(deps, t.TempDir(), "a/b", false, false, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage {
+		t.Fatalf("err = %v, want exitUsage", err)
+	}
+}
+
+func TestRemoteClaimUnconfiguredIsUsage(t *testing.T) {
+	deps := defaultRemoteDeps()
+	deps.configPath = filepath.Join(t.TempDir(), "none.yaml")
+	var out bytes.Buffer
+	err := runRemoteClaim(deps, t.TempDir(), "task-7", "", false, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
+		t.Fatalf("err = %v, want usage error with snippet", err)
+	}
+}
+
+func TestRemoteReleaseUnconfiguredIsUsage(t *testing.T) {
+	deps := defaultRemoteDeps()
+	deps.configPath = filepath.Join(t.TempDir(), "none.yaml")
+	var out bytes.Buffer
+	err := runRemoteRelease(deps, t.TempDir(), "task-7", false, false, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
+		t.Fatalf("err = %v, want usage error with snippet", err)
+	}
+}
+
+func TestRemoteClaimsUnconfiguredIsUsage(t *testing.T) {
+	deps := defaultRemoteDeps()
+	deps.configPath = filepath.Join(t.TempDir(), "none.yaml")
+	var out bytes.Buffer
+	err := runRemoteClaims(deps, t.TempDir(), 24*time.Hour, false, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitUsage || !strings.Contains(err.Error(), "remote:\n  provider: git") {
+		t.Fatalf("err = %v, want usage error with snippet", err)
+	}
+}
+
+func TestRemoteReleaseHeldByOtherRefusesWithoutForce(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	err := runRemoteRelease(f.deps("alice", at), f.projectsRoot, "task-7", false, false, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings {
+		t.Fatalf("err = %v, want exitFindings", err)
+	}
+	for _, want := range []string{"bob/desktop", "not you", "--force"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+
+	out.Reset()
+	if err := runRemoteRelease(f.deps("alice", at), f.projectsRoot, "task-7", true, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "released task-7") {
+		t.Fatalf("out = %q, want released task-7", out.String())
+	}
+	if files := remoteGit(t, f.origin, "ls-tree", "-r", "--name-only", "main"); strings.Contains(files, "claims/task-7.yaml") {
+		t.Fatalf("force release did not delete the claim file: %s", files)
+	}
+}
+
+func TestRemoteClaimJSONOutcome(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "for the demo", false, false, true, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	var outcome remotestate.ClaimOutcome
+	if err := json.Unmarshal(out.Bytes(), &outcome); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if outcome.Kind != remotestate.ClaimAcquired || outcome.Current.Holder() != "alice/laptop" || outcome.Current.Note != "for the demo" {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+}
+
+func TestRemoteReleaseJSONOutcome(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runRemoteRelease(f.deps("alice", at), f.projectsRoot, "task-7", false, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	var outcome remotestate.ReleaseOutcome
+	if err := json.Unmarshal(out.Bytes(), &outcome); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if outcome.Kind != remotestate.Released {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+}
+
+func TestRemoteClaimsListsWithStaleness(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := runRemotePublish(f.deps("alice", at), f.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	g := secondMachine(t, f, "desktop")
+	out.Reset()
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-9", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+	// bob never publishes: his claim has no heartbeat at all, so it's stale.
+
+	out.Reset()
+	if err := runRemoteClaims(f.deps("alice", at), f.projectsRoot, 24*time.Hour, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	for _, want := range []string{"task-7", "task-9", "alice/laptop", "bob/desktop"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("claims table missing %q: %s", want, text)
+		}
+	}
+	var task7Line, task9Line string
+	for _, l := range strings.Split(strings.TrimSpace(text), "\n") {
+		switch {
+		case strings.Contains(l, "task-7"):
+			task7Line = l
+		case strings.Contains(l, "task-9"):
+			task9Line = l
+		}
+	}
+	if !strings.Contains(task9Line, "STALE") {
+		t.Fatalf("task-9 line = %q, want STALE", task9Line)
+	}
+	if strings.Contains(task7Line, "STALE") {
+		t.Fatalf("task-7 line = %q, want not stale", task7Line)
+	}
+
+	out.Reset()
+	if err := runRemoteClaims(f.deps("alice", at), f.projectsRoot, 24*time.Hour, true, &out); err != nil {
+		t.Fatal(err)
+	}
+	var rows []claimRow
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	byTask := map[string]claimRow{}
+	for _, r := range rows {
+		byTask[r.Task] = r
+	}
+	if byTask["task-7"].Stale || !byTask["task-9"].Stale {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if byTask["task-7"].Holder != "alice/laptop" || byTask["task-9"].Holder != "bob/desktop" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestRemoteClaimsErrorRow(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	pushCorruptClaim(t, f, "task-9")
+
+	var out bytes.Buffer
+	if err := runRemoteClaims(f.deps("alice", at), f.projectsRoot, 24*time.Hour, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "task-9") || !strings.Contains(out.String(), "error:") {
+		t.Fatalf("out = %q, want an error row for task-9", out.String())
+	}
+}
+
+func TestRemoteStatusShowsClaims(t *testing.T) {
+	f, at := publishTwo(t)
+	var out, errOut bytes.Buffer
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "", false, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "remote claims: task-7") {
+		t.Fatalf("status text missing remote claims line: %s", text)
+	}
+
+	out.Reset()
+	if err := runRemoteStatus(f.deps("alice", at.Add(time.Hour)), f.projectsRoot, 24*time.Hour, "", true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	var report remoteStatusReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if len(report.Claims) != 1 || report.Claims[0].Task != "task-7" || report.Claims[0].Holder != "alice/laptop" {
+		t.Fatalf("report.Claims = %+v", report.Claims)
+	}
+}
+
+// TestPersistentFlagMatrixRemoteClaimCommands extends the remote command
+// allowlist coverage in remote_test.go: the three claim commands accept
+// --projects-root only (to locate the state-repo clone), never --filter or
+// --org (they operate on the remote store, not a local repo scan).
+func TestPersistentFlagMatrixRemoteClaimCommands(t *testing.T) {
+	for _, cmd := range []string{"remote claim", "remote release", "remote claims"} {
+		if !persistentFlagSupport["projects-root"][cmd] {
+			t.Errorf("%s must accept --projects-root: it locates the state-repo clone", cmd)
+		}
+		if persistentFlagSupport["filter"][cmd] {
+			t.Errorf("%s must reject --filter: it does not scan the local fleet", cmd)
+		}
+		if persistentFlagSupport["org"][cmd] {
+			t.Errorf("%s must reject --org: it operates on the remote store, not GitHub-listed repos", cmd)
+		}
+	}
+}
