@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -38,13 +39,43 @@ func (p *Provider) readClaim(task string) (claim remotestate.Claim, exists bool,
 	return c, true, nil, nil
 }
 
+// stampOwnLastSeen best-effort records claim activity in the calling
+// machine's own machines/<login>/<machine>/snapshot.yaml by setting
+// LastSeenAt to at and rewriting the file in place. Per the spec's
+// failure-handling rule, this never fails the calling mutation: if the
+// snapshot is absent (this machine never published) or present but
+// undecodable, it returns without touching anything — the claim still
+// lands, and published_at is never modified. Callers MUST pass only their
+// own login/machine; the per-machine file-ownership rule holds, and this
+// method has no way to enforce it itself.
+func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) {
+	rel := SnapshotPath(login, machine)
+	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return // absent (or unreadable): skip silently, never create one
+	}
+	snap, err := remotestate.Decode(data)
+	if err != nil {
+		return // corrupt: skip silently, leave the bytes exactly as they are
+	}
+	snap.LastSeenAt = at
+	encoded, err := remotestate.Encode(snap)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(abs, encoded, 0o644)
+}
+
 // mutateStore commits and pushes a claims-directory mutation performed by
 // mutate, retrying once via rebase on a rejected push. mutate writes or
-// deletes the one claim file it owns and returns the commit message plus
-// whether it actually changed anything on disk — a byte-identical refresh
-// changes nothing, so no commit or push happens and the current HEAD is
-// returned as-is. claimPath names the claim file mutate touches; it is used
-// only to name the mutation in error messages.
+// deletes the one claim file it owns — and, via stampOwnLastSeen, may also
+// best-effort rewrite the caller's own machines/.../snapshot.yaml — and
+// returns the commit message plus whether it actually changed anything on
+// disk — a byte-identical refresh changes nothing, so no commit or push
+// happens and the current HEAD is returned as-is. claimPath names the claim
+// file mutate touches; it is used only to name the mutation in error
+// messages.
 //
 // onLostRace runs only when a rebase after a rejected push fails with a
 // genuine conflict. Since every commit this function makes touches exactly
@@ -77,7 +108,10 @@ func (p *Provider) mutateStore(claimPath string, mutate func() (message string, 
 	if !changed {
 		return gitops.HeadSHA(p.opts.ClonePath)
 	}
-	committed, err := gitops.AddCommit(p.opts.ClonePath, message, "claims")
+	// "." rather than "claims": mutate may also have rewritten the caller's
+	// own machines/<login>/<machine>/snapshot.yaml via stampOwnLastSeen, and
+	// that stamp must land in this SAME commit as the claim change.
+	committed, err := gitops.AddCommit(p.opts.ClonePath, message, ".")
 	if err != nil {
 		return "", err
 	}
@@ -196,6 +230,11 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 		if err := os.WriteFile(abs, data, 0o644); err != nil {
 			return "", false, err
 		}
+		// Best-effort: stamp the claimant's own snapshot in the same commit
+		// as the claim write. Only reached when the claim file itself is
+		// actually changing, so a byte-identical refresh (handled above)
+		// never dirties the clone with an uncommitted stamp.
+		p.stampOwnLastSeen(claim.Login, claim.Machine, claim.ClaimedAt)
 		return message, true, nil
 	}
 	onLostRace := func() error {
@@ -277,6 +316,11 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 			}
 			return "", false, err
 		}
+		// Best-effort: stamp the releasing machine's own snapshot in the
+		// same commit as the claim removal. Release has no caller-supplied
+		// operation time (unlike Claim's ClaimedAt), so it self-stamps with
+		// the current time.
+		p.stampOwnLastSeen(login, machine, time.Now().UTC())
 		return message, true, nil
 	}
 	onLostRace := func() error {

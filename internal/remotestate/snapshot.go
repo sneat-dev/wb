@@ -37,10 +37,15 @@ const (
 
 // Snapshot is one machine's published fleet state.
 type Snapshot struct {
-	SchemaVersion       int               `yaml:"schema_version" json:"schema_version"`
-	Login               string            `yaml:"login" json:"login"`
-	Machine             string            `yaml:"machine" json:"machine"`
-	PublishedAt         time.Time         `yaml:"published_at" json:"published_at"`
+	SchemaVersion int       `yaml:"schema_version" json:"schema_version"`
+	Login         string    `yaml:"login" json:"login"`
+	Machine       string    `yaml:"machine" json:"machine"`
+	PublishedAt   time.Time `yaml:"published_at" json:"published_at"`
+	// LastSeenAt records the last time this machine acted through the store
+	// via a claim mutation (claim, refresh, release, take-over); it is
+	// stamped by the provider, never by Build. Zero means no claim activity
+	// has been recorded. See Heartbeat.
+	LastSeenAt          time.Time         `yaml:"last_seen_at,omitempty" json:"last_seen_at,omitempty"`
 	WBVersion           string            `yaml:"wb_version" json:"wb_version"`
 	ProjectsRoot        string            `yaml:"projects_root" json:"projects_root"`
 	RepositoriesScanned int               `yaml:"repositories_scanned" json:"repositories_scanned"`
@@ -50,6 +55,17 @@ type Snapshot struct {
 
 // Key identifies the machine inside a store: "<login>/<machine>".
 func (s Snapshot) Key() string { return s.Login + "/" + s.Machine }
+
+// Heartbeat is the effective liveness signal for staleness judgments: the
+// later of PublishedAt (last full scan) and LastSeenAt (last claim-mutation
+// activity through the store). This is the single definition of that max —
+// callers must not compute it themselves.
+func (s Snapshot) Heartbeat() time.Time {
+	if s.LastSeenAt.After(s.PublishedAt) {
+		return s.LastSeenAt
+	}
+	return s.PublishedAt
+}
 
 // RepositoryState is one non-clean repository on the publishing machine.
 type RepositoryState struct {

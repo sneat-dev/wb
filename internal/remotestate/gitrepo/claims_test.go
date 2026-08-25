@@ -687,3 +687,171 @@ func TestClaimTakeOverExpectedHolderMismatchReturnsHeld(t *testing.T) {
 		t.Fatalf("origin main moved from %s to %s; a held mismatch must not commit", before, after)
 	}
 }
+
+// corruptSnapshotOnMain writes unparseable bytes directly to a machine's
+// snapshot path on main, in a throwaway clone of origin, synthesizing a
+// snapshot file too malformed for remotestate.Decode. Mirrors pushClaimToRef.
+func corruptSnapshotOnMain(t *testing.T, origin, login, mach, garbage string) {
+	t.Helper()
+	work := filepath.Join(t.TempDir(), "corrupt-snapshot")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, work)
+	abs := filepath.Join(work, filepath.FromSlash(SnapshotPath(login, mach)))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abs, []byte(garbage), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, work, "add", "-A")
+	gitIn(t, work, "commit", "-q", "-m", "corrupt snapshot")
+	gitIn(t, work, "push", "-q", "origin", "main")
+}
+
+// TestClaimStampsOwnSnapshotLastSeen: a claim by a machine that has
+// published stamps last_seen_at in that machine's own snapshot, in the SAME
+// commit as the claim file, leaving published_at untouched.
+func TestClaimStampsOwnSnapshotLastSeen(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	published := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", published)); err != nil {
+		t.Fatal(err)
+	}
+	before := gitIn(t, origin, "rev-parse", "main")
+
+	claimedAt := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", claimedAt), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := gitIn(t, origin, "rev-list", "--count", before+"..main"); n != "1" {
+		t.Fatalf("commits after claim = %s, want 1 (claim file + snapshot stamp in one commit)", n)
+	}
+	tree := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	for _, want := range []string{"claims/task-7.yaml", "machines/alice/laptop/snapshot.yaml"} {
+		if !strings.Contains(tree, want) {
+			t.Fatalf("origin tree %q lacks %s", tree, want)
+		}
+	}
+	data := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+	got, err := remotestate.Decode([]byte(data))
+	if err != nil {
+		t.Fatalf("decode stamped snapshot: %v", err)
+	}
+	if !got.LastSeenAt.Equal(claimedAt) {
+		t.Fatalf("LastSeenAt = %v, want %v", got.LastSeenAt, claimedAt)
+	}
+	if !got.PublishedAt.Equal(published) {
+		t.Fatalf("PublishedAt = %v, want unchanged %v", got.PublishedAt, published)
+	}
+}
+
+// TestReleaseStampsOwnSnapshotLastSeen mirrors TestClaimStampsOwnSnapshotLastSeen
+// for Release, which has no caller-supplied operation time.
+func TestReleaseStampsOwnSnapshotLastSeen(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	published := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", published)); err != nil {
+		t.Fatal(err)
+	}
+	claimedAt := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", claimedAt), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+	before := gitIn(t, origin, "rev-parse", "main")
+	notBefore := time.Now().UTC()
+
+	if _, err := p.Release(context.Background(), "task-7", "alice", "laptop", false); err != nil {
+		t.Fatal(err)
+	}
+	notAfter := time.Now().UTC()
+
+	if n := gitIn(t, origin, "rev-list", "--count", before+"..main"); n != "1" {
+		t.Fatalf("commits after release = %s, want 1 (release + snapshot stamp in one commit)", n)
+	}
+	data := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+	got, err := remotestate.Decode([]byte(data))
+	if err != nil {
+		t.Fatalf("decode stamped snapshot: %v", err)
+	}
+	if got.LastSeenAt.Before(notBefore) || got.LastSeenAt.After(notAfter) {
+		t.Fatalf("LastSeenAt = %v, want between %v and %v", got.LastSeenAt, notBefore, notAfter)
+	}
+	if !got.PublishedAt.Equal(published) {
+		t.Fatalf("PublishedAt = %v, want unchanged %v", got.PublishedAt, published)
+	}
+}
+
+// TestClaimWithoutSnapshotDoesNotCreateOne: a claim by a machine that never
+// published still lands, and no snapshot file is fabricated for it.
+func TestClaimWithoutSnapshotDoesNotCreateOne(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+
+	if _, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tree := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	if !strings.Contains(tree, "claims/task-7.yaml") {
+		t.Fatalf("origin tree %q lacks claims/task-7.yaml", tree)
+	}
+	if strings.Contains(tree, "machines/bob") {
+		t.Fatalf("origin tree %q unexpectedly has a machines/bob snapshot; bob never published", tree)
+	}
+	if n := gitIn(t, origin, "rev-list", "--count", "main"); n != "2" {
+		t.Fatalf("commit count on main = %s, want 2 (seed + claim, no extra commit)", n)
+	}
+}
+
+// TestClaimWithCorruptOwnSnapshotStillLands: a claim by a machine whose own
+// snapshot file exists but fails to decode still lands the claim, and the
+// corrupt bytes are left exactly as they were (skip silently, never touch).
+func TestClaimWithCorruptOwnSnapshotStillLands(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	corruptSnapshotOnMain(t, origin, "alice", "laptop", "{not yaml")
+	before := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	if _, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	tree := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	if !strings.Contains(tree, "claims/task-7.yaml") {
+		t.Fatalf("origin tree %q lacks claims/task-7.yaml", tree)
+	}
+	after := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+	if after != before {
+		t.Fatalf("corrupt snapshot bytes changed:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+// TestClaimNeverTouchesOtherMachinesSnapshot: a claim by bob must never
+// modify alice's snapshot, and must not fabricate one for bob either.
+func TestClaimNeverTouchesOtherMachinesSnapshot(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	published := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", published)); err != nil {
+		t.Fatal(err)
+	}
+	before := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	if _, err := p.Claim(context.Background(), mkClaim("bob", "vm", "task-7", at), remotestate.ClaimNormal, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	after := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+	if after != before {
+		t.Fatalf("alice's snapshot changed after bob's claim:\nbefore %q\nafter  %q", before, after)
+	}
+	tree := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	if strings.Contains(tree, "machines/bob") {
+		t.Fatalf("origin tree %q unexpectedly has a machines/bob snapshot; bob never published", tree)
+	}
+}
