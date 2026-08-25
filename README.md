@@ -380,10 +380,11 @@ planned, attempted, and successful pull actions, and existing clones whose
 checked-out commit actually advanced from the remote; already-current pulls
 and dry runs do not inflate the update count. Anything left
 needing your attention remains visible as its own summary category. After an
-interactive run, the final summary becomes the navigable left panel; selecting
-any count shows the repositories contributing to it on the right, including
-their modified/untracked/conflicted files, unpushed commits, stash entries, or
-errors.
+interactive run, the compact, sectioned final summary becomes the navigable
+left panel. Selecting any count fills a filterable repository list on the
+right; `Tab` moves focus between panes, and selecting a repository shows its
+modified/untracked/conflicted files, unpushed commits, stash entries, or errors
+below the repository list.
 The detail panel wraps and scrolls with Page Up/Page Down, and narrow terminals
 stack the list above the details. While the list filter is active, `q` is search
 text rather than an accidental quit.
