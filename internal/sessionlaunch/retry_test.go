@@ -223,6 +223,40 @@ func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
 	fixture := newLauncherRetryFixture(t)
 	fixture.createReleasedAttempt(t, true, false)
 
+	_, inspectErr := inspectWithDependencies(context.Background(), fixture.options(nil), fixture.deps, true)
+	if !errors.Is(inspectErr, ErrRetryableLaunch) {
+		t.Fatalf("Inspect error = %v, want ErrRetryableLaunch", inspectErr)
+	}
+	var attemptFailure *AttemptFailureError
+	if !errors.As(inspectErr, &attemptFailure) {
+		t.Fatalf("Inspect error = %v, want typed AttemptFailureError", inspectErr)
+	}
+	evidence := attemptFailure.Evidence
+	if !evidence.Authenticates(fixture.request.HandoffID, fixture.digest, "worklog-attempt-1") ||
+		evidence.AttemptIndex != 1 || evidence.PID != 919191 || evidence.StartedAt.IsZero() || evidence.FailedAt.IsZero() {
+		t.Fatalf("typed immutable failure evidence = %#v", evidence)
+	}
+	mutations := map[string]func(*FailureEvidence){
+		"handoff": func(value *FailureEvidence) { value.HandoffID = "other" },
+		"digest":  func(value *FailureEvidence) { value.RequestDigest = sessionmove.DigestBytes([]byte("other")) },
+		"attempt": func(value *FailureEvidence) { value.AttemptID = "000002-" + strings.Repeat("2", 32) },
+		"index":   func(value *FailureEvidence) { value.AttemptIndex++ },
+		"pid":     func(value *FailureEvidence) { value.PID++ },
+		"started": func(value *FailureEvidence) { value.StartedAt = value.StartedAt.Add(time.Second) },
+		"failed":  func(value *FailureEvidence) { value.FailedAt = value.FailedAt.Add(time.Second) },
+		"worklog": func(value *FailureEvidence) { value.TargetWorkLogReference = "other" },
+		"diagnostic": func(value *FailureEvidence) {
+			value.Diagnostic = "substituted"
+		},
+	}
+	for name, mutate := range mutations {
+		copy := evidence
+		mutate(&copy)
+		if copy.Authenticates(fixture.request.HandoffID, fixture.digest, "worklog-attempt-1") {
+			t.Fatalf("mutated %s failure evidence retained authentication", name)
+		}
+	}
+
 	if _, err := inspectWithDependencies(context.Background(), fixture.options(nil), fixture.deps, true); !errors.Is(err, ErrRetryableLaunch) {
 		t.Fatalf("Inspect error = %v, want ErrRetryableLaunch", err)
 	}

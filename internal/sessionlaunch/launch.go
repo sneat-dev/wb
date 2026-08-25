@@ -33,8 +33,57 @@ type Prepared struct {
 	Request       sessionmove.Request
 	RequestDigest sessionmove.Digest
 	Session       session.Record
+	AttemptID     string
+	AttemptIndex  uint64
 	WorktreeDir   string
 	PinnedCommit  string
+}
+
+// FailureEvidence is descriptor-validated immutable launcher evidence for one
+// released attempt. Receivers use it to append Work Log failure lineage
+// without parsing error text or guessing a PID/attempt identity.
+type FailureEvidence struct {
+	HandoffID              string
+	RequestDigest          sessionmove.Digest
+	AttemptID              string
+	AttemptIndex           uint64
+	PID                    int
+	StartedAt              time.Time
+	FailedAt               time.Time
+	TargetWorkLogReference string
+	Diagnostic             string
+	authority              *failureEvidenceAuthority
+}
+
+type failureEvidenceAuthority struct {
+	HandoffID              string
+	RequestDigest          sessionmove.Digest
+	AttemptID              string
+	AttemptIndex           uint64
+	PID                    int
+	StartedAt              time.Time
+	FailedAt               time.Time
+	TargetWorkLogReference string
+	Diagnostic             string
+}
+
+// Authenticates reports whether this value was constructed from descriptor-
+// validated Task4 artifacts and binds the supplied external custody identity.
+func (e FailureEvidence) Authenticates(handoffID string, digest sessionmove.Digest, targetWorkLogReference string) bool {
+	a := e.authority
+	return a != nil && e.HandoffID == a.HandoffID && e.RequestDigest == a.RequestDigest && e.AttemptID == a.AttemptID &&
+		e.AttemptIndex == a.AttemptIndex && e.PID == a.PID && e.StartedAt.Equal(a.StartedAt) && e.FailedAt.Equal(a.FailedAt) &&
+		e.TargetWorkLogReference == a.TargetWorkLogReference && e.Diagnostic == a.Diagnostic &&
+		e.HandoffID == handoffID && e.RequestDigest == digest && e.TargetWorkLogReference == targetWorkLogReference
+}
+
+// AttemptFailureError carries exact immutable post-release failure proof.
+type AttemptFailureError struct {
+	Evidence FailureEvidence
+}
+
+func (failure *AttemptFailureError) Error() string {
+	return "successor launcher failed after release: " + failure.Evidence.Diagnostic
 }
 
 // BeforeRelease is the Task 5 custody seam. It prepares the successor-owned
@@ -289,6 +338,7 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 		return Result{}, err
 	}
 	prepared := Prepared{Request: options.Request, RequestDigest: options.RequestDigest, Session: ready.Session,
+		AttemptID: attempt.id, AttemptIndex: attempt.index,
 		WorktreeDir: plan.WorktreeDir, PinnedCommit: plan.PinnedCommit}
 	targetWorkLogRef := ""
 	if options.BeforeRelease != nil {
@@ -615,7 +665,7 @@ func inspectWithDependencies(ctx context.Context, options Options, deps dependen
 	result, err := inspectReleased(ctx, options, deps, attempt, plan, planDigest, release)
 	if err != nil {
 		if retryErr := failedAttemptRetryable(ctx, options, deps, state, attempt, plan, planDigest, release, releaseDigest); retryErr == nil {
-			return Result{}, fmt.Errorf("%w: %s", ErrRetryableLaunch, err)
+			return Result{}, fmt.Errorf("%w: %w", ErrRetryableLaunch, err)
 		}
 		return result, err
 	}
@@ -638,7 +688,7 @@ func inspectReleased(ctx context.Context, options Options, deps dependencies, at
 		ready.PlanDigest != planDigest || ready.RequestDigest != plan.RequestDigest {
 		return Result{}, fmt.Errorf("immutable launcher release does not match its plan and ready artifact")
 	}
-	if err := waitExecSuccess(ctx, deps, attempt, plan, planDigest, release); err != nil {
+	if err := waitExecSuccess(ctx, deps, attempt, plan, planDigest, ready, release); err != nil {
 		return Result{}, err
 	}
 	pid, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName)
@@ -703,7 +753,7 @@ func waitReady(ctx context.Context, options Options, deps dependencies, attempt 
 	}
 }
 
-func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAttempt, plan launchPlan, planDigest sessionmove.Digest, release launcherRelease) error {
+func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAttempt, plan launchPlan, planDigest sessionmove.Digest, ready launcherReady, release launcherRelease) error {
 	waitCtx, cancel := context.WithTimeout(ctx, deps.startTimeout)
 	defer cancel()
 	ticker := time.NewTicker(deps.pollInterval)
@@ -727,7 +777,19 @@ func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAtte
 					failure.ReadyDigest != release.ReadyDigest || failure.ReleaseDigest != releaseDigest {
 					return fmt.Errorf("launcher exec-failure evidence conflicts with immutable release")
 				}
-				return fmt.Errorf("successor launcher failed after release: %s", failure.Diagnostic)
+				evidence := FailureEvidence{
+					HandoffID: plan.HandoffID, RequestDigest: plan.RequestDigest,
+					AttemptID: attempt.id, AttemptIndex: attempt.index, PID: release.PID,
+					StartedAt: ready.Session.StartedAt, FailedAt: failure.FailedAt,
+					TargetWorkLogReference: release.TargetWorkLogRef, Diagnostic: failure.Diagnostic,
+				}
+				evidence.authority = &failureEvidenceAuthority{
+					HandoffID: evidence.HandoffID, RequestDigest: evidence.RequestDigest,
+					AttemptID: evidence.AttemptID, AttemptIndex: evidence.AttemptIndex, PID: evidence.PID,
+					StartedAt: evidence.StartedAt, FailedAt: evidence.FailedAt,
+					TargetWorkLogReference: evidence.TargetWorkLogReference, Diagnostic: evidence.Diagnostic,
+				}
+				return &AttemptFailureError{Evidence: evidence}
 			}
 			pid, exists, paneErr := deps.tmux.PanePID(waitCtx, plan.TmuxName)
 			if paneErr != nil {

@@ -70,7 +70,7 @@ func TestSSHDelivererUsesFixedArgvAndExactRequestStdin(t *testing.T) {
 	if runner.deadline.IsZero() || time.Until(runner.deadline) > sshDeliveryTimeout {
 		t.Fatalf("ssh command deadline = %v", runner.deadline)
 	}
-	if result.Phase != sessionmove.PhaseSuccessorStarted || result.Request != request {
+	if result.Phase != sessionmove.PhaseCompleted || result.Request != request || result.Receipt == nil {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -105,10 +105,11 @@ func TestSSHDelivererAcceptsCrossHarnessSuccessorIdentity(t *testing.T) {
 	}
 }
 
-func TestSSHDelivererAcceptsVerifiedStartedReplayWithoutWorktreeProjection(t *testing.T) {
+func TestSSHDelivererAcceptsCompletedReceiptOnlyReplay(t *testing.T) {
 	request, raw := courierTestRequest(t)
 	response := validCourierResult(request, raw)
 	response.Worktree = nil
+	response.Successor = nil
 	response.Replay = true
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, response)}
 	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "target"}, runner)
@@ -116,8 +117,8 @@ func TestSSHDelivererAcceptsVerifiedStartedReplayWithoutWorktreeProjection(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Replay || result.Successor == nil || result.Successor.PinnedCommit != request.BundleCommit {
-		t.Fatalf("started replay = %#v", result)
+	if !result.Replay || result.Successor != nil || result.Receipt == nil || result.Receipt.PinnedCommit != request.BundleCommit {
+		t.Fatalf("completed receipt-only replay = %#v", result)
 	}
 }
 
@@ -178,7 +179,7 @@ func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
 				result.Phase = sessionmove.PhaseWorktreeReady
 				return encodeCourierResult(t, result)
 			},
-			want: "successor_started",
+			want: "completed",
 		},
 		"wrong pinned commit": {
 			response: func() []byte {
@@ -195,6 +196,30 @@ func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
 				return encodeCourierResult(t, result)
 			},
 			want: "does not include a successor",
+		},
+		"missing receipt": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Receipt = nil
+				return encodeCourierResult(t, result)
+			},
+			want: "does not include a completion receipt",
+		},
+		"receipt-only fresh response": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Successor = nil
+				return encodeCourierResult(t, result)
+			},
+			want: "fresh",
+		},
+		"wrong receipt target work log": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Receipt.TargetWorkLogReference = "worklog:effort/run/" + strings.Repeat("d", 64)
+				return encodeCourierResult(t, result)
+			},
+			want: "target_work_log_reference",
 		},
 		"wrong successor handoff": {
 			response: func() []byte {
@@ -251,6 +276,38 @@ func TestSSHDelivererStrictlyValidatesResponse(t *testing.T) {
 				return encodeCourierResult(t, result)
 			},
 			want: "successor pinned_commit",
+		},
+		"wrong successor target work log": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Successor.TargetWorkLogRef = "worklog:effort/run/" + strings.Repeat("d", 64)
+				return encodeCourierResult(t, result)
+			},
+			want: "successor target_work_log_ref",
+		},
+		"receipt differs from successor started time": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Receipt.StartedAt = result.Receipt.StartedAt.Add(time.Second)
+				return encodeCourierResult(t, result)
+			},
+			want: "receipt started_at",
+		},
+		"receipt differs from successor attempt": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Receipt.AttemptID = "000001-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+				return encodeCourierResult(t, result)
+			},
+			want: "launch attempt",
+		},
+		"receipt differs from successor pid": {
+			response: func() []byte {
+				result := validCourierResult(request, raw)
+				result.Receipt.PID++
+				return encodeCourierResult(t, result)
+			},
+			want: "launch attempt",
 		},
 	}
 	for name, test := range tests {
@@ -371,21 +428,37 @@ func validCourierResult(request sessionmove.Request, raw []byte) sessionreceive.
 	if runtime == request.SourceRuntime {
 		model = request.SourceModel
 	}
-	return sessionreceive.Result{
+	digest := sessionmove.DigestBytes(raw)
+	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(request, digest)
+	if err != nil {
+		panic(err)
+	}
+	startedAt := time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC)
+	result := sessionreceive.Result{
 		Request: request,
-		Digest:  sessionmove.DigestBytes(raw),
-		Phase:   sessionmove.PhaseSuccessorStarted,
+		Digest:  digest,
+		Phase:   sessionmove.PhaseCompleted,
 		Worktree: &worktrees.SessionReceiveResult{
 			Repository: "acme/app", CanonicalDir: "/target/acme/app", WorktreeDir: "/target/worktree", Commit: request.BundleCommit,
 		},
 		Successor: &sessionlaunch.Result{
 			HandoffID: request.HandoffID, WBSessionID: request.SuccessorWBSessionID,
 			PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
-			PID: 1234, TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: runtime, Model: model,
-			WorktreeDir: "/target/worktree", PinnedCommit: request.BundleCommit,
-			StartedAt: time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC),
+			PID: 1234, AttemptID: "000001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AttemptIndex: 1,
+			TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: runtime, Model: model,
+			TargetWorkLogRef: targetReference.String(), WorktreeDir: "/target/worktree", PinnedCommit: request.BundleCommit,
+			StartedAt: startedAt,
 		},
 	}
+	result.Receipt = &sessionmove.Receipt{
+		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
+		SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
+		TargetMachine: request.TargetMachine, TmuxName: "wb-session-" + request.SuccessorWBSessionID,
+		Runtime: runtime, Model: model, AttemptID: "000001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", AttemptIndex: 1, PID: 1234,
+		TargetWorkLogReference: targetReference.String(),
+		PinnedCommit:           request.BundleCommit, StartedAt: startedAt,
+	}
+	return result
 }
 
 func encodeCourierResult(t *testing.T, result sessionreceive.Result) []byte {
@@ -399,13 +472,19 @@ func encodeCourierResult(t *testing.T, result sessionreceive.Result) []byte {
 
 func courierTestRequest(t *testing.T) (sessionmove.Request, []byte) {
 	t.Helper()
+	const sourceOfferMessage = "Session handoff offered"
+	const sourceOfferNextAction = "Continue from the immutable handover document"
 	request := sessionmove.Request{
 		SchemaVersion: sessionmove.RequestSchemaVersion,
 		HandoffID:     "handoff-123", SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: "wbs-source",
 		SourceMachine: "source", TargetMachine: "target-vm", RepositoryRemote: "git@github.com:acme/app.git",
 		Branch: "feature/session", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
 		HandoverPath: ".wb/handoffs/handoff-123.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover\n")),
-		SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+		SourceRuntime: "codex", SourceModel: "gpt-5",
+		WorkLogReference:   "worklog:effort/run/" + strings.Repeat("c", 64),
+		SourceOfferMessage: sourceOfferMessage, SourceOfferNextAction: sourceOfferNextAction,
+		SourceOfferDigest: sessionmove.DigestSourceOffer(sourceOfferMessage, sourceOfferNextAction),
+		CreatedAt:         time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
 	}
 	raw, err := sessionmove.EncodeRequest(request)
 	if err != nil {

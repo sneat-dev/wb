@@ -87,30 +87,31 @@ type workLogProjection struct {
 }
 
 type workLogClaim struct {
-	Version         int       `json:"version"`
-	EffortID        string    `json:"effort_id"`
-	RunID           string    `json:"run_id"`
-	ClaimID         string    `json:"claim_id"`
-	Task            string    `json:"task"`
-	Repository      string    `json:"repository"`
-	Worktree        string    `json:"worktree"`
-	Branch          string    `json:"branch"`
-	Base            string    `json:"base"`
-	BaseSHA         string    `json:"base_sha"`
-	Lifecycle       string    `json:"lifecycle"`
-	RecordedAt      time.Time `json:"recorded_at"`
-	Initiator       string    `json:"initiator,omitempty"`
-	AgentID         string    `json:"agent_id,omitempty"`
-	AgentRuntime    string    `json:"agent_runtime,omitempty"`
-	Model           string    `json:"model,omitempty"`
-	ModelProvenance string    `json:"model_provenance,omitempty"`
-	ModelDeclaredBy string    `json:"model_declared_by,omitempty"`
-	CLI             string    `json:"cli,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
-	PromptArchive   string    `json:"prompt_archive,omitempty"` // run-relative
-	PromptDigest    string    `json:"prompt_sha256,omitempty"`
-	ParentClaimID   string    `json:"parent_claim_id,omitempty"`
-	AcquiredVia     string    `json:"acquired_via,omitempty"`
+	Version         int                             `json:"version"`
+	EffortID        string                          `json:"effort_id"`
+	RunID           string                          `json:"run_id"`
+	ClaimID         string                          `json:"claim_id"`
+	Task            string                          `json:"task"`
+	Repository      string                          `json:"repository"`
+	Worktree        string                          `json:"worktree"`
+	Branch          string                          `json:"branch"`
+	Base            string                          `json:"base"`
+	BaseSHA         string                          `json:"base_sha"`
+	Lifecycle       string                          `json:"lifecycle"`
+	RecordedAt      time.Time                       `json:"recorded_at"`
+	Initiator       string                          `json:"initiator,omitempty"`
+	AgentID         string                          `json:"agent_id,omitempty"`
+	AgentRuntime    string                          `json:"agent_runtime,omitempty"`
+	Model           string                          `json:"model,omitempty"`
+	ModelProvenance string                          `json:"model_provenance,omitempty"`
+	ModelDeclaredBy string                          `json:"model_declared_by,omitempty"`
+	CLI             string                          `json:"cli,omitempty"`
+	Provider        string                          `json:"provider,omitempty"`
+	PromptArchive   string                          `json:"prompt_archive,omitempty"` // run-relative
+	PromptDigest    string                          `json:"prompt_sha256,omitempty"`
+	ParentClaimID   string                          `json:"parent_claim_id,omitempty"`
+	AcquiredVia     string                          `json:"acquired_via,omitempty"`
+	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
 }
 
 // workLogIdentityCorrection is immutable evidence. Field presence, rather
@@ -174,28 +175,30 @@ type workLogPromptMetadata struct {
 
 type workLogTerminalRecord struct {
 	workLogClaim
-	FinalCommit      string    `json:"final_commit"`
-	Disposition      string    `json:"worktree_disposition"`
-	SealedAt         time.Time `json:"sealed_at"`
-	SuccessorClaimID string    `json:"successor_claim_id,omitempty"`
-	SuccessorAgentID string    `json:"successor_agent_id,omitempty"`
+	FinalCommit      string                          `json:"final_commit"`
+	Disposition      string                          `json:"worktree_disposition"`
+	SealedAt         time.Time                       `json:"sealed_at"`
+	SuccessorClaimID string                          `json:"successor_claim_id,omitempty"`
+	SuccessorAgentID string                          `json:"successor_agent_id,omitempty"`
+	ExternalHandoff  *workLogExternalHandoffEvidence `json:"external_handoff_completion,omitempty"`
 }
 
 type workLogPublicEvent struct {
-	Version      int       `json:"version"`
-	Type         string    `json:"type"`
-	At           time.Time `json:"at"`
-	EffortID     string    `json:"effort_id"`
-	RunID        string    `json:"run_id"`
-	ClaimID      string    `json:"claim_id"`
-	Repository   string    `json:"repository"`
-	Branch       string    `json:"branch"`
-	Base         string    `json:"base"`
-	BaseSHA      string    `json:"base_sha"`
-	FinalCommit  string    `json:"final_commit,omitempty"`
-	Lifecycle    string    `json:"lifecycle"`
-	Disposition  string    `json:"disposition,omitempty"`
-	CorrectionID string    `json:"correction_id,omitempty"`
+	Version         int                             `json:"version"`
+	Type            string                          `json:"type"`
+	At              time.Time                       `json:"at"`
+	EffortID        string                          `json:"effort_id"`
+	RunID           string                          `json:"run_id"`
+	ClaimID         string                          `json:"claim_id"`
+	Repository      string                          `json:"repository"`
+	Branch          string                          `json:"branch"`
+	Base            string                          `json:"base"`
+	BaseSHA         string                          `json:"base_sha"`
+	FinalCommit     string                          `json:"final_commit,omitempty"`
+	Lifecycle       string                          `json:"lifecycle"`
+	Disposition     string                          `json:"disposition,omitempty"`
+	CorrectionID    string                          `json:"correction_id,omitempty"`
+	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
 }
 
 // WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
@@ -1253,7 +1256,7 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
-	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, "", "")
+	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, "", "", nil)
 	if err != nil {
 		return err
 	}
@@ -1306,7 +1309,7 @@ func transferWorkLogClaim(home, worktree, finalCommit, disposition, successor st
 		return err
 	}
 	successorClaimID := declaredSuccessorWorkLogClaimID(claim.ClaimID, successor, disposition, identity)
-	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, successorClaimID, successor)
+	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, successorClaimID, successor, nil)
 	if err != nil {
 		return err
 	}
@@ -1425,11 +1428,12 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 	return writeWorkLogProjection(worktree, workLogProjection{Version: 1, EffortID: prior.EffortID, RunID: prior.RunID, ClaimID: recoveryID, Lifecycle: "active"})
 }
 
-func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string) (time.Time, error) {
+func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
-		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID}
+		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
+		ExternalHandoff: external}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -1438,7 +1442,8 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	terminalName := claim.ClaimID + ".json"
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
-		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID {
+		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
 		sealedAt = existing.SealedAt
@@ -1454,7 +1459,8 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	defer func() { _ = outbox.Close() }()
 	event := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
-		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition}
+		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition,
+		ExternalHandoff: external}
 	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}
@@ -1596,15 +1602,24 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	}
 	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
 	if claim.ParentClaimID != "" {
-		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed") {
+		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" && claim.AcquiredVia != "external_handoff") {
 			return fmt.Errorf("private successor claim metadata is invalid")
 		}
-		if claim.Version == 2 && claim.AcquiredVia != "recycle_failed" {
+		if claim.AcquiredVia == "external_handoff" {
+			var externalErr error
+			wantID, externalErr = expectedExternalClaimID(claim)
+			if externalErr != nil {
+				return externalErr
+			}
+		} else if claim.Version == 2 && claim.AcquiredVia != "recycle_failed" {
 			wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
 				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
 		} else {
 			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
 		}
+	}
+	if claim.AcquiredVia != "external_handoff" && claim.ExternalHandoff != nil {
+		return fmt.Errorf("ordinary private claim carries unexpected external handoff evidence")
 	}
 	if wantID != claim.ClaimID {
 		return fmt.Errorf("private work-log claim digest mismatch")

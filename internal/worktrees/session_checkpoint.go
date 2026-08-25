@@ -46,6 +46,7 @@ type SessionCheckpointOptions struct {
 	// Test-only coordination after post-commit remote authentication and
 	// before publication through the already-parsed exact push URL.
 	afterPushRemoteAuthentication func()
+	afterAdmission                func() error
 }
 
 // SessionCheckpointResult is the immutable courier input plus the exact
@@ -109,6 +110,9 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	} else {
 		options.Now = options.Now.UTC()
 	}
+	if options.Now.Before(options.SourceSession.StartedAt.UTC()) {
+		return result, fmt.Errorf("session checkpoint time cannot precede the source session start")
+	}
 
 	handoffID := strings.TrimSpace(options.HandoffID)
 	if handoffID == "" {
@@ -136,6 +140,9 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	handoverPath := filepath.ToSlash(filepath.Join(".wb", "handoffs", handoffID+".md"))
 	document := renderSessionHandover(options, preflight, handoffID, successorID)
 	handoverDigest := sessionmove.DigestBytes(document)
+	offerMessage, offerNextAction := sessionmove.NormalizeSourceOfferContent(
+		normalizedHandoverSummary(options.Handover), normalizedRemainingWork(options.Handover, handoverPath),
+	)
 	request := sessionmove.Request{
 		SchemaVersion:          sessionmove.RequestSchemaVersion,
 		HandoffID:              handoffID,
@@ -154,6 +161,9 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 		SourceNativeHarnessID:  sourceNativeHarnessID(options.SourceSession),
 		RequestedHarness:       options.RequestedHarness,
 		WorkLogReference:       preflight.workLogReference,
+		SourceOfferMessage:     offerMessage,
+		SourceOfferNextAction:  offerNextAction,
+		SourceOfferDigest:      sessionmove.DigestSourceOffer(offerMessage, offerNextAction),
 		CreatedAt:              options.Now,
 	}
 	// Validate every request-carried value while the operation is still
@@ -228,33 +238,32 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	if admission.Replay {
 		return result, fmt.Errorf("new source checkpoint unexpectedly replayed handoff %s", handoffID)
 	}
-	if _, err := store.AppendEvent(handoffID, digest, sessionmove.HandoffEvent{Phase: sessionmove.PhaseOffered, At: options.Now}); err != nil {
-		return result, fmt.Errorf("record offered handoff phase: %w", err)
-	}
-	handoffLog, err := LogHandoff(ctx, LogHandoffOptions{
-		ProjectsRoot:  options.ProjectsRoot,
-		Worktree:      preflight.root,
-		HandoffID:     handoffID,
-		TargetMachine: options.TargetMachine,
-		BundleCommit:  bundleCommit,
-		Summary:       normalizedHandoverSummary(options.Handover),
-		NextAction:    normalizedRemainingWork(options.Handover, handoverPath),
-		Successor:     successorID,
-		Apply:         false,
-	})
-	if err != nil {
-		return result, fmt.Errorf("record source Work Log handoff offer: %w", err)
-	}
-	if handoffLog.Event == nil || handoffLog.Applied {
-		return result, fmt.Errorf("source Work Log did not return an offer-only event")
-	}
-
+	// From this durability boundary onward every handled error must carry the
+	// exact admitted identity so the CLI can direct the operator to --resume.
+	// Work Log offer/owner evidence is deliberately filled only after repair.
 	result = SessionCheckpointResult{
 		Request: request, Digest: digest,
-		RequestBytes:  append([]byte(nil), requestRaw...),
-		HandoverBytes: append([]byte(nil), document...),
-		WorkLogEvent:  *handoffLog.Event,
+		RequestBytes: append([]byte(nil), requestRaw...), HandoverBytes: append([]byte(nil), document...),
 	}
+	if options.afterAdmission != nil {
+		if err := options.afterAdmission(); err != nil {
+			return result, err
+		}
+	}
+	lock, err := store.AcquireExecutionLock(ctx, handoffID, digest)
+	if err != nil {
+		return result, fmt.Errorf("retain exact source checkpoint aggregate: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	offerEvidence, err := EnsureExternalSourceOfferEvidence(ExternalSourceOfferOptions{
+		Store: store, ExecutionLock: lock, ProjectsRoot: options.ProjectsRoot,
+		Request: request, RequestDigest: digest, SourceSession: options.SourceSession,
+	})
+	if err != nil {
+		return result, fmt.Errorf("record exact source Work Log offer evidence: %w", err)
+	}
+
+	result.WorkLogEvent = offerEvidence.OfferEvent
 	return result, nil
 }
 
@@ -379,8 +388,11 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 		SourceWorkCommit: head, BundleCommit: strings.Repeat("0", 40),
 		HandoverPath:   filepath.ToSlash(filepath.Join(".wb", "handoffs", handoffID+".md")),
 		HandoverDigest: sessionmove.DigestBytes([]byte("probe")), SourceRuntime: options.SourceSession.Runtime,
+		WorkLogReference:   preflight.workLogReference,
+		SourceOfferMessage: "Session handoff offered", SourceOfferNextAction: "Continue from .wb/handoffs/" + handoffID + ".md",
 		CreatedAt: options.Now,
 	}
+	probe.SourceOfferDigest = sessionmove.DigestSourceOffer(probe.SourceOfferMessage, probe.SourceOfferNextAction)
 	if _, err := sessionmove.EncodeRequest(probe); err != nil {
 		preflight.close()
 		return nil, fmt.Errorf("validate source checkpoint identity: %w", err)

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -23,6 +24,7 @@ func TestReceiveRejectsWrongTargetMachineBeforeAdmission(t *testing.T) {
 
 	_, err := Receive(context.Background(), Options{
 		Store: store, LocalMachine: "different-vm", RawRequest: raw,
+		workLog: receiveTestWorkLog(),
 		ReceiveWorktree: func(context.Context, worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			called = true
 			return worktrees.SessionReceiveResult{}, nil
@@ -45,22 +47,21 @@ func TestReceiveReturnsExistingReceiptWithoutExecutingTarget(t *testing.T) {
 	if _, err := store.Admit(raw, digest); err != nil {
 		t.Fatal(err)
 	}
-	receipt := sessionmove.Receipt{
-		SchemaVersion: sessionmove.ReceiptSchemaVersion,
-		HandoffID:     request.HandoffID, RequestDigest: digest,
-		SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
-		TargetMachine: request.TargetMachine, TmuxName: "wb-handoff-123", Runtime: "codex",
-		PinnedCommit: request.BundleCommit, StartedAt: time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC),
-	}
+	receipt := receiveTestReceipt(t, request, digest)
 	if _, _, err := store.SaveReceipt(request.HandoffID, digest, receipt); err != nil {
 		t.Fatal(err)
 	}
 
 	result, err := Receive(context.Background(), Options{
 		Store: store, LocalMachine: request.TargetMachine, RawRequest: raw,
+		workLog: receiveTestWorkLog(),
 		ReceiveWorktree: func(context.Context, worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			t.Fatal("target execution ran despite existing receipt")
 			return worktrees.SessionReceiveResult{}, nil
+		},
+		InspectSuccessor: func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error) {
+			t.Fatal("completed receipt replay inspected or required a live successor")
+			return sessionlaunch.Result{}, nil
 		},
 	})
 	if err != nil {
@@ -68,6 +69,72 @@ func TestReceiveReturnsExistingReceiptWithoutExecutingTarget(t *testing.T) {
 	}
 	if result.Receipt == nil || *result.Receipt != receipt || !result.Replay || result.Phase != sessionmove.PhaseCompleted {
 		t.Fatalf("result = %#v", result)
+	}
+	state, err := store.Load(request.HandoffID)
+	if err != nil || !stateHasPhase(state, sessionmove.PhaseCompleted) {
+		t.Fatalf("completed receipt replay did not repair completed phase: state=%#v err=%v", state, err)
+	}
+}
+
+func TestReceiveRepairsCompletionAcrossTargetEvidenceAndReceiptBoundaries(t *testing.T) {
+	request, raw, _ := receiveTestRequest(t)
+	store := sessionmove.NewStore(filepath.Join(t.TempDir(), "handoffs"))
+	projectsRoot := t.TempDir()
+	expectedWorktree := receiveTestWorktree(t, projectsRoot, request)
+	injected := errors.New("injected completion boundary")
+	workLog := receiveTestWorkLog()
+	completedCalls := 0
+	baseComplete := workLog.complete
+	workLog.complete = func(options worktrees.ExternalTargetCompletionOptions) (worktrees.LocalWorkLogEvent, error) {
+		completedCalls++
+		return baseComplete(options)
+	}
+	options := Options{
+		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
+		ReceiveWorktree: func(_ context.Context, options worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
+			return worktrees.SessionReceiveResult{WorktreeDir: expectedWorktree, Commit: options.Request.BundleCommit}, nil
+		},
+		StartSuccessor: receiveTestStart, InspectSuccessor: receiveTestInspect, workLog: workLog,
+		hooks: receiveHooks{afterTargetCompleted: func() error { return injected }},
+	}
+	if _, err := Receive(context.Background(), options); !errors.Is(err, injected) {
+		t.Fatalf("after target completion error=%v, want injected crash", err)
+	}
+	state, err := store.Load(request.HandoffID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Receipt != nil || stateHasPhase(state, sessionmove.PhaseCompleted) || !stateHasPhase(state, sessionmove.PhaseSuccessorStarted) {
+		t.Fatalf("receipt crossed target-completed boundary: %#v", state)
+	}
+
+	options.hooks = receiveHooks{afterReceipt: func() error { return injected }}
+	if _, err := Receive(context.Background(), options); !errors.Is(err, injected) {
+		t.Fatalf("after receipt error=%v, want injected crash", err)
+	}
+	state, err = store.Load(request.HandoffID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Receipt == nil || stateHasPhase(state, sessionmove.PhaseCompleted) {
+		t.Fatalf("completed phase crossed receipt boundary: %#v", state)
+	}
+
+	options.hooks = receiveHooks{}
+	options.InspectSuccessor = func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error) {
+		t.Fatal("durable receipt replay inspected successor")
+		return sessionlaunch.Result{}, nil
+	}
+	result, err := Receive(context.Background(), options)
+	if err != nil || result.Receipt == nil || result.Phase != sessionmove.PhaseCompleted || !result.Replay {
+		t.Fatalf("completed repair result=%#v err=%v", result, err)
+	}
+	if completedCalls != 2 {
+		t.Fatalf("target Work Log completion calls=%d, want one before each receipt attempt and none on receipt replay", completedCalls)
+	}
+	state, err = store.Load(request.HandoffID)
+	if err != nil || !stateHasPhase(state, sessionmove.PhaseCompleted) {
+		t.Fatalf("completed phase was not repaired from receipt: state=%#v err=%v", state, err)
 	}
 }
 
@@ -83,6 +150,7 @@ func TestReceiveRejectsSameHandoffIDDifferentExactBytes(t *testing.T) {
 	}
 	if _, err := Receive(context.Background(), Options{
 		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw, ReceiveWorktree: receiver,
+		workLog:        receiveTestWorkLog(),
 		StartSuccessor: receiveTestStart, InspectSuccessor: receiveTestInspect,
 	}); err != nil {
 		t.Fatal(err)
@@ -94,6 +162,7 @@ func TestReceiveRejectsSameHandoffIDDifferentExactBytes(t *testing.T) {
 	}
 	if _, err := Receive(context.Background(), Options{
 		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: conflictingRaw, ReceiveWorktree: receiver,
+		workLog: receiveTestWorkLog(),
 	}); !errors.Is(err, sessionmove.ErrHandoffConflict) {
 		t.Fatalf("error = %v, want handoff conflict", err)
 	}
@@ -108,7 +177,8 @@ func TestReceiveRecordsActionableFailureWithoutReceipt(t *testing.T) {
 	projectsRoot := t.TempDir()
 	_, err := Receive(context.Background(), Options{
 		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
-		Now: func() time.Time { return time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC) },
+		workLog: receiveTestWorkLog(),
+		Now:     func() time.Time { return time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC) },
 		ReceiveWorktree: func(context.Context, worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			return worktrees.SessionReceiveResult{}, errors.New("remote branch tip moved from exact bundle commit")
 		},
@@ -161,6 +231,7 @@ func TestReceiveConcurrentIdenticalRequestsSerializeAndCreateOnce(t *testing.T) 
 		return result, nil
 	}
 	options := Options{Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw, ReceiveWorktree: receiver,
+		workLog:        receiveTestWorkLog(),
 		StartSuccessor: receiveTestStart, InspectSuccessor: receiveTestInspect}
 	results := make([]Result, 2)
 	errs := make([]error, 2)
@@ -190,11 +261,12 @@ func TestReceiveConcurrentIdenticalRequestsSerializeAndCreateOnce(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Events) != 3 || state.Events[0].Phase != sessionmove.PhaseReceived || state.Events[1].Phase != sessionmove.PhaseWorktreeReady || state.Events[2].Phase != sessionmove.PhaseSuccessorStarted {
+	if len(state.Events) != 4 || state.Events[0].Phase != sessionmove.PhaseReceived || state.Events[1].Phase != sessionmove.PhaseWorktreeReady ||
+		state.Events[2].Phase != sessionmove.PhaseSuccessorStarted || state.Events[3].Phase != sessionmove.PhaseCompleted {
 		t.Fatalf("events = %#v", state.Events)
 	}
-	if results[0].Receipt != nil || results[1].Receipt != nil {
-		t.Fatalf("Task 3 must not synthesize receipts: %#v", results)
+	if results[0].Receipt == nil || results[1].Receipt == nil || *results[0].Receipt != *results[1].Receipt {
+		t.Fatalf("serialized completed receipts = %#v", results)
 	}
 }
 
@@ -214,6 +286,7 @@ func TestReceiveReplayAfterWorktreeReadyUsesLocalVerifierWithoutRefetch(t *testi
 	}
 	verified := 0
 	result, err := Receive(context.Background(), Options{Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
+		workLog: receiveTestWorkLog(),
 		ReceiveWorktree: func(context.Context, worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			t.Fatal("durable worktree_ready replay refetched the mutable remote branch")
 			return worktrees.SessionReceiveResult{}, nil
@@ -225,7 +298,7 @@ func TestReceiveReplayAfterWorktreeReadyUsesLocalVerifierWithoutRefetch(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if verified != 1 || result.Phase != sessionmove.PhaseSuccessorStarted {
+	if verified != 1 || result.Phase != sessionmove.PhaseCompleted || result.Receipt == nil {
 		t.Fatalf("verified=%d result=%#v", verified, result)
 	}
 }
@@ -245,6 +318,7 @@ func TestReceiveReplayAfterSuccessorStartedBypassesAllGit(t *testing.T) {
 	}
 	inspected := 0
 	result, err := Receive(context.Background(), Options{Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
+		workLog: receiveTestWorkLog(),
 		ReceiveWorktree: func(context.Context, worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			t.Fatal("started replay refetched Git")
 			return worktrees.SessionReceiveResult{}, nil
@@ -260,7 +334,7 @@ func TestReceiveReplayAfterSuccessorStartedBypassesAllGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inspected != 1 || !result.Replay || result.Phase != sessionmove.PhaseSuccessorStarted {
+	if inspected != 1 || !result.Replay || result.Phase != sessionmove.PhaseCompleted || result.Receipt == nil {
 		t.Fatalf("inspected=%d result=%#v", inspected, result)
 	}
 }
@@ -281,6 +355,7 @@ func TestReceiveRecoversReleasedSuccessorBeforeDirtyWorktreeReplay(t *testing.T)
 	inspected := 0
 	result, err := Receive(context.Background(), Options{
 		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
+		workLog: receiveTestWorkLog(),
 		ReceiveWorktree: func(context.Context, worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			t.Fatal("released successor recovery refetched mutable Git")
 			return worktrees.SessionReceiveResult{}, nil
@@ -297,7 +372,7 @@ func TestReceiveRecoversReleasedSuccessorBeforeDirtyWorktreeReplay(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inspected != 1 || result.Successor == nil || result.Phase != sessionmove.PhaseSuccessorStarted || !result.Replay {
+	if inspected != 1 || result.Successor == nil || result.Receipt == nil || result.Phase != sessionmove.PhaseCompleted || !result.Replay {
 		t.Fatalf("inspected=%d result=%#v", inspected, result)
 	}
 	state, err := store.Load(request.HandoffID)
@@ -317,6 +392,7 @@ func TestReceiveRetriesExactTerminalLauncherWithoutGitReplay(t *testing.T) {
 	var receiveCalls, verifyCalls, inspectCalls, startCalls int
 	options := Options{
 		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
+		workLog: receiveTestWorkLog(),
 		ReceiveWorktree: func(_ context.Context, options worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
 			receiveCalls++
 			return worktrees.SessionReceiveResult{WorktreeDir: expectedWorktree, Commit: options.Request.BundleCommit}, nil
@@ -348,14 +424,14 @@ func TestReceiveRetriesExactTerminalLauncherWithoutGitReplay(t *testing.T) {
 	if receiveCalls != 1 || verifyCalls != 0 || inspectCalls != 1 || startCalls != 2 {
 		t.Fatalf("receive=%d verify=%d inspect=%d start=%d, want 1/0/1/2", receiveCalls, verifyCalls, inspectCalls, startCalls)
 	}
-	if result.Phase != sessionmove.PhaseSuccessorStarted || result.Successor == nil || !result.Replay {
+	if result.Phase != sessionmove.PhaseCompleted || result.Successor == nil || result.Receipt == nil || !result.Replay {
 		t.Fatalf("result = %#v", result)
 	}
 	state, err := store.Load(request.HandoffID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPhases := []sessionmove.Phase{sessionmove.PhaseReceived, sessionmove.PhaseWorktreeReady, sessionmove.PhaseFailed, sessionmove.PhaseSuccessorStarted}
+	wantPhases := []sessionmove.Phase{sessionmove.PhaseReceived, sessionmove.PhaseWorktreeReady, sessionmove.PhaseFailed, sessionmove.PhaseSuccessorStarted, sessionmove.PhaseCompleted}
 	if len(state.Events) != len(wantPhases) {
 		t.Fatalf("events = %#v", state.Events)
 	}
@@ -366,11 +442,35 @@ func TestReceiveRetriesExactTerminalLauncherWithoutGitReplay(t *testing.T) {
 	}
 }
 
-func receiveTestStart(_ context.Context, options sessionlaunch.Options) (sessionlaunch.Result, error) {
+func receiveTestStart(ctx context.Context, options sessionlaunch.Options) (sessionlaunch.Result, error) {
+	attemptID := "000001-" + strings.Repeat("1", 32)
+	startedAt := time.Now().UTC()
+	record := session.Record{
+		PID: 123, WBSessionID: options.Request.SuccessorWBSessionID, Machine: options.Request.TargetMachine,
+		Runtime: options.Request.SourceRuntime, Model: options.Request.SourceModel, NativeHarnessID: "native-target",
+		TmuxName: "wb-session-" + options.Request.SuccessorWBSessionID, PredecessorWBSessionID: options.Request.PredecessorWBSessionID,
+		HandoffID: options.Request.HandoffID, StartedAt: startedAt,
+	}
+	target, err := sessionmove.ExpectedTargetWorkLogReference(options.Request, options.RequestDigest)
+	if err != nil {
+		return sessionlaunch.Result{}, err
+	}
+	targetReference := target.String()
+	if options.BeforeRelease != nil {
+		targetReference, err = options.BeforeRelease(ctx, sessionlaunch.Prepared{
+			Request: options.Request, RequestDigest: options.RequestDigest, Session: record,
+			AttemptID: attemptID, AttemptIndex: 1, WorktreeDir: options.WorktreeDir, PinnedCommit: options.PinnedCommit,
+		})
+		if err != nil {
+			return sessionlaunch.Result{}, err
+		}
+	}
 	return sessionlaunch.Result{HandoffID: options.Request.HandoffID, WBSessionID: options.Request.SuccessorWBSessionID,
 		PredecessorWBSessionID: options.Request.PredecessorWBSessionID, TargetMachine: options.Request.TargetMachine,
-		PID: 123, TmuxName: "wb-session-" + options.Request.SuccessorWBSessionID, Runtime: options.Request.SourceRuntime,
-		WorktreeDir: options.WorktreeDir, PinnedCommit: options.PinnedCommit, StartedAt: time.Now().UTC()}, nil
+		PID: 123, AttemptID: attemptID, AttemptIndex: 1,
+		TmuxName: "wb-session-" + options.Request.SuccessorWBSessionID, Runtime: options.Request.SourceRuntime,
+		Model: options.Request.SourceModel, NativeHarnessID: record.NativeHarnessID, TargetWorkLogRef: targetReference,
+		WorktreeDir: options.WorktreeDir, PinnedCommit: options.PinnedCommit, StartedAt: startedAt}, nil
 }
 
 func receiveTestInspect(_ context.Context, options sessionlaunch.Options) (sessionlaunch.Result, error) {
@@ -381,6 +481,44 @@ func receiveTestInspect(_ context.Context, options sessionlaunch.Options) (sessi
 
 func receiveTestMissingInspect(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error) {
 	return sessionlaunch.Result{}, sessionlaunch.ErrNotReleased
+}
+
+func receiveTestWorkLog() targetWorkLogDependencies {
+	return targetWorkLogDependencies{
+		prepare: func(_ context.Context, options worktrees.ExternalSessionWorkLogPrepareOptions) (worktrees.ExternalSessionWorkLogPrepareResult, error) {
+			target, err := sessionmove.ExpectedTargetWorkLogReference(options.Request, options.RequestDigest)
+			if err != nil {
+				return worktrees.ExternalSessionWorkLogPrepareResult{}, err
+			}
+			return worktrees.ExternalSessionWorkLogPrepareResult{WorkLogReference: target.String(), ClaimID: target.ClaimID}, nil
+		},
+		complete: func(options worktrees.ExternalTargetCompletionOptions) (worktrees.LocalWorkLogEvent, error) {
+			if err := sessionmove.ValidateReceiptForRequest(options.Receipt, options.Request, options.RequestDigest); err != nil {
+				return worktrees.LocalWorkLogEvent{}, err
+			}
+			return worktrees.LocalWorkLogEvent{ID: "completed"}, nil
+		},
+		fail: func(worktrees.ExternalTargetAttemptFailureOptions) (worktrees.LocalWorkLogEvent, error) {
+			return worktrees.LocalWorkLogEvent{ID: "failed"}, nil
+		},
+	}
+}
+
+func receiveTestReceipt(t *testing.T, request sessionmove.Request, digest sessionmove.Digest) sessionmove.Receipt {
+	t.Helper()
+	target, err := sessionmove.ExpectedTargetWorkLogReference(request, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sessionmove.Receipt{
+		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
+		SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
+		TargetMachine: request.TargetMachine, TmuxName: "wb-session-" + request.SuccessorWBSessionID,
+		Runtime: request.SourceRuntime, Model: request.SourceModel, NativeHarnessID: "native-target",
+		AttemptID: "000001-" + strings.Repeat("1", 32), AttemptIndex: 1, PID: 123,
+		TargetWorkLogReference: target.String(), PinnedCommit: request.BundleCommit,
+		StartedAt: time.Date(2026, time.August, 25, 13, 0, 0, 0, time.UTC),
+	}
 }
 
 func receiveTestWorktree(t *testing.T, projectsRoot string, request sessionmove.Request) string {
@@ -401,8 +539,12 @@ func receiveTestRequest(t *testing.T) (sessionmove.Request, []byte, sessionmove.
 		SourceMachine: "source", TargetMachine: "target-vm", RepositoryRemote: "/tmp/remotes/acme/app.git",
 		Branch: "feature/session", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
 		HandoverPath: ".wb/handoffs/handoff-123.md", HandoverDigest: sessionmove.DigestBytes(handover),
-		SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+		SourceRuntime: "codex", SourceModel: "gpt-5", SourceNativeHarnessID: "native-source",
+		WorkLogReference:   "worklog:session-move/session-move-run/" + strings.Repeat("a", 64),
+		SourceOfferMessage: "Session handoff offered", SourceOfferNextAction: "Continue from .wb/handoffs/handoff-123.md",
+		CreatedAt: time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
 	}
+	request.SourceOfferDigest = sessionmove.DigestSourceOffer(request.SourceOfferMessage, request.SourceOfferNextAction)
 	raw, err := sessionmove.EncodeRequest(request)
 	if err != nil {
 		t.Fatal(err)

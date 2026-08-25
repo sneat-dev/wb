@@ -591,8 +591,11 @@ func newSessionReceiveFixture(t *testing.T) *sessionReceiveFixture {
 		SourceWorkCommit: sourceCommit, BundleCommit: bundleCommit,
 		HandoverPath: handoverPath, HandoverDigest: sessionmove.DigestBytes(handover),
 		SourceRuntime: "codex", SourceModel: "gpt-5", RequestedHarness: "codex",
+		WorkLogReference:   "worklog:session-move/session-move-run/" + strings.Repeat("a", 64),
+		SourceOfferMessage: "Session handoff offered", SourceOfferNextAction: "Continue from " + handoverPath,
 		CreatedAt: time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
 	}
+	request.SourceOfferDigest = sessionmove.DigestSourceOffer(request.SourceOfferMessage, request.SourceOfferNextAction)
 	resolvedHome, err := wbhome.Root(projectsRoot)
 	if err != nil {
 		t.Fatal(err)

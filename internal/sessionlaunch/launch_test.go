@@ -133,7 +133,8 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 			if _, _, err := loadRelease(store.Root, request.HandoffID); err == nil {
 				t.Fatal("release existed before BeforeRelease")
 			}
-			if prepared.Session.PID != launcherPID || prepared.Session.WBSessionID != request.SuccessorWBSessionID {
+			if prepared.Session.PID != launcherPID || prepared.Session.WBSessionID != request.SuccessorWBSessionID ||
+				prepared.AttemptID != attemptID || prepared.AttemptIndex != 1 {
 				t.Fatalf("prepared = %#v", prepared)
 			}
 			go func(fence *os.File) {

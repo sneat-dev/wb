@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -511,6 +512,15 @@ type LogHandoffOptions struct {
 	CLI           string
 	Provider      string
 	Apply         bool
+	// EventID/At and lineage fields are optional for ordinary manual verbs.
+	// Session checkpoint supplies them to make its offer immutable evidence
+	// derivable from the exact request digest.
+	EventID                string
+	At                     time.Time
+	RequestDigest          sessionmove.Digest
+	SourceWorkLogReference string
+	PredecessorWBSessionID string
+	SourceMachine          string
 }
 
 // LogHandoff records a durable handoff offer and optionally transfers the Hybrid claim.
@@ -544,7 +554,20 @@ func LogHandoff(ctx context.Context, options LogHandoffOptions) (LogVerbResult, 
 	if value := strings.TrimSpace(options.BundleCommit); value != "" {
 		extra["bundle_commit"] = value
 	}
+	if options.RequestDigest != "" {
+		extra["request_digest"] = string(options.RequestDigest)
+	}
+	if value := strings.TrimSpace(options.SourceWorkLogReference); value != "" {
+		extra["source_work_log_reference"] = value
+	}
+	if value := strings.TrimSpace(options.PredecessorWBSessionID); value != "" {
+		extra["predecessor_wb_session_id"] = value
+	}
+	if value := strings.TrimSpace(options.SourceMachine); value != "" {
+		extra["source_machine"] = value
+	}
 	event, projection, err := appendLocalEvent(root, LocalWorkLogEvent{
+		ID: strings.TrimSpace(options.EventID), At: options.At,
 		Type: LocalEventHandoff, Message: strings.TrimSpace(options.Summary),
 		NextAction: strings.TrimSpace(options.NextAction), Git: &gitEvidence,
 		Result: "offered", Extra: extra,

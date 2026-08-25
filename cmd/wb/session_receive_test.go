@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionreceive"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -75,6 +76,50 @@ func TestSessionReceiveCommandBoundsInputBeforeTargetExecution(t *testing.T) {
 				t.Fatal("target receive ran after input refusal")
 			}
 		})
+	}
+}
+
+func TestSessionReceiveCommandDistinguishesFreshAndReplayedReceipts(t *testing.T) {
+	receipt := sessionmove.Receipt{
+		HandoffID: "handoff-123", SuccessorWBSessionID: "wbs-successor",
+		TmuxName: "wb-session-wbs-successor", PinnedCommit: strings.Repeat("a", 40),
+	}
+	fresh := true
+	deps := sessionReceiveDependencies{
+		localMachine: func() (string, error) { return "target-vm", nil },
+		store:        func(string) (sessionmove.Store, error) { return sessionmove.NewStore(t.TempDir()), nil },
+		receive: func(context.Context, sessionreceive.Options) (sessionreceive.Result, error) {
+			result := sessionreceive.Result{
+				Request: sessionmove.Request{HandoffID: receipt.HandoffID}, Phase: sessionmove.PhaseCompleted,
+				Receipt: &receipt, Replay: !fresh,
+			}
+			if fresh {
+				result.Successor = &sessionlaunch.Result{WBSessionID: receipt.SuccessorWBSessionID}
+			}
+			return result, nil
+		},
+	}
+	command := newSessionReceiveCmdWithDeps(deps)
+	command.SetIn(strings.NewReader("request"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "completed handoff") || strings.Contains(output.String(), "replayed") {
+		t.Fatalf("fresh output = %q", output.String())
+	}
+
+	fresh = false
+	command = newSessionReceiveCmdWithDeps(deps)
+	command.SetIn(strings.NewReader("request"))
+	output.Reset()
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "replayed completed handoff") {
+		t.Fatalf("replay output = %q", output.String())
 	}
 }
 

@@ -322,7 +322,7 @@ func TestAbortHandoffCrashBindsSuccessorExecutionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeWorkLogTerminal(fixture.home, runDir, claim, head, "handoff", firstID, "next-run"); err != nil {
+	if _, err := writeWorkLogTerminal(fixture.home, runDir, claim, head, "handoff", firstID, "next-run", nil); err != nil {
 		_ = runDir.Close()
 		t.Fatal(err)
 	}

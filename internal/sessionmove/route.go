@@ -2,14 +2,11 @@ package sessionmove
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -17,6 +14,10 @@ import (
 const RouteSchemaVersion = 1
 const routeFileName = "route.json"
 const maxRouteBytes = 16 << 10
+
+const SuccessorAddressSchemaVersion = 1
+const successorAddressesDirName = "successors"
+const maxSuccessorAddressBytes = 32 << 10
 
 // Route is the immutable source-side courier address selected before the
 // first delivery attempt. Resume always reuses it, so config/default changes
@@ -28,6 +29,31 @@ type Route struct {
 	TargetMachine string     `json:"target_machine"`
 	Courier       Courier    `json:"courier"`
 	SSH           *SSHConfig `json:"ssh,omitempty"`
+}
+
+// SuccessorAddress is the durable courier-neutral address of one completed
+// successor. It is keyed by stable WB session ID so later messaging and a
+// handoff-back request do not depend on a harness-native session identifier.
+type SuccessorAddress struct {
+	SchemaVersion          int       `json:"schema_version"`
+	SuccessorWBSessionID   string    `json:"successor_wb_session_id"`
+	PredecessorWBSessionID string    `json:"predecessor_wb_session_id"`
+	HandoffID              string    `json:"handoff_id"`
+	RequestDigest          Digest    `json:"request_digest"`
+	SourceMachine          string    `json:"source_machine"`
+	TargetMachine          string    `json:"target_machine"`
+	SourceWorkLogReference string    `json:"source_work_log_reference"`
+	TargetWorkLogReference string    `json:"target_work_log_reference"`
+	TmuxName               string    `json:"tmux_name"`
+	Runtime                string    `json:"runtime"`
+	Model                  string    `json:"model,omitempty"`
+	NativeHarnessID        string    `json:"native_harness_id,omitempty"`
+	AttemptID              string    `json:"attempt_id"`
+	AttemptIndex           uint64    `json:"attempt_index"`
+	PID                    int       `json:"pid"`
+	PinnedCommit           string    `json:"pinned_commit"`
+	StartedAt              time.Time `json:"started_at"`
+	Route                  Route     `json:"route"`
 }
 
 func (s Store) RequestBytes(handoffID string) (Request, Digest, []byte, error) {
@@ -90,6 +116,194 @@ func (s Store) LoadRoute(handoffID string) (Route, error) {
 	return decodeAndValidateRoute(raw, request, digest)
 }
 
+// LoadRouteUnderLock reads the courier route from the exact handoff aggregate
+// retained by the held execution fence.
+func (s Store) LoadRouteUnderLock(lock *ExecutionLock, handoffID string, digest Digest) (Route, error) {
+	request, handoff, err := s.retainHandoffUnderLock(lock, handoffID, digest)
+	if err != nil {
+		return Route{}, fmt.Errorf("load route under exact admitted execution authority: %w", err)
+	}
+	defer func() { _ = handoff.Close() }()
+	return loadRouteAt(handoff, request, digest)
+}
+
+// SaveSuccessorAddressUnderLock publishes the stable completed-successor
+// index under the exact Store root retained by this handoff's execution lock.
+func (s Store) SaveSuccessorAddressUnderLock(lock *ExecutionLock, handoffID string, digest Digest, receipt Receipt) (SuccessorAddress, bool, error) {
+	request, handoff, err := s.retainHandoffUnderLock(lock, handoffID, digest)
+	if err != nil {
+		return SuccessorAddress{}, false, fmt.Errorf("save successor address under exact admitted execution authority: %w", err)
+	}
+	defer func() { _ = handoff.Close() }()
+	if err := ValidateReceiptForRequest(receipt, request, digest); err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	durableReceipt, _, err := loadReceiptAt(handoff, request, digest)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	if durableReceipt == nil {
+		return SuccessorAddress{}, false, fmt.Errorf("successor address requires a durable completion receipt")
+	}
+	durableRaw, err := EncodeReceipt(*durableReceipt)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	suppliedRaw, err := EncodeReceipt(receipt)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	if !bytes.Equal(durableRaw, suppliedRaw) {
+		return SuccessorAddress{}, false, fmt.Errorf("%w: successor address receipt differs from durable completion receipt", ErrHandoffConflict)
+	}
+	route, err := loadRouteAt(handoff, request, digest)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	root, err := lock.RetainStoreRootForStore(s.Root, request, digest)
+	if err != nil {
+		return SuccessorAddress{}, false, fmt.Errorf("retain exact store root for successor address: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	addresses, err := openSuccessorAddressesAt(root, true)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	defer func() { _ = addresses.Close() }()
+	address := successorAddressFor(request, digest, *durableReceipt, route)
+	if err := validateSuccessorAddress(address, receipt.SuccessorWBSessionID); err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	raw, err := marshalJSON(address)
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	if len(raw) > maxSuccessorAddressBytes {
+		return SuccessorAddress{}, false, fmt.Errorf("successor address exceeds %d bytes", maxSuccessorAddressBytes)
+	}
+	name := successorAddressFileName(receipt.SuccessorWBSessionID)
+	created, err := publishImmutableAt(addresses, name, raw, 0o600)
+	if err != nil {
+		return SuccessorAddress{}, false, fmt.Errorf("publish immutable successor address: %w", err)
+	}
+	existingRaw, err := readImmutableAt(addresses, name, maxSuccessorAddressBytes, "successor address")
+	if err != nil {
+		return SuccessorAddress{}, false, err
+	}
+	if !bytes.Equal(existingRaw, raw) {
+		return SuccessorAddress{}, false, fmt.Errorf("%w: successor WB session %s already has a different address", ErrHandoffConflict, receipt.SuccessorWBSessionID)
+	}
+	existing, err := decodeAndValidateSuccessorAddress(existingRaw, receipt.SuccessorWBSessionID)
+	return existing, !created, err
+}
+
+// LoadSuccessorAddress resolves a stable successor WB session ID without
+// consulting current courier configuration.
+func (s Store) LoadSuccessorAddress(successorWBSessionID string) (SuccessorAddress, error) {
+	if err := validateID("successor_wb_session_id", successorWBSessionID); err != nil {
+		return SuccessorAddress{}, err
+	}
+	root, err := s.openRoot(false)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	defer func() { _ = root.Close() }()
+	addresses, err := openSuccessorAddressesAt(root, false)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	defer func() { _ = addresses.Close() }()
+	raw, err := readImmutableAt(addresses, successorAddressFileName(successorWBSessionID), maxSuccessorAddressBytes, "successor address")
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	address, err := decodeAndValidateSuccessorAddress(raw, successorWBSessionID)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	handoff, err := openHandoffAtRoot(root, address.HandoffID)
+	if err != nil {
+		return SuccessorAddress{}, fmt.Errorf("corroborate successor address handoff: %w", err)
+	}
+	defer func() { _ = handoff.Close() }()
+	request, digest, _, err := loadRequestAt(handoff, address.HandoffID)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	if digest != address.RequestDigest {
+		return SuccessorAddress{}, fmt.Errorf("%w: successor address request digest does not match exact admitted handoff", ErrHandoffConflict)
+	}
+	return corroborateSuccessorAddressAt(handoff, request, digest, successorWBSessionID, raw)
+}
+
+// LoadSuccessorAddressUnderLock corroborates the immutable completed-successor
+// index against the exact request, receipt, and route retained by a held
+// execution fence. Source custody uses this proof immediately before sealing
+// the predecessor Work Log terminal.
+func (s Store) LoadSuccessorAddressUnderLock(lock *ExecutionLock, handoffID string, digest Digest) (SuccessorAddress, error) {
+	request, handoff, err := s.retainHandoffUnderLock(lock, handoffID, digest)
+	if err != nil {
+		return SuccessorAddress{}, fmt.Errorf("load successor address under exact admitted execution authority: %w", err)
+	}
+	defer func() { _ = handoff.Close() }()
+	root, err := lock.RetainStoreRootForStore(s.Root, request, digest)
+	if err != nil {
+		return SuccessorAddress{}, fmt.Errorf("retain exact store root for successor address: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	addresses, err := openSuccessorAddressesAt(root, false)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	defer func() { _ = addresses.Close() }()
+	raw, err := readImmutableAt(addresses, successorAddressFileName(request.SuccessorWBSessionID), maxSuccessorAddressBytes, "successor address")
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	return corroborateSuccessorAddressAt(handoff, request, digest, request.SuccessorWBSessionID, raw)
+}
+
+func corroborateSuccessorAddressAt(handoff *os.File, request Request, digest Digest, successorWBSessionID string, raw []byte) (SuccessorAddress, error) {
+	address, err := decodeAndValidateSuccessorAddress(raw, successorWBSessionID)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	if address.HandoffID != request.HandoffID || address.RequestDigest != digest {
+		return SuccessorAddress{}, fmt.Errorf("%w: successor address request identity does not match exact admitted handoff", ErrHandoffConflict)
+	}
+	receipt, _, err := loadReceiptAt(handoff, request, digest)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	if receipt == nil {
+		return SuccessorAddress{}, fmt.Errorf("%w: successor address has no durable completion receipt", ErrHandoffConflict)
+	}
+	route, err := loadRouteAt(handoff, request, digest)
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	expectedRaw, err := marshalJSON(successorAddressFor(request, digest, *receipt, route))
+	if err != nil {
+		return SuccessorAddress{}, err
+	}
+	if !bytes.Equal(raw, expectedRaw) {
+		return SuccessorAddress{}, fmt.Errorf("%w: successor address does not match exact request, receipt, and route", ErrHandoffConflict)
+	}
+	return address, nil
+}
+
+func successorAddressFor(request Request, digest Digest, receipt Receipt, route Route) SuccessorAddress {
+	return SuccessorAddress{
+		SchemaVersion:        SuccessorAddressSchemaVersion,
+		SuccessorWBSessionID: receipt.SuccessorWBSessionID, PredecessorWBSessionID: receipt.PredecessorWBSessionID,
+		HandoffID: request.HandoffID, RequestDigest: digest, SourceMachine: request.SourceMachine, TargetMachine: receipt.TargetMachine,
+		SourceWorkLogReference: request.WorkLogReference, TargetWorkLogReference: receipt.TargetWorkLogReference,
+		TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
+		AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex, PID: receipt.PID,
+		PinnedCommit: receipt.PinnedCommit, StartedAt: receipt.StartedAt, Route: route,
+	}
+}
+
 func decodeAndValidateRoute(raw []byte, request Request, digest Digest) (Route, error) {
 	var route Route
 	if err := decodeJSON(raw, &route); err != nil {
@@ -107,144 +321,141 @@ func decodeAndValidateRoute(raw []byte, request Request, digest Digest) (Route, 
 	return route, nil
 }
 
+func loadRouteAt(handoff *os.File, request Request, digest Digest) (Route, error) {
+	raw, err := readImmutableAt(handoff, routeFileName, maxRouteBytes, "durable courier route")
+	if err != nil {
+		return Route{}, err
+	}
+	return decodeAndValidateRoute(raw, request, digest)
+}
+
+func openSuccessorAddressesAt(root *os.File, create bool) (*os.File, error) {
+	if root == nil {
+		return nil, fmt.Errorf("open successor addresses: exact Store root is required")
+	}
+	if create {
+		if err := unix.Mkdirat(int(root.Fd()), successorAddressesDirName, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			return nil, fmt.Errorf("create successor addresses directory: %w", err)
+		}
+	}
+	fd, err := unix.Openat(int(root.Fd()), successorAddressesDirName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open successor addresses directory: %w", err)
+	}
+	directory := os.NewFile(uintptr(fd), "wb-session-successor-addresses")
+	if directory == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap successor addresses directory")
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
+		_ = directory.Close()
+		if err != nil {
+			return nil, fmt.Errorf("inspect successor addresses directory: %w", err)
+		}
+		return nil, fmt.Errorf("successor addresses directory is not mode 0700")
+	}
+	return directory, nil
+}
+
+func successorAddressFileName(successorWBSessionID string) string {
+	return successorWBSessionID + ".json"
+}
+
+func decodeAndValidateSuccessorAddress(raw []byte, successorWBSessionID string) (SuccessorAddress, error) {
+	var address SuccessorAddress
+	if err := decodeJSON(raw, &address); err != nil {
+		return SuccessorAddress{}, fmt.Errorf("decode successor address: %w", err)
+	}
+	if err := validateSuccessorAddress(address, successorWBSessionID); err != nil {
+		return SuccessorAddress{}, err
+	}
+	return address, nil
+}
+
+func validateSuccessorAddress(address SuccessorAddress, successorWBSessionID string) error {
+	if address.SchemaVersion != SuccessorAddressSchemaVersion {
+		return fmt.Errorf("successor address schema_version %d is unsupported", address.SchemaVersion)
+	}
+	for field, value := range map[string]string{
+		"successor_wb_session_id":   address.SuccessorWBSessionID,
+		"predecessor_wb_session_id": address.PredecessorWBSessionID,
+		"handoff_id":                address.HandoffID, "source_machine": address.SourceMachine, "target_machine": address.TargetMachine,
+		"tmux_name": address.TmuxName,
+	} {
+		if err := validateID(field, value); err != nil {
+			return err
+		}
+	}
+	if address.SuccessorWBSessionID != successorWBSessionID {
+		return fmt.Errorf("%w: successor address key %s contains session %s", ErrHandoffConflict, successorWBSessionID, address.SuccessorWBSessionID)
+	}
+	if err := address.RequestDigest.validate(); err != nil {
+		return err
+	}
+	sourceReference, err := ParseWorkLogReference(address.SourceWorkLogReference)
+	if err != nil {
+		return err
+	}
+	reference, err := ParseWorkLogReference(address.TargetWorkLogReference)
+	if err != nil {
+		return err
+	}
+	claimID, err := ExternalHandoffClaimID(address.RequestDigest, address.SuccessorWBSessionID)
+	if err != nil {
+		return err
+	}
+	if reference.EffortID != sourceReference.EffortID || reference.RunID != sourceReference.RunID || reference.ClaimID != claimID {
+		return fmt.Errorf("%w: successor address target Work Log claim is not deterministic", ErrHandoffConflict)
+	}
+	if address.TmuxName != "wb-session-"+address.SuccessorWBSessionID {
+		return fmt.Errorf("%w: successor address tmux name is not deterministic", ErrHandoffConflict)
+	}
+	if strings.TrimSpace(address.Runtime) == "" || strings.ContainsAny(address.Runtime, "\r\n") {
+		return fmt.Errorf("successor address runtime must be non-empty and single-line")
+	}
+	if err := validateLaunchAttemptIdentity(address.AttemptID, address.AttemptIndex, address.PID); err != nil {
+		return fmt.Errorf("successor address launch attempt identity: %w", err)
+	}
+	if !gitObjectID.MatchString(address.PinnedCommit) || address.StartedAt.IsZero() {
+		return fmt.Errorf("successor address launch identity is incomplete")
+	}
+	if address.Route.SchemaVersion != RouteSchemaVersion || address.Route.HandoffID != address.HandoffID ||
+		address.Route.RequestDigest != address.RequestDigest || address.Route.TargetMachine != address.TargetMachine {
+		return fmt.Errorf("%w: successor address route does not match completed handoff", ErrHandoffConflict)
+	}
+	if address.Route.Courier != CourierSSH || address.Route.SSH == nil {
+		return fmt.Errorf("successor address route is unsupported by this WB build")
+	}
+	if err := address.Route.SSH.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
 // openRouteHandoff retains the admitted handoff directory descriptor used for
 // all subsequent route operations. Each path boundary refuses symlinks, and
 // the request is read once from one bounded regular-file descriptor.
 func (s Store) openRouteHandoff(handoffID string) (Request, Digest, []byte, *os.File, error) {
-	if err := validateID("handoff_id", handoffID); err != nil {
+	handoff, err := s.openHandoff(handoffID, false)
+	if err != nil {
 		return Request{}, "", nil, nil, err
 	}
-	if strings.TrimSpace(s.Root) == "" || s.Root != strings.TrimSpace(s.Root) {
-		return Request{}, "", nil, nil, fmt.Errorf("handoff store root is required")
-	}
-	rootPath, err := filepath.Abs(s.Root)
-	if err != nil {
-		return Request{}, "", nil, nil, fmt.Errorf("resolve handoff store root: %w", err)
-	}
-	rootPath = filepath.Clean(rootPath)
-	rootFD, err := unix.Open(rootPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return Request{}, "", nil, nil, fmt.Errorf("open handoff store root: %w", err)
-	}
-	root := os.NewFile(uintptr(rootFD), "wb-session-route-root")
-	if root == nil {
-		_ = unix.Close(rootFD)
-		return Request{}, "", nil, nil, fmt.Errorf("wrap handoff store root")
-	}
-	handoffFD, err := unix.Openat(rootFD, handoffID, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	_ = root.Close()
-	if err != nil {
-		return Request{}, "", nil, nil, fmt.Errorf("open handoff route directory: %w", err)
-	}
-	handoff := os.NewFile(uintptr(handoffFD), "wb-session-route-handoff")
-	if handoff == nil {
-		_ = unix.Close(handoffFD)
-		return Request{}, "", nil, nil, fmt.Errorf("wrap handoff route directory")
-	}
-	raw, err := readRouteFileAt(handoff, requestFileName, maxExecutionLockRequestBytes, "admitted handoff request")
+	request, digest, raw, err := loadRequestAt(handoff, handoffID)
 	if err != nil {
 		_ = handoff.Close()
 		return Request{}, "", nil, nil, err
 	}
-	request, err := DecodeRequest(raw)
-	if err != nil {
-		_ = handoff.Close()
-		return Request{}, "", nil, nil, fmt.Errorf("decode durable handoff request: %w", err)
-	}
-	if request.HandoffID != handoffID {
-		_ = handoff.Close()
-		return Request{}, "", nil, nil, fmt.Errorf("%w: directory %s contains request %s", ErrHandoffConflict, handoffID, request.HandoffID)
-	}
-	return request, DigestBytes(raw), raw, handoff, nil
+	return request, digest, raw, handoff, nil
 }
 
 func readRouteFileAt(directory *os.File, name string, maximum int64, description string) ([]byte, error) {
-	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", description, err)
-	}
-	file := os.NewFile(uintptr(fd), "wb-session-route-"+name)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap %s", description)
-	}
-	defer func() { _ = file.Close() }()
-	var stat unix.Stat_t
-	if err := unix.Fstat(fd, &stat); err != nil {
-		return nil, fmt.Errorf("inspect %s: %w", description, err)
-	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 || stat.Size < 0 || stat.Size > maximum {
-		return nil, fmt.Errorf("%s is not one single-link bounded regular file", description)
-	}
-	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", description, err)
-	}
-	if int64(len(raw)) > maximum {
-		return nil, fmt.Errorf("%s exceeds %d bytes", description, maximum)
-	}
-	if int64(len(raw)) != stat.Size {
-		return nil, fmt.Errorf("%s changed while being read", description)
-	}
-	return raw, nil
+	return readImmutableAt(directory, name, maximum, description)
 }
 
 func publishRouteImmutableAt(directory *os.File, raw []byte) (bool, error) {
 	if len(raw) > maxRouteBytes {
 		return false, fmt.Errorf("courier route exceeds %d bytes", maxRouteBytes)
 	}
-	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return false, fmt.Errorf("name courier route temporary file: %w", err)
-	}
-	temporaryName := ".route-pending-" + hex.EncodeToString(random[:])
-	fd, err := unix.Openat(int(directory.Fd()), temporaryName, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
-	if err != nil {
-		return false, fmt.Errorf("create courier route temporary file: %w", err)
-	}
-	file := os.NewFile(uintptr(fd), "wb-session-route-temporary")
-	if file == nil {
-		_ = unix.Close(fd)
-		_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
-		return false, fmt.Errorf("wrap courier route temporary file")
-	}
-	temporaryExists := true
-	defer func() {
-		if temporaryExists {
-			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
-		}
-	}()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return false, fmt.Errorf("secure courier route temporary file: %w", err)
-	}
-	written, err := file.Write(raw)
-	if err != nil || written != len(raw) {
-		_ = file.Close()
-		if err != nil {
-			return false, fmt.Errorf("write courier route temporary file: %w", err)
-		}
-		return false, fmt.Errorf("write courier route temporary file: short write")
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return false, fmt.Errorf("sync courier route temporary file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return false, fmt.Errorf("close courier route temporary file: %w", err)
-	}
-	if err := unix.Linkat(int(directory.Fd()), temporaryName, int(directory.Fd()), routeFileName, 0); err != nil {
-		if errors.Is(err, unix.EEXIST) {
-			return false, nil
-		}
-		return false, fmt.Errorf("publish immutable courier route: %w", err)
-	}
-	if err := unix.Unlinkat(int(directory.Fd()), temporaryName, 0); err != nil {
-		return false, fmt.Errorf("remove published courier route temporary link: %w", err)
-	}
-	temporaryExists = false
-	if err := directory.Sync(); err != nil {
-		return false, fmt.Errorf("sync courier route directory: %w", err)
-	}
-	return true, nil
+	return publishImmutableAt(directory, routeFileName, raw, 0o600)
 }

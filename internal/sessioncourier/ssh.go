@@ -194,15 +194,25 @@ func validateSSHResult(result sessionreceive.Result, request sessionmove.Request
 	if result.Digest != wantDigest {
 		return fmt.Errorf("response request_digest %q does not match exact delivered bytes %q", result.Digest, wantDigest)
 	}
-	if result.Phase != sessionmove.PhaseSuccessorStarted {
-		return fmt.Errorf("response phase %q is not %q", result.Phase, sessionmove.PhaseSuccessorStarted)
+	if result.Phase != sessionmove.PhaseCompleted {
+		return fmt.Errorf("response phase %q is not %q", result.Phase, sessionmove.PhaseCompleted)
 	}
 	if result.Worktree != nil && result.Worktree.Commit != request.BundleCommit {
 		return fmt.Errorf("response pinned worktree commit does not match bundle_commit %q", request.BundleCommit)
 	}
+	receipt := result.Receipt
+	if receipt == nil {
+		return fmt.Errorf("response phase %q does not include a completion receipt", result.Phase)
+	}
+	if err := sessionmove.ValidateReceiptForRequest(*receipt, request, wantDigest); err != nil {
+		return fmt.Errorf("response receipt is invalid: %w", err)
+	}
 	successor := result.Successor
 	if successor == nil {
-		return fmt.Errorf("response phase %q does not include a successor launch result", result.Phase)
+		if !result.Replay {
+			return fmt.Errorf("fresh completed response does not include a successor launch result")
+		}
+		return nil
 	}
 	if successor.HandoffID != request.HandoffID {
 		return fmt.Errorf("response successor handoff_id %q does not match %q", successor.HandoffID, request.HandoffID)
@@ -246,8 +256,27 @@ func validateSSHResult(result sessionreceive.Result, request sessionmove.Request
 	if result.Worktree != nil && successor.WorktreeDir != result.Worktree.WorktreeDir {
 		return fmt.Errorf("response successor worktree %q does not match received worktree %q", successor.WorktreeDir, result.Worktree.WorktreeDir)
 	}
-	if result.Receipt != nil {
-		return fmt.Errorf("response at phase %q unexpectedly includes a completion receipt", result.Phase)
+	if successor.TargetWorkLogRef != receipt.TargetWorkLogReference {
+		return fmt.Errorf("response successor target_work_log_ref %q does not match receipt target_work_log_reference %q", successor.TargetWorkLogRef, receipt.TargetWorkLogReference)
+	}
+	if successor.AttemptID != receipt.AttemptID || successor.AttemptIndex != receipt.AttemptIndex || successor.PID != receipt.PID {
+		return fmt.Errorf("response successor launch attempt does not match completion receipt")
+	}
+	if successor.HandoffID != receipt.HandoffID || successor.WBSessionID != receipt.SuccessorWBSessionID ||
+		successor.PredecessorWBSessionID != receipt.PredecessorWBSessionID || successor.TargetMachine != receipt.TargetMachine {
+		return fmt.Errorf("response successor identity does not match completion receipt")
+	}
+	if successor.TmuxName != receipt.TmuxName {
+		return fmt.Errorf("response successor tmux_name %q does not match receipt %q", successor.TmuxName, receipt.TmuxName)
+	}
+	if successor.Runtime != receipt.Runtime || successor.Model != receipt.Model || successor.NativeHarnessID != receipt.NativeHarnessID {
+		return fmt.Errorf("response successor harness identity does not match completion receipt")
+	}
+	if successor.PinnedCommit != receipt.PinnedCommit {
+		return fmt.Errorf("response successor pinned_commit %q does not match receipt %q", successor.PinnedCommit, receipt.PinnedCommit)
+	}
+	if !successor.StartedAt.Equal(receipt.StartedAt) {
+		return fmt.Errorf("response receipt started_at %s does not match successor %s", receipt.StartedAt, successor.StartedAt)
 	}
 	return nil
 }

@@ -136,6 +136,31 @@ func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Re
 	return file, nil
 }
 
+// RetainStoreRootForStore returns a CLOEXEC duplicate of the exact Store root
+// retained with this admitted handoff. It is used for indexes whose key spans
+// handoff aggregates while the held execution fence supplies authority.
+func (lock *ExecutionLock) RetainStoreRootForStore(expectedRoot string, request Request, digest Digest) (*os.File, error) {
+	if !lock.HeldForStore(expectedRoot, request, digest) {
+		return nil, fmt.Errorf("execution lock does not retain the exact admitted handoff store root")
+	}
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	if lock.root == nil {
+		return nil, fmt.Errorf("execution lock store root is closed")
+	}
+	fd, err := unix.Dup(int(lock.root.Fd()))
+	if err != nil {
+		return nil, fmt.Errorf("duplicate admitted handoff store root: %w", err)
+	}
+	unix.CloseOnExec(fd)
+	file := os.NewFile(uintptr(fd), "wb-session-retained-store-root-authority")
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap retained handoff store root")
+	}
+	return file, nil
+}
+
 // AcquireExecutionLock waits interruptibly for the per-handoff receive fence.
 // Callers admit and authenticate exact request bytes before taking this lock.
 func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, digest Digest) (*ExecutionLock, error) {

@@ -33,6 +33,22 @@ func TestAcquireExecutionLockBindsExactAdmissionAndStoreIdentity(t *testing.T) {
 	if !lock.HeldForStore(root, request, digest) {
 		t.Fatal("exact admitted store authority was not recognized")
 	}
+	retainedRoot, err := lock.RetainStoreRootForStore(root, request, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retainedInfo, err := retainedRoot.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(rootInfo, retainedInfo) {
+		t.Fatal("retained store-root descriptor names a different inode")
+	}
+	_ = retainedRoot.Close()
 	otherRoot := filepath.Join(t.TempDir(), "handoffs")
 	otherStore := NewStore(otherRoot)
 	if _, err := otherStore.Admit(raw, digest); err != nil {

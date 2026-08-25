@@ -15,8 +15,10 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
+	"github.com/sneat-dev/wb/internal/sessioncustody"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/sessionreceive"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -31,6 +33,7 @@ type sessionMoveDependencies struct {
 	checkpoint        func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error)
 	store             func(string) (sessionmove.Store, error)
 	newDeliverer      func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error)
+	acknowledge       func(context.Context, sessioncustody.Options) (sessioncustody.Result, error)
 }
 
 func defaultSessionMoveDependencies() sessionMoveDependencies {
@@ -59,16 +62,19 @@ func defaultSessionMoveDependencies() sessionMoveDependencies {
 			}
 			return sessioncourier.NewSSHDeliverer(*target.SSH)
 		},
+		acknowledge: sessioncustody.Acknowledge,
 	}
 }
 
 type sessionMoveOutput struct {
-	Phase        string                `json:"phase"`
-	Courier      sessionmove.Courier   `json:"courier"`
-	SourceActive bool                  `json:"source_active"`
-	Request      sessionmove.Request   `json:"request"`
-	Digest       sessionmove.Digest    `json:"request_digest"`
-	Successor    *sessionlaunch.Result `json:"successor,omitempty"`
+	Phase        string                        `json:"phase"`
+	Courier      sessionmove.Courier           `json:"courier"`
+	SourceActive bool                          `json:"source_active"`
+	Request      sessionmove.Request           `json:"request"`
+	Digest       sessionmove.Digest            `json:"request_digest"`
+	Successor    *sessionlaunch.Result         `json:"successor,omitempty"`
+	Receipt      *sessionmove.Receipt          `json:"receipt,omitempty"`
+	Address      *sessionmove.SuccessorAddress `json:"successor_address,omitempty"`
 }
 
 func newSessionMoveCmd() *cobra.Command {
@@ -80,7 +86,7 @@ func newSessionMoveCmdWithDeps(deps sessionMoveDependencies) *cobra.Command {
 	var summary, validation, remaining, format string
 	command := &cobra.Command{
 		Use:   "move [worktree-path]",
-		Short: "Create an exact pushed handover checkpoint for this registered session",
+		Short: "Move this registered session through an exact receipt-gated handoff",
 		Long: `Create the source-owned checkpoint for a portable session move.
 
 WB requires a live registered session, an active managed Work Log, a clean
@@ -89,8 +95,10 @@ generates and commits only .wb/handoffs/<id>.md, performs a normal non-force
 push, verifies that exact commit as the remote branch tip, and records an
 offer without transferring source custody. It then delivers the exact request
 through the selected immutable courier route and starts the successor in a
-named tmux session. If delivery is ambiguous, retry the same handoff with
---resume; WB never creates a second checkpoint for that retry.`,
+named tmux session. Only a durable target receipt lets WB publish the stable
+successor address and seal predecessor custody. If delivery or acknowledgement
+is ambiguous, retry the same handoff with --resume; WB repairs the exact
+aggregate and never creates a second checkpoint or successor for that retry.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -148,6 +156,9 @@ named tmux session. If delivery is ambiguous, retry the same handoff with
 				},
 			})
 			if err != nil {
+				if result.Request.HandoffID != "" {
+					return resumablePostCheckpointError(result.Request.HandoffID, "finish source checkpoint evidence", err)
+				}
 				return err
 			}
 			store, err := deps.store(projectsRoot)
@@ -163,12 +174,10 @@ named tmux session. If delivery is ambiguous, retry the same handoff with
 			if err != nil {
 				return resumableDeliveryError(result.Request.HandoffID, err)
 			}
-			if delivery.Successor == nil {
-				return resumableDeliveryError(result.Request.HandoffID, errors.New("courier returned no successor identity"))
-			}
-			output := sessionMoveOutput{
-				Phase: string(delivery.Phase), Courier: courier, SourceActive: true,
-				Request: result.Request, Digest: result.Digest, Successor: delivery.Successor,
+			output, err := acknowledgeSessionMove(command.Context(), deps, store, source, courier,
+				result.Request, result.Digest, delivery)
+			if err != nil {
+				return resumablePostCheckpointError(result.Request.HandoffID, "complete receipt-gated source custody", err)
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -176,10 +185,10 @@ named tmux session. If delivery is ambiguous, retry the same handoff with
 				return encoder.Encode(output)
 			}
 			_, err = fmt.Fprintf(command.OutOrStdout(),
-				"started successor %s for handoff %s on %s via %s at exact commit %s; source session %s remains active pending a receipt\n",
-				delivery.Successor.WBSessionID,
-				result.Request.HandoffID, result.Request.TargetMachine, courier, result.Request.BundleCommit,
-				result.Request.PredecessorWBSessionID,
+				"moved session %s to successor %s for handoff %s on %s via %s in tmux %s at exact commit %s; predecessor custody is sealed\n",
+				result.Request.PredecessorWBSessionID, output.Receipt.SuccessorWBSessionID,
+				result.Request.HandoffID, result.Request.TargetMachine, courier, output.Receipt.TmuxName,
+				result.Request.BundleCommit,
 			)
 			return err
 		},
@@ -249,27 +258,84 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 		return fmt.Errorf("--via cannot change immutable courier route %q", route.Courier)
 	}
 	target := sessionmove.TargetConfig{Machine: route.TargetMachine, DefaultCourier: route.Courier, SSH: route.SSH}
-	deliverer, err := deps.newDeliverer(target, route.Courier)
+	state, err := store.Load(handoffID)
 	if err != nil {
 		return err
 	}
-	delivery, err := deliverer.Deliver(command.Context(), raw)
+	var delivery sessionreceive.Result
+	if state.Receipt != nil {
+		receipt := *state.Receipt
+		delivery = sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseCompleted,
+			Receipt: &receipt, Replay: true}
+	} else {
+		deliverer, delivererErr := deps.newDeliverer(target, route.Courier)
+		if delivererErr != nil {
+			return delivererErr
+		}
+		delivery, err = deliverer.Deliver(command.Context(), raw)
+		if err != nil {
+			return resumableDeliveryError(handoffID, err)
+		}
+	}
+	output, err := acknowledgeSessionMove(command.Context(), deps, store, source, route.Courier, request, digest, delivery)
 	if err != nil {
-		return resumableDeliveryError(handoffID, err)
+		return resumablePostCheckpointError(handoffID, "complete receipt-gated source custody", err)
 	}
-	if delivery.Successor == nil {
-		return resumableDeliveryError(handoffID, errors.New("courier returned no successor identity"))
-	}
-	output := sessionMoveOutput{Phase: string(delivery.Phase), Courier: route.Courier, SourceActive: true,
-		Request: request, Digest: digest, Successor: delivery.Successor}
 	if format == "json" {
 		encoder := json.NewEncoder(command.OutOrStdout())
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(output)
 	}
-	_, err = fmt.Fprintf(command.OutOrStdout(), "resumed handoff %s to successor %s via %s; source session remains active pending a receipt\n",
-		handoffID, delivery.Successor.WBSessionID, route.Courier)
+	_, err = fmt.Fprintf(command.OutOrStdout(), "completed handoff %s to successor %s via %s in tmux %s; predecessor custody is sealed\n",
+		handoffID, output.Receipt.SuccessorWBSessionID, route.Courier, output.Receipt.TmuxName)
 	return err
+}
+
+func acknowledgeSessionMove(
+	ctx context.Context,
+	deps sessionMoveDependencies,
+	store sessionmove.Store,
+	source session.Record,
+	courier sessionmove.Courier,
+	request sessionmove.Request,
+	digest sessionmove.Digest,
+	delivery sessionreceive.Result,
+) (sessionMoveOutput, error) {
+	var output sessionMoveOutput
+	if delivery.Phase != sessionmove.PhaseCompleted || delivery.Receipt == nil {
+		return output, errors.New("courier returned no durable completion receipt")
+	}
+	deliveredRequest, err := sessionmove.EncodeRequest(delivery.Request)
+	if err != nil {
+		return output, fmt.Errorf("validate courier response request: %w", err)
+	}
+	expectedRequest, err := sessionmove.EncodeRequest(request)
+	if err != nil {
+		return output, err
+	}
+	if !bytes.Equal(deliveredRequest, expectedRequest) || delivery.Digest != digest {
+		return output, fmt.Errorf("courier completion does not match the exact delivered request")
+	}
+	if err := sessionmove.ValidateReceiptForRequest(*delivery.Receipt, request, digest); err != nil {
+		return output, fmt.Errorf("validate target completion receipt: %w", err)
+	}
+	acknowledge := deps.acknowledge
+	if acknowledge == nil {
+		return output, errors.New("source custody acknowledger is unavailable")
+	}
+	acknowledged, err := acknowledge(ctx, sessioncustody.Options{
+		Store: store, ProjectsRoot: projectsRoot, Request: request, RequestDigest: digest,
+		Receipt: *delivery.Receipt, SourceSession: source,
+	})
+	if err != nil {
+		return output, err
+	}
+	receipt := acknowledged.Receipt
+	address := acknowledged.Address
+	return sessionMoveOutput{
+		Phase: string(sessionmove.PhaseCompleted), Courier: courier, SourceActive: false,
+		Request: request, Digest: digest, Successor: delivery.Successor, Receipt: &receipt, Address: &address,
+	}, nil
 }
 
 func resumableDeliveryError(handoffID string, err error) error {

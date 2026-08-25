@@ -3,6 +3,7 @@ package worktrees
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,7 +23,7 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 	// origin's independently configured, logically equivalent push route.
 	gitTest(t, worktree, "remote", "set-url", "--push", "origin", "file://"+fixture.remote)
 	sourceHead := gitTestOutput(t, worktree, "rev-parse", "HEAD")
-	now := time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC)
+	now := source.StartedAt.Add(time.Second)
 
 	result, err := CreateSessionCheckpoint(context.Background(), SessionCheckpointOptions{
 		ProjectsRoot:         fixture.projectsRoot,
@@ -105,9 +106,16 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 	if err != nil {
 		t.Fatal(err)
 	}
-	last := events[len(events)-1]
-	if last.Type != LocalEventHandoff || last.Result != "offered" || last.Extra["handoff_id"] != "handoff-123" || last.Extra["apply"] != false {
-		t.Fatalf("last Work Log event = %#v", last)
+	if len(events) < 2 {
+		t.Fatalf("Work Log events = %#v, want offer followed by exact owner evidence", events)
+	}
+	offer, owner := events[len(events)-2], events[len(events)-1]
+	if offer.Type != LocalEventHandoff || offer.Result != "offered" || offer.Extra["handoff_id"] != "handoff-123" || offer.Extra["apply"] != false {
+		t.Fatalf("source offer Work Log event = %#v", offer)
+	}
+	if owner.Type != LocalEventOwner || owner.Owner == nil || owner.Message != "predecessor session owns offered external handoff" ||
+		owner.Extra["handoff_id"] != "handoff-123" || owner.Owner.PID != source.PID {
+		t.Fatalf("source owner Work Log event = %#v", owner)
 	}
 	home, err := wbhomeRootForTest(fixture.projectsRoot)
 	if err != nil {
@@ -119,6 +127,82 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 	}
 	if projection.Lifecycle != "active" {
 		t.Fatalf("source claim lifecycle = %q, want active", projection.Lifecycle)
+	}
+}
+
+func TestCreateSessionCheckpointRejectsOfferTimestampBeforeSourceStartWithoutMutation(t *testing.T) {
+	startedAt := time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC)
+	_, err := CreateSessionCheckpoint(context.Background(), SessionCheckpointOptions{
+		ProjectsRoot: t.TempDir(), Worktree: t.TempDir(), TargetMachine: "hetzner-vm1",
+		SourceSession: session.Record{PID: os.Getpid(), WBSessionID: "wbs-source", Machine: "laptop",
+			Runtime: "codex", StartedAt: startedAt},
+		Handover: SessionHandover{Summary: "continue"}, Now: startedAt.Add(-time.Nanosecond),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot precede") {
+		t.Fatalf("checkpoint timestamp error=%v", err)
+	}
+}
+
+func TestCreateSessionCheckpointReturnsAdmittedIdentityAfterPostAdmissionFailure(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-post-admission-failure")
+	injected := errors.New("injected after durable admission")
+	options := SessionCheckpointOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
+		TargetMachine: "hetzner-vm1", HandoffID: "handoff-admitted", SuccessorWBSessionID: "wbs-successor",
+		Handover: SessionHandover{Summary: "continue from the admitted checkpoint"},
+		Now:      source.StartedAt.Add(time.Second),
+		afterAdmission: func() error {
+			return injected
+		},
+	}
+
+	result, err := CreateSessionCheckpoint(context.Background(), options)
+	if !errors.Is(err, injected) {
+		t.Fatalf("checkpoint error = %v, want injected post-admission failure", err)
+	}
+	if result.Request.HandoffID != options.HandoffID || result.Request.SuccessorWBSessionID != options.SuccessorWBSessionID {
+		t.Fatalf("partial result lost resumable identity: %#v", result.Request)
+	}
+	if result.Digest == "" || result.Digest != sessionmove.DigestBytes(result.RequestBytes) {
+		t.Fatalf("partial result digest = %q for request bytes", result.Digest)
+	}
+	if result.Request.HandoverDigest != sessionmove.DigestBytes(result.HandoverBytes) {
+		t.Fatalf("partial handover digest = %q for handover bytes", result.Request.HandoverDigest)
+	}
+	if result.WorkLogEvent.ID != "" {
+		t.Fatalf("partial result claims unrepaired Work Log evidence: %#v", result.WorkLogEvent)
+	}
+
+	store := sessionmove.NewStore(filepath.Join(fixture.home, sessionmove.DirName))
+	state, err := store.Load(options.HandoffID)
+	if err != nil {
+		t.Fatalf("load admitted checkpoint: %v", err)
+	}
+	if state.Request != result.Request || state.Digest != result.Digest || len(state.Events) != 0 {
+		t.Fatalf("admitted boundary state = %#v, partial result = %#v", state, result)
+	}
+
+	lock, err := store.AcquireExecutionLock(context.Background(), options.HandoffID, result.Digest)
+	if err != nil {
+		t.Fatalf("acquire admitted checkpoint for resume: %v", err)
+	}
+	defer func() { _ = lock.Close() }()
+	evidence, err := EnsureExternalSourceOfferEvidence(ExternalSourceOfferOptions{
+		Store: store, ExecutionLock: lock, ProjectsRoot: fixture.projectsRoot,
+		Request: result.Request, RequestDigest: result.Digest, SourceSession: source,
+	})
+	if err != nil {
+		t.Fatalf("resume admitted source evidence: %v", err)
+	}
+	if evidence.OfferEvent.ID == "" || evidence.OwnerEvent.ID == "" {
+		t.Fatalf("resumed source evidence = %#v", evidence)
+	}
+	repaired, err := store.LoadUnderLock(lock, options.HandoffID, result.Digest)
+	if err != nil {
+		t.Fatalf("load repaired checkpoint: %v", err)
+	}
+	if len(repaired.Events) != 1 || repaired.Events[0].Phase != sessionmove.PhaseOffered {
+		t.Fatalf("repaired aggregate events = %#v", repaired.Events)
 	}
 }
 
@@ -231,7 +315,7 @@ func TestCreateSessionCheckpointRefusesBeforeAnyMutation(t *testing.T) {
 				ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
 				TargetMachine: "hetzner-vm1", HandoffID: "handoff-refused", SuccessorWBSessionID: "wbs-successor",
 				Handover: SessionHandover{Summary: "summary", ValidationEvidence: "tests pass", RemainingWork: "continue", Body: []byte("details\n")},
-				Now:      time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+				Now:      source.StartedAt.Add(time.Second),
 			}
 			test.prepare(t, fixture, worktree, &options)
 			headBefore := gitTestOutput(t, worktree, "rev-parse", "HEAD")
@@ -279,7 +363,7 @@ func TestVerifySessionBundleCommitRejectsCommittedBlobMismatchWhenWorktreeMatche
 		SourceSession: source,
 		TargetMachine: "hetzner-vm1",
 		Handover:      SessionHandover{Body: []byte("expected handover\n")},
-		Now:           time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+		Now:           source.StartedAt.Add(time.Second),
 	}
 	preflight, err := preflightSessionCheckpoint(context.Background(), options, "handoff-blob-mismatch", "wbs-successor")
 	if err != nil {
@@ -338,7 +422,7 @@ func TestCreateSessionCheckpointRefusesSanitizedPostCommitRemoteRedirectBeforePu
 		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
 		TargetMachine: "hetzner-vm1", HandoffID: "handoff-redirect", SuccessorWBSessionID: "wbs-successor",
 		Handover: SessionHandover{Body: []byte("continue safely\n")},
-		Now:      time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+		Now:      source.StartedAt.Add(time.Second),
 	})
 	if err == nil || !strings.Contains(err.Error(), "origin remote changed after handover commit") {
 		t.Fatalf("error = %v, want post-commit remote redirect refusal", err)
@@ -362,7 +446,7 @@ func TestCreateSessionCheckpointUsesAuthenticatedExactPushURLDespiteOriginConfig
 		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
 		TargetMachine: "hetzner-vm1", HandoffID: "handoff-push-toctou", SuccessorWBSessionID: "wbs-successor",
 		Handover: SessionHandover{Body: []byte("continue safely\n")},
-		Now:      time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+		Now:      source.StartedAt.Add(time.Second),
 	}
 	options.afterPushRemoteAuthentication = func() {
 		gitTest(t, worktree, "remote", "set-url", "--push", "origin", wrongRemote)

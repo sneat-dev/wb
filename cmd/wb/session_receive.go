@@ -53,15 +53,17 @@ func newSessionReceiveCmdWithDeps(deps sessionReceiveDependencies) *cobra.Comman
 	var format string
 	command := &cobra.Command{
 		Use:   "receive",
-		Short: "Receive exact session-move bytes into a pinned target worktree",
+		Short: "Receive an exact session move and return its durable target receipt",
 		Long: `Receive one portable session handoff from exact stdin bytes.
 
 The receiver authenticates its target against the validated remote.machine in
 the local wb.yaml, admits the exact request bytes idempotently, fetches the
 declared branch directly, and creates or verifies one clean worktree pinned to
 the exact bundle commit. It starts the fixed requested harness through a
-preallocated WB identity in detached tmux and records successor_started, but
-does not write a receipt or transfer predecessor custody.`,
+preallocated WB identity in detached tmux, records the linked target Work Log,
+and returns a receipt only after the successor is live. Replaying completed
+bytes returns the immutable receipt without launching or consulting Git.
+Predecessor custody remains a source-side acknowledgement transaction.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -91,8 +93,13 @@ does not write a receipt or transfer predecessor custody.`,
 				return encoder.Encode(result)
 			}
 			if result.Receipt != nil {
-				_, err = fmt.Fprintf(command.OutOrStdout(), "replayed completed handoff %s receipt for successor %s\n",
-					result.Request.HandoffID, result.Receipt.SuccessorWBSessionID)
+				if result.Successor != nil {
+					_, err = fmt.Fprintf(command.OutOrStdout(), "completed handoff %s for successor %s in tmux %s at exact commit %s; durable target receipt recorded\n",
+						result.Request.HandoffID, result.Receipt.SuccessorWBSessionID, result.Receipt.TmuxName, result.Receipt.PinnedCommit)
+					return err
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "replayed completed handoff %s receipt for successor %s in tmux %s\n",
+					result.Request.HandoffID, result.Receipt.SuccessorWBSessionID, result.Receipt.TmuxName)
 				return err
 			}
 			if result.Successor != nil {

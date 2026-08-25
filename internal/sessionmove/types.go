@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +26,10 @@ const (
 	MessageSchemaVersion  = 1
 	EventSchemaVersion    = 1
 	DigestAlgorithmSHA256 = "sha256"
+	// MaxSourceOfferFieldBytes bounds each exact Work Log offer field carried
+	// by a request. Keeping the source-authored content in the immutable
+	// request lets crash repair recreate the offer without parsing Markdown.
+	MaxSourceOfferFieldBytes = 64 << 10
 )
 
 // Digest identifies exact bytes at a courier or durable-state boundary. Its
@@ -84,7 +90,10 @@ type Request struct {
 	SourceModel            string    `json:"source_model,omitempty"`
 	SourceNativeHarnessID  string    `json:"source_native_harness_id,omitempty"`
 	RequestedHarness       string    `json:"requested_harness,omitempty"`
-	WorkLogReference       string    `json:"work_log_reference,omitempty"`
+	WorkLogReference       string    `json:"work_log_reference"`
+	SourceOfferMessage     string    `json:"source_offer_message"`
+	SourceOfferNextAction  string    `json:"source_offer_next_action"`
+	SourceOfferDigest      Digest    `json:"source_offer_digest"`
 	CreatedAt              time.Time `json:"created_at"`
 }
 
@@ -101,8 +110,134 @@ type Receipt struct {
 	Runtime                string    `json:"runtime"`
 	Model                  string    `json:"model,omitempty"`
 	NativeHarnessID        string    `json:"native_harness_id,omitempty"`
+	AttemptID              string    `json:"attempt_id"`
+	AttemptIndex           uint64    `json:"attempt_index"`
+	PID                    int       `json:"pid"`
+	TargetWorkLogReference string    `json:"target_work_log_reference"`
 	PinnedCommit           string    `json:"pinned_commit"`
 	StartedAt              time.Time `json:"started_at"`
+}
+
+// WorkLogReference is the parsed identity of one Work Log claim. Its wire
+// spelling stays a single portable string so handoff protocol values do not
+// expose a machine-local Work Log directory layout.
+type WorkLogReference struct {
+	EffortID string
+	RunID    string
+	ClaimID  string
+}
+
+const (
+	workLogReferencePrefix       = "worklog:"
+	externalHandoffClaimDomain   = "wb.session.external-handoff-claim.v1"
+	sourceOfferDigestDomain      = "wb.session.source-offer.v1"
+	externalHandoffHashPartCount = 3
+)
+
+var workLogClaimID = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var launchAttemptID = regexp.MustCompile(`^[0-9]{6}-[0-9a-f]{32}$`)
+
+// ParseWorkLogReference accepts only the canonical
+// worklog:<effort>/<run>/<64-lowercase-hex-claim> spelling.
+func ParseWorkLogReference(value string) (WorkLogReference, error) {
+	if !strings.HasPrefix(value, workLogReferencePrefix) {
+		return WorkLogReference{}, fmt.Errorf("work log reference %q must start with %q", value, workLogReferencePrefix)
+	}
+	parts := strings.Split(strings.TrimPrefix(value, workLogReferencePrefix), "/")
+	if len(parts) != 3 {
+		return WorkLogReference{}, fmt.Errorf("work log reference %q must be worklog:<effort>/<run>/<64 lowercase hex characters>", value)
+	}
+	if err := validateID("work log effort", parts[0]); err != nil {
+		return WorkLogReference{}, err
+	}
+	if parts[0] == "." || parts[0] == ".." {
+		return WorkLogReference{}, fmt.Errorf("work log effort %q is not a safe path segment", parts[0])
+	}
+	if err := validateID("work log run", parts[1]); err != nil {
+		return WorkLogReference{}, err
+	}
+	if parts[1] == "." || parts[1] == ".." {
+		return WorkLogReference{}, fmt.Errorf("work log run %q is not a safe path segment", parts[1])
+	}
+	if !workLogClaimID.MatchString(parts[2]) {
+		return WorkLogReference{}, fmt.Errorf("work log claim %q must contain exactly 64 lowercase hex characters", parts[2])
+	}
+	return WorkLogReference{EffortID: parts[0], RunID: parts[1], ClaimID: parts[2]}, nil
+}
+
+// String returns the canonical portable reference spelling.
+func (reference WorkLogReference) String() string {
+	return workLogReferencePrefix + reference.EffortID + "/" + reference.RunID + "/" + reference.ClaimID
+}
+
+// ExternalHandoffClaimID derives the stable target claim identity from only
+// immutable move identity. Length prefixes prevent field-boundary ambiguity;
+// attempt PIDs and timestamps deliberately do not participate.
+func ExternalHandoffClaimID(requestDigest Digest, successorWBSessionID string) (string, error) {
+	if err := requestDigest.validate(); err != nil {
+		return "", fmt.Errorf("request digest: %w", err)
+	}
+	if err := validateID("successor_wb_session_id", successorWBSessionID); err != nil {
+		return "", err
+	}
+	hasher := sha256.New()
+	parts := [externalHandoffHashPartCount]string{
+		externalHandoffClaimDomain,
+		string(requestDigest),
+		successorWBSessionID,
+	}
+	for _, part := range parts {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = hasher.Write(length[:])
+		_, _ = hasher.Write([]byte(part))
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// NormalizeSourceOfferContent returns the one canonical spelling checkpoint
+// writers must place in Request. The exact normalized strings are carried on
+// the wire so receipt-time crash repair never has to reverse-parse a handover
+// document to recover Work Log event content.
+func NormalizeSourceOfferContent(message, nextAction string) (string, string) {
+	return strings.TrimSpace(message), strings.TrimSpace(nextAction)
+}
+
+// DigestSourceOffer derives the authenticated content digest for an immutable
+// source Work Log offer. Length-prefixing the domain and both normalized
+// fields prevents boundary ambiguity.
+func DigestSourceOffer(message, nextAction string) Digest {
+	message, nextAction = NormalizeSourceOfferContent(message, nextAction)
+	hasher := sha256.New()
+	for _, part := range [...]string{sourceOfferDigestDomain, message, nextAction} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(part)))
+		_, _ = hasher.Write(length[:])
+		_, _ = hasher.Write([]byte(part))
+	}
+	return Digest(DigestAlgorithmSHA256 + ":" + hex.EncodeToString(hasher.Sum(nil)))
+}
+
+// ExpectedTargetWorkLogReference keeps the source effort and run while
+// replacing its predecessor claim with the deterministic external target
+// claim. The caller supplies the digest of the exact admitted bytes, which may
+// use any valid JSON whitespace; Store or ExecutionLock owns raw-byte proof.
+func ExpectedTargetWorkLogReference(request Request, requestDigest Digest) (WorkLogReference, error) {
+	if err := request.validate(); err != nil {
+		return WorkLogReference{}, err
+	}
+	if err := requestDigest.validate(); err != nil {
+		return WorkLogReference{}, fmt.Errorf("request digest: %w", err)
+	}
+	source, err := ParseWorkLogReference(request.WorkLogReference)
+	if err != nil {
+		return WorkLogReference{}, fmt.Errorf("work_log_reference: %w", err)
+	}
+	claimID, err := ExternalHandoffClaimID(requestDigest, request.SuccessorWBSessionID)
+	if err != nil {
+		return WorkLogReference{}, err
+	}
+	return WorkLogReference{EffortID: source.EffortID, RunID: source.RunID, ClaimID: claimID}, nil
 }
 
 // MessageKind distinguishes ordinary successor input from WB's standard
@@ -203,6 +338,9 @@ func (r Request) validate() error {
 			return err
 		}
 	}
+	if r.HandoffID == successorAddressesDirName {
+		return fmt.Errorf("handoff_id %q is reserved for WB's completed-successor index", r.HandoffID)
+	}
 	if strings.TrimSpace(r.RepositoryRemote) == "" || strings.ContainsAny(r.RepositoryRemote, "\r\n") {
 		return fmt.Errorf("repository_remote must be non-empty and single-line")
 	}
@@ -224,6 +362,28 @@ func (r Request) validate() error {
 	}
 	if strings.TrimSpace(r.SourceRuntime) == "" {
 		return fmt.Errorf("source_runtime is required")
+	}
+	if _, err := ParseWorkLogReference(r.WorkLogReference); err != nil {
+		return fmt.Errorf("work_log_reference: %w", err)
+	}
+	message, nextAction := NormalizeSourceOfferContent(r.SourceOfferMessage, r.SourceOfferNextAction)
+	if message == "" || message != r.SourceOfferMessage {
+		return fmt.Errorf("source_offer_message must be non-empty normalized content")
+	}
+	if len(message) > MaxSourceOfferFieldBytes {
+		return fmt.Errorf("source_offer_message exceeds %d bytes", MaxSourceOfferFieldBytes)
+	}
+	if nextAction == "" || nextAction != r.SourceOfferNextAction {
+		return fmt.Errorf("source_offer_next_action must be non-empty normalized content")
+	}
+	if len(nextAction) > MaxSourceOfferFieldBytes {
+		return fmt.Errorf("source_offer_next_action exceeds %d bytes", MaxSourceOfferFieldBytes)
+	}
+	if err := r.SourceOfferDigest.validate(); err != nil {
+		return fmt.Errorf("source_offer_digest: %w", err)
+	}
+	if expected := DigestSourceOffer(message, nextAction); r.SourceOfferDigest != expected {
+		return fmt.Errorf("source_offer_digest %q does not match exact normalized offer content", r.SourceOfferDigest)
 	}
 	if r.CreatedAt.IsZero() {
 		return fmt.Errorf("created_at is required")
@@ -250,11 +410,31 @@ func (r Receipt) validate() error {
 	if strings.TrimSpace(r.Runtime) == "" {
 		return fmt.Errorf("runtime is required")
 	}
+	if err := validateLaunchAttemptIdentity(r.AttemptID, r.AttemptIndex, r.PID); err != nil {
+		return err
+	}
+	if _, err := ParseWorkLogReference(r.TargetWorkLogReference); err != nil {
+		return fmt.Errorf("target_work_log_reference: %w", err)
+	}
 	if !gitObjectID.MatchString(r.PinnedCommit) {
 		return fmt.Errorf("pinned_commit %q must be a full lowercase Git object ID", r.PinnedCommit)
 	}
 	if r.StartedAt.IsZero() {
 		return fmt.Errorf("started_at is required")
+	}
+	return nil
+}
+
+func validateLaunchAttemptIdentity(attemptID string, attemptIndex uint64, pid int) error {
+	if !launchAttemptID.MatchString(attemptID) {
+		return fmt.Errorf("attempt_id %q must be <6-digit-index>-<32-lowercase-hex-entropy>", attemptID)
+	}
+	parsed, err := strconv.ParseUint(attemptID[:6], 10, 64)
+	if err != nil || parsed == 0 || attemptIndex != parsed {
+		return fmt.Errorf("attempt_index %d does not match canonical attempt_id %q", attemptIndex, attemptID)
+	}
+	if pid <= 0 {
+		return fmt.Errorf("pid must be positive")
 	}
 	return nil
 }

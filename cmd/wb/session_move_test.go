@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
+	"github.com/sneat-dev/wb/internal/sessioncustody"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionreceive"
@@ -32,6 +33,7 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 	var captured worktrees.SessionCheckpointOptions
 	store := sessionmove.NewStore(t.TempDir())
 	var delivered []byte
+	acknowledgements := 0
 	deps := sessionMoveDependencies{
 		defaultConfigPath: func() string { return "/unused/default.yaml" },
 		loadConfig: func(path string) (sessionmove.Config, error) {
@@ -54,23 +56,19 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 				if err != nil {
 					return sessionreceive.Result{}, err
 				}
-				return sessionreceive.Result{Request: request, Digest: sessionmove.DigestBytes(raw), Phase: sessionmove.PhaseSuccessorStarted,
-					Successor: &sessionlaunch.Result{HandoffID: request.HandoffID, WBSessionID: request.SuccessorWBSessionID,
-						PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
-						PID: 123, TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: "claude-code",
-						WorktreeDir: "/target/worktree", PinnedCommit: request.BundleCommit, StartedAt: time.Now().UTC()}}, nil
+				return completedMoveTestDelivery(t, request, raw, true), nil
 			}), nil
 		},
 		checkpoint: func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
 			captured = options
-			request := sessionmove.Request{
+			request := completeMoveTestRequest(sessionmove.Request{
 				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-123", SuccessorWBSessionID: "wbs-successor",
 				PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "hetzner-vm1",
 				RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
 				BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-123.md",
 				HandoverDigest: sessionmove.DigestBytes([]byte("handover")), SourceRuntime: "codex", SourceModel: "gpt-5",
 				RequestedHarness: "claude-code", CreatedAt: time.Now().UTC(),
-			}
+			})
 			raw, err := sessionmove.EncodeRequest(request)
 			if err != nil {
 				return worktrees.SessionCheckpointResult{}, err
@@ -80,6 +78,13 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 				return worktrees.SessionCheckpointResult{}, err
 			}
 			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			acknowledgements++
+			if options.SourceSession != source {
+				t.Fatalf("acknowledgement source = %#v", options.SourceSession)
+			}
+			return completedMoveTestAcknowledgement(t, options), nil
 		},
 	}
 
@@ -106,8 +111,8 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
 		t.Fatalf("decode output %q: %v", output.String(), err)
 	}
-	if rendered.Phase != string(sessionmove.PhaseSuccessorStarted) || rendered.Courier != sessionmove.CourierSSH || rendered.SourceActive != true ||
-		rendered.Request.HandoffID != "handoff-123" {
+	if rendered.Phase != string(sessionmove.PhaseCompleted) || rendered.Courier != sessionmove.CourierSSH || rendered.SourceActive ||
+		rendered.Request.HandoffID != "handoff-123" || rendered.Receipt == nil || rendered.Address == nil || acknowledgements != 1 {
 		t.Fatalf("output = %#v", rendered)
 	}
 	if !bytes.Equal(delivered, mustEncodeMoveTestRequest(t, rendered.Request)) {
@@ -171,12 +176,12 @@ func TestSessionMoveCommandRefusesMissingSessionAndEmptyHandoverBeforeCheckpoint
 func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
 	store := sessionmove.NewStore(t.TempDir())
 	source := session.Record{PID: 11, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now().UTC()}
-	request := sessionmove.Request{SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-resume",
+	request := completeMoveTestRequest(sessionmove.Request{SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-resume",
 		SuccessorWBSessionID: "wbs-target", PredecessorWBSessionID: source.WBSessionID, SourceMachine: source.Machine,
 		TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/resume",
 		SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
 		HandoverPath: ".wb/handoffs/handoff-resume.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
-		SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Now().UTC()}
+		SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Now().UTC()})
 	raw := mustEncodeMoveTestRequest(t, request)
 	digest := sessionmove.DigestBytes(raw)
 	calls, checkpoints := 0, 0
@@ -207,12 +212,11 @@ func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
 				if calls == 1 {
 					return sessionreceive.Result{}, errors.New("connection lost after remote start")
 				}
-				return sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseSuccessorStarted,
-					Successor: &sessionlaunch.Result{HandoffID: request.HandoffID, WBSessionID: request.SuccessorWBSessionID,
-						PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
-						PID: 77, TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: "codex", Model: "gpt-5",
-						WorktreeDir: "/target/worktree", PinnedCommit: request.BundleCommit, StartedAt: time.Now().UTC()}}, nil
+				return completedMoveTestDelivery(t, request, got, true), nil
 			}), nil
+		},
+		acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
 		},
 	}
 	first := newSessionMoveCmdWithDeps(deps)
@@ -239,6 +243,74 @@ func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
 	}
 	if !bytes.Equal(delivered[0], raw) || !bytes.Equal(delivered[1], raw) {
 		t.Fatal("resume changed exact request bytes")
+	}
+}
+
+func TestSessionMoveResumeRepairsDurableReceiptWithoutRedelivery(t *testing.T) {
+	store := sessionmove.NewStore(t.TempDir())
+	source := session.Record{PID: 11, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Now().UTC()}
+	request := completeMoveTestRequest(sessionmove.Request{
+		SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-local-receipt",
+		SuccessorWBSessionID: "wbs-target", PredecessorWBSessionID: source.WBSessionID,
+		SourceMachine: source.Machine, TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
+		Branch: "feature/resume", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
+		HandoverPath: ".wb/handoffs/handoff-local-receipt.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+		SourceRuntime: "codex", CreatedAt: time.Now().UTC(),
+	})
+	raw := mustEncodeMoveTestRequest(t, request)
+	digest := sessionmove.DigestBytes(raw)
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	route := sessionmove.Route{HandoffID: request.HandoffID, RequestDigest: digest, TargetMachine: request.TargetMachine,
+		Courier: sessionmove.CourierSSH, SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"}}
+	if _, _, err := store.SaveRoute(route); err != nil {
+		t.Fatal(err)
+	}
+	receipt := *completedMoveTestDelivery(t, request, raw, false).Receipt
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SaveReceiptUnderLock(lock, request.HandoffID, digest, receipt); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	deliveries := 0
+	deps := sessionMoveDependencies{
+		resolveSource: func() (session.Record, bool, error) { return source, true, nil },
+		store:         func(string) (sessionmove.Store, error) { return store, nil },
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+			deliveries++
+			return nil, errors.New("durable local receipt must skip courier")
+		},
+		acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			if options.Receipt != receipt {
+				t.Fatalf("acknowledged receipt = %#v", options.Receipt)
+			}
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{"--resume", request.HandoffID, "--format", "json"})
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if deliveries != 0 {
+		t.Fatalf("courier deliveries = %d, want 0", deliveries)
+	}
+	var rendered sessionMoveOutput
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.SourceActive || rendered.Phase != string(sessionmove.PhaseCompleted) || rendered.Successor != nil || rendered.Receipt == nil {
+		t.Fatalf("resume output = %#v", rendered)
 	}
 }
 
@@ -274,14 +346,14 @@ func TestSessionMoveRejectsUnsupportedHarnessBeforeCheckpoint(t *testing.T) {
 }
 
 func TestSessionMoveReportsExactResumeAfterRoutePersistenceFailure(t *testing.T) {
-	request := sessionmove.Request{
+	request := completeMoveTestRequest(sessionmove.Request{
 		SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-route-failure",
 		SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: "wbs-source",
 		SourceMachine: "laptop", TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
 		Branch: "feature/session", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
 		HandoverPath: ".wb/handoffs/handoff-route-failure.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
 		SourceRuntime: "codex", CreatedAt: time.Now().UTC(),
-	}
+	})
 	raw := mustEncodeMoveTestRequest(t, request)
 	invalidStoreRoot := t.TempDir() + "/not-a-directory"
 	if err := os.WriteFile(invalidStoreRoot, []byte("file"), 0o600); err != nil {
@@ -323,16 +395,54 @@ func TestSessionMoveReportsExactResumeAfterRoutePersistenceFailure(t *testing.T)
 	}
 }
 
-func TestSessionMoveRefusesCourierSuccessWithoutSuccessorIdentity(t *testing.T) {
+func TestSessionMoveReportsExactResumeAfterDurableCheckpointEvidenceFailure(t *testing.T) {
+	const handoffID = "handoff-checkpoint-evidence-failure"
+	delivered := false
+	deps := sessionMoveDependencies{
+		defaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		loadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{"hetzner-vm1": {
+				Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH,
+				SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"},
+			}}}, nil
+		},
+		resolveSource: func() (session.Record, bool, error) {
+			return session.Record{PID: 1, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex"}, true, nil
+		},
+		checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			return worktrees.SessionCheckpointResult{Request: sessionmove.Request{HandoffID: handoffID}},
+				errors.New("source owner evidence interrupted")
+		},
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
+				delivered = true
+				return sessionreceive.Result{}, errors.New("must not deliver")
+			}), nil
+		},
+	}
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue"))
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "wb session move --resume "+handoffID) ||
+		!strings.Contains(err.Error(), "finish source checkpoint evidence") {
+		t.Fatalf("error = %v", err)
+	}
+	if delivered {
+		t.Fatal("courier ran after incomplete source checkpoint evidence")
+	}
+}
+
+func TestSessionMoveRefusesCourierSuccessWithoutCompletionReceipt(t *testing.T) {
 	store := sessionmove.NewStore(t.TempDir())
-	request := sessionmove.Request{
+	request := completeMoveTestRequest(sessionmove.Request{
 		SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-missing-successor",
 		SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: "wbs-source",
 		SourceMachine: "laptop", TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
 		Branch: "feature/session", SourceWorkCommit: strings.Repeat("a", 40), BundleCommit: strings.Repeat("b", 40),
 		HandoverPath: ".wb/handoffs/handoff-missing-successor.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
 		SourceRuntime: "codex", CreatedAt: time.Now().UTC(),
-	}
+	})
 	raw := mustEncodeMoveTestRequest(t, request)
 	digest := sessionmove.DigestBytes(raw)
 	deps := sessionMoveDependencies{
@@ -362,7 +472,7 @@ func TestSessionMoveRefusesCourierSuccessWithoutSuccessorIdentity(t *testing.T) 
 	command := newSessionMoveCmdWithDeps(deps)
 	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
 	command.SetIn(strings.NewReader("continue"))
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "no successor identity") ||
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "no durable completion receipt") ||
 		!strings.Contains(err.Error(), "--resume "+request.HandoffID) {
 		t.Fatalf("error = %v", err)
 	}
@@ -375,4 +485,80 @@ func mustEncodeMoveTestRequest(t *testing.T, request sessionmove.Request) []byte
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func completeMoveTestRequest(request sessionmove.Request) sessionmove.Request {
+	if request.WorkLogReference == "" {
+		request.WorkLogReference = "worklog:effort/run-1/" + strings.Repeat("1", 64)
+	}
+	message, nextAction := sessionmove.NormalizeSourceOfferContent("session checkpoint ready", "continue from the handover")
+	request.SourceOfferMessage = message
+	request.SourceOfferNextAction = nextAction
+	request.SourceOfferDigest = sessionmove.DigestSourceOffer(message, nextAction)
+	return request
+}
+
+func completedMoveTestDelivery(t *testing.T, request sessionmove.Request, raw []byte, includeSuccessor bool) sessionreceive.Result {
+	t.Helper()
+	digest := sessionmove.DigestBytes(raw)
+	targetReference, err := sessionmove.ExpectedTargetWorkLogReference(request, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := request.RequestedHarness
+	if runtime == "" {
+		runtime = request.SourceRuntime
+	}
+	model := ""
+	if runtime == request.SourceRuntime {
+		model = request.SourceModel
+	}
+	startedAt := request.CreatedAt.Add(time.Second).UTC()
+	receipt := sessionmove.Receipt{
+		SchemaVersion: sessionmove.ReceiptSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
+		SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
+		TargetMachine: request.TargetMachine, TmuxName: "wb-session-" + request.SuccessorWBSessionID,
+		Runtime: runtime, Model: model, TargetWorkLogReference: targetReference.String(),
+		AttemptID: "000001-" + strings.Repeat("a", 32), AttemptIndex: 1, PID: 123,
+		PinnedCommit: request.BundleCommit, StartedAt: startedAt,
+	}
+	result := sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseCompleted, Receipt: &receipt}
+	if includeSuccessor {
+		result.Successor = &sessionlaunch.Result{
+			HandoffID: request.HandoffID, WBSessionID: request.SuccessorWBSessionID,
+			PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
+			PID: receipt.PID, AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex,
+			TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model,
+			TargetWorkLogRef: receipt.TargetWorkLogReference, WorktreeDir: "/target/worktree",
+			PinnedCommit: request.BundleCommit, StartedAt: startedAt,
+		}
+	}
+	return result
+}
+
+func completedMoveTestAcknowledgement(t *testing.T, options sessioncustody.Options) sessioncustody.Result {
+	t.Helper()
+	route, err := options.Store.LoadRoute(options.Request.HandoffID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := options.Receipt
+	address := sessionmove.SuccessorAddress{
+		SchemaVersion:        sessionmove.SuccessorAddressSchemaVersion,
+		SuccessorWBSessionID: receipt.SuccessorWBSessionID, PredecessorWBSessionID: receipt.PredecessorWBSessionID,
+		HandoffID: receipt.HandoffID, RequestDigest: receipt.RequestDigest,
+		SourceMachine: options.Request.SourceMachine, TargetMachine: receipt.TargetMachine,
+		SourceWorkLogReference: options.Request.WorkLogReference, TargetWorkLogReference: receipt.TargetWorkLogReference,
+		TmuxName: receipt.TmuxName, Runtime: receipt.Runtime, Model: receipt.Model, NativeHarnessID: receipt.NativeHarnessID,
+		AttemptID: receipt.AttemptID, AttemptIndex: receipt.AttemptIndex, PID: receipt.PID,
+		PinnedCommit: receipt.PinnedCommit, StartedAt: receipt.StartedAt, Route: route,
+	}
+	return sessioncustody.Result{
+		Receipt: receipt, Address: address,
+		WorkLog: worktrees.ExternalSourceSealResult{
+			SourceWorkLogReference: options.Request.WorkLogReference,
+			TargetWorkLogReference: receipt.TargetWorkLogReference,
+			SealedAt:               receipt.StartedAt.Add(time.Second),
+		},
+	}
 }

@@ -43,9 +43,13 @@ func TestHarnessSpecRejectsUnsupportedHarness(t *testing.T) {
 }
 
 func launchTestRequest() sessionmove.Request {
-	return sessionmove.Request{
+	request := sessionmove.Request{
 		HandoffID: "handoff-123", SuccessorWBSessionID: "wbs-successor",
 		PredecessorWBSessionID: "wbs-source", SourceMachine: "source", TargetMachine: "hetzner-vm1",
 		SourceRuntime: RuntimeCodex, SourceModel: "gpt-5", HandoverPath: ".wb/handoffs/handoff-123.md",
+		WorkLogReference:   "worklog:session-move/session-move-run/" + strings.Repeat("a", 64),
+		SourceOfferMessage: "Session handoff offered", SourceOfferNextAction: "Continue from .wb/handoffs/handoff-123.md",
 	}
+	request.SourceOfferDigest = sessionmove.DigestSourceOffer(request.SourceOfferMessage, request.SourceOfferNextAction)
+	return request
 }

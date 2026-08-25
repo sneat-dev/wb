@@ -2,6 +2,7 @@ package sessionmove
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +12,305 @@ import (
 	"sync"
 	"testing"
 )
+
+func TestSaveSuccessorAddressUnderLockPublishesExactReplayableIndex(t *testing.T) {
+	store, request, digest, _ := admittedRouteRequest(t, false)
+	if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	receipt := validReceipt(request, digest)
+	if _, _, err := store.SaveReceiptUnderLock(lock, request.HandoffID, digest, receipt); err != nil {
+		t.Fatal(err)
+	}
+	first, replay, err := store.SaveSuccessorAddressUnderLock(lock, request.HandoffID, digest, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay || first.SchemaVersion != SuccessorAddressSchemaVersion ||
+		first.SuccessorWBSessionID != request.SuccessorWBSessionID ||
+		first.HandoffID != request.HandoffID || first.RequestDigest != digest ||
+		first.TargetWorkLogReference != receipt.TargetWorkLogReference || !reflect.DeepEqual(first.Route, validRoute(request, digest)) {
+		t.Fatalf("first successor address = (%#v, replay=%t)", first, replay)
+	}
+	loaded, err := store.LoadSuccessorAddress(request.SuccessorWBSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(loaded, first) {
+		t.Fatalf("loaded address = %#v, want %#v", loaded, first)
+	}
+	underLock, err := store.LoadSuccessorAddressUnderLock(lock, request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(underLock, first) {
+		t.Fatalf("under-lock address = %#v, want %#v", underLock, first)
+	}
+	again, replay, err := store.SaveSuccessorAddressUnderLock(lock, request.HandoffID, digest, receipt)
+	if err != nil || !replay || !reflect.DeepEqual(again, first) {
+		t.Fatalf("replayed successor address = (%#v, replay=%t, err=%v)", again, replay, err)
+	}
+	path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("successor address mode: info=%v err=%v", info, err)
+	}
+}
+
+func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T) {
+	fixture := func(t *testing.T) (Store, Request, SuccessorAddress, []byte) {
+		t.Helper()
+		store, request, digest, _ := admittedRouteRequest(t, false)
+		if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.SaveReceiptUnderLock(lock, request.HandoffID, digest, validReceipt(request, digest)); err != nil {
+			_ = lock.Close()
+			t.Fatal(err)
+		}
+		address, _, err := store.SaveSuccessorAddressUnderLock(lock, request.HandoffID, digest, validReceipt(request, digest))
+		_ = lock.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := marshalJSON(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store, request, address, raw
+	}
+
+	for _, test := range []struct {
+		name    string
+		install func(*testing.T, string, []byte)
+	}{
+		{"symlink", func(t *testing.T, path string, raw []byte) {
+			external := filepath.Join(t.TempDir(), "address.json")
+			if err := os.WriteFile(external, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(external, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"hardlink", func(t *testing.T, path string, raw []byte) {
+			external := filepath.Join(t.TempDir(), "address.json")
+			if err := os.WriteFile(external, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(external, path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"unsafe-mode", func(t *testing.T, path string, raw []byte) {
+			if err := os.WriteFile(path, raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"oversized", func(t *testing.T, path string, _ []byte) {
+			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxSuccessorAddressBytes+1), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, request, _, raw := fixture(t)
+			path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			test.install(t, path, raw)
+			if _, err := store.LoadSuccessorAddress(request.SuccessorWBSessionID); err == nil {
+				t.Fatal("LoadSuccessorAddress accepted unsafe address artifact")
+			}
+		})
+	}
+
+	t.Run("mismatched contents", func(t *testing.T) {
+		store, request, address, _ := fixture(t)
+		path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		address.TmuxName = "wb-session-other"
+		raw, err := marshalJSON(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.LoadSuccessorAddress(request.SuccessorWBSessionID); err == nil {
+			t.Fatal("LoadSuccessorAddress accepted mismatched deterministic tmux name")
+		}
+	})
+
+	t.Run("self-consistent forged pointer", func(t *testing.T) {
+		store, request, address, _ := fixture(t)
+		path := filepath.Join(store.Root, successorAddressesDirName, request.SuccessorWBSessionID+".json")
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		address.RequestDigest = DigestBytes([]byte("forged exact request"))
+		address.Route.RequestDigest = address.RequestDigest
+		sourceReference, err := ParseWorkLogReference(address.SourceWorkLogReference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimID, err := ExternalHandoffClaimID(address.RequestDigest, address.SuccessorWBSessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		address.TargetWorkLogReference = (WorkLogReference{EffortID: sourceReference.EffortID, RunID: sourceReference.RunID, ClaimID: claimID}).String()
+		raw, err := marshalJSON(address)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.LoadSuccessorAddress(request.SuccessorWBSessionID); !errors.Is(err, ErrHandoffConflict) {
+			t.Fatalf("LoadSuccessorAddress forged-pointer error = %v, want ErrHandoffConflict", err)
+		}
+	})
+
+	t.Run("store root symlink", func(t *testing.T) {
+		store, request, _, _ := fixture(t)
+		alias := filepath.Join(t.TempDir(), "handoffs-link")
+		if err := os.Symlink(store.Root, alias); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewStore(alias).LoadSuccessorAddress(request.SuccessorWBSessionID); err == nil {
+			t.Fatal("LoadSuccessorAddress followed a store-root symlink")
+		}
+	})
+
+	t.Run("index directory symlink", func(t *testing.T) {
+		store, request, _, _ := fixture(t)
+		wrapper := filepath.Join(t.TempDir(), DirName)
+		if err := os.Mkdir(wrapper, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(store.Root, successorAddressesDirName), filepath.Join(wrapper, successorAddressesDirName)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewStore(wrapper).LoadSuccessorAddress(request.SuccessorWBSessionID); err == nil {
+			t.Fatal("LoadSuccessorAddress followed an index-directory symlink")
+		}
+	})
+}
+
+func TestSaveSuccessorAddressUnderLockRefusesRootAndHandoffPathSwaps(t *testing.T) {
+	for _, swapRoot := range []bool{false, true} {
+		name := "handoff"
+		if swapRoot {
+			name = "root"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, request, digest, raw := admittedRouteRequest(t, false)
+			if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
+				t.Fatal(err)
+			}
+			lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = lock.Close() }()
+			if _, _, err := store.SaveReceiptUnderLock(lock, request.HandoffID, digest, validReceipt(request, digest)); err != nil {
+				t.Fatal(err)
+			}
+			retained := ""
+			if swapRoot {
+				retained = store.Root + ".retained"
+				if err := os.Rename(store.Root, retained); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(store.Root, request.HandoffID), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				handoff := filepath.Join(store.Root, request.HandoffID)
+				retained = handoff + ".retained"
+				if err := os.Rename(handoff, retained); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(handoff, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(store.Root, request.HandoffID, requestFileName), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.SaveSuccessorAddressUnderLock(lock, request.HandoffID, digest, validReceipt(request, digest)); err == nil || !strings.Contains(err.Error(), "exact admitted") {
+				t.Fatalf("SaveSuccessorAddressUnderLock error = %v", err)
+			}
+			for _, root := range []string{store.Root, retained} {
+				if _, err := os.Stat(filepath.Join(root, successorAddressesDirName)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("path swap published successor index under %s: %v", root, err)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadSuccessorAddressUnderLockRefusesRootAndHandoffPathSwaps(t *testing.T) {
+	for _, swapRoot := range []bool{false, true} {
+		name := "handoff"
+		if swapRoot {
+			name = "root"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, request, digest, raw := admittedRouteRequest(t, false)
+			if _, _, err := store.SaveRoute(validRoute(request, digest)); err != nil {
+				t.Fatal(err)
+			}
+			lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = lock.Close() }()
+			receipt := validReceipt(request, digest)
+			if _, _, err := store.SaveReceiptUnderLock(lock, request.HandoffID, digest, receipt); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.SaveSuccessorAddressUnderLock(lock, request.HandoffID, digest, receipt); err != nil {
+				t.Fatal(err)
+			}
+
+			if swapRoot {
+				if err := os.Rename(store.Root, store.Root+".retained"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(store.Root, request.HandoffID), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				handoff := filepath.Join(store.Root, request.HandoffID)
+				if err := os.Rename(handoff, handoff+".retained"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(handoff, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(store.Root, request.HandoffID, requestFileName), raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.LoadSuccessorAddressUnderLock(lock, request.HandoffID, digest); err == nil || !strings.Contains(err.Error(), "exact admitted") {
+				t.Fatalf("LoadSuccessorAddressUnderLock error = %v", err)
+			}
+		})
+	}
+}
 
 func TestSaveRoutePublishesExactImmutableSSHRouteAndReplays(t *testing.T) {
 	store, request, digest, _ := admittedRouteRequest(t, false)
