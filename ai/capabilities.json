@@ -20,6 +20,7 @@
                 "--base",
                 "--format",
                 "--older-than",
+                "--receipts",
                 "--report-dir",
                 "--scope"
               ],
@@ -47,7 +48,8 @@
                 "force-with-lease",
                 "compare-and-delete",
                 "pull-request evidence",
-                "never removes, moves, or modifies any working tree"
+                "never removes, moves, or modifies any working tree",
+                "--receipts"
               ]
             }
           ],
