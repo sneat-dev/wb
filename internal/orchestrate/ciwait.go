@@ -51,6 +51,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	defer cancel()
 	stableFingerprint := ""
 	stableObservations := 0
+	observations := 0
 	policyCache := requiredChecksCache{}
 	for {
 		if err := sliceCtx.Err(); err != nil {
@@ -119,6 +120,11 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			return failedCommitWaitResult(result, reason), nil
 		}
 		result.Checks = checks
+		observations++
+		// Report as soon as the exact-head check receipt is available. Later in
+		// this observation WB may still need branch-policy or freshness receipts;
+		// publishing this event keeps a slow authority lookup from looking hung.
+		reportPullRequestWaitProgress(options, observations, result, 0)
 		failed := false
 		for _, check := range checks {
 			switch check.Bucket {
@@ -130,7 +136,9 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			}
 		}
 		if failed {
-			return failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled"), nil
+			failedResult := failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled")
+			reportPullRequestWaitProgress(options, observations, failedResult, 0)
+			return failedResult, nil
 		}
 
 		requiredChecks, authority, freshnessAuthority, authorityReason := requiredChecksReceipt(sliceCtx, options, &policyCache)
@@ -245,14 +253,21 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			} else {
 				result.Reason = "GitHub's required-check policy was enumerated (possibly empty), every required check was present, and the exact remote target's observed check set stayed terminal across a bounded stable reread"
 			}
+			reportPullRequestWaitProgress(options, observations, result, 0)
 			return result, nil
 		}
 		if terminal {
 			result.Reason = "terminal checks require one unchanged foreground reread before they form a bounded CI receipt"
 		}
 		if !time.Now().Add(options.CheckPollInterval).Before(deadline) {
+			pendingResult := result
+			pendingResult.Status = PullRequestWaitPending
+			reportPullRequestWaitProgress(options, observations, pendingResult, 0)
 			return pendingCommitWaitResult(result), nil
 		}
+		pendingResult := result
+		pendingResult.Status = PullRequestWaitPending
+		reportPullRequestWaitProgress(options, observations, pendingResult, options.CheckPollInterval)
 		timer := time.NewTimer(options.CheckPollInterval)
 		select {
 		case <-sliceCtx.Done():
@@ -268,6 +283,12 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			return failedCommitWaitResult(result, sliceCtx.Err().Error()), nil
 		case <-timer.C:
 		}
+	}
+}
+
+func reportPullRequestWaitProgress(options PullRequestWaitOptions, observation int, result PullRequestWaitResult, nextPoll time.Duration) {
+	if options.Progress != nil {
+		options.Progress(PullRequestWaitProgress{Observation: observation, Result: result, NextPoll: nextPoll})
 	}
 }
 

@@ -148,7 +148,7 @@ func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDep
 	if publish {
 		if dryRun {
 			_, _ = fmt.Fprintln(out, "dry-run: skipping remote publish")
-		} else if err := runRemotePublish(deps, projectsRoot, filter, workers, false, false, out); err != nil {
+		} else if err := runRemotePublishWithProgress(deps, projectsRoot, filter, workers, false, false, out, errOut); err != nil {
 			_, _ = fmt.Fprintln(errOut, "remote publish failed (sync itself succeeded):", err)
 		}
 	}

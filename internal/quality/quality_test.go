@@ -16,7 +16,10 @@ func TestCoverAggregatesGoStatements(t *testing.T) {
 	writeQualityFile(t, filepath.Join(repository, "coverage.go"), "package coverage\n\nfunc Covered() int { return 1 }\nfunc Uncovered() int { return 2 }\n")
 	writeQualityFile(t, filepath.Join(repository, "coverage_test.go"), "package coverage\n\nimport \"testing\"\n\nfunc TestCovered(t *testing.T) { if Covered() != 1 { t.Fatal(\"unexpected\") } }\n")
 
-	report := Cover(context.Background(), "example/coverage", repository)
+	var progress []Progress
+	report := CoverWithOptions(context.Background(), "example/coverage", repository, RunOptions{Progress: func(event Progress) {
+		progress = append(progress, event)
+	}})
 	if report.Status != StatusPassed {
 		t.Fatalf("status = %s: %s", report.Status, report.Error)
 	}
@@ -26,6 +29,9 @@ func TestCoverAggregatesGoStatements(t *testing.T) {
 	combined := NewCoverageReport([]RepositoryCoverage{report})
 	if combined.Statements != report.Statements || combined.Percentage != report.Percentage {
 		t.Fatalf("combined report = %+v", combined)
+	}
+	if len(progress) != 2 || progress[0].State != ProgressStarted || progress[1].State != ProgressCompleted || progress[1].Status != StatusPassed {
+		t.Fatalf("coverage progress = %+v", progress)
 	}
 }
 
@@ -59,7 +65,10 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	report := Verify(context.Background(), "example/node", repository, []Check{CheckLint, CheckTest, CheckBuild})
+	var progress []Progress
+	report := VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint, CheckTest, CheckBuild}, RunOptions{Progress: func(event Progress) {
+		progress = append(progress, event)
+	}})
 	if report.Status != StatusPassed || len(report.Results) != 3 {
 		t.Fatalf("report = %+v", report)
 	}
@@ -69,6 +78,18 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(string(contents)), "run lint\nrun test\nrun build"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
+	}
+	if len(progress) != 6 {
+		t.Fatalf("verification progress events = %d, want 6: %+v", len(progress), progress)
+	}
+	for index, event := range progress {
+		want := ProgressStarted
+		if index%2 == 1 {
+			want = ProgressCompleted
+		}
+		if event.State != want {
+			t.Fatalf("verification progress event %d state = %s, want %s", index, event.State, want)
+		}
 	}
 }
 
