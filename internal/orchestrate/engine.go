@@ -54,8 +54,9 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 		if errorsByRepository[index] != nil {
 			state = progress.Failed
 		}
-		progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "repository", Repository: repositories[index].Slug, State: state, Completed: completed, Total: len(repositories)})
+		completedSnapshot := completed
 		completedMu.Unlock()
+		progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "repository", Repository: repositories[index].Slug, State: state, Completed: completedSnapshot, Total: len(repositories)})
 	})
 	if options.Merge {
 		runParallel(len(repositories), options.Parallel, func(index int) {

@@ -109,7 +109,7 @@ func runSync(projectsRoot, filter string, only []string, workers int, dryRun, pu
 			results = runSyncPlain(repos, projectsRoot, workers, dryRun)
 		}
 
-		printSyncSummary(results)
+		printSyncSummary(os.Stdout, results)
 
 		needsReview := false
 		for _, res := range results {
@@ -233,38 +233,47 @@ func runResultsBrowser(results []fleetsync.Result) error {
 	return err
 }
 
-func printSyncSummary(results []fleetsync.Result) {
+func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 	counts := map[fleetsync.Status]int{}
+	updated := 0
 	for _, r := range results {
 		counts[r.Status]++
+		if r.Updated {
+			updated++
+		}
 	}
-	fmt.Printf("\n━━━ Summary ━━━\n")
-	fmt.Printf("Not owned/fork    %d\n", counts[fleetsync.NoOp])
-	fmt.Printf("Cloned            %d\n", counts[fleetsync.Cloned])
-	fmt.Printf("Pulled            %d\n", counts[fleetsync.Pulled])
-	fmt.Printf("Skipped (dirty)   %d\n", counts[fleetsync.SkippedDirty])
-	fmt.Printf("Skipped (ignored) %d\n", counts[fleetsync.SkippedIgnored])
-	fmt.Printf("Empty remote      %d\n", counts[fleetsync.EmptyRemote])
-	fmt.Printf("Archived removed  %d\n", counts[fleetsync.RemovedArchived])
-	fmt.Printf("Archived kept     %d\n", counts[fleetsync.KeptArchived])
-	fmt.Printf("Archived absent   %d\n", counts[fleetsync.AbsentArchived])
-	fmt.Printf("Needs attention   %d\n", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream]+
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "━━━ Summary ━━━")
+	printCount := func(label string, count int) { fmt.Fprintf(out, "%-20s%d\n", label, count) }
+	printCount("Not owned/fork", counts[fleetsync.NoOp])
+	printCount("Cloned", counts[fleetsync.Cloned])
+	printCount("Pulled", counts[fleetsync.Pulled])
+	printCount("Updated from remote", updated)
+	printCount("Skipped (dirty)", counts[fleetsync.SkippedDirty])
+	printCount("Skipped (ignored)", counts[fleetsync.SkippedIgnored])
+	printCount("Empty remote", counts[fleetsync.EmptyRemote])
+	printCount("Archived removed", counts[fleetsync.RemovedArchived])
+	printCount("Archived kept", counts[fleetsync.KeptArchived])
+	printCount("Archived absent", counts[fleetsync.AbsentArchived])
+	fmt.Fprintln(out)
+	printCount("Needs attention", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream]+
 		counts[fleetsync.Unpushed]+counts[fleetsync.ArchivedUnlandable])
-	fmt.Printf("Errors            %d\n", counts[fleetsync.Failed])
+	fmt.Fprintln(out)
+	printCount("Errors", counts[fleetsync.Failed])
 	for _, r := range results {
 		switch r.Status {
 		case fleetsync.Diverged, fleetsync.NoUpstream:
-			fmt.Printf("  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
+			fmt.Fprintf(out, "  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
 		case fleetsync.Unpushed:
-			fmt.Printf("  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
+			fmt.Fprintf(out, "  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
 		case fleetsync.ArchivedUnlandable:
-			fmt.Printf("  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
+			fmt.Fprintf(out, "  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
 				r.Repo.Slug(), r.Detail.Summary())
 		}
 	}
 	for _, r := range results {
 		if r.Status == fleetsync.Failed {
-			fmt.Printf("  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
+			fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
 		}
 	}
 }

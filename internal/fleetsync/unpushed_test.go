@@ -82,8 +82,8 @@ func TestSyncStillReportsPulledWhenNothingIsOwed(t *testing.T) {
 	git(t, local, "push", "-q", "origin", "main")
 
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
-	if res := Sync(repo, "", false); res.Status != Pulled {
-		t.Fatalf("Status = %v (err=%v), want Pulled", res.Status, res.Err)
+	if res := Sync(repo, "", false); res.Status != Pulled || res.Updated {
+		t.Fatalf("result = %+v, want Pulled without a remote update", res)
 	}
 }
 

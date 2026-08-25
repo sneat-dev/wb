@@ -69,8 +69,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		var progressErr error
 		onProgress := func(progress graphDiscoveryProgress) {
 			progressMu.Lock()
-			defer progressMu.Unlock()
 			if progressErr != nil {
+				progressMu.Unlock()
 				return
 			}
 			report.Progress = BumpProgress{
@@ -79,8 +79,9 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				RepositoriesCompleted: progress.RepositoriesCompleted,
 				LastRepository:        progress.LastRepository,
 			}
-			progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", Repository: progress.LastRepository, State: progresspkg.Completed, Completed: progress.RepositoriesCompleted, Total: progress.RepositoriesTotal, Wave: waveIndex})
 			progressErr = persistBumpReport(options, report)
+			progressMu.Unlock()
+			progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", Repository: progress.LastRepository, State: progresspkg.Completed, Completed: progress.RepositoriesCompleted, Total: progress.RepositoriesTotal, Wave: waveIndex})
 		}
 		var graph bumpFleetGraph
 		var err error

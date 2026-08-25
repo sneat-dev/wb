@@ -65,8 +65,9 @@ func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftO
 					defer func() {
 						progressMu.Lock()
 						completed++
-						progress.Report(options.Progress, progress.Event{Operation: "deps drift", Phase: "inspect", Repository: repository.Slug, State: progress.Completed, Completed: completed, Total: len(repositories)})
+						completedSnapshot := completed
 						progressMu.Unlock()
+						progress.Report(options.Progress, progress.Event{Operation: "deps drift", Phase: "inspect", Repository: repository.Slug, State: progress.Completed, Completed: completedSnapshot, Total: len(repositories)})
 					}()
 					if repository.Path == "" {
 						results[index].skip = &GraphDiscoverySkip{

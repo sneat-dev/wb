@@ -375,10 +375,13 @@ clone directly below `<projects-root>/<repository>`.
 
 Runs against every repo owned by your GitHub account and every org you
 belong to, in parallel, with a live progress UI (overall + per-org bars, a
-live tail of in-flight repos). Anything left needing your attention (a hard
-error, or a repo skipped/kept because it's dirty) opens an interactive
-drill-down after the run — pick a repo to see exactly what's wrong
-(modified/untracked/conflicted files, unpushed commits, stash entries).
+live tail of in-flight repos). The live UI and final summary separately count
+existing clones whose checked-out commit actually advanced from the remote;
+already-current pulls and dry runs do not inflate that count. Anything left
+needing your attention (a hard error, or a repo skipped/kept because it's
+dirty) opens a two-pane interactive review screen after the run. Navigate the
+summary on the left; the right panel continuously shows the selected repository's
+modified/untracked/conflicted files, unpushed commits, stash entries, or error.
 Non-interactive runs (piped output, no TTY) print a plain summary instead
 and skip the drill-down.
 
@@ -532,6 +535,8 @@ for repositories with `spec/`. `--timeout` applies to each external command;
 `--retry=N` retries only failed commands N additional times; and
 `--resume --report-dir DIR` selects only repository failures from the previous
 YAML report. These controls also apply to `wb coverage` and `wb verify`.
+Interactive fleet and single-repository runs show their current repository,
+module, and check on stderr without contaminating the report on stdout.
 
 ### `wb fleet` / `wb status` — local fleet Git health
 
@@ -565,7 +570,10 @@ These commands read only local Git state—never fetch, pull, modify, commit, or
 push—and report clean, attention, or inspection-error status. Attention covers
 modified, untracked, conflicted, stashed, and unpushed work. Markdown defaults
 to concise summaries; YAML/JSON and `--details` provide individual paths and
-Git entries. `wb fleet` / `stats` always include layout placement counts and
+Git entries. Interactive fleet and single-repository status scans show a live
+counter and continuously refreshed elapsed time on stderr; structured output
+remains on stdout, and `--non-interactive` suppresses the live line. `wb fleet`
+/ `stats` always include layout placement counts and
 managed worktree rollups. Pass `--remote` for sync-drift counts or `--hooks`
 for managed-hook findings. Use `wb layout audit` for the placement worklist,
 `wb sync --dry-run` for GitHub reconciliation, and `wb worktree orphans` for
@@ -773,9 +781,11 @@ downstream repositories; it never invents the next version. If a release is
 not visible before `--timeout`, the report remains `awaiting_release` and
 `--resume` continues from the persisted pre-merge baseline.
 
-Interactive fleet set/bump campaigns report their current wave, repository,
-and lifecycle phase on stderr. Structured reports stay on stdout, and
-`--non-interactive` disables the progress renderer.
+Interactive set/bump campaigns report repository selection immediately, then
+their current wave, repository, and lifecycle phase on stderr. The elapsed time
+continues to refresh during silent discovery, verification, and release-waiting
+phases. Structured reports stay on stdout, and `--non-interactive` disables the
+progress renderer.
 
 A campaign can wait long enough for a still newer provider version to appear.
 Before starting downstream work, WB rechecks accumulated release events older
@@ -861,9 +871,11 @@ classify `converged`, `divergent`, `replaced`, and `major_path_split` states.
 `--fail-on-drift` turns those drift classes into an exit gate after the complete
 report is written.
 
-Fleet drift and graph scans show live per-repository progress on an interactive
-terminal. The progress line is written to stderr, so Markdown/YAML/JSON/SVG/HTML
-stdout remains machine-readable; `--non-interactive` suppresses it completely.
+Fleet and single-repository drift and graph scans show live selection and
+per-repository progress on an interactive terminal. The elapsed time keeps
+refreshing during silent phases. The progress line is written to stderr, so
+Markdown/YAML/JSON/SVG/HTML stdout remains machine-readable;
+`--non-interactive` suppresses it completely.
 
 ```sh
 wb deps drift .
@@ -1243,8 +1255,9 @@ migration, and prepares each GitHub repository independently.
 
 Interactive runs show the current dependency layer, repository, and campaign
 phase (prepare, rewrite, manifest update, verification, publication, checks,
-and merge) on stderr. `--non-interactive` keeps the same report and exit
-contract without terminal progress.
+and merge) on stderr. The elapsed time refreshes even while a phase emits no
+events. `--non-interactive` keeps the same report and exit contract without
+terminal progress.
 
 ```sh
 # Plan only. No clone, fetch, worktree, source, commit, or push occurs.
