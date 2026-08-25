@@ -74,7 +74,7 @@ polling, fixed remote argv, and no shell interpolation.
 ### Task 5: Finalize receipt-gated custody and Work Log evidence
 
 **Verifies:** agent-session-move#ac:receipt-completes-custody-and-lineage
-**Status:** planning
+**Status:** in_progress
 
 Have the target create its external-parent Work Log claim and return a receipt
 only after the stable successor registration and tmux session are live. Add a
