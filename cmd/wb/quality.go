@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/quality"
 )
@@ -72,7 +73,12 @@ func newCoverageCmd() *cobra.Command {
 					return nil
 				}
 			}
-			reports := runCoverageTargets(targets, options.parallel, runOptions(options))
+			progress := newQualityProgress(cmd.ErrOrStderr(), options.fleet && console.Interactive(cmd.ErrOrStderr(), nonInteractive), "coverage", len(targets))
+			progress.start()
+			runOptions := runOptions(options)
+			runOptions.Progress = progress.report
+			reports := runCoverageTargets(targets, options.parallel, runOptions)
+			progress.finish()
 			report := quality.NewCoverageReport(reports)
 			if options.resume {
 				report = mergeCoverageReports(previous, report)
@@ -128,7 +134,12 @@ func newVerifyCmd() *cobra.Command {
 					return nil
 				}
 			}
-			reports := runVerificationTargets(targets, checks, options.parallel, runOptions(options))
+			progress := newQualityProgress(cmd.ErrOrStderr(), options.fleet && console.Interactive(cmd.ErrOrStderr(), nonInteractive), "verify", len(targets))
+			progress.start()
+			runOptions := runOptions(options)
+			runOptions.Progress = progress.report
+			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
+			progress.finish()
 			quality.SortVerificationReports(reports)
 			report := verificationIndex{SchemaVersion: 1, Checks: checks, Repositories: reports}
 			if options.resume {
@@ -187,7 +198,12 @@ func newCheckCmd() *cobra.Command {
 					return nil
 				}
 			}
-			reports := runVerificationTargets(targets, checks, options.parallel, runOptions(options))
+			progress := newQualityProgress(cmd.ErrOrStderr(), options.fleet && console.Interactive(cmd.ErrOrStderr(), nonInteractive), "check", len(targets))
+			progress.start()
+			runOptions := runOptions(options)
+			runOptions.Progress = progress.report
+			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
+			progress.finish()
 			quality.SortVerificationReports(reports)
 			report := verificationIndex{SchemaVersion: 1, Profile: profile, Checks: checks, Repositories: reports}
 			if options.resume {
@@ -297,7 +313,9 @@ func runCoverageTargets(targets []qualityTarget, parallel int, options quality.R
 	reports := make([]quality.RepositoryCoverage, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
-		reports[index] = quality.CoverWithOptions(context.Background(), target.repository, target.path, options)
+		targetOptions := qualityRunOptionsForTarget(options, target.repository)
+		reports[index] = quality.CoverWithOptions(context.Background(), target.repository, target.path, targetOptions)
+		reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 	})
 	return reports
 }
@@ -306,9 +324,29 @@ func runVerificationTargets(targets []qualityTarget, checks []quality.Check, par
 	reports := make([]quality.VerificationReport, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
-		reports[index] = quality.VerifyWithOptions(context.Background(), target.repository, target.path, checks, options)
+		targetOptions := qualityRunOptionsForTarget(options, target.repository)
+		reports[index] = quality.VerifyWithOptions(context.Background(), target.repository, target.path, checks, targetOptions)
+		reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 	})
 	return reports
+}
+
+func qualityRunOptionsForTarget(options quality.RunOptions, repository string) quality.RunOptions {
+	progress := options.Progress
+	if progress == nil {
+		return options
+	}
+	options.Progress = func(event quality.Progress) {
+		event.Repository = repository
+		progress(event)
+	}
+	return options
+}
+
+func reportQualityRepositoryCompleted(options quality.RunOptions, repository string, status quality.Status) {
+	if options.Progress != nil {
+		options.Progress(quality.Progress{Repository: repository, State: quality.ProgressRepositoryCompleted, Status: status})
+	}
 }
 
 func runTargets(count, parallel int, run func(int)) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/remotestate"
 )
 
@@ -23,7 +24,7 @@ task worktrees, and publishes one snapshot keyed <login>/<machine>.
 --dry-run prints the snapshot and writes nothing, locally or remotely.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runRemotePublish(defaultRemoteDeps(), projectsRoot, filterFlag, parallel, dryRun, jsonOut, os.Stdout)
+			return runRemotePublishWithProgress(defaultRemoteDeps(), projectsRoot, filterFlag, parallel, dryRun, jsonOut, os.Stdout, cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the snapshot; publish nothing")
@@ -41,6 +42,10 @@ type remotePublishReport struct {
 }
 
 func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out io.Writer) error {
+	return runRemotePublishWithProgress(deps, projectsRoot, filter, parallel, dryRun, jsonOut, out, nil)
+}
+
+func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, parallel int, dryRun, jsonOut bool, out, progressOut io.Writer) error {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
 		return err
@@ -50,12 +55,15 @@ func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int
 		return &exitError{code: exitUsage, message: fmt.Sprintf("wb remote needs the GitHub login to key this machine's entry (gh auth status): %v", err)}
 	}
 	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version}
-	snapshot, err := collectSnapshot(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed)
+	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, nonInteractive))
+	snapshot, err := collectSnapshotWithProgress(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
 	if err != nil {
+		progress.fail(err)
 		return err
 	}
 	report := remotePublishReport{Key: snapshot.Key(), RepositoriesScanned: snapshot.RepositoriesScanned, Attention: len(snapshot.Repositories), Worktrees: len(snapshot.Worktrees)}
 	if dryRun {
+		progress.finish("snapshot prepared")
 		if jsonOut {
 			return json.NewEncoder(out).Encode(snapshot)
 		}
@@ -66,11 +74,14 @@ func runRemotePublish(deps remoteDeps, projectsRoot, filter string, parallel int
 		_, err = out.Write(data)
 		return err
 	}
+	progress.phase("publishing snapshot")
 	result, err := provider.Publish(context.Background(), snapshot)
 	if err != nil {
+		progress.fail(err)
 		return &exitError{code: exitFindings, message: "publish: " + err.Error()}
 	}
 	report.Location = result.Location
+	progress.finish(fmt.Sprintf("published %d repositories and %d worktrees", report.RepositoriesScanned, report.Worktrees))
 	if jsonOut {
 		return json.NewEncoder(out).Encode(report)
 	}
