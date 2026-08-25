@@ -46,7 +46,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11.3
+          # Released binaries still target Go 1.26, and v2.12.2's analysis
+          # dependencies panic on Go 1.27's embedded-selector literals. Pin
+          # upstream source with the fixes until a compatible release lands.
+          version: 1b907273167eec8b3d84cae636b7798ced4433d5
+          install-mode: goinstall
 
       - name: go build
         run: go build ./...
