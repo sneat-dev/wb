@@ -42,7 +42,8 @@ branch or tracking ref:
 
 | Disposition | Meaning | Eligible for `--apply`? |
 | --- | --- | --- |
-| `contained` | ancestor of the fetched exact target | **yes — the only one** |
+| `contained` | ancestor of the fetched exact target | **yes** |
+| `receipted` | a proved GitHub landing receipt shows the work is in the target | **yes, only under `--receipts`** |
 | `absorbed` | patch-id or tree equal to the target, but not an ancestor | **never** |
 | `unique` | `git cherry` proves it has content not upstream | no |
 | `protected` | is `--base`, the canonical clone's current HEAD, or a protected name | no |
@@ -68,8 +69,22 @@ Do not second-guess this with raw `git cherry` output and delete by hand. Each
 - A WB-owned branch (it has a task): `wb worktree cleanup <task> --absorbed-by <pr-or-commit>` —
   the receipt-based path that proves containment through a real GitHub
   landing receipt plus a local three-way merge, not through patch-id alone.
-- Otherwise: an explicit human decision. There is no flag that makes this
-  branch eligible.
+- Otherwise: re-run with `--receipts`. WB then asks GitHub's own
+  commit-to-pull-request index for a merged pull request into the exact base,
+  verifies its merge commit is contained in the fetched target, and proves
+  locally — with a three-way merge that mutates nothing — that the branch adds
+  nothing to the landing commit or the target. A branch that passes every
+  check is reclassified `receipted` and becomes eligible; one that fails any
+  check keeps its disposition with the failing check named in its evidence.
+  The reverted-work case fails the proof by construction, because merging the
+  branch back would change the target's tree. This costs one GitHub query per
+  candidate, which is why it is opt-in.
+- A branch neither WB-owned nor receipt-provable stays where it is: an
+  explicit human decision. No flag makes `absorbed` itself eligible.
+
+`--receipts` also rescues `unique`-classified squash landings: a multi-commit
+squash leaves no upstream twin for any individual patch-id, so a fully landed
+branch can report unique patches while every byte of it is in the target.
 
 ## A branch that has a worktree or a live claim: `in-use`
 
