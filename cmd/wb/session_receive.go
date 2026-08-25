@@ -59,8 +59,9 @@ func newSessionReceiveCmdWithDeps(deps sessionReceiveDependencies) *cobra.Comman
 The receiver authenticates its target against the validated remote.machine in
 the local wb.yaml, admits the exact request bytes idempotently, fetches the
 declared branch directly, and creates or verifies one clean worktree pinned to
-the exact bundle commit. It records target phases but does not start a harness,
-write a receipt, or transfer predecessor custody.`,
+the exact bundle commit. It starts the fixed requested harness through a
+preallocated WB identity in detached tmux and records successor_started, but
+does not write a receipt or transfer predecessor custody.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -94,11 +95,16 @@ write a receipt, or transfer predecessor custody.`,
 					result.Request.HandoffID, result.Receipt.SuccessorWBSessionID)
 				return err
 			}
+			if result.Successor != nil {
+				_, err = fmt.Fprintf(command.OutOrStdout(), "handoff %s started successor %s in tmux %s at exact commit %s; predecessor custody remains active pending a receipt\n",
+					result.Request.HandoffID, result.Successor.WBSessionID, result.Successor.TmuxName, result.Successor.PinnedCommit)
+				return err
+			}
 			worktree := ""
 			if result.Worktree != nil {
 				worktree = result.Worktree.WorktreeDir
 			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "handoff %s phase %s at pinned target worktree %s; no successor started\n",
+			_, err = fmt.Fprintf(command.OutOrStdout(), "handoff %s phase %s at pinned target worktree %s\n",
 				result.Request.HandoffID, result.Phase, worktree)
 			return err
 		},

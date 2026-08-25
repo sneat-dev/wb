@@ -60,9 +60,9 @@ wb session list --live
 wb session prune
 ```
 
-## Create a portable source checkpoint
+## Move a registered session over SSH
 
-Move preparation is fail-closed. The invoking process must belong to a live
+Session movement is fail-closed. The invoking process must belong to a live
 registered session that owns the worktree's active managed Work Log, and the
 worktree must be clean on a named branch that can advance `origin` without a
 force push. Supply the agent-authored continuation from a regular file (or use
@@ -70,17 +70,47 @@ force push. Supply the agent-authored continuation from a regular file (or use
 
 ```sh
 wb session move --to hetzner-vm1 --handover-file handover.md
+wb session move --to hetzner-vm1 --via ssh --harness claude-code \
+  --handover-file handover.md
 ```
 
-WB preallocates the successor identity, generates and commits only
-`.wb/handoffs/<handoff-id>.md`, pushes normally, verifies that exact commit as
-the remote branch tip, and records an offer. The request carries the validated,
-credential-free fetch URL; an independently configured push URL must identify
-the same logical repository, and WB publishes through the already-validated
-exact push URL without putting that URL in the handover. This checkpoint stage
-does not deliver to or
-start the target and does not transfer source custody; the source stays active
-until a later valid successor receipt.
+Omit `--harness` to continue in the source runtime. The only supported
+harnesses are `codex` and `claude-code`; same-harness moves retain the source
+model, while cross-harness moves use the target harness's default model.
+
+Before checkpoint mutation, WB validates the requested harness and resolves
+the configured courier. It preallocates the successor identity, generates and
+commits only `.wb/handoffs/<handoff-id>.md`, pushes normally, verifies that
+exact commit as the remote branch tip, and records an offer. The request
+carries the validated, credential-free fetch URL; an independently configured
+push URL must identify the same logical repository, and WB publishes through
+the already-validated exact push URL without putting that URL in the handover.
+
+After the checkpoint is durable, WB persists the selected SSH host and optional
+remote `wb_path` as the handoff's immutable courier route. It sends the
+canonical request bytes only on SSH stdin, with batch mode, no TTY, bounded
+timeouts, and no request data in remote argv. An SSH failure never falls back
+to another courier. The target's validated `remote.machine` must match the
+request, with `tmux` and the selected harness available on its `PATH`.
+
+Successful delivery means the target has verified the exact pinned worktree,
+registered the preallocated WB successor identity, and started the selected
+harness in detached tmux named
+`wb-session-<successor-wb-session-id>`. The reported phase is
+`successor_started`; the predecessor remains active until a later valid
+receipt transfers custody.
+
+An interrupted SSH connection is ambiguous: the target may already be live.
+Use the exact handoff ID printed by WB:
+
+```sh
+wb session move --resume <handoff-id>
+```
+
+Resume does not checkpoint again. It reloads the byte-identical admitted
+request and immutable courier address, so a later `wb.yaml` host/default change
+cannot redirect the handoff. Do not start a fresh move to recover an ambiguous
+attempt.
 
 ## Receive a pinned target checkpoint
 
@@ -99,13 +129,17 @@ the canonical clone's full remote identity (or securely clones it when
 missing), fetches the declared branch directly, and requires the live tip to
 equal the exact bundle commit. It then verifies source ancestry and the tracked
 handover blob before creating or reusing one clean linked worktree pinned to
-that commit.
+that commit. It then selects a fixed Codex or Claude Code argv, creates or
+reuses the deterministic tmux session, registers the preallocated WB identity
+against the exact pane PID, and releases that process to `exec` the harness
+only after registration and PID binding are durable.
 
 A moved branch, wrong remote, missing/non-ancestor commit, digest mismatch, or
 unsafe existing worktree records an actionable failed phase before any
-successor can be created or started. This receiver stage records
-`worktree_ready` only; it does not create a receipt, start a harness, or change
-source custody.
+successor can be released. Identical retries serialize by handoff ID and reuse
+the matching worktree, launch state, tmux session, and successor PID; a
+completed `successor_started` replay performs no Git fetch. The receiver does
+not create a receipt or change predecessor custody in this stage.
 
 `wb session list` joins each session to the worktree owner entries recorded
 under its declared PID (guarded by registration time, so an entry from a

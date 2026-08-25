@@ -55,8 +55,9 @@ wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a
 wb remote publish|status|machines # share fleet state across machines via a git state repo
 wb remote claim|release|claims <task> # reserve, give up, or list fleet-wide task claims
 wb session register|list|prune # register and inspect stable local agent-session identities
-wb session move --to <machine> --handover-file <file> # publish an exact source checkpoint
-wb session receive [--format json] # verify exact stdin bytes into a pinned target worktree
+wb session move --to <machine> --handover-file <file> # checkpoint, SSH-deliver, and start a tmux successor
+wb session move --resume <handoff-id> # retry the exact request and immutable courier route
+wb session receive [--format json] # receive exact stdin bytes and start the pinned successor
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
 wb worktree summary <task>   # brief overview of a task's worktrees, branches, optional PRs
@@ -321,6 +322,56 @@ relative, repository-local, non-regular, or non-executable result. A GUI Git
 client with a reduced `PATH` should set `WB_EXECUTABLE` to an installed
 launcher in its hook environment; package upgrades then do not require a
 repository-by-repository repair.
+
+### `wb session move` — checkpoint and start a remote successor
+
+Configure each target by its stable WB machine name. SSH is the implemented
+courier; `host` is a safe SSH alias and `wb_path` is an optional trusted
+absolute path on that target (an omitted path runs `wb`):
+
+```yaml
+session_move:
+  targets:
+    hetzner-vm1:
+      default_courier: ssh
+      ssh:
+        host: hetzner-vm1
+        wb_path: /home/ai/go/bin/wb
+```
+
+On the target, the validated `remote.machine` must be `hetzner-vm1`, and
+`tmux` plus the selected harness must be available on the remote `PATH`.
+
+Run a same-harness move by omitting `--harness`, or explicitly move between
+the two supported harnesses, `codex` and `claude-code`:
+
+```sh
+wb session move --to hetzner-vm1 --handover-file handover.md
+wb session move --to hetzner-vm1 --via ssh --harness claude-code \
+  --handover-file handover.md
+```
+
+The source must be a live registered session that owns the active managed
+Work Log on a clean named branch. WB creates and pushes one exact tracked
+handover checkpoint, persists the selected SSH address as an immutable route,
+sends the canonical request bytes only on SSH stdin, and verifies the target
+response. The target pins the exact commit, registers the preallocated WB
+successor identity, and starts it in detached tmux as
+`wb-session-<successor-wb-session-id>`. Same-harness moves retain the source
+model; a cross-harness move starts with the target harness's default model.
+
+An SSH error can be ambiguous because the target may already have started.
+Retry the reported handoff instead of creating another checkpoint:
+
+```sh
+wb session move --resume <handoff-id>
+```
+
+Resume sends the byte-identical request through the already-persisted route,
+even if `wb.yaml` defaults later change. WB does not fall back to another
+courier after an SSH failure. A successful move reports `successor_started`;
+the predecessor remains active until a later receipt completes custody
+transfer.
 
 ### `wb remote` — fleet state across machines
 

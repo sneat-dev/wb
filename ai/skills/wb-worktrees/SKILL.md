@@ -1,6 +1,6 @@
 ---
 name: wb-worktrees
-description: Use WB to create, guard, resume, and inspect isolated task worktrees, and to safely clean up leftover worktrees and branches — for one finished task or as a historic, fleet-wide sweep across every repository. Use when asked to clean up branches, delete merged branches, prune remote branches, remove stale or leftover worktrees, tidy historic leftovers, or audit repository hygiene, and also before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout. Never hand-roll `git branch -d`, `git branch --merged`, `git worktree remove`, or `git push --delete` branch or worktree sweeps.
+description: Use WB to create, guard, resume, and inspect isolated task worktrees, move registered agent sessions between machines, and safely clean up leftover worktrees and branches — for one finished task or as a historic, fleet-wide sweep across every repository. Use when asked to move or resume an agent session, clean up branches, delete merged branches, prune remote branches, remove stale or leftover worktrees, tidy historic leftovers, or audit repository hygiene, and also before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout. Never hand-roll `git branch -d`, `git branch --merged`, `git worktree remove`, or `git push --delete` branch or worktree sweeps.
 ---
 
 # WB worktrees
@@ -33,8 +33,9 @@ recognizes legacy linked worktrees there during migration.
 - Read [worklog.md](references/worklog.md) for local work-log mutating verbs
   (checkpoint, steer, refresh, handoff, recover, finalize, sync).
 - Read [ownership.md](references/ownership.md) to register a session
-  (`wb session register`), attach an agent to a worktree, inspect owner
-  metadata and PID liveness, or triage active/orphaned worktrees.
+  (`wb session register`), move or resume it through `wb session move`, attach
+  an agent to a worktree, inspect owner metadata and PID liveness, or triage
+  active/orphaned worktrees.
 - Consult [capabilities.json](../../capabilities.json) before assuming a WB
   surface exists; execute only commands whose runtime evidence is present.
 - Use `$wb-change` when the task spans implementation, hooks, tests, and PRs.

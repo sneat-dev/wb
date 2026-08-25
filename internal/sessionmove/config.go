@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -23,6 +24,31 @@ const (
 type SSHConfig struct {
 	Host   string `yaml:"host" json:"host"`
 	WBPath string `yaml:"wb_path,omitempty" json:"wb_path,omitempty"`
+}
+
+var safeRemotePathSegment = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
+
+// Validate rejects values that OpenSSH could reinterpret when it constructs
+// the remote shell command. Host is deliberately limited to a configured SSH
+// alias, and a custom WBPath may contain only shell-inert ASCII path segments.
+// An empty WBPath selects the fixed remote command name "wb".
+func (c SSHConfig) Validate() error {
+	if !safeID.MatchString(c.Host) {
+		return fmt.Errorf("ssh.host %q must start with a letter or digit and contain only letters, digits, dots, underscores, or dashes", c.Host)
+	}
+	if c.WBPath == "" {
+		return nil
+	}
+	if !path.IsAbs(c.WBPath) || path.Clean(c.WBPath) != c.WBPath {
+		return fmt.Errorf("ssh.wb_path %q must be a clean absolute target path", c.WBPath)
+	}
+	segments := strings.Split(strings.TrimPrefix(c.WBPath, "/"), "/")
+	for _, segment := range segments {
+		if !safeRemotePathSegment.MatchString(segment) {
+			return fmt.Errorf("ssh.wb_path %q must contain only shell-inert ASCII path segments using letters, digits, dots, underscores, pluses, or dashes", c.WBPath)
+		}
+	}
+	return nil
 }
 
 type SynchestraConfig struct {
@@ -110,16 +136,8 @@ func validateTarget(target TargetConfig) error {
 		return fmt.Errorf("default_courier %q must be %q or %q", target.DefaultCourier, CourierSSH, CourierSynchestra)
 	}
 	if target.SSH != nil {
-		if err := validateFixedArgument("ssh.host", target.SSH.Host); err != nil {
+		if err := target.SSH.Validate(); err != nil {
 			return err
-		}
-		if target.SSH.WBPath != "" {
-			if err := validateFixedArgument("ssh.wb_path", target.SSH.WBPath); err != nil {
-				return err
-			}
-			if !path.IsAbs(target.SSH.WBPath) || path.Clean(target.SSH.WBPath) != target.SSH.WBPath {
-				return fmt.Errorf("ssh.wb_path %q must be a clean absolute target path", target.SSH.WBPath)
-			}
 		}
 	}
 	if target.Synchestra != nil {

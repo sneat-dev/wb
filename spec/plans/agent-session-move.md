@@ -63,7 +63,7 @@ refuse moved branches, repository mismatches, conflicts, and digest reuse.
 ### Task 4: Start same-harness or cross-harness successors through SSH
 
 **Verifies:** agent-session-move#ac:ssh-move-starts-same-harness-successor, agent-session-move#ac:explicit-cross-harness-move
-**Status:** planning
+**Status:** complete
 
 Add fixed Codex and Claude Code launch specifications plus a private WB launcher
 that registers the preallocated session and `exec`s the harness inside a named

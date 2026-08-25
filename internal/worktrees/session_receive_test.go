@@ -129,6 +129,24 @@ func TestReceiveSessionBundleCreatesAndReusesExactPinnedWorktree(t *testing.T) {
 	}
 }
 
+func TestVerifyReceivedSessionBundleIgnoresLaterRemoteAdvance(t *testing.T) {
+	fixture := newSessionReceiveFixture(t)
+	created, err := ReceiveSessionBundle(context.Background(), SessionReceiveOptions{ProjectsRoot: fixture.projectsRoot, Request: fixture.request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.advanceBranch(t, "legitimate later source work")
+	fence, digest := acquireSessionReceiveFence(t, fixture, filepath.Join(fixture.home, sessionmove.DirName))
+	verified, err := VerifyReceivedSessionBundle(context.Background(), SessionReceiveOptions{ProjectsRoot: fixture.projectsRoot,
+		Request: fixture.request, RequestDigest: digest, ExecutionLock: fence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verified.Reused || verified.WorktreeDir != created.WorktreeDir || verified.Commit != fixture.request.BundleCommit {
+		t.Fatalf("verified=%#v created=%#v", verified, created)
+	}
+}
+
 func TestReceiveSessionBundleReclaimsInterruptedOperationLockUnderExecutionFence(t *testing.T) {
 	fixture := newSessionReceiveFixture(t)
 	operation := "session-" + fixture.request.HandoffID

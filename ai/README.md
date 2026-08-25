@@ -5,7 +5,7 @@
 | Skill | Scope |
 |---|---|
 | `wb-install` | Install and verify an exact WB build |
-| `wb-worktrees` | Guard, create, inspect, resume, and clean isolated worktrees |
+| `wb-worktrees` | Guard, create, inspect, and clean worktrees; move registered sessions |
 | `wb-hooks` | Install, inspect, repair, and measure Git hooks |
 | `wb-deps` | Graph, set, and bump dependencies |
 | `wb-ci` | Audit CI/CD policy |

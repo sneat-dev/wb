@@ -61,6 +61,34 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
       ssh:
         host: "vm one"
 `,
+		"ssh host shell separator": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: "vm;touch"
+`,
+		"ssh host variable expansion": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: 'vm$HOME'
+`,
+		"ssh host command substitution": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: 'vm` + "`id`" + `'
+`,
+		"ssh host glob": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: 'vm*'
+`,
 		"relative wb path": `session_move:
   targets:
     vm:
@@ -77,6 +105,54 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
         host: vm
         wb_path: "/opt/wb current/wb"
 `,
+		"wb path shell separator": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        wb_path: "/opt/wb;touch"
+`,
+		"wb path variable expansion": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        wb_path: '/opt/$HOME/wb'
+`,
+		"wb path command substitution": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        wb_path: '/opt/` + "`id`" + `/wb'
+`,
+		"wb path quote": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        wb_path: "/opt/wb'bad"
+`,
+		"wb path backslash": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        wb_path: '/opt/wb\\bad'
+`,
+		"wb path glob": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        wb_path: '/opt/wb*'
+`,
 		"option-like runner": `session_move:
   targets:
     vm:
@@ -91,6 +167,17 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
 				t.Fatal("LoadConfig accepted unsafe target configuration")
 			}
 		})
+	}
+}
+
+func TestSSHConfigAllowsFixedCommandOrShellInertAbsolutePath(t *testing.T) {
+	for _, config := range []SSHConfig{
+		{Host: "hetzner-vm1"},
+		{Host: "hetzner.vm_1", WBPath: "/home/ai/go/bin/wb-v1.2+local"},
+	} {
+		if err := config.Validate(); err != nil {
+			t.Fatalf("SSHConfig.Validate(%+v): %v", config, err)
+		}
 	}
 }
 

@@ -109,6 +109,33 @@ func (lock *ExecutionLock) HeldForStore(expectedRoot string, request Request, di
 	return sameFile(lock.file, file)
 }
 
+// RetainHandoffForStore returns a CLOEXEC duplicate of the exact admitted
+// handoff directory retained by this held execution fence. Callers use the
+// descriptor as authority for a multi-step transaction so a later path swap
+// cannot split reads, locks, and immutable publications across directories.
+// The caller owns the returned file.
+func (lock *ExecutionLock) RetainHandoffForStore(expectedRoot string, request Request, digest Digest) (*os.File, error) {
+	if !lock.HeldForStore(expectedRoot, request, digest) {
+		return nil, fmt.Errorf("execution lock does not retain the exact admitted handoff directory")
+	}
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	if lock.handoff == nil {
+		return nil, fmt.Errorf("execution lock handoff directory is closed")
+	}
+	fd, err := unix.Dup(int(lock.handoff.Fd()))
+	if err != nil {
+		return nil, fmt.Errorf("duplicate admitted handoff directory: %w", err)
+	}
+	unix.CloseOnExec(fd)
+	file := os.NewFile(uintptr(fd), "wb-session-retained-handoff-authority")
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("wrap retained handoff directory")
+	}
+	return file, nil
+}
+
 // AcquireExecutionLock waits interruptibly for the per-handoff receive fence.
 // Callers admit and authenticate exact request bytes before taking this lock.
 func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, digest Digest) (*ExecutionLock, error) {

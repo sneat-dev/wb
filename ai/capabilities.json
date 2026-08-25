@@ -3874,6 +3874,7 @@
                 "--handover-file",
                 "--harness",
                 "--remaining",
+                "--resume",
                 "--summary",
                 "--to",
                 "--validation",
@@ -3881,11 +3882,13 @@
               ],
               "modes": [
                 "Refuses before mutation unless the invoking live registered session owns an active managed Work Log on a clean named branch whose exact checkpoint can advance origin without force.",
-                "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, then records an offer while leaving source custody active; courier delivery is a later stage."
+                "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, records an offer, and persists the selected SSH host and remote WB path as an immutable courier route.",
+                "Delivers the canonical request bytes through configured SSH stdin and accepts success only after the target reports the preallocated successor live in deterministic detached tmux at the exact pinned commit; omitting --harness keeps codex or claude-code, while an explicit supported value performs a cross-harness move.",
+                "--resume <handoff-id> sends the byte-identical admitted request through its persisted route without creating another checkpoint or following later config/default changes; an SSH failure never falls back to another courier."
               ]
             }
           ],
-          "limitation": "This source-checkpoint stage does not yet deliver to or start a target session."
+          "limitation": "The predecessor remains active after successor_started; receipt-gated custody transfer is not yet available."
         },
         "help": {
           "status": "Full",
@@ -3896,7 +3899,9 @@
                 "--to",
                 "--handover-file",
                 "--via",
-                "--harness"
+                "--harness",
+                "--resume",
+                "named tmux session"
               ]
             }
           ],
@@ -3907,9 +3912,10 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Create a portable source checkpoint",
+              "marker": "## Move a registered session over SSH",
               "examples": [
-                "wb session move --to hetzner-vm1 --handover-file handover.md"
+                "wb session move --to hetzner-vm1 --handover-file handover.md",
+                "wb session move --resume <handoff-id>"
               ]
             }
           ],
@@ -3920,8 +3926,28 @@
           "references": [
             {
               "path": "cmd/wb/session_move_test.go",
-              "name": "TestSessionMoveCommandCreatesSourceOfferWithoutDelivering",
+              "name": "TestSessionMoveCommandCheckpointsThenDeliversThroughSSH",
               "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessioncourier/ssh_test.go",
+              "name": "TestSSHDelivererUsesFixedArgvAndExactRequestStdin",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionlaunch/harness_test.go",
+              "name": "TestHarnessSpecUsesFixedSameAndCrossHarnessArgv",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionlaunch/launch_test.go",
+              "name": "TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch",
+              "kind": "integration"
             },
             {
               "path": "internal/worktrees/session_checkpoint_test.go",
@@ -3937,7 +3963,7 @@
           "limitation": null
         }
       },
-      "notes": "The offer is not a custody transfer: no courier or target process runs and the predecessor claim remains active until a later valid receipt."
+      "notes": "The immutable route makes ambiguous SSH delivery safely retryable without a second checkpoint or target switch. Successor startup is proved, but it is not yet a custody receipt: the predecessor remains active until a later valid receipt."
     },
     {
       "id": "wb.session.prune",
@@ -4016,11 +4042,12 @@
               "modes": [
                 "Reads one bounded request from byte-exact stdin, computes and admits its digest idempotently, and authenticates the declared target against local remote.machine configuration.",
                 "Fetches the declared branch ref live, refuses a moved tip before successor creation, securely clones a missing canonical repository, and creates or verifies one clean target worktree pinned to the exact bundle commit.",
-                "Replays an existing receipt when present; otherwise records received, worktree_ready, or an actionable failed phase without starting a harness or changing predecessor custody."
+                "Selects one fixed codex or claude-code argv, registers the preallocated WB identity against the exact pane PID, and releases it into deterministic detached tmux only after durable ready-state validation.",
+                "Identical retries reuse verified worktree and launch state; successor_started replay bypasses Git entirely, while conflicting or dead post-release identity fails rather than manufacturing another successor."
               ]
             }
           ],
-          "limitation": "This target checkpoint stage does not yet start or register the successor, deliver a receipt, or transfer predecessor custody."
+          "limitation": "The target starts and registers the successor but does not yet deliver a custody receipt or transfer predecessor custody."
         },
         "help": {
           "status": "Full",
@@ -4030,6 +4057,7 @@
               "contains": [
                 "exact stdin bytes",
                 "validated remote.machine",
+                "detached tmux",
                 "--format"
               ]
             }
@@ -4063,6 +4091,11 @@
               "kind": "integration"
             },
             {
+              "path": "internal/sessionreceive/receive_test.go",
+              "name": "TestReceiveReplayAfterSuccessorStartedBypassesAllGit",
+              "kind": "integration"
+            },
+            {
               "path": "internal/worktrees/session_receive_test.go",
               "name": "TestReceiveSessionBundleRefusesMovedBranchBeforeTargetWorktree",
               "kind": "integration"
@@ -4076,7 +4109,7 @@
           "limitation": null
         }
       },
-      "notes": "The target phase is resumable and idempotent per exact handoff digest; no successful worktree verification is treated as a custody receipt."
+      "notes": "The target phase is resumable and idempotent per exact handoff digest through successor_started; neither successful worktree verification nor successor startup alone is treated as a custody receipt."
     },
     {
       "id": "wb.session.register",

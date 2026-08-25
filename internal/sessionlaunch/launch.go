@@ -1,0 +1,814 @@
+package sessionlaunch
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"syscall"
+	"time"
+
+	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/wbhome"
+)
+
+const PrivateLauncherArgument = "--wb-internal-session-launch"
+
+// ErrNotReleased is the only recovery-safe absence signal. Inspect returns it
+// only when no immutable launch/release exists; missing artifacts after a
+// release remain hard errors and must never fall back to Git replay.
+var ErrNotReleased = errors.New("successor launcher is not released")
+
+// ErrRetryableLaunch means Inspect proved that the latest released attempt has
+// exact terminal failure evidence, a dead PID, and no tmux session. Receive may
+// route this one outcome to Start without touching Git; Start rechecks all gates.
+var ErrRetryableLaunch = errors.New("successor launcher has an exactly retryable terminal attempt")
+
+type Prepared struct {
+	Request       sessionmove.Request
+	RequestDigest sessionmove.Digest
+	Session       session.Record
+	WorktreeDir   string
+	PinnedCommit  string
+}
+
+// BeforeRelease is the Task 5 custody seam. It prepares the successor-owned
+// Work Log before the wrapper is allowed to Exec and returns the durable target
+// Work Log reference that the immutable release must bind to this exact PID.
+type BeforeRelease func(context.Context, Prepared) (targetWorkLogRef string, err error)
+
+type Options struct {
+	Store         sessionmove.Store
+	ProjectsRoot  string
+	Request       sessionmove.Request
+	RequestDigest sessionmove.Digest
+	WorktreeDir   string
+	PinnedCommit  string
+	ExecutionLock *sessionmove.ExecutionLock
+	BeforeRelease BeforeRelease
+}
+
+type Result struct {
+	HandoffID              string    `json:"handoff_id"`
+	WBSessionID            string    `json:"wb_session_id"`
+	PredecessorWBSessionID string    `json:"predecessor_wb_session_id"`
+	TargetMachine          string    `json:"target_machine"`
+	PID                    int       `json:"pid"`
+	AttemptID              string    `json:"attempt_id"`
+	AttemptIndex           uint64    `json:"attempt_index"`
+	TmuxName               string    `json:"tmux_name"`
+	Runtime                string    `json:"runtime"`
+	Model                  string    `json:"model,omitempty"`
+	NativeHarnessID        string    `json:"native_harness_id,omitempty"`
+	TargetWorkLogRef       string    `json:"target_work_log_ref,omitempty"`
+	WorktreeDir            string    `json:"worktree_dir"`
+	PinnedCommit           string    `json:"pinned_commit"`
+	StartedAt              time.Time `json:"started_at"`
+	Reused                 bool      `json:"reused"`
+}
+
+type dependencies struct {
+	tmux          tmux
+	lookPath      func(string) (string, error)
+	wbExecutable  func() (string, error)
+	sessionDir    func(string) (string, error)
+	now           func() time.Time
+	pollInterval  time.Duration
+	startTimeout  time.Duration
+	verifyPinned  func(context.Context, launchPlan) error
+	processStatus func(int) error
+}
+
+func defaultDependencies(projectsRoot string) (dependencies, error) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		return dependencies{}, fmt.Errorf("fixed tmux executable is unavailable: %w", err)
+	}
+	tmuxPath, err = cleanAbsoluteExecutable(tmuxPath)
+	if err != nil {
+		return dependencies{}, err
+	}
+	return dependencies{
+		tmux: osTmux{executable: tmuxPath}, lookPath: exec.LookPath, wbExecutable: os.Executable,
+		sessionDir: func(root string) (string, error) {
+			home, err := wbhome.EnsureRoot(root)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(home, session.DirName), nil
+		},
+		now: func() time.Time { return time.Now().UTC() }, pollInterval: 25 * time.Millisecond, startTimeout: 30 * time.Second,
+		verifyPinned:  verifyPinnedWorktree,
+		processStatus: func(pid int) error { return syscall.Kill(pid, 0) },
+	}, nil
+}
+
+func Start(ctx context.Context, options Options) (Result, error) {
+	deps, err := defaultDependencies(options.ProjectsRoot)
+	if err != nil {
+		return Result{}, err
+	}
+	return startWithDependencies(ctx, options, deps)
+}
+
+func Inspect(ctx context.Context, options Options) (Result, error) {
+	deps, err := defaultDependencies(options.ProjectsRoot)
+	if err != nil {
+		return Result{}, err
+	}
+	return inspectWithDependencies(ctx, options, deps, true)
+}
+
+func startWithDependencies(ctx context.Context, options Options, deps dependencies) (Result, error) {
+	if options.ExecutionLock == nil || !options.ExecutionLock.HeldForStore(options.Store.Root, options.Request, options.RequestDigest) {
+		return Result{}, fmt.Errorf("successor launch requires the exact held handoff execution lock")
+	}
+	if _, err := sessionmove.EncodeRequest(options.Request); err != nil {
+		return Result{}, err
+	}
+	if options.PinnedCommit != options.Request.BundleCommit {
+		return Result{}, fmt.Errorf("successor pinned commit %s does not match bundle commit %s", options.PinnedCommit, options.Request.BundleCommit)
+	}
+	worktree, err := filepath.Abs(options.WorktreeDir)
+	if err != nil || filepath.Clean(worktree) != worktree {
+		return Result{}, fmt.Errorf("successor worktree must be a clean absolute path")
+	}
+	storeRoot, err := filepath.Abs(options.Store.Root)
+	if err != nil || filepath.Clean(storeRoot) != storeRoot || storeRoot != options.Store.Root {
+		return Result{}, fmt.Errorf("successor handoff store must be a clean absolute path")
+	}
+	handoffAuthority, err := options.ExecutionLock.RetainHandoffForStore(options.Store.Root, options.Request, options.RequestDigest)
+	if err != nil {
+		return Result{}, err
+	}
+	state, err := openLaunchStateFromHandoff(options.Request.HandoffID, handoffAuthority, true)
+	if err != nil {
+		return Result{}, err
+	}
+	defer state.Close()
+	plan, planDigest, loadPlanErr := state.loadPlan()
+	planReplay := loadPlanErr == nil
+	if planReplay {
+		if err := validatePlanForOptions(plan, options, worktree); err != nil {
+			return Result{}, err
+		}
+	} else {
+		if !errors.Is(loadPlanErr, os.ErrNotExist) {
+			return Result{}, loadPlanErr
+		}
+		spec, specErr := harnessSpec(options.Request, worktree)
+		if specErr != nil {
+			return Result{}, specErr
+		}
+		harnessPath, pathErr := deps.lookPath(spec.Executable)
+		if pathErr != nil {
+			return Result{}, fmt.Errorf("fixed %s harness executable %q is unavailable: %w", spec.Runtime, spec.Executable, pathErr)
+		}
+		harnessPath, pathErr = cleanAbsoluteExecutable(harnessPath)
+		if pathErr != nil {
+			return Result{}, pathErr
+		}
+		wbExecutable, executableErr := deps.wbExecutable()
+		if executableErr != nil {
+			return Result{}, fmt.Errorf("locate private WB launcher: %w", executableErr)
+		}
+		wbExecutable, executableErr = cleanAbsoluteExecutable(wbExecutable)
+		if executableErr != nil {
+			return Result{}, executableErr
+		}
+		plan = launchPlan{
+			SchemaVersion: launchSchemaVersion, HandoffID: options.Request.HandoffID, RequestDigest: options.RequestDigest,
+			SuccessorWBSessionID: options.Request.SuccessorWBSessionID, PredecessorWBSessionID: options.Request.PredecessorWBSessionID,
+			Machine: options.Request.TargetMachine, TmuxName: "wb-session-" + options.Request.SuccessorWBSessionID,
+			Runtime: spec.Runtime, Model: spec.Model, StoreRoot: storeRoot, WorktreeDir: worktree, PinnedCommit: options.PinnedCommit,
+			HandoverPath: options.Request.HandoverPath, WBExecutable: wbExecutable,
+			HarnessExecutable: harnessPath, HarnessArgs: append([]string(nil), spec.Args...),
+		}
+		plan, planDigest, _, err = state.savePlan(plan)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	attempt, attemptReused, completed, done, err := selectAttemptForStart(ctx, options, deps, state, plan, planDigest)
+	if err != nil {
+		return Result{}, err
+	}
+	if done {
+		completed.Reused = true
+		return completed, nil
+	}
+	defer func() { _ = attempt.Close() }()
+	if err := validatePlanExecutables(plan); err != nil {
+		return Result{}, err
+	}
+
+	pid, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName)
+	if err != nil {
+		return Result{}, err
+	}
+	abandonment, abandonmentErr := attempt.loadAbandonment()
+	if abandonmentErr == nil {
+		if exists {
+			return Result{}, fmt.Errorf("abandoned launcher attempt %s conflicts with live tmux session %s", attempt.id, plan.TmuxName)
+		}
+		if err := validateAbandonment(ctx, deps, state, attempt, plan, planDigest, abandonment); err != nil {
+			return Result{}, err
+		}
+		if err := deps.verifyPinned(ctx, plan); err != nil {
+			return Result{}, fmt.Errorf("verify pinned worktree after launcher abandonment: %w", err)
+		}
+		_ = attempt.Close()
+		attempt, err = state.createAttempt()
+		if err != nil {
+			return Result{}, err
+		}
+		attemptReused, pid, exists = true, 0, false
+	} else if !errors.Is(abandonmentErr, os.ErrNotExist) {
+		return Result{}, abandonmentErr
+	}
+	if !exists {
+		evidencePID, hasEvidence, evidenceErr := attempt.preReleaseProcessEvidence()
+		if evidenceErr != nil {
+			return Result{}, evidenceErr
+		}
+		if hasEvidence {
+			held, fenceErr := attempt.execFenceHeld(evidencePID)
+			if fenceErr != nil {
+				return Result{}, fenceErr
+			}
+			if held {
+				return Result{}, fmt.Errorf("launcher attempt %s has live or ambiguous pre-release PID %d", attempt.id, evidencePID)
+			}
+			if err := proveProcessDead(deps, evidencePID); err != nil {
+				return Result{}, fmt.Errorf("launcher attempt %s cannot prove pre-release PID %d dead: %w", attempt.id, evidencePID, err)
+			}
+			abandonment, _, err = attempt.saveAbandonment(plan, planDigest, evidencePID, deps.now())
+			if err != nil {
+				return Result{}, fmt.Errorf("persist exact terminal launcher abandonment: %w", err)
+			}
+			// Recheck every external and descriptor-bound proof after the
+			// immutable marker is durable. A crash after publication can replay
+			// this same validation and create at most the immediate next attempt.
+			if err := validateAbandonment(ctx, deps, state, attempt, plan, planDigest, abandonment); err != nil {
+				return Result{}, err
+			}
+			if err := deps.verifyPinned(ctx, plan); err != nil {
+				return Result{}, fmt.Errorf("verify pinned worktree after launcher abandonment: %w", err)
+			}
+			_ = attempt.Close()
+			attempt, err = state.createAttempt()
+			if err != nil {
+				return Result{}, err
+			}
+			attemptReused = true
+		}
+		if err := deps.tmux.StartDetached(ctx, plan.TmuxName, plan.WorktreeDir, plan.WBExecutable,
+			[]string{PrivateLauncherArgument, plan.StoreRoot, plan.HandoffID, attempt.id, string(planDigest)}); err != nil {
+			if adoptedPID, adopted, inspectErr := deps.tmux.PanePID(ctx, plan.TmuxName); inspectErr != nil {
+				return Result{}, errors.Join(err, inspectErr)
+			} else if !adopted {
+				return Result{}, err
+			} else {
+				pid, exists = adoptedPID, true
+			}
+		}
+	}
+	ready, err := waitReady(ctx, options, deps, attempt, plan, planDigest)
+	if err != nil {
+		return Result{}, err
+	}
+	if exists && ready.PID != pid {
+		return Result{}, fmt.Errorf("tmux successor PID changed while authorizing existing launch")
+	}
+	if err := deps.verifyPinned(ctx, plan); err != nil {
+		return Result{}, err
+	}
+	prepared := Prepared{Request: options.Request, RequestDigest: options.RequestDigest, Session: ready.Session,
+		WorktreeDir: plan.WorktreeDir, PinnedCommit: plan.PinnedCommit}
+	targetWorkLogRef := ""
+	if options.BeforeRelease != nil {
+		targetWorkLogRef, err = options.BeforeRelease(ctx, prepared)
+		if err != nil {
+			return Result{}, fmt.Errorf("prepare successor before release: %w", err)
+		}
+	}
+	release, releaseReplay, err := attempt.saveRelease(plan, planDigest, ready, targetWorkLogRef, deps.now())
+	if err != nil {
+		return Result{}, err
+	}
+	result, err := inspectReleased(ctx, options, deps, attempt, plan, planDigest, release)
+	if err != nil {
+		return Result{}, err
+	}
+	if _, _, err := finalizeStarted(state, attempt, plan, planDigest, release, deps.now()); err != nil {
+		return Result{}, err
+	}
+	result.Reused = planReplay || attemptReused || exists || releaseReplay
+	return result, nil
+}
+
+func selectAttemptForStart(
+	ctx context.Context,
+	options Options,
+	deps dependencies,
+	state *launchState,
+	plan launchPlan,
+	planDigest sessionmove.Digest,
+) (*launchAttempt, bool, Result, bool, error) {
+	started, startedErr := state.loadStarted()
+	if startedErr == nil {
+		result, err := inspectStarted(ctx, options, deps, state, plan, planDigest, started)
+		return nil, true, result, err == nil, err
+	}
+	if !errors.Is(startedErr, os.ErrNotExist) {
+		return nil, false, Result{}, false, startedErr
+	}
+	refs, err := state.listAttempts()
+	if err != nil {
+		return nil, false, Result{}, false, err
+	}
+	if len(refs) == 0 {
+		attempt, err := state.createAttempt()
+		return attempt, false, Result{}, false, err
+	}
+	latest := refs[len(refs)-1]
+	attempt, err := state.openAttempt(latest.id)
+	if errors.Is(err, os.ErrNotExist) {
+		attempt, err = state.openOrRecoverClaimedAttempt(latest.id)
+	}
+	if err != nil {
+		return nil, true, Result{}, false, err
+	}
+	release, releaseDigest, releaseErr := attempt.loadRelease()
+	if errors.Is(releaseErr, os.ErrNotExist) {
+		return attempt, true, Result{}, false, nil
+	}
+	if releaseErr != nil {
+		_ = attempt.Close()
+		return nil, true, Result{}, false, releaseErr
+	}
+	result, inspectErr := inspectReleased(ctx, options, deps, attempt, plan, planDigest, release)
+	if inspectErr == nil {
+		if _, _, err := finalizeStarted(state, attempt, plan, planDigest, release, deps.now()); err != nil {
+			_ = attempt.Close()
+			return nil, true, Result{}, false, err
+		}
+		_ = attempt.Close()
+		return nil, true, result, true, nil
+	}
+	if retryErr := failedAttemptRetryable(ctx, options, deps, state, attempt, plan, planDigest, release, releaseDigest); retryErr != nil {
+		_ = attempt.Close()
+		return nil, true, Result{}, false, fmt.Errorf("%w; launcher attempt %s cannot be replaced: %v", inspectErr, attempt.id, retryErr)
+	}
+	_ = attempt.Close()
+	if err := deps.verifyPinned(ctx, plan); err != nil {
+		return nil, true, Result{}, false, fmt.Errorf("verify corrected pinned worktree before launcher retry: %w", err)
+	}
+	next, err := state.createAttempt()
+	return next, true, Result{}, false, err
+}
+
+func failedAttemptRetryable(
+	ctx context.Context,
+	options Options,
+	deps dependencies,
+	state *launchState,
+	attempt *launchAttempt,
+	plan launchPlan,
+	planDigest sessionmove.Digest,
+	release launcherRelease,
+	releaseDigest sessionmove.Digest,
+) error {
+	if _, err := attempt.loadAbandonment(); err == nil {
+		return fmt.Errorf("released launcher attempt also has conflicting abandonment evidence")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := state.loadStarted(); err == nil {
+		return fmt.Errorf("an immutable started attempt already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	ready, readyDigest, err := attempt.loadReady(release.PID)
+	if err != nil {
+		return err
+	}
+	if release.PlanDigest != planDigest || release.ReadyDigest != readyDigest || ready.PlanDigest != planDigest {
+		return fmt.Errorf("release does not bind the exact failed attempt")
+	}
+	held, err := attempt.execFenceHeld(release.PID)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("prior launcher still holds its exec fence")
+	}
+	failure, found, err := attempt.loadExecFailure(release.PID)
+	if err != nil {
+		return err
+	}
+	if !found || failure.RequestDigest != plan.RequestDigest || failure.PlanDigest != planDigest ||
+		failure.ReadyDigest != readyDigest || failure.ReleaseDigest != releaseDigest || failure.PID != release.PID {
+		return fmt.Errorf("prior launcher has no exact immutable terminal failure evidence")
+	}
+	if _, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("exact tmux session %s still exists", plan.TmuxName)
+	}
+	if err := proveProcessDead(deps, release.PID); err != nil {
+		return fmt.Errorf("prior launcher PID %d is still live or ambiguous: %w", release.PID, err)
+	}
+	return nil
+}
+
+func validateAbandonment(
+	ctx context.Context,
+	deps dependencies,
+	state *launchState,
+	attempt *launchAttempt,
+	plan launchPlan,
+	planDigest sessionmove.Digest,
+	abandonment launcherAbandonment,
+) error {
+	if abandonment.HandoffID != plan.HandoffID || abandonment.AttemptID != attempt.id ||
+		abandonment.AttemptIndex != attempt.index || abandonment.RequestDigest != plan.RequestDigest ||
+		abandonment.PlanDigest != planDigest {
+		return fmt.Errorf("immutable launcher abandonment does not bind its exact attempt and plan")
+	}
+	if _, _, err := attempt.loadRelease(); err == nil {
+		return fmt.Errorf("abandoned launcher attempt also has a conflicting release")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := state.loadStarted(); err == nil {
+		return fmt.Errorf("abandoned launcher attempt conflicts with immutable started marker")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	evidencePID, found, err := attempt.preReleaseProcessEvidence()
+	if err != nil {
+		return err
+	}
+	if !found || evidencePID != abandonment.PID {
+		return fmt.Errorf("immutable launcher abandonment does not match exact process evidence")
+	}
+	ready, readyDigest, readyErr := attempt.loadReady(abandonment.PID)
+	if abandonment.ReadyDigest == "" {
+		if readyErr == nil {
+			return fmt.Errorf("launcher ready evidence appeared after attempt abandonment")
+		}
+		if !errors.Is(readyErr, os.ErrNotExist) {
+			return readyErr
+		}
+	} else {
+		if readyErr != nil {
+			return readyErr
+		}
+		if readyDigest != abandonment.ReadyDigest || ready.RequestDigest != plan.RequestDigest || ready.PlanDigest != planDigest {
+			return fmt.Errorf("immutable launcher abandonment conflicts with its ready evidence")
+		}
+	}
+	held, err := attempt.execFenceHeld(abandonment.PID)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("abandoned launcher attempt still holds its exec fence")
+	}
+	if _, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("abandoned launcher attempt conflicts with exact tmux session %s", plan.TmuxName)
+	}
+	if err := proveProcessDead(deps, abandonment.PID); err != nil {
+		return fmt.Errorf("abandoned launcher PID %d is live or ambiguous: %w", abandonment.PID, err)
+	}
+	return nil
+}
+
+func proveProcessDead(deps dependencies, pid int) error {
+	probe := deps.processStatus
+	if probe == nil {
+		probe = func(pid int) error { return syscall.Kill(pid, 0) }
+	}
+	err := probe(pid)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	if err == nil {
+		return fmt.Errorf("PID is live")
+	}
+	if errors.Is(err, syscall.EPERM) {
+		return fmt.Errorf("PID liveness is permission-ambiguous: %w", err)
+	}
+	return fmt.Errorf("PID liveness probe is ambiguous: %w", err)
+}
+
+func finalizeStarted(state *launchState, attempt *launchAttempt, plan launchPlan, planDigest sessionmove.Digest, release launcherRelease, now time.Time) (launcherStarted, bool, error) {
+	_, releaseDigest, err := attempt.loadRelease()
+	if err != nil {
+		return launcherStarted{}, false, err
+	}
+	return state.saveStarted(attempt, plan, planDigest, releaseDigest, release, now)
+}
+
+func inspectStarted(ctx context.Context, options Options, deps dependencies, state *launchState, plan launchPlan, planDigest sessionmove.Digest, started launcherStarted) (Result, error) {
+	attempt, err := state.openAttempt(started.AttemptID)
+	if err != nil {
+		return Result{}, err
+	}
+	defer attempt.Close()
+	release, releaseDigest, err := attempt.loadRelease()
+	if err != nil {
+		return Result{}, err
+	}
+	if started.AttemptIndex != attempt.index || started.RequestDigest != plan.RequestDigest || started.PlanDigest != planDigest ||
+		started.ReleaseDigest != releaseDigest || started.PID != release.PID {
+		return Result{}, fmt.Errorf("immutable started marker does not match its selected launch attempt")
+	}
+	return inspectReleased(ctx, options, deps, attempt, plan, planDigest, release)
+}
+
+func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return fmt.Errorf("fixed git executable is unavailable for launch verification: %w", err)
+	}
+	gitPath, err = cleanAbsoluteExecutable(gitPath)
+	if err != nil {
+		return err
+	}
+	head, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}").Output()
+	if err != nil || string(bytes.TrimSpace(head)) != plan.PinnedCommit {
+		return fmt.Errorf("pinned successor worktree HEAD no longer equals %s", plan.PinnedCommit)
+	}
+	branch, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err != nil || string(bytes.TrimSpace(branch)) != "wb-session/"+plan.HandoffID {
+		return fmt.Errorf("pinned successor worktree is not on its exact WB session branch")
+	}
+	status, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "status", "--porcelain=v1", "--untracked-files=all").Output()
+	if err != nil {
+		return fmt.Errorf("inspect pinned successor worktree status: %w", err)
+	}
+	if len(status) != 0 {
+		return fmt.Errorf("pinned successor worktree is dirty before harness release")
+	}
+	return nil
+}
+
+func inspectWithDependencies(ctx context.Context, options Options, deps dependencies, replay bool) (Result, error) {
+	if options.ExecutionLock == nil {
+		return Result{}, fmt.Errorf("successor inspection requires the exact held handoff execution lock")
+	}
+	handoffAuthority, err := options.ExecutionLock.RetainHandoffForStore(options.Store.Root, options.Request, options.RequestDigest)
+	if err != nil {
+		return Result{}, err
+	}
+	state, err := openLaunchStateFromHandoff(options.Request.HandoffID, handoffAuthority, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Result{}, ErrNotReleased
+		}
+		return Result{}, err
+	}
+	defer state.Close()
+	plan, planDigest, err := state.loadPlan()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Result{}, ErrNotReleased
+		}
+		return Result{}, err
+	}
+	if err := validatePlanForOptions(plan, options, options.WorktreeDir); err != nil {
+		return Result{}, err
+	}
+	started, err := state.loadStarted()
+	if err == nil {
+		result, inspectErr := inspectStarted(ctx, options, deps, state, plan, planDigest, started)
+		result.Reused = replay
+		return result, inspectErr
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return Result{}, err
+	}
+	attempt, err := latestAttempt(state)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Result{}, ErrNotReleased
+		}
+		return Result{}, err
+	}
+	defer attempt.Close()
+	release, releaseDigest, err := attempt.loadRelease()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Result{}, ErrNotReleased
+		}
+		return Result{}, err
+	}
+	result, err := inspectReleased(ctx, options, deps, attempt, plan, planDigest, release)
+	if err != nil {
+		if retryErr := failedAttemptRetryable(ctx, options, deps, state, attempt, plan, planDigest, release, releaseDigest); retryErr == nil {
+			return Result{}, fmt.Errorf("%w: %s", ErrRetryableLaunch, err)
+		}
+		return result, err
+	}
+	_, _, err = finalizeStarted(state, attempt, plan, planDigest, release, deps.now())
+	result.Reused = replay
+	return result, err
+}
+
+func inspectReleased(ctx context.Context, options Options, deps dependencies, attempt *launchAttempt, plan launchPlan, planDigest sessionmove.Digest, release launcherRelease) (Result, error) {
+	if _, err := attempt.loadAbandonment(); err == nil {
+		return Result{}, fmt.Errorf("released launcher attempt has conflicting immutable abandonment evidence")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Result{}, err
+	}
+	ready, readyDigest, err := attempt.loadReady(release.PID)
+	if err != nil {
+		return Result{}, err
+	}
+	if release.RequestDigest != plan.RequestDigest || release.PlanDigest != planDigest || release.ReadyDigest != readyDigest ||
+		ready.PlanDigest != planDigest || ready.RequestDigest != plan.RequestDigest {
+		return Result{}, fmt.Errorf("immutable launcher release does not match its plan and ready artifact")
+	}
+	if err := waitExecSuccess(ctx, deps, attempt, plan, planDigest, release); err != nil {
+		return Result{}, err
+	}
+	pid, exists, err := deps.tmux.PanePID(ctx, plan.TmuxName)
+	if err != nil {
+		return Result{}, err
+	}
+	if !exists || pid != release.PID {
+		return Result{}, fmt.Errorf("released tmux successor %s is not live at PID %d", plan.TmuxName, release.PID)
+	}
+	directory, err := deps.sessionDir(options.ProjectsRoot)
+	if err != nil {
+		return Result{}, err
+	}
+	record, live := session.Lookup(directory, pid)
+	if !live || !sameReadySession(plan, ready, record) {
+		return Result{}, fmt.Errorf("released successor PID %d has no matching live WB session registration", pid)
+	}
+	return resultFrom(attempt, plan, release, record), nil
+}
+
+func waitReady(ctx context.Context, options Options, deps dependencies, attempt *launchAttempt, plan launchPlan, planDigest sessionmove.Digest) (launcherReady, error) {
+	startCtx, cancel := context.WithTimeout(ctx, deps.startTimeout)
+	defer cancel()
+	ticker := time.NewTicker(deps.pollInterval)
+	defer ticker.Stop()
+	for {
+		pid, exists, err := deps.tmux.PanePID(startCtx, plan.TmuxName)
+		if err != nil {
+			return launcherReady{}, err
+		}
+		if exists {
+			ready, _, readErr := attempt.loadReady(pid)
+			if readErr == nil {
+				directory, dirErr := deps.sessionDir(options.ProjectsRoot)
+				if dirErr != nil {
+					return launcherReady{}, dirErr
+				}
+				record, live := session.Lookup(directory, pid)
+				if !live {
+					return launcherReady{}, fmt.Errorf("launcher PID %d published ready without a live WB session", pid)
+				}
+				if ready.PlanDigest != planDigest || ready.RequestDigest != plan.RequestDigest || !sameReadySession(plan, ready, record) {
+					return launcherReady{}, fmt.Errorf("launcher PID %d ready artifact conflicts with its WB session registration", pid)
+				}
+				held, fenceErr := attempt.execFenceHeld(pid)
+				if fenceErr != nil {
+					return launcherReady{}, fenceErr
+				}
+				if !held {
+					return launcherReady{}, fmt.Errorf("launcher PID %d published ready without holding its exec-success fence", pid)
+				}
+				return ready, nil
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				return launcherReady{}, readErr
+			}
+		}
+		select {
+		case <-startCtx.Done():
+			return launcherReady{}, fmt.Errorf("wait for registered tmux successor: %w", startCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAttempt, plan launchPlan, planDigest sessionmove.Digest, release launcherRelease) error {
+	waitCtx, cancel := context.WithTimeout(ctx, deps.startTimeout)
+	defer cancel()
+	ticker := time.NewTicker(deps.pollInterval)
+	defer ticker.Stop()
+	for {
+		held, err := attempt.execFenceHeld(release.PID)
+		if err != nil {
+			return err
+		}
+		if !held {
+			failure, found, failureErr := attempt.loadExecFailure(release.PID)
+			if failureErr != nil {
+				return failureErr
+			}
+			if found {
+				_, releaseDigest, digestErr := attempt.loadRelease()
+				if digestErr != nil {
+					return digestErr
+				}
+				if failure.RequestDigest != plan.RequestDigest || failure.PlanDigest != planDigest ||
+					failure.ReadyDigest != release.ReadyDigest || failure.ReleaseDigest != releaseDigest {
+					return fmt.Errorf("launcher exec-failure evidence conflicts with immutable release")
+				}
+				return fmt.Errorf("successor launcher failed after release: %s", failure.Diagnostic)
+			}
+			pid, exists, paneErr := deps.tmux.PanePID(waitCtx, plan.TmuxName)
+			if paneErr != nil {
+				return paneErr
+			}
+			if !exists || pid != release.PID {
+				return fmt.Errorf("successor launcher exited before a live harness could be proven")
+			}
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("wait for successor harness Exec: %w", waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func sameReadySession(plan launchPlan, ready launcherReady, record session.Record) bool {
+	readyRecord := ready.Session
+	nativeCompatible := readyRecord.NativeHarnessID == record.NativeHarnessID || readyRecord.NativeHarnessID == "" && record.NativeHarnessID != ""
+	legacyCompatible := readyRecord.AgentID == record.AgentID || readyRecord.AgentID == "" && record.AgentID != ""
+	return ready.HandoffID == plan.HandoffID && ready.RequestDigest == plan.RequestDigest && ready.PID == record.PID &&
+		readyRecord.PID == record.PID && readyRecord.WBSessionID == record.WBSessionID && readyRecord.Machine == record.Machine &&
+		readyRecord.Runtime == record.Runtime && readyRecord.Model == record.Model && readyRecord.TmuxName == record.TmuxName &&
+		readyRecord.PredecessorWBSessionID == record.PredecessorWBSessionID && readyRecord.HandoffID == record.HandoffID &&
+		readyRecord.StartedAt.Equal(record.StartedAt) && nativeCompatible && legacyCompatible &&
+		record.WBSessionID == plan.SuccessorWBSessionID && record.Machine == plan.Machine &&
+		record.Runtime == plan.Runtime && record.Model == plan.Model && record.TmuxName == plan.TmuxName &&
+		record.PredecessorWBSessionID == plan.PredecessorWBSessionID && record.HandoffID == plan.HandoffID
+}
+
+func resultFrom(attempt *launchAttempt, plan launchPlan, release launcherRelease, record session.Record) Result {
+	return Result{HandoffID: plan.HandoffID, WBSessionID: record.WBSessionID,
+		PredecessorWBSessionID: record.PredecessorWBSessionID, TargetMachine: record.Machine, PID: record.PID,
+		AttemptID: attempt.id, AttemptIndex: attempt.index,
+		TmuxName: record.TmuxName, Runtime: record.Runtime, Model: record.Model, NativeHarnessID: record.NativeHarnessID,
+		TargetWorkLogRef: release.TargetWorkLogRef, WorktreeDir: plan.WorktreeDir,
+		PinnedCommit: plan.PinnedCommit, StartedAt: record.StartedAt}
+}
+
+func cleanAbsoluteExecutable(path string) (string, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("executable path %q is not absolute", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect executable path %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", fmt.Errorf("executable path %q is not one executable regular file", path)
+	}
+	return path, nil
+}
+
+func validatePlanForOptions(plan launchPlan, options Options, worktree string) error {
+	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != options.Request.HandoffID || plan.RequestDigest != options.RequestDigest ||
+		plan.SuccessorWBSessionID != options.Request.SuccessorWBSessionID || plan.PredecessorWBSessionID != options.Request.PredecessorWBSessionID ||
+		plan.Machine != options.Request.TargetMachine || plan.TmuxName != "wb-session-"+options.Request.SuccessorWBSessionID ||
+		plan.StoreRoot != options.Store.Root ||
+		plan.WorktreeDir != worktree || plan.PinnedCommit != options.PinnedCommit ||
+		plan.HandoverPath != options.Request.HandoverPath {
+		return fmt.Errorf("immutable launch plan conflicts with the admitted request or pinned worktree")
+	}
+	spec, err := harnessSpec(options.Request, worktree)
+	if err != nil {
+		return err
+	}
+	if plan.Runtime != spec.Runtime || plan.Model != spec.Model || filepath.Base(plan.HarnessExecutable) != spec.Executable ||
+		!reflect.DeepEqual(plan.HarnessArgs, spec.Args) {
+		return fmt.Errorf("immutable launch plan conflicts with fixed harness specification")
+	}
+	return nil
+}
+
+func validatePlanExecutables(plan launchPlan) error {
+	if _, err := cleanAbsoluteExecutable(plan.WBExecutable); err != nil {
+		return fmt.Errorf("immutable launch plan has invalid WB executable: %w", err)
+	}
+	if _, err := cleanAbsoluteExecutable(plan.HarnessExecutable); err != nil {
+		return fmt.Errorf("immutable launch plan has invalid harness executable: %w", err)
+	}
+	return nil
+}

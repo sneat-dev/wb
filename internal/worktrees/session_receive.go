@@ -46,6 +46,91 @@ type SessionReceiveResult struct {
 	Reused        bool   `json:"reused"`
 }
 
+// SessionReceiveWorktreePath derives the one accepted target checkout path
+// from local ProjectsRoot plus the immutable request. It performs no Git or
+// network access and is safe for successor-start replay after the harness may
+// already have changed the worktree.
+func SessionReceiveWorktreePath(projectsRoot string, request sessionmove.Request) (string, error) {
+	if _, err := sessionmove.EncodeRequest(request); err != nil {
+		return "", err
+	}
+	root, err := absoluteProjectsRoot(projectsRoot)
+	if err != nil {
+		return "", err
+	}
+	remote, err := gitremote.Parse(request.RepositoryRemote)
+	if err != nil {
+		return "", err
+	}
+	owner, name, _, err := canonicalRepositoryPath(root, remote.Identity.Repository)
+	if err != nil {
+		return "", err
+	}
+	home, err := wbhome.Root(root)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "worktrees", "session-"+request.HandoffID, owner, name), nil
+}
+
+// VerifyReceivedSessionBundle is the local-only replay boundary after a
+// worktree_ready event. It deliberately performs no fetch or remote-tip check:
+// a later legitimate source-branch push must not strand an already accepted
+// exact handoff. The immutable request, held receive lock, local pin branch,
+// clean checkout, commit, and handover blob remain mandatory.
+func VerifyReceivedSessionBundle(ctx context.Context, options SessionReceiveOptions) (SessionReceiveResult, error) {
+	request := options.Request
+	if _, err := sessionmove.EncodeRequest(request); err != nil {
+		return SessionReceiveResult{}, err
+	}
+	projectsRoot, err := absoluteProjectsRoot(options.ProjectsRoot)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
+	if options.ExecutionLock == nil || !options.ExecutionLock.HeldForStore(filepath.Join(home, sessionmove.DirName), request, options.RequestDigest) {
+		return SessionReceiveResult{}, fmt.Errorf("local session receive replay requires exact admitted handoff authority")
+	}
+	remote, err := gitremote.Parse(request.RepositoryRemote)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
+	owner, name, canonicalPath, err := canonicalRepositoryPath(projectsRoot, remote.Identity.Repository)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
+	held, err := openAbsoluteDirectoryNoFollow(canonicalPath, false)
+	if err != nil {
+		return SessionReceiveResult{}, fmt.Errorf("open accepted canonical repository: %w", err)
+	}
+	defer held.Close()
+	canonical, err := openSessionReceiveCanonicalFromHeldRoot(canonicalPath, held)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
+	defer canonical.close()
+	if err := verifySessionReceiveCanonical(ctx, canonical, remote.Identity); err != nil {
+		return SessionReceiveResult{}, err
+	}
+	operationPath := filepath.Join(home, "worktrees", "session-"+request.HandoffID)
+	worktreePath := filepath.Join(operationPath, owner, name)
+	if err := verifySessionReceiveReuse(ctx, canonical, operationPath, worktreePath, "wb-session/"+request.HandoffID, request.BundleCommit); err != nil {
+		return SessionReceiveResult{}, fmt.Errorf("verify accepted pinned target worktree locally: %w", err)
+	}
+	handoverBytes, err := gitCanonicalBytes(ctx, canonical, "cat-file", "blob", request.BundleCommit+":"+request.HandoverPath)
+	if err != nil {
+		return SessionReceiveResult{}, fmt.Errorf("read accepted handover blob locally: %w", err)
+	}
+	if !request.HandoverDigest.Matches(handoverBytes) {
+		return SessionReceiveResult{}, fmt.Errorf("accepted handover blob digest changed")
+	}
+	return SessionReceiveResult{Repository: remote.Identity.Repository, CanonicalDir: canonicalPath, WorktreeDir: worktreePath,
+		Commit: request.BundleCommit, HandoverBytes: handoverBytes, Reused: true}, nil
+}
+
 // ReceiveSessionBundle fetches and verifies a request's exact public Git
 // evidence, then creates or verifies one deterministic isolated target
 // worktree. It never starts a successor or changes source custody.
