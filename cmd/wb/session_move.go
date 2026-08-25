@@ -32,7 +32,7 @@ type sessionMoveDependencies struct {
 	resolveSource     func() (session.Record, bool, error)
 	checkpoint        func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error)
 	store             func(string) (sessionmove.Store, error)
-	newDeliverer      func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error)
+	newDeliverer      func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error)
 	acknowledge       func(context.Context, sessioncustody.Options) (sessioncustody.Result, error)
 }
 
@@ -56,11 +56,21 @@ func defaultSessionMoveDependencies() sessionMoveDependencies {
 			}
 			return sessionmove.NewStore(filepath.Join(home, sessionmove.DirName)), nil
 		},
-		newDeliverer: func(target sessionmove.TargetConfig, courier sessionmove.Courier) (sessioncourier.Deliverer, error) {
-			if courier != sessionmove.CourierSSH || target.SSH == nil {
+		newDeliverer: func(target sessionmove.TargetConfig, courier sessionmove.Courier, options sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			switch courier {
+			case sessionmove.CourierSSH:
+				if target.SSH == nil {
+					return nil, fmt.Errorf("target %q has no ssh courier configured", target.Machine)
+				}
+				return sessioncourier.NewSSHDeliverer(*target.SSH)
+			case sessionmove.CourierSynchestra:
+				if target.Synchestra == nil {
+					return nil, fmt.Errorf("target %q has no synchestra courier configured", target.Machine)
+				}
+				return sessioncourier.NewSynchestraDeliverer(*target.Synchestra, options)
+			default:
 				return nil, fmt.Errorf("courier %q is not implemented by this WB build", courier)
 			}
-			return sessioncourier.NewSSHDeliverer(*target.SSH)
 		},
 		acknowledge: sessioncustody.Acknowledge,
 	}
@@ -127,7 +137,19 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 			if err != nil {
 				return err
 			}
-			deliverer, err := deps.newDeliverer(target, courier)
+			var deliveryStore sessionmove.Store
+			storeReady := false
+			freshOptions := sessioncourier.SynchestraOptions{}
+			if courier == sessionmove.CourierSynchestra {
+				freshOptions.SaveDispatch = func(identity sessionmove.SynchestraDispatch) error {
+					if !storeReady {
+						return errors.New("durable handoff store is unavailable before Synchestra delivery")
+					}
+					_, _, saveErr := deliveryStore.SaveSynchestraDispatch(identity)
+					return saveErr
+				}
+			}
+			deliverer, err := deps.newDeliverer(target, courier, freshOptions)
 			if err != nil {
 				return err
 			}
@@ -161,20 +183,20 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 				}
 				return err
 			}
-			store, err := deps.store(projectsRoot)
+			deliveryStore, err = deps.store(projectsRoot)
 			if err != nil {
 				return resumablePostCheckpointError(result.Request.HandoffID, "open durable move state", err)
 			}
-			route := sessionmove.Route{HandoffID: result.Request.HandoffID, RequestDigest: result.Digest,
-				TargetMachine: result.Request.TargetMachine, Courier: courier, SSH: target.SSH}
-			if _, _, err := store.SaveRoute(route); err != nil {
+			storeReady = true
+			route := sessionMoveRoute(result.Request, result.Digest, courier, target)
+			if _, _, err := deliveryStore.SaveRoute(route); err != nil {
 				return resumablePostCheckpointError(result.Request.HandoffID, "persist immutable courier route", err)
 			}
 			delivery, err := deliverer.Deliver(command.Context(), result.RequestBytes)
 			if err != nil {
 				return resumableDeliveryError(result.Request.HandoffID, err)
 			}
-			output, err := acknowledgeSessionMove(command.Context(), deps, store, source, courier,
+			output, err := acknowledgeSessionMove(command.Context(), deps, deliveryStore, source, courier,
 				result.Request, result.Digest, delivery)
 			if err != nil {
 				return resumablePostCheckpointError(result.Request.HandoffID, "complete receipt-gated source custody", err)
@@ -249,7 +271,7 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 		if selectErr != nil {
 			return selectErr
 		}
-		route = sessionmove.Route{HandoffID: handoffID, RequestDigest: digest, TargetMachine: request.TargetMachine, Courier: courier, SSH: target.SSH}
+		route = sessionMoveRoute(request, digest, courier, target)
 		if _, _, saveErr := store.SaveRoute(route); saveErr != nil {
 			return saveErr
 		}
@@ -257,7 +279,7 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 	if strings.TrimSpace(via) != "" && sessionmove.Courier(strings.TrimSpace(via)) != route.Courier {
 		return fmt.Errorf("--via cannot change immutable courier route %q", route.Courier)
 	}
-	target := sessionmove.TargetConfig{Machine: route.TargetMachine, DefaultCourier: route.Courier, SSH: route.SSH}
+	target := sessionmove.TargetConfig{Machine: route.TargetMachine, DefaultCourier: route.Courier, SSH: route.SSH, Synchestra: route.Synchestra}
 	state, err := store.Load(handoffID)
 	if err != nil {
 		return err
@@ -268,7 +290,11 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 		delivery = sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseCompleted,
 			Receipt: &receipt, Replay: true}
 	} else {
-		deliverer, delivererErr := deps.newDeliverer(target, route.Courier)
+		options, optionsErr := sessionMoveSynchestraOptions(store, handoffID, route.Courier)
+		if optionsErr != nil {
+			return optionsErr
+		}
+		deliverer, delivererErr := deps.newDeliverer(target, route.Courier, options)
 		if delivererErr != nil {
 			return delivererErr
 		}
@@ -289,6 +315,41 @@ func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, 
 	_, err = fmt.Fprintf(command.OutOrStdout(), "completed handoff %s to successor %s via %s in tmux %s; predecessor custody is sealed\n",
 		handoffID, output.Receipt.SuccessorWBSessionID, route.Courier, output.Receipt.TmuxName)
 	return err
+}
+
+func sessionMoveRoute(request sessionmove.Request, digest sessionmove.Digest, courier sessionmove.Courier, target sessionmove.TargetConfig) sessionmove.Route {
+	route := sessionmove.Route{
+		HandoffID: request.HandoffID, RequestDigest: digest,
+		TargetMachine: request.TargetMachine, Courier: courier,
+	}
+	switch courier {
+	case sessionmove.CourierSSH:
+		route.SSH = target.SSH
+	case sessionmove.CourierSynchestra:
+		route.Synchestra = target.Synchestra
+	}
+	return route
+}
+
+func sessionMoveSynchestraOptions(store sessionmove.Store, handoffID string, courier sessionmove.Courier) (sessioncourier.SynchestraOptions, error) {
+	if courier != sessionmove.CourierSynchestra {
+		return sessioncourier.SynchestraOptions{}, nil
+	}
+	options := sessioncourier.SynchestraOptions{
+		SaveDispatch: func(identity sessionmove.SynchestraDispatch) error {
+			_, _, err := store.SaveSynchestraDispatch(identity)
+			return err
+		},
+	}
+	dispatch, err := store.LoadSynchestraDispatch(handoffID)
+	if err == nil {
+		options.Dispatch = &dispatch
+		return options, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return options, nil
+	}
+	return sessioncourier.SynchestraOptions{}, err
 }
 
 func acknowledgeSessionMove(

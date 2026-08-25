@@ -85,7 +85,7 @@ handoff transfer.
 ### Task 6: Add the Synchestra courier adapter
 
 **Verifies:** agent-session-move#ac:synchestra-uses-the-same-receiver-contract
-**Status:** planning
+**Status:** complete
 
 Implement the WB adapter for the typed `wb.session.accept.v1` Synchestra runner
 handler using the byte-identical request and receipt types used by SSH. Keep

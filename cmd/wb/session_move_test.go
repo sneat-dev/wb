@@ -49,7 +49,7 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 		},
 		resolveSource: func() (session.Record, bool, error) { return source, true, nil },
 		store:         func(string) (sessionmove.Store, error) { return store, nil },
-		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
 				delivered = append([]byte(nil), raw...)
 				request, err := sessionmove.DecodeRequest(raw)
@@ -120,6 +120,131 @@ func TestSessionMoveCommandCheckpointsThenDeliversThroughSSH(t *testing.T) {
 	}
 }
 
+func TestSessionMoveCommandUsesSynchestraWithSameReceiptAndLineageContract(t *testing.T) {
+	source := session.Record{
+		PID: 321, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex",
+		Model: "gpt-5", StartedAt: time.Now().UTC(),
+	}
+	store := sessionmove.NewStore(t.TempDir())
+	var delivered []byte
+	deps := sessionMoveDependencies{
+		defaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		loadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {
+					Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSynchestra,
+					Synchestra: &sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
+				},
+			}}, nil
+		},
+		resolveSource: func() (session.Record, bool, error) { return source, true, nil },
+		store:         func(string) (sessionmove.Store, error) { return store, nil },
+		checkpoint: func(_ context.Context, _ worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			request := completeMoveTestRequest(sessionmove.Request{
+				SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-synchestra",
+				SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: source.WBSessionID,
+				SourceMachine: source.Machine, TargetMachine: "hetzner-vm1", RepositoryRemote: "/tmp/acme/app.git",
+				Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40), BundleCommit: strings.Repeat("a", 40),
+				HandoverPath: ".wb/handoffs/handoff-synchestra.md", HandoverDigest: sessionmove.DigestBytes([]byte("handover")),
+				SourceRuntime: source.Runtime, SourceModel: source.Model, CreatedAt: time.Now().UTC(),
+			})
+			raw := mustEncodeMoveTestRequest(t, request)
+			digest := sessionmove.DigestBytes(raw)
+			if _, err := store.Admit(raw, digest); err != nil {
+				return worktrees.SessionCheckpointResult{}, err
+			}
+			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+		},
+		newDeliverer: func(target sessionmove.TargetConfig, courier sessionmove.Courier, options sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			if courier != sessionmove.CourierSynchestra || target.Synchestra == nil || target.Synchestra.Runner != "hetzner-vm1" || options.Dispatch != nil || options.SaveDispatch == nil {
+				t.Fatalf("Synchestra factory inputs: target=%#v courier=%q options=%#v", target, courier, options)
+			}
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				delivered = append([]byte(nil), raw...)
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				if err := options.SaveDispatch(sessionmove.SynchestraDispatch{
+					HandoffID: request.HandoffID, RequestDigest: sessionmove.DigestBytes(raw), Runner: target.Synchestra.Runner,
+					InvocationID: request.HandoffID, Handler: sessionmove.SynchestraSessionAcceptHandler, DispatchID: "dsp_synchestra",
+				}); err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			}), nil
+		},
+		acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{
+		"--to", "hetzner-vm1", "--via", "synchestra", "--handover-file", "-", "--format", "json",
+	})
+	command.SetIn(strings.NewReader("continue on the runner\n"))
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var rendered sessionMoveOutput
+	if err := json.Unmarshal(output.Bytes(), &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.Courier != sessionmove.CourierSynchestra || rendered.SourceActive || rendered.Receipt == nil || rendered.Address == nil ||
+		rendered.Receipt.HandoffID != "handoff-synchestra" || rendered.Receipt.SuccessorWBSessionID != "wbs-successor" ||
+		rendered.Address.PredecessorWBSessionID != source.WBSessionID || rendered.Address.Route.Courier != sessionmove.CourierSynchestra ||
+		rendered.Address.Route.Synchestra == nil || rendered.Address.Route.Synchestra.Runner != "hetzner-vm1" {
+		t.Fatalf("Synchestra move output = %#v", rendered)
+	}
+	if !bytes.Equal(delivered, mustEncodeMoveTestRequest(t, rendered.Request)) {
+		t.Fatal("Synchestra did not receive the exact checkpoint bytes")
+	}
+	dispatch, err := store.LoadSynchestraDispatch("handoff-synchestra")
+	if err != nil || dispatch.InvocationID != "handoff-synchestra" || dispatch.DispatchID != "dsp_synchestra" {
+		t.Fatalf("durable Synchestra dispatch = %#v err=%v", dispatch, err)
+	}
+}
+
+func TestSessionMoveCommandPreflightsSynchestraBeforeCheckpoint(t *testing.T) {
+	preflightErr := errors.New("synchestra executable is unavailable")
+	checkpointed := false
+	deps := sessionMoveDependencies{
+		defaultConfigPath: func() string { return "/tmp/wb.yaml" },
+		loadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {
+					Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSynchestra,
+					Synchestra: &sessionmove.SynchestraConfig{Runner: "hetzner-vm1"},
+				},
+			}}, nil
+		},
+		resolveSource: func() (session.Record, bool, error) {
+			return session.Record{PID: 321, WBSessionID: "wbs-source", Runtime: "codex"}, true, nil
+		},
+		newDeliverer: func(target sessionmove.TargetConfig, courier sessionmove.Courier, options sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			if courier != sessionmove.CourierSynchestra || target.Synchestra == nil || options.SaveDispatch == nil || options.Dispatch != nil {
+				t.Fatalf("Synchestra preflight inputs: target=%#v courier=%q options=%#v", target, courier, options)
+			}
+			return nil, preflightErr
+		},
+		checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+			checkpointed = true
+			return worktrees.SessionCheckpointResult{}, errors.New("must not checkpoint")
+		},
+	}
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--via", "synchestra", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("continue on the runner\n"))
+	if err := command.Execute(); !errors.Is(err, preflightErr) {
+		t.Fatalf("error = %v, want %v", err, preflightErr)
+	}
+	if checkpointed {
+		t.Fatal("Synchestra preflight failure reached checkpoint mutation")
+	}
+}
+
 func TestSessionMoveCommandRefusesMissingSessionAndEmptyHandoverBeforeCheckpoint(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -152,7 +277,7 @@ func TestSessionMoveCommandRefusesMissingSessionAndEmptyHandoverBeforeCheckpoint
 					}}, nil
 				},
 				resolveSource: test.resolve,
-				newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+				newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 					return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) { return sessionreceive.Result{}, nil }), nil
 				},
 				checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
@@ -204,7 +329,7 @@ func TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute(t *testing.T) {
 			}
 			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
 		},
-		newDeliverer: func(target sessionmove.TargetConfig, _ sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(target sessionmove.TargetConfig, _ sessionmove.Courier, _ sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			routedHosts = append(routedHosts, target.SSH.Host)
 			return delivererFunc(func(_ context.Context, got []byte) (sessionreceive.Result, error) {
 				calls++
@@ -284,7 +409,7 @@ func TestSessionMoveResumeRepairsDurableReceiptWithoutRedelivery(t *testing.T) {
 	deps := sessionMoveDependencies{
 		resolveSource: func() (session.Record, bool, error) { return source, true, nil },
 		store:         func(string) (sessionmove.Store, error) { return store, nil },
-		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			deliveries++
 			return nil, errors.New("durable local receipt must skip courier")
 		},
@@ -326,7 +451,7 @@ func TestSessionMoveRejectsUnsupportedHarnessBeforeCheckpoint(t *testing.T) {
 		resolveSource: func() (session.Record, bool, error) {
 			return session.Record{PID: 1, WBSessionID: "wbs-source", Runtime: "codex"}, true, nil
 		},
-		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) { return sessionreceive.Result{}, nil }), nil
 		},
 		checkpoint: func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
@@ -375,7 +500,7 @@ func TestSessionMoveReportsExactResumeAfterRoutePersistenceFailure(t *testing.T)
 			return worktrees.SessionCheckpointResult{Request: request, Digest: sessionmove.DigestBytes(raw), RequestBytes: raw}, nil
 		},
 		store: func(string) (sessionmove.Store, error) { return sessionmove.NewStore(invalidStoreRoot), nil },
-		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
 				delivered = true
 				return sessionreceive.Result{}, nil
@@ -413,7 +538,7 @@ func TestSessionMoveReportsExactResumeAfterDurableCheckpointEvidenceFailure(t *t
 			return worktrees.SessionCheckpointResult{Request: sessionmove.Request{HandoffID: handoffID}},
 				errors.New("source owner evidence interrupted")
 		},
-		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
 				delivered = true
 				return sessionreceive.Result{}, errors.New("must not deliver")
@@ -463,7 +588,7 @@ func TestSessionMoveRefusesCourierSuccessWithoutCompletionReceipt(t *testing.T) 
 			return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
 		},
 		store: func(string) (sessionmove.Store, error) { return store, nil },
-		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier) (sessioncourier.Deliverer, error) {
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
 			return delivererFunc(func(context.Context, []byte) (sessionreceive.Result, error) {
 				return sessionreceive.Result{Request: request, Digest: digest, Phase: sessionmove.PhaseSuccessorStarted}, nil
 			}), nil

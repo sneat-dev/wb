@@ -23,12 +23,13 @@ const maxSuccessorAddressBytes = 32 << 10
 // first delivery attempt. Resume always reuses it, so config/default changes
 // cannot switch an ambiguous handoff to another courier or SSH host.
 type Route struct {
-	SchemaVersion int        `json:"schema_version"`
-	HandoffID     string     `json:"handoff_id"`
-	RequestDigest Digest     `json:"request_digest"`
-	TargetMachine string     `json:"target_machine"`
-	Courier       Courier    `json:"courier"`
-	SSH           *SSHConfig `json:"ssh,omitempty"`
+	SchemaVersion int               `json:"schema_version"`
+	HandoffID     string            `json:"handoff_id"`
+	RequestDigest Digest            `json:"request_digest"`
+	TargetMachine string            `json:"target_machine"`
+	Courier       Courier           `json:"courier"`
+	SSH           *SSHConfig        `json:"ssh,omitempty"`
+	Synchestra    *SynchestraConfig `json:"synchestra,omitempty"`
 }
 
 // SuccessorAddress is the durable courier-neutral address of one completed
@@ -75,10 +76,7 @@ func (s Store) SaveRoute(route Route) (Route, bool, error) {
 	if route.RequestDigest != digest || route.TargetMachine != request.TargetMachine {
 		return Route{}, false, fmt.Errorf("%w: courier route does not match admitted request", ErrHandoffConflict)
 	}
-	if route.Courier != CourierSSH || route.SSH == nil {
-		return Route{}, false, fmt.Errorf("Task 4 courier route must select configured SSH")
-	}
-	if err := route.SSH.Validate(); err != nil {
+	if err := validateCourierRoute(route); err != nil {
 		return Route{}, false, err
 	}
 	raw, err := marshalJSON(route)
@@ -312,13 +310,27 @@ func decodeAndValidateRoute(raw []byte, request Request, digest Digest) (Route, 
 	if route.SchemaVersion != RouteSchemaVersion || route.HandoffID != request.HandoffID || route.RequestDigest != digest || route.TargetMachine != request.TargetMachine {
 		return Route{}, fmt.Errorf("%w: durable courier route does not match admitted request", ErrHandoffConflict)
 	}
-	if route.Courier != CourierSSH || route.SSH == nil {
-		return Route{}, errors.New("durable courier route is unsupported by this WB build")
-	}
-	if err := route.SSH.Validate(); err != nil {
+	if err := validateCourierRoute(route); err != nil {
 		return Route{}, err
 	}
 	return route, nil
+}
+
+func validateCourierRoute(route Route) error {
+	switch route.Courier {
+	case CourierSSH:
+		if route.SSH == nil || route.Synchestra != nil {
+			return errors.New("ssh courier route must contain only one configured ssh address")
+		}
+		return route.SSH.Validate()
+	case CourierSynchestra:
+		if route.Synchestra == nil || route.SSH != nil {
+			return errors.New("synchestra courier route must contain only one configured runner address")
+		}
+		return route.Synchestra.Validate()
+	default:
+		return errors.New("durable courier route is unsupported by this WB build")
+	}
 }
 
 func loadRouteAt(handoff *os.File, request Request, digest Digest) (Route, error) {
@@ -424,10 +436,7 @@ func validateSuccessorAddress(address SuccessorAddress, successorWBSessionID str
 		address.Route.RequestDigest != address.RequestDigest || address.Route.TargetMachine != address.TargetMachine {
 		return fmt.Errorf("%w: successor address route does not match completed handoff", ErrHandoffConflict)
 	}
-	if address.Route.Courier != CourierSSH || address.Route.SSH == nil {
-		return fmt.Errorf("successor address route is unsupported by this WB build")
-	}
-	if err := address.Route.SSH.Validate(); err != nil {
+	if err := validateCourierRoute(address.Route); err != nil {
 		return err
 	}
 	return nil

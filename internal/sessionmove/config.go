@@ -55,6 +55,12 @@ type SynchestraConfig struct {
 	Runner string `yaml:"runner" json:"runner"`
 }
 
+// Validate keeps the configured runner safe to pass as one fixed argv value.
+// The runner is routing data only; it never contributes shell or command text.
+func (c SynchestraConfig) Validate() error {
+	return validateFixedArgument("synchestra.runner", c.Runner)
+}
+
 // TargetConfig is one WB machine and its separate courier addresses. Machine
 // is populated from the targets map key and is never decoded from an address.
 type TargetConfig struct {
@@ -141,7 +147,7 @@ func validateTarget(target TargetConfig) error {
 		}
 	}
 	if target.Synchestra != nil {
-		if err := validateFixedArgument("synchestra.runner", target.Synchestra.Runner); err != nil {
+		if err := target.Synchestra.Validate(); err != nil {
 			return err
 		}
 	}
