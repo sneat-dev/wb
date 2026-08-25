@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -106,5 +107,30 @@ func TestUnpushedCommitsStillSeesOtherBranchesBesideAGoneOne(t *testing.T) {
 	}
 	if len(commits) != 1 {
 		t.Fatalf("commits = %v, want only the live branch's unpushed commit", commits)
+	}
+}
+
+func TestUnpushedWorkAttributesCommitToLinkedWorktree(t *testing.T) {
+	clone, _ := pushedClone(t)
+	linked := filepath.Join(t.TempDir(), "linked")
+	git(t, clone, "worktree", "add", "-q", "-b", "linked-work", linked, "main")
+	git(t, linked, "commit", "-q", "--allow-empty", "-m", "linked work")
+
+	commits, branches, err := UnpushedWork(clone)
+	if err != nil {
+		t.Fatalf("UnpushedWork: %v", err)
+	}
+	if len(commits) != 1 {
+		t.Fatalf("commits = %v, want the linked-worktree commit", commits)
+	}
+	if len(branches) != 1 {
+		t.Fatalf("branches = %+v, want one attributed branch", branches)
+	}
+	canonicalLinked, err := filepath.EvalSymlinks(linked)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", linked, err)
+	}
+	if got := branches[0]; got.Branch != "linked-work" || got.Worktree != canonicalLinked || len(got.Commits) != 1 || got.Commits[0] != commits[0] {
+		t.Fatalf("branch attribution = %+v, want linked-work in %q with %q", got, linked, commits[0])
 	}
 }

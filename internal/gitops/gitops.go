@@ -291,6 +291,16 @@ func RemoteHasBranches(repoPath string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// UnpushedBranch attributes commits that exist on no remote to one local
+// branch and, when that branch is checked out, its canonical or linked
+// worktree. Commits can appear under more than one branch; RepoStatus.Unpushed
+// remains the unique flat list used for counts and backward compatibility.
+type UnpushedBranch struct {
+	Branch   string   `yaml:"branch" json:"branch"`
+	Worktree string   `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	Commits  []string `yaml:"commits" json:"commits"`
+}
+
 // UnpushedCommits lists commits present on some local branch and on no
 // remote-tracking branch, newest first, as `<short-sha> <subject>` lines.
 //
@@ -298,31 +308,46 @@ func RemoteHasBranches(repoPath string) (bool, error) {
 // abandoned on a side branch at least as often as on the default one, and a
 // clone holding either is holding work that exists nowhere else.
 func UnpushedCommits(repoPath string) ([]string, error) {
+	commits, _, err := UnpushedWork(repoPath)
+	return commits, err
+}
+
+// UnpushedWork returns both the unique flat commit list and branch/worktree
+// attribution. It requires at least one known remote-tracking ref for the same
+// reason as UnpushedCommits: without one, the whole repository history would
+// be indistinguishable from unpublished work.
+func UnpushedWork(repoPath string) ([]string, []UnpushedBranch, error) {
+	return unpushedWork(repoPath, true)
+}
+
+func unpushedWork(repoPath string, requireRemoteEvidence bool) ([]string, []UnpushedBranch, error) {
 	// With no remote-tracking refs, `--branches --not --remotes` subtracts
 	// nothing and returns the entire history — a clone that has never fetched
 	// would be reported as holding thousands of unpushed commits. "Unpushed"
 	// only means anything relative to a known remote state, so say nothing
 	// rather than something false.
-	refs, err := run(repoPath, "git", "for-each-ref", "--count=1", "refs/remotes")
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(refs) == "" {
-		return nil, nil
+	if requireRemoteEvidence {
+		refs, err := run(repoPath, "git", "for-each-ref", "--count=1", "refs/remotes")
+		if err != nil {
+			return nil, nil, err
+		}
+		if strings.TrimSpace(refs) == "" {
+			return nil, nil, nil
+		}
 	}
 
 	branches, err := unpushableBranches(repoPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(branches) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	args := append([]string{"log", "--oneline"}, branches...)
 	out, err := run(repoPath, "git", append(args, "--not", "--remotes")...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var commits []string
 	for _, line := range strings.Split(out, "\n") {
@@ -330,7 +355,52 @@ func UnpushedCommits(repoPath string) ([]string, error) {
 			commits = append(commits, line)
 		}
 	}
-	return commits, nil
+	if len(commits) == 0 {
+		return nil, nil, nil
+	}
+
+	worktrees, err := worktreesByBranch(repoPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	attributed := make([]UnpushedBranch, 0, len(branches))
+	for _, ref := range branches {
+		branchOut, branchErr := run(repoPath, "git", "log", "--oneline", ref, "--not", "--remotes")
+		if branchErr != nil {
+			return nil, nil, branchErr
+		}
+		var branchCommits []string
+		for _, line := range strings.Split(branchOut, "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				branchCommits = append(branchCommits, line)
+			}
+		}
+		if len(branchCommits) == 0 {
+			continue
+		}
+		attributed = append(attributed, UnpushedBranch{
+			Branch: strings.TrimPrefix(ref, "refs/heads/"), Worktree: worktrees[ref], Commits: branchCommits,
+		})
+	}
+	return commits, attributed, nil
+}
+
+func worktreesByBranch(repoPath string) (map[string]string, error) {
+	out, err := run(repoPath, "git", "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	worktrees := map[string]string{}
+	worktree := ""
+	for _, field := range strings.Split(out, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			worktree = strings.TrimPrefix(field, "worktree ")
+		case strings.HasPrefix(field, "branch ") && worktree != "":
+			worktrees[strings.TrimPrefix(field, "branch ")] = worktree
+		}
+	}
+	return worktrees, nil
 }
 
 // unpushableBranches lists the local branches whose commits could genuinely
@@ -567,11 +637,12 @@ func PushSetUpstream(repoPath, branch string) error {
 // RepoStatus is git working-tree/history state relevant to sync decisions
 // and to reporting why a repo needs attention.
 type RepoStatus struct {
-	Modified   []string // tracked files with changes
-	Untracked  []string // untracked files
-	Conflicted []string // merge-conflict paths
-	Unpushed   []string // `git log --branches --not --remotes --oneline` lines
-	Stashed    []string // `git stash list` lines
+	Modified         []string         // tracked files with changes
+	Untracked        []string         // untracked files
+	Conflicted       []string         // merge-conflict paths
+	Unpushed         []string         // unique `<short-sha> <subject>` lines
+	UnpushedBranches []UnpushedBranch // branch and linked-worktree attribution
+	Stashed          []string         // `git stash list` lines
 }
 
 // WorkingTreeDirty reports whether the working tree itself has changes
@@ -662,14 +733,9 @@ func Status(repoPath string) (RepoStatus, error) {
 		}
 	}
 
-	out, err = run(repoPath, "git", "log", "--branches", "--not", "--remotes", "--oneline")
+	s.Unpushed, s.UnpushedBranches, err = unpushedWork(repoPath, false)
 	if err != nil {
 		return s, err
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			s.Unpushed = append(s.Unpushed, line)
-		}
 	}
 
 	return s, nil

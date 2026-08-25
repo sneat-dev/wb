@@ -92,15 +92,19 @@ func TestBuildListsOnlyNonCleanRepositoriesAndCountsAll(t *testing.T) {
 }
 
 func TestBuildRedactsUnpushedSubjectsToCounts(t *testing.T) {
-	repos := []RepositoryInput{{Repository: "acme/x", Path: "/p/x", Status: gitops.RepoStatus{Unpushed: []string{"abc feat", "def fix"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}}}
+	attribution := []gitops.UnpushedBranch{{Branch: "feature", Worktree: "/p/feature", Commits: []string{"abc feat", "def fix"}}}
+	repos := []RepositoryInput{{Repository: "acme/x", Path: "/p/x", Status: gitops.RepoStatus{Unpushed: []string{"abc feat", "def fix"}, UnpushedBranches: attribution}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}}}
 
 	full := Build(identity(), repos, nil, RedactNone)
 	if len(full.Repositories[0].Unpushed) != 2 || full.Repositories[0].UnpushedCount != 2 {
 		t.Fatalf("subjects mode: Unpushed=%v UnpushedCount=%d", full.Repositories[0].Unpushed, full.Repositories[0].UnpushedCount)
 	}
+	if !reflect.DeepEqual(full.Repositories[0].UnpushedBranches, attribution) {
+		t.Fatalf("subjects mode: UnpushedBranches=%+v, want %+v", full.Repositories[0].UnpushedBranches, attribution)
+	}
 	redacted := Build(identity(), repos, nil, RedactUnpushed)
-	if redacted.Repositories[0].Unpushed != nil || redacted.Repositories[0].UnpushedCount != 2 {
-		t.Fatalf("counts mode: Unpushed=%v UnpushedCount=%d", redacted.Repositories[0].Unpushed, redacted.Repositories[0].UnpushedCount)
+	if redacted.Repositories[0].Unpushed != nil || redacted.Repositories[0].UnpushedBranches != nil || redacted.Repositories[0].UnpushedCount != 2 {
+		t.Fatalf("counts mode: Unpushed=%v UnpushedBranches=%+v UnpushedCount=%d", redacted.Repositories[0].Unpushed, redacted.Repositories[0].UnpushedBranches, redacted.Repositories[0].UnpushedCount)
 	}
 }
 
