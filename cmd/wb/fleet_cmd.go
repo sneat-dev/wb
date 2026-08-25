@@ -149,7 +149,9 @@ func newFleetStatusCmd() *cobra.Command {
 stashed, or unpushed checkouts under --projects-root.
 
 Clean repositories are counted rather than listed unless --all is set. This is
-the fleet-shaped form of the historical wb status command.`,
+the fleet-shaped form of the historical wb status command. A live completion
+counter is shown on stderr when attached to a terminal; --non-interactive
+disables it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRepositoryStatus(repositoryStatusRequest{
@@ -161,6 +163,7 @@ the fleet-shaped form of the historical wb status command.`,
 				filter:    filterFlag,
 				projects:  projectsRoot,
 				titleKind: statusTitleFleet,
+				progress:  cmd.ErrOrStderr(),
 			})
 		},
 	}
