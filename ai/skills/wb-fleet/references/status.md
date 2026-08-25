@@ -21,6 +21,10 @@ wb repo status . --details --format json
 `wb status` remains as a compatibility entry point: no path matches
 `wb fleet status`, and a path matches `wb repo status`.
 
+Interactive fleet status scans show a live repository completion counter on
+stderr while the final report is built. Redirected and `--non-interactive`
+runs stay quiet, and stdout remains a clean Markdown, YAML, or JSON document.
+
 Fleet commands default to local disk/Git state. Layout placement counts are
 always included in stats/overview. Pass `--remote` for sync-drift counts
 (contacts GitHub) or `--hooks` for managed-hook finding counts. Use

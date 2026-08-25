@@ -41,6 +41,7 @@ not scan the projects-root fleet.`,
 				filter:    "",
 				projects:  projectsRoot,
 				titleKind: statusTitleRepo,
+				progress:  cmd.ErrOrStderr(),
 			})
 		},
 	}

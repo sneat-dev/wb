@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/gitops"
 )
 
@@ -32,7 +34,8 @@ Prefer the explicit commands:
 
 Without a path this command matches wb fleet status. With a path it matches
 wb repo status. It reads local Git state only and never fetches or contacts
-GitHub.`,
+GitHub. Fleet scans show a live completion counter on stderr when attached to
+a terminal; --non-interactive disables it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "."
@@ -50,6 +53,7 @@ GitHub.`,
 				filter:    filterFlag,
 				projects:  projectsRoot,
 				titleKind: statusTitleAuto,
+				progress:  cmd.ErrOrStderr(),
 			})
 		},
 	}
@@ -74,6 +78,7 @@ type repositoryStatusRequest struct {
 	filter    string
 	projects  string
 	titleKind statusTitleKind
+	progress  io.Writer
 }
 
 func bindRepositoryStatusFlags(command *cobra.Command, options *qualityOptions, details, all *bool, fleetFilters bool) {
@@ -96,7 +101,14 @@ func runRepositoryStatus(request repositoryStatusRequest) error {
 	if err != nil {
 		return err
 	}
-	report := statusIndex{SchemaVersion: 1, Repositories: runStatusTargets(targets, request.options.parallel)}
+	progress := newStatusProgress(
+		request.progress,
+		request.fleet && console.Interactive(request.progress, nonInteractive),
+	)
+	progress.start(len(targets))
+	repositories := runStatusTargetsWithProgress(targets, request.options.parallel, progress.complete)
+	progress.finish()
+	report := statusIndex{SchemaVersion: 1, Repositories: repositories}
 	// A fleet report is a worklist, so clean checkouts are noise unless they
 	// were asked for. One named repository is a direct question about that
 	// checkout, where "clean" is the answer, not nothing.
@@ -153,12 +165,23 @@ type repositoryStatusInfo struct {
 }
 
 func runStatusTargets(targets []qualityTarget, parallel int) []repositoryStatusInfo {
+	return runStatusTargetsWithProgress(targets, parallel, nil)
+}
+
+func runStatusTargetsWithProgress(
+	targets []qualityTarget,
+	parallel int,
+	complete func(qualityTarget, repositoryStatusInfo),
+) []repositoryStatusInfo {
 	reports := make([]repositoryStatusInfo, len(targets))
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
 		state, err := gitops.Status(target.path)
 		if err != nil {
 			reports[index] = repositoryStatusInfo{Repository: target.repository, Path: target.path, Status: "error", Error: err.Error()}
+			if complete != nil {
+				complete(target, reports[index])
+			}
 			return
 		}
 		status := "clean"
@@ -175,6 +198,9 @@ func runStatusTargets(targets []qualityTarget, parallel int) []repositoryStatusI
 			Conflicted: state.Conflicted,
 			Unpushed:   state.Unpushed,
 			Stashed:    state.Stashed,
+		}
+		if complete != nil {
+			complete(target, reports[index])
 		}
 	})
 	return reports
