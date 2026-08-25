@@ -33,6 +33,20 @@ later writes by matching its own ancestors against registered sessions — which
 confirms a declaration rather than guessing an owner, since an unregistered
 ancestor is never treated as one.
 
+Registration assigns a stable WB session ID and records the local machine.
+The ID is independent of the PID and any harness-native session ID, and is
+preserved when the same PID re-registers. A WB-managed successor supplies its
+preallocated identity and lineage explicitly:
+
+```sh
+wb session register --pid 12345 --wb-session-id wbs-successor \
+  --machine hetzner-vm1 --runtime codex --native-harness-id native-123 \
+  --tmux-name wb-session-wbs-successor \
+  --predecessor-wb-session-id wbs-source --handoff-id handoff-123
+```
+
+`--agent-id` remains a legacy alias for `--native-harness-id`.
+
 A start-up hook cannot do this on the session's behalf: hooks run in an
 isolated subprocess whose parent is an intermediate shell, not the agent, and
 they cannot export variables into the session either. A hook should prompt the

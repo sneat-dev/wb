@@ -3918,6 +3918,7 @@
     {
       "id": "wb.session.register",
       "feature_refs": [
+        "spec/features/agent-session-move/README.md",
         "spec/features/work-log/README.md"
       ],
       "since": "unreleased",
@@ -3929,9 +3930,15 @@
               "path": "wb session register",
               "flags": [
                 "--agent-id",
+                "--handoff-id",
+                "--machine",
                 "--model",
+                "--native-harness-id",
                 "--pid",
-                "--runtime"
+                "--predecessor-wb-session-id",
+                "--runtime",
+                "--tmux-name",
+                "--wb-session-id"
               ],
               "modes": [
                 "Announces an agent session so later WB writes are attributed to it without per-command declaration."
@@ -3948,7 +3955,13 @@
               "contains": [
                 "--pid",
                 "--runtime",
-                "--model"
+                "--model",
+                "--wb-session-id",
+                "--machine",
+                "--native-harness-id",
+                "--tmux-name",
+                "--predecessor-wb-session-id",
+                "--handoff-id"
               ]
             }
           ],
@@ -3973,6 +3986,11 @@
             {
               "path": "internal/session/session_test.go",
               "name": "TestRegisterRecordsWhatWBKnowsAboutItself",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/session/session_test.go",
+              "name": "TestRegisterAssignsStableWBIdentityAndMachine",
               "kind": "integration"
             },
             {

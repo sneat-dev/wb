@@ -69,9 +69,13 @@ func installSessionResolver() {
 		if !ok {
 			return worktrees.AgentIdentity{}, false
 		}
+		nativeID := record.NativeHarnessID
+		if nativeID == "" {
+			nativeID = record.AgentID
+		}
 		return worktrees.AgentIdentity{
 			Runtime: record.Runtime,
-			AgentID: record.AgentID,
+			AgentID: nativeID,
 			Model:   record.Model,
 			PID:     record.PID,
 		}, true

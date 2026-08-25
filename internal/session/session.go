@@ -11,6 +11,7 @@
 package session
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +31,19 @@ const DirName = "sessions"
 
 // Record is one agent session's self-declaration.
 type Record struct {
-	PID     int    `json:"pid"`
-	Runtime string `json:"runtime,omitempty"`
-	Model   string `json:"model,omitempty"`
+	PID                    int    `json:"pid"`
+	WBSessionID            string `json:"wb_session_id,omitempty"`
+	Machine                string `json:"machine,omitempty"`
+	Runtime                string `json:"runtime,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	NativeHarnessID        string `json:"native_harness_id,omitempty"`
+	TmuxName               string `json:"tmux_name,omitempty"`
+	PredecessorWBSessionID string `json:"predecessor_wb_session_id,omitempty"`
+	HandoffID              string `json:"handoff_id,omitempty"`
+
+	// AgentID is the legacy spelling for a harness-native session ID. It stays
+	// readable and writable so existing hooks and PID records continue to
+	// work; new integrations should use NativeHarnessID.
 	AgentID string `json:"agent_id,omitempty"`
 
 	// WBVersion and WBPath describe the binary that took the registration.
@@ -62,6 +73,16 @@ func recordPath(dir string, pid int) string {
 	return filepath.Join(dir, strconv.Itoa(pid)+".json")
 }
 
+// NewID returns an opaque WB session identity. It is independent of every
+// runtime-specific identifier and safe to carry in file and tmux names.
+func NewID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate WB session ID: %w", err)
+	}
+	return fmt.Sprintf("wbs-%x", random[:]), nil
+}
+
 // Register writes a session record, replacing any record for the same PID.
 // Re-registering is deliberately allowed: a session that restarts its harness
 // or corrects its model should not have to find and delete the old file.
@@ -69,9 +90,68 @@ func Register(dir string, record Record) (Record, error) {
 	if record.PID <= 0 {
 		return Record{}, fmt.Errorf("a session must declare a positive PID")
 	}
+	record.WBSessionID = strings.TrimSpace(record.WBSessionID)
+	record.Machine = strings.TrimSpace(record.Machine)
 	record.Runtime = strings.TrimSpace(record.Runtime)
 	record.Model = strings.TrimSpace(record.Model)
+	record.NativeHarnessID = strings.TrimSpace(record.NativeHarnessID)
+	record.TmuxName = strings.TrimSpace(record.TmuxName)
+	record.PredecessorWBSessionID = strings.TrimSpace(record.PredecessorWBSessionID)
+	record.HandoffID = strings.TrimSpace(record.HandoffID)
 	record.AgentID = strings.TrimSpace(record.AgentID)
+	if record.NativeHarnessID != "" && record.AgentID != "" && record.NativeHarnessID != record.AgentID {
+		return Record{}, fmt.Errorf("native harness ID %q conflicts with legacy agent ID %q", record.NativeHarnessID, record.AgentID)
+	}
+	if record.NativeHarnessID == "" {
+		record.NativeHarnessID = record.AgentID
+	}
+
+	// Re-registering a PID is an update to the same declared session unless a
+	// caller supplies a preallocated identity explicitly. Preserve the stable
+	// fields that cannot be rediscovered from the process itself.
+	if previous, ok := readRecord(recordPath(dir, record.PID)); ok {
+		sameSession := record.WBSessionID == "" || record.WBSessionID == previous.WBSessionID
+		if record.WBSessionID == "" {
+			record.WBSessionID = previous.WBSessionID
+		}
+		if sameSession {
+			if record.Machine == "" {
+				record.Machine = previous.Machine
+			}
+			if record.NativeHarnessID == "" {
+				record.NativeHarnessID = previous.NativeHarnessID
+			}
+			if record.TmuxName == "" {
+				record.TmuxName = previous.TmuxName
+			}
+			if record.PredecessorWBSessionID == "" {
+				record.PredecessorWBSessionID = previous.PredecessorWBSessionID
+			}
+			if record.HandoffID == "" {
+				record.HandoffID = previous.HandoffID
+			}
+			if record.StartedAt.IsZero() {
+				record.StartedAt = previous.StartedAt
+			}
+		}
+	}
+	if record.WBSessionID == "" {
+		id, err := NewID()
+		if err != nil {
+			return Record{}, err
+		}
+		record.WBSessionID = id
+	}
+	if record.Machine == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return Record{}, fmt.Errorf("resolve session machine: %w", err)
+		}
+		record.Machine = strings.TrimSpace(hostname)
+		if record.Machine == "" {
+			return Record{}, fmt.Errorf("resolve session machine: hostname is empty")
+		}
+	}
 	record.WBVersion = buildinfo.Version()
 	if executable, err := os.Executable(); err == nil {
 		record.WBPath = executable
@@ -93,6 +173,21 @@ func Register(dir string, record Record) (Record, error) {
 	return record, nil
 }
 
+func readRecord(path string) (Record, bool) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return Record{}, false
+	}
+	var record Record
+	if err := json.Unmarshal(content, &record); err != nil || record.PID <= 0 {
+		return Record{}, false
+	}
+	if record.NativeHarnessID == "" {
+		record.NativeHarnessID = record.AgentID
+	}
+	return record, true
+}
+
 // List returns every recorded session with its liveness, newest first. A
 // missing directory is not an error: no session has registered yet.
 func List(dir string) ([]View, error) {
@@ -108,14 +203,10 @@ func List(dir string) ([]View, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		var record Record
 		// A malformed record is skipped rather than failing the listing: one
 		// bad file must not hide every other session.
-		if err := json.Unmarshal(content, &record); err != nil || record.PID <= 0 {
+		record, ok := readRecord(filepath.Join(dir, entry.Name()))
+		if !ok {
 			continue
 		}
 		views = append(views, View{Record: record, State: state(record.PID)})
@@ -149,12 +240,8 @@ func Lookup(dir string, pid int) (Record, bool) {
 	if pid <= 0 {
 		return Record{}, false
 	}
-	content, err := os.ReadFile(recordPath(dir, pid))
-	if err != nil {
-		return Record{}, false
-	}
-	var record Record
-	if err := json.Unmarshal(content, &record); err != nil {
+	record, ok := readRecord(recordPath(dir, pid))
+	if !ok {
 		return Record{}, false
 	}
 	return record, state(record.PID) == StateLive

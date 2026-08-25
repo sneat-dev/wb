@@ -1,0 +1,147 @@
+package sessionmove
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path"
+	"strings"
+	"unicode"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Courier names the configured delivery adapter. Machine identity remains the
+// target map key; courier addresses are deliberately nested beneath it.
+type Courier string
+
+const (
+	CourierSSH        Courier = "ssh"
+	CourierSynchestra Courier = "synchestra"
+)
+
+type SSHConfig struct {
+	Host   string `yaml:"host" json:"host"`
+	WBPath string `yaml:"wb_path,omitempty" json:"wb_path,omitempty"`
+}
+
+type SynchestraConfig struct {
+	Runner string `yaml:"runner" json:"runner"`
+}
+
+// TargetConfig is one WB machine and its separate courier addresses. Machine
+// is populated from the targets map key and is never decoded from an address.
+type TargetConfig struct {
+	Machine        string            `yaml:"-" json:"machine"`
+	DefaultCourier Courier           `yaml:"default_courier" json:"default_courier"`
+	SSH            *SSHConfig        `yaml:"ssh,omitempty" json:"ssh,omitempty"`
+	Synchestra     *SynchestraConfig `yaml:"synchestra,omitempty" json:"synchestra,omitempty"`
+}
+
+// Config is the session_move section of ~/.config/wb/wb.yaml.
+type Config struct {
+	Targets map[string]TargetConfig `yaml:"targets" json:"targets"`
+}
+
+type configFile struct {
+	SessionMove *Config `yaml:"session_move"`
+}
+
+// UnconfiguredError distinguishes an absent session_move section from invalid
+// configured values, so a future command can map the former to usage help.
+type UnconfiguredError struct{ Path string }
+
+func (e *UnconfiguredError) Error() string {
+	return fmt.Sprintf("session move is not configured in %s; add a session_move.targets section", e.Path)
+}
+
+// LoadConfig reads and validates only session_move while tolerating unrelated
+// top-level WB configuration sections.
+func LoadConfig(configPath string) (Config, error) {
+	raw, err := os.ReadFile(configPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return Config{}, &UnconfiguredError{Path: configPath}
+	}
+	if err != nil {
+		return Config{}, fmt.Errorf("read config %s: %w", configPath, err)
+	}
+	var file configFile
+	if err := yaml.Unmarshal(raw, &file); err != nil {
+		return Config{}, fmt.Errorf("parse config %s: %w", configPath, err)
+	}
+	if file.SessionMove == nil {
+		return Config{}, &UnconfiguredError{Path: configPath}
+	}
+	config := *file.SessionMove
+	if len(config.Targets) == 0 {
+		return Config{}, fmt.Errorf("session_move.targets must configure at least one target")
+	}
+	for machine, target := range config.Targets {
+		if err := validateID("session_move target machine", machine); err != nil {
+			return Config{}, err
+		}
+		target.Machine = machine
+		if err := validateTarget(target); err != nil {
+			return Config{}, fmt.Errorf("session_move.targets.%s: %w", machine, err)
+		}
+		config.Targets[machine] = target
+	}
+	return config, nil
+}
+
+// Target resolves a canonical WB machine name without consulting courier
+// aliases or addresses.
+func (c Config) Target(machine string) (TargetConfig, bool) {
+	target, ok := c.Targets[machine]
+	return target, ok
+}
+
+func validateTarget(target TargetConfig) error {
+	switch target.DefaultCourier {
+	case CourierSSH:
+		if target.SSH == nil {
+			return fmt.Errorf("default_courier %q requires an ssh section", target.DefaultCourier)
+		}
+	case CourierSynchestra:
+		if target.Synchestra == nil {
+			return fmt.Errorf("default_courier %q requires a synchestra section", target.DefaultCourier)
+		}
+	default:
+		return fmt.Errorf("default_courier %q must be %q or %q", target.DefaultCourier, CourierSSH, CourierSynchestra)
+	}
+	if target.SSH != nil {
+		if err := validateFixedArgument("ssh.host", target.SSH.Host); err != nil {
+			return err
+		}
+		if target.SSH.WBPath != "" {
+			if err := validateFixedArgument("ssh.wb_path", target.SSH.WBPath); err != nil {
+				return err
+			}
+			if !path.IsAbs(target.SSH.WBPath) || path.Clean(target.SSH.WBPath) != target.SSH.WBPath {
+				return fmt.Errorf("ssh.wb_path %q must be a clean absolute target path", target.SSH.WBPath)
+			}
+		}
+	}
+	if target.Synchestra != nil {
+		if err := validateFixedArgument("synchestra.runner", target.Synchestra.Runner); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFixedArgument(field, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("%s %q must not be option-like", field, value)
+	}
+	if strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("%s %q must not contain whitespace", field, value)
+	}
+	if strings.ContainsRune(value, '\x00') {
+		return fmt.Errorf("%s must not contain NUL", field)
+	}
+	return nil
+}

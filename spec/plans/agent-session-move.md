@@ -5,7 +5,7 @@ status: Approved
 
 # Plan: Agent Session Move implementation plan
 
-**Status:** Approved
+**Status:** Executing
 **Source Feature:** agent-session-move
 **Date:** 2026-08-25
 **Owner:** codex
@@ -33,7 +33,7 @@ AI harness; the final smoke test may exercise `hetzner-vm1` explicitly.
 ### Task 1: Add stable session identity and durable handoff state
 
 **Verifies:** agent-session-move#ac:failed-or-retried-delivery-is-idempotent
-**Status:** planning
+**Status:** complete
 
 Extend session registration with a stable WB session ID, machine, lineage,
 tmux, and optional native-harness fields while retaining legacy PID records.

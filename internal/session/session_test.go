@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -23,6 +24,108 @@ func TestRegisterRecordsWhatWBKnowsAboutItself(t *testing.T) {
 	}
 	if written.StartedAt.IsZero() {
 		t.Fatal("StartedAt is zero")
+	}
+}
+
+func TestRegisterAssignsStableWBIdentityAndMachine(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	pid := os.Getpid()
+
+	first, err := Register(dir, Record{PID: pid, Runtime: "codex"})
+	if err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	if first.WBSessionID == "" {
+		t.Fatal("WBSessionID is empty")
+	}
+	if first.Machine == "" {
+		t.Fatal("Machine is empty")
+	}
+
+	second, err := Register(dir, Record{PID: pid, Runtime: "codex", Model: "corrected"})
+	if err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	if second.WBSessionID != first.WBSessionID {
+		t.Fatalf("WBSessionID changed across re-registration: %q -> %q", first.WBSessionID, second.WBSessionID)
+	}
+	if second.Machine != first.Machine {
+		t.Fatalf("Machine changed across re-registration: %q -> %q", first.Machine, second.Machine)
+	}
+}
+
+func TestRegisterRetainsPreallocatedLineageAndHarnessIdentity(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	want := Record{
+		PID:                    os.Getpid(),
+		WBSessionID:            "wbs-successor",
+		Machine:                "hetzner-vm1",
+		Runtime:                "codex",
+		Model:                  "gpt-5",
+		NativeHarnessID:        "native-123",
+		TmuxName:               "wb-session-wbs-successor",
+		PredecessorWBSessionID: "wbs-source",
+		HandoffID:              "handoff-123",
+	}
+
+	written, err := Register(dir, want)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if written.WBSessionID != want.WBSessionID || written.Machine != want.Machine ||
+		written.NativeHarnessID != want.NativeHarnessID || written.TmuxName != want.TmuxName ||
+		written.PredecessorWBSessionID != want.PredecessorWBSessionID || written.HandoffID != want.HandoffID {
+		t.Fatalf("written identity = %+v, want fields from %+v", written, want)
+	}
+
+	reRegistered, err := Register(dir, Record{PID: want.PID, Runtime: want.Runtime, Model: "corrected"})
+	if err != nil {
+		t.Fatalf("re-register successor: %v", err)
+	}
+	if reRegistered.WBSessionID != written.WBSessionID || reRegistered.Machine != written.Machine ||
+		reRegistered.NativeHarnessID != written.NativeHarnessID || reRegistered.TmuxName != written.TmuxName ||
+		reRegistered.PredecessorWBSessionID != written.PredecessorWBSessionID || reRegistered.HandoffID != written.HandoffID ||
+		!reRegistered.StartedAt.Equal(written.StartedAt) {
+		t.Fatalf("re-registration erased stable identity or lineage: first=%+v second=%+v", written, reRegistered)
+	}
+
+	loaded, ok := Lookup(dir, want.PID)
+	if !ok {
+		t.Fatal("Lookup did not return the registered successor")
+	}
+	if loaded.WBSessionID != want.WBSessionID || loaded.PredecessorWBSessionID != want.PredecessorWBSessionID || loaded.HandoffID != want.HandoffID {
+		t.Fatalf("loaded lineage = %+v, want fields from %+v", loaded, want)
+	}
+}
+
+func TestListKeepsLegacyPIDOnlyRecordsReadable(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]any{
+		"pid":        os.Getpid(),
+		"runtime":    "claude-code",
+		"agent_id":   "legacy-native-id",
+		"started_at": time.Now().UTC(),
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recordPath(dir, os.Getpid()), raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	views, err := List(dir)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(views) != 1 || views[0].PID != os.Getpid() || views[0].AgentID != "legacy-native-id" {
+		t.Fatalf("views = %+v, want the legacy PID record", views)
+	}
+	if views[0].WBSessionID != "" {
+		t.Fatalf("legacy WBSessionID = %q, want empty rather than an invented unstable identity", views[0].WBSessionID)
 	}
 }
 
