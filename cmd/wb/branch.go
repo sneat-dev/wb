@@ -54,7 +54,8 @@ in any configuration: patch-id equality proves identical content exists
 upstream, not that this branch's work is still present in the target now — a
 branch that landed and was later reverted still emits zero unique patches. Its
 row names the remedy: 'wb worktree cleanup <task> --absorbed-by <pr-or-commit>'
-for a WB-owned branch, or an explicit human decision otherwise.
+for a WB-owned branch, 'wb branch cleanup --absorbed-by <pr-or-commit>' for one
+with no worktree left, or an explicit human decision otherwise.
 
 A branch owned by a WB task is always in-use, never a candidate here — see
 'wb worktree cleanup <task>' or 'wb worktree abort <task>'.
@@ -97,7 +98,7 @@ reserved for the report.`,
 }
 
 func newBranchCleanupCmd() *cobra.Command {
-	var base, scope, reportDir, format string
+	var base, scope, reportDir, format, absorbedBy string
 	var apply, receipts bool
 	var olderThan time.Duration
 	command := &cobra.Command{
@@ -119,6 +120,20 @@ are likewise never eligible (a unique or absorbed branch can only become
 eligible by the receipt proof above, which reclassifies it receipted). A
 branch owned by a WB task is reported in-use and is never deleted here; use
 'wb worktree cleanup <task>' or 'wb worktree abort <task>' instead.
+
+--absorbed-by <pr-or-commit> names an explicit landing pull request or exact
+commit and verifies it with the same attested-absorption proof
+'wb worktree cleanup --absorbed-by' performs, for the branch this command's
+own worktree analogue cannot reach because the worktree is already gone. Every
+proof --receipts requires still applies (containment in the landing commit,
+containment in the fetched target, a mutation-free three-way merge for both),
+plus one more: the named commit must be exactly where the work entered the
+target, so the flag cannot degrade into a bare content assertion by naming the
+target tip. A branch that verifies is recorded receipted, exactly like a
+discovered receipt, never absorbed — absorbed itself still never becomes
+eligible, under any flag. A pointer that fails any check refuses only that
+branch, with the failing check reported as its evidence, and never aborts the
+sweep.
 
 A local branch is deleted with a compare-and-delete against the exact SHA the
 plan recorded: 'git update-ref -d refs/heads/<branch> <expected-sha>', never
@@ -152,6 +167,7 @@ in-use and therefore never a candidate.`,
 			now := time.Now()
 			outcome, err := worktrees.BranchCleanup(command.Context(), worktrees.BranchCleanupOptions{
 				Receipts:     receipts,
+				AbsorbedBy:   absorbedBy,
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Apply: apply,
 				OlderThan: olderThan, ReportDir: reportDir, Filter: filterFlag, Progress: progress,
 				Now: func() time.Time { return now },
@@ -185,6 +201,7 @@ in-use and therefore never a candidate.`,
 	command.Flags().StringVar(&scope, "scope", "local", "local, remote, or all")
 	command.Flags().BoolVar(&apply, "apply", false, "delete every eligible branch; the default is a dry-run plan")
 	command.Flags().BoolVar(&receipts, "receipts", false, "prove landings via GitHub pull-request receipts, making receipted branches eligible (one query per candidate)")
+	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify this merged pull request number or exact landing commit absorbed a branch's content, making a content-proven squash-absorbed branch eligible even with no worktree left (same proof as 'wb worktree cleanup --absorbed-by')")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum branch age required for eligibility (0 disables)")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "branch cleanup audit directory (default <wb-home>/reports/branch-cleanup/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

@@ -88,6 +88,16 @@ type BranchEntry struct {
 	// could not ask GitHub." Cleanup's remote apply fails the whole scope
 	// closed on the latter; list surfaces it but never refuses on it.
 	PullRequestQueryFailed bool `json:"pull_request_query_failed,omitempty"`
+	// AbsorbedByRejection explains why an operator-supplied --absorbed-by
+	// pointer did not verify for this branch. It is set only when
+	// --absorbed-by was passed and its attested-absorption proof (see
+	// attestedAbsorbedReceipt, shared with `wb worktree cleanup
+	// --absorbed-by`) failed for this candidate specifically; the branch keeps
+	// whatever disposition its patch evidence (or --receipts) produces. A
+	// wrong or dishonest pointer can therefore only fail closed, never widen
+	// eligibility, and the rejection is reported rather than silently
+	// swallowed.
+	AbsorbedByRejection string `json:"absorbed_by_rejection,omitempty"`
 }
 
 // BranchListOutcome is the full result of one sweep.
@@ -162,6 +172,14 @@ type branchSweepOptions struct {
 	// query per non-contained candidate. See
 	// #req:receipted-is-opt-in-and-fails-closed.
 	Receipts bool
+	// AbsorbedBy is the optional operator-supplied landing pointer (a merged
+	// pull request number or an exact landing commit) that Branch Hygiene
+	// verifies with the same attested-absorption proof `wb worktree cleanup
+	// --absorbed-by` performs — see attestedAbsorbedReceipt. It selects which
+	// receipt to check and never substitutes for one: every candidate is
+	// still proved on evidence, so a wrong or dishonest pointer can only fail
+	// closed for that candidate. See #req:attested-absorption-requires-exact-entry-point.
+	AbsorbedBy string
 }
 
 func sweepBranches(ctx context.Context, options BranchListOptions) (BranchListOutcome, error) {
@@ -496,6 +514,46 @@ func classifyBranch(
 		entry.Evidence = fmt.Sprintf("git cherry: %v", err)
 		return entry
 	}
+
+	// An operator-supplied --absorbed-by pointer is checked before both patch
+	// evidence and --receipts auto-discovery: like a discovered receipt, a
+	// branch that proves out this way must never be classified absorbed in
+	// the first place (#req:absorbed-is-report-only governs only what
+	// actually becomes absorbed, not what a stronger independent proof
+	// reclassifies before that assignment happens). It reuses worktree
+	// cleanup's exact attested-absorption proof (see attestedAbsorbedReceipt)
+	// rather than a second implementation: the named commit must be exactly
+	// where the work entered the target, and merging the branch into it, and
+	// into the fetched target, must add nothing to either. A pointer that
+	// fails this proof for the current branch is an ordinary negative for
+	// THAT branch, never a hard error — a fleet sweep with an unfiltered
+	// --absorbed-by fails closed candidate by candidate, never aborts.
+	absorbedByNote := ""
+	if sweep.AbsorbedBy != "" {
+		receipt, rejection, err := classifyAttestedReceipt(ctx, repository, ref, sweep.Base, targetSHA, sweep.AbsorbedBy)
+		if err != nil {
+			entry.Disposition = BranchUnreadable
+			entry.Evidence = fmt.Sprintf("--absorbed-by verification failed: %v", err)
+			return entry
+		}
+		if receipt != nil {
+			entry.Disposition = BranchReceipted
+			entry.LandingSHA = receipt.LandingSHA
+			entry.ReceiptPullRequest = receipt.PullRequest
+			entry.Evidence = fmt.Sprintf(
+				"--absorbed-by %s resolved to %s; branch content is fully contained there and in the fetched target, and %s is exactly where it entered",
+				sweep.AbsorbedBy, shortSHA(receipt.LandingSHA), shortSHA(receipt.LandingSHA))
+			entry.Reason = fmt.Sprintf(
+				"content-proven absorbed via --absorbed-by %s; eligible for deletion", sweep.AbsorbedBy)
+			if scope == BranchScopeRemote {
+				classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
+			}
+			return entry
+		}
+		entry.AbsorbedByRejection = rejection
+		absorbedByNote = "; --absorbed-by: " + rejection
+	}
+
 	// A proved landing receipt outranks patch evidence in both directions: a
 	// multi-commit squash landing presents as unique (no individual patch-id
 	// survives squashing) even though every byte is in the target, and
@@ -523,21 +581,42 @@ func classifyBranch(
 	}
 	if absorbed {
 		entry.Disposition = BranchAbsorbed
-		entry.Evidence = absorbedEvidence + receiptNote
+		entry.Evidence = absorbedEvidence + receiptNote + absorbedByNote
 		entry.Reason = "absorbed by patch-id or tree equality only; never eligible for --apply. " +
 			"If this branch belongs to a WB task, run `wb worktree cleanup <task> --absorbed-by <pr-or-commit>`; " +
+			"if it has no worktree, run `wb branch cleanup --absorbed-by <pr-or-commit>`; " +
 			"otherwise this requires an explicit human decision"
 		// The text renderer prefers Reason over Evidence, so a named failing
 		// receipt check must ride along or the operator never sees it.
-		entry.Reason += receiptNote
+		entry.Reason += receiptNote + absorbedByNote
 		return entry
 	}
 	entry.Disposition = BranchUnique
-	entry.Evidence = fmt.Sprintf("git cherry reports %d unique patch(es) not upstream", uniqueCount) + receiptNote
+	entry.Evidence = fmt.Sprintf("git cherry reports %d unique patch(es) not upstream", uniqueCount) + receiptNote + absorbedByNote
 	if scope == BranchScopeRemote {
 		classifyRemotePullRequestGate(ctx, repository, ref, targetSHA, &entry, pullRequestCache)
 	}
 	return entry
+}
+
+// classifyAttestedReceipt verifies an operator-supplied --absorbed-by pointer
+// for one candidate branch, reusing worktree cleanup's exact
+// attested-absorption proof (attestedAbsorbedReceipt) rather than a second
+// implementation of it. Branch Hygiene's candidates have no worktree — the
+// worktree may already be gone, which is exactly the situation this exists
+// for (see spec/features/branch-hygiene/README.md) — so the canonical
+// repository stands in for both the "worktree" and "repository" arguments the
+// shared proof expects; every check it performs runs against the canonical
+// clone's object database and touches no working tree.
+func classifyAttestedReceipt(
+	ctx context.Context,
+	repository discover.Repo,
+	ref branchRef,
+	base, targetSHA, absorbedBy string,
+) (*absorbedReceipt, string, error) {
+	return attestedAbsorbedReceipt(
+		ctx, repository.Path, repository.Path, repository.Slug(), ref.SHA, base, targetSHA, absorbedBy,
+	)
 }
 
 func shortSHA(sha string) string {

@@ -30,6 +30,17 @@ type BranchCleanupOptions struct {
 	// costs a GitHub query per non-contained candidate. See
 	// #req:receipted-is-opt-in-and-fails-closed.
 	Receipts bool
+	// AbsorbedBy is the optional operator-supplied landing pointer (a merged
+	// pull request number or an exact landing commit) verified with the same
+	// attested-absorption proof `wb worktree cleanup --absorbed-by` performs.
+	// A branch that proves out is recorded as receipted, with the landing
+	// commit carried in the plan exactly like a discovered receipt, so a
+	// content-proven squash-absorbed branch whose worktree is already gone
+	// can still be retired with an audited receipt. See
+	// #req:attested-absorption-requires-exact-entry-point. Empty by default:
+	// it never runs unless explicitly passed, and a pointer that fails to
+	// verify for a given candidate refuses only that candidate.
+	AbsorbedBy string
 	// Now is injectable so age eligibility is deterministic under test.
 	Now func() time.Time
 }
@@ -69,6 +80,7 @@ func normalizeBranchCleanupOptions(options BranchCleanupOptions) (BranchCleanupO
 	}
 	options.ProjectsRoot, options.Base, options.Scope = base.ProjectsRoot, base.Base, base.Scope
 	options.OlderThan, options.Filter = base.OlderThan, base.Filter
+	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
 	if options.Now == nil {
 		options.Now = time.Now
 	}
@@ -103,7 +115,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 	sweep := branchSweepOptions{
 		ProjectsRoot: normalized.ProjectsRoot, Base: normalized.Base, Scope: normalized.Scope,
 		OlderThan: normalized.OlderThan, Filter: normalized.Filter, Progress: normalized.Progress, Now: now,
-		Receipts: normalized.Receipts,
+		Receipts: normalized.Receipts, AbsorbedBy: normalized.AbsorbedBy,
 	}
 	entries, diagnostics, paths, err := classifyFleetBranchesWithPaths(ctx, sweep)
 	if err != nil {
