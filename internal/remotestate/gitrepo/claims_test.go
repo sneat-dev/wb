@@ -245,6 +245,58 @@ func TestClaimRaceWithDifferentTaskStillLands(t *testing.T) {
 	}
 }
 
+// TestClaimRaceCarriesStampThroughRebase proves the snapshot stamp survives
+// the same reject-first-push -> clean-rebase -> re-push path as
+// TestClaimRaceWithDifferentTaskStillLands, this time with a published
+// snapshot in play (see TestClaimStampsOwnSnapshotLastSeen): alice's claim
+// commit touches both claims/task-7.yaml and her own snapshot, a
+// competitor's commit for a DIFFERENT task rejects the first push, the
+// rebase completes cleanly (no shared path with the competitor's commit),
+// and the retried push carries both of alice's files to origin intact.
+// This behaviour already works; the test pins it (no RED phase).
+func TestClaimRaceCarriesStampThroughRebase(t *testing.T) {
+	origin := bareOrigin(t)
+	p := machine(t, origin)
+	published := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	if _, err := p.Publish(context.Background(), snap("alice", "laptop", published)); err != nil {
+		t.Fatal(err)
+	}
+
+	at := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	bobClaim := mkClaim("bob", "vm", "task-9", at)
+	pushClaimToRef(t, origin, bobClaim, "refs/staging/bob")
+	bobSHA := gitIn(t, origin, "rev-parse", "refs/staging/bob")
+	installRejectFirstPushHook(t, origin, bobSHA)
+
+	claimedAt := at.Add(time.Minute)
+	outcome, err := p.Claim(context.Background(), mkClaim("alice", "laptop", "task-7", claimedAt), remotestate.ClaimNormal, "")
+	if err != nil {
+		t.Fatalf("Claim with induced push rejection for a different task: %v", err)
+	}
+	if outcome.Kind != remotestate.ClaimAcquired {
+		t.Fatalf("Kind = %v, want acquired", outcome.Kind)
+	}
+
+	files := gitIn(t, origin, "ls-tree", "-r", "--name-only", "main")
+	for _, want := range []string{"claims/task-7.yaml", "claims/task-9.yaml", "machines/alice/laptop/snapshot.yaml"} {
+		if !strings.Contains(files, want) {
+			t.Fatalf("origin tree %q lacks %s", files, want)
+		}
+	}
+
+	data := gitIn(t, origin, "show", "main:machines/alice/laptop/snapshot.yaml")
+	got, err := remotestate.Decode([]byte(data))
+	if err != nil {
+		t.Fatalf("decode stamped snapshot: %v", err)
+	}
+	if !got.LastSeenAt.Equal(claimedAt) {
+		t.Fatalf("LastSeenAt = %v, want %v", got.LastSeenAt, claimedAt)
+	}
+	if !got.PublishedAt.Equal(published) {
+		t.Fatalf("PublishedAt = %v, want unchanged %v", got.PublishedAt, published)
+	}
+}
+
 // pushReleaseToRef commits the deletion of task's claim file in a throwaway
 // clone of origin and pushes it to ref, synthesizing "another machine's
 // release commit is ready to land" the same way pushClaimToRef synthesizes

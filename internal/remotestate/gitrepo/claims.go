@@ -81,14 +81,29 @@ func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) string 
 // messages.
 //
 // onLostRace runs only when a rebase after a rejected push fails with a
-// genuine conflict. Since every commit this function makes touches exactly
-// one file (the caller's own claim path), such a conflict can only mean
-// someone else raced for that same claim: mutateStore aborts the conflicted
-// rebase, hard-resets the clone to @{u} (discarding the local commit
-// entirely so the clone reflects the winner), and returns onLostRace()'s
-// error. A rebase that completes cleanly (e.g. a concurrent commit for a
-// different task) is not a race for THIS claim, so mutateStore simply
-// pushes again.
+// genuine conflict. A commit this function makes can touch up to two
+// files — the caller's own claim path, and, when stampOwnLastSeen fired,
+// the caller's own machines/.../snapshot.yaml — so a conflict has two
+// possible causes: someone else raced for that same claim (a conflict on
+// the claim path), or this same login/machine is operating concurrently
+// from two places — two clones, or a claim/release racing its own
+// Publish — and stepped on its own snapshot file (a conflict on the
+// snapshot path with no claim-path conflict at all). Either way,
+// mutateStore aborts the conflicted rebase, hard-resets the clone to @{u}
+// (discarding the local commit entirely so the clone reflects upstream),
+// and returns onLostRace()'s error. For the acquire path (Claim/Release),
+// onLostRace re-reads the claim after that reset: a snapshot-only conflict
+// leaves the claim path exactly as it was upstream, so the reread reports
+// it free or held-by-upstream, errStorePathFreed fires, and the whole
+// operation retries and lands cleanly — absorbing the snapshot-only case
+// without ever misreporting it as a claim race. The one gap is a refresh
+// or take-over conflicting with itself this way: onLostRace's reread finds
+// the claim still held by the caller's own login/machine, which reads as
+// "still held" rather than "freed," so it reports a lost race even though
+// no one else was ever contending for the claim. Accepted for now, low
+// reachability — see review follow-up. A rebase that completes cleanly
+// (e.g. a concurrent commit for a different task) is not a conflict at
+// all, so mutateStore simply pushes again.
 //
 // A second push rejection (after that rebase-and-retry) is handled
 // differently here than in Provider.Publish, which keeps its local commit

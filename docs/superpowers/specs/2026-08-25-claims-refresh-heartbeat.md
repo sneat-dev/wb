@@ -55,6 +55,10 @@ independently honest.
 - Failure handling: a failed snapshot-stamp read/write inside the mutation
   must not fail the claim — degrade to not stamping (the commit proceeds
   with just the claim change). Never invent a snapshot file.
+- A byte-identical claim refresh (same ClaimedAt) commits nothing and
+  therefore does not stamp — a deliberate corollary of the no-dirty-clone
+  invariant, unreachable from the CLI where ClaimedAt is always the current
+  time.
 
 ## Non-goals
 
