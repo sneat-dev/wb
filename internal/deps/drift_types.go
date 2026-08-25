@@ -1,6 +1,10 @@
 package deps
 
-import "time"
+import (
+	"time"
+
+	"github.com/sneat-dev/wb/internal/progress"
+)
 
 // DriftClassification is the fleet-level state for one canonical dependency path.
 type DriftClassification string
@@ -26,6 +30,7 @@ type DriftOptions struct {
 	Online       bool
 	FailOnDrift  bool
 	Now          func() time.Time
+	Progress     progress.Reporter
 }
 
 // DriftReport is the deterministic convergence index for one repository or a fleet.

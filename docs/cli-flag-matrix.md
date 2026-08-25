@@ -62,8 +62,12 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
   is intentionally rejected for a direct canonical
   worktree create/guard/abort, where silently skipping the requested repository
   would be unsafe.
-- `--non-interactive` controls the terminal sync UI. `WB_NON_INTERACTIVE=1`
-  has the same sync rendering effect; it is not a universal JSON mode.
+- `--non-interactive` disables every live terminal UI and progress line,
+  including sync, status, fleet quality checks, CI waits, dependency campaigns,
+  npm publication, remote publication, and hierarchical migration.
+  `WB_NON_INTERACTIVE=1` has the same rendering effect; it is not a universal
+  JSON mode. Structured command output remains on stdout while interactive
+  progress uses stderr.
 - `--format`/`--json`, `--dry-run`, `--apply`, `--check`, and config flags are
   command-specific. They are never advertised as root flags. Commands that
   mutate default to their documented dry-run/plan behavior unless their own

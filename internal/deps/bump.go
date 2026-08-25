@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	progresspkg "github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/mod/modfile"
 	modmodule "golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
@@ -58,6 +59,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		return report, err
 	}
 	for waveIndex := startWave; ; waveIndex++ {
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", State: progresspkg.Started, Wave: waveIndex, Total: len(repositories)})
 		report.Phase = BumpPhaseDiscoveringGraph
 		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(repositories)}
 		if err := persistBumpReport(options, report); err != nil {
@@ -77,6 +79,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				RepositoriesCompleted: progress.RepositoriesCompleted,
 				LastRepository:        progress.LastRepository,
 			}
+			progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", Repository: progress.LastRepository, State: progresspkg.Completed, Completed: progress.RepositoriesCompleted, Total: progress.RepositoriesTotal, Wave: waveIndex})
 			progressErr = persistBumpReport(options, report)
 		}
 		var graph bumpFleetGraph
@@ -114,6 +117,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			return report, persistBumpFailure(options, report, err)
 		}
 		report.Phase = BumpPhasePlanningWave
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "plan_wave", State: progresspkg.Running, Wave: waveIndex})
 		if err := persistBumpReport(options, report); err != nil {
 			return report, err
 		}
@@ -194,6 +198,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		report.Waves = append(report.Waves, wave)
 		waveReport := &report.Waves[len(report.Waves)-1]
 		report.Phase = BumpPhaseProcessingWave
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "process_wave", State: progresspkg.Started, Wave: waveIndex, Total: len(affectedRepositories)})
 		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(affectedRepositories)}
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr
@@ -233,6 +238,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			}
 			return report, nil
 		}
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "observe_releases", State: progresspkg.Waiting, Wave: waveIndex})
 		waveReport.Status = "merged"
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr

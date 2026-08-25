@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -88,7 +89,8 @@ type Options struct {
 	Order bool
 	// Layers restricts an ordered run to one layer or a contiguous range so an
 	// operator can land one layer before starting the next.
-	Layers LayerSelection
+	Layers   LayerSelection
+	Progress progress.Reporter
 
 	// ResolveGitHubRef is injectable for hermetic adapter tests.
 	ResolveGitHubRef func(context.Context, string, string) (string, error)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/migrate"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -157,11 +158,18 @@ func runHierarchicalMigration(specPath string, roots []string, options hierarchi
 		}
 		reportDir = filepath.Join(home, "reports", spec.ID)
 	}
+	campaign := newCampaignProgress(os.Stderr, console.Interactive(os.Stderr, nonInteractive), "migrate "+spec.ID)
 	report, runErr := migrate.RunCampaign(spec, roots[0], migrate.CampaignOptions{
 		GitHubDir: githubDir, Ref: options.ref, ModuleRefs: refs, Apply: options.apply,
 		Verify: verification, Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge, Resume: options.resume,
 		Parallel: options.parallel, ReportDir: reportDir,
+		Progress: campaign.reporter(),
 	})
+	if runErr != nil {
+		campaign.finish("failed")
+	} else {
+		campaign.finish("completed")
+	}
 	if err := migrate.WriteCampaignReports(reportDir, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

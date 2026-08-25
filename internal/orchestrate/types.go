@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -38,6 +39,7 @@ type Options struct {
 	Push              bool
 	PR                bool
 	Merge             bool
+	Progress          progress.Reporter
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.

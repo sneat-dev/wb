@@ -773,6 +773,10 @@ downstream repositories; it never invents the next version. If a release is
 not visible before `--timeout`, the report remains `awaiting_release` and
 `--resume` continues from the persisted pre-merge baseline.
 
+Interactive fleet set/bump campaigns report their current wave, repository,
+and lifecycle phase on stderr. Structured reports stay on stdout, and
+`--non-interactive` disables the progress renderer.
+
 A campaign can wait long enough for a still newer provider version to appear.
 Before starting downstream work, WB rechecks accumulated release events older
 than `--refresh-after` (default `5m`). A newer registry version replaces the
@@ -840,6 +844,8 @@ the same recalculated `wb deps bump npm` wave engine. Add `--merge` only as a
 separate explicit approval for downstream consumer changes. If publication or
 registry evidence times out, retain `--report-dir` and use the same tuples
 with `--resume --apply`; WB reuses receipted runs without redispatching them.
+Interactive apply/resume runs show head resolution, dispatch, workflow polling,
+registry verification, and downstream wave progress on stderr.
 
 See the [NPM release propagation feature specification](spec/features/npm-release-propagation/README.md)
 and the [publish-npm reference](ai/skills/wb-deps/references/publish-npm.md)
@@ -854,6 +860,10 @@ registry versions are required. Fleet reports group each module path and
 classify `converged`, `divergent`, `replaced`, and `major_path_split` states.
 `--fail-on-drift` turns those drift classes into an exit gate after the complete
 report is written.
+
+Fleet drift and graph scans show live per-repository progress on an interactive
+terminal. The progress line is written to stderr, so Markdown/YAML/JSON/SVG/HTML
+stdout remains machine-readable; `--non-interactive` suppresses it completely.
 
 ```sh
 wb deps drift .
@@ -1230,6 +1240,11 @@ Use `--hierarchical` when the migration must move a Go dependency graph rather
 than one checked-out repository. It reads the source module's `go mod graph`,
 finds the reverse dependency closure of the module paths referenced by the
 migration, and prepares each GitHub repository independently.
+
+Interactive runs show the current dependency layer, repository, and campaign
+phase (prepare, rewrite, manifest update, verification, publication, checks,
+and merge) on stderr. `--non-interactive` keeps the same report and exit
+contract without terminal progress.
 
 ```sh
 # Plan only. No clone, fetch, worktree, source, commit, or push occurs.
