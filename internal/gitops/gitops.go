@@ -344,16 +344,28 @@ func unpushedWork(repoPath string, requireRemoteEvidence bool) ([]string, []Unpu
 		return nil, nil, nil
 	}
 
-	args := append([]string{"log", "--oneline"}, branches...)
+	args := []string{"log", "--topo-order", "--format=%H%x09%h %s%x09%P"}
+	for _, branch := range branches {
+		args = append(args, branch.ref)
+	}
 	out, err := run(repoPath, "git", append(args, "--not", "--remotes")...)
 	if err != nil {
 		return nil, nil, err
 	}
-	var commits []string
+	commitOrder := make([]string, 0)
+	commits := make([]string, 0)
+	graph := make(map[string]unpushedCommit)
 	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			commits = append(commits, line)
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		commit, parseErr := parseUnpushedCommit(line)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		commitOrder = append(commitOrder, commit.sha)
+		commits = append(commits, commit.line)
+		graph[commit.sha] = commit
 	}
 	if len(commits) == 0 {
 		return nil, nil, nil
@@ -364,25 +376,60 @@ func unpushedWork(repoPath string, requireRemoteEvidence bool) ([]string, []Unpu
 		return nil, nil, err
 	}
 	attributed := make([]UnpushedBranch, 0, len(branches))
-	for _, ref := range branches {
-		branchOut, branchErr := run(repoPath, "git", "log", "--oneline", ref, "--not", "--remotes")
-		if branchErr != nil {
-			return nil, nil, branchErr
-		}
-		var branchCommits []string
-		for _, line := range strings.Split(branchOut, "\n") {
-			if line = strings.TrimSpace(line); line != "" {
-				branchCommits = append(branchCommits, line)
+	for _, branch := range branches {
+		reachable := reachableUnpushedCommits(branch.tip, graph)
+		branchCommits := make([]string, 0, len(reachable))
+		for _, sha := range commitOrder {
+			if _, ok := reachable[sha]; ok {
+				branchCommits = append(branchCommits, graph[sha].line)
 			}
 		}
 		if len(branchCommits) == 0 {
 			continue
 		}
 		attributed = append(attributed, UnpushedBranch{
-			Branch: strings.TrimPrefix(ref, "refs/heads/"), Worktree: worktrees[ref], Commits: branchCommits,
+			Branch: strings.TrimPrefix(branch.ref, "refs/heads/"), Worktree: worktrees[branch.ref], Commits: branchCommits,
 		})
 	}
 	return commits, attributed, nil
+}
+
+type unpushedCommit struct {
+	sha     string
+	line    string
+	parents []string
+}
+
+func parseUnpushedCommit(line string) (unpushedCommit, error) {
+	firstTab := strings.IndexByte(line, '\t')
+	lastTab := strings.LastIndexByte(line, '\t')
+	if firstTab <= 0 || lastTab <= firstTab {
+		return unpushedCommit{}, fmt.Errorf("unexpected unpushed git log record: %q", line)
+	}
+	return unpushedCommit{
+		sha:     line[:firstTab],
+		line:    line[firstTab+1 : lastTab],
+		parents: strings.Fields(line[lastTab+1:]),
+	}, nil
+}
+
+func reachableUnpushedCommits(tip string, graph map[string]unpushedCommit) map[string]struct{} {
+	reachable := make(map[string]struct{})
+	stack := []string{tip}
+	for len(stack) > 0 {
+		sha := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, seen := reachable[sha]; seen {
+			continue
+		}
+		commit, ok := graph[sha]
+		if !ok {
+			continue
+		}
+		reachable[sha] = struct{}{}
+		stack = append(stack, commit.parents...)
+	}
+	return reachable
 }
 
 func worktreesByBranch(repoPath string) (map[string]string, error) {
@@ -414,26 +461,31 @@ func worktreesByBranch(repoPath string) (map[string]string, error) {
 // fires on success is one people learn to ignore.
 //
 // A branch with no upstream at all is kept: it may never have been pushed.
-func unpushableBranches(repoPath string) ([]string, error) {
+type unpushableBranch struct {
+	ref string
+	tip string
+}
+
+func unpushableBranches(repoPath string) ([]unpushableBranch, error) {
 	out, err := run(repoPath, "git", "for-each-ref",
-		"--format=%(refname)%09%(upstream)%09%(upstream:track,nobracket)", "refs/heads/")
+		"--format=%(refname)%09%(objectname)%09%(upstream)%09%(upstream:track,nobracket)", "refs/heads/")
 	if err != nil {
 		return nil, err
 	}
-	var branches []string
+	var branches []unpushableBranch
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
-		ref, upstream, track := fields[0], fields[1], strings.TrimSpace(fields[2])
+		ref, tip, upstream, track := fields[0], fields[1], fields[2], strings.TrimSpace(fields[3])
 		if upstream != "" && track == "gone" {
 			continue
 		}
-		branches = append(branches, ref)
+		branches = append(branches, unpushableBranch{ref: ref, tip: tip})
 	}
 	return branches, nil
 }

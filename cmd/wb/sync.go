@@ -227,49 +227,20 @@ func runResultsBrowser(results []fleetsync.Result) error {
 }
 
 func printSyncSummary(out io.Writer, results []fleetsync.Result) {
-	counts := map[fleetsync.Status]int{}
-	pullPlanned, pullAttempted, pullSucceeded, updated, current := 0, 0, 0, 0, 0
-	for _, r := range results {
-		counts[r.Status]++
-		if r.PullPlanned {
-			pullPlanned++
-		}
-		if r.PullAttempted {
-			pullAttempted++
-		}
-		if r.PullSucceeded {
-			pullSucceeded++
-			if !r.Updated {
-				current++
-			}
-		}
-		if r.Updated {
-			updated++
-		}
-	}
+	groups := fleetsync.Summary(results)
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "━━━ Summary ━━━")
 	printCount := func(label string, count int) { _, _ = fmt.Fprintf(out, "%-20s%d\n", label, count) }
-	printCount("Not owned/fork", counts[fleetsync.NoOp])
-	printCount("Cloned", counts[fleetsync.Cloned])
-	printCount("Pulled", counts[fleetsync.Pulled])
-	printCount("Pull planned", pullPlanned)
-	printCount("Pull attempted", pullAttempted)
-	printCount("Pull succeeded", pullSucceeded)
-	printCount("Updated from remote", updated)
-	printCount("Already current", current)
-	printCount("Skipped (dirty)", counts[fleetsync.SkippedDirty])
-	printCount("Skipped (ignored)", counts[fleetsync.SkippedIgnored])
-	printCount("Empty remote", counts[fleetsync.EmptyRemote])
-	printCount("Archived removed", counts[fleetsync.RemovedArchived])
-	printCount("Archived kept", counts[fleetsync.KeptArchived])
-	printCount("Archived absent", counts[fleetsync.AbsentArchived])
-	_, _ = fmt.Fprintln(out)
-	printCount("Needs attention", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream]+
-		counts[fleetsync.Unpushed]+counts[fleetsync.ArchivedUnlandable])
-	_, _ = fmt.Fprintln(out)
-	printCount("Errors", counts[fleetsync.Failed])
-	for _, r := range results {
+	var section fleetsync.SummarySection
+	for _, group := range groups {
+		if group.Section != section {
+			section = group.Section
+			_, _ = fmt.Fprintf(out, "\n%s\n", section)
+		}
+		printCount(group.Label, len(group.Results))
+	}
+	attention, _ := fleetsync.SummaryGroupByLabel(groups, "Needs attention")
+	for _, r := range attention.Results {
 		switch r.Status {
 		case fleetsync.Diverged, fleetsync.NoUpstream:
 			_, _ = fmt.Fprintf(out, "  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
@@ -280,9 +251,8 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 				r.Repo.Slug(), r.Detail.Summary())
 		}
 	}
-	for _, r := range results {
-		if r.Status == fleetsync.Failed {
-			_, _ = fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
-		}
+	errors, _ := fleetsync.SummaryGroupByLabel(groups, "Errors")
+	for _, r := range errors.Results {
+		_, _ = fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
 	}
 }
