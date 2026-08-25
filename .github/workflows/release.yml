@@ -58,6 +58,7 @@ jobs:
     permissions:
       contents: write
     with:
+      go_version: '1.27'
       allow_major_version_bump: false
     secrets:
       GORELEASER_GITHUB_TOKEN: ${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}

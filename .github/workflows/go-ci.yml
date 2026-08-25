@@ -46,7 +46,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11.3
+          # The published v2.12.2 binary was built with Go 1.26 and refuses
+          # modules targeting 1.27. Build the same pinned source with the
+          # setup-go toolchain above until upstream publishes a 1.27 build.
+          version: v2.12.2
+          install-mode: goinstall
 
       - name: go build
         run: go build ./...
