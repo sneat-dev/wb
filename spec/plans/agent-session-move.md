@@ -1,11 +1,11 @@
 ---
 format: https://specscore.md/plan-specification
-status: In Review
+status: Approved
 ---
 
 # Plan: Agent Session Move implementation plan
 
-**Status:** In Review
+**Status:** Approved
 **Source Feature:** agent-session-move
 **Date:** 2026-08-25
 **Owner:** codex
