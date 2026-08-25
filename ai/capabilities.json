@@ -2865,7 +2865,7 @@
           "limitation": null
         }
       },
-      "notes": "Claim staleness is derived from the holder machine's publish heartbeat; there is no separate claim TTL."
+      "notes": "Claim staleness is derived from the holder machine's effective heartbeat (the later of its publish and its claim activity, last_seen_at); there is no separate claim TTL."
     },
     {
       "id": "wb.remote.claims",
@@ -2884,7 +2884,7 @@
                 "--stale"
               ],
               "modes": [
-                "Lists every task claim with holder, claimed_at, holder-heartbeat age, and a STALE flag; claim files that cannot be decoded render as error rows"
+                "Lists every task claim with holder, claimed_at, holder's effective-heartbeat age, and a STALE flag; claim files that cannot be decoded render as error rows"
               ]
             }
           ],
@@ -2948,7 +2948,7 @@
                 "--stale"
               ],
               "modes": [
-                "Lists every machine in the remote store with its publish age."
+                "Lists every machine in the remote store with its publish age (PUBLISHED) and its effective-heartbeat age (SEEN); STALE keys off SEEN."
               ]
             }
           ],
@@ -3148,7 +3148,7 @@
                 "--stale"
               ],
               "modes": [
-                "Renders the cross-machine worklist from the remote store; entries that cannot be decoded become error rows and do not change the exit code."
+                "Renders the cross-machine worklist from the remote store, flagging a machine STALE by its effective heartbeat (publish or claim activity, whichever is newer); entries that cannot be decoded become error rows and do not change the exit code."
               ]
             }
           ],

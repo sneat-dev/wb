@@ -20,7 +20,8 @@ begins. The store already reserved `claims/<task>.yaml` for exactly this.
   task at once must resolve to exactly one holder, via git push rejection as
   the compare-and-swap.
 - No TTL bookkeeping: claim staleness derives from the claimant machine's
-  existing snapshot heartbeat.
+  existing snapshot heartbeat — the effective heartbeat: the later of the
+  machine's publish and its claim activity (`last_seen_at`).
 - Make the common case automatic: `wb worktree create` claims best-effort,
   `wb worktree cleanup`/`abort` release best-effort — without ever making a
   local command fail because the network did.
@@ -94,11 +95,17 @@ takeover rules apply unchanged.
 ## Staleness and takeover
 
 - A claim has no expiry. It is **stale exactly when its claimant machine's
-  snapshot is stale** — `published_at` older than the same `--stale` window
-  (default 24h) that `wb remote status` uses. A machine that keeps
-  publishing keeps all its claims fresh; a machine that died goes stale as
-  one unit. A claimant with **no snapshot at all** is treated as stale (it
-  never published, so it has no heartbeat to be fresh).
+  effective heartbeat is stale** — older than the same `--stale` window
+  (default 24h) that `wb remote status` uses. The effective heartbeat is the
+  later of the machine's publish and its claim activity: the same claim,
+  refresh, release, or take-over that mutates the store also stamps
+  `last_seen_at` in the claimant's own snapshot, in the same commit (see
+  `docs/superpowers/specs/2026-08-25-claims-refresh-heartbeat.md`), so a
+  machine that runs a long claims campaign without re-publishing stays
+  fresh. A machine that keeps publishing OR keeps claiming/refreshing keeps
+  all its claims fresh; a machine that goes silent on both fronts goes stale
+  as one unit. A claimant with **no snapshot at all** is treated as stale
+  (it never published, so it has no heartbeat to be fresh).
 - `wb remote claim <task> --take-over` succeeds only if the current claim is
   stale; the takeover commit records the previous holder.
 - `--force` replaces even a fresh claim, printing loudly whose claim is
@@ -109,16 +116,16 @@ takeover rules apply unchanged.
 
 - `wb remote claim <task> [--note <text>] [--take-over | --force] [--json]`
   Exit 0 on acquired/refreshed; exit 1 on held-by-other (the refusal names
-  the holder, their machine's heartbeat age, and whether `--take-over`
-  would work); exit 2 unconfigured (same snippet as publish).
+  the holder, their machine's effective-heartbeat age, and whether
+  `--take-over` would work); exit 2 unconfigured (same snippet as publish).
 - `wb remote release <task> [--json]`
   Releases only a claim held by this `login/machine`; releasing someone
   else's claim requires `--force` (loud). Releasing a non-existent claim is
   exit 0 with a note (idempotent).
 - `wb remote claims [--json] [--stale <dur>]`
-  Lists all claims: task, holder, `claimed_at`, holder-heartbeat age, STALE
-  flag. Exit 0 always; malformed claim files render as error rows (same
-  philosophy as `machines`).
+  Lists all claims: task, holder, `claimed_at`, holder's effective-heartbeat
+  age, STALE flag. Exit 0 always; malformed claim files render as error rows
+  (same philosophy as `machines`).
 - `wb remote status` gains a `claims` line per machine section and includes
   claims in its `--json` output.
 
@@ -195,7 +202,8 @@ Claims(ctx context.Context) ([]ClaimEntry, error)
 - Refresh, release (idempotent, wrong-holder refusal, `--force`), takeover
   (stale-only vs `--force`), malformed-file refusal.
 - Staleness join: claims listed against machine snapshots with old/absent
-  `published_at`; claimant-without-snapshot is stale.
+  effective heartbeats (`published_at` and/or `last_seen_at`);
+  claimant-without-snapshot is stale.
 - `cmd/wb`: exit codes per the table; `claims`/`status` rendering; JSON
   shapes; auto-claim outcomes in `worktree create` including the
   unreachable-store path (point the store URL at a nonexistent path) and

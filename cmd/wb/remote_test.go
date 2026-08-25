@@ -413,6 +413,78 @@ func TestMachineRowsTreatsZeroPublishedAtAsError(t *testing.T) {
 	}
 }
 
+// TestMachineRowsSeenReflectsLastSeen proves SEEN and STALE key off the
+// effective heartbeat (max of published_at and last_seen_at), while
+// PUBLISHED keeps showing the raw publish-data age: a machine that
+// published a day ago but claimed a task an hour ago is live (fresh claim
+// activity), and an operator diffing PUBLISHED vs SEEN must be able to see
+// that the two diverged.
+func TestMachineRowsSeenReflectsLastSeen(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	oldPublish := now.Add(-48 * time.Hour)
+	freshSeen := now.Add(-1 * time.Hour)
+	entries := []remotestate.Entry{
+		{
+			Snapshot: remotestate.Snapshot{
+				SchemaVersion: 1,
+				Login:         "alice",
+				Machine:       "laptop",
+				PublishedAt:   oldPublish,
+				LastSeenAt:    freshSeen,
+			},
+		},
+	}
+	rows := machineRows(entries, now, 24*time.Hour)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	row := rows[0]
+	if row.Error != "" {
+		t.Fatalf("row.Error = %q, want none", row.Error)
+	}
+	if row.Stale {
+		t.Fatalf("row.Stale = true, want false: fresh claim activity (1h) must beat the 24h stale window even though PublishedAt is 48h old")
+	}
+	if row.Age != "2d" {
+		t.Fatalf("row.Age (PUBLISHED) = %q, want the raw publish age 2d", row.Age)
+	}
+	if row.Seen != "1h" {
+		t.Fatalf("row.Seen = %q, want the effective-heartbeat age 1h", row.Seen)
+	}
+	if !row.SeenAt.Equal(freshSeen) {
+		t.Fatalf("row.SeenAt = %v, want %v", row.SeenAt, freshSeen)
+	}
+}
+
+// TestMachineRowsZeroPublishedButLastSeenIsNotError proves the spec's
+// distinction precisely: a snapshot with a zero PublishedAt is only an
+// error row when LastSeenAt is ALSO zero. A non-zero LastSeenAt alone is
+// enough of a liveness signal to render normally.
+func TestMachineRowsZeroPublishedButLastSeenIsNotError(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	entries := []remotestate.Entry{
+		{
+			Snapshot: remotestate.Snapshot{
+				SchemaVersion: 1,
+				Login:         "alice",
+				Machine:       "laptop",
+				PublishedAt:   time.Time{},
+				LastSeenAt:    now.Add(-1 * time.Hour),
+			},
+		},
+	}
+	rows := machineRows(entries, now, 24*time.Hour)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	if rows[0].Error != "" {
+		t.Fatalf("row.Error = %q, want none: zero PublishedAt with non-zero LastSeenAt must not be an error row", rows[0].Error)
+	}
+	if rows[0].Stale {
+		t.Fatalf("row.Stale = true, want false: LastSeenAt is fresh")
+	}
+}
+
 func TestSyncPublishFlagIsRegistered(t *testing.T) {
 	cmd := newSyncCmd()
 	flag := cmd.Flags().Lookup("publish")

@@ -200,6 +200,25 @@ func TestDecodeRejectsGarbage(t *testing.T) {
 	}
 }
 
+func TestHeartbeatIsLaterOfPublishedAndLastSeen(t *testing.T) {
+	published := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+
+	zeroLastSeen := Snapshot{PublishedAt: published}
+	if got := zeroLastSeen.Heartbeat(); !got.Equal(published) {
+		t.Fatalf("Heartbeat() with zero LastSeenAt = %v, want PublishedAt %v", got, published)
+	}
+
+	laterLastSeen := Snapshot{PublishedAt: published, LastSeenAt: published.Add(48 * time.Hour)}
+	if got, want := laterLastSeen.Heartbeat(), laterLastSeen.LastSeenAt; !got.Equal(want) {
+		t.Fatalf("Heartbeat() with later LastSeenAt = %v, want %v", got, want)
+	}
+
+	laterPublished := Snapshot{PublishedAt: published, LastSeenAt: published.Add(-1 * time.Hour)}
+	if got := laterPublished.Heartbeat(); !got.Equal(published) {
+		t.Fatalf("Heartbeat() with later PublishedAt = %v, want %v", got, published)
+	}
+}
+
 var errOops = errString("git status: boom")
 
 type errString string
