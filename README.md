@@ -54,6 +54,9 @@ wb repo status [path]        # local Git state for one repository
 wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a path is given
 wb remote publish|status|machines # share fleet state across machines via a git state repo
 wb remote claim|release|claims <task> # reserve, give up, or list fleet-wide task claims
+wb session register|list|prune # register and inspect stable local agent-session identities
+wb session move --to <machine> --handover-file <file> # publish an exact source checkpoint
+wb session receive [--format json] # verify exact stdin bytes into a pinned target worktree
 wb hooks  <command> [flags]  # install, validate, run, and measure user-owned Git hooks
 wb worktree create <task> --original-prompt-file <private-file> # create an audited feature worktree
 wb worktree summary <task>   # brief overview of a task's worktrees, branches, optional PRs

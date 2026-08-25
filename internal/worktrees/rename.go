@@ -74,44 +74,63 @@ func runSecureRenameGitWithHeldWorktree(
 	worktree *os.File,
 	gitArgs ...string,
 ) error {
+	_, err := runSecureRenameGitBytesWithHeldWorktree(ctx, canonicalDir, worktreesRoot, worktreePath, worktree, gitArgs...)
+	return err
+}
+
+// runSecureRenameGitBytesWithHeldWorktree is the byte-preserving query form
+// of the same descriptor-authorized linked-worktree helper used by rename.
+// Stdout stays separate from diagnostics so callers can authenticate exact
+// Git bytes or inspect a held worktree without reopening its public path.
+func runSecureRenameGitBytesWithHeldWorktree(
+	ctx context.Context,
+	canonicalDir, worktreesRoot, worktreePath string,
+	worktree *os.File,
+	gitArgs ...string,
+) ([]byte, error) {
 	canonical, err := openCanonicalRepository(canonicalDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer canonical.close()
 	if err := canonical.authorizeForGit(); err != nil {
-		return fmt.Errorf("canonical repository path changed before rename Git operation: %w", err)
+		return nil, fmt.Errorf("canonical repository path changed before rename Git operation: %w", err)
 	}
 	parent, err := openAbsoluteDirectoryNoFollow(worktreesRoot, false)
 	if err != nil {
-		return fmt.Errorf("open managed worktrees root for rename Git: %w", err)
+		return nil, fmt.Errorf("open managed worktrees root for rename Git: %w", err)
 	}
 	defer func() { _ = parent.Close() }()
 	if !directoryStillMatches(worktreesRoot, parent) || !directoryStillMatches(worktreePath, worktree) {
-		return fmt.Errorf("managed rename path changed before Git operation")
+		return nil, fmt.Errorf("managed rename path changed before Git operation")
 	}
 	linked, err := openLinkedWorktreeGitDir(canonical, worktree)
 	if err != nil {
-		return fmt.Errorf("retain linked worktree Git metadata for rename: %w", err)
+		return nil, fmt.Errorf("retain linked worktree Git metadata for rename: %w", err)
 	}
 	defer linked.close()
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("locate WB rename Git helper: %w", err)
+		return nil, fmt.Errorf("locate WB rename Git helper: %w", err)
 	}
 	gitExecutable, err := trustedGitExecutable()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	arguments := append([]string{SecureRenameGitHelperArgument, canonical.path, worktreePath, worktreesRoot, linked.adminName, gitExecutable}, gitArgs...)
 	command := exec.CommandContext(ctx, executable, arguments...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{canonical.root, canonical.common, parent, worktree, linked.gitFile, linked.adminRoot, linked.admin}
-	output, err := command.CombinedOutput()
+	output, err := command.Output()
 	if err != nil {
-		return fmt.Errorf("run descriptor-anchored rename Git: %w: %s", err, strings.TrimSpace(string(output)))
+		detail := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			detail = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		return nil, fmt.Errorf("run descriptor-anchored rename Git: %w: %s", err, detail)
 	}
-	return nil
+	return output, nil
 }
 
 // RunSecureRenameGitHelper is the child-side counterpart of

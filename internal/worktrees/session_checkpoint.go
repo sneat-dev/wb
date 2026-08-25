@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -41,6 +42,10 @@ type SessionCheckpointOptions struct {
 	SuccessorWBSessionID string
 	Handover             SessionHandover
 	Now                  time.Time
+
+	// Test-only coordination after post-commit remote authentication and
+	// before publication through the already-parsed exact push URL.
+	afterPushRemoteAuthentication func()
 }
 
 // SessionCheckpointResult is the immutable courier input plus the exact
@@ -58,6 +63,7 @@ type sessionCheckpointPreflight struct {
 	branch           string
 	sourceCommit     string
 	repositoryRemote string
+	pushRemote       string
 	workLogReference string
 	canonicalDir     string
 	worktreesRoot    string
@@ -187,10 +193,22 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	}
 	digest := sessionmove.DigestBytes(requestRaw)
 
+	// Git hooks ran while creating the checkpoint commit. Re-authenticate both
+	// descriptor-read origin routes before allowing the first network mutation;
+	// a hook must not redirect publication after the zero-mutation preflight.
+	if err := verifySessionCheckpointRemotesUnchanged(ctx, preflight); err != nil {
+		return result, fmt.Errorf("origin remote changed after handover commit; refusing publication: %w", err)
+	}
+	if options.afterPushRemoteAuthentication != nil {
+		options.afterPushRemoteAuthentication()
+	}
 	if err := runSessionPushGit(ctx, preflight, false); err != nil {
 		return result, fmt.Errorf("push exact handover commit without force: %w", err)
 	}
-	remoteTip, err := sessionRemoteBranchTip(ctx, preflight.root, preflight.repositoryRemote, preflight.branch)
+	if err := verifySessionCheckpointRemotesUnchanged(ctx, preflight); err != nil {
+		return result, fmt.Errorf("origin remote changed while publishing handover commit: %w", err)
+	}
+	remoteTip, err := sessionRemoteBranchTip(ctx, preflight, preflight.branch)
 	if err != nil {
 		return result, fmt.Errorf("verify exact remote branch tip after push: %w", err)
 	}
@@ -279,14 +297,6 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 	if err != nil || !isGitObjectID(head) {
 		return nil, fmt.Errorf("resolve exact source work commit: %w", err)
 	}
-	remote, err := git(ctx, root, "remote", "get-url", "--push", "origin")
-	if err != nil || strings.TrimSpace(remote) == "" {
-		return nil, fmt.Errorf("source branch has no usable origin push remote: %w", err)
-	}
-	remote = strings.TrimSpace(remote)
-	if strings.ContainsAny(remote, "\r\n") || strings.HasPrefix(remote, "-") {
-		return nil, fmt.Errorf("origin push remote %q is unsafe", remote)
-	}
 	guard, err := Guard(ctx, root, GuardOptions{ProjectsRoot: options.ProjectsRoot, Admission: AdmissionEnforce})
 	if err != nil {
 		return nil, fmt.Errorf("session move requires a managed Git worktree: %w", err)
@@ -312,8 +322,37 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 		canonical.close()
 		return nil, fmt.Errorf("hold source worktree for checkpoint: %w", err)
 	}
+	fetchRemote, err := readCanonicalOriginRemote(ctx, canonical, false)
+	if err != nil {
+		worktree.close()
+		canonical.close()
+		return nil, fmt.Errorf("source branch has no usable origin fetch remote: %w", err)
+	}
+	pushRemote, err := readCanonicalOriginRemote(ctx, canonical, true)
+	if err != nil {
+		worktree.close()
+		canonical.close()
+		return nil, fmt.Errorf("source branch has no usable origin push remote: %w", err)
+	}
+	parsedFetch, err := gitremote.Parse(fetchRemote)
+	if err != nil {
+		worktree.close()
+		canonical.close()
+		return nil, fmt.Errorf("origin fetch remote is unsafe: %w", err)
+	}
+	parsedPush, err := gitremote.Parse(pushRemote)
+	if err != nil {
+		worktree.close()
+		canonical.close()
+		return nil, fmt.Errorf("origin push remote is unsafe: %w", err)
+	}
+	if !parsedFetch.Identity.Equal(parsedPush.Identity) {
+		worktree.close()
+		canonical.close()
+		return nil, fmt.Errorf("origin fetch and push remotes identify different repositories")
+	}
 	preflight := &sessionCheckpointPreflight{
-		root: root, branch: branch, sourceCommit: head, repositoryRemote: remote,
+		root: root, branch: branch, sourceCommit: head, repositoryRemote: parsedFetch.Raw, pushRemote: parsedPush.Raw,
 		workLogReference: reference, canonicalDir: guard.CanonicalDir, worktreesRoot: guard.WorktreesRoot,
 		canonical: canonical, worktree: worktree,
 	}
@@ -336,7 +375,7 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 		HandoffID:     handoffID, SuccessorWBSessionID: successorID,
 		PredecessorWBSessionID: options.SourceSession.WBSessionID,
 		SourceMachine:          options.SourceSession.Machine, TargetMachine: options.TargetMachine,
-		RepositoryRemote: remote, Branch: branch,
+		RepositoryRemote: parsedFetch.Raw, Branch: branch,
 		SourceWorkCommit: head, BundleCommit: strings.Repeat("0", 40),
 		HandoverPath:   filepath.ToSlash(filepath.Join(".wb", "handoffs", handoffID+".md")),
 		HandoverDigest: sessionmove.DigestBytes([]byte("probe")), SourceRuntime: options.SourceSession.Runtime,
@@ -418,11 +457,39 @@ func verifySessionCheckpointUnchanged(ctx context.Context, preflight *sessionChe
 	if err != nil || status != "" {
 		return fmt.Errorf("source worktree changed during preflight")
 	}
-	remote, err := git(ctx, preflight.root, "remote", "get-url", "--push", "origin")
-	if err != nil || strings.TrimSpace(remote) != preflight.repositoryRemote {
+	return verifySessionCheckpointRemotesUnchanged(ctx, preflight)
+}
+
+func verifySessionCheckpointRemotesUnchanged(ctx context.Context, preflight *sessionCheckpointPreflight) error {
+	fetchRemote, err := readCanonicalOriginRemote(ctx, preflight.canonical, false)
+	if err != nil || fetchRemote != preflight.repositoryRemote {
+		return fmt.Errorf("origin fetch remote changed during preflight")
+	}
+	pushRemote, err := readCanonicalOriginRemote(ctx, preflight.canonical, true)
+	if err != nil || pushRemote != preflight.pushRemote {
 		return fmt.Errorf("origin push remote changed during preflight")
 	}
 	return nil
+}
+
+func readCanonicalOriginRemote(ctx context.Context, canonical *canonicalRepository, push bool) (string, error) {
+	arguments := []string{"remote", "get-url", "--all"}
+	if push {
+		arguments = append(arguments, "--push")
+	}
+	arguments = append(arguments, "origin")
+	raw, err := gitCanonicalBytes(ctx, canonical, arguments...)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		return "", fmt.Errorf("origin remote output was not one terminated value")
+	}
+	value := string(raw[:len(raw)-1])
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("origin remote output was not one safe value")
+	}
+	return value, nil
 }
 
 func runSessionCanonicalGit(ctx context.Context, preflight *sessionCheckpointPreflight, args ...string) error {
@@ -440,7 +507,7 @@ func runSessionPushGit(ctx context.Context, preflight *sessionCheckpointPrefligh
 	if dryRun {
 		arguments = append(arguments, "--dry-run")
 	}
-	arguments = append(arguments, "--porcelain", "origin",
+	arguments = append(arguments, "--porcelain", "--", preflight.pushRemote,
 		"refs/heads/"+preflight.branch+":refs/heads/"+preflight.branch)
 	return runSessionCanonicalGit(ctx, preflight, arguments...)
 }
@@ -522,8 +589,8 @@ func verifySessionBundleCommit(ctx context.Context, preflight *sessionCheckpoint
 	return head, nil
 }
 
-func sessionRemoteBranchTip(ctx context.Context, root, remote, branch string) (string, error) {
-	output, err := git(ctx, root, "ls-remote", "--heads", "--", remote, "refs/heads/"+branch)
+func sessionRemoteBranchTip(ctx context.Context, preflight *sessionCheckpointPreflight, branch string) (string, error) {
+	output, err := gitCanonical(ctx, preflight.canonical, "ls-remote", "--heads", "--", preflight.repositoryRemote, "refs/heads/"+branch)
 	if err != nil {
 		return "", err
 	}

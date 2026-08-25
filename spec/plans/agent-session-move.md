@@ -53,7 +53,7 @@ branch, verify the exact remote tip, and persist an offer-only Work Log event.
 ### Task 3: Receive a bundle into a pinned target worktree
 
 **Verifies:** agent-session-move#ac:moved-branch-refuses-at-target
-**Status:** planning
+**Status:** complete
 
 Add the fixed idempotent `wb session receive` boundary and extend WB's secure
 worktree creation path to fetch a declared feature branch at an exact expected

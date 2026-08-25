@@ -2932,18 +2932,25 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 	return nil
 }
 
-// localOriginDirectoryForSecurePush authorizes an exact local file remote as
-// an additional descriptor-bound write root. Network/SSH remotes need no
-// local filesystem root. This keeps integration tests and legitimate local
-// bare-repository workflows inside the same sandbox boundary instead of
-// weakening remote deletion to an unanchored Git process.
+// localOriginDirectoryForSecurePush authorizes the local file remote named by
+// the actual push command as an additional descriptor-bound write root.
+// Network/SSH remotes need no local filesystem root. This keeps integration
+// tests and legitimate local bare-repository workflows inside the same
+// sandbox boundary without re-reading mutable remote configuration when the
+// caller already supplied an authenticated exact URL.
 func localOriginDirectoryForSecurePush(ctx context.Context, canonical *canonicalRepository, gitArgs []string) (*os.File, string, error) {
 	if len(gitArgs) == 0 || gitArgs[0] != "push" {
 		return nil, "", nil
 	}
-	remoteURL, err := gitCanonical(ctx, canonical, "remote", "get-url", "--push", "origin")
+	remoteURL, err := securePushRepositoryArgument(gitArgs)
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve origin push URL: %w", err)
+		return nil, "", err
+	}
+	if remoteURL == "origin" {
+		remoteURL, err = gitCanonical(ctx, canonical, "remote", "get-url", "--push", "origin")
+		if err != nil {
+			return nil, "", fmt.Errorf("resolve configured push URL: %w", err)
+		}
 	}
 	remoteURL = strings.TrimSpace(remoteURL)
 	localPath := remoteURL
@@ -2958,13 +2965,30 @@ func localOriginDirectoryForSecurePush(ctx context.Context, canonical *canonical
 	}
 	localPath, err = filepath.EvalSymlinks(filepath.Clean(localPath))
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve local origin directory %s: %w", remoteURL, err)
+		return nil, "", fmt.Errorf("resolve local push remote directory: %w", err)
 	}
 	directory, err := openAbsoluteDirectoryNoFollow(localPath, false)
 	if err != nil {
-		return nil, "", fmt.Errorf("open local origin directory %s: %w", localPath, err)
+		return nil, "", fmt.Errorf("open local push remote directory: %w", err)
 	}
 	return directory, localPath, nil
+}
+
+func securePushRepositoryArgument(gitArgs []string) (string, error) {
+	for i := 1; i < len(gitArgs); i++ {
+		argument := gitArgs[i]
+		if argument == "--" {
+			if i+1 >= len(gitArgs) || strings.TrimSpace(gitArgs[i+1]) == "" {
+				return "", fmt.Errorf("secure push repository argument is missing")
+			}
+			return gitArgs[i+1], nil
+		}
+		if strings.HasPrefix(argument, "-") {
+			continue
+		}
+		return argument, nil
+	}
+	return "", fmt.Errorf("secure push repository argument is missing")
 }
 
 // RunSecureCleanupGitHelper is the child half of descriptor-anchored cleanup

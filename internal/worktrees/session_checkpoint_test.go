@@ -18,6 +18,9 @@ import (
 
 func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-source")
+	// The fetch URL is the portable request identity. Publication still uses
+	// origin's independently configured, logically equivalent push route.
+	gitTest(t, worktree, "remote", "set-url", "--push", "origin", "file://"+fixture.remote)
 	sourceHead := gitTestOutput(t, worktree, "rev-parse", "HEAD")
 	now := time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC)
 
@@ -43,6 +46,9 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 
 	if result.Request.SourceWorkCommit != sourceHead {
 		t.Fatalf("source work commit = %q, want %q", result.Request.SourceWorkCommit, sourceHead)
+	}
+	if result.Request.RepositoryRemote != fixture.remote {
+		t.Fatalf("repository remote = %q, want credential-free fetch URL %q", result.Request.RepositoryRemote, fixture.remote)
 	}
 	if result.Request.BundleCommit == sourceHead || result.Request.BundleCommit == "" {
 		t.Fatalf("bundle commit = %q, source = %q", result.Request.BundleCommit, sourceHead)
@@ -169,6 +175,49 @@ func TestCreateSessionCheckpointRefusesBeforeAnyMutation(t *testing.T) {
 			want: "no usable origin",
 		},
 		{
+			name: "credential bearing fetch remote",
+			prepare: func(t *testing.T, _ *gitFixture, worktree string, _ *SessionCheckpointOptions) {
+				gitTest(t, worktree, "remote", "set-url", "origin", "https://user:secret@example.invalid/acme/app.git")
+			},
+			want: "origin fetch remote is unsafe",
+		},
+		{
+			name: "credential bearing push remote",
+			prepare: func(t *testing.T, _ *gitFixture, worktree string, _ *SessionCheckpointOptions) {
+				gitTest(t, worktree, "remote", "set-url", "--push", "origin", "https://user:secret@example.invalid/acme/app.git")
+			},
+			want: "origin push remote is unsafe",
+		},
+		{
+			name: "query bearing fetch remote",
+			prepare: func(t *testing.T, _ *gitFixture, worktree string, _ *SessionCheckpointOptions) {
+				gitTest(t, worktree, "remote", "set-url", "origin", "https://example.invalid/acme/app.git?token=secret")
+			},
+			want: "origin fetch remote is unsafe",
+		},
+		{
+			name: "fragment bearing push remote",
+			prepare: func(t *testing.T, _ *gitFixture, worktree string, _ *SessionCheckpointOptions) {
+				gitTest(t, worktree, "remote", "set-url", "--push", "origin", "https://example.invalid/acme/app.git#fragment")
+			},
+			want: "origin push remote is unsafe",
+		},
+		{
+			name: "fetch and push identify different repositories",
+			prepare: func(t *testing.T, _ *gitFixture, worktree string, _ *SessionCheckpointOptions) {
+				gitTest(t, worktree, "remote", "set-url", "--push", "origin", "https://evil.example/acme/app.git")
+			},
+			want: "origin fetch and push remotes identify different repositories",
+		},
+		{
+			name: "multiple push routes",
+			prepare: func(t *testing.T, fixture *gitFixture, worktree string, _ *SessionCheckpointOptions) {
+				gitTest(t, worktree, "remote", "set-url", "--add", "--push", "origin", fixture.remote)
+				gitTest(t, worktree, "remote", "set-url", "--add", "--push", "origin", "file://"+fixture.remote)
+			},
+			want: "no usable origin push remote",
+		},
+		{
 			name:    "remote rejects non force publication",
 			prepare: makeRemoteBranchAhead,
 			want:    "cannot be pushed without force",
@@ -195,6 +244,9 @@ func TestCreateSessionCheckpointRefusesBeforeAnyMutation(t *testing.T) {
 			_, err = CreateSessionCheckpoint(context.Background(), options)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want containing %q", err, test.want)
+			}
+			if strings.Contains(err.Error(), "secret") {
+				t.Fatalf("refusal exposed credential-bearing remote: %v", err)
 			}
 			if got := gitTestOutput(t, worktree, "rev-parse", "HEAD"); got != headBefore {
 				t.Fatalf("HEAD changed from %s to %s", headBefore, got)
@@ -267,6 +319,69 @@ func TestVerifySessionBundleCommitRejectsCommittedBlobMismatchWhenWorktreeMatche
 	}
 }
 
+func TestCreateSessionCheckpointRefusesSanitizedPostCommitRemoteRedirectBeforePush(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-remote-redirect")
+	hooksPath := gitTestOutput(t, worktree, "rev-parse", "--git-path", "hooks")
+	if !filepath.IsAbs(hooksPath) {
+		hooksPath = filepath.Join(worktree, hooksPath)
+	}
+	if err := os.MkdirAll(hooksPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hook := []byte("#!/bin/sh\ngit config remote.origin.pushurl 'https://user:top-secret@example.invalid/acme/app.git'\n")
+	if err := os.WriteFile(filepath.Join(hooksPath, "post-commit"), hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	branch := gitTestOutput(t, worktree, "branch", "--show-current")
+
+	_, err := CreateSessionCheckpoint(context.Background(), SessionCheckpointOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
+		TargetMachine: "hetzner-vm1", HandoffID: "handoff-redirect", SuccessorWBSessionID: "wbs-successor",
+		Handover: SessionHandover{Body: []byte("continue safely\n")},
+		Now:      time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+	})
+	if err == nil || !strings.Contains(err.Error(), "origin remote changed after handover commit") {
+		t.Fatalf("error = %v, want post-commit remote redirect refusal", err)
+	}
+	if strings.Contains(err.Error(), "top-secret") || strings.Contains(err.Error(), "user:") {
+		t.Fatalf("remote redirect refusal exposed credential-bearing URL: %v", err)
+	}
+	if got := remoteBranchTipIfPresent(t, worktree, branch); got != "" {
+		t.Fatalf("remote branch advanced despite pre-push redirect refusal: %s", got)
+	}
+}
+
+func TestCreateSessionCheckpointUsesAuthenticatedExactPushURLDespiteOriginConfigTOCTOU(t *testing.T) {
+	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-push-url-toctou")
+	wrongRemote := filepath.Join(filepath.Dir(fixture.projectsRoot), "wrong-remotes", "acme", "app.git")
+	if err := os.MkdirAll(filepath.Dir(wrongRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Dir(wrongRemote), "init", "--bare", "--initial-branch=main", wrongRemote)
+	options := SessionCheckpointOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
+		TargetMachine: "hetzner-vm1", HandoffID: "handoff-push-toctou", SuccessorWBSessionID: "wbs-successor",
+		Handover: SessionHandover{Body: []byte("continue safely\n")},
+		Now:      time.Date(2026, time.August, 25, 12, 30, 0, 0, time.UTC),
+	}
+	options.afterPushRemoteAuthentication = func() {
+		gitTest(t, worktree, "remote", "set-url", "--push", "origin", wrongRemote)
+	}
+	branch := gitTestOutput(t, worktree, "branch", "--show-current")
+
+	_, err := CreateSessionCheckpoint(context.Background(), options)
+	if err == nil || !strings.Contains(err.Error(), "origin remote changed while publishing") {
+		t.Fatalf("error = %v, want post-push origin reauthentication refusal", err)
+	}
+	head := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	if got := remoteBranchTipFrom(t, worktree, fixture.remote, branch); got != head {
+		t.Fatalf("authenticated push remote tip = %q, want %q", got, head)
+	}
+	if got := remoteBranchTipFrom(t, worktree, wrongRemote, branch); got != "" {
+		t.Fatalf("mutable origin redirected push to wrong remote at %s", got)
+	}
+}
+
 func newSessionCheckpointFixture(t *testing.T, operation string) (*gitFixture, string, session.Record) {
 	t.Helper()
 	neutralizeGitSigning(t)
@@ -305,6 +420,23 @@ func neutralizeGitSigning(t *testing.T) {
 func remoteBranchTip(t *testing.T, worktree, branch string) string {
 	t.Helper()
 	fields := strings.Fields(gitTestOutput(t, worktree, "ls-remote", "--heads", "origin", "refs/heads/"+branch))
+	if len(fields) != 2 {
+		t.Fatalf("unexpected remote branch response: %#v", fields)
+	}
+	return fields[0]
+}
+
+func remoteBranchTipIfPresent(t *testing.T, worktree, branch string) string {
+	t.Helper()
+	return remoteBranchTipFrom(t, worktree, "origin", branch)
+}
+
+func remoteBranchTipFrom(t *testing.T, worktree, remote, branch string) string {
+	t.Helper()
+	fields := strings.Fields(gitTestOutput(t, worktree, "ls-remote", "--heads", "--", remote, "refs/heads/"+branch))
+	if len(fields) == 0 {
+		return ""
+	}
 	if len(fields) != 2 {
 		t.Fatalf("unexpected remote branch response: %#v", fields)
 	}

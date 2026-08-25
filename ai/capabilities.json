@@ -3999,6 +3999,86 @@
       "notes": "Housekeeping only: a stale record reports as gone rather than misleading anyone, and a live session is never removed."
     },
     {
+      "id": "wb.session.receive",
+      "feature_refs": [
+        "spec/features/agent-session-move/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb session receive",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Reads one bounded request from byte-exact stdin, computes and admits its digest idempotently, and authenticates the declared target against local remote.machine configuration.",
+                "Fetches the declared branch ref live, refuses a moved tip before successor creation, securely clones a missing canonical repository, and creates or verifies one clean target worktree pinned to the exact bundle commit.",
+                "Replays an existing receipt when present; otherwise records received, worktree_ready, or an actionable failed phase without starting a harness or changing predecessor custody."
+              ]
+            }
+          ],
+          "limitation": "This target checkpoint stage does not yet start or register the successor, deliver a receipt, or transfer predecessor custody."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session receive --help",
+              "contains": [
+                "exact stdin bytes",
+                "validated remote.machine",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Receive a pinned target checkpoint",
+              "examples": [
+                "wb session receive --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_receive_test.go",
+              "name": "TestSessionReceiveCommandUsesConfiguredMachineAndExactStdinBytes",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionreceive/receive_test.go",
+              "name": "TestReceiveConcurrentIdenticalRequestsSerializeAndCreateOnce",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/session_receive_test.go",
+              "name": "TestReceiveSessionBundleRefusesMovedBranchBeforeTargetWorktree",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/session_receive_test.go",
+              "name": "TestReceiveSessionBundleSecurelyClonesMissingCanonicalRepository",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The target phase is resumable and idempotent per exact handoff digest; no successful worktree verification is treated as a custody receipt."
+    },
+    {
       "id": "wb.session.register",
       "feature_refs": [
         "spec/features/agent-session-move/README.md",

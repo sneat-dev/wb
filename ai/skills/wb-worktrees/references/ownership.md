@@ -74,9 +74,38 @@ wb session move --to hetzner-vm1 --handover-file handover.md
 
 WB preallocates the successor identity, generates and commits only
 `.wb/handoffs/<handoff-id>.md`, pushes normally, verifies that exact commit as
-the remote branch tip, and records an offer. This checkpoint stage does not
-deliver to or start the target and does not transfer source custody; the
-source stays active until a later valid successor receipt.
+the remote branch tip, and records an offer. The request carries the validated,
+credential-free fetch URL; an independently configured push URL must identify
+the same logical repository, and WB publishes through the already-validated
+exact push URL without putting that URL in the handover. This checkpoint stage
+does not deliver to or
+start the target and does not transfer source custody; the source stays active
+until a later valid successor receipt.
+
+## Receive a pinned target checkpoint
+
+`wb session receive` is the fixed target boundary used by couriers. Feed the
+exact request bytes on stdin; do not parse and re-encode them or add a digest or
+machine flag:
+
+```sh
+wb session receive --format json < exact-request.json
+```
+
+WB computes the digest from those bytes, verifies the request's target against
+the local validated `remote.machine`, and replays an existing receipt when one
+already exists. Otherwise it serializes execution for the handoff, verifies
+the canonical clone's full remote identity (or securely clones it when
+missing), fetches the declared branch directly, and requires the live tip to
+equal the exact bundle commit. It then verifies source ancestry and the tracked
+handover blob before creating or reusing one clean linked worktree pinned to
+that commit.
+
+A moved branch, wrong remote, missing/non-ancestor commit, digest mismatch, or
+unsafe existing worktree records an actionable failed phase before any
+successor can be created or started. This receiver stage records
+`worktree_ready` only; it does not create a receipt, start a harness, or change
+source custody.
 
 `wb session list` joins each session to the worktree owner entries recorded
 under its declared PID (guarded by registration time, so an entry from a
