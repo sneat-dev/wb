@@ -1,11 +1,46 @@
 package gitops
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestIsTransientPullFailure(t *testing.T) {
+	for _, test := range []struct {
+		message string
+		want    bool
+	}{
+		{message: "git pull: Connection closed by 4.208.26.197 port 22", want: true},
+		{message: "git pull: Connection to github.com closed by remote host", want: true},
+		{message: "git pull: fatal: expected flush after ref listing", want: true},
+		{message: "git pull: Your configuration specifies to merge with the ref 'refs/heads/deleted'", want: false},
+		{message: "git pull: fatal: Not possible to fast-forward, aborting.", want: false},
+		{message: "git pull: Permission denied (publickey).", want: false},
+	} {
+		t.Run(test.message, func(t *testing.T) {
+			if got := isTransientPullFailure(errors.New(test.message)); got != test.want {
+				t.Fatalf("isTransientPullFailure(%q) = %t, want %t", test.message, got, test.want)
+			}
+		})
+	}
+}
+
+func TestPullRetryDelayBacksOffAndStaggersCheckouts(t *testing.T) {
+	first := pullRetryDelay("/fleet/acme/widgets", 0)
+	if first < 500*time.Millisecond || first >= time.Second {
+		t.Fatalf("first retry delay = %s, want [500ms, 1s)", first)
+	}
+	if second := pullRetryDelay("/fleet/acme/widgets", 1); second < time.Second || second >= 1500*time.Millisecond {
+		t.Fatalf("second retry delay = %s, want [1s, 1.5s)", second)
+	}
+	if other := pullRetryDelay("/fleet/acme/gadgets", 0); other == first {
+		t.Fatalf("different checkouts received the same retry delay: %s", first)
+	}
+}
 
 func git(t *testing.T, dir string, args ...string) {
 	t.Helper()
