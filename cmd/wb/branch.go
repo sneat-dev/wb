@@ -98,7 +98,7 @@ reserved for the report.`,
 
 func newBranchCleanupCmd() *cobra.Command {
 	var base, scope, reportDir, format string
-	var apply bool
+	var apply, receipts bool
 	var olderThan time.Duration
 	command := &cobra.Command{
 		Use:   "cleanup",
@@ -108,9 +108,15 @@ provably contained in the freshly fetched exact origin/<base> target. The
 default is a dry-run plan; --apply is required for every deletion in every
 scope, and a dry run never creates a report directory or mutates anything.
 
-Only the contained disposition is ever eligible. absorbed is never eligible,
-under any flag, in any configuration — see 'wb branch list --help' for why.
-unique, protected, in-use, and unreadable are likewise never eligible. A
+contained is always eligible. Under --receipts a branch with a proved landing
+receipt is eligible too: GitHub's commit-to-pull-request index must name a
+merged pull request into the exact base whose merge commit is contained in the
+fetched target, and a local three-way merge proof must show the branch adds
+nothing to the landing commit or the target. Patch-id equality never
+qualifies: absorbed is never eligible, under any flag, in any configuration —
+see 'wb branch list --help' for why. unique, protected, in-use, and unreadable
+are likewise never eligible (a unique or absorbed branch can only become
+eligible by the receipt proof above, which reclassifies it receipted). A
 branch owned by a WB task is reported in-use and is never deleted here; use
 'wb worktree cleanup <task>' or 'wb worktree abort <task>' instead.
 
@@ -145,6 +151,7 @@ in-use and therefore never a candidate.`,
 			progress := command.ErrOrStderr()
 			now := time.Now()
 			outcome, err := worktrees.BranchCleanup(command.Context(), worktrees.BranchCleanupOptions{
+				Receipts:     receipts,
 				ProjectsRoot: projectsRoot, Base: base, Scope: scope, Apply: apply,
 				OlderThan: olderThan, ReportDir: reportDir, Filter: filterFlag, Progress: progress,
 				Now: func() time.Time { return now },
@@ -177,6 +184,7 @@ in-use and therefore never a candidate.`,
 	command.Flags().StringVar(&base, "base", "main", "exact origin target branch every candidate must be contained in")
 	command.Flags().StringVar(&scope, "scope", "local", "local, remote, or all")
 	command.Flags().BoolVar(&apply, "apply", false, "delete every eligible branch; the default is a dry-run plan")
+	command.Flags().BoolVar(&receipts, "receipts", false, "prove landings via GitHub pull-request receipts, making receipted branches eligible (one query per candidate)")
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum branch age required for eligibility (0 disables)")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "branch cleanup audit directory (default <wb-home>/reports/branch-cleanup/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

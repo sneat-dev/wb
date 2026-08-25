@@ -25,13 +25,19 @@ type BranchCleanupOptions struct {
 	ReportDir    string
 	Filter       string
 	Progress     io.Writer
+	// Receipts enables landing-receipt classification, making receipted
+	// branches eligible alongside contained ones. Off by default because it
+	// costs a GitHub query per non-contained candidate. See
+	// #req:receipted-is-opt-in-and-fails-closed.
+	Receipts bool
 	// Now is injectable so age eligibility is deterministic under test.
 	Now func() time.Time
 }
 
 // BranchCleanupResult is one candidate's plan and, under --apply, its
-// outcome. Only Disposition == contained can ever have Applied == true;
-// absorbed is permanently report-only. See #req:absorbed-is-report-only.
+// outcome. Only contained — and, under --receipts, receipted — can ever have
+// Applied == true; absorbed is permanently report-only. See
+// #req:absorbed-is-report-only and #req:receipted-requires-a-proved-landing.
 type BranchCleanupResult struct {
 	BranchEntry
 	Eligible   bool   `json:"eligible"`
@@ -97,6 +103,7 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 	sweep := branchSweepOptions{
 		ProjectsRoot: normalized.ProjectsRoot, Base: normalized.Base, Scope: normalized.Scope,
 		OlderThan: normalized.OlderThan, Filter: normalized.Filter, Progress: normalized.Progress, Now: now,
+		Receipts: normalized.Receipts,
 	}
 	entries, diagnostics, paths, err := classifyFleetBranchesWithPaths(ctx, sweep)
 	if err != nil {
@@ -143,9 +150,11 @@ func BranchCleanup(ctx context.Context, options BranchCleanupOptions) (BranchCle
 }
 
 // planBranchCleanup decides, for every classified branch, whether it is
-// eligible for deletion. Only contained branches ever qualify; absorbed,
-// unique, protected, in-use, and unreadable are always reported, never
-// eligible. A remote candidate additionally requires pull-request evidence:
+// eligible for deletion. Contained branches always qualify; receipted ones
+// qualify only when the run enabled --receipts (they cannot arise otherwise).
+// absorbed, unique, protected, in-use, and unreadable are always reported,
+// never eligible. A remote candidate additionally requires pull-request
+// evidence:
 // an open PR refuses it outright, and evidence WB could not obtain refuses
 // every remote candidate in the run, never only the ones it touched.
 func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []BranchCleanupResult {
@@ -154,7 +163,7 @@ func planBranchCleanup(entries []BranchEntry, sweep branchSweepOptions) []Branch
 	for _, entry := range entries {
 		result := BranchCleanupResult{BranchEntry: entry, Outcome: "skipped"}
 		switch {
-		case entry.Disposition != BranchContained:
+		case entry.Disposition != BranchContained && entry.Disposition != BranchReceipted:
 			result.SkipReason = skipReasonForDisposition(entry)
 		case sweep.OlderThan > 0 && !entry.CommitterDate.IsZero() && sweep.Now.Sub(entry.CommitterDate) < sweep.OlderThan:
 			result.SkipReason = fmt.Sprintf("branch is younger than --older-than %s", sweep.OlderThan)
@@ -199,7 +208,9 @@ func remotePullRequestEvidenceUnavailable(entries []BranchEntry, sweep branchSwe
 		return false
 	}
 	for _, entry := range entries {
-		if entry.Scope == BranchScopeRemote && entry.Disposition == BranchContained && entry.PullRequestQueryFailed {
+		if entry.Scope == BranchScopeRemote &&
+			(entry.Disposition == BranchContained || entry.Disposition == BranchReceipted) &&
+			entry.PullRequestQueryFailed {
 			return true
 		}
 	}
@@ -253,14 +264,7 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch moved from %s to %s between plan and apply; refusing", shortSHA(result.SHA), shortSHA(currentSHA))
 		return
 	}
-	contained, err := isAncestor(ctx, repositoryPath, currentSHA, freshTarget)
-	if err != nil || !contained {
-		result.Outcome = "failed"
-		if err != nil {
-			result.Error = fmt.Sprintf("recheck containment: %v", err)
-		} else {
-			result.Error = "branch is no longer an ancestor of the freshly fetched target"
-		}
+	if !recheckDeletionEvidence(ctx, repositoryPath, currentSHA, freshTarget, result) {
 		return
 	}
 	canonical, err := openCanonicalRepository(repositoryPath)
@@ -274,6 +278,55 @@ func applyLocalBranchDeletion(ctx context.Context, repositoryPath string, result
 		return
 	}
 	result.Applied, result.Outcome = true, "deleted"
+}
+
+// recheckDeletionEvidence repeats, against the freshly fetched target, the
+// evidence that made this candidate eligible. A contained branch must still be
+// an ancestor. A receipted branch fails ancestry by construction, so it must
+// instead re-prove its receipt: the recorded landing commit still contained in
+// the fresh target, and the three-way proof still holding against it — which
+// is what refuses work reverted between plan and apply. On failure the result
+// is marked and false is returned. See
+// #req:receipted-requires-a-proved-landing.
+func recheckDeletionEvidence(ctx context.Context, repositoryPath, currentSHA, freshTarget string, result *BranchCleanupResult) bool {
+	if result.Disposition == BranchReceipted {
+		if !isGitObjectID(result.LandingSHA) {
+			result.Outcome, result.Error = "failed", "receipted plan carries no landing commit; refusing"
+			return false
+		}
+		landed, err := isAncestor(ctx, repositoryPath, result.LandingSHA, freshTarget)
+		if err != nil || !landed {
+			result.Outcome = "failed"
+			if err != nil {
+				result.Error = fmt.Sprintf("recheck landing containment: %v", err)
+			} else {
+				result.Error = fmt.Sprintf("landing commit %s is no longer contained in the freshly fetched target", shortSHA(result.LandingSHA))
+			}
+			return false
+		}
+		proved, err := contentAbsorbed(ctx, repositoryPath, currentSHA, result.LandingSHA, freshTarget)
+		if err != nil || !proved {
+			result.Outcome = "failed"
+			if err != nil {
+				result.Error = fmt.Sprintf("recheck receipt proof: %v", err)
+			} else {
+				result.Error = "receipt no longer holds against the freshly fetched target; the work may have been reverted"
+			}
+			return false
+		}
+		return true
+	}
+	contained, err := isAncestor(ctx, repositoryPath, currentSHA, freshTarget)
+	if err != nil || !contained {
+		result.Outcome = "failed"
+		if err != nil {
+			result.Error = fmt.Sprintf("recheck containment: %v", err)
+		} else {
+			result.Error = "branch is no longer an ancestor of the freshly fetched target"
+		}
+		return false
+	}
+	return true
 }
 
 func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, result *BranchCleanupResult) {
@@ -300,14 +353,7 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("remote branch moved from %s to %s between plan and apply; refusing", shortSHA(result.SHA), shortSHA(observedSHA))
 		return
 	}
-	contained, err := isAncestor(ctx, repositoryPath, observedSHA, freshTarget)
-	if err != nil || !contained {
-		result.Outcome = "failed"
-		if err != nil {
-			result.Error = fmt.Sprintf("recheck containment: %v", err)
-		} else {
-			result.Error = "remote branch is no longer an ancestor of the freshly fetched target"
-		}
+	if !recheckDeletionEvidence(ctx, repositoryPath, observedSHA, freshTarget, result) {
 		return
 	}
 	pullRequests, err := githubPullRequests(ctx, repositoryPath, result.Repository, observedSHA)

@@ -155,6 +155,9 @@ set, together with the evidence string that produced it:
   `git cherry <target-sha> <branch-sha>` emits zero `+` lines, or
   `<branch-sha>^{tree}` equals `<target-sha>^{tree}`. Report-only; see
   `#req:absorbed-is-report-only`.
+- `receipted` — not an ancestor of the target, but a landing receipt proves the
+  work is present in it. Eligible for deletion only under `--receipts`; see
+  `#req:receipted-requires-a-proved-landing`.
 - `unique` — `git cherry <target-sha> <branch-sha>` emits at least one `+`
   line. The evidence MUST include the count of unique patches.
 - `protected` — the branch is `<base>` itself, is the canonical clone's current
@@ -196,6 +199,61 @@ branches **visible and actionable**, by naming the receipt-based command that
 can retire them, never to retire them itself.
 
 [absorbed]: ../worktree-lifecycle/README.md
+
+#### REQ: receipted-requires-a-proved-landing
+
+`absorbed` stays report-only forever, and this requirement does not weaken it.
+`receipted` is a distinct, stronger class: a branch enters it only by the
+receipt-and-proof path that `#req:absorbed-is-report-only` already names as the
+correct way for a squash-merged branch to become deletable
+([worktree-lifecycle#req:absorbed-integration-containment-evidence][absorbed]).
+Patch-id or tree equality MUST NEVER promote a branch out of `absorbed`.
+
+To classify a branch `receipted`, WB MUST obtain a landing receipt from
+GitHub's own commit-to-pull-request index for the branch's immutable head
+commit, naming a merged pull request into the exact base whose merge commit is
+contained in the freshly fetched exact origin target. A branch name MUST NOT be
+treated as evidence, and the pull request's head MUST NOT be required to equal
+the branch head.
+
+Every receipt MUST additionally be proved locally, exactly as the worktree path
+proves it: a three-way merge of the branch into the landing commit MUST succeed
+and produce that commit's own tree, and the same merge into the fetched target
+MUST produce the target's tree. The proof MUST NOT mutate any ref, index, or
+working tree. Work that landed and was later reverted, or landed only in part,
+therefore fails the proof and MUST remain `absorbed`.
+
+This is what makes the class safe where patch-id is not: a revert leaves the
+patch-id twins intact but changes the target's tree, so the merge proof catches
+precisely the case `#req:absorbed-is-report-only` warns about.
+
+#### REQ: receipted-is-opt-in-and-fails-closed
+
+Receipt classification costs a GitHub query per candidate, so WB MUST NOT
+perform it unless `--receipts` is passed. Without the flag a branch that would
+qualify MUST be reported with the disposition its patch evidence produces —
+`absorbed` or `unique` — never silently eligible. `unique` branches MUST be
+receipt-checked too: a multi-commit squash landing leaves no upstream twin for
+any individual patch-id, so a fully landed branch can present as `unique`.
+
+Any failure to obtain or verify a receipt — no merged pull request into the
+exact base, an unreachable or unauthenticated GitHub, a merge commit absent
+from the target, a conflicted or residual three-way merge — MUST leave the
+branch in its patch-evidence disposition with the failing check named in its
+evidence. A branch MUST NEVER become eligible because a check could not be
+run.
+
+`protected`, `in-use`, and `unreadable` MUST still be evaluated first, so
+`#req:delegate-wb-owned-branches` continues to hold: a WB-owned branch is never
+deleted here regardless of any receipt.
+
+Immediately before deleting a `receipted` branch, WB MUST re-verify the receipt
+rather than ancestry, which a `receipted` branch fails by construction: after
+the refetch and the compare-and-delete SHA check, the recorded landing commit
+MUST still be contained in the freshly fetched target and the three-way proof
+MUST still hold against it. The plan MUST record the landing commit so this
+recheck cannot silently degrade to a weaker test. Work reverted between plan
+and apply therefore refuses its own deletion, exactly as a moved branch does.
 
 #### REQ: absorbed-names-its-remedy
 
