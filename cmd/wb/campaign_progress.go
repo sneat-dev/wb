@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
 )
@@ -14,11 +15,27 @@ import (
 type campaignProgress struct {
 	live      *liveProgress
 	operation string
-	once      sync.Once
+	heartbeat time.Duration
+	done      chan struct{}
+	stopped   chan struct{}
+
+	startOnce  sync.Once
+	stopOnce   sync.Once
+	finishOnce sync.Once
+	mu         sync.RWMutex
+	last       string
+	finished   bool
 }
 
 func newCampaignProgress(out io.Writer, enabled bool, operation string) *campaignProgress {
-	return &campaignProgress{live: newLiveProgress(out, enabled), operation: operation}
+	return newCampaignProgressWithHeartbeat(out, enabled, operation, time.Second)
+}
+
+func newCampaignProgressWithHeartbeat(out io.Writer, enabled bool, operation string, heartbeat time.Duration) *campaignProgress {
+	return &campaignProgress{
+		live: newLiveProgress(out, enabled), operation: operation,
+		heartbeat: heartbeat, done: make(chan struct{}), stopped: make(chan struct{}),
+	}
 }
 
 func (p *campaignProgress) reporter() progress.Reporter {
@@ -29,13 +46,13 @@ func (p *campaignProgress) reporter() progress.Reporter {
 }
 
 func (p *campaignProgress) report(event progress.Event) {
-	p.once.Do(func() { p.live.start(p.operation + ": starting") })
+	p.ensureStarted()
 	parts := []string{p.operation}
 	if event.Wave > 0 {
 		parts = append(parts, fmt.Sprintf("wave %d", event.Wave))
 	}
-	if event.Layer > 0 {
-		parts = append(parts, fmt.Sprintf("layer %d", event.Layer))
+	if event.Layer != nil {
+		parts = append(parts, fmt.Sprintf("layer %d", *event.Layer))
 	}
 	if event.Phase != "" {
 		parts = append(parts, strings.ReplaceAll(event.Phase, "_", " "))
@@ -48,16 +65,71 @@ func (p *campaignProgress) report(event progress.Event) {
 	}
 	if event.Detail != "" {
 		parts = append(parts, event.Detail)
-	} else if event.State != "" && event.State != progress.Running {
+	}
+	if event.State != "" && event.State != progress.Running {
 		parts = append(parts, string(event.State))
 	}
-	p.live.update(strings.Join(parts, ": "))
+	message := strings.Join(parts, ": ")
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.finished {
+		return
+	}
+	p.last = message
+	p.live.update(message)
 }
 
 func (p *campaignProgress) finish(message string) {
 	if p == nil || p.live == nil || !p.live.enabled {
 		return
 	}
-	p.once.Do(func() { p.live.start(p.operation + ": starting") })
-	p.live.finish(p.operation + ": " + message)
+	p.finishOnce.Do(func() {
+		p.ensureStarted()
+		p.mu.Lock()
+		p.finished = true
+		p.mu.Unlock()
+		p.stopOnce.Do(func() { close(p.done) })
+		<-p.stopped
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		p.live.finish(p.operation + ": " + message)
+	})
+}
+
+func (p *campaignProgress) ensureStarted() {
+	p.startOnce.Do(func() {
+		message := p.operation + ": starting"
+		p.mu.Lock()
+		p.last = message
+		p.mu.Unlock()
+		p.live.start(message)
+		if p.heartbeat > 0 {
+			go p.runHeartbeat()
+		} else {
+			close(p.stopped)
+		}
+	})
+}
+
+func (p *campaignProgress) runHeartbeat() {
+	defer close(p.stopped)
+	ticker := time.NewTicker(p.heartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.mu.Lock()
+			if p.finished {
+				p.mu.Unlock()
+				continue
+			}
+			message := p.last
+			if message != "" {
+				p.live.update(message)
+			}
+			p.mu.Unlock()
+		case <-p.done:
+			return
+		}
+	}
 }

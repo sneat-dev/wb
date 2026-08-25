@@ -465,7 +465,7 @@ func (c *campaign) apply() error {
 	layers := flattenRepositoryComponentLayers(componentLayers)
 	var localVerificationErrors []error
 	for layerIndex, componentLayer := range componentLayers {
-		layerNumber := layerIndex + 1
+		layerNumber := layerIndex
 		layer := flattenRepositoryComponents(componentLayer)
 		var preflightErrors []error
 		var cycleBootstraps []cycleBootstrap
@@ -478,8 +478,14 @@ func (c *campaign) apply() error {
 				repo *campaignRepository,
 				allowedUnreleased map[string]bool,
 			) (map[string]bool, error) {
-				progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "preflight", Repository: repo.repository, State: progress.Running, Layer: layerNumber})
-				return c.preflightRepository(repo, moduleRoots, allowedUnreleased)
+				progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "preflight", Repository: repo.repository, State: progress.Running, Layer: progress.Index(layerNumber)})
+				releases, err := c.preflightRepository(repo, moduleRoots, allowedUnreleased)
+				state := progress.Completed
+				if err != nil {
+					state = progress.Failed
+				}
+				progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "preflight", Repository: repo.repository, State: state, Layer: progress.Index(layerNumber)})
+				return releases, err
 			})
 			if len(layer) == 0 {
 				return errors.Join(preflightErrors...)
@@ -581,7 +587,7 @@ func (c *campaign) progressAction(phase string, layer int, repositories []*campa
 	var mu sync.Mutex
 	completed := 0
 	return func(repo *campaignRepository) error {
-		progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: phase, Repository: repo.repository, State: progress.Running, Layer: layer, Total: len(repositories)})
+		progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: phase, Repository: repo.repository, State: progress.Running, Layer: progress.Index(layer), Total: len(repositories)})
 		err := action(repo)
 		mu.Lock()
 		completed++
@@ -589,8 +595,9 @@ func (c *campaign) progressAction(phase string, layer int, repositories []*campa
 		if err != nil {
 			state = progress.Failed
 		}
-		progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: phase, Repository: repo.repository, State: state, Layer: layer, Completed: completed, Total: len(repositories)})
+		completedSnapshot := completed
 		mu.Unlock()
+		progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: phase, Repository: repo.repository, State: state, Layer: progress.Index(layer), Completed: completedSnapshot, Total: len(repositories)})
 		return err
 	}
 }

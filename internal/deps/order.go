@@ -198,7 +198,7 @@ func runOrderedLayers[T any](ctx context.Context, order GraphOrder, repositories
 				})
 			}
 		default:
-			progress.Report(lifecycle.Progress, progress.Event{Operation: lifecycle.Operation, Phase: "process_layer", Detail: fmt.Sprintf("layer %02d, %d repositories", layer.index, len(layer.repositories)), State: progress.Started, Total: len(layer.repositories)})
+			progress.Report(lifecycle.Progress, progress.Event{Operation: lifecycle.Operation, Phase: "process_layer", Detail: fmt.Sprintf("%d repositories", len(layer.repositories)), State: progress.Started, Layer: progress.Index(layer.index), Total: len(layer.repositories)})
 			layerResults, err := orchestrate.Run(ctx, layer.repositories, handler, lifecycle)
 			results = append(results, layerResults...)
 			entry.Status = "completed"
@@ -209,7 +209,7 @@ func runOrderedLayers[T any](ctx context.Context, order GraphOrder, repositories
 				failed = layer.index
 				runErrors = append(runErrors, fmt.Errorf("layer %02d: %w", layer.index, err))
 			}
-			progress.Report(lifecycle.Progress, progress.Event{Operation: lifecycle.Operation, Phase: "process_layer", Detail: fmt.Sprintf("layer %02d", layer.index), State: progressState, Completed: len(layerResults), Total: len(layer.repositories)})
+			progress.Report(lifecycle.Progress, progress.Event{Operation: lifecycle.Operation, Phase: "process_layer", State: progressState, Layer: progress.Index(layer.index), Completed: len(layerResults), Total: len(layer.repositories)})
 		}
 		report.Layers = append(report.Layers, entry)
 	}

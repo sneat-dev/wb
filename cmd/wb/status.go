@@ -103,7 +103,7 @@ func runRepositoryStatus(request repositoryStatusRequest) error {
 	}
 	progress := newStatusProgress(
 		request.progress,
-		request.fleet && console.Interactive(request.progress, nonInteractive),
+		console.Interactive(request.progress, nonInteractive),
 	)
 	progress.start(len(targets))
 	repositories := runStatusTargetsWithProgress(targets, request.options.parallel, progress.complete)

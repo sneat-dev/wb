@@ -160,10 +160,17 @@ func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOption
 		return err
 	}
 	defer locks.Release()
+	selectionProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps publish npm")
+	options.campaign = selectionProgress
 	prepared, err := preflight(options)
 	if err != nil {
+		selectionProgress.finish("failed")
 		return err
 	}
+	selectionProgress.finish("selection completed")
+	// Publication and downstream propagation own later progress lines. Do not
+	// reuse a renderer whose selection heartbeat has already been stopped.
+	options.campaign = nil
 	if prepared.operation != operation {
 		return fmt.Errorf("npm publication preflight changed the requested operation; refusing to dispatch")
 	}

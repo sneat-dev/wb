@@ -73,7 +73,7 @@ func newCoverageCmd() *cobra.Command {
 					return nil
 				}
 			}
-			progress := newQualityProgress(cmd.ErrOrStderr(), options.fleet && console.Interactive(cmd.ErrOrStderr(), nonInteractive), "coverage", len(targets))
+			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "coverage", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
@@ -134,7 +134,7 @@ func newVerifyCmd() *cobra.Command {
 					return nil
 				}
 			}
-			progress := newQualityProgress(cmd.ErrOrStderr(), options.fleet && console.Interactive(cmd.ErrOrStderr(), nonInteractive), "verify", len(targets))
+			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "verify", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report
@@ -198,7 +198,7 @@ func newCheckCmd() *cobra.Command {
 					return nil
 				}
 			}
-			progress := newQualityProgress(cmd.ErrOrStderr(), options.fleet && console.Interactive(cmd.ErrOrStderr(), nonInteractive), "check", len(targets))
+			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "check", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
 			runOptions.Progress = progress.report

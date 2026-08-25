@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -120,14 +121,19 @@ func TestRunValidatesPublishabilityBeforeCommit(t *testing.T) {
 func TestRunSkipsArchivedRepository(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
+	var events []progress.Event
 	results, err := Run(context.Background(), []Repository{{Slug: "acme/retired", Archived: true}}, textHandler{}, Options{
 		GitHubDir: directory, Operation: "archived-test", DryRun: true,
+		Progress: func(event progress.Event) { events = append(events, event) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if results[0].Status != "skipped" || results[0].Reason != "repository is archived" {
 		t.Fatalf("result = %+v", results[0])
+	}
+	if len(events) != 2 || events[0].State != progress.Started || events[1].State != progress.Completed || events[1].Completed != 1 || events[1].Total != 1 {
+		t.Fatalf("progress events = %#v", events)
 	}
 }
 

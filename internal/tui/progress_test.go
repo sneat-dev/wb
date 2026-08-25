@@ -20,7 +20,7 @@ func TestProgressModelTracksCounts(t *testing.T) {
 		t.Fatalf("inFlight = %d, want 1", len(m.inFlight))
 	}
 
-	res := fleetsync.Result{Repo: discover.Repo{Org: "acme", Name: "widgets"}, Status: fleetsync.Pulled}
+	res := fleetsync.Result{Repo: discover.Repo{Org: "acme", Name: "widgets"}, Status: fleetsync.Pulled, Updated: true}
 	updated, _ = m.Update(RepoDone{Result: res})
 	m = updated.(ProgressModel)
 
@@ -35,6 +35,9 @@ func TestProgressModelTracksCounts(t *testing.T) {
 	}
 	if len(m.Results) != 1 || m.Results[0].Status != fleetsync.Pulled {
 		t.Errorf("Results = %+v, want [Pulled]", m.Results)
+	}
+	if m.updated != 1 || !strings.Contains(m.View().Content, "updated from remote 1") {
+		t.Errorf("updated = %d, view = %q", m.updated, m.View().Content)
 	}
 }
 

@@ -86,7 +86,12 @@ func (s Status) String() string {
 type Result struct {
 	Repo   discover.Repo
 	Status Status
-	Detail gitops.RepoStatus
+	// Updated is true only when an existing clone's checked-out commit moved
+	// forward during this sync. A successful no-op pull and a dry run leave it
+	// false, so callers can report fresh remote updates without inflating the
+	// count with repositories that were already current.
+	Updated bool
+	Detail  gitops.RepoStatus
 	// Tracking is filled in only for Diverged and NoUpstream, whose reports
 	// are meaningless without the branch names and ahead/behind counts.
 	Tracking gitops.TrackingState
@@ -207,6 +212,7 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		res.Status = Pulled
 		return res
 	}
+	beforeHead, beforeHeadErr := gitops.HeadSHA(repo.Path)
 	if err := gitops.Pull(repo.Path); err != nil {
 		// A remote publishing no branches at all has nothing to pull, so the
 		// failure is expected rather than a fault: the repository was created
@@ -246,6 +252,9 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		res.Status = Failed
 		res.Err = err
 		return res
+	}
+	if afterHead, afterHeadErr := gitops.HeadSHA(repo.Path); beforeHeadErr == nil && afterHeadErr == nil && afterHead != beforeHead {
+		res.Updated = true
 	}
 	// A successful pull says the clone is not BEHIND. It says nothing about
 	// what the clone is holding that origin has never seen: an ahead-only

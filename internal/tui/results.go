@@ -6,6 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/sneat-dev/wb/internal/fleetsync"
 )
@@ -31,12 +32,13 @@ func (i resultItem) Description() string {
 
 func (i resultItem) FilterValue() string { return i.Repo.Slug() }
 
-// ResultsModel is the interactive drill-down: a list of repos that need
-// review, and a detail view for the currently selected one.
+const resultsPanelGap = 3
+
+// ResultsModel is a persistent split-pane review screen: the left panel is a
+// navigable summary and the right panel follows its current selection.
 type ResultsModel struct {
-	list       list.Model
-	showDetail bool
-	selected   fleetsync.Result
+	list          list.Model
+	width, height int
 }
 
 // NewResultsModel builds a ResultsModel over the reviewable results —
@@ -51,7 +53,7 @@ func NewResultsModel(results []fleetsync.Result) ResultsModel {
 		}
 	}
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Needs review"
+	l.Title = fmt.Sprintf("Needs review (%d)", len(items))
 	return ResultsModel{list: l}
 }
 
@@ -72,25 +74,14 @@ func (m ResultsModel) Init() tea.Cmd { return nil }
 func (m ResultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.list.SetSize(msg.Width, msg.Height)
+		m.width, m.height = msg.Width, msg.Height
+		leftWidth, _ := resultsPanelWidths(msg.Width)
+		m.list.SetSize(max(1, leftWidth-4), max(1, msg.Height-2))
 		return m, nil
 	case tea.KeyMsg:
-		if m.showDetail {
-			switch msg.String() {
-			case "esc", "q":
-				m.showDetail = false
-			}
-			return m, nil
-		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "enter":
-			if it, ok := m.list.SelectedItem().(resultItem); ok {
-				m.selected = it.Result
-				m.showDetail = true
-			}
-			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -99,16 +90,40 @@ func (m ResultsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m ResultsModel) View() tea.View {
-	if m.showDetail {
-		return tea.NewView(detailView(m.selected))
+	if m.width <= 0 || m.height <= 0 {
+		return tea.NewView(m.list.View())
 	}
-	return tea.NewView(m.list.View())
+	leftWidth, rightWidth := resultsPanelWidths(m.width)
+	panelHeight := max(1, m.height-2)
+	panel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	left := panel.Width(max(1, leftWidth-4)).Height(panelHeight).Render(m.list.View())
+	right := panel.Width(max(1, rightWidth-4)).Height(panelHeight).Render(detailView(m.selectedResult()))
+	return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, left, strings.Repeat(" ", resultsPanelGap), right))
+}
+
+func resultsPanelWidths(width int) (left, right int) {
+	usable := max(2, width-resultsPanelGap)
+	left = usable / 2
+	return left, usable - left
+}
+
+func (m ResultsModel) selectedResult() fleetsync.Result {
+	if item, ok := m.list.SelectedItem().(resultItem); ok {
+		return item.Result
+	}
+	return fleetsync.Result{}
 }
 
 // detailView renders the full status breakdown for one result.
 func detailView(r fleetsync.Result) string {
+	if r.Repo.Org == "" && r.Repo.Name == "" {
+		return "No repositories need review.\n\n(q to close)\n"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s — %s\n\n", r.Repo.Slug(), r.Status)
+	if r.Status == fleetsync.Diverged || r.Status == fleetsync.NoUpstream {
+		fmt.Fprintf(&b, "Tracking: %s\n\n", r.Tracking.Summary())
+	}
 	if summary := r.Detail.Summary(); summary != "" {
 		fmt.Fprintf(&b, "%s\n\n", summary)
 	}
@@ -120,7 +135,7 @@ func detailView(r fleetsync.Result) string {
 	if r.Err != nil {
 		fmt.Fprintf(&b, "Error:\n  %s\n", r.Err.Error())
 	}
-	b.WriteString("\n(esc to go back)\n")
+	b.WriteString("\n(↑/↓ select · / filter · q close)\n")
 	return b.String()
 }
 

@@ -90,11 +90,12 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 			return
 		}
 		progressMu.Lock()
-		defer progressMu.Unlock()
 		completed++
-		onProgress(graphDiscoveryProgress{
+		item := graphDiscoveryProgress{
 			RepositoriesTotal: len(repositories), RepositoriesCompleted: completed, LastRepository: repository,
-		})
+		}
+		progressMu.Unlock()
+		onProgress(item)
 	}
 	for range workers {
 		group.Add(1)

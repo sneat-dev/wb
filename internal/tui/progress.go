@@ -39,6 +39,7 @@ type ProgressModel struct {
 	orgTotal    map[string]int
 	orgDone     map[string]int
 	total, done int
+	updated     int
 	inFlight    []inFlight
 	maxInFlight int
 	Results     []fleetsync.Result
@@ -81,6 +82,9 @@ func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.done++
 		org := msg.Result.Repo.Org
 		m.orgDone[org]++
+		if msg.Result.Updated {
+			m.updated++
+		}
 		m.Results = append(m.Results, msg.Result)
 		for i, f := range m.inFlight {
 			if f.org == org && f.name == msg.Result.Repo.Name {
@@ -110,7 +114,7 @@ func (m ProgressModel) View() tea.View {
 	if m.total > 0 {
 		pct = float64(m.done) / float64(m.total)
 	}
-	fmt.Fprintf(&b, "%s %s %d/%d\n\n", headerStyle.Render("Overall"), m.overall.ViewAs(pct), m.done, m.total)
+	fmt.Fprintf(&b, "%s %s %d/%d · updated from remote %d\n\n", headerStyle.Render("Overall"), m.overall.ViewAs(pct), m.done, m.total, m.updated)
 	for _, org := range m.orgOrder {
 		p := 0.0
 		if m.orgTotal[org] > 0 {

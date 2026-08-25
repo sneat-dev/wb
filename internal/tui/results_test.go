@@ -45,29 +45,33 @@ func TestNewResultsModelFiltersToReviewable(t *testing.T) {
 	}
 }
 
-func TestResultsModelEnterShowsDetailAndEscReturns(t *testing.T) {
+func TestResultsModelRendersNavigableSplitPane(t *testing.T) {
 	results := []fleetsync.Result{
 		{
-			Repo:   discover.Repo{Org: "a", Name: "broken"},
+			Repo:   discover.Repo{Org: "a", Name: "first"},
 			Status: fleetsync.SkippedDirty,
-			Detail: gitops.RepoStatus{Modified: []string{"f.txt"}},
+			Detail: gitops.RepoStatus{Modified: []string{"first.txt"}},
+		},
+		{
+			Repo:   discover.Repo{Org: "a", Name: "second"},
+			Status: fleetsync.SkippedDirty,
+			Detail: gitops.RepoStatus{Modified: []string{"second.txt"}},
 		},
 	}
 	m := NewResultsModel(results)
-
-	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = updated.(ResultsModel)
-	if !m.showDetail {
-		t.Fatal("expected showDetail=true after enter")
-	}
 	view := m.View().Content
-	if !strings.Contains(view, "a/broken") || !strings.Contains(view, "f.txt") {
-		t.Fatalf("detail view missing expected content: %q", view)
+	if !strings.Contains(view, "Needs review (2)") || !strings.Contains(view, "a/first") || !strings.Contains(view, "first.txt") {
+		t.Fatalf("split view missing list or selected details: %q", view)
 	}
-
-	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = updated.(ResultsModel)
-	if m.showDetail {
-		t.Fatal("expected showDetail=false after esc")
+	view = m.View().Content
+	if !strings.Contains(view, "a/second") || !strings.Contains(view, "second.txt") {
+		t.Fatalf("detail panel did not follow selection: %q", view)
+	}
+	if !strings.Contains(view, "   ") {
+		t.Fatalf("split view has no spacing between panels: %q", view)
 	}
 }
