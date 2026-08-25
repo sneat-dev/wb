@@ -242,9 +242,9 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 			updated++
 		}
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "━━━ Summary ━━━")
-	printCount := func(label string, count int) { fmt.Fprintf(out, "%-20s%d\n", label, count) }
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "━━━ Summary ━━━")
+	printCount := func(label string, count int) { _, _ = fmt.Fprintf(out, "%-20s%d\n", label, count) }
 	printCount("Not owned/fork", counts[fleetsync.NoOp])
 	printCount("Cloned", counts[fleetsync.Cloned])
 	printCount("Pulled", counts[fleetsync.Pulled])
@@ -255,25 +255,25 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 	printCount("Archived removed", counts[fleetsync.RemovedArchived])
 	printCount("Archived kept", counts[fleetsync.KeptArchived])
 	printCount("Archived absent", counts[fleetsync.AbsentArchived])
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	printCount("Needs attention", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream]+
 		counts[fleetsync.Unpushed]+counts[fleetsync.ArchivedUnlandable])
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 	printCount("Errors", counts[fleetsync.Failed])
 	for _, r := range results {
 		switch r.Status {
 		case fleetsync.Diverged, fleetsync.NoUpstream:
-			fmt.Fprintf(out, "  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
+			_, _ = fmt.Fprintf(out, "  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
 		case fleetsync.Unpushed:
-			fmt.Fprintf(out, "  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
+			_, _ = fmt.Fprintf(out, "  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
 		case fleetsync.ArchivedUnlandable:
-			fmt.Fprintf(out, "  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
+			_, _ = fmt.Fprintf(out, "  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
 				r.Repo.Slug(), r.Detail.Summary())
 		}
 	}
 	for _, r := range results {
 		if r.Status == fleetsync.Failed {
-			fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
+			_, _ = fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
 		}
 	}
 }
