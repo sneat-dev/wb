@@ -48,23 +48,26 @@ func (p *Provider) readClaim(task string) (claim remotestate.Claim, exists bool,
 // lands, and published_at is never modified. Callers MUST pass only their
 // own login/machine; the per-machine file-ownership rule holds, and this
 // method has no way to enforce it itself.
-func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) {
+func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) string {
 	rel := SnapshotPath(login, machine)
 	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
 	data, err := os.ReadFile(abs)
 	if err != nil {
-		return // absent (or unreadable): skip silently, never create one
+		return "" // absent (or unreadable): skip silently, never create one
 	}
 	snap, err := remotestate.Decode(data)
 	if err != nil {
-		return // corrupt: skip silently, leave the bytes exactly as they are
+		return "" // corrupt: skip silently, leave the bytes exactly as they are
 	}
 	snap.LastSeenAt = at
 	encoded, err := remotestate.Encode(snap)
 	if err != nil {
-		return
+		return ""
 	}
-	_ = os.WriteFile(abs, encoded, 0o644)
+	if err := os.WriteFile(abs, encoded, 0o644); err != nil {
+		return ""
+	}
+	return rel
 }
 
 // mutateStore commits and pushes a claims-directory mutation performed by
@@ -100,18 +103,19 @@ func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) {
 // re-creatable (just claim/release again), so mutateStore instead discards
 // the local commit and resets the clone to upstream, leaving it healthy for
 // the next attempt.
-func (p *Provider) mutateStore(claimPath string, mutate func() (message string, changed bool, err error), onLostRace func() error) (sha string, err error) {
-	message, changed, err := mutate()
+func (p *Provider) mutateStore(claimPath string, mutate func() (message string, changed bool, extraPaths []string, err error), onLostRace func() error) (sha string, err error) {
+	message, changed, extraPaths, err := mutate()
 	if err != nil {
 		return "", err
 	}
 	if !changed {
 		return gitops.HeadSHA(p.opts.ClonePath)
 	}
-	// "." rather than "claims": mutate may also have rewritten the caller's
-	// own machines/<login>/<machine>/snapshot.yaml via stampOwnLastSeen, and
-	// that stamp must land in this SAME commit as the claim change.
-	committed, err := gitops.AddCommit(p.opts.ClonePath, message, ".")
+	// Scoped staging: the claims directory plus exactly the paths mutate
+	// says it touched (the caller's own snapshot stamp). Never "." — with
+	// no inter-process lock on the clone, a bare "." could sweep another
+	// process's half-written files into a claim commit.
+	committed, err := gitops.AddCommit(p.opts.ClonePath, message, append([]string{"claims"}, extraPaths...)...)
 	if err != nil {
 		return "", err
 	}
@@ -220,22 +224,25 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 		return remotestate.ClaimOutcome{}, err
 	}
 
-	mutate := func() (string, bool, error) {
+	mutate := func() (string, bool, []string, error) {
 		if old, readErr := os.ReadFile(abs); readErr == nil && string(old) == string(data) {
-			return message, false, nil
+			return message, false, nil, nil
 		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			return "", false, err
+			return "", false, nil, err
 		}
 		if err := os.WriteFile(abs, data, 0o644); err != nil {
-			return "", false, err
+			return "", false, nil, err
 		}
 		// Best-effort: stamp the claimant's own snapshot in the same commit
 		// as the claim write. Only reached when the claim file itself is
 		// actually changing, so a byte-identical refresh (handled above)
 		// never dirties the clone with an uncommitted stamp.
-		p.stampOwnLastSeen(claim.Login, claim.Machine, claim.ClaimedAt)
-		return message, true, nil
+		var extra []string
+		if stamped := p.stampOwnLastSeen(claim.Login, claim.Machine, claim.ClaimedAt); stamped != "" {
+			extra = append(extra, stamped)
+		}
+		return message, true, extra, nil
 	}
 	onLostRace := func() error {
 		other, stillExists, dErr, rErr := p.readClaim(claim.Task)
@@ -309,19 +316,22 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
 	message := fmt.Sprintf("wb: release %s by %s/%s", task, login, machine)
 
-	mutate := func() (string, bool, error) {
+	mutate := func() (string, bool, []string, error) {
 		if err := os.Remove(abs); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return message, false, nil
+				return message, false, nil, nil
 			}
-			return "", false, err
+			return "", false, nil, err
 		}
 		// Best-effort: stamp the releasing machine's own snapshot in the
 		// same commit as the claim removal. Release has no caller-supplied
 		// operation time (unlike Claim's ClaimedAt), so it self-stamps with
 		// the current time.
-		p.stampOwnLastSeen(login, machine, time.Now().UTC())
-		return message, true, nil
+		var extra []string
+		if stamped := p.stampOwnLastSeen(login, machine, time.Now().UTC()); stamped != "" {
+			extra = append(extra, stamped)
+		}
+		return message, true, extra, nil
 	}
 	onLostRace := func() error {
 		other, stillExists, dErr, rErr := p.readClaim(task)
