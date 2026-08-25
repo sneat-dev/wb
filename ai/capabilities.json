@@ -4112,6 +4112,80 @@
       "notes": "The target phase is resumable and idempotent per exact handoff digest through successor_started; neither successful worktree verification nor successor startup alone is treated as a custody receipt."
     },
     {
+      "id": "wb.session.receive-message",
+      "feature_refs": [
+        "spec/features/agent-session-move/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session receive-message",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Consumes one bounded canonical typed message from exact stdin and authenticates its recipient and original handoff lineage against the completed local successor.",
+                "Records the inbox and one paste intent before using direct tmux list-panes, load-buffer, save-buffer, paste-buffer, and delete-buffer argv; message bytes occur only on load-buffer stdin.",
+                "Returns a canonical JSON receipt only after durable recording and paste to the exact live pane; this does not assert agent processing, and a receiptless paste intent disables automatic repaste."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session receive-message --help",
+              "contains": [
+                "Receive exact typed message bytes",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Message a recorded successor and request handoff back",
+              "examples": [
+                "wb session receive-message --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_message_test.go",
+              "name": "TestSessionReceiveMessageReturnsCanonicalReceiptOnly",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionmessage/receive_test.go",
+              "name": "TestReceiveDoesNotRepasteAfterAmbiguousPostIntentFailure",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/sessionmessage/tmux_test.go",
+              "name": "TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The typed canonical JSON is intentionally the prompt contract. Acknowledgement is limited to durable target recording plus paste into the corroborated pane, never harness processing."
+    },
+    {
       "id": "wb.session.register",
       "feature_refs": [
         "spec/features/agent-session-move/README.md",
@@ -4204,6 +4278,159 @@
         }
       },
       "notes": "The PID must be the agent process, not the shell running the command; $PPID from a harness tool call is correct. A start-up hook cannot supply it, because a hook's parent is an intermediate shell rather than the agent."
+    },
+    {
+      "id": "wb.session.request-handoff",
+      "feature_refs": [
+        "spec/features/agent-session-move/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session request-handoff",
+              "flags": [
+                "--format",
+                "--resume"
+              ],
+              "modes": [
+                "Creates the standard empty-body request_handoff typed message with the original predecessor as sender and reply target, then resolves only the immutable address indexed by successor WB session ID.",
+                "Persists a caller-owned message ID and exact canonical bytes before using the recorded SSH or Synchestra courier; acknowledgement proves recorded and pasted, not agent-processed.",
+                "--resume <message-id> reloads the durable request_handoff bytes and cannot change their kind, lineage, reply target, courier, or successor address."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session request-handoff --help",
+              "contains": [
+                "Ask a recorded successor",
+                "--resume",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Message a recorded successor and request handoff back",
+              "examples": [
+                "wb session request-handoff <successor-wb-session-id>",
+                "wb session request-handoff <successor-wb-session-id> --resume <message-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_message_test.go",
+              "name": "TestSessionRequestHandoffUsesTypedKindAndPreservesKindOnResume",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionmessage/receive_test.go",
+              "name": "TestReceiveUsesCanonicalTypedJSONAsTheActionableRequestHandoffPrompt",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The empty body is intentional: request_handoff plus reply_to_wb_session_id is the standard actionable hand-control-return prompt."
+    },
+    {
+      "id": "wb.session.send",
+      "feature_refs": [
+        "spec/features/agent-session-move/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session send",
+              "flags": [
+                "--format",
+                "--message",
+                "--message-file",
+                "--resume"
+              ],
+              "modes": [
+                "Requires exactly one bounded message input for a fresh send and resolves the target only through the immutable successor index keyed by stable WB session ID.",
+                "Persists a caller-owned message ID and exact canonical bytes before using the recorded SSH or Synchestra courier; there is no user-supplied host, runner, tmux, or PID override and no courier fallback.",
+                "An ambiguous or incomplete result prints the exact successor and message ID retry command; --resume rejects replacement content and reuses the durable bytes."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session send --help",
+              "contains": [
+                "Durably send exact typed input",
+                "--message",
+                "--message-file",
+                "--resume",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Message a recorded successor and request handoff back",
+              "examples": [
+                "wb session send <successor-wb-session-id> --message-file message.txt",
+                "wb session send <successor-wb-session-id> --resume <message-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_message_test.go",
+              "name": "TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionmessenger/send_test.go",
+              "name": "TestSendAmbiguityReturnsExactResumeIdentityAndReusesDurableBytes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/sessioncourier/message_test.go",
+              "name": "TestSSHMessageDelivererUsesFixedReceiverAndExactCanonicalBytes",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A receipt means the target durably recorded and pasted the exact message into the verified pane. It deliberately does not claim that the successor agent processed it."
     },
     {
       "id": "wb.status",

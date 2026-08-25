@@ -141,6 +141,47 @@ the matching worktree, launch state, tmux session, and successor PID; a
 completed `successor_started` replay performs no Git fetch. The receiver does
 not create a receipt or change predecessor custody in this stage.
 
+## Message a recorded successor and request handoff back
+
+After a completed move, address the successor only by the stable WB session ID
+printed in the receipt. WB resolves the immutable successor address and its
+recorded SSH or Synchestra courier; there is no host, runner, tmux, or PID
+override on these commands.
+
+```sh
+wb session send <successor-wb-session-id> --message-file message.txt
+wb session send <successor-wb-session-id> --message-file - < message.txt
+wb session request-handoff <successor-wb-session-id>
+```
+
+`send` accepts exactly one bounded `--message` or `--message-file` input. The
+standard `request-handoff` message has an empty body; its typed kind and
+`reply_to_wb_session_id` identify the predecessor to which control should
+return. WB durably records the exact canonical JSON before courier use, and the
+receiver pastes those exact typed bytes through a verified named tmux buffer.
+Acknowledgement proves durable recording and paste to the recorded live pane;
+it does not assert that the agent processed the input.
+
+If delivery is ambiguous, use the exact successor and message ID printed by
+WB. Resume reloads the already-durable bytes and rejects a replacement body:
+
+```sh
+wb session send <successor-wb-session-id> --resume <message-id>
+wb session request-handoff <successor-wb-session-id> --resume <message-id>
+```
+
+Never start a fresh message to recover an ambiguous attempt. The target will
+not automatically paste again when a durable paste intent exists without a
+receipt; inspect the recorded pane and inbox before manual recovery.
+
+`wb session receive-message` is the fixed courier boundary. It consumes exact
+canonical message JSON on stdin and, for `--format json`, returns only the
+canonical recorded-and-pasted receipt:
+
+```sh
+wb session receive-message --format json < exact-message.json
+```
+
 `wb session list` joins each session to the worktree owner entries recorded
 under its declared PID (guarded by registration time, so an entry from a
 previous holder of a recycled PID is never attributed to the new session) and

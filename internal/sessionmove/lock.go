@@ -204,7 +204,7 @@ func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, diges
 		_ = root.Close()
 		return nil, err
 	}
-	fd, err := unix.Openat(handoffFD, executionLockFileName, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	fd, err := openExecutionLockAt(handoffFD)
 	if err != nil {
 		_ = requestFile.Close()
 		_ = handoff.Close()
@@ -266,6 +266,32 @@ func (s Store) AcquireExecutionLock(ctx context.Context, handoffID string, diges
 		case <-timer.C:
 		}
 	}
+}
+
+// openExecutionLockAt installs the stable flock inode without asking multiple
+// first-time callers to race through O_CREAT on the same pathname. Darwin can
+// transiently report ENOENT for that race. Opening first and then creating
+// exclusively gives every loser an unambiguous signal to reopen the winner's
+// inode; WB never unlinks this file.
+func openExecutionLockAt(handoffFD int) (int, error) {
+	const flags = unix.O_RDWR | unix.O_CLOEXEC | unix.O_NOFOLLOW
+	for attempts := 0; attempts < 3; attempts++ {
+		fd, err := unix.Openat(handoffFD, executionLockFileName, flags, 0)
+		if err == nil {
+			return fd, nil
+		}
+		if !errors.Is(err, unix.ENOENT) {
+			return -1, err
+		}
+		fd, err = unix.Openat(handoffFD, executionLockFileName, flags|unix.O_CREAT|unix.O_EXCL, 0o600)
+		if err == nil {
+			return fd, nil
+		}
+		if !errors.Is(err, unix.EEXIST) {
+			return -1, err
+		}
+	}
+	return -1, fmt.Errorf("stable execution lock creation did not converge")
 }
 
 func admittedRequestAt(handoff *os.File, handoffID string, digest Digest) (Request, *os.File, error) {

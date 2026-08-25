@@ -7,11 +7,14 @@ import (
 )
 
 const (
-	SynchestraDispatchSchemaVersion = 1
-	SynchestraSessionAcceptHandler  = "wb.session.accept.v1"
+	SynchestraDispatchSchemaVersion        = 1
+	SynchestraSessionAcceptHandler         = "wb.session.accept.v1"
+	SynchestraSessionMessageHandler        = "wb.session.message.v1"
+	MessageSynchestraDispatchSchemaVersion = 1
 
-	synchestraDispatchFileName = "synchestra-dispatch.json"
-	maxSynchestraDispatchBytes = 16 << 10
+	synchestraDispatchFileName        = "synchestra-dispatch.json"
+	messageSynchestraDispatchFileName = "synchestra-dispatch.json"
+	maxSynchestraDispatchBytes        = 16 << 10
 )
 
 var synchestraDispatchIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -23,6 +26,22 @@ type SynchestraDispatch struct {
 	SchemaVersion int    `json:"schema_version"`
 	HandoffID     string `json:"handoff_id"`
 	RequestDigest Digest `json:"request_digest"`
+	Runner        string `json:"runner"`
+	InvocationID  string `json:"invocation_id"`
+	Handler       string `json:"handler"`
+	DispatchID    string `json:"dispatch_id"`
+}
+
+// MessageSynchestraDispatch is the exact accepted transport identity for one
+// outgoing message. Target MessageID/digest admission remains authoritative:
+// a hub invoke ambiguity before this record exists may create another
+// dispatch, but it can never authorize a second inbox or paste.
+type MessageSynchestraDispatch struct {
+	SchemaVersion int    `json:"schema_version"`
+	HandoffID     string `json:"handoff_id"`
+	RequestDigest Digest `json:"request_digest"`
+	MessageID     string `json:"message_id"`
+	MessageDigest Digest `json:"message_digest"`
 	Runner        string `json:"runner"`
 	InvocationID  string `json:"invocation_id"`
 	Handler       string `json:"handler"`

@@ -5,7 +5,7 @@ status: Approved
 
 # Plan: Agent Session Move implementation plan
 
-**Status:** Executing
+**Status:** Completed
 **Source Feature:** agent-session-move
 **Date:** 2026-08-25
 **Owner:** codex
@@ -96,7 +96,7 @@ WB behavior with an injectable fake plus compatibility tests.
 ### Task 7: Deliver messages and request handoff back
 
 **Verifies:** agent-session-move#ac:successor-can-be-messaged-and-asked-back
-**Status:** planning
+**Status:** complete
 
 Add `session send`, the fixed target message receiver, durable inbox and
 receipts, and `session request-handoff` with its typed reply target. Deliver to

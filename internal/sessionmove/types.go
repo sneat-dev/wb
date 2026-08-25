@@ -18,14 +18,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
-	RequestSchemaVersion  = 1
-	ReceiptSchemaVersion  = 1
-	MessageSchemaVersion  = 1
-	EventSchemaVersion    = 1
-	DigestAlgorithmSHA256 = "sha256"
+	RequestSchemaVersion            = 1
+	ReceiptSchemaVersion            = 1
+	MessageSchemaVersion            = 1
+	MessageReceiptSchemaVersion     = 1
+	MessageRecordSchemaVersion      = 1
+	MessagePasteIntentSchemaVersion = 1
+	EventSchemaVersion              = 1
+	DigestAlgorithmSHA256           = "sha256"
+	// MaxMessageBodyBytes bounds agent-authored message content before it is
+	// admitted to an outbox, transported, or copied into a tmux buffer.
+	MaxMessageBodyBytes = 64 << 10
 	// MaxSourceOfferFieldBytes bounds each exact Work Log offer field carried
 	// by a request. Keeping the source-authored content in the immutable
 	// request lets crash repair recreate the offer without parsing Markdown.
@@ -262,6 +269,25 @@ type Message struct {
 	SentAt               time.Time   `json:"sent_at"`
 }
 
+// MessageReceipt acknowledges only durable target recording plus one
+// successful paste into the exact corroborated tmux pane. It deliberately
+// contains no field that could imply the harness or agent processed the bytes.
+type MessageReceipt struct {
+	SchemaVersion        int         `json:"schema_version"`
+	MessageID            string      `json:"message_id"`
+	MessageDigest        Digest      `json:"message_digest"`
+	HandoffID            string      `json:"handoff_id"`
+	SenderWBSessionID    string      `json:"sender_wb_session_id"`
+	RecipientWBSessionID string      `json:"recipient_wb_session_id"`
+	ReplyToWBSessionID   string      `json:"reply_to_wb_session_id"`
+	Kind                 MessageKind `json:"kind"`
+	TmuxName             string      `json:"tmux_name"`
+	PaneID               string      `json:"pane_id"`
+	PID                  int         `json:"pid"`
+	RecordedAt           time.Time   `json:"recorded_at"`
+	PastedAt             time.Time   `json:"pasted_at"`
+}
+
 // Phase is one durable point in the handoff state machine. Phase records are
 // evidence, not a mutable current-state file; State derives the latest phase
 // by reading the ordered append-only event sequence.
@@ -446,16 +472,12 @@ func (m Message) validate() error {
 	if err := validateID("message_id", m.MessageID); err != nil {
 		return err
 	}
-	if err := validateID("recipient_wb_session_id", m.RecipientWBSessionID); err != nil {
-		return err
-	}
 	for field, value := range map[string]string{
-		"handoff_id": m.HandoffID, "sender_wb_session_id": m.SenderWBSessionID, "reply_to_wb_session_id": m.ReplyToWBSessionID,
+		"handoff_id": m.HandoffID, "sender_wb_session_id": m.SenderWBSessionID,
+		"recipient_wb_session_id": m.RecipientWBSessionID, "reply_to_wb_session_id": m.ReplyToWBSessionID,
 	} {
-		if value != "" {
-			if err := validateID(field, value); err != nil {
-				return err
-			}
+		if err := validateID(field, value); err != nil {
+			return err
 		}
 	}
 	if m.Kind != MessageKindText && m.Kind != MessageKindRequestHandoff {
@@ -463,6 +485,15 @@ func (m Message) validate() error {
 	}
 	if m.Kind == MessageKindText && strings.TrimSpace(m.Body) == "" {
 		return fmt.Errorf("text message body is required")
+	}
+	if len(m.Body) > MaxMessageBodyBytes {
+		return fmt.Errorf("session message body exceeds %d bytes", MaxMessageBodyBytes)
+	}
+	if !utf8.ValidString(m.Body) {
+		return fmt.Errorf("session message body must be valid UTF-8")
+	}
+	if m.Kind == MessageKindRequestHandoff && m.Body != "" {
+		return fmt.Errorf("request_handoff message must use the standard empty body")
 	}
 	if m.SentAt.IsZero() {
 		return fmt.Errorf("sent_at is required")
@@ -524,6 +555,24 @@ func DecodeMessage(raw []byte) (Message, error) {
 		return Message{}, err
 	}
 	return message, nil
+}
+
+func EncodeMessageReceipt(receipt MessageReceipt) ([]byte, error) {
+	if err := receipt.validate(); err != nil {
+		return nil, err
+	}
+	return marshalJSON(receipt)
+}
+
+func DecodeMessageReceipt(raw []byte) (MessageReceipt, error) {
+	var receipt MessageReceipt
+	if err := decodeJSON(raw, &receipt); err != nil {
+		return MessageReceipt{}, fmt.Errorf("parse session message receipt: %w", err)
+	}
+	if err := receipt.validate(); err != nil {
+		return MessageReceipt{}, err
+	}
+	return receipt, nil
 }
 
 func marshalJSON(value any) ([]byte, error) {

@@ -287,3 +287,37 @@ func TestResolveForProcessIgnoresARegisteredButExitedAncestor(t *testing.T) {
 		t.Fatal("ResolveForProcess resolved to a session that has exited")
 	}
 }
+
+func TestLookupExactRefusesLinkedRecordsAndRequiresLivePID(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "sessions")
+	record, err := Register(directory, Record{
+		PID: os.Getpid(), WBSessionID: "wbs-successor", Machine: "target-vm", Runtime: "codex",
+		TmuxName: "wb-session-wbs-successor", PredecessorWBSessionID: "wbs-source", HandoffID: "handoff-123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, live, err := LookupExact(directory, record.PID)
+	if err != nil || !live || loaded.WBSessionID != record.WBSessionID || loaded.TmuxName != record.TmuxName {
+		t.Fatalf("LookupExact = (%#v, live=%t, err=%v)", loaded, live, err)
+	}
+
+	path := recordPath(directory, record.PID)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "forged.json")
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(external, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LookupExact(directory, record.PID); err == nil {
+		t.Fatal("LookupExact followed a session-record symlink")
+	}
+}
