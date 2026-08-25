@@ -21,10 +21,15 @@ remote:
 | Publish after syncing | `wb sync --publish` |
 
 The store is a git repository: one `machines/<login>/<machine>/snapshot.yaml`
-per machine, so history is the audit trail. Snapshots older than `--stale`
-(default 24h) are flagged `STALE`. Entries that cannot be decoded are shown as
-error rows and do not change the exit code. Exit `2` means the `remote`
-section is missing; the message includes the snippet to add.
+per machine, so history is the audit trail. Staleness keys off the effective
+heartbeat: the later of the machine's publish and its claim activity
+(`last_seen_at`, stamped by claim/refresh/release/take-over) — a machine
+that runs a long claims campaign without re-publishing stays fresh. `wb
+remote machines` shows both: PUBLISHED is the raw publish age, SEEN is the
+effective-heartbeat age STALE actually keys off. Entries older than
+`--stale` (default 24h) are flagged `STALE`. Entries that cannot be decoded
+are shown as error rows and do not change the exit code. Exit `2` means the
+`remote` section is missing; the message includes the snippet to add.
 
 Create the store with `gh repo create <owner>/wb-state --private` (no README
 needed; the first publish creates `main`), and SSH access to GitHub is
@@ -46,11 +51,12 @@ field, no tombstones).
 | List every claim with staleness | `wb remote claims --stale 12h` |
 
 Staleness has no separate TTL: a claim is stale exactly when its holder
-machine's publish heartbeat (`published_at`) is stale, or the holder never
-published at all. `--take-over` only replaces a stale claim; `--force`
-replaces any claim and prints who is being overridden — never used by any
-automatic path. Same `login` on a different `machine` is still another
-holder (only the wording softens to "you").
+machine's effective heartbeat (the later of `published_at` and
+`last_seen_at`) is stale, or the holder never published at all. `--take-over`
+only replaces a stale claim; `--force` replaces any claim and prints who is
+being overridden — never used by any automatic path. Same `login` on a
+different `machine` is still another holder (only the wording softens to
+"you").
 
 `wb worktree create <task>` claims best-effort automatically when `remote:`
 is configured: it prints the outcome (acquired, refreshed, held by another
