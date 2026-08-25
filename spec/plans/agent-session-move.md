@@ -43,7 +43,7 @@ handoff-state types with same-ID/same-digest replay and conflict detection.
 ### Task 2: Create and push the exact source handover checkpoint
 
 **Verifies:** agent-session-move#ac:unpublished-work-refuses-before-delivery
-**Status:** planning
+**Status:** complete
 
 Implement source preflight for a live registered session, managed Work Log,
 clean named branch, and non-force remote publication. Preallocate the successor

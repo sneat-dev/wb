@@ -499,15 +499,18 @@ func branchPublished(ctx context.Context, worktree string) (bool, error) {
 
 // LogHandoffOptions configures wb worktree log handoff.
 type LogHandoffOptions struct {
-	ProjectsRoot string
-	Worktree     string
-	Summary      string
-	NextAction   string
-	Successor    string
-	Model        string
-	CLI          string
-	Provider     string
-	Apply        bool
+	ProjectsRoot  string
+	Worktree      string
+	HandoffID     string
+	TargetMachine string
+	BundleCommit  string
+	Summary       string
+	NextAction    string
+	Successor     string
+	Model         string
+	CLI           string
+	Provider      string
+	Apply         bool
 }
 
 // LogHandoff records a durable handoff offer and optionally transfers the Hybrid claim.
@@ -528,14 +531,23 @@ func LogHandoff(ctx context.Context, options LogHandoffOptions) (LogVerbResult, 
 	}
 	home := fence.home
 	gitEvidence := observeLocalGit(ctx, root)
+	extra := map[string]any{
+		"successor": strings.TrimSpace(options.Successor),
+		"apply":     options.Apply,
+	}
+	if value := strings.TrimSpace(options.HandoffID); value != "" {
+		extra["handoff_id"] = value
+	}
+	if value := strings.TrimSpace(options.TargetMachine); value != "" {
+		extra["target_machine"] = value
+	}
+	if value := strings.TrimSpace(options.BundleCommit); value != "" {
+		extra["bundle_commit"] = value
+	}
 	event, projection, err := appendLocalEvent(root, LocalWorkLogEvent{
 		Type: LocalEventHandoff, Message: strings.TrimSpace(options.Summary),
 		NextAction: strings.TrimSpace(options.NextAction), Git: &gitEvidence,
-		Result: "offered",
-		Extra: map[string]any{
-			"successor": strings.TrimSpace(options.Successor),
-			"apply":     options.Apply,
-		},
+		Result: "offered", Extra: extra,
 	})
 	if fence.unlock != nil {
 		fence.unlock()

@@ -5,6 +5,7 @@ package sessionmove
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,17 @@ const (
 // textual form names the algorithm so a future protocol can add one without
 // silently reinterpreting old state.
 type Digest string
+
+// NewHandoffID returns an opaque identity suitable for both the tracked
+// handover filename and the private aggregate directory. It is deliberately
+// independent of either endpoint session ID.
+func NewHandoffID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate session handoff ID: %w", err)
+	}
+	return fmt.Sprintf("handoff-%x", random[:]), nil
+}
 
 // DigestBytes returns the sha256 digest of exact bytes.
 func DigestBytes(raw []byte) Digest {

@@ -60,6 +60,24 @@ wb session list --live
 wb session prune
 ```
 
+## Create a portable source checkpoint
+
+Move preparation is fail-closed. The invoking process must belong to a live
+registered session that owns the worktree's active managed Work Log, and the
+worktree must be clean on a named branch that can advance `origin` without a
+force push. Supply the agent-authored continuation from a regular file (or use
+`--handover-file -` with piped stdin):
+
+```sh
+wb session move --to hetzner-vm1 --handover-file handover.md
+```
+
+WB preallocates the successor identity, generates and commits only
+`.wb/handoffs/<handoff-id>.md`, pushes normally, verifies that exact commit as
+the remote branch tip, and records an offer. This checkpoint stage does not
+deliver to or start the target and does not transfer source custody; the
+source stays active until a later valid successor receipt.
+
 `wb session list` joins each session to the worktree owner entries recorded
 under its declared PID (guarded by registration time, so an entry from a
 previous holder of a recycled PID is never attributed to the new session) and

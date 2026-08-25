@@ -3857,6 +3857,89 @@
       "notes": "Only sessions that registered appear; WB reports what it was told, never what it guessed."
     },
     {
+      "id": "wb.session.move",
+      "feature_refs": [
+        "spec/features/agent-session-move/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb session move",
+              "flags": [
+                "--config",
+                "--format",
+                "--handover-file",
+                "--harness",
+                "--remaining",
+                "--summary",
+                "--to",
+                "--validation",
+                "--via"
+              ],
+              "modes": [
+                "Refuses before mutation unless the invoking live registered session owns an active managed Work Log on a clean named branch whose exact checkpoint can advance origin without force.",
+                "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, then records an offer while leaving source custody active; courier delivery is a later stage."
+              ]
+            }
+          ],
+          "limitation": "This source-checkpoint stage does not yet deliver to or start a target session."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session move --help",
+              "contains": [
+                "--to",
+                "--handover-file",
+                "--via",
+                "--harness"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Create a portable source checkpoint",
+              "examples": [
+                "wb session move --to hetzner-vm1 --handover-file handover.md"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveCommandCreatesSourceOfferWithoutDelivering",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/session_checkpoint_test.go",
+              "name": "TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/session_checkpoint_test.go",
+              "name": "TestCreateSessionCheckpointRefusesBeforeAnyMutation",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The offer is not a custody transfer: no courier or target process runs and the predecessor claim remains active until a later valid receipt."
+    },
+    {
       "id": "wb.session.prune",
       "feature_refs": [
         "spec/features/work-log/README.md"
