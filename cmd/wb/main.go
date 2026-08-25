@@ -151,8 +151,8 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
-		"worktree summary": true,
-		"branch list":      true, "branch cleanup": true,
+		"worktree summary": true, "worktree abort": true,
+		"branch list": true, "branch cleanup": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI

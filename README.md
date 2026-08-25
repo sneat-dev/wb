@@ -282,7 +282,11 @@ unchanged remote source branch and removes a clean, unlocked worktree/local
 branch after the archive is durable and the live checkout is revalidated at
 the deletion boundary. The same discarded command resumes an exact durable
 post-removal branch backlog after interruption; it never relies on live
-worktree inventory alone.
+worktree inventory alone. The persistent `--filter` flag scopes which
+repositories in the task abort touches: a repository it excludes is reported,
+never mutated, and the task stays non-terminal until a later abort call
+resolves it too — so one repository blocked on something abort cannot fix no
+longer makes the whole coordinated task un-abortable.
 
 Plan-overlap/migration-scope detection, periodic refresh notifications,
 distributed Synchestra fences, and Git-backed communication fallback are

@@ -36,7 +36,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
-| `worktree create`, `guard`, `abort`, `log`, `info` | yes | rejected | rejected | yes |
+| `worktree abort` | yes | yes | rejected | yes |
+| `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
@@ -60,8 +61,16 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
   explicit `--fleet`; status requires its no-path default fleet mode; the
   `wb fleet …` leaves always accept it. The flag
   is intentionally rejected for a direct canonical
-  worktree create/guard/abort, where silently skipping the requested repository
-  would be unsafe.
+  worktree create/guard, where silently skipping the requested repository
+  would be unsafe: those commands have no per-repository report for an
+  excluded repository to appear in. `worktree abort` is the one exception
+  (#170): it narrows which repositories in a coordinated task are touched,
+  but every excluded repository is still reported via `AbortResult.Excluded`
+  — never silently dropped — and the task remains non-terminal (its remote
+  claim, if any, is not released) until a later abort call resolves it too.
+  This lets one repository blocked on something abort cannot fix stop
+  blocking the rest of the task without ever widening into #76's cross-repo
+  blast-radius concern.
 - `--non-interactive` disables every live terminal UI and progress line,
   including sync, status, fleet quality checks, CI waits, dependency campaigns,
   npm publication, remote publication, and hierarchical migration.
