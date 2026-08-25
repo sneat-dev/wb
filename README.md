@@ -376,12 +376,17 @@ clone directly below `<projects-root>/<repository>`.
 Runs against every repo owned by your GitHub account and every org you
 belong to, in parallel, with a live progress UI (overall + per-org bars, a
 live tail of in-flight repos). The live UI and final summary separately count
-existing clones whose checked-out commit actually advanced from the remote;
-already-current pulls and dry runs do not inflate that count. Anything left
-needing your attention (a hard error, or a repo skipped/kept because it's
-dirty) opens a two-pane interactive review screen after the run. Navigate the
-summary on the left; the right panel continuously shows the selected repository's
-modified/untracked/conflicted files, unpushed commits, stash entries, or error.
+planned, attempted, and successful pull actions, and existing clones whose
+checked-out commit actually advanced from the remote; already-current pulls
+and dry runs do not inflate the update count. Anything left
+needing your attention remains visible as its own summary category. After an
+interactive run, the final summary becomes the navigable left panel; selecting
+any count shows the repositories contributing to it on the right, including
+their modified/untracked/conflicted files, unpushed commits, stash entries, or
+errors.
+The detail panel wraps and scrolls with Page Up/Page Down, and narrow terminals
+stack the list above the details. While the list filter is active, `q` is search
+text rather than an accidental quit.
 Non-interactive runs (piped output, no TTY) print a plain summary instead
 and skip the drill-down.
 
@@ -570,7 +575,9 @@ These commands read only local Git state—never fetch, pull, modify, commit, or
 push—and report clean, attention, or inspection-error status. Attention covers
 modified, untracked, conflicted, stashed, and unpushed work. Markdown defaults
 to concise summaries; YAML/JSON and `--details` provide individual paths and
-Git entries. Interactive fleet and single-repository status scans show a live
+Git entries. Unpushed commit details identify the local branch and, when it is
+checked out, the canonical or linked worktree holding it. Interactive fleet
+and single-repository status scans show a live
 counter and continuously refreshed elapsed time on stderr; structured output
 remains on stdout, and `--non-interactive` suppresses the live line. `wb fleet`
 / `stats` always include layout placement counts and

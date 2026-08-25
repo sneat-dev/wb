@@ -96,8 +96,8 @@ func TestSyncPullClean(t *testing.T) {
 	if res.Status != Pulled {
 		t.Fatalf("Status = %v, want Pulled (err=%v)", res.Status, res.Err)
 	}
-	if !res.Updated {
-		t.Fatal("Updated = false, want true after HEAD advanced from the remote")
+	if !res.PullAttempted || !res.PullSucceeded || !res.Updated || res.PullSummary() != "updated from remote" {
+		t.Fatalf("pull action = %+v, want successful remote update", res)
 	}
 	got, err := os.ReadFile(filepath.Join(cloneDir, "f.txt"))
 	if err != nil {

@@ -111,14 +111,7 @@ func runSync(projectsRoot, filter string, only []string, workers int, dryRun, pu
 
 		printSyncSummary(os.Stdout, results)
 
-		needsReview := false
-		for _, res := range results {
-			if tui.Reviewable(res) {
-				needsReview = true
-			}
-		}
-
-		if interactive && needsReview {
+		if interactive {
 			if err := runResultsBrowser(results); err != nil {
 				fmt.Fprintln(os.Stderr, "results browser error:", err)
 			}
@@ -235,9 +228,21 @@ func runResultsBrowser(results []fleetsync.Result) error {
 
 func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 	counts := map[fleetsync.Status]int{}
-	updated := 0
+	pullPlanned, pullAttempted, pullSucceeded, updated, current := 0, 0, 0, 0, 0
 	for _, r := range results {
 		counts[r.Status]++
+		if r.PullPlanned {
+			pullPlanned++
+		}
+		if r.PullAttempted {
+			pullAttempted++
+		}
+		if r.PullSucceeded {
+			pullSucceeded++
+			if !r.Updated {
+				current++
+			}
+		}
 		if r.Updated {
 			updated++
 		}
@@ -248,7 +253,11 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 	printCount("Not owned/fork", counts[fleetsync.NoOp])
 	printCount("Cloned", counts[fleetsync.Cloned])
 	printCount("Pulled", counts[fleetsync.Pulled])
+	printCount("Pull planned", pullPlanned)
+	printCount("Pull attempted", pullAttempted)
+	printCount("Pull succeeded", pullSucceeded)
 	printCount("Updated from remote", updated)
+	printCount("Already current", current)
 	printCount("Skipped (dirty)", counts[fleetsync.SkippedDirty])
 	printCount("Skipped (ignored)", counts[fleetsync.SkippedIgnored])
 	printCount("Empty remote", counts[fleetsync.EmptyRemote])

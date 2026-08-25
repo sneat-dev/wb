@@ -53,21 +53,22 @@ func (s Snapshot) Key() string { return s.Login + "/" + s.Machine }
 
 // RepositoryState is one non-clean repository on the publishing machine.
 type RepositoryState struct {
-	Repository    string   `yaml:"repository" json:"repository"`
-	Path          string   `yaml:"path" json:"path"`
-	Status        string   `yaml:"status" json:"status"` // attention | error
-	Summary       string   `yaml:"summary,omitempty" json:"summary,omitempty"`
-	Branch        string   `yaml:"branch,omitempty" json:"branch,omitempty"`
-	Upstream      string   `yaml:"upstream,omitempty" json:"upstream,omitempty"`
-	Ahead         int      `yaml:"ahead,omitempty" json:"ahead,omitempty"`
-	Behind        int      `yaml:"behind,omitempty" json:"behind,omitempty"`
-	Modified      []string `yaml:"modified,omitempty" json:"modified,omitempty"`
-	Untracked     []string `yaml:"untracked,omitempty" json:"untracked,omitempty"`
-	Conflicted    []string `yaml:"conflicted,omitempty" json:"conflicted,omitempty"`
-	Unpushed      []string `yaml:"unpushed,omitempty" json:"unpushed,omitempty"`
-	UnpushedCount int      `yaml:"unpushed_count,omitempty" json:"unpushed_count,omitempty"`
-	Stashed       []string `yaml:"stashed,omitempty" json:"stashed,omitempty"`
-	Error         string   `yaml:"error,omitempty" json:"error,omitempty"`
+	Repository       string                  `yaml:"repository" json:"repository"`
+	Path             string                  `yaml:"path" json:"path"`
+	Status           string                  `yaml:"status" json:"status"` // attention | error
+	Summary          string                  `yaml:"summary,omitempty" json:"summary,omitempty"`
+	Branch           string                  `yaml:"branch,omitempty" json:"branch,omitempty"`
+	Upstream         string                  `yaml:"upstream,omitempty" json:"upstream,omitempty"`
+	Ahead            int                     `yaml:"ahead,omitempty" json:"ahead,omitempty"`
+	Behind           int                     `yaml:"behind,omitempty" json:"behind,omitempty"`
+	Modified         []string                `yaml:"modified,omitempty" json:"modified,omitempty"`
+	Untracked        []string                `yaml:"untracked,omitempty" json:"untracked,omitempty"`
+	Conflicted       []string                `yaml:"conflicted,omitempty" json:"conflicted,omitempty"`
+	Unpushed         []string                `yaml:"unpushed,omitempty" json:"unpushed,omitempty"`
+	UnpushedBranches []gitops.UnpushedBranch `yaml:"unpushed_branches,omitempty" json:"unpushed_branches,omitempty"`
+	UnpushedCount    int                     `yaml:"unpushed_count,omitempty" json:"unpushed_count,omitempty"`
+	Stashed          []string                `yaml:"stashed,omitempty" json:"stashed,omitempty"`
+	Error            string                  `yaml:"error,omitempty" json:"error,omitempty"`
 }
 
 // WorktreeState is one WB task worktree on the publishing machine, whether
@@ -158,6 +159,7 @@ func Build(identity Snapshot, repos []RepositoryInput, wts []worktrees.ListResul
 		}
 		if redaction != RedactUnpushed {
 			state.Unpushed = in.Status.Unpushed
+			state.UnpushedBranches = in.Status.UnpushedBranches
 		}
 		snap.Repositories = append(snap.Repositories, state)
 	}
