@@ -41,8 +41,12 @@ func newSyncCmd() *cobra.Command {
 	// already spell it that way, and "workers" reads as a second noun beside
 	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so
 	// existing scripts and muscle memory keep working.
-	cmd.Flags().IntVar(&workers, "parallel", 8, "maximum repositories to inspect concurrently")
-	cmd.Flags().IntVarP(&workers, "workers", "j", 8, "maximum repositories to inspect concurrently")
+	// GitHub can close SSH handshakes when a large fleet starts too many at
+	// once. Four still keeps sync comfortably parallel while avoiding that
+	// transport limit on the default path; callers that know their network can
+	// opt into a higher ceiling explicitly.
+	cmd.Flags().IntVar(&workers, "parallel", 4, "maximum repositories to inspect concurrently")
+	cmd.Flags().IntVarP(&workers, "workers", "j", 4, "maximum repositories to inspect concurrently")
 	_ = cmd.Flags().MarkDeprecated("workers", "use --parallel instead")
 	cmd.Flags().StringArrayVarP(&only, "org", "o", nil, "only sync this org (repeatable); default: all your orgs + your own account")
 	cmd.Flags().BoolVar(&publish, "publish", false, "after a successful sync, run wb remote publish")

@@ -7,11 +7,13 @@ package gitops
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 )
@@ -223,8 +225,55 @@ func lastLine(s string) string {
 // machine and errors on another. Refusing is the only safe answer; the caller
 // classifies the refusal.
 func Pull(repoPath string) error {
-	_, err := run(repoPath, "git", "pull", "--ff-only", "--quiet")
+	const attempts = 5
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		_, err = run(repoPath, "git", "pull", "--ff-only", "--quiet")
+		if err == nil || !isTransientPullFailure(err) {
+			return err
+		}
+		if attempt+1 < attempts {
+			// A fleet sync has several concurrent SSH handshakes. GitHub can
+			// occasionally close one of them under load. Exponential backoff,
+			// staggered per checkout, gives the connection burst time to clear
+			// without hiding real Git refusals.
+			time.Sleep(pullRetryDelay(repoPath, attempt))
+		}
+	}
 	return err
+}
+
+func pullRetryDelay(repoPath string, attempt int) time.Duration {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(repoPath))
+	// 500ms, 1s, 2s, and 4s, each with up to 499ms deterministic jitter.
+	// The delay is deterministic so an interrupted run behaves predictably,
+	// unlike a random sleep that makes support incidents harder to reproduce.
+	return (500*time.Millisecond)<<attempt + time.Duration(hash.Sum32()%500)*time.Millisecond
+}
+
+// isTransientPullFailure reports transport failures worth retrying. It stays
+// deliberately narrow: branch deletion, authentication, and fast-forward
+// refusals require a human decision and must remain visible to sync callers.
+func isTransientPullFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"connection closed by",
+		"connection to github.com closed",
+		"connection reset by peer",
+		"connection timed out",
+		"operation timed out",
+		"kex_exchange_identification",
+		"expected flush after ref listing",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoteHasBranches reports whether origin publishes any branch at all.
