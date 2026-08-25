@@ -56,7 +56,7 @@ func runRemotePublishWithProgress(deps remoteDeps, projectsRoot, filter string, 
 	}
 	identity := remotestate.Snapshot{Login: login, Machine: cfg.Machine, PublishedAt: deps.now(), WBVersion: collectVersion().Version}
 	progress := newRemotePublishProgress(progressOut, console.Interactive(progressOut, nonInteractive))
-	snapshot, err := collectSnapshotWithProgress(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
+	snapshot, err := collectSnapshot(projectsRoot, filter, parallel, identity, cfg.Publish.Unpushed, progress)
 	if err != nil {
 		progress.fail(err)
 		return err
