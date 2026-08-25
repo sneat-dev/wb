@@ -1,14 +1,15 @@
 ---
 format: https://specscore.md/feature-specification
-status: Under Review
+status: Approved
 ---
 
 # Feature: Agent Session Move
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-session-move?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-session-move?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-session-move?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-session-move?op=request-change) |
-**Status:** Under Review
+**Status:** Approved
 **Source Ideas:** —
 **Supersedes:** —
+**Grade:** B
 
 ## Summary
 
