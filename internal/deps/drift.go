@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/mod/module"
 )
 
@@ -17,6 +18,7 @@ import (
 // selected repositories. It never mutates manifests or contacts a registry
 // unless options.Online is set.
 func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftOptions) (DriftReport, error) {
+	progress.Report(options.Progress, progress.Event{Operation: "deps drift", Phase: "inspect", State: progress.Started, Total: len(repositories)})
 	if options.Parallel < 1 {
 		options.Parallel = 1
 	}
@@ -51,30 +53,40 @@ func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftO
 	}
 	jobs := make(chan int)
 	var group sync.WaitGroup
+	var progressMu sync.Mutex
+	completed := 0
 	for range workers {
 		group.Add(1)
 		go func() {
 			defer group.Done()
 			for index := range jobs {
 				repository := repositories[index]
-				if repository.Path == "" {
-					results[index].skip = &GraphDiscoverySkip{
-						Repository: repository.Slug,
-						Reason:     "repository has no local clone path; drift inspects checked-out go.mod files only",
+				func() {
+					defer func() {
+						progressMu.Lock()
+						completed++
+						progress.Report(options.Progress, progress.Event{Operation: "deps drift", Phase: "inspect", Repository: repository.Slug, State: progress.Completed, Completed: completed, Total: len(repositories)})
+						progressMu.Unlock()
+					}()
+					if repository.Path == "" {
+						results[index].skip = &GraphDiscoverySkip{
+							Repository: repository.Slug,
+							Reason:     "repository has no local clone path; drift inspects checked-out go.mod files only",
+						}
+						return
 					}
-					continue
-				}
-				inspected, err := inspectGoDriftRepository(ctx, repository, options, observedAt)
-				if err != nil {
-					results[index].repository = DriftRepository{
-						Repository: repository.Slug,
-						Path:       repository.Path,
-						Status:     "error",
-						Reason:     sanitizeDriftReason(err.Error()),
+					inspected, err := inspectGoDriftRepository(ctx, repository, options, observedAt)
+					if err != nil {
+						results[index].repository = DriftRepository{
+							Repository: repository.Slug,
+							Path:       repository.Path,
+							Status:     "error",
+							Reason:     sanitizeDriftReason(err.Error()),
+						}
+						return
 					}
-					continue
-				}
-				results[index].repository = inspected
+					results[index].repository = inspected
+				}()
 			}
 		}()
 	}

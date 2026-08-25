@@ -47,9 +47,10 @@ Exit codes:
   1  findings — the command ran and reported failures, drift, or policy findings
   2  usage    — the invocation was rejected before any work started
 
-Terminal-only behaviour, such as the live sync progress UI, activates only when
-stdout is a terminal. Pass --non-interactive, or set WB_NON_INTERACTIVE=1, to
-force plain line-buffered output even when a terminal is attached.`
+Terminal-only behaviour, such as live progress reporting, activates only when
+its output stream is a terminal. Pass --non-interactive, or set
+WB_NON_INTERACTIVE=1, to suppress terminal UIs and progress lines even when a
+terminal is attached.`
 
 func newRootCmd() *cobra.Command {
 	home, _ := os.UserHomeDir()

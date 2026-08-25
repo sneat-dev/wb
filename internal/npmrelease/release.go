@@ -24,6 +24,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/encode"
+	"github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
 )
@@ -163,6 +164,8 @@ type Options struct {
 	Now          func() time.Time
 	Persist      func(Report) error
 	Previous     *Report
+	Progress     progress.Reporter
+	operation    string
 }
 
 // ValidateOptions performs every no-I/O publication option check. Command
@@ -439,6 +442,7 @@ func Run(ctx context.Context, releases []Release, options Options) (Report, erro
 		options.Runner = OSCommandRunner{}
 	}
 	report := plannedReport(normalized)
+	options.operation = report.Operation
 	if options.Resume {
 		if options.Previous == nil {
 			return Report{}, errors.New("--resume requires a persisted npm publication report")
@@ -471,6 +475,7 @@ func Run(ctx context.Context, releases []Release, options Options) (Report, erro
 		if receipt.Status == StatusPublished {
 			continue
 		}
+		progress.Report(options.Progress, progress.Event{Operation: report.Operation, Phase: "release", Repository: receipt.Repository, Detail: receipt.Package + "@" + receipt.Version, State: progress.Started, Completed: index, Total: len(report.Releases)})
 		if err := processReceipt(ctx, receipt, options, func() error { return persist(options, report) }); err != nil {
 			if receipt.Status == "" || receipt.Status == StatusPlanned || receipt.Status == StatusRunning {
 				receipt.Status = StatusFailed
@@ -478,8 +483,10 @@ func Run(ctx context.Context, releases []Release, options Options) (Report, erro
 			report.Status = receipt.Status
 			receipt.Reason = err.Error()
 			_ = persist(options, report)
+			progress.Report(options.Progress, progress.Event{Operation: report.Operation, Phase: "release", Repository: receipt.Repository, State: progress.Failed, Completed: index, Total: len(report.Releases)})
 			return report, err
 		}
+		progress.Report(options.Progress, progress.Event{Operation: report.Operation, Phase: "release", Repository: receipt.Repository, Detail: receipt.Package + "@" + receipt.Version, State: progress.Completed, Completed: index + 1, Total: len(report.Releases)})
 		if err := persist(options, report); err != nil {
 			return report, err
 		}
@@ -558,11 +565,13 @@ func persist(options Options, report Report) error {
 
 func processReceipt(ctx context.Context, receipt *Receipt, options Options, persistReceipt func() error) error {
 	if receipt.DispatchAt.IsZero() {
+		reportReceiptProgress(options, *receipt, "resolve_head", progress.Running, "")
 		headhash, err := resolveHead(ctx, *receipt, options)
 		if err != nil {
 			return fmt.Errorf("resolve exact %s head before dispatch: %w", receipt.Repository, err)
 		}
 		receipt.HeadSHA = headhash
+		reportReceiptProgress(options, *receipt, "capture_baseline", progress.Running, "")
 		baseline, err := listExactWorkflowRuns(ctx, *receipt, options)
 		if err != nil {
 			return fmt.Errorf("capture exact workflow-run baseline before dispatch: %w", err)
@@ -578,6 +587,7 @@ func processReceipt(ctx context.Context, receipt *Receipt, options Options, pers
 		if err := persistReceipt(); err != nil {
 			return err
 		}
+		reportReceiptProgress(options, *receipt, "dispatch_workflow", progress.Running, "")
 		if err := dispatchWorkflow(ctx, *receipt, options); err != nil {
 			receipt.Status = StatusDispatchFailed
 			receipt.Reason = "workflow dispatch command failed; use --resume only to locate a possibly accepted run, never to redispatch"
@@ -597,6 +607,7 @@ func processReceipt(ctx context.Context, receipt *Receipt, options Options, pers
 		return errors.New("persisted dispatch state lacks an exact head or pre-dispatch baseline; inspect the provider workflow and start a new operation only after resolving the ambiguity")
 	}
 	if receipt.RunID == "" {
+		reportReceiptProgress(options, *receipt, "locate_workflow_run", progress.Waiting, "")
 		run, err := locateRun(ctx, *receipt, options)
 		if err != nil {
 			if receipt.Status != StatusDispatchUnknown && receipt.Status != StatusDispatchFailed {
@@ -619,9 +630,11 @@ func processReceipt(ctx context.Context, receipt *Receipt, options Options, pers
 		receipt.Status = StatusFailed
 		return fmt.Errorf("workflow run %s head %s does not match dispatched head %s", receipt.RunID, receipt.RunHeadSHA, receipt.HeadSHA)
 	}
+	reportReceiptProgress(options, *receipt, "wait_workflow", progress.Waiting, receipt.RunStatus)
 	if err := waitRun(ctx, receipt, options, persistReceipt); err != nil {
 		return err
 	}
+	reportReceiptProgress(options, *receipt, "verify_registry", progress.Waiting, "")
 	version, checkedAt, err := verifyRegistry(ctx, *receipt, options)
 	receipt.RegistryCheckedAt = checkedAt
 	if err != nil {
@@ -633,6 +646,13 @@ func processReceipt(ctx context.Context, receipt *Receipt, options Options, pers
 	receipt.Status = StatusPublished
 	receipt.Reason = "exact workflow run passed and npm registry returned the requested version"
 	return nil
+}
+
+func reportReceiptProgress(options Options, receipt Receipt, phase string, state progress.State, detail string) {
+	progress.Report(options.Progress, progress.Event{
+		Operation: options.operation, Phase: phase,
+		Repository: receipt.Repository, Detail: detail, State: state,
+	})
 }
 
 type workflowRun struct {
@@ -742,6 +762,7 @@ func locateRun(ctx context.Context, receipt Receipt, options Options) (workflowR
 		deadline = time.Now().Add(options.Timeout)
 	}
 	for {
+		reportReceiptProgress(options, receipt, "locate_workflow_run", progress.Waiting, "polling GitHub")
 		runs, err := listExactWorkflowRuns(ctx, receipt, options)
 		if err != nil {
 			return workflowRun{}, fmt.Errorf("locate dispatched workflow run: %w", err)
@@ -817,6 +838,7 @@ func waitRun(ctx context.Context, receipt *Receipt, options Options, persistRece
 			receipt.Status = StatusFailed
 			return fmt.Errorf("workflow run %s head %s does not match dispatched head %s", receipt.RunID, receipt.RunHeadSHA, receipt.HeadSHA)
 		}
+		reportReceiptProgress(options, *receipt, "wait_workflow", progress.Waiting, strings.TrimSpace(run.Status+" "+run.Conclusion))
 		switch strings.ToLower(run.Status) {
 		case "completed":
 			switch strings.ToLower(run.Conclusion) {
