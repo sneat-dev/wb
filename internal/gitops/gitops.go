@@ -796,9 +796,37 @@ func Status(repoPath string) (RepoStatus, error) {
 // PullRebase replays local commits on top of the freshly fetched upstream.
 // It is the retry primitive for shared state repositories where several
 // machines push small non-conflicting commits.
+//
+// It fetches and rebases onto an explicitly named "origin/<branch>" —
+// never a bare `git pull --rebase`. A bare pull resolves what to rebase
+// onto through FETCH_HEAD's "for merge" bookkeeping, which git refuses to
+// rebase onto once it holds more than one candidate, with a message
+// ("fatal: Cannot rebase onto multiple branches.") that names neither the
+// clone nor the ref (wb#175). Two known ways to land more than one
+// candidate there: a branch configured with more than one
+// `branch.<name>.merge` value, and — reproduced directly for this fix —
+// two `wb` processes (e.g. concurrent `worktree cleanup --apply --remote`
+// runs) racing a bare `git pull --rebase` against the very same
+// unlocked local clone, which can interleave two "for merge" lines into
+// one FETCH_HEAD. Naming the remote and the branch explicitly for both the
+// fetch and the rebase sidesteps FETCH_HEAD's merge-head bookkeeping
+// entirely: there is only ever one ref to rebase onto.
 func PullRebase(repoPath string) error {
-	_, err := run(repoPath, "git", "pull", "--rebase", "--quiet")
-	return err
+	branch, err := CurrentBranch(repoPath)
+	if err != nil {
+		return fmt.Errorf("determine current branch in %s: %w", repoPath, err)
+	}
+	if branch == "" {
+		return fmt.Errorf("%s has no current branch (detached HEAD); cannot rebase", repoPath)
+	}
+	upstream := "origin/" + branch
+	if _, err := run(repoPath, "git", "fetch", "--quiet", "origin", branch); err != nil {
+		return fmt.Errorf("fetch origin %s in %s failed: %w", branch, repoPath, err)
+	}
+	if _, err := run(repoPath, "git", "rebase", "--quiet", upstream); err != nil {
+		return fmt.Errorf("rebase onto %s in %s failed: %w", upstream, repoPath, err)
+	}
+	return nil
 }
 
 // Push publishes the current branch to its upstream.
