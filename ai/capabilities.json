@@ -16,6 +16,7 @@
             {
               "path": "wb branch cleanup",
               "flags": [
+                "--absorbed-by",
                 "--apply",
                 "--base",
                 "--format",
@@ -27,6 +28,7 @@
               "modes": [
                 "Dry-run plan is the default; --apply is required for every deletion in every scope",
                 "Only the contained disposition is ever eligible; absorbed is never eligible under any flag combination",
+                "--absorbed-by <pr-or-commit> verifies an explicit landing pull request or commit with the same attested-absorption proof `wb worktree cleanup --absorbed-by` performs, reclassifying a content-proven squash-absorbed branch receipted (never absorbed) even when its worktree is already gone",
                 "Local deletion is a compare-and-delete (git update-ref -d) against the exact SHA the plan recorded",
                 "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
                 "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
@@ -49,7 +51,8 @@
                 "compare-and-delete",
                 "pull-request evidence",
                 "never removes, moves, or modifies any working tree",
-                "--receipts"
+                "--receipts",
+                "--absorbed-by"
               ]
             }
           ],
@@ -63,7 +66,8 @@
               "marker": "## Compare-and-delete, never `git branch -d`/`-D`",
               "examples": [
                 "wb branch cleanup",
-                "wb branch cleanup --scope all --apply --older-than 0"
+                "wb branch cleanup --scope all --apply --older-than 0",
+                "wb branch cleanup --scope remote --absorbed-by 123"
               ]
             }
           ],
@@ -91,12 +95,27 @@
               "path": "internal/worktrees/branches_test.go",
               "name": "TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence",
               "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRetiresContentProvenSquashAbsorbedRemoteBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRefusesResidualNotPresentInLandingCommit",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRefusesRefDrift",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. Never add a flag that makes it eligible."
+      "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. No flag ever makes the absorbed disposition itself eligible; --receipts and --absorbed-by only ever move a candidate to receipted BEFORE absorbed is assigned, and only via an independent, stronger proof (a real GitHub landing receipt, or an operator-attested landing commit proving it is exactly where the work entered the target), never via patch-id."
     },
     {
       "id": "wb.branch.list",

@@ -27,6 +27,10 @@ func TestBranchCleanupDefaultsToSafeDryRun(t *testing.T) {
 	if command.Flags().Lookup("remote") != nil {
 		t.Fatal("wb branch cleanup must not define a --remote boolean; scope is selected only by --scope")
 	}
+	absorbedBy := command.Flags().Lookup("absorbed-by")
+	if absorbedBy == nil || absorbedBy.DefValue != "" {
+		t.Fatalf("--absorbed-by = %#v, want an empty-default string flag", absorbedBy)
+	}
 }
 
 func TestBranchListDefaultsShowEveryAgeAndDisposition(t *testing.T) {
@@ -62,7 +66,7 @@ func TestBranchHelpExplainsEvidenceTaxonomyAndInvariants(t *testing.T) {
 	for _, wanted := range []string{
 		"dry-run plan", "absorbed is never eligible", "compare-and-delete",
 		"force-with-lease", "pull-request evidence", "never removes, moves, or modifies any working tree",
-		"between plan and apply refuses only itself",
+		"between plan and apply refuses only itself", "--absorbed-by",
 	} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("branch cleanup help does not mention %q", wanted)
