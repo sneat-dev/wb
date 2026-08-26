@@ -33,12 +33,16 @@ func seedGraphRepository(t *testing.T, fixture, name, branch string, files map[s
 	return canonical
 }
 
-// TestBuildGraphSkipsProvenNonGoRepositoryWithoutBaseRef pins that a fleet-wide
-// graph survives a repository that has no origin/main and no go.mod. Before the
-// discovery policy was applied to this path, one such repository made
-// `wb deps graph --fleet` exit 1 with no output at all: every other
-// repository's evidence was discarded along with it.
-func TestBuildGraphSkipsProvenNonGoRepositoryWithoutBaseRef(t *testing.T) {
+// TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef pins
+// that a fleet-wide graph survives — and correctly discovers — a repository
+// whose default branch is "master" rather than the fleet's configured
+// "main". Before the default-branch fallback existed, `orchestrate
+// .EnsureCanonical` hard-failed on `origin/main` for every such repository;
+// discovery only survived the fleet-wide run because a local scan could
+// prove a website like this carries no go.mod at all. With the fallback,
+// this repository is fully discovered at its actual default branch instead
+// of merely being excused from failing the campaign.
+func TestBuildGraphFallsBackToDefaultBranchForNonGoRepositoryWithoutBaseRef(t *testing.T) {
 	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
@@ -67,45 +71,225 @@ func TestBuildGraphSkipsProvenNonGoRepositoryWithoutBaseRef(t *testing.T) {
 	if !contains(modules, "example.com/app") {
 		t.Fatalf("healthy repository missing from graph; modules = %v", modules)
 	}
-	// The skip is reported, so a shrunken fleet cannot read as a complete one.
-	if len(graph.DiscoverySkips) != 1 {
-		t.Fatalf("discovery skips = %+v, want exactly one", graph.DiscoverySkips)
+	// Nothing was skipped: the repository resolved via its default branch.
+	if len(graph.DiscoverySkips) != 0 {
+		t.Fatalf("discovery skips = %+v, want none — the repository should have been resolved via fallback, not skipped", graph.DiscoverySkips)
 	}
-	if graph.DiscoverySkips[0].Repository != "acme/website" {
-		t.Fatalf("skipped repository = %q, want acme/website", graph.DiscoverySkips[0].Repository)
+	if len(graph.DefaultBranchFallbacks) != 1 || graph.DefaultBranchFallbacks[0].Repository != "acme/website" {
+		t.Fatalf("default branch fallbacks = %+v, want exactly one for acme/website", graph.DefaultBranchFallbacks)
 	}
-	if !strings.Contains(graph.DiscoverySkips[0].Reason, "no go.mod") {
-		t.Fatalf("skip reason = %q, want it to say why the skip was safe", graph.DiscoverySkips[0].Reason)
+	if graph.DefaultBranchFallbacks[0].Ref != "master" {
+		t.Fatalf("fallback ref = %q, want master", graph.DefaultBranchFallbacks[0].Ref)
 	}
 }
 
-// TestBuildGraphFailsForGoRepositoryWithoutBaseRef is the other half, and the
-// more important one: a repository that DOES carry Go code must never be
-// skipped quietly. Silently dropping it would hide a real consumer from a
-// dependency rollout, which is worse than the abort this policy replaced.
-func TestBuildGraphFailsForGoRepositoryWithoutBaseRef(t *testing.T) {
+// TestBuildGraphFallsBackToDefaultBranchForGoRepositoryWithoutBaseRef is the
+// other half, and the more important one: a repository that DOES carry Go
+// code must be fully discovered via its actual default branch rather than
+// either being dropped or aborting the whole fleet. Silently dropping it
+// would hide a real consumer from a dependency rollout; aborting the fleet
+// over a routine default-branch mismatch is the exact production failure
+// this fallback exists to fix (7 master-default fleet repositories: e.g.
+// strongo/gamp, trakhimenok/badger).
+func TestBuildGraphFallsBackToDefaultBranchForGoRepositoryWithoutBaseRef(t *testing.T) {
 	t.Parallel()
 	fixture := t.TempDir()
 	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
 		"go.mod": "module example.com/app\n\ngo 1.24\n",
 	})
-	// A Go consumer whose default branch was renamed. This must be loud.
-	stranded := seedGraphRepository(t, fixture, "consumer", "master", map[string]string{
+	// A Go consumer whose default branch is master, not main.
+	consumer := seedGraphRepository(t, fixture, "consumer", "master", map[string]string{
+		"go.mod": "module example.com/consumer\n\ngo 1.24\n\nrequire example.com/app v0.1.0\n",
+	})
+
+	graph, err := BuildGraph(context.Background(), []Repository{
+		{Slug: "acme/app", Path: app},
+		{Slug: "acme/consumer", Path: consumer},
+	}, GraphOptions{
+		GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
+		Parallel: 1, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("a Go repository without origin/main must fall back to its default branch, not fail the graph: %v", err)
+	}
+	var modules []string
+	for _, module := range graph.Modules {
+		modules = append(modules, module.Path)
+	}
+	if !contains(modules, "example.com/consumer") {
+		t.Fatalf("consumer module missing from graph; modules = %v", modules)
+	}
+	if len(graph.DiscoverySkips) != 0 {
+		t.Fatalf("discovery skips = %+v, want none", graph.DiscoverySkips)
+	}
+	if len(graph.DefaultBranchFallbacks) != 1 || graph.DefaultBranchFallbacks[0].Repository != "acme/consumer" || graph.DefaultBranchFallbacks[0].Ref != "master" {
+		t.Fatalf("default branch fallbacks = %+v, want exactly one acme/consumer -> master", graph.DefaultBranchFallbacks)
+	}
+}
+
+// deleteOriginHeadSymref reproduces a long-lived fleet clone that never had
+// (or lost) its cached origin/HEAD symref — most commonly because it was
+// assembled with `git remote add` + `git fetch` rather than `git clone`, or
+// because the remote's default branch was renamed after the local symref was
+// cached. EnsureCanonical must still resolve the actual default branch by
+// refreshing it from origin (`git remote set-head origin --auto`, or
+// `git ls-remote --symref` if that also fails).
+func deleteOriginHeadSymref(t *testing.T, canonical string) {
+	t.Helper()
+	runTestGit(t, canonical, "symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+}
+
+// TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing exercises
+// the refresh path specifically: EnsureCanonical must not depend solely on
+// a symref that `git clone` happened to cache; it must refresh it from
+// origin when absent.
+func TestBuildGraphFallsBackToDefaultBranchWhenLocalSymrefIsMissing(t *testing.T) {
+	t.Parallel()
+	fixture := t.TempDir()
+	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.24\n",
+	})
+	consumer := seedGraphRepository(t, fixture, "consumer", "master", map[string]string{
 		"go.mod": "module example.com/consumer\n\ngo 1.24\n",
 	})
+	deleteOriginHeadSymref(t, consumer)
+
+	graph, err := BuildGraph(context.Background(), []Repository{
+		{Slug: "acme/app", Path: app},
+		{Slug: "acme/consumer", Path: consumer},
+	}, GraphOptions{
+		GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
+		Parallel: 1, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("a missing cached origin/HEAD symref must be refreshed from origin, not fail the graph: %v", err)
+	}
+	var modules []string
+	for _, module := range graph.Modules {
+		modules = append(modules, module.Path)
+	}
+	if !contains(modules, "example.com/consumer") {
+		t.Fatalf("consumer module missing from graph; modules = %v", modules)
+	}
+	if len(graph.DefaultBranchFallbacks) != 1 || graph.DefaultBranchFallbacks[0].Ref != "master" {
+		t.Fatalf("default branch fallbacks = %+v, want exactly one acme/consumer -> master", graph.DefaultBranchFallbacks)
+	}
+}
+
+// TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve pins the
+// floor of the fallback: a repository whose origin has no resolvable ref at
+// all (nothing for `--ref`, and no default branch to fall back to) must
+// still fail loudly for a repository proven relevant by a local scan. The
+// fallback substitutes a known-good alternative; it is never license to swallow
+// a repository WB genuinely cannot read.
+func TestBuildGraphFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
+	t.Parallel()
+	fixture := t.TempDir()
+	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.24\n",
+	})
+	// A canonical clone of a genuinely empty remote: no branches, no HEAD to
+	// resolve at all. The working tree still carries an (uncommitted) go.mod,
+	// exactly as a local scan would find on disk regardless of git history, so
+	// the failure must stay loud rather than being excused as irrelevant.
+	remote := filepath.Join(fixture, "remote-broken.git")
+	runTestGit(t, fixture, "init", "--bare", remote)
+	broken := filepath.Join(fixture, "projects", "acme", "broken")
+	if err := os.MkdirAll(filepath.Dir(broken), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, fixture, "clone", remote, broken)
+	writeTestFile(t, filepath.Join(broken, "go.mod"), "module example.com/broken\n\ngo 1.24\n")
 
 	_, err := BuildGraph(context.Background(), []Repository{
 		{Slug: "acme/app", Path: app},
-		{Slug: "acme/consumer", Path: stranded},
+		{Slug: "acme/broken", Path: broken},
 	}, GraphOptions{
 		GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
 		Parallel: 1, Timeout: time.Minute,
 	})
 	if err == nil {
-		t.Fatal("a Go repository without the base ref must fail the graph, not be skipped")
+		t.Fatal("a repository with no resolvable ref at all and a real go.mod must fail the graph")
 	}
-	if !strings.Contains(err.Error(), "acme/consumer") {
+	if !strings.Contains(err.Error(), "acme/broken") {
 		t.Fatalf("error must name the repository; got %v", err)
+	}
+}
+
+// TestBuildGraphSkipsUnparseableNonRootGoModWithWarning pins the second
+// discovery defect this fallback work fixed: a nested go.mod that is not a
+// repository's root manifest — most commonly an EJS code-generator template
+// such as sneat-co/sneat-ext-contracts'
+// tools/contract-generator/src/generators/contract/files-go/go.mod, which
+// contains a literal `module module/path` placeholder — must not abort the
+// whole fleet. It is skipped with a warning naming the exact file and
+// repository instead.
+func TestBuildGraphSkipsUnparseableNonRootGoModWithWarning(t *testing.T) {
+	t.Parallel()
+	fixture := t.TempDir()
+	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.24\n",
+	})
+	// A repository with NO root go.mod at all, only a nested EJS template
+	// that is not valid Go module syntax.
+	generator := seedGraphRepository(t, fixture, "contracts", "main", map[string]string{
+		"tools/contract-generator/src/generators/contract/files-go/go.mod": "module github.com/acme/contracts/<%= family %>\n",
+	})
+
+	graph, err := BuildGraph(context.Background(), []Repository{
+		{Slug: "acme/app", Path: app},
+		{Slug: "acme/contracts", Path: generator},
+	}, GraphOptions{
+		GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
+		Parallel: 1, Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("an unparseable NON-root go.mod must not fail the graph: %v", err)
+	}
+	if len(graph.ManifestWarnings) != 1 {
+		t.Fatalf("manifest warnings = %+v, want exactly one", graph.ManifestWarnings)
+	}
+	warning := graph.ManifestWarnings[0]
+	if warning.Repository != "acme/contracts" {
+		t.Fatalf("warning repository = %q, want acme/contracts", warning.Repository)
+	}
+	if warning.Manifest != "tools/contract-generator/src/generators/contract/files-go/go.mod" {
+		t.Fatalf("warning manifest = %q, want the exact template path", warning.Manifest)
+	}
+	if len(graph.DiscoverySkips) != 0 {
+		t.Fatalf("discovery skips = %+v, want none — the repository was discovered, only one manifest was skipped", graph.DiscoverySkips)
+	}
+}
+
+// TestBuildGraphFailsForUnparseableRootGoMod is the fatal counterpart: an
+// unparseable ROOT go.mod must never be downgraded to a warning. WB cannot
+// safely assume irrelevance about a repository's own module declaration the
+// way it can about a nested generator template.
+func TestBuildGraphFailsForUnparseableRootGoMod(t *testing.T) {
+	t.Parallel()
+	fixture := t.TempDir()
+	app := seedGraphRepository(t, fixture, "app", "main", map[string]string{
+		"go.mod": "module example.com/app\n\ngo 1.24\n",
+	})
+	broken := seedGraphRepository(t, fixture, "broken-root", "main", map[string]string{
+		"go.mod": "module <%= family %>\n",
+	})
+
+	_, err := BuildGraph(context.Background(), []Repository{
+		{Slug: "acme/app", Path: app},
+		{Slug: "acme/broken-root", Path: broken},
+	}, GraphOptions{
+		GitHubDir: filepath.Join(fixture, "projects"), Ref: "main",
+		Parallel: 1, Timeout: time.Minute,
+	})
+	if err == nil {
+		t.Fatal("an unparseable ROOT go.mod must fail the graph, not be downgraded to a warning")
+	}
+	if !strings.Contains(err.Error(), "acme/broken-root") {
+		t.Fatalf("error must name the repository; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "go.mod") {
+		t.Fatalf("error must name the manifest; got %v", err)
 	}
 }
 

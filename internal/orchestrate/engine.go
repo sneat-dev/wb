@@ -152,10 +152,12 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	}
 	result.CanonicalDir = canonical
 	phase("sync")
-	if err := EnsureCanonical(ctx, repository, canonical, options); err != nil {
+	resolvedBase, err := EnsureCanonical(ctx, repository, canonical, options)
+	if err != nil {
 		return failResult(result, err)
 	}
-	base := "origin/" + options.Ref
+	result.Ref = resolvedBase.Ref
+	base := "origin/" + resolvedBase.Ref
 	phase("inspect")
 	assessment, err := handler.Inspect(ctx, canonical, base, repository)
 	result.Metadata = assessment.Metadata
@@ -253,7 +255,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if options.PR {
 		phase("open_pr")
 		title, body := handler.PullRequest(repository)
-		prURL, err := openPullRequest(ctx, worktree, options.Branch, options.Ref, title, body, options)
+		prURL, err := openPullRequest(ctx, worktree, options.Branch, resolvedBase.Ref, title, body, options)
 		if err != nil {
 			return failResult(result, err)
 		}
@@ -264,30 +266,129 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	return nil
 }
 
+// ResolvedBase is the git ref EnsureCanonical verified exists in a
+// repository's canonical clone. Every remaining lifecycle stage for this
+// repository — graph inspection, worktree creation, and any eventual pull
+// request base — must use Ref rather than the operation's configured
+// options.Ref, since the two differ exactly when Fallback is true.
+type ResolvedBase struct {
+	// Ref is the short branch name (no "origin/" prefix).
+	Ref string
+	// Fallback is true when the operation's configured ref did not exist for
+	// this repository and Ref instead names its actual origin/HEAD default
+	// branch. Nothing about this is silent: every caller that receives a
+	// Fallback result is expected to surface it in its own report.
+	Fallback bool
+}
+
 // EnsureCanonical clones a missing repository, fetches origin, and verifies
-// the configured base ref without checking out or modifying the canonical tree.
-func EnsureCanonical(ctx context.Context, repository Repository, canonical string, options Options) error {
+// a usable base ref without checking out or modifying the canonical tree. It
+// first tries the operation's configured options.Ref (default "main"); a
+// fleet inevitably contains repositories whose default branch is something
+// else (commonly "master", or a branch renamed after the local clone was
+// made), so a repository that lacks options.Ref falls back to its actual
+// origin/HEAD default branch instead of failing outright. A repository for
+// which neither ref resolves still fails loudly — this is a fallback to a
+// known-good alternative, never a silent skip.
+func EnsureCanonical(ctx context.Context, repository Repository, canonical string, options Options) (ResolvedBase, error) {
 	if _, err := os.Stat(canonical); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
-			return err
+			return ResolvedBase{}, err
 		}
 		cloneURL := repository.CloneURL
 		if cloneURL == "" {
 			cloneURL = "https://github.com/" + repository.Slug + ".git"
 		}
 		if _, _, err := runCommand(ctx, options.Timeout, 0, filepath.Dir(canonical), "git", "clone", "--quiet", cloneURL, canonical); err != nil {
-			return err
+			return ResolvedBase{}, err
 		}
 	} else if err != nil {
-		return err
+		return ResolvedBase{}, err
 	}
 	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "fetch", "--quiet", "origin"); err != nil {
-		return err
+		return ResolvedBase{}, err
 	}
-	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+options.Ref+"^{commit}"); err != nil {
-		return fmt.Errorf("%s does not contain origin/%s: %w", repository.Slug, options.Ref, err)
+	if verifyErr := verifyRemoteRef(ctx, canonical, options, options.Ref); verifyErr == nil {
+		return ResolvedBase{Ref: options.Ref}, nil
+	} else if defaultBranch, resolveErr := resolveOriginDefaultBranch(ctx, canonical, options); resolveErr != nil || defaultBranch == "" || defaultBranch == options.Ref {
+		return ResolvedBase{}, fmt.Errorf("%s does not contain origin/%s: %w", repository.Slug, options.Ref, verifyErr)
+	} else if verifyErr := verifyRemoteRef(ctx, canonical, options, defaultBranch); verifyErr != nil {
+		return ResolvedBase{}, fmt.Errorf("%s does not contain origin/%s, and its default branch origin/%s also failed verification: %w", repository.Slug, options.Ref, defaultBranch, verifyErr)
+	} else {
+		return ResolvedBase{Ref: defaultBranch, Fallback: true}, nil
 	}
-	return nil
+}
+
+// verifyRemoteRef reports whether origin/<ref> resolves to a commit in the
+// canonical clone, without checking anything out.
+func verifyRemoteRef(ctx context.Context, canonical string, options Options, ref string) error {
+	_, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+ref+"^{commit}")
+	return err
+}
+
+// resolveOriginDefaultBranch determines the repository's actual default
+// branch on origin. It prefers the locally cached origin/HEAD symref, which
+// `git clone` sets automatically; a long-lived canonical clone assembled by
+// `git remote add` + `git fetch` (common across an older fleet) never gets
+// that symref, and a clone's cached symref can also go stale after the
+// remote's default branch is renamed on GitHub — so a missing or unusable
+// symref is refreshed from origin (`git remote set-head origin --auto`,
+// falling back to `git ls-remote --symref`) before giving up.
+func resolveOriginDefaultBranch(ctx context.Context, canonical string, options Options) (string, error) {
+	if ref, err := readOriginHeadSymref(ctx, canonical, options); err == nil && ref != "" {
+		return ref, nil
+	}
+	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "remote", "set-head", "origin", "--auto"); err == nil {
+		if ref, err := readOriginHeadSymref(ctx, canonical, options); err == nil && ref != "" {
+			return ref, nil
+		}
+	}
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "ls-remote", "--symref", "origin", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	ref, err := parseLsRemoteSymref(output)
+	if err != nil {
+		return "", err
+	}
+	return ref, nil
+}
+
+func readOriginHeadSymref(ctx context.Context, canonical string, options Options) (string, error) {
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "symbolic-ref", "refs/remotes/origin/HEAD")
+	if err != nil {
+		return "", err
+	}
+	ref := strings.TrimSpace(output)
+	const prefix = "refs/remotes/origin/"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", fmt.Errorf("unexpected origin/HEAD symref %q", ref)
+	}
+	return strings.TrimPrefix(ref, prefix), nil
+}
+
+// parseLsRemoteSymref extracts the branch name from `git ls-remote --symref
+// origin HEAD` output, which looks like:
+//
+//	ref: refs/heads/master	HEAD
+//	<sha>	HEAD
+func parseLsRemoteSymref(output string) (string, error) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		rest, ok := strings.CutPrefix(line, "ref: ")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		const prefix = "refs/heads/"
+		if ref, ok := strings.CutPrefix(fields[0], prefix); ok {
+			return ref, nil
+		}
+	}
+	return "", fmt.Errorf("origin HEAD symref not found in ls-remote output")
 }
 
 func prepareWorktree(ctx context.Context, canonical, worktree, branch, base string, options Options) error {

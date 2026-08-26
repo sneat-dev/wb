@@ -42,6 +42,12 @@ type Graph struct {
 	// inspected. It belongs to the graph rather than to a log line so that no
 	// output format can present a partial fleet as a complete one.
 	DiscoverySkips []GraphDiscoverySkip `json:"discovery_skips,omitempty" yaml:"discovery_skips,omitempty"`
+	// DefaultBranchFallbacks lists repositories fully discovered using their
+	// actual default branch because the configured base ref did not exist.
+	DefaultBranchFallbacks []GraphDefaultBranchFallback `json:"default_branch_fallbacks,omitempty" yaml:"default_branch_fallbacks,omitempty"`
+	// ManifestWarnings lists non-root manifest files skipped for failing to
+	// parse instead of aborting discovery.
+	ManifestWarnings []GraphManifestWarning `json:"manifest_warnings,omitempty" yaml:"manifest_warnings,omitempty"`
 }
 
 // GraphFilters records evidence filters applied after repository discovery.

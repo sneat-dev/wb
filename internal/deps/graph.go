@@ -93,6 +93,8 @@ func normalizeGraphDependencies(values []string) ([]string, error) {
 func graphFromGoFleet(discovered goFleetGraph, selected []Repository, ref string, filters []string) Graph {
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemGo, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
 	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
+	graph.DefaultBranchFallbacks = append(graph.DefaultBranchFallbacks, discovered.baseRefFallbacks...)
+	graph.ManifestWarnings = append(graph.ManifestWarnings, discovered.manifestWarnings...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true
@@ -237,6 +239,7 @@ func graphModuleDeclarations(graph goFleetGraph, module string) []goFleetModule 
 func graphFromNpmFleet(discovered npmFleetGraph, selected []Repository, ref string, filters []string) Graph {
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemNPM, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
 	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
+	graph.DefaultBranchFallbacks = append(graph.DefaultBranchFallbacks, discovered.baseRefFallbacks...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true
