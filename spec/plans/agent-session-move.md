@@ -5,7 +5,7 @@ status: Approved
 
 # Plan: Agent Session Move implementation plan
 
-**Status:** Completed
+**Status:** Implemented
 **Source Feature:** agent-session-move
 **Date:** 2026-08-25
 **Owner:** codex
