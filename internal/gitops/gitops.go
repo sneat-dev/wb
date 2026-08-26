@@ -291,6 +291,16 @@ func RemoteHasBranches(repoPath string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// UnpushedBranch attributes commits that exist on no remote to one local
+// branch and, when that branch is checked out, its canonical or linked
+// worktree. Commits can appear under more than one branch; RepoStatus.Unpushed
+// remains the unique flat list used for counts and backward compatibility.
+type UnpushedBranch struct {
+	Branch   string   `yaml:"branch" json:"branch"`
+	Worktree string   `yaml:"worktree,omitempty" json:"worktree,omitempty"`
+	Commits  []string `yaml:"commits" json:"commits"`
+}
+
 // UnpushedCommits lists commits present on some local branch and on no
 // remote-tracking branch, newest first, as `<short-sha> <subject>` lines.
 //
@@ -298,39 +308,146 @@ func RemoteHasBranches(repoPath string) (bool, error) {
 // abandoned on a side branch at least as often as on the default one, and a
 // clone holding either is holding work that exists nowhere else.
 func UnpushedCommits(repoPath string) ([]string, error) {
+	commits, _, err := UnpushedWork(repoPath)
+	return commits, err
+}
+
+// UnpushedWork returns both the unique flat commit list and branch/worktree
+// attribution. It requires at least one known remote-tracking ref for the same
+// reason as UnpushedCommits: without one, the whole repository history would
+// be indistinguishable from unpublished work.
+func UnpushedWork(repoPath string) ([]string, []UnpushedBranch, error) {
+	return unpushedWork(repoPath, true)
+}
+
+func unpushedWork(repoPath string, requireRemoteEvidence bool) ([]string, []UnpushedBranch, error) {
 	// With no remote-tracking refs, `--branches --not --remotes` subtracts
 	// nothing and returns the entire history — a clone that has never fetched
 	// would be reported as holding thousands of unpushed commits. "Unpushed"
 	// only means anything relative to a known remote state, so say nothing
 	// rather than something false.
-	refs, err := run(repoPath, "git", "for-each-ref", "--count=1", "refs/remotes")
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(refs) == "" {
-		return nil, nil
+	if requireRemoteEvidence {
+		refs, err := run(repoPath, "git", "for-each-ref", "--count=1", "refs/remotes")
+		if err != nil {
+			return nil, nil, err
+		}
+		if strings.TrimSpace(refs) == "" {
+			return nil, nil, nil
+		}
 	}
 
 	branches, err := unpushableBranches(repoPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(branches) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	args := append([]string{"log", "--oneline"}, branches...)
+	args := []string{"log", "--topo-order", "--format=%H%x09%h %s%x09%P"}
+	for _, branch := range branches {
+		args = append(args, branch.ref)
+	}
 	out, err := run(repoPath, "git", append(args, "--not", "--remotes")...)
+	if err != nil {
+		return nil, nil, err
+	}
+	commitOrder := make([]string, 0)
+	commits := make([]string, 0)
+	graph := make(map[string]unpushedCommit)
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		commit, parseErr := parseUnpushedCommit(line)
+		if parseErr != nil {
+			return nil, nil, parseErr
+		}
+		commitOrder = append(commitOrder, commit.sha)
+		commits = append(commits, commit.line)
+		graph[commit.sha] = commit
+	}
+	if len(commits) == 0 {
+		return nil, nil, nil
+	}
+
+	worktrees, err := worktreesByBranch(repoPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	attributed := make([]UnpushedBranch, 0, len(branches))
+	for _, branch := range branches {
+		reachable := reachableUnpushedCommits(branch.tip, graph)
+		branchCommits := make([]string, 0, len(reachable))
+		for _, sha := range commitOrder {
+			if _, ok := reachable[sha]; ok {
+				branchCommits = append(branchCommits, graph[sha].line)
+			}
+		}
+		if len(branchCommits) == 0 {
+			continue
+		}
+		attributed = append(attributed, UnpushedBranch{
+			Branch: strings.TrimPrefix(branch.ref, "refs/heads/"), Worktree: worktrees[branch.ref], Commits: branchCommits,
+		})
+	}
+	return commits, attributed, nil
+}
+
+type unpushedCommit struct {
+	sha     string
+	line    string
+	parents []string
+}
+
+func parseUnpushedCommit(line string) (unpushedCommit, error) {
+	firstTab := strings.IndexByte(line, '\t')
+	lastTab := strings.LastIndexByte(line, '\t')
+	if firstTab <= 0 || lastTab <= firstTab {
+		return unpushedCommit{}, fmt.Errorf("unexpected unpushed git log record: %q", line)
+	}
+	return unpushedCommit{
+		sha:     line[:firstTab],
+		line:    line[firstTab+1 : lastTab],
+		parents: strings.Fields(line[lastTab+1:]),
+	}, nil
+}
+
+func reachableUnpushedCommits(tip string, graph map[string]unpushedCommit) map[string]struct{} {
+	reachable := make(map[string]struct{})
+	stack := []string{tip}
+	for len(stack) > 0 {
+		sha := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if _, seen := reachable[sha]; seen {
+			continue
+		}
+		commit, ok := graph[sha]
+		if !ok {
+			continue
+		}
+		reachable[sha] = struct{}{}
+		stack = append(stack, commit.parents...)
+	}
+	return reachable
+}
+
+func worktreesByBranch(repoPath string) (map[string]string, error) {
+	out, err := run(repoPath, "git", "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return nil, err
 	}
-	var commits []string
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			commits = append(commits, line)
+	worktrees := map[string]string{}
+	worktree := ""
+	for _, field := range strings.Split(out, "\x00") {
+		switch {
+		case strings.HasPrefix(field, "worktree "):
+			worktree = strings.TrimPrefix(field, "worktree ")
+		case strings.HasPrefix(field, "branch ") && worktree != "":
+			worktrees[strings.TrimPrefix(field, "branch ")] = worktree
 		}
 	}
-	return commits, nil
+	return worktrees, nil
 }
 
 // unpushableBranches lists the local branches whose commits could genuinely
@@ -344,26 +461,31 @@ func UnpushedCommits(repoPath string) ([]string, error) {
 // fires on success is one people learn to ignore.
 //
 // A branch with no upstream at all is kept: it may never have been pushed.
-func unpushableBranches(repoPath string) ([]string, error) {
+type unpushableBranch struct {
+	ref string
+	tip string
+}
+
+func unpushableBranches(repoPath string) ([]unpushableBranch, error) {
 	out, err := run(repoPath, "git", "for-each-ref",
-		"--format=%(refname)%09%(upstream)%09%(upstream:track,nobracket)", "refs/heads/")
+		"--format=%(refname)%09%(objectname)%09%(upstream)%09%(upstream:track,nobracket)", "refs/heads/")
 	if err != nil {
 		return nil, err
 	}
-	var branches []string
+	var branches []unpushableBranch
 	for _, line := range strings.Split(out, "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 3 {
+		if len(fields) < 4 {
 			continue
 		}
-		ref, upstream, track := fields[0], fields[1], strings.TrimSpace(fields[2])
+		ref, tip, upstream, track := fields[0], fields[1], fields[2], strings.TrimSpace(fields[3])
 		if upstream != "" && track == "gone" {
 			continue
 		}
-		branches = append(branches, ref)
+		branches = append(branches, unpushableBranch{ref: ref, tip: tip})
 	}
 	return branches, nil
 }
@@ -567,11 +689,12 @@ func PushSetUpstream(repoPath, branch string) error {
 // RepoStatus is git working-tree/history state relevant to sync decisions
 // and to reporting why a repo needs attention.
 type RepoStatus struct {
-	Modified   []string // tracked files with changes
-	Untracked  []string // untracked files
-	Conflicted []string // merge-conflict paths
-	Unpushed   []string // `git log --branches --not --remotes --oneline` lines
-	Stashed    []string // `git stash list` lines
+	Modified         []string         // tracked files with changes
+	Untracked        []string         // untracked files
+	Conflicted       []string         // merge-conflict paths
+	Unpushed         []string         // unique `<short-sha> <subject>` lines
+	UnpushedBranches []UnpushedBranch // branch and linked-worktree attribution
+	Stashed          []string         // `git stash list` lines
 }
 
 // WorkingTreeDirty reports whether the working tree itself has changes
@@ -662,14 +785,9 @@ func Status(repoPath string) (RepoStatus, error) {
 		}
 	}
 
-	out, err = run(repoPath, "git", "log", "--branches", "--not", "--remotes", "--oneline")
+	s.Unpushed, s.UnpushedBranches, err = unpushedWork(repoPath, false)
 	if err != nil {
 		return s, err
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			s.Unpushed = append(s.Unpushed, line)
-		}
 	}
 
 	return s, nil
@@ -678,9 +796,37 @@ func Status(repoPath string) (RepoStatus, error) {
 // PullRebase replays local commits on top of the freshly fetched upstream.
 // It is the retry primitive for shared state repositories where several
 // machines push small non-conflicting commits.
+//
+// It fetches and rebases onto an explicitly named "origin/<branch>" —
+// never a bare `git pull --rebase`. A bare pull resolves what to rebase
+// onto through FETCH_HEAD's "for merge" bookkeeping, which git refuses to
+// rebase onto once it holds more than one candidate, with a message
+// ("fatal: Cannot rebase onto multiple branches.") that names neither the
+// clone nor the ref (wb#175). Two known ways to land more than one
+// candidate there: a branch configured with more than one
+// `branch.<name>.merge` value, and — reproduced directly for this fix —
+// two `wb` processes (e.g. concurrent `worktree cleanup --apply --remote`
+// runs) racing a bare `git pull --rebase` against the very same
+// unlocked local clone, which can interleave two "for merge" lines into
+// one FETCH_HEAD. Naming the remote and the branch explicitly for both the
+// fetch and the rebase sidesteps FETCH_HEAD's merge-head bookkeeping
+// entirely: there is only ever one ref to rebase onto.
 func PullRebase(repoPath string) error {
-	_, err := run(repoPath, "git", "pull", "--rebase", "--quiet")
-	return err
+	branch, err := CurrentBranch(repoPath)
+	if err != nil {
+		return fmt.Errorf("determine current branch in %s: %w", repoPath, err)
+	}
+	if branch == "" {
+		return fmt.Errorf("%s has no current branch (detached HEAD); cannot rebase", repoPath)
+	}
+	upstream := "origin/" + branch
+	if _, err := run(repoPath, "git", "fetch", "--quiet", "origin", branch); err != nil {
+		return fmt.Errorf("fetch origin %s in %s failed: %w", branch, repoPath, err)
+	}
+	if _, err := run(repoPath, "git", "rebase", "--quiet", upstream); err != nil {
+		return fmt.Errorf("rebase onto %s in %s failed: %w", upstream, repoPath, err)
+	}
+	return nil
 }
 
 // Push publishes the current branch to its upstream.

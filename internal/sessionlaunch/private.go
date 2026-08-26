@@ -62,12 +62,12 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 	if err != nil {
 		return err
 	}
-	defer launchState.Close()
+	defer func() { _ = launchState.Close() }()
 	attempt, err := launchState.openAttempt(attemptID)
 	if err != nil {
 		return err
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	plan, planDigest, err := launchState.loadPlan()
 	if err != nil {
 		return err
@@ -144,7 +144,7 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 	if err != nil {
 		return err
 	}
-	defer execFence.Close()
+	defer func() { _ = execFence.Close() }()
 	record, err := deps.register(sessionDirectory, session.Record{
 		PID: launcherPID, WBSessionID: plan.SuccessorWBSessionID, Machine: plan.Machine,
 		Runtime: plan.Runtime, Model: plan.Model, TmuxName: plan.TmuxName,
@@ -355,7 +355,7 @@ func readPrivateArtifactAt(directory *os.File, name string, maximum int) ([]byte
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 ||
 		os.FileMode(stat.Mode).Perm() != 0o600 || stat.Size < 0 || stat.Size > int64(maximum) {

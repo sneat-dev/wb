@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -343,6 +344,54 @@ func TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation(t *testing.T) {
 		EffortID: effort, RunID: run, Model: "unknown", OriginalPrompt: samePrompt, RequireOriginalPrompt: true,
 	}); err != nil {
 		t.Fatalf("identical same-run prompt was rejected: %v", err)
+	}
+}
+
+// TestWorkLogBranchMismatchErrorStatesProvenRecovery is the regression for
+// #183: an agent renaming the live branch away from the claim before landing
+// used to refuse with no recovery hint. The proven recovery — rename the live
+// branch back to the claim name — must appear in the error text, and actually
+// performing it must restore corroboration exactly as the issue's manual
+// recovery did.
+func TestWorkLogBranchMismatchErrorStatesProvenRecovery(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "branch-mismatch-recovery",
+		WorkLog:      WorkLogOptions{RunID: "branch-mismatch-run", Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	claimBranch := created[0].Branch
+	head := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+
+	// An agent renames the branch before pushing/opening its PR, exactly like
+	// the observed sneat-apps-ext-pass2 incident.
+	gitTest(t, worktree, "branch", "-m", "feature/renamed-by-agent")
+
+	err = preflightWorkLogSeal(fixture.home, worktree, head)
+	if err == nil {
+		t.Fatal("renamed live branch unexpectedly corroborated against the unrenamed claim")
+	}
+	for _, want := range []string{
+		fmt.Sprintf("live branch %q", "feature/renamed-by-agent"),
+		fmt.Sprintf("private claim %q", claimBranch),
+		"rename the live branch back to the claim name",
+		"git branch -m " + claimBranch,
+		"landing evidence is commit-based",
+		"still proves out",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("branch mismatch error = %q, want it to contain %q", err.Error(), want)
+		}
+	}
+
+	// Performing the documented recovery restores corroboration.
+	gitTest(t, worktree, "branch", "-m", claimBranch)
+	if err := preflightWorkLogSeal(fixture.home, worktree, head); err != nil {
+		t.Fatalf("documented recovery did not restore corroboration: %v", err)
 	}
 }
 

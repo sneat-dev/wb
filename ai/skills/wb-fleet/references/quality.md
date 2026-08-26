@@ -41,8 +41,8 @@ hook's orchestrating command once instead of duplicating it here.
 
 `wb verify receipt` is the read-only final composition step, not an assertion
 that arbitrary prose is evidence. Give it the closed, versioned outputs from
-the local CI-equivalent check, CI wait, target observation, external deployment
-producer, and WB terminal cleanup:
+the local CI-equivalent check, CI wait, target observation, GitHub Actions
+deployment producer, and WB terminal cleanup:
 
 ```sh
 wb check --fleet --match acme/wb --profile ci --format json >local-check.json
@@ -59,10 +59,12 @@ not a pull-request head.
 
 The target-observation subcommand resolves the configured GitHub remote, runs
 a canonical `git ls-remote` observation, and emits evidence that the composer
-corroborates with every other component. The external deployment receipt must
-retain its exact structured payload as `payload_json`, its SHA-256 digest, a
-JSON pointer resolving the deployed revision, and a credential-free immutable
-run URL. Keep all evidence files immutable for review; a receipt refuses
+corroborates with every other component. The GitHub Actions deployment receipt
+uses producer `github-actions.deployment-receipt.v1` and must retain its exact
+structured payload as `payload_json`, its SHA-256 digest, JSON pointers
+resolving both the deployed revision and numeric provider run ID, and the
+matching canonical `https://github.com/<owner>/<repo>/actions/runs/<id>` URL.
+Keep all evidence files immutable for review; a receipt refuses
 mismatched revisions, self-attestation fields, stale or non-monotonic
 timestamps, and incomplete cleanup. Cleanup removes campaign worktrees and
 source branches; it never removes the canonical target checkout.

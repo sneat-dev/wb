@@ -116,7 +116,7 @@ func PrepareParkedSessionWorkLog(ctx context.Context, options ParkedSessionWorkL
 	if err != nil {
 		return result, err
 	}
-	defer runDir.Close()
+	defer func() { _ = runDir.Close() }()
 	unlock, err := lockClaim(runDir, claim.ClaimID)
 	if err != nil {
 		return result, err
@@ -242,7 +242,7 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	defer runDir.Close()
+	defer func() { _ = runDir.Close() }()
 	unlock, err := lockClaim(runDir, target.ClaimID)
 	if err != nil {
 		return LocalWorkLogEvent{}, err

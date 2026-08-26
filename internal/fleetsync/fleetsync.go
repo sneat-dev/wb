@@ -86,11 +86,36 @@ func (s Status) String() string {
 type Result struct {
 	Repo   discover.Repo
 	Status Status
-	Detail gitops.RepoStatus
+	// PullPlanned is true only for a dry-run existing clone. PullAttempted and
+	// PullSucceeded describe the real action independently of Status, which may
+	// still end as Unpushed after a successful pull. Updated is a successful
+	// pull whose checked-out commit moved forward.
+	PullPlanned   bool
+	PullAttempted bool
+	PullSucceeded bool
+	Updated       bool
+	Detail        gitops.RepoStatus
 	// Tracking is filled in only for Diverged and NoUpstream, whose reports
 	// are meaningless without the branch names and ahead/behind counts.
 	Tracking gitops.TrackingState
 	Err      error
+}
+
+// PullSummary renders the pull action independently of the final repository
+// status. Empty means this result did not concern an existing active clone.
+func (r Result) PullSummary() string {
+	switch {
+	case r.PullPlanned:
+		return "planned (dry-run)"
+	case r.Updated:
+		return "updated from remote"
+	case r.PullSucceeded:
+		return "already current"
+	case r.PullAttempted:
+		return "failed"
+	default:
+		return ""
+	}
 }
 
 // Sync reconciles a single repo's local clone with its GitHub state: clone
@@ -144,7 +169,7 @@ func syncArchived(repo discover.Repo, res Result, dryRun bool) Result {
 		res.Err = err
 		return res
 	}
-	unpushed, unpushedErr := gitops.UnpushedCommits(repo.Path)
+	unpushed, unpushedBranches, unpushedErr := gitops.UnpushedWork(repo.Path)
 	if unpushedErr == nil && len(unpushed) > 0 {
 		// The remote is read-only, so these commits can never be pushed. That
 		// makes this the one "kept" reason that will never clear on its own:
@@ -155,6 +180,7 @@ func syncArchived(repo discover.Repo, res Result, dryRun bool) Result {
 		res.Status = ArchivedUnlandable
 		res.Detail = status
 		res.Detail.Unpushed = unpushed
+		res.Detail.UnpushedBranches = unpushedBranches
 		return res
 	}
 	if status.Dirty() {
@@ -205,8 +231,11 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 	}
 	if dryRun {
 		res.Status = Pulled
+		res.PullPlanned = true
 		return res
 	}
+	beforeHead, beforeHeadErr := gitops.HeadSHA(repo.Path)
+	res.PullAttempted = true
 	if err := gitops.Pull(repo.Path); err != nil {
 		// A remote publishing no branches at all has nothing to pull, so the
 		// failure is expected rather than a fault: the repository was created
@@ -247,6 +276,10 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		res.Err = err
 		return res
 	}
+	res.PullSucceeded = true
+	if afterHead, afterHeadErr := gitops.HeadSHA(repo.Path); beforeHeadErr == nil && afterHeadErr == nil && afterHead != beforeHead {
+		res.Updated = true
+	}
 	// A successful pull says the clone is not BEHIND. It says nothing about
 	// what the clone is holding that origin has never seen: an ahead-only
 	// branch pulls cleanly and reports "Already up to date", so unlanded work
@@ -256,9 +289,10 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 	//
 	// Re-read rather than reusing the pre-pull Status: the pull may have just
 	// landed some of those commits from elsewhere. One local git command.
-	if unpushed, err := gitops.UnpushedCommits(repo.Path); err == nil && len(unpushed) > 0 {
+	if unpushed, unpushedBranches, err := gitops.UnpushedWork(repo.Path); err == nil && len(unpushed) > 0 {
 		res.Status = Unpushed
 		res.Detail.Unpushed = unpushed
+		res.Detail.UnpushedBranches = unpushedBranches
 		return res
 	}
 	res.Status = Pulled

@@ -34,11 +34,13 @@ func (deliverer *fakeMessageDeliverer) DeliverMessage(_ context.Context, raw []b
 }
 
 func TestSendRejectsNilContextBeforeDurableLookup(t *testing.T) {
-	_, err := Send(nil, Options{TargetWBSessionID: "wbs-successor"})
+	_, err := Send(nilContext(), Options{TargetWBSessionID: "wbs-successor"})
 	if err == nil || !strings.Contains(err.Error(), "context is required") {
 		t.Fatalf("Send(nil) error = %v, want context requirement", err)
 	}
 }
+
+func nilContext() context.Context { return nil }
 
 func TestSendPersistsBeforeCourierAndBindsTextAndRequestHandoffLineage(t *testing.T) {
 	for _, test := range []struct {

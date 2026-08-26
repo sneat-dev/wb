@@ -64,9 +64,11 @@ any other clone.
 #### REQ: remote-publish-heartbeat
 
 Every publish MUST create a commit: `published_at` MUST advance even when
-fleet state is otherwise unchanged, because `wb remote status --stale` uses
-it as the machine's heartbeat. A byte-identical snapshot (same timestamp)
-MUST be the only no-op.
+fleet state is otherwise unchanged, because it is one of the two inputs to
+the machine's effective heartbeat that `wb remote status --stale` uses (the
+other being `last_seen_at`, stamped by claim activity — see the
+remote-claims feature). A byte-identical snapshot (same timestamp) MUST be
+the only no-op.
 
 #### REQ: remote-publish-concurrent-rebase
 
@@ -79,13 +81,16 @@ pushed state.
 #### REQ: remote-status-rendering
 
 `wb remote status` MUST report a cross-machine worklist from the store, MUST
-flag stale snapshots, and MUST render an error row for any entry that cannot
-be decoded rather than dropping it.
+flag a machine as stale exactly when its effective heartbeat (the later of
+`published_at` and `last_seen_at`) is older than the `--stale` window, and
+MUST render an error row for any entry that cannot be decoded rather than
+dropping it.
 
 #### REQ: remote-machines-rendering
 
-`wb remote machines` MUST report one line per machine including its publish
-age.
+`wb remote machines` MUST report one line per machine including both its
+publish age (PUBLISHED) and its effective-heartbeat age (SEEN); STALE MUST
+key off SEEN, not PUBLISHED alone.
 
 #### REQ: remote-status-exit-code
 
@@ -113,9 +118,10 @@ implicit hostname-derived fallback to silently misidentify a machine.
 
 **Requirements:** remote-state#req:remote-publish-heartbeat, remote-state#req:remote-publish-concurrent-rebase
 
-Every publish advances `published_at` (except a byte-identical repeat) so
-staleness detection has a reliable heartbeat, and two machines publishing at
-the same time both succeed via a rebase-and-retry on push rejection.
+Every publish advances `published_at` (except a byte-identical repeat),
+feeding the effective heartbeat that staleness detection relies on, and two
+machines publishing at the same time both succeed via a rebase-and-retry on
+push rejection.
 
 ### AC: cross-machine-visibility
 
@@ -123,8 +129,9 @@ the same time both succeed via a rebase-and-retry on push rejection.
 
 `wb remote status` and `wb remote machines` give a readable cross-machine
 view — worklist with staleness and error rows, and a one-line-per-machine
-summary — and a store containing undecodable entries never blocks a
-zero exit code.
+summary carrying both the publish age and the effective-heartbeat (SEEN)
+age — and a store containing undecodable entries never blocks a zero exit
+code.
 
 ## Open Questions
 

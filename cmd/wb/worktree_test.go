@@ -946,3 +946,115 @@ func TestWorktreeCreateKeepsRemoteClaimNotesOffStdout(t *testing.T) {
 		t.Errorf("a remote-claim note reached stdout: %q", stdout.String())
 	}
 }
+
+// findOriginalPromptArchive locates the single Work Log run's archived prompt
+// file for task under home, matching the layout WB_HOME/worklogs/<effort>/
+// runs/<run>/original-prompt.txt. It fails the test if there is not exactly
+// one run, so a stampede regression (multiple orphaned runs) is caught here
+// too rather than only in the internal/worktrees package tests.
+func findOriginalPromptArchive(t *testing.T, home, task string) string {
+	t.Helper()
+	runsRoot := filepath.Join(home, "worklogs", task, "runs")
+	entries, err := os.ReadDir(runsRoot)
+	if err != nil {
+		t.Fatalf("read work-log runs directory %s: %v", runsRoot, err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("work-log runs for %s = %d, want exactly 1: %v", task, len(entries), names)
+	}
+	return filepath.Join(runsRoot, entries[0].Name(), "original-prompt.txt")
+}
+
+// TestWorktreeCreateAcceptsOriginalPromptFromStdin is the CLI-level regression
+// test for issue #88: --original-prompt-file - reads the exact prompt from
+// stdin instead of a caller-staged file, and WB itself writes the private
+// 0600 archive under WB_HOME. This proves the whole path end to end: stdin in,
+// an exact-content 0600 archive on disk, and that same body recoverable from
+// the Work Log exactly as a file-based --original-prompt-file would record it.
+func TestWorktreeCreateAcceptsOriginalPromptFromStdin(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := os.Getenv(wbhome.EnvOverride)
+
+	const prompt = "stdin-sourced original request, never staged to a shared path\n"
+	var stdout, stderr bytes.Buffer
+	code := runWithStdin(
+		[]string{"--projects-root", projects, "worktree", "create", "cli-stdin-prompt", "acme/app", "--model", "unknown", "--original-prompt-file", "-"},
+		strings.NewReader(prompt), &stdout, &stderr,
+	)
+	if code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), prompt) || strings.Contains(stderr.String(), prompt) {
+		t.Fatalf("create echoed the stdin prompt back: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	archive := findOriginalPromptArchive(t, home, "cli-stdin-prompt")
+	info, err := os.Stat(archive)
+	if err != nil {
+		t.Fatalf("stat archived stdin prompt: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("archived stdin prompt mode = %o, want 0600", info.Mode().Perm())
+	}
+	content, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatalf("read archived stdin prompt: %v", err)
+	}
+	if string(content) != prompt {
+		t.Fatalf("archived stdin prompt = %q, want %q", content, prompt)
+	}
+
+	worktree := filepath.Join(home, "worktrees", "cli-stdin-prompt", "acme", "app")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("log failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "stdin-sourced original request") {
+		t.Fatalf("work log did not recover the stdin-sourced prompt: %s", stdout.String())
+	}
+}
+
+// TestWorktreeCreateRefusesEmptyStdinPrompt proves --original-prompt-file -
+// fails closed exactly like an empty --original-prompt-file: no worktree,
+// task directory, or Work Log state is created for an empty or
+// whitespace-only stdin.
+func TestWorktreeCreateRefusesEmptyStdinPrompt(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		stdin string
+	}{
+		{name: "empty", stdin: ""},
+		{name: "whitespace-only", stdin: "   \n\t\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			home := filepath.Join(root, ".wb")
+			t.Setenv("WB_HOME", home)
+			task := "empty-stdin-" + test.name
+			var stdout, stderr bytes.Buffer
+			code := runWithStdin(
+				[]string{"--projects-root", filepath.Join(root, "projects"), "worktree", "create", task, "acme/app", "--model", "unknown", "--original-prompt-file", "-"},
+				strings.NewReader(test.stdin), &stdout, &stderr,
+			)
+			if code == exitOK {
+				t.Fatalf("empty stdin prompt succeeded: stdout=%s", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "non-empty stdin") {
+				t.Fatalf("stderr = %q, want a clear non-empty-stdin refusal", stderr.String())
+			}
+			if _, err := os.Stat(filepath.Join(home, "worktrees", task)); !os.IsNotExist(err) {
+				t.Fatalf("empty stdin preflight created task state: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(home, "worklogs", task)); !os.IsNotExist(err) {
+				t.Fatalf("empty stdin preflight created work-log state: %v", err)
+			}
+		})
+	}
+}

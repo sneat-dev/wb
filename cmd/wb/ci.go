@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/ciaudit"
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 )
@@ -80,13 +81,17 @@ it. This command never starts a detached watcher or background loop.`,
 			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval)
 		},
 		RunE: func(command *cobra.Command, args []string) error {
+			progress := newCIWaitProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive))
+			progress.start(repository, pullRequest, target, head)
 			result, err := orchestrate.WaitForCommitChecks(command.Context(), orchestrate.PullRequestWaitOptions{
 				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
-				Slice: slice, CheckPollInterval: interval,
+				Slice: slice, CheckPollInterval: interval, Progress: progress.report,
 			})
 			if err != nil {
+				progress.fail(err)
 				return err
 			}
+			progress.finish(result)
 			output := ciWaitOutput{SchemaVersion: 1, ObservedAt: time.Now().UTC(), PullRequestWaitResult: result}
 			if result.Status == orchestrate.PullRequestWaitPending {
 				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, jsonOut)

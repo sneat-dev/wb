@@ -106,6 +106,104 @@ func TestAbortDiscardedUnusedWorktreesIsAudited(t *testing.T) {
 	}
 }
 
+// TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact is the
+// regression for #170: one repository blocked on something abort cannot fix
+// (here, uncommitted local changes on a discard) used to make the entire
+// coordinated task un-abortable. --filter must let the operator resolve the
+// ready repository while leaving the blocked one completely untouched and
+// precisely reported, and the task must stay non-terminal until it too is
+// resolved.
+func TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact(t *testing.T) {
+	fixture := newGitFixture(t)
+	otherCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
+	gitTest(t, fixture.projectsRoot, "clone", fixture.remote, otherCanonical)
+	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "filtered-abort", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var storage CreateResult
+	for _, create := range created {
+		if create.Repository == "acme/storage" {
+			storage = create
+		}
+	}
+	if storage.WorktreeDir == "" {
+		t.Fatalf("created = %#v, missing acme/storage", created)
+	}
+	// Simulate the blocked repository: local changes abort cannot discard.
+	if err := os.WriteFile(filepath.Join(storage.WorktreeDir, "WIP.md"), []byte("dead wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Baseline: without --filter, the one blocked repository still refuses
+	// the whole task exactly as before this fix.
+	if _, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "filtered-abort", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true,
+	}); err == nil {
+		t.Fatal("unfiltered abort with one blocked repo unexpectedly succeeded")
+	}
+	if _, err := os.Stat(storage.WorktreeDir); err != nil {
+		t.Fatalf("refused unfiltered abort changed the blocked worktree: %v", err)
+	}
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "filtered-abort", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true, Filter: "acme/app",
+	})
+	if err != nil {
+		t.Fatalf("filtered abort failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("filtered abort results = %#v", results)
+	}
+	var app, blocked AbortResult
+	for _, result := range results {
+		switch result.Repository {
+		case "acme/app":
+			app = result
+		case "acme/storage":
+			blocked = result
+		}
+	}
+	if app.Excluded || !app.Applied || !app.WorktreeGone || !app.BranchDeleted {
+		t.Fatalf("filtered-in repository did not complete: %#v", app)
+	}
+	if !blocked.Excluded || blocked.Applied || blocked.WorktreeGone || blocked.BranchDeleted {
+		t.Fatalf("filtered-out repository was touched: %#v", blocked)
+	}
+	if !strings.Contains(blocked.Reason, "local changes") {
+		t.Fatalf("filtered-out repository did not report its precise block reason: %#v", blocked)
+	}
+	if _, err := os.Stat(storage.WorktreeDir); err != nil {
+		t.Fatalf("filtered-out worktree was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storage.WorktreeDir, "WIP.md")); err != nil {
+		t.Fatalf("filtered-out worktree lost its local change: %v", err)
+	}
+	if exists, branchErr := localBranchExists(context.Background(), otherCanonical, storage.Branch); branchErr != nil || !exists {
+		t.Fatalf("filtered-out branch exists=%t err=%v", exists, branchErr)
+	}
+
+	// The now-unblocked storage repository resolves on a later, unfiltered
+	// abort: the task was left genuinely non-terminal, not silently forgotten.
+	if err := os.Remove(filepath.Join(storage.WorktreeDir, "WIP.md")); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "filtered-abort", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatalf("follow-up abort of the remaining repository failed: %v", err)
+	}
+	if len(finished) != 1 || finished[0].Excluded || !finished[0].Applied || !finished[0].WorktreeGone || !finished[0].BranchDeleted {
+		t.Fatalf("follow-up abort = %#v", finished)
+	}
+}
+
 // TestAbortDiscardedResolvesSymlinkedProjectsRoot is the regression for a bug
 // where preflightAbortRepository and applyDiscardedAbort's
 // inspectLifecycleWorktree calls used the caller's raw options.ProjectsRoot

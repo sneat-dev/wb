@@ -10,11 +10,19 @@ import (
 )
 
 // remoteMachineRow is one machine's summary line, shared by `wb remote
-// machines` and the header of each `wb remote status` section.
+// machines` and the header of each `wb remote status` section. PublishedAt/
+// Age report the raw publish-data age (when the fleet was last scanned);
+// SeenAt/Seen report the effective heartbeat age (Snapshot.Heartbeat(): the
+// later of publish and claim activity) — the two diverge exactly when a
+// machine has claimed or refreshed a task more recently than it last
+// published. Stale is judged from the effective heartbeat, never from
+// PublishedAt alone.
 type remoteMachineRow struct {
 	Key         string    `json:"key"`
 	PublishedAt time.Time `json:"published_at"`
 	Age         string    `json:"age"`
+	SeenAt      time.Time `json:"seen_at"`
+	Seen        string    `json:"seen"`
 	Stale       bool      `json:"stale"`
 	WBVersion   string    `json:"wb_version,omitempty"`
 	Attention   int       `json:"attention"`
@@ -23,22 +31,30 @@ type remoteMachineRow struct {
 }
 
 // machineRows summarizes entries for rendering. now and stale together
-// decide staleness; an entry with a decode error carries no age/attention.
+// decide staleness (from the effective heartbeat); an entry with a decode
+// error carries no age/attention. A snapshot is only an error row when BOTH
+// PublishedAt and LastSeenAt are zero — a snapshot with claim activity but
+// no recorded publish still has a usable heartbeat.
 func machineRows(entries []remotestate.Entry, now time.Time, stale time.Duration) []remoteMachineRow {
 	rows := make([]remoteMachineRow, 0, len(entries))
 	for _, entry := range entries {
 		row := remoteMachineRow{Key: entry.Snapshot.Key(), Error: entry.Error}
 		if entry.Error == "" {
-			if entry.Snapshot.PublishedAt.IsZero() {
+			snap := entry.Snapshot
+			if snap.PublishedAt.IsZero() && snap.LastSeenAt.IsZero() {
 				row.Error = "snapshot has no published_at (truncated or empty file)"
 			} else {
-				age := now.Sub(entry.Snapshot.PublishedAt)
-				row.PublishedAt = entry.Snapshot.PublishedAt
-				row.Age = humanAge(age)
-				row.Stale = stale > 0 && age > stale
-				row.WBVersion = entry.Snapshot.WBVersion
-				row.Attention = len(entry.Snapshot.Repositories)
-				row.Worktrees = len(entry.Snapshot.Worktrees)
+				heartbeat := snap.Heartbeat()
+				row.PublishedAt = snap.PublishedAt
+				if !snap.PublishedAt.IsZero() {
+					row.Age = humanAge(now.Sub(snap.PublishedAt))
+				}
+				row.SeenAt = heartbeat
+				row.Seen = humanAge(now.Sub(heartbeat))
+				row.Stale = stale > 0 && now.Sub(heartbeat) > stale
+				row.WBVersion = snap.WBVersion
+				row.Attention = len(snap.Repositories)
+				row.Worktrees = len(snap.Worktrees)
 			}
 		}
 		rows = append(rows, row)
@@ -73,9 +89,12 @@ func humanAge(d time.Duration) string {
 // writeMachinesTable renders one fixed-width row per machine for `wb remote
 // machines`. PUBLISHED_AT carries the exact RFC3339 UTC instant; PUBLISHED
 // stays the coarse relative age next to it, so a row is readable at a
-// glance but still comparable exactly across machines.
+// glance but still comparable exactly across machines. SEEN is the
+// effective-heartbeat age (publish or claim activity, whichever is newer)
+// that STALE actually keys off; it equals PUBLISHED when there has been no
+// claim activity since the last publish.
 func writeMachinesTable(out io.Writer, rows []remoteMachineRow) {
-	_, _ = fmt.Fprintf(out, "%-32s %-20s %-10s %-6s %-10s %9s %9s\n", "MACHINE", "PUBLISHED_AT", "PUBLISHED", "STALE", "WB", "ATTENTION", "WORKTREES")
+	_, _ = fmt.Fprintf(out, "%-32s %-20s %-10s %-10s %-6s %-10s %9s %9s\n", "MACHINE", "PUBLISHED_AT", "PUBLISHED", "SEEN", "STALE", "WB", "ATTENTION", "WORKTREES")
 	for _, row := range rows {
 		if row.Error != "" {
 			_, _ = fmt.Fprintf(out, "%-32s error: %s\n", row.Key, row.Error)
@@ -85,8 +104,8 @@ func writeMachinesTable(out io.Writer, rows []remoteMachineRow) {
 		if row.Stale {
 			stale = "STALE"
 		}
-		_, _ = fmt.Fprintf(out, "%-32s %-20s %-10s %-6s %-10s %9d %9d\n",
-			row.Key, row.PublishedAt.UTC().Format(time.RFC3339), row.Age, stale, row.WBVersion, row.Attention, row.Worktrees)
+		_, _ = fmt.Fprintf(out, "%-32s %-20s %-10s %-10s %-6s %-10s %9d %9d\n",
+			row.Key, row.PublishedAt.UTC().Format(time.RFC3339), row.Age, row.Seen, stale, row.WBVersion, row.Attention, row.Worktrees)
 	}
 }
 
@@ -172,25 +191,28 @@ func findSnapshot(machines []remotestate.Entry, login, machine string) (remotest
 }
 
 // holderStale judges staleness in the command layer, never the provider: a
-// holder with no snapshot at all is stale, and one whose snapshot is older
-// than the --stale window is stale.
+// holder with no snapshot at all is stale, and one whose effective
+// heartbeat (Snapshot.Heartbeat(): the later of publish and claim activity)
+// is older than the --stale window is stale. Fresh claim/refresh activity
+// through the store counts as liveness even when the holder's last publish
+// is old.
 func holderStale(machines []remotestate.Entry, login, machine string, now time.Time, stale time.Duration) bool {
 	snap, ok := findSnapshot(machines, login, machine)
 	if !ok {
 		return true
 	}
-	return stale > 0 && now.Sub(snap.PublishedAt) > stale
+	return stale > 0 && now.Sub(snap.Heartbeat()) > stale
 }
 
-// heartbeatPhrase renders a holder's last-publish age for prose messages,
-// falling back to none (e.g. "never published" or "never") when the holder
-// has no snapshot in the store at all.
+// heartbeatPhrase renders a holder's effective-heartbeat age for prose
+// messages, falling back to none (e.g. "never published" or "never") when
+// the holder has no snapshot in the store at all.
 func heartbeatPhrase(machines []remotestate.Entry, login, machine string, now time.Time, none string) string {
 	snap, ok := findSnapshot(machines, login, machine)
 	if !ok {
 		return none
 	}
-	return publishedAgo(humanAge(now.Sub(snap.PublishedAt)))
+	return publishedAgo(humanAge(now.Sub(snap.Heartbeat())))
 }
 
 // holderDesc softens the holder key when it names the caller's own login on

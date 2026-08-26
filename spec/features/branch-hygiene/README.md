@@ -155,6 +155,13 @@ set, together with the evidence string that produced it:
   `git cherry <target-sha> <branch-sha>` emits zero `+` lines, or
   `<branch-sha>^{tree}` equals `<target-sha>^{tree}`. Report-only; see
   `#req:absorbed-is-report-only`.
+- `receipted` — not an ancestor of the target, but a landing receipt proves the
+  work is present in it. The receipt comes either from GitHub's own
+  commit-to-pull-request index (`--receipts`; see
+  `#req:receipted-requires-a-proved-landing`) or from an operator-attested
+  `--absorbed-by <pr-or-commit>` pointer (see
+  `#req:attested-absorption-requires-exact-entry-point`). Eligible for
+  deletion only under the flag that produced the receipt.
 - `unique` — `git cherry <target-sha> <branch-sha>` emits at least one `+`
   line. The evidence MUST include the count of unique patches.
 - `protected` — the branch is `<base>` itself, is the canonical clone's current
@@ -197,13 +204,106 @@ can retire them, never to retire them itself.
 
 [absorbed]: ../worktree-lifecycle/README.md
 
+#### REQ: receipted-requires-a-proved-landing
+
+`absorbed` stays report-only forever, and this requirement does not weaken it.
+`receipted` is a distinct, stronger class: a branch enters it only by the
+receipt-and-proof path that `#req:absorbed-is-report-only` already names as the
+correct way for a squash-merged branch to become deletable
+([worktree-lifecycle#req:absorbed-integration-containment-evidence][absorbed]).
+Patch-id or tree equality MUST NEVER promote a branch out of `absorbed`.
+
+To classify a branch `receipted`, WB MUST obtain a landing receipt from
+GitHub's own commit-to-pull-request index for the branch's immutable head
+commit, naming a merged pull request into the exact base whose merge commit is
+contained in the freshly fetched exact origin target. A branch name MUST NOT be
+treated as evidence, and the pull request's head MUST NOT be required to equal
+the branch head.
+
+Every receipt MUST additionally be proved locally, exactly as the worktree path
+proves it: a three-way merge of the branch into the landing commit MUST succeed
+and produce that commit's own tree, and the same merge into the fetched target
+MUST produce the target's tree. The proof MUST NOT mutate any ref, index, or
+working tree. Work that landed and was later reverted, or landed only in part,
+therefore fails the proof and MUST remain `absorbed`.
+
+This is what makes the class safe where patch-id is not: a revert leaves the
+patch-id twins intact but changes the target's tree, so the merge proof catches
+precisely the case `#req:absorbed-is-report-only` warns about.
+
+#### REQ: receipted-is-opt-in-and-fails-closed
+
+Receipt classification costs a GitHub query per candidate, so WB MUST NOT
+perform it unless `--receipts` is passed. Without the flag a branch that would
+qualify MUST be reported with the disposition its patch evidence produces —
+`absorbed` or `unique` — never silently eligible. `unique` branches MUST be
+receipt-checked too: a multi-commit squash landing leaves no upstream twin for
+any individual patch-id, so a fully landed branch can present as `unique`.
+
+Any failure to obtain or verify a receipt — no merged pull request into the
+exact base, an unreachable or unauthenticated GitHub, a merge commit absent
+from the target, a conflicted or residual three-way merge — MUST leave the
+branch in its patch-evidence disposition with the failing check named in its
+evidence. A branch MUST NEVER become eligible because a check could not be
+run.
+
+`protected`, `in-use`, and `unreadable` MUST still be evaluated first, so
+`#req:delegate-wb-owned-branches` continues to hold: a WB-owned branch is never
+deleted here regardless of any receipt.
+
+Immediately before deleting a `receipted` branch, WB MUST re-verify the receipt
+rather than ancestry, which a `receipted` branch fails by construction: after
+the refetch and the compare-and-delete SHA check, the recorded landing commit
+MUST still be contained in the freshly fetched target and the three-way proof
+MUST still hold against it. The plan MUST record the landing commit so this
+recheck cannot silently degrade to a weaker test. Work reverted between plan
+and apply therefore refuses its own deletion, exactly as a moved branch does.
+
+#### REQ: attested-absorption-requires-exact-entry-point
+
+`wb branch cleanup --absorbed-by <pr-or-commit>` gives a branch with no
+worktree the same audited path
+[worktree-lifecycle#req:absorbed-integration-containment-evidence][absorbed]
+already gives a WB-owned one, for exactly the case that path cannot reach: the
+worktree and local branch are already gone, only a remote (or bare local)
+branch survives, and GitHub's commit-to-pull-request index has nothing to
+associate with it — a manual squash or cherry-pick landing, not a GitHub
+merge.
+
+The flag MUST be verified with the identical proof machinery
+`wb worktree cleanup --absorbed-by` uses, not a second implementation of it: a
+pull-request number MUST resolve to a merged pull request into the exact base
+whose merge commit is a real commit; any other pointer MUST resolve to an
+exact commit already present in the freshly fetched canonical repository. The
+resolved landing commit MUST be contained in the freshly fetched exact origin
+target. The branch's content MUST be proved contained in that landing commit,
+and separately in the target, each via a three-way merge that mutates no ref,
+index, or working tree and adds nothing to either. The landing commit MUST
+additionally be exactly where the work entered the target: its first parent
+MUST NOT already contain the branch's content, or the flag would degrade into
+a bare content assertion an operator could satisfy by naming the target tip.
+
+A branch that passes every check MUST be classified `receipted`, carrying the
+resolved landing commit, and MUST NEVER be classified `absorbed` — this does
+not weaken `#req:absorbed-is-report-only`, exactly as `--receipts` does not: a
+branch that proves out this way never was `absorbed` classified in the first
+place. A branch that fails any check keeps whatever disposition its patch
+evidence (and, when requested, `--receipts`) produces, with the failing
+`--absorbed-by` check named alongside it; a failing pointer MUST refuse only
+that candidate and MUST NOT abort a fleet-wide sweep, exactly as an
+unresolvable `--absorbed-by` pointer never aborts `wb worktree cleanup`.
+`--absorbed-by` is independent of `--receipts`: it costs a GitHub query only
+when it names a pull request number, and it runs whenever it is passed,
+regardless of whether `--receipts` is also set.
+
 #### REQ: absorbed-names-its-remedy
 
 Every `absorbed` row MUST name the concrete next step in its reason text: for a
 branch that belongs to a WB task, `wb worktree cleanup <task> --absorbed-by
-<pr-or-commit>`; otherwise an explicit human decision. A row that merely says
-"not eligible" is insufficient, because it reproduces the discoverability
-failure this feature exists to remove.
+<pr-or-commit>`; for one with no worktree left, `wb branch cleanup
+--absorbed-by <pr-or-commit>`; otherwise an explicit human decision. A row
+that merely says "not eligible" is insufficient, because it reproduces the
+discoverability failure this feature exists to remove.
 
 #### REQ: delegate-wb-owned-branches
 
@@ -388,10 +488,37 @@ refused with its moved SHA reported and the remaining deletions still succeed.
 Given a branch whose commits were cherry-picked into `main` and then reverted
 in `main`, so that `git cherry` reports zero `+` lines while the target no
 longer contains the work, when `wb branch cleanup --apply` runs with every
-flag combination the command accepts, then the branch is classified `absorbed`,
-is never deleted, and its reason names the receipt-based
-`wb worktree cleanup --absorbed-by` remedy or an explicit human decision. A
-test MUST assert that no flag combination deletes an `absorbed` branch.
+flag combination the command accepts — including an `--absorbed-by` pointer
+naming a real but unrelated commit elsewhere in the same history — then the
+branch is classified `absorbed`, is never deleted, and its reason names the
+receipt-based `wb worktree cleanup --absorbed-by` remedy, the
+`wb branch cleanup --absorbed-by` remedy, or an explicit human decision. A
+test MUST assert that no flag combination, including an unrelated
+`--absorbed-by` pointer, deletes an `absorbed` branch.
+
+### AC: attested-absorption-retires-a-branch-with-no-worktree
+
+**Requirements:** branch-hygiene#req:attested-absorption-requires-exact-entry-point, branch-hygiene#req:absorbed-names-its-remedy, branch-hygiene#req:recheck-before-mutation, branch-hygiene#req:durable-audit
+
+Given a remote branch whose commits were squash-landed onto `main` as one
+commit that GitHub associates with no pull request, and whose worktree and
+local branch are already gone, when `wb branch cleanup --scope remote
+--absorbed-by <landing-commit>` runs without `--apply`, then the branch is
+classified `receipted`, carries the resolved landing commit, and is reported
+eligible; dry run and apply MUST evaluate the same evidence. When `--apply`
+then runs, the remote branch is deleted with force-with-lease and the receipt
+is recorded in the audit report.
+
+Given the same branch but a landing pointer that omits one of its commits
+(an unknown residual), when `--absorbed-by` names that pointer, then the
+branch is refused with the missing residual named, its disposition is
+unchanged, and nothing is deleted. Given a landing pointer that no longer
+survives in the freshly fetched exact target (the target was rewound past
+it), when `--apply` runs, then the branch is refused with the target drift
+named and nothing is deleted. Given a pointer that names a commit strictly
+downstream of the real landing point, when `--apply` runs, then the branch is
+refused because the named commit is not where the work entered the target,
+and nothing is deleted.
 
 ### AC: remote-only-mode-fails-closed
 

@@ -58,7 +58,7 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 
 	worktree := filepath.Join(root, "worktree")
 	if err := os.MkdirAll(filepath.Join(worktree, ".wb", "handoffs"), 0o755); err != nil {
@@ -245,7 +245,7 @@ func TestRunPrivateLauncherPublishesReadyThenExecsFixedArgvAfterRelease(t *testi
 	if err := os.Chdir(worktree); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chdir(previous)
+	defer func() { _ = os.Chdir(previous) }()
 	execCalled, sleepCalled := false, false
 	deps := privateLauncherDependencies{pid: os.Getpid, register: session.Register,
 		verifyPinned: func(context.Context, launchPlan) error { return nil },
@@ -343,7 +343,7 @@ func TestRunPrivateLauncherRecordsExecFailureBeforeReleasingFence(t *testing.T) 
 	if err := os.Chdir(worktree); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chdir(previous)
+	defer func() { _ = os.Chdir(previous) }()
 	injected := errors.New("injected Exec failure")
 	deps := privateLauncherDependencies{
 		pid: os.Getpid, register: session.Register, verifyPinned: func(context.Context, launchPlan) error { return nil },
@@ -368,12 +368,12 @@ func TestRunPrivateLauncherRecordsExecFailureBeforeReleasingFence(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	latest, err := latestAttempt(state)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer latest.Close()
+	defer func() { _ = latest.Close() }()
 	failure, found, err := latest.loadExecFailure(os.Getpid())
 	if err != nil || !found || !strings.Contains(failure.Diagnostic, injected.Error()) {
 		t.Fatalf("failure = %#v found=%t error=%v", failure, found, err)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -38,6 +39,7 @@ type Options struct {
 	Push              bool
 	PR                bool
 	Merge             bool
+	Progress          progress.Reporter
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.
@@ -85,6 +87,16 @@ type PullRequestWaitOptions struct {
 	Head              string
 	Slice             time.Duration
 	CheckPollInterval time.Duration
+	// Progress receives completed GitHub observations. It is diagnostic only;
+	// callers must use the returned result as the authoritative receipt.
+	Progress func(PullRequestWaitProgress)
+}
+
+// PullRequestWaitProgress is one completed observation inside a bounded wait.
+type PullRequestWaitProgress struct {
+	Observation int
+	Result      PullRequestWaitResult
+	NextPoll    time.Duration
 }
 
 // PullRequestWaitStatus is intentionally small so callers can branch on a

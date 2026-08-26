@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 // TestHideCleanRepositoriesKeepsTheWorklist pins the default filter to the
@@ -84,6 +86,24 @@ func TestStatusMarkdownUnfilteredHasNoNote(t *testing.T) {
 	}}, false, "# WB local repository status\n\n")
 	if strings.Contains(markdown, "--all") {
 		t.Errorf("an unfiltered report advertises --all:\n%s", markdown)
+	}
+}
+
+func TestStatusMarkdownAttributesUnpushedCommits(t *testing.T) {
+	t.Parallel()
+	markdown := statusMarkdown(statusIndex{Repositories: []repositoryStatusInfo{{
+		Repository: "acme/app",
+		Status:     "attention",
+		Summary:    "1 unpushed commit",
+		Unpushed:   []string{"abc1234 local work"},
+		UnpushedBranches: []gitops.UnpushedBranch{{
+			Branch: "feature", Worktree: "/projects/.wb/worktrees/task/acme/app", Commits: []string{"abc1234 local work"},
+		}},
+	}}}, true, "# Status\n\n")
+	for _, want := range []string{"acme/app — Unpushed", "Branch `feature`", "worktree `/projects/.wb/worktrees/task/acme/app`", "`abc1234 local work`"} {
+		if !strings.Contains(markdown, want) {
+			t.Errorf("attributed markdown missing %q:\n%s", want, markdown)
+		}
 	}
 }
 

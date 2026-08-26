@@ -396,17 +396,6 @@ func repairCurrentLocalProjection(worktree string) (LocalWorkLogProjection, erro
 	return projection, nil
 }
 
-func readLocalEventsAt(directory *os.File) ([]LocalWorkLogEvent, error) {
-	content, err := readBytesAt(directory, localWorkLogEventsName)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return parseLocalEvents(content)
-}
-
 func readLocalEventsForAppend(directory *os.File) ([]LocalWorkLogEvent, bool, error) {
 	content, err := readBytesAt(directory, localWorkLogEventsName)
 	if errors.Is(err, os.ErrNotExist) {

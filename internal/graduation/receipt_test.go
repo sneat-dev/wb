@@ -69,6 +69,20 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 			change: func(inputs *Inputs, now time.Time) time.Time { inputs.CIWait.PullRequest = "42"; return now },
 			want:   "exact observed head",
 		},
+		"CI target head differs": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.CIWait.ObservedTargetHead = strings.Repeat("b", 40)
+				return now
+			},
+			want: "exact observed head",
+		},
+		"CI did not bind candidate to target": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.CIWait.CandidateContainsTarget = false
+				return now
+			},
+			want: "exact observed head",
+		},
 		"failed CI bucket contradicts pass": {
 			change: func(inputs *Inputs, now time.Time) time.Time { inputs.CIWait.Checks[0].Bucket = "fail"; return now },
 			want:   "failed check",
@@ -82,6 +96,13 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 			},
 			want: "fixed-shape",
 		},
+		"remote URL uses helper scheme": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.RemoteTarget.RemoteURL = "file://github.com/sneat-dev/wb"
+				return now
+			},
+			want: "canonical GitHub HTTPS or SSH",
+		},
 		"deployment payload does not carry revision": {
 			change: func(inputs *Inputs, now time.Time) time.Time {
 				inputs.DeployedRevision.RevisionJSONPointer = "/deployment/missing"
@@ -94,21 +115,29 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 				inputs.DeployedRevision.Repository = "sneat-dev/other"
 				return now
 			},
-			want: "structured deployment producer payload",
+			want: "closed GitHub Actions deployment payload",
 		},
 		"deployment digest conflicts": {
 			change: func(inputs *Inputs, now time.Time) time.Time {
 				inputs.DeployedRevision.PayloadSHA256 = Digest([]byte("different"))
 				return now
 			},
-			want: "structured deployment producer payload",
+			want: "closed GitHub Actions deployment payload",
 		},
 		"deployment URL contains mutable query": {
 			change: func(inputs *Inputs, now time.Time) time.Time {
 				inputs.DeployedRevision.RunURL += "?token=secret"
 				return now
 			},
-			want: "credential-free HTTPS",
+			want: "canonical immutable GitHub Actions run URL",
+		},
+		"deployment payload run ID differs": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.DeployedRevision.PayloadJSON = strings.Replace(inputs.DeployedRevision.PayloadJSON, `"run_id":42`, `"run_id":43`, 1)
+				inputs.DeployedRevision.PayloadSHA256 = Digest([]byte(inputs.DeployedRevision.PayloadJSON))
+				return now
+			},
+			want: "run ID pointer",
 		},
 		"deployment pointer has invalid escape": {
 			change: func(inputs *Inputs, now time.Time) time.Time {
@@ -120,6 +149,20 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 		"canonical target checkout deletion claimed": {
 			change: func(inputs *Inputs, now time.Time) time.Time {
 				inputs.TerminalCleanup.Results[0].WorktreeDir = inputs.TerminalCleanup.Results[0].CanonicalDir
+				return now
+			},
+			want: "terminal WB cleanup",
+		},
+		"cleanup does not report all merged": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.TerminalCleanup.AllMerged = false
+				return now
+			},
+			want: "applied wb worktree cleanup",
+		},
+		"cleanup deletes final target branch": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.TerminalCleanup.Results[0].Branch = "main"
 				return now
 			},
 			want: "terminal WB cleanup",
@@ -186,7 +229,7 @@ func validInputs() (Inputs, time.Time) {
 	remoteAt := ciAt.Add(time.Minute)
 	deployedAt := remoteAt.Add(time.Minute)
 	cleanupAt := deployedAt.Add(time.Minute)
-	payload := `{"deployment":{"revision":"` + revision + `"}}`
+	payload := `{"deployment":{"revision":"` + revision + `","run_id":42}}`
 	localCheck := VerificationIndex{SchemaVersion: SchemaVersion, GeneratedAt: localAt, Profile: "ci", Checks: []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild}, Repositories: []quality.VerificationReport{{
 		Repository: repository, Path: "/projects/sneat-dev/wb", Revision: revision, WorkspaceClean: true, Status: quality.StatusPassed,
 		Results: []quality.VerificationEntry{
@@ -196,14 +239,14 @@ func validInputs() (Inputs, time.Time) {
 		},
 	}}}
 	ciWait := CIWaitReceipt{SchemaVersion: SchemaVersion, ObservedAt: ciAt, PullRequestWaitResult: orchestrate.PullRequestWaitResult{
-		Status: orchestrate.PullRequestWaitPassed, Repository: repository, Target: "main", Head: revision, ObservedHead: revision,
+		Status: orchestrate.PullRequestWaitPassed, Repository: repository, Target: "main", Head: revision, ObservedHead: revision, ObservedTargetHead: revision, CandidateContainsTarget: true,
 		Checks:                  []orchestrate.RemoteCheck{{Name: "test", Bucket: "pass", Link: "https://github.test/runs/42"}},
 		RequiredChecksAuthority: "github-rulesets", StableObservations: 2,
 	}}
 	remoteOutput := revision + "\trefs/heads/main\n"
 	remoteTarget := RemoteTargetEvidence{SchemaVersion: SchemaVersion, Producer: RemoteTargetProducer, Repository: repository, Remote: "origin", RemoteURL: "git@github.com:sneat-dev/wb.git", TargetRef: "refs/heads/main", Revision: revision, ObservedAt: remoteAt, ObservedOutput: remoteOutput, ObservedOutputSHA256: Digest([]byte(remoteOutput))}
-	deployed := DeployedRevisionEvidence{SchemaVersion: SchemaVersion, Producer: DeploymentProducer, Provider: "github-actions", Repository: repository, RunURL: "https://github.com/sneat-dev/wb/actions/runs/42", Revision: revision, RevisionJSONPointer: "/deployment/revision", ObservedAt: deployedAt, PayloadJSON: payload, PayloadSHA256: Digest([]byte(payload))}
-	cleanup := TerminalCleanupEvidence{GeneratedAt: cleanupAt, Phase: "applied", Task: "graduation", Apply: true, DeleteRemote: true, OlderThan: "24h0m0s", Results: []worktrees.CleanupResult{{
+	deployed := DeployedRevisionEvidence{SchemaVersion: SchemaVersion, Producer: DeploymentProducer, Provider: "github-actions", Repository: repository, RunURL: "https://github.com/sneat-dev/wb/actions/runs/42", ProviderRunID: "42", RunIDJSONPointer: "/deployment/run_id", Revision: revision, RevisionJSONPointer: "/deployment/revision", ObservedAt: deployedAt, PayloadJSON: payload, PayloadSHA256: Digest([]byte(payload))}
+	cleanup := TerminalCleanupEvidence{GeneratedAt: cleanupAt, Phase: "applied", Task: "graduation", AllMerged: true, Apply: true, DeleteRemote: true, OlderThan: "24h0m0s", Results: []worktrees.CleanupResult{{
 		ListResult: worktrees.ListResult{Task: "graduation", Repository: repository, CanonicalDir: "/projects/sneat-dev/wb", WorktreeDir: "/worktrees/graduation/sneat-dev/wb", Branch: "feature/graduation", Base: "main", HeadSHA: revision, RemoteHeadSHA: revision, RemoteTargetSHA: revision, IntegratedAtOrigin: true, Clean: true},
 		Eligible:   true, Applied: true, RemoteDeleted: true, WorktreeGone: true, BranchDeleted: true,
 	}}}

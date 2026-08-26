@@ -84,16 +84,19 @@ The default stdout format MUST be Markdown. Both commands MUST also support YAML
 producer documents into one graduation receipt: a one-repository
 `wb check --profile ci --format json` report, a direct final-target
 `wb ci wait --json` receipt, an exact `wb verify receipt remote-target`
-observation, an external deployed-revision receipt, and the real
+observation, a closed GitHub Actions deployed-revision receipt, and the real
 `wb worktree cleanup --apply --remote` report. Every component MUST resolve to
 the same repository and full Git revision. The local report MUST bind its
 passed lint, test, and build mechanisms to an unchanged clean checkout at that
-revision; PR-only CI is not final-target CI; and the deployment provider's
-structured payload MUST expose the revision through a declared JSON pointer
-whose bytes match its digest and credential-free immutable run URL.
+revision; PR-only CI is not final-target CI; and the GitHub Actions deployment
+payload MUST expose both revision and numeric run ID through declared JSON
+pointers whose exact bytes match its digest. The run ID MUST also match the
+canonical immutable `https://github.com/<owner>/<repo>/actions/runs/<id>` URL.
 
 Terminal cleanup MUST attest that every campaign worktree and local source
 branch is gone and each remote source branch was deleted or was already absent.
+The cleanup report MUST say every selected candidate was merged and MUST never
+delete the final CI target branch.
 It MUST retain the canonical target checkout and bind the selected repository's
 cleanup to the same remote-target revision. The command MUST reject a missing,
 failed, malformed, mismatched, future/non-monotonic, prose, or hand-authored

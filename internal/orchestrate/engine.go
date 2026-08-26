@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -41,15 +42,28 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 		defer func() { _ = lock.Release() }()
 	}
 	errorsByRepository := make([]error, len(repositories))
+	var completedMu sync.Mutex
+	completed := 0
 	runParallel(len(repositories), options.Parallel, func(index int) {
+		progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "repository", Repository: repositories[index].Slug, State: progress.Started, Total: len(repositories)})
 		errorsByRepository[index] = processRepository(ctx, repositories[index], handler, options, &results[index])
 		sort.Strings(results[index].ChangedFiles)
+		completedMu.Lock()
+		completed++
+		state := progress.Completed
+		if errorsByRepository[index] != nil {
+			state = progress.Failed
+		}
+		completedSnapshot := completed
+		completedMu.Unlock()
+		progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "repository", Repository: repositories[index].Slug, State: state, Completed: completedSnapshot, Total: len(repositories)})
 	})
 	if options.Merge {
 		runParallel(len(repositories), options.Parallel, func(index int) {
 			if errorsByRepository[index] != nil || results[index].PR == "" {
 				return
 			}
+			progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "wait_and_merge", Repository: repositories[index].Slug, State: progress.Waiting})
 			if err := waitAndMerge(ctx, options, &results[index]); err != nil {
 				results[index].Status = "failed"
 				results[index].Reason = err.Error()
@@ -120,6 +134,9 @@ func Normalize(options Options) (Options, error) {
 }
 
 func processRepository[T any](ctx context.Context, repository Repository, handler Handler[T], options Options, result *Result[T]) error {
+	phase := func(name string) {
+		progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: name, Repository: repository.Slug, State: progress.Running})
+	}
 	if repository.Archived {
 		result.Status = "skipped"
 		result.Reason = "repository is archived"
@@ -134,10 +151,12 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		canonical = filepath.Join(options.GitHubDir, owner, name)
 	}
 	result.CanonicalDir = canonical
+	phase("sync")
 	if err := EnsureCanonical(ctx, repository, canonical, options); err != nil {
 		return failResult(result, err)
 	}
 	base := "origin/" + options.Ref
+	phase("inspect")
 	assessment, err := handler.Inspect(ctx, canonical, base, repository)
 	result.Metadata = assessment.Metadata
 	if err != nil {
@@ -165,9 +184,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	worktree := filepath.Join(home, "worktrees", options.Operation, owner, name)
 	result.WorktreeDir = worktree
 	result.Branch = options.Branch
+	phase("prepare_worktree")
 	if err := prepareWorktree(ctx, canonical, worktree, options.Branch, base, options); err != nil {
 		return failResult(result, err)
 	}
+	phase("apply")
 	metadata, err := handler.Apply(ctx, worktree, repository)
 	result.Metadata = metadata
 	if err != nil {
@@ -192,6 +213,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		return nil
 	}
 	if options.Verify {
+		phase("verify")
 		verification := quality.VerifyWithOptions(ctx, repository.Slug, worktree, options.Checks, quality.RunOptions{Timeout: options.Timeout, Retry: options.Retry})
 		result.Verifications = verification.Results
 		if verification.Status == quality.StatusFailed {
@@ -204,6 +226,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		return nil
 	}
 	if len(result.ChangedFiles) > 0 {
+		phase("commit")
 		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "add", "-A"); err != nil {
 			return failResult(result, err)
 		}
@@ -219,6 +242,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	result.Status = "committed"
 	result.Reason = "verified operation committed locally"
 	if options.Push {
+		phase("push")
 		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "-u", "origin", options.Branch); err != nil {
 			return failResult(result, err)
 		}
@@ -227,6 +251,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		result.Reason = "verified commit pushed to the operation branch"
 	}
 	if options.PR {
+		phase("open_pr")
 		title, body := handler.PullRequest(repository)
 		prURL, err := openPullRequest(ctx, worktree, options.Branch, options.Ref, title, body, options)
 		if err != nil {

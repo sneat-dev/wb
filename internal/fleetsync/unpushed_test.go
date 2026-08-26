@@ -82,8 +82,20 @@ func TestSyncStillReportsPulledWhenNothingIsOwed(t *testing.T) {
 	git(t, local, "push", "-q", "origin", "main")
 
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
-	if res := Sync(repo, "", false); res.Status != Pulled {
-		t.Fatalf("Status = %v (err=%v), want Pulled", res.Status, res.Err)
+	if res := Sync(repo, "", false); res.Status != Pulled || !res.PullAttempted || !res.PullSucceeded || res.Updated || res.PullSummary() != "already current" {
+		t.Fatalf("result = %+v, want successful pull without a remote update", res)
+	}
+}
+
+func TestSyncDryRunPlansPullWithoutClaimingItRan(t *testing.T) {
+	origin := t.TempDir()
+	git(t, origin, "init", "-q", "--bare", "-b", "main")
+	local := t.TempDir()
+	cloneInto(t, origin, local)
+	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
+	res := Sync(repo, "", true)
+	if res.Status != Pulled || !res.PullPlanned || res.PullAttempted || res.PullSucceeded || res.Updated || res.PullSummary() != "planned (dry-run)" {
+		t.Fatalf("dry-run result = %+v, want a planned-only pull", res)
 	}
 }
 

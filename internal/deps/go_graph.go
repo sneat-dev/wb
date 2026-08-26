@@ -76,14 +76,14 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 			return
 		}
 		progressMu.Lock()
-		defer progressMu.Unlock()
 		completed++
-		progress := graphDiscoveryProgress{
+		item := graphDiscoveryProgress{
 			RepositoriesTotal:     len(repositories),
 			RepositoriesCompleted: completed,
 			LastRepository:        repository,
 		}
-		onProgress(progress)
+		progressMu.Unlock()
+		onProgress(item)
 	}
 	for range workers {
 		group.Add(1)

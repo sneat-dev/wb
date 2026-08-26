@@ -90,11 +90,20 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			report.Error = err.Error()
 			return report
 		}
+		command := "go test -coverprofile … ./..."
+		reportQualityProgress(options, Progress{
+			Language: "go", Module: relativePath(path, module), Check: CheckTest,
+			Command: command, State: ProgressStarted,
+		})
 		output, attempts, err := runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
 		if err != nil {
 			_ = os.Remove(profilePath)
 			report.Status = StatusFailed
-			report.Error = commandError("go test -coverprofile … ./...", output, err)
+			report.Error = commandError(command, output, err)
+			reportQualityProgress(options, Progress{
+				Language: "go", Module: relativePath(path, module), Check: CheckTest,
+				Command: command, State: ProgressCompleted, Status: StatusFailed, Attempts: attempts,
+			})
 			return report
 		}
 		statements, covered, err := profileTotals(profilePath)
@@ -114,6 +123,10 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 		report.Modules = append(report.Modules, moduleReport)
 		report.Statements += statements
 		report.Covered += covered
+		reportQualityProgress(options, Progress{
+			Language: "go", Module: relativePath(path, module), Check: CheckTest,
+			Command: command, State: ProgressCompleted, Status: StatusPassed, Attempts: attempts,
+		})
 	}
 	report.Percentage = percent(report.Covered, report.Statements)
 	return report

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,7 +116,7 @@ func newVerifyReceiptCmdWithDeps(deps graduationCommandDeps) *cobra.Command {
 	command.Flags().StringVar(&localCheckPath, "local-check", "", "JSON from wb check --profile ci --format json for one clean exact revision")
 	command.Flags().StringVar(&ciWaitPath, "ci-wait", "", "JSON from wb ci wait --json for the exact target revision")
 	command.Flags().StringVar(&remoteTargetPath, "remote-target", "", "JSON from wb verify receipt remote-target")
-	command.Flags().StringVar(&deployedRevisionPath, "deployed-revision", "", "closed external deployment-provider JSON receipt")
+	command.Flags().StringVar(&deployedRevisionPath, "deployed-revision", "", "closed GitHub Actions deployment-run JSON receipt")
 	command.Flags().StringVar(&terminalCleanupPath, "terminal-cleanup", "", "cleanup.json from wb worktree cleanup --apply --remote")
 	command.Flags().StringVar(&outputPath, "output", "", "create this new JSON receipt file as well as writing stdout")
 	command.AddCommand(newVerifyReceiptRemoteTargetCmd(deps))
@@ -153,7 +152,7 @@ func newVerifyReceiptRemoteTargetCmd(deps graduationCommandDeps) *cobra.Command 
 				return fmt.Errorf("resolve remote %s: %w", remote, err)
 			}
 			remoteURL := strings.TrimSpace(string(remoteURLRaw))
-			if err := validateGraduationRemoteURL(repository, remoteURL); err != nil {
+			if err := graduation.ValidateGitHubRepositoryURL(repository, remoteURL); err != nil {
 				return err
 			}
 			targetRef := "refs/heads/" + target
@@ -251,39 +250,4 @@ func writeGraduationReceipt(path string, raw []byte) error {
 func graduationRepositoryName(value string) bool {
 	owner, name, found := strings.Cut(value, "/")
 	return found && owner != "" && name != "" && !strings.Contains(name, "/") && !strings.ContainsAny(value, "\r\n ")
-}
-
-func validateGraduationRemoteURL(repository, remoteURL string) error {
-	if remoteURL == "" || strings.ContainsAny(remoteURL, "\r\n") {
-		return fmt.Errorf("remote URL is empty or multiline")
-	}
-	if strings.Contains(remoteURL, "://") {
-		parsed, err := url.Parse(remoteURL)
-		if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") {
-			return fmt.Errorf("remote URL must identify github.com")
-		}
-		if parsed.User != nil {
-			if _, hasPassword := parsed.User.Password(); hasPassword || parsed.Scheme == "http" || parsed.Scheme == "https" {
-				return fmt.Errorf("remote URL must not embed credentials")
-			}
-		}
-	} else {
-		colon := strings.IndexByte(remoteURL, ':')
-		if colon < 0 || !strings.HasSuffix(strings.ToLower(remoteURL[:colon]), "@github.com") {
-			return fmt.Errorf("remote URL must identify github.com")
-		}
-	}
-	normalized := strings.TrimSuffix(strings.TrimSuffix(remoteURL, "/"), ".git")
-	if at := strings.LastIndex(normalized, ":"); at >= 0 && !strings.Contains(normalized[at+1:], "/../") {
-		prefix := normalized[:at]
-		if strings.Contains(prefix, "@") && !strings.Contains(normalized[at+1:], "//") {
-			normalized = normalized[at+1:]
-		}
-	}
-	normalized = strings.Trim(normalized, "/")
-	parts := strings.Split(normalized, "/")
-	if len(parts) < 2 || parts[len(parts)-2]+"/"+parts[len(parts)-1] != repository {
-		return fmt.Errorf("remote URL does not identify expected repository %s", repository)
-	}
-	return nil
 }

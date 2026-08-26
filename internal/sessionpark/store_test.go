@@ -157,7 +157,7 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	replayed, err := store.PrepareRemoteUnderLock(lock, "target", "", firstAt.Add(2*time.Hour))
 	if err != nil || !replayed.Replay || replayed.Digest != first.Digest {
 		t.Fatalf("replayed admission = %#v, err=%v", replayed, err)
@@ -263,7 +263,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer lock.Close()
+			defer func() { _ = lock.Close() }()
 			if _, err := store.ContinuationPathUnderLock(lock); err == nil {
 				t.Fatal("unsafe continuation artifact accepted")
 			}
@@ -352,7 +352,7 @@ func TestSourceStoreRefusesSecondTargetAfterDurableResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if _, err := store.PrepareRemoteUnderLock(lock, "target-b", "", time.Unix(300, 0)); err == nil {
 		t.Fatal("resumed source admitted a competing target")
 	}

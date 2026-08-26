@@ -132,6 +132,7 @@ func normalizeOptions(options Options, operation string) (Options, orchestrate.O
 		Parallel: options.Parallel, DryRun: options.DryRun, Resume: options.Resume,
 		Verify: options.Verify, Checks: options.Checks, Timeout: options.Timeout, Retry: options.Retry,
 		Commit: options.Commit, Push: options.Push, PR: options.PR, Merge: options.Merge,
+		Progress: options.Progress,
 	})
 	if err != nil {
 		return Options{}, orchestrate.Options{}, err

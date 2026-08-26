@@ -98,6 +98,85 @@ func TestPullRebaseReplaysLocalCommitOnTopOfRemote(t *testing.T) {
 	}
 }
 
+// TestPullRebaseIgnoresAmbiguousMergeConfig proves PullRebase (wb#175) never
+// hits git's "Cannot rebase onto multiple branches" refusal even when the
+// clone's current branch is configured with more than one
+// branch.<name>.merge value — the misconfiguration that made a bare
+// `git pull --rebase` ambiguous: it resolves what to rebase onto through
+// FETCH_HEAD's "for merge" bookkeeping, one line per configured merge ref,
+// and dies once there is more than one (reproduced directly against this
+// exact fixture while diagnosing wb#175: a bare `git pull --rebase --quiet`
+// here fails with "fatal: Cannot rebase onto multiple branches."). PullRebase
+// sidesteps that bookkeeping entirely by fetching and rebasing onto a single
+// explicitly named origin/<branch>, so the ambiguous config can no longer
+// matter.
+func TestPullRebaseIgnoresAmbiguousMergeConfig(t *testing.T) {
+	origin, clone := seededOriginAndClone(t)
+	// A second branch, from the same commit, for the ambiguous merge config
+	// below to point at.
+	gitIn(t, clone, "push", "-q", "origin", "HEAD:other")
+	// The misconfiguration: main is now set up to "merge" from two branches.
+	gitIn(t, clone, "config", "--add", "branch.main.merge", "refs/heads/other")
+
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	gitIn(t, other, "commit", "-q", "--allow-empty", "-m", "remote work")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	if err := PullRebase(clone); err != nil {
+		t.Fatalf("PullRebase with ambiguous branch.main.merge config: %v", err)
+	}
+	if log := gitIn(t, clone, "log", "--format=%s", "-1"); log != "remote work" {
+		t.Fatalf("HEAD after PullRebase = %q, want the remote commit", log)
+	}
+}
+
+// TestPullRebaseErrorNamesCloneAndRef proves a PullRebase failure names the
+// clone path and the exact ref it tried to rebase onto (wb#175's second
+// ask) — unlike the bare `git pull --rebase --quiet: exit status 128: fatal:
+// ...` it replaced, which named neither, leaving an operator nothing to act
+// on.
+func TestPullRebaseErrorNamesCloneAndRef(t *testing.T) {
+	origin, clone := seededOriginAndClone(t)
+
+	// Seed a shared file both sides will edit, so the rebase hits a real
+	// content conflict rather than an add/add one.
+	if err := os.WriteFile(filepath.Join(clone, "shared.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "add", "shared.txt")
+	gitIn(t, clone, "commit", "-q", "-m", "seed shared.txt")
+	gitIn(t, clone, "push", "-q", "origin", "main")
+
+	other := filepath.Join(t.TempDir(), "other")
+	gitIn(t, t.TempDir(), "clone", "-q", origin, other)
+	if err := os.WriteFile(filepath.Join(other, "shared.txt"), []byte("remote\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, other, "commit", "-q", "-am", "remote change")
+	gitIn(t, other, "push", "-q", "origin", "main")
+
+	if err := os.WriteFile(filepath.Join(clone, "shared.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, clone, "commit", "-q", "-am", "local change")
+
+	err := PullRebase(clone)
+	if err == nil {
+		t.Fatal("PullRebase should fail on conflict")
+	}
+	if !strings.Contains(err.Error(), clone) {
+		t.Fatalf("error = %q, want it to name the clone path %q", err.Error(), clone)
+	}
+	if !strings.Contains(err.Error(), "origin/main") {
+		t.Fatalf("error = %q, want it to name the failing ref origin/main", err.Error())
+	}
+
+	if err := RebaseAbort(clone); err != nil {
+		t.Fatalf("RebaseAbort: %v", err)
+	}
+}
+
 // TestRebaseAbortClearsConflictAndKeepsLocalCommit creates a genuine
 // rebase conflict (two clones editing the same line of the same file, one
 // pushes, the other commits locally and then PullRebase fails) and proves

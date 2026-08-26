@@ -224,7 +224,7 @@ func TargetWorkLogClaimID(digest sessionmove.Digest, successorID, memberID, repo
 	}
 	hash := sha256.New()
 	for _, part := range []string{"wb.session.park-target-claim.v1", string(digest), successorID, memberID, repository, sourceClaimID} {
-		_, _ = hash.Write([]byte(fmt.Sprintf("%08x", len(part))))
+		_, _ = fmt.Fprintf(hash, "%08x", len(part))
 		_, _ = hash.Write([]byte(part))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil

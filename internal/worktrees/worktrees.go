@@ -393,7 +393,12 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		return nil, err
 	}
 	workLogPrepared := false
-	prepareWorkLog := func() error {
+	// prepareWorkLogOptions only validates and snapshots the caller's exact
+	// prompt bytes into memory; it never touches WB_HOME. That keeps the
+	// fail-fast behavior below (a bad or missing prompt is refused before WB
+	// creates even the task hierarchy) without letting a losing concurrent
+	// create durably reserve anything it will never use.
+	prepareWorkLogOptions := func() error {
 		// A coordinated create is one Run claiming several repositories. Generate
 		// its local fallback ID once, not once per claim, so recovery preserves
 		// cardinality across the complete invocation.
@@ -405,17 +410,29 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return prepareErr
 		}
 		normalized.WorkLog = prepared
+		return nil
+	}
+	// reserveWorkLog performs the durable reservation: creating the Work Log
+	// run directory and archiving the immutable prompt under WB_HOME. This
+	// must not run until this invocation holds the exclusive per-task
+	// operation lock below — otherwise every loser of a concurrent create
+	// stampede for the same new task slug durably archives a prompt it will
+	// never claim, leaking an orphaned Work Log run per loser with every
+	// retry (see #169).
+	reserveWorkLog := func() error {
 		if reserveErr := reserveOriginalPromptArchive(home, normalized.Operation, normalized.WorkLog); reserveErr != nil {
 			return reserveErr
 		}
 		workLogPrepared = true
 		return nil
 	}
-	// New work still binds its prompt before WB creates even the task
-	// hierarchy. Resume first opens the already-existing task under its lock so
-	// the active claim, rather than today's naming policy, can select identity.
+	// New work still validates and snapshots its prompt before WB creates even
+	// the task hierarchy, so a bad --original-prompt-file is refused without
+	// mutating anything. Resume first opens the already-existing task under
+	// its lock so the active claim, rather than today's naming policy, can
+	// select identity.
 	if !normalized.Resume {
-		if err := prepareWorkLog(); err != nil {
+		if err := prepareWorkLogOptions(); err != nil {
 			return nil, err
 		}
 	}
@@ -426,9 +443,23 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	defer operation.close()
 	lock, err := acquireLockAt(operation.Directory, normalized.Operation)
 	if err != nil {
+		// Name the contended task and the exact remedy: this is the losing side
+		// of a concurrent create stampede for the same task slug (#169), not a
+		// generic "something else is running" condition, so the caller can tell
+		// the two apart and retry rather than treat it as fatal corruption.
+		if errors.Is(err, errOperationLockHeld) {
+			return nil, fmt.Errorf("claim already held by a concurrent create for task %q; retry once it finishes", normalized.Operation)
+		}
 		return nil, err
 	}
 	defer func() { _ = lock.release() }()
+	// Only the invocation that won the exclusive task lock above may durably
+	// reserve its Work Log run; every loser returned before reaching here.
+	if !normalized.Resume {
+		if err := reserveWorkLog(); err != nil {
+			return nil, err
+		}
+	}
 	if normalized.afterOperationRootPrepared != nil {
 		normalized.afterOperationRootPrepared()
 	}
@@ -545,7 +576,9 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				return nil, err
 			}
 			workLogPrepared = true
-		} else if err := prepareWorkLog(); err != nil {
+		} else if err := prepareWorkLogOptions(); err != nil {
+			return nil, err
+		} else if err := reserveWorkLog(); err != nil {
 			return nil, err
 		}
 	}
@@ -3172,6 +3205,13 @@ func writeOperationLockMetadata(file *os.File, operation string) error {
 	return nil
 }
 
+// errOperationLockHeld is the sentinel behind "already active" contention on
+// an operation lock, distinguished from every other acquisition failure so a
+// caller that wants a more specific, task-named refusal (see Create's use of
+// this below) can recognize exactly this condition with errors.Is rather than
+// matching on error text.
+var errOperationLockHeld = errors.New("worktree operation is already active in another process")
+
 // holdOperationLock takes the exclusive kernel lock this operation keeps for
 // its whole lifetime, so a concurrent WB process is refused while it runs and
 // the kernel releases it if the process dies. Closing the descriptor releases
@@ -3179,7 +3219,7 @@ func writeOperationLockMetadata(file *os.File, operation string) error {
 func holdOperationLock(file *os.File) error {
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		if errors.Is(err, unix.EWOULDBLOCK) {
-			return fmt.Errorf("worktree operation is already active in another process")
+			return errOperationLockHeld
 		}
 		return fmt.Errorf("hold secure worktree operation lock: %w", err)
 	}

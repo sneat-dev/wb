@@ -75,7 +75,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if lock.Envelope().Request.ResumeID != request.ResumeID {
 		return Result{}, fmt.Errorf("retained park resume envelope changed after admission")
 	}

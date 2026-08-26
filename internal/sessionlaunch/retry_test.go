@@ -121,12 +121,12 @@ func (fixture *launcherRetryFixture) createReleasedAttempt(t *testing.T, withFai
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	attempt, err := state.createAttempt()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	const pid = 919191
 	fence, err := attempt.acquireExecFence(pid)
 	if err != nil {
@@ -275,7 +275,7 @@ func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	attempts, err := state.listAttempts()
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("attempts=%#v error=%v", attempts, err)
@@ -328,7 +328,7 @@ func TestDuplicateTmuxStartAdoptsSameAttemptWithoutReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	refs, err := state.listAttempts()
 	if err != nil || len(refs) != 1 {
 		t.Fatalf("attempts=%#v error=%v", refs, err)
@@ -379,7 +379,7 @@ func TestReleasedAttemptReplacementFailsClosedWithoutExactTerminalProof(t *testi
 			if openErr != nil {
 				t.Fatal(openErr)
 			}
-			defer state.Close()
+			defer func() { _ = state.Close() }()
 			attempts, listErr := state.listAttempts()
 			if listErr != nil || len(attempts) != 1 {
 				t.Fatalf("attempts=%#v error=%v", attempts, listErr)
@@ -424,7 +424,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	attempts, err := state.listAttempts()
 	if err != nil || len(attempts) != 2 {
 		t.Fatalf("attempts=%#v error=%v", attempts, err)
@@ -433,7 +433,7 @@ func TestDeadPreReleaseWrapperIsSealedThenRetriesOneNewAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 	abandonment, err := first.loadAbandonment()
 	if err != nil || abandonment.PID != pid || abandonment.PlanDigest != fixture.planDigest || abandonment.ReadyDigest != "" {
 		t.Fatalf("abandonment=%#v error=%v", abandonment, err)
@@ -504,7 +504,7 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer state.Close()
+			defer func() { _ = state.Close() }()
 			refs, err := state.listAttempts()
 			if err != nil || len(refs) != 1 {
 				t.Fatalf("attempts=%#v error=%v", refs, err)
@@ -513,7 +513,7 @@ func TestPreReleaseAbandonmentRefusesAmbiguousState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer attempt.Close()
+			defer func() { _ = attempt.Close() }()
 			if _, err := attempt.loadAbandonment(); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("abandonment artifact error = %v, want absent", err)
 			}
@@ -612,7 +612,7 @@ func TestDelayedPrivateLauncherCannotRegisterAfterItsAttemptWasAbandoned(t *test
 	if err := os.Chdir(fixture.worktree); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chdir(previous)
+	defer func() { _ = os.Chdir(previous) }()
 	registered := false
 	err = runPrivateLauncher([]string{fixture.store.Root, fixture.request.HandoffID, firstID, string(fixture.planDigest)}, privateLauncherDependencies{
 		pid: func() int { return os.Getpid() },

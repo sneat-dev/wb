@@ -1195,6 +1195,12 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	results := make([]CleanupResult, len(listed.Results))
 	for index, entry := range listed.Results {
 		eligible, reason := cleanupEligibility(entry, normalized.OlderThan, now)
+		if eligible {
+			if err := preflightWorkLogClaimReadOnly(resolution.Write.Home, entry.WorktreeDir, entry.HeadSHA); err != nil {
+				eligible = false
+				reason = fmt.Sprintf("preflight Work Log for %s: %v", entry.Repository, err)
+			}
+		}
 		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
 	}
 	// Residue reads back as a candidate that is no longer a Git worktree root,
@@ -1238,6 +1244,17 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			}
 		}
 		return outcome, cleanupErr
+	}
+	// A named cleanup is the operator's exact subject. Preserve its established
+	// failure contract when the read-only Work Log gate has already found the
+	// same mismatch that apply's locked preflight would reject. Fleet cleanup
+	// instead reports the ineligible task and keeps processing healthy tasks.
+	if normalized.Task != "" {
+		for _, result := range outcome.Results {
+			if strings.HasPrefix(result.Reason, "preflight Work Log for ") {
+				return fail(errors.New(result.Reason))
+			}
+		}
 	}
 	for backlogIndex := range backlog {
 		// A record whose worktree path is still present is one Git unregistered

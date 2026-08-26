@@ -81,7 +81,7 @@ func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
 		return TargetAdmission{}, fmt.Errorf("open private park resume store root: %w", err)
 	}
 	rootDir := os.NewFile(uintptr(rootFD), "wb-park-resume-admit-root")
-	defer rootDir.Close()
+	defer func() { _ = rootDir.Close() }()
 	if err := unix.Fchmod(rootFD, 0o700); err != nil {
 		return TargetAdmission{}, err
 	}
@@ -91,11 +91,11 @@ func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
 		return TargetAdmission{}, err
 	}
 	admit := os.NewFile(uintptr(admitFD), "wb-park-resume-admit-lock")
-	defer admit.Close()
+	defer func() { _ = admit.Close() }()
 	if err := unix.Flock(int(admit.Fd()), unix.LOCK_EX); err != nil {
 		return TargetAdmission{}, err
 	}
-	defer unix.Flock(int(admit.Fd()), unix.LOCK_UN)
+	defer func() { _ = unix.Flock(int(admit.Fd()), unix.LOCK_UN) }()
 	created := false
 	if err := unix.Mkdirat(rootFD, envelope.Request.ResumeID, 0o700); err != nil {
 		if !errors.Is(err, unix.EEXIST) {
@@ -109,7 +109,7 @@ func (store TargetStore) Admit(raw []byte) (TargetAdmission, error) {
 		return TargetAdmission{}, fmt.Errorf("open private park resume target aggregate: %w", err)
 	}
 	aggregate := os.NewFile(uintptr(aggregateFD), "wb-park-resume-admit-aggregate")
-	defer aggregate.Close()
+	defer func() { _ = aggregate.Close() }()
 	if err := unix.Fchmod(aggregateFD, 0o700); err != nil {
 		return TargetAdmission{}, err
 	}
@@ -252,7 +252,7 @@ func (lock *TargetLock) heldForSessionLocked(expectedRoot, aggregateID, digest s
 		return false
 	}
 	root := os.NewFile(uintptr(rootFD), "wb-park-resume-root-check")
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	if !sameFile(lock.root, root) {
 		return false
 	}
@@ -261,7 +261,7 @@ func (lock *TargetLock) heldForSessionLocked(expectedRoot, aggregateID, digest s
 		return false
 	}
 	aggregate := os.NewFile(uintptr(aggregateFD), "wb-park-resume-aggregate-check")
-	defer aggregate.Close()
+	defer func() { _ = aggregate.Close() }()
 	if !sameFile(lock.aggregate, aggregate) {
 		return false
 	}
@@ -270,7 +270,7 @@ func (lock *TargetLock) heldForSessionLocked(expectedRoot, aggregateID, digest s
 		return false
 	}
 	envelope := os.NewFile(uintptr(envelopeFD), "wb-park-resume-envelope-check")
-	defer envelope.Close()
+	defer func() { _ = envelope.Close() }()
 	if !sameFile(lock.envelopeFile, envelope) {
 		return false
 	}
@@ -283,7 +283,7 @@ func (lock *TargetLock) heldForSessionLocked(expectedRoot, aggregateID, digest s
 		return false
 	}
 	file := os.NewFile(uintptr(lockFD), "wb-park-resume-lock-check")
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return sameFile(lock.file, file)
 }
 
@@ -411,7 +411,7 @@ func (store TargetStore) AppendEventUnderLock(lock *TargetLock, request RemoteRe
 		return TargetEvent{}, err
 	}
 	events := os.NewFile(uintptr(eventsFD), "wb-park-resume-events")
-	defer events.Close()
+	defer func() { _ = events.Close() }()
 	history, err := listTargetEventsAt(events, request.ResumeID)
 	if err != nil {
 		return TargetEvent{}, err
@@ -442,7 +442,7 @@ func (store TargetStore) EventsUnderLock(lock *TargetLock, request RemoteRequest
 		return nil, err
 	}
 	events := os.NewFile(uintptr(eventsFD), "wb-park-resume-events")
-	defer events.Close()
+	defer func() { _ = events.Close() }()
 	return listTargetEventsAt(events, request.ResumeID)
 }
 
@@ -500,7 +500,7 @@ func readRegularAt(directory *os.File, name string, maximum int64) ([]byte, erro
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return readBoundedRegular(file, maximum)
 }
 
@@ -534,7 +534,7 @@ func writeExactPrivateAt(directory *os.File, name string, raw []byte) error {
 		return err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Nlink != 1 {
 		return fmt.Errorf("private artifact %q is not one 0600 regular file", name)

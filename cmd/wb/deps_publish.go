@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/encode"
 	"github.com/sneat-dev/wb/internal/npmrelease"
@@ -159,10 +160,17 @@ func runNpmPublishWithPreflight(command *cobra.Command, options npmPublishOption
 		return err
 	}
 	defer locks.Release()
+	selectionProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps publish npm")
+	options.campaign = selectionProgress
 	prepared, err := preflight(options)
 	if err != nil {
+		selectionProgress.finish("failed")
 		return err
 	}
+	selectionProgress.finish("selection completed")
+	// Publication and downstream propagation own later progress lines. Do not
+	// reuse a renderer whose selection heartbeat has already been stopped.
+	options.campaign = nil
 	if prepared.operation != operation {
 		return fmt.Errorf("npm publication preflight changed the requested operation; refusing to dispatch")
 	}
@@ -280,12 +288,19 @@ func runPreparedNpmPublishLocked(command *cobra.Command, options npmPublishOptio
 		}
 	}
 
+	publicationProgress := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps publish npm")
 	publication, publicationErr := npmrelease.Run(commandExecutionContext(command), prepared.releases, npmrelease.Options{
 		Apply: true, Resume: options.resume, Ref: options.ref,
 		Timeout: options.timeout, PollInterval: options.workflowPoll, Registry: options.registry,
 		ReportDir: prepared.reportDir, Previous: prepared.previous,
-		Persist: func(report npmrelease.Report) error { return npmrelease.WriteReport(prepared.reportDir, report) },
+		Persist:  func(report npmrelease.Report) error { return npmrelease.WriteReport(prepared.reportDir, report) },
+		Progress: publicationProgress.reporter(),
 	})
+	if publicationErr != nil {
+		publicationProgress.finish("failed")
+	} else {
+		publicationProgress.finish("published")
+	}
 	if preDispatchBump.Operation != "" {
 		attachNpmPropagation(&publication, preDispatchBump)
 	}

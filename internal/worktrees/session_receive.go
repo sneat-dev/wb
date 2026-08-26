@@ -218,7 +218,7 @@ func VerifyReceivedSessionMember(ctx context.Context, options SessionMemberRecei
 	if err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("open accepted canonical repository: %w", err)
 	}
-	defer held.Close()
+	defer func() { _ = held.Close() }()
 	canonical, err := openSessionReceiveCanonicalFromHeldRoot(canonicalPath, held)
 	if err != nil {
 		return SessionReceiveResult{}, err

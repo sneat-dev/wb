@@ -48,9 +48,10 @@ Exit codes:
   1  findings — the command ran and reported failures, drift, or policy findings
   2  usage    — the invocation was rejected before any work started
 
-Terminal-only behaviour, such as the live sync progress UI, activates only when
-stdout is a terminal. Pass --non-interactive, or set WB_NON_INTERACTIVE=1, to
-force plain line-buffered output even when a terminal is attached.`
+Terminal-only behaviour, such as live progress reporting, activates only when
+its output stream is a terminal. Pass --non-interactive, or set
+WB_NON_INTERACTIVE=1, to suppress terminal UIs and progress lines even when a
+terminal is attached.`
 
 func newRootCmd() *cobra.Command {
 	home, _ := os.UserHomeDir()
@@ -153,8 +154,8 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
-		"worktree summary": true,
-		"branch list":      true, "branch cleanup": true,
+		"worktree summary": true, "worktree abort": true,
+		"branch list": true, "branch cleanup": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI
@@ -298,6 +299,15 @@ func propagateRuntimeWBExecutable(
 // separate from main so tests can drive the whole command surface without
 // spawning a process or terminating the test binary.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, nil, stdout, stderr)
+}
+
+// runWithStdin behaves exactly like run but additionally wires stdin, so a
+// test can drive a command that reads from it (worktree create
+// --original-prompt-file -) without touching the real process's standard
+// input. A nil stdin falls back to the real os.Stdin, matching run's
+// production behavior exactly.
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// Handled before Execute so `wb --version` answers even when a later flag
 	// is invalid, and so it never depends on subcommand wiring.
 	if hasVersionFlag(args) {
@@ -307,6 +317,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	commandStarted = false
 	root := newRootCmd()
 	root.SetArgs(args)
+	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 

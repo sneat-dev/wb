@@ -20,6 +20,7 @@ wb branch list --scope all --only unique
 wb branch cleanup
 wb branch cleanup --scope remote --apply
 wb branch cleanup --scope all --apply --older-than 0
+wb branch cleanup --scope remote --absorbed-by 123
 ```
 
 `wb branch list` is read-only in every configuration; its only remote
@@ -30,9 +31,10 @@ Flags on both: `--base` (default `main`), `--scope` (`local`, `remote`, or
 `all`; default `local`), `--format` (`text` or `json`), plus root `--filter`
 and `--projects-root`. `wb branch list` adds `--only <disposition>` and
 `--older-than` (default `0`, shows every age). `wb branch cleanup` adds
-`--apply`, `--older-than` (default `24h`, `0` disables the grace window), and
-`--report-dir`. Scope is selected only by `--scope` — there is no `--remote`
-boolean here, unlike `wb worktree cleanup --remote`.
+`--apply`, `--older-than` (default `24h`, `0` disables the grace window),
+`--report-dir`, `--receipts`, and `--absorbed-by <pr-or-commit>`. Scope is
+selected only by `--scope` — there is no `--remote` boolean here, unlike
+`wb worktree cleanup --remote`.
 
 ## The evidence taxonomy
 
@@ -42,7 +44,8 @@ branch or tracking ref:
 
 | Disposition | Meaning | Eligible for `--apply`? |
 | --- | --- | --- |
-| `contained` | ancestor of the fetched exact target | **yes — the only one** |
+| `contained` | ancestor of the fetched exact target | **yes** |
+| `receipted` | a proved landing receipt — GitHub's own commit-to-pull-request index, or an operator-attested `--absorbed-by <pr-or-commit>` — shows the work is in the target | **yes, only under `--receipts` or `--absorbed-by`** |
 | `absorbed` | patch-id or tree equal to the target, but not an ancestor | **never** |
 | `unique` | `git cherry` proves it has content not upstream | no |
 | `protected` | is `--base`, the canonical clone's current HEAD, or a protected name | no |
@@ -68,8 +71,32 @@ Do not second-guess this with raw `git cherry` output and delete by hand. Each
 - A WB-owned branch (it has a task): `wb worktree cleanup <task> --absorbed-by <pr-or-commit>` —
   the receipt-based path that proves containment through a real GitHub
   landing receipt plus a local three-way merge, not through patch-id alone.
-- Otherwise: an explicit human decision. There is no flag that makes this
-  branch eligible.
+- A branch with no worktree left — the common case, and the one that motivated
+  this flag (a squash-landed branch whose worktree and local branch were
+  already cleaned up): `wb branch cleanup --absorbed-by <pr-or-commit>`. It
+  performs the exact same attested-absorption proof as the worktree-cleanup
+  flag above — the named pull request or commit must contain the branch's
+  content, the fetched target must still contain it, and the named commit
+  must be exactly where the work entered the target, not merely somewhere
+  downstream of it. A branch that passes is reclassified `receipted`, never
+  `absorbed`; one that fails is reported with the failing check named and
+  nothing is deleted.
+- Otherwise: re-run with `--receipts`. WB then asks GitHub's own
+  commit-to-pull-request index for a merged pull request into the exact base,
+  verifies its merge commit is contained in the fetched target, and proves
+  locally — with a three-way merge that mutates nothing — that the branch adds
+  nothing to the landing commit or the target. A branch that passes every
+  check is reclassified `receipted` and becomes eligible; one that fails any
+  check keeps its disposition with the failing check named in its evidence.
+  The reverted-work case fails the proof by construction, because merging the
+  branch back would change the target's tree. This costs one GitHub query per
+  candidate, which is why it is opt-in.
+- A branch neither WB-owned nor receipt-provable stays where it is: an
+  explicit human decision. No flag makes `absorbed` itself eligible.
+
+`--receipts` also rescues `unique`-classified squash landings: a multi-commit
+squash leaves no upstream twin for any individual patch-id, so a fully landed
+branch can report unique patches while every byte of it is in the target.
 
 ## A branch that has a worktree or a live claim: `in-use`
 

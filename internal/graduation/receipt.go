@@ -25,12 +25,14 @@ const SchemaVersion = 1
 
 const (
 	RemoteTargetProducer = "wb.verify.receipt.remote-target.v1"
-	DeploymentProducer   = "external.deployment-receipt.v1"
+	DeploymentProducer   = "github-actions.deployment-receipt.v1"
 )
 
 var (
 	repositoryName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	gitRevision    = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+	providerRunID  = regexp.MustCompile(`^[1-9][0-9]*$`)
+	githubSCPURL   = regexp.MustCompile(`^git@github\.com:([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*)(?:\.git)?$`)
 )
 
 // VerificationIndex is exactly the JSON envelope emitted by `wb check
@@ -67,16 +69,17 @@ type RemoteTargetEvidence struct {
 	ObservedOutputSHA256 string    `json:"observed_output_sha256"`
 }
 
-// DeployedRevisionEvidence is a provider-neutral immutable deployment
-// receipt. A deployment adapter must retain its exact structured provider
-// payload and content digest; free-form “passed” prose is intentionally not
-// representable here.
+// DeployedRevisionEvidence is the closed GitHub Actions deployment receipt.
+// It binds both revision and immutable numeric Actions run identity through
+// declared pointers into the exact retained provider payload.
 type DeployedRevisionEvidence struct {
 	SchemaVersion       int       `json:"schema_version"`
 	Producer            string    `json:"producer"`
 	Provider            string    `json:"provider"`
 	Repository          string    `json:"repository"`
 	RunURL              string    `json:"run_url"`
+	ProviderRunID       string    `json:"provider_run_id"`
+	RunIDJSONPointer    string    `json:"run_id_json_pointer"`
 	Revision            string    `json:"revision"`
 	RevisionJSONPointer string    `json:"revision_json_pointer"`
 	ObservedAt          time.Time `json:"observed_at"`
@@ -212,7 +215,7 @@ func Compose(inputs Inputs, now time.Time) (Receipt, error) {
 	if err := validateDeployedRevision(inputs.DeployedRevision, repository, revision); err != nil {
 		return Receipt{}, fmt.Errorf("deployed-revision evidence: %w", err)
 	}
-	if err := validateTerminalCleanup(inputs.TerminalCleanup, repository, revision); err != nil {
+	if err := validateTerminalCleanup(inputs.TerminalCleanup, repository, inputs.CIWait.Target, revision); err != nil {
 		return Receipt{}, fmt.Errorf("terminal-cleanup evidence: %w", err)
 	}
 	for name, digest := range map[string]string{
@@ -271,7 +274,7 @@ func localCheckRepository(evidence VerificationIndex) string {
 
 func validateCIWait(evidence CIWaitReceipt, repository string) error {
 	result := evidence.PullRequestWaitResult
-	if evidence.SchemaVersion != SchemaVersion || evidence.ObservedAt.IsZero() || result.Status != orchestrate.PullRequestWaitPassed || result.Repository != repository || result.PullRequest != "" || !gitRevision.MatchString(result.Head) || result.ObservedHead != result.Head || result.StableObservations < 2 || !nonBlank(result.RequiredChecksAuthority) || !nonBlank(result.Target) || len(result.Checks) == 0 {
+	if evidence.SchemaVersion != SchemaVersion || evidence.ObservedAt.IsZero() || result.Status != orchestrate.PullRequestWaitPassed || result.Repository != repository || result.PullRequest != "" || !gitRevision.MatchString(result.Head) || result.ObservedHead != result.Head || result.ObservedTargetHead != result.Head || !result.CandidateContainsTarget || result.StableObservations < 2 || !nonBlank(result.RequiredChecksAuthority) || !nonBlank(result.Target) || len(result.Checks) == 0 {
 		return fmt.Errorf("must be a schema v1 passed wb ci wait JSON receipt for the exact observed head")
 	}
 	passed := false
@@ -294,31 +297,39 @@ func validateRemoteTarget(evidence RemoteTargetEvidence, repository, target, rev
 	if evidence.ObservedOutput != evidence.Revision+"\t"+evidence.TargetRef+"\n" || evidence.ObservedOutputSHA256 != Digest([]byte(evidence.ObservedOutput)) {
 		return fmt.Errorf("git ls-remote payload or digest conflicts with target identity")
 	}
+	if err := ValidateGitHubRepositoryURL(repository, evidence.RemoteURL); err != nil {
+		return err
+	}
 	return nil
 }
 
 func validateDeployedRevision(evidence DeployedRevisionEvidence, repository, revision string) error {
 	payloadBytes := []byte(evidence.PayloadJSON)
-	if evidence.SchemaVersion != SchemaVersion || evidence.Producer != DeploymentProducer || evidence.Repository != repository || evidence.Revision != revision || !gitRevision.MatchString(evidence.Revision) || !nonBlank(evidence.Provider) || evidence.ObservedAt.IsZero() || len(payloadBytes) == 0 || evidence.PayloadSHA256 != Digest(payloadBytes) {
-		return fmt.Errorf("must retain an immutable structured deployment producer payload for the CI head")
+	if evidence.SchemaVersion != SchemaVersion || evidence.Producer != DeploymentProducer || evidence.Provider != "github-actions" || evidence.Repository != repository || evidence.Revision != revision || !gitRevision.MatchString(evidence.Revision) || !providerRunID.MatchString(evidence.ProviderRunID) || evidence.ObservedAt.IsZero() || len(payloadBytes) == 0 || evidence.PayloadSHA256 != Digest(payloadBytes) {
+		return fmt.Errorf("must retain a closed GitHub Actions deployment payload for the CI head")
 	}
 	parsed, err := url.Parse(evidence.RunURL)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("deployment run_url must be one credential-free HTTPS producer URL")
+	wantRunPath := "/" + repository + "/actions/runs/" + evidence.ProviderRunID
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "github.com") || parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" || parsed.Path != wantRunPath {
+		return fmt.Errorf("deployment run_url must be the canonical immutable GitHub Actions run URL for provider_run_id")
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil || len(payload) == 0 {
+	payload, err := decodeProviderPayload(payloadBytes)
+	if err != nil || len(payload) == 0 {
 		return fmt.Errorf("deployment payload must be one non-empty structured JSON object")
 	}
 	payloadRevision, err := jsonPointerString(payload, evidence.RevisionJSONPointer)
 	if err != nil || payloadRevision != revision {
 		return fmt.Errorf("deployment payload revision pointer must resolve to the exact CI head")
 	}
+	payloadRunID, err := jsonPointerRunID(payload, evidence.RunIDJSONPointer)
+	if err != nil || payloadRunID != evidence.ProviderRunID {
+		return fmt.Errorf("deployment payload run ID pointer must resolve to the exact immutable GitHub Actions run")
+	}
 	return nil
 }
 
-func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, revision string) error {
-	if evidence.Phase != "applied" || !evidence.Apply || !evidence.DeleteRemote || !nonBlank(evidence.Task) || evidence.GeneratedAt.IsZero() || len(evidence.Results) == 0 || len(evidence.Diagnostics) != 0 {
+func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, target, revision string) error {
+	if evidence.Phase != "applied" || !evidence.AllMerged || !evidence.Apply || !evidence.DeleteRemote || !nonBlank(evidence.Task) || evidence.GeneratedAt.IsZero() || len(evidence.Results) == 0 || len(evidence.Diagnostics) != 0 {
 		return fmt.Errorf("must be an applied wb worktree cleanup --remote report")
 	}
 	found := false
@@ -329,7 +340,7 @@ func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, revis
 		}
 		seen[result.Repository] = true
 		remoteAbsent := result.RemoteDeleted || result.RemoteHeadSHA == ""
-		if !gitRevision.MatchString(result.HeadSHA) || !result.Eligible || !result.Clean || !result.Applied || !result.WorktreeGone || !result.BranchDeleted || !remoteAbsent || result.WorktreeDir == result.CanonicalDir {
+		if !gitRevision.MatchString(result.HeadSHA) || !result.Eligible || !result.Clean || !result.Applied || !result.WorktreeGone || !result.BranchDeleted || !remoteAbsent || result.WorktreeDir == result.CanonicalDir || result.Branch == target {
 			return fmt.Errorf("campaign worktree %s lacks terminal WB cleanup evidence", result.Repository)
 		}
 		if result.Repository == repository {
@@ -345,15 +356,32 @@ func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, revis
 	return nil
 }
 
-func jsonPointerString(root any, pointer string) (string, error) {
+func decodeProviderPayload(raw []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("unexpected trailing JSON value")
+		}
+		return nil, err
+	}
+	return payload, nil
+}
+
+func jsonPointerValue(root any, pointer string) (any, error) {
 	if pointer == "" || pointer[0] != '/' {
-		return "", fmt.Errorf("revision_json_pointer must be a non-root RFC 6901 pointer")
+		return nil, fmt.Errorf("JSON pointer must be a non-root RFC 6901 pointer")
 	}
 	current := root
 	for _, raw := range strings.Split(pointer[1:], "/") {
 		for index := 0; index < len(raw); index++ {
 			if raw[index] == '~' && (index+1 >= len(raw) || (raw[index+1] != '0' && raw[index+1] != '1')) {
-				return "", fmt.Errorf("revision_json_pointer contains an invalid escape")
+				return nil, fmt.Errorf("JSON pointer contains an invalid escape")
 			}
 			if raw[index] == '~' {
 				index++
@@ -362,18 +390,85 @@ func jsonPointerString(root any, pointer string) (string, error) {
 		token := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
 		object, ok := current.(map[string]any)
 		if !ok {
-			return "", fmt.Errorf("deployment revision pointer crosses a non-object")
+			return nil, fmt.Errorf("JSON pointer crosses a non-object")
 		}
 		current, ok = object[token]
 		if !ok {
-			return "", fmt.Errorf("deployment revision pointer token %q is absent", token)
+			return nil, fmt.Errorf("JSON pointer token %q is absent", token)
 		}
+	}
+	return current, nil
+}
+
+func jsonPointerString(root any, pointer string) (string, error) {
+	current, err := jsonPointerValue(root, pointer)
+	if err != nil {
+		return "", err
 	}
 	value, ok := current.(string)
 	if !ok || !gitRevision.MatchString(value) {
 		return "", fmt.Errorf("deployment revision pointer does not resolve to a Git revision string")
 	}
-	return strings.ToLower(value), nil
+	return value, nil
+}
+
+func jsonPointerRunID(root any, pointer string) (string, error) {
+	current, err := jsonPointerValue(root, pointer)
+	if err != nil {
+		return "", err
+	}
+	var value string
+	switch typed := current.(type) {
+	case string:
+		value = typed
+	case json.Number:
+		value = typed.String()
+	default:
+		return "", fmt.Errorf("deployment run ID pointer does not resolve to a decimal string or number")
+	}
+	if !providerRunID.MatchString(value) {
+		return "", fmt.Errorf("deployment run ID pointer does not resolve to a canonical positive decimal run ID")
+	}
+	return value, nil
+}
+
+// ValidateGitHubRepositoryURL accepts only the canonical GitHub transport
+// forms WB can independently bind to an owner/repository identity. It rejects
+// aliases, ports, credentials, mutable URL components, and helper schemes.
+func ValidateGitHubRepositoryURL(repository, raw string) error {
+	if !repositoryName.MatchString(repository) || strings.TrimSpace(raw) != raw || raw == "" || strings.ContainsAny(raw, "\r\n") {
+		return fmt.Errorf("remote URL or expected repository is invalid")
+	}
+	if match := githubSCPURL.FindStringSubmatch(raw); match != nil {
+		if strings.TrimSuffix(match[1], ".git") != repository {
+			return fmt.Errorf("remote URL does not identify expected repository %s", repository)
+		}
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Port() != "" || !strings.EqualFold(parsed.Hostname(), "github.com") {
+		return fmt.Errorf("remote URL must be one canonical GitHub HTTPS or SSH repository URL")
+	}
+	switch parsed.Scheme {
+	case "https":
+		if parsed.User != nil {
+			return fmt.Errorf("remote URL must not embed credentials")
+		}
+	case "ssh":
+		if parsed.User == nil || parsed.User.Username() != "git" {
+			return fmt.Errorf("GitHub SSH remote URL must use the git user")
+		}
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			return fmt.Errorf("remote URL must not embed credentials")
+		}
+	default:
+		return fmt.Errorf("remote URL must use canonical GitHub HTTPS or SSH transport")
+	}
+	path := strings.TrimSuffix(parsed.Path, ".git")
+	if path != "/"+repository {
+		return fmt.Errorf("remote URL does not identify expected repository %s", repository)
+	}
+	return nil
 }
 
 func validateTimes(now time.Time, inputs Inputs) error {

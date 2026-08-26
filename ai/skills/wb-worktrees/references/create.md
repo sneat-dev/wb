@@ -27,7 +27,22 @@ wb worktree create <task> --branch-prefix <prefix>/ \
   --original-prompt-file <private-prompt-file>
 ```
 
-For one task spanning repositories:
+Prefer piping the prompt on stdin instead of staging a file:
+
+```sh
+printf '%s' "$ORIGINAL_PROMPT" | wb worktree create <task> --branch-prefix <prefix>/ \
+  --model unknown \
+  --original-prompt-file -
+```
+
+For one task spanning repositories, prefer one coordinated `create` call
+naming every repository, not several parallel single-repository calls for the
+same new task slug: `create` holds an exclusive per-task lock, so only one
+concurrent invocation for a brand-new slug wins and every other one fails
+clean with "claim already held by a concurrent create" rather than corrupting
+shared state. A fleet that must fan out per-repository invocations anyway
+should retry a losing one after the winner finishes, not treat the refusal as
+fatal.
 
 ```sh
 wb worktree create <task> --branch-prefix <prefix>/ \
@@ -76,11 +91,17 @@ immutable claim for each repository below
 `<WB_HOME>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`; claim IDs are
 portable collision-resistant digests of effort, canonical repository, branch,
 and immutable base; Run ID and absolute worktree path are not identity inputs.
-Never emulate this with a single hand-written shared JSON file. Before running
-create, write the exact originating request to a readable non-empty 0600 file
-outside source Git. `--original-prompt-file` is mandatory and copies those
-exact bytes into the private archive only. They are intentionally absent from the
-Git-excluded worktree projection and Synchestra outbox.
+Never emulate this with a single hand-written shared JSON file.
+`--original-prompt-file` is mandatory. Prefer `--original-prompt-file -` and
+pipe the exact originating request on stdin: WB reads it once, in memory, and
+writes the private 0600 archive itself — no caller-managed staging file ever
+exists, so a concurrent agent sharing your scratchpad directory cannot
+overwrite or archive the wrong prompt. Only pass a file path when the prompt
+cannot be piped; in that case use a per-invocation-unique path (never the
+default `original-prompt.txt` name, which is exactly what collides when two
+agents share a scratchpad). Either way the exact bytes go only into the
+private archive and are intentionally absent from the Git-excluded worktree
+projection and Synchestra outbox.
 
 The dispatcher that creates a session, worktree, or successor claim must
 explicitly supply the model it chose: `--model <exact-id>` or `--model

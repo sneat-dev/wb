@@ -1,6 +1,10 @@
 package deps
 
-import "time"
+import (
+	"time"
+
+	"github.com/sneat-dev/wb/internal/progress"
+)
 
 // GraphView selects one visual projection of canonical dependency evidence.
 type GraphView string
@@ -20,6 +24,7 @@ type GraphOptions struct {
 	Timeout      time.Duration
 	Retry        int
 	Dependencies []string
+	Progress     progress.Reporter
 }
 
 // Graph is the canonical, deterministic evidence model shared by every view.

@@ -16,16 +16,19 @@
             {
               "path": "wb branch cleanup",
               "flags": [
+                "--absorbed-by",
                 "--apply",
                 "--base",
                 "--format",
                 "--older-than",
+                "--receipts",
                 "--report-dir",
                 "--scope"
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required for every deletion in every scope",
                 "Only the contained disposition is ever eligible; absorbed is never eligible under any flag combination",
+                "--absorbed-by <pr-or-commit> verifies an explicit landing pull request or commit with the same attested-absorption proof `wb worktree cleanup --absorbed-by` performs, reclassifying a content-proven squash-absorbed branch receipted (never absorbed) even when its worktree is already gone",
                 "Local deletion is a compare-and-delete (git update-ref -d) against the exact SHA the plan recorded",
                 "Remote deletion uses force-with-lease against the observed SHA and fails closed without pull-request evidence",
                 "A branch checked out in any linked worktree, or named by a live WB Work Log claim, is always in-use and never deleted here",
@@ -47,7 +50,9 @@
                 "force-with-lease",
                 "compare-and-delete",
                 "pull-request evidence",
-                "never removes, moves, or modifies any working tree"
+                "never removes, moves, or modifies any working tree",
+                "--receipts",
+                "--absorbed-by"
               ]
             }
           ],
@@ -61,7 +66,8 @@
               "marker": "## Compare-and-delete, never `git branch -d`/`-D`",
               "examples": [
                 "wb branch cleanup",
-                "wb branch cleanup --scope all --apply --older-than 0"
+                "wb branch cleanup --scope all --apply --older-than 0",
+                "wb branch cleanup --scope remote --absorbed-by 123"
               ]
             }
           ],
@@ -89,12 +95,27 @@
               "path": "internal/worktrees/branches_test.go",
               "name": "TestBranchCleanupRemoteFailsClosedWithoutPullRequestEvidence",
               "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRetiresContentProvenSquashAbsorbedRemoteBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRefusesResidualNotPresentInLandingCommit",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branches_absorbed_by_test.go",
+              "name": "TestBranchCleanupAbsorbedByRefusesRefDrift",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. Never add a flag that makes it eligible."
+      "notes": "absorbed is permanently report-only: patch-id/tree equality proves identical content exists upstream, not that this branch's work is still present in the target now. No flag ever makes the absorbed disposition itself eligible; --receipts and --absorbed-by only ever move a candidate to receipted BEFORE absorbed is assigned, and only via an independent, stronger proof (a real GitHub landing receipt, or an operator-attested landing commit proving it is exactly where the work entered the target), never via patch-id."
     },
     {
       "id": "wb.branch.list",
@@ -2863,7 +2884,7 @@
           "limitation": null
         }
       },
-      "notes": "Claim staleness is derived from the holder machine's publish heartbeat; there is no separate claim TTL."
+      "notes": "Claim staleness is derived from the holder machine's effective heartbeat (the later of its publish and its claim activity, last_seen_at); there is no separate claim TTL."
     },
     {
       "id": "wb.remote.claims",
@@ -2882,7 +2903,7 @@
                 "--stale"
               ],
               "modes": [
-                "Lists every task claim with holder, claimed_at, holder-heartbeat age, and a STALE flag; claim files that cannot be decoded render as error rows"
+                "Lists every task claim with holder, claimed_at, holder's effective-heartbeat age, and a STALE flag; claim files that cannot be decoded render as error rows"
               ]
             }
           ],
@@ -2946,7 +2967,7 @@
                 "--stale"
               ],
               "modes": [
-                "Lists every machine in the remote store with its publish age."
+                "Lists every machine in the remote store with its publish age (PUBLISHED) and its effective-heartbeat age (SEEN); STALE keys off SEEN."
               ]
             }
           ],
@@ -3146,7 +3167,7 @@
                 "--stale"
               ],
               "modes": [
-                "Renders the cross-machine worklist from the remote store; entries that cannot be decoded become error rows and do not change the exit code."
+                "Renders the cross-machine worklist from the remote store, flagging a machine STALE by its effective heartbeat (publish or claim activity, whichever is newer); entries that cannot be decoded become error rows and do not change the exit code."
               ]
             }
           ],
@@ -4706,7 +4727,7 @@
       "feature_refs": ["spec/features/fleet-quality/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb verify receipt", "flags": ["--ci-wait", "--deployed-revision", "--local-check", "--output", "--remote-target", "--terminal-cleanup"], "modes": ["Composes five closed, versioned producer documents into one machine-readable graduation receipt for one exact repository revision.", "Refuses prose, producer/schema mismatches, dirty or unequal local revisions, PR-only or failed CI, unequal remote or deployed revisions, future or non-monotonic timestamps, and cleanup that leaves source branches or campaign worktrees behind."]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb verify receipt", "flags": ["--ci-wait", "--deployed-revision", "--local-check", "--output", "--remote-target", "--terminal-cleanup"], "modes": ["Composes five closed, versioned producer documents into one machine-readable graduation receipt for one exact repository revision.", "Binds the GitHub Actions deployment run ID through its canonical immutable run URL and exact retained provider payload.", "Refuses prose, producer/schema mismatches, dirty or unequal local revisions, PR-only or failed CI, unequal remote or deployed revisions, future or non-monotonic timestamps, target-branch deletion, and cleanup that leaves source branches or campaign worktrees behind."]}], "limitation": null},
         "help": {"status": "Full", "anchors": [{"command": "wb verify receipt --help", "contains": ["--local-check", "--terminal-cleanup"]}], "limitation": null},
         "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/quality.md", "marker": "## Graduation receipts", "examples": ["wb verify receipt --local-check local-check.json --ci-wait ci-wait.json --remote-target remote-target.json --deployed-revision deployment.json --terminal-cleanup cleanup.json"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "cmd/wb/verify_receipt_test.go", "name": "TestVerifyReceiptComposesExactMachineReadableEvidence", "kind": "integration"}], "limitation": null}

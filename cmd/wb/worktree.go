@@ -634,6 +634,15 @@ refs after their archive has been sealed. A discarded apply requires --remote;
 an exact matching remote source branch is then retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
+
+--filter (see the root flag) narrows which repositories in the task are
+touched, the same "owner/repository slug contains this substring" semantics
+as wb branch cleanup --filter. A repository --filter excludes is left
+completely untouched and still reported, so one repository blocked on
+something abort cannot fix no longer makes the rest of the task un-abortable.
+The task remains non-terminal — and the remote claim, if any, is not
+released — until every repository is eventually resolved.
+
 The default is a dry-run plan.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -641,7 +650,7 @@ The default is a dry-run plan.`,
 				return err
 			}
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Base: base,
+				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
@@ -649,13 +658,25 @@ The default is a dry-run plan.`,
 			if err != nil {
 				return err
 			}
+			remaining := 0
+			for _, result := range results {
+				if result.Excluded {
+					remaining++
+				}
+			}
 			// Release only follows a disposition that actually ends the
 			// task on this machine: discarded drops it, handoff moves it to
 			// a successor. not_landed leaves the task expected to resume
-			// here, so the claim must stay put.
+			// here, so the claim must stay put. A --filter that left any
+			// repository untouched means the task is not actually finished,
+			// so the remote claim must not be released either.
 			disp := worktrees.AbortDisposition(disposition)
-			if apply && (disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff) {
+			releasable := disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff
+			switch {
+			case apply && releasable && remaining == 0:
 				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], remoteClaimWriter(command))
+			case apply && releasable && remaining > 0:
+				skippedAutoRelease(remoteClaimWriter(command), fmt.Sprintf("%d repositories excluded by --filter still remain", remaining))
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -663,6 +684,16 @@ The default is a dry-run plan.`,
 				return encoder.Encode(results)
 			}
 			for _, result := range results {
+				if result.Excluded {
+					reason := result.Reason
+					if reason == "" {
+						reason = "not evaluated"
+					}
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "excluded by --filter %s %s: %s\n", result.Repository, result.Disposition, reason); err != nil {
+						return err
+					}
+					continue
+				}
 				state := "would seal"
 				if result.Applied && result.WorktreeGone {
 					state = "sealed and removed"
@@ -670,6 +701,11 @@ The default is a dry-run plan.`,
 					state = "sealed and resumable"
 				}
 				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s\n", state, result.Repository, result.Disposition); err != nil {
+					return err
+				}
+			}
+			if remaining > 0 {
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%d repositories excluded by --filter remain unresolved for task %q\n", remaining, args[0]); err != nil {
 					return err
 				}
 			}
@@ -720,7 +756,14 @@ silently replacing the claim.
 
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
 into the private Work Log under WB_HOME before any worktree is created; prompt
-text never enters the worktree projection, source Git, or normal output.`,
+text never enters the worktree projection, source Git, or normal output.
+
+Pass --original-prompt-file - to supply the prompt on stdin instead of a path.
+WB reads stdin once, in memory, and writes the private 0600 archive itself
+under WB_HOME; no caller-owned staging file ever exists, so two concurrent
+invocations cannot archive each other's prompt by racing on a shared path.
+Empty or whitespace-only stdin is refused, and the bytes are never echoed
+back to stdout, stderr, or argv.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MinimumNArgs(1)(command, args); err != nil {
 				return err
@@ -735,6 +778,17 @@ text never enters the worktree projection, source Git, or normal output.`,
 				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
 				AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
 				RequireOriginalPrompt: true,
+			}
+			if originalPrompt == "-" {
+				stdinBytes, readErr := io.ReadAll(command.InOrStdin())
+				if readErr != nil {
+					return fmt.Errorf("read --original-prompt-file - from stdin: %w", readErr)
+				}
+				var stdinErr error
+				workLog, stdinErr = workLog.WithOriginalPromptFromStdin(stdinBytes)
+				if stdinErr != nil {
+					return stdinErr
+				}
 			}
 			repositories := args[1:]
 			if len(repositories) == 0 {
@@ -820,7 +874,7 @@ text never enters the worktree projection, source Git, or normal output.`,
 	command.Flags().StringVar(&model, "model", "", "required exact child model identifier, or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
-	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt; archived under WB_HOME only")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

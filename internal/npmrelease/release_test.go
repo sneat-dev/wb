@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/progress"
 	"gopkg.in/yaml.v3"
 )
 
@@ -143,6 +144,7 @@ func TestRunBoundsEachExternalCommandWithTimeout(t *testing.T) {
 
 func TestRunDispatchWaitAndRegistryEvidence(t *testing.T) {
 	t.Parallel()
+	var progressEvents []progress.Event
 	created := time.Now().UTC().Truncate(time.Second)
 	run := workflowRunFixture("123", "completed", "success", created.Add(time.Second))
 	runner := &fakeRunner{steps: []CommandResult{
@@ -155,7 +157,8 @@ func TestRunDispatchWaitAndRegistryEvidence(t *testing.T) {
 	}}
 	report, err := Run(context.Background(), []Release{testRelease()}, Options{
 		Apply: true, Runner: runner, Timeout: time.Second, PollInterval: 0,
-		Now: func() time.Time { return created },
+		Now:      func() time.Time { return created },
+		Progress: func(event progress.Event) { progressEvents = append(progressEvents, event) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +172,18 @@ func TestRunDispatchWaitAndRegistryEvidence(t *testing.T) {
 	}
 	if len(runner.calls) != 6 || !strings.Contains(runner.calls[2], "workflow run publish.yml") || !strings.Contains(runner.calls[5], "npm view @sneat/extension-assetus@0.1.0") {
 		t.Fatalf("commands = %v", runner.calls)
+	}
+	for _, phase := range []string{"resolve_head", "dispatch_workflow", "wait_workflow", "verify_registry"} {
+		found := false
+		for _, event := range progressEvents {
+			if event.Phase == phase {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("progress events %#v do not include %q", progressEvents, phase)
+		}
 	}
 	events, err := EventsFor(report)
 	if err != nil || len(events) != 1 {

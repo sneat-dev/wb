@@ -178,7 +178,7 @@ func newSessionResumeCmdWithDeps(deps sessionResumeDependencies) *cobra.Command 
 				if err != nil {
 					return err
 				}
-				defer lock.Close()
+				defer func() { _ = lock.Close() }()
 				state, err := store.LoadUnderLock(lock)
 				if err != nil {
 					return err
@@ -298,13 +298,13 @@ func readParkContext(command *cobra.Command, path string) ([]byte, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil
 	}
-	var reader io.Reader = command.InOrStdin()
+	reader := command.InOrStdin()
 	if path != "-" {
 		file, err := os.Open(path)
 		if err != nil {
 			return nil, err
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 		reader = file
 	}
 	raw, err := io.ReadAll(io.LimitReader(reader, sessionpark.MaxContinuationBytes+1))

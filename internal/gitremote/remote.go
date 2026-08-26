@@ -151,7 +151,7 @@ func safeSegment(segment string, repository bool) bool {
 		if !letter && !digit && character != '.' && character != '_' && character != '-' {
 			return false
 		}
-		if index == 0 && !letter && !digit && !(repository && character == '.') {
+		if index == 0 && !letter && !digit && (!repository || character != '.') {
 			return false
 		}
 	}

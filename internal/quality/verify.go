@@ -27,6 +27,31 @@ const (
 type RunOptions struct {
 	Timeout time.Duration
 	Retry   int
+	// Progress receives lifecycle events for external checks. Callers may use it
+	// for terminal diagnostics; reports remain the authoritative output.
+	Progress func(Progress)
+}
+
+// ProgressState identifies a visible quality-work transition.
+type ProgressState string
+
+const (
+	ProgressStarted             ProgressState = "started"
+	ProgressCompleted           ProgressState = "completed"
+	ProgressRepositoryCompleted ProgressState = "repository_completed"
+)
+
+// Progress describes one external check or a completed repository. Repository
+// is filled by the fleet runner, which owns cross-repository scheduling.
+type Progress struct {
+	Repository string
+	Language   string
+	Module     string
+	Check      Check
+	Command    string
+	State      ProgressState
+	Status     Status
+	Attempts   int
 }
 
 // VerificationReport records all conventional checks applicable to a
@@ -162,15 +187,32 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 		entry.Detail = "unsupported check"
 		return entry
 	}
+	reportQualityProgress(options, Progress{
+		Language: language, Module: module, Check: check, Command: entry.Command, State: ProgressStarted,
+	})
 	output, attempts, err := runWithOptions(ctx, options, dir, command[0], command[1:]...)
 	entry.Attempts = attempts
 	if err != nil {
 		entry.Status = StatusFailed
 		entry.Detail = commandError(entry.Command, output, err)
+		reportQualityProgress(options, Progress{
+			Language: language, Module: module, Check: check, Command: entry.Command,
+			State: ProgressCompleted, Status: entry.Status, Attempts: attempts,
+		})
 		return entry
 	}
 	entry.Status = StatusPassed
+	reportQualityProgress(options, Progress{
+		Language: language, Module: module, Check: check, Command: entry.Command,
+		State: ProgressCompleted, Status: entry.Status, Attempts: attempts,
+	})
 	return entry
+}
+
+func reportQualityProgress(options RunOptions, progress Progress) {
+	if options.Progress != nil {
+		options.Progress(progress)
+	}
 }
 
 type nodeManifest struct {
