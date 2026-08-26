@@ -75,6 +75,19 @@ func TestSSHDelivererUsesFixedArgvAndExactRequestStdin(t *testing.T) {
 	}
 }
 
+func TestSSHDelivererPassesConfiguredUserAsFixedArgv(t *testing.T) {
+	request, raw := courierTestRequest(t)
+	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
+	deliverer := newTestSSHDeliverer(t, sessionmove.SSHConfig{Host: "178.104.41.143", User: "ai"}, runner)
+	if _, err := deliverer.Deliver(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-l", "ai", "--", "178.104.41.143", defaultRemoteWBCommand, "--non-interactive", "session", "receive", "--format", "json"}
+	if !reflect.DeepEqual(runner.args, want) {
+		t.Fatalf("ssh argv = %#v, want %#v", runner.args, want)
+	}
+}
+
 func TestSSHDelivererUsesFixedRemoteWBCommandByDefault(t *testing.T) {
 	request, raw := courierTestRequest(t)
 	runner := &fakeCommandRunner{response: encodeCourierResult(t, validCourierResult(request, raw))}
@@ -358,6 +371,7 @@ func TestSSHDelivererBoundsOutputAndSanitizesFailure(t *testing.T) {
 func TestNewSSHDelivererRefusesUnsafeConfigBeforeExecutableLookup(t *testing.T) {
 	for name, config := range map[string]sessionmove.SSHConfig{
 		"host": {Host: "target;touch"},
+		"user": {Host: "target", User: "ai;touch"},
 		"path": {Host: "target", WBPath: "/opt/$HOME/wb"},
 	} {
 		t.Run(name, func(t *testing.T) {

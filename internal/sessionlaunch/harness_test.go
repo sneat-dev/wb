@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
@@ -39,6 +40,25 @@ func TestHarnessSpecRejectsUnsupportedHarness(t *testing.T) {
 	request.RequestedHarness = "shell"
 	if _, err := harnessSpec(request, "/target/worktree"); err == nil || !strings.Contains(err.Error(), "supported") {
 		t.Fatalf("error = %v, want supported-harness refusal", err)
+	}
+}
+
+func TestPrivateContinuationNeverAppearsInHarnessArgv(t *testing.T) {
+	secretPath := "/private/park-resumes/resume-secret/successor-context.md"
+	secretBody := "private continuation marker that must remain out of argv"
+	authority := sessionauthority.Launch{
+		AggregateID: "resume-secret", SuccessorWBSessionID: "wbs-successor", PredecessorWBSessionID: "wbs-source",
+		SourceRuntime: RuntimeCodex, SourceModel: "gpt-5", ContinuationKind: sessionauthority.ContinuationPrivate,
+		ContinuationPath: secretPath, ContinuationDigest: string(sessionmove.DigestBytes([]byte(secretBody))),
+	}
+	spec, err := harnessSpecForAuthority(authority, "/target/worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(spec.Args, "\x00")
+	if strings.Contains(joined, secretPath) || strings.Contains(joined, secretBody) ||
+		!strings.Contains(joined, sessionauthority.ContinuationEnvironment) {
+		t.Fatalf("private harness argv violates continuation contract: %#v", spec.Args)
 	}
 }
 

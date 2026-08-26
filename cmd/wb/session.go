@@ -33,6 +33,7 @@ liveness from the declared PID when the record is read.`,
 	command.AddCommand(newSessionParkCmd())
 	command.AddCommand(newSessionResumeCmd())
 	command.AddCommand(newSessionReceiveCmd())
+	command.AddCommand(newSessionReceiveParkCmd())
 	command.AddCommand(newSessionSendCmd())
 	command.AddCommand(newSessionRequestHandoffCmd())
 	command.AddCommand(newSessionReceiveMessageCmd())

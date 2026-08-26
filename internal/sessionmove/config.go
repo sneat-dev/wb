@@ -22,11 +22,15 @@ const (
 )
 
 type SSHConfig struct {
-	Host   string `yaml:"host" json:"host"`
+	Host string `yaml:"host" json:"host"`
+	// User is an optional target account. It is passed to OpenSSH as a fixed
+	// `-l` argv pair, never joined with Host or remote command text.
+	User   string `yaml:"user,omitempty" json:"user,omitempty"`
 	WBPath string `yaml:"wb_path,omitempty" json:"wb_path,omitempty"`
 }
 
 var safeRemotePathSegment = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
+var safeSSHUser = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
 
 // Validate rejects values that OpenSSH could reinterpret when it constructs
 // the remote shell command. Host is deliberately limited to a configured SSH
@@ -37,7 +41,13 @@ func (c SSHConfig) Validate() error {
 		return fmt.Errorf("ssh.host %q must start with a letter or digit and contain only letters, digits, dots, underscores, or dashes", c.Host)
 	}
 	if c.WBPath == "" {
-		return nil
+		if c.User == "" || safeSSHUser.MatchString(c.User) {
+			return nil
+		}
+		return fmt.Errorf("ssh.user %q must start with a letter or underscore and contain only letters, digits, underscores, or dashes", c.User)
+	}
+	if c.User != "" && !safeSSHUser.MatchString(c.User) {
+		return fmt.Errorf("ssh.user %q must start with a letter or underscore and contain only letters, digits, underscores, or dashes", c.User)
 	}
 	if !path.IsAbs(c.WBPath) || path.Clean(c.WBPath) != c.WBPath {
 		return fmt.Errorf("ssh.wb_path %q must be a clean absolute target path", c.WBPath)

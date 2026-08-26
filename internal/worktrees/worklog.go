@@ -1602,7 +1602,7 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	}
 	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
 	if claim.ParentClaimID != "" {
-		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" && claim.AcquiredVia != "external_handoff") {
+		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" && claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume") {
 			return fmt.Errorf("private successor claim metadata is invalid")
 		}
 		if claim.AcquiredVia == "external_handoff" {
@@ -1611,6 +1611,12 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 			if externalErr != nil {
 				return externalErr
 			}
+		} else if claim.AcquiredVia == "parked_session_resume" {
+			var parkedErr error
+			wantID, parkedErr = expectedParkedSessionClaimID(claim)
+			if parkedErr != nil {
+				return parkedErr
+			}
 		} else if claim.Version == 2 && claim.AcquiredVia != "recycle_failed" {
 			wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
 				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
@@ -1618,7 +1624,7 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
 		}
 	}
-	if claim.AcquiredVia != "external_handoff" && claim.ExternalHandoff != nil {
+	if claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume" && claim.ExternalHandoff != nil {
 		return fmt.Errorf("ordinary private claim carries unexpected external handoff evidence")
 	}
 	if wantID != claim.ClaimID {

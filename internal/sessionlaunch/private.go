@@ -1,18 +1,23 @@
 package sessionlaunch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/sessionpark"
+	"golang.org/x/sys/unix"
 )
 
 type privateLauncherDependencies struct {
@@ -47,7 +52,9 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 		return fmt.Errorf("invalid arguments")
 	}
 	storeRoot, handoffID, attemptID, expectedPlanDigest := args[0], args[1], args[2], sessionmove.Digest(args[3])
-	if !filepath.IsAbs(storeRoot) || filepath.Clean(storeRoot) != storeRoot || filepath.Base(storeRoot) != sessionmove.DirName {
+	storeKind := filepath.Base(storeRoot)
+	if !filepath.IsAbs(storeRoot) || filepath.Clean(storeRoot) != storeRoot ||
+		storeKind != sessionmove.DirName && storeKind != sessionpark.TargetDirName {
 		return fmt.Errorf("private launcher requires the exact clean absolute handoff store root")
 	}
 	store := sessionmove.NewStore(storeRoot)
@@ -61,10 +68,6 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 		return err
 	}
 	defer attempt.Close()
-	state, err := store.Load(handoffID)
-	if err != nil {
-		return err
-	}
 	plan, planDigest, err := launchState.loadPlan()
 	if err != nil {
 		return err
@@ -72,11 +75,23 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 	if planDigest != expectedPlanDigest {
 		return fmt.Errorf("private launcher plan digest %s does not match fixed tmux argv %s", planDigest, expectedPlanDigest)
 	}
-	if err := validatePrivatePlan(state, plan); err != nil {
-		return err
-	}
-	if err := verifyLauncherWorktree(plan, state.Request); err != nil {
-		return err
+	privateContinuation := ""
+	if storeKind == sessionmove.DirName {
+		state, err := store.Load(handoffID)
+		if err != nil {
+			return err
+		}
+		if err := validatePrivatePlan(state, plan); err != nil {
+			return err
+		}
+		if err := verifyLauncherWorktree(plan, state.Request); err != nil {
+			return err
+		}
+	} else {
+		privateContinuation, err = validatePrivateParkPlan(launchState, plan)
+		if err != nil {
+			return err
+		}
 	}
 	if plan.StoreRoot != storeRoot {
 		return fmt.Errorf("private launcher store root does not match immutable launch plan")
@@ -153,7 +168,7 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 	for {
 		release, _, releaseErr := attempt.loadRelease()
 		if releaseErr == nil {
-			if release.PID != record.PID || release.RequestDigest != state.Digest || release.PlanDigest != planDigest ||
+			if release.PID != record.PID || release.RequestDigest != plan.RequestDigest || release.PlanDigest != planDigest ||
 				release.ReadyDigest != readyDigest || ready.PlanDigest != planDigest {
 				return fmt.Errorf("immutable release selects a different launcher")
 			}
@@ -182,7 +197,11 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 		return recordFailure(err)
 	}
 	argv := append([]string{plan.HarnessExecutable}, plan.HarnessArgs...)
-	if err := deps.exec(plan.HarnessExecutable, argv, console.Env()); err != nil {
+	environment := console.Env()
+	if privateContinuation != "" {
+		environment = append(environment, sessionauthority.ContinuationEnvironment+"="+privateContinuation)
+	}
+	if err := deps.exec(plan.HarnessExecutable, argv, environment); err != nil {
 		return recordFailure(fmt.Errorf("exec fixed %s harness: %w", plan.Runtime, err))
 	}
 	return nil
@@ -195,6 +214,12 @@ func validatePrivatePlan(state sessionmove.State, plan launchPlan) error {
 		plan.Machine != request.TargetMachine || plan.TmuxName != "wb-session-"+request.SuccessorWBSessionID ||
 		plan.PinnedCommit != request.BundleCommit || plan.HandoverPath != request.HandoverPath ||
 		plan.StoreRoot == "" {
+		return fmt.Errorf("immutable launch plan does not match admitted handoff")
+	}
+	if plan.PinnedBranch != "" && plan.PinnedBranch != "wb-session/"+request.HandoffID ||
+		plan.AuthorityFile != "" && plan.AuthorityFile != "request.json" ||
+		plan.ContinuationKind != "" && plan.ContinuationKind != string(sessionauthority.ContinuationTracked) ||
+		plan.ContinuationDigest != "" && plan.ContinuationDigest != request.HandoverDigest {
 		return fmt.Errorf("immutable launch plan does not match admitted handoff")
 	}
 	spec, err := harnessSpec(request, plan.WorktreeDir)
@@ -239,6 +264,109 @@ func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request) error 
 		return fmt.Errorf("pinned handover digest changed before harness exec")
 	}
 	return nil
+}
+
+// validatePrivateParkPlan is intentionally separate from the unchanged
+// session-move validator above. It fully decodes the exact 0600 admitted
+// sessionpark envelope through a descriptor retained by launchState, derives
+// the expected launch authority from that envelope, and then compares every
+// plan field before the private continuation path can enter the environment.
+func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error) {
+	if plan.AuthorityFile != sessionpark.EnvelopeFileName ||
+		sessionauthority.ContinuationKind(plan.ContinuationKind) != sessionauthority.ContinuationPrivate {
+		return "", fmt.Errorf("parked launcher plan does not name the fixed private authority artifacts")
+	}
+	raw, err := readPrivateArtifactAt(state.handoff, sessionpark.EnvelopeFileName, sessionpark.MaxEnvelopeBytes)
+	if err != nil {
+		return "", fmt.Errorf("read admitted parked-session envelope: %w", err)
+	}
+	if !plan.RequestDigest.Matches(raw) {
+		return "", fmt.Errorf("admitted parked-session envelope digest changed")
+	}
+	envelope, err := sessionpark.DecodeEnvelope(raw)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := sessionpark.EncodeEnvelope(envelope)
+	if err != nil || !bytes.Equal(canonical, raw) {
+		return "", fmt.Errorf("admitted parked-session envelope is not canonical")
+	}
+	continuationPath := filepath.Join(plan.StoreRoot, plan.HandoffID, sessionpark.SuccessorContextFileName)
+	continuation, err := readPrivateArtifactAt(state.handoff, sessionpark.SuccessorContextFileName, sessionpark.MaxSuccessorContextBytes)
+	if err != nil {
+		return "", fmt.Errorf("read private parked successor context: %w", err)
+	}
+	authority, err := sessionpark.LaunchAuthority(envelope.Request, plan.RequestDigest, continuationPath, continuation)
+	if err != nil {
+		return "", err
+	}
+	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != authority.AggregateID ||
+		plan.SuccessorWBSessionID != authority.SuccessorWBSessionID || plan.PredecessorWBSessionID != authority.PredecessorWBSessionID ||
+		plan.Machine != authority.TargetMachine || plan.TmuxName != "wb-session-"+authority.SuccessorWBSessionID ||
+		plan.PinnedCommit != authority.PinnedCommit || plan.PinnedBranch != authority.PinnedBranch ||
+		plan.HandoverPath != authority.ContinuationPath || plan.ContinuationDigest != sessionmove.Digest(authority.ContinuationDigest) ||
+		plan.StoreRoot == "" || filepath.Base(plan.StoreRoot) != sessionpark.TargetDirName {
+		return "", fmt.Errorf("immutable launch plan does not match admitted parked-session envelope")
+	}
+	spec, err := harnessSpecForAuthority(authority, plan.WorktreeDir)
+	if err != nil {
+		return "", err
+	}
+	if plan.Runtime != spec.Runtime || plan.Model != spec.Model || filepath.Base(plan.HarnessExecutable) != spec.Executable ||
+		!reflect.DeepEqual(plan.HarnessArgs, spec.Args) {
+		return "", fmt.Errorf("immutable parked launch plan does not match fixed %s harness argv", spec.Runtime)
+	}
+	for _, argument := range plan.HarnessArgs {
+		if strings.Contains(argument, continuationPath) || strings.Contains(argument, envelope.Request.Continuation) {
+			return "", fmt.Errorf("private continuation data must not appear in harness argv")
+		}
+	}
+	if !filepath.IsAbs(plan.WBExecutable) || !filepath.IsAbs(plan.HarnessExecutable) || !filepath.IsAbs(plan.WorktreeDir) ||
+		!filepath.IsAbs(plan.StoreRoot) || filepath.Clean(plan.StoreRoot) != plan.StoreRoot {
+		return "", fmt.Errorf("immutable parked launch plan contains a non-absolute target path")
+	}
+	if _, err := cleanAbsoluteExecutable(plan.WBExecutable); err != nil {
+		return "", fmt.Errorf("validate fixed WB executable: %w", err)
+	}
+	if _, err := cleanAbsoluteExecutable(plan.HarnessExecutable); err != nil {
+		return "", fmt.Errorf("validate fixed harness executable: %w", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	wantInfo, err := os.Stat(plan.WorktreeDir)
+	if err != nil {
+		return "", err
+	}
+	gotInfo, err := os.Stat(cwd)
+	if err != nil || !os.SameFile(wantInfo, gotInfo) {
+		return "", fmt.Errorf("private launcher is not rooted in the pinned target worktree")
+	}
+	if !plan.ContinuationDigest.Matches(continuation) || !bytes.HasPrefix(continuation, []byte(envelope.Request.Continuation)) {
+		return "", fmt.Errorf("private parked continuation conflicts with admitted envelope")
+	}
+	return continuationPath, nil
+}
+
+func readPrivateArtifactAt(directory *os.File, name string, maximum int) ([]byte, error) {
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 ||
+		os.FileMode(stat.Mode).Perm() != 0o600 || stat.Size < 0 || stat.Size > int64(maximum) {
+		return nil, fmt.Errorf("private session artifact is not one bounded 0600 regular file")
+	}
+	raw := make([]byte, int(stat.Size))
+	read, err := file.Read(raw)
+	if err != nil || read != len(raw) {
+		return nil, fmt.Errorf("private session artifact changed while being read")
+	}
+	return bytes.Clone(raw), nil
 }
 
 func launcherError(err error) int {

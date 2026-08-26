@@ -207,7 +207,10 @@ func appendLocalEventWithCustody(worktree string, event LocalWorkLogEvent, recor
 		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err
 	}
 	defer unlock()
+	return appendLocalEventUnderLock(worktree, directory, event)
+}
 
+func appendLocalEventUnderLock(worktree string, directory *os.File, event LocalWorkLogEvent) (LocalWorkLogEvent, LocalWorkLogProjection, error) {
 	existing, journalRepair, err := readLocalEventsForAppend(directory)
 	if err != nil {
 		return LocalWorkLogEvent{}, LocalWorkLogProjection{}, err

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -32,6 +33,7 @@ var ErrRetryableLaunch = errors.New("successor launcher has an exactly retryable
 type Prepared struct {
 	Request       sessionmove.Request
 	RequestDigest sessionmove.Digest
+	Authority     sessionauthority.Launch
 	Session       session.Record
 	AttemptID     string
 	AttemptIndex  uint64
@@ -99,7 +101,45 @@ type Options struct {
 	WorktreeDir   string
 	PinnedCommit  string
 	ExecutionLock *sessionmove.ExecutionLock
+	// Authority/StoreRoot/Fence are the protocol-neutral path used by parked
+	// bundles. Existing session-move callers leave them zero and are adapted
+	// byte-for-byte from Request, Store, and ExecutionLock.
+	Authority     *sessionauthority.Launch
+	StoreRoot     string
+	Fence         sessionauthority.Fence
 	BeforeRelease BeforeRelease
+}
+
+type resolvedAuthority struct {
+	launch    sessionauthority.Launch
+	storeRoot string
+	fence     sessionauthority.Fence
+}
+
+func resolveAuthority(options Options) (resolvedAuthority, error) {
+	if options.Authority == nil {
+		if _, err := sessionmove.EncodeRequest(options.Request); err != nil {
+			return resolvedAuthority{}, err
+		}
+		launch := sessionauthority.Launch{
+			AggregateID: options.Request.HandoffID, AggregateDigest: string(options.RequestDigest), AggregateFile: "request.json",
+			SuccessorWBSessionID: options.Request.SuccessorWBSessionID, PredecessorWBSessionID: options.Request.PredecessorWBSessionID,
+			TargetMachine: options.Request.TargetMachine, SourceRuntime: options.Request.SourceRuntime,
+			SourceModel: options.Request.SourceModel, RequestedHarness: options.Request.RequestedHarness,
+			PinnedCommit: options.Request.BundleCommit, PinnedBranch: "wb-session/" + options.Request.HandoffID,
+			ContinuationKind: sessionauthority.ContinuationTracked, ContinuationPath: options.Request.HandoverPath,
+			ContinuationDigest: string(options.Request.HandoverDigest),
+		}
+		if err := launch.Validate(); err != nil {
+			return resolvedAuthority{}, err
+		}
+		return resolvedAuthority{launch: launch, storeRoot: options.Store.Root, fence: options.ExecutionLock}, nil
+	}
+	launch := *options.Authority
+	if err := launch.Validate(); err != nil {
+		return resolvedAuthority{}, err
+	}
+	return resolvedAuthority{launch: launch, storeRoot: options.StoreRoot, fence: options.Fence}, nil
 }
 
 type Result struct {
@@ -174,28 +214,31 @@ func Inspect(ctx context.Context, options Options) (Result, error) {
 }
 
 func startWithDependencies(ctx context.Context, options Options, deps dependencies) (Result, error) {
-	if options.ExecutionLock == nil || !options.ExecutionLock.HeldForStore(options.Store.Root, options.Request, options.RequestDigest) {
-		return Result{}, fmt.Errorf("successor launch requires the exact held handoff execution lock")
-	}
-	if _, err := sessionmove.EncodeRequest(options.Request); err != nil {
+	resolved, err := resolveAuthority(options)
+	if err != nil {
 		return Result{}, err
 	}
-	if options.PinnedCommit != options.Request.BundleCommit {
-		return Result{}, fmt.Errorf("successor pinned commit %s does not match bundle commit %s", options.PinnedCommit, options.Request.BundleCommit)
+	authority := resolved.launch
+	digest := sessionmove.Digest(authority.AggregateDigest)
+	if resolved.fence == nil || !resolved.fence.HeldForSession(resolved.storeRoot, authority.AggregateID, authority.AggregateDigest) {
+		return Result{}, fmt.Errorf("successor launch requires the exact held handoff execution lock")
+	}
+	if options.PinnedCommit != authority.PinnedCommit {
+		return Result{}, fmt.Errorf("successor pinned commit %s does not match admitted commit %s", options.PinnedCommit, authority.PinnedCommit)
 	}
 	worktree, err := filepath.Abs(options.WorktreeDir)
 	if err != nil || filepath.Clean(worktree) != worktree {
 		return Result{}, fmt.Errorf("successor worktree must be a clean absolute path")
 	}
-	storeRoot, err := filepath.Abs(options.Store.Root)
-	if err != nil || filepath.Clean(storeRoot) != storeRoot || storeRoot != options.Store.Root {
+	storeRoot, err := filepath.Abs(resolved.storeRoot)
+	if err != nil || filepath.Clean(storeRoot) != storeRoot || storeRoot != resolved.storeRoot {
 		return Result{}, fmt.Errorf("successor handoff store must be a clean absolute path")
 	}
-	handoffAuthority, err := options.ExecutionLock.RetainHandoffForStore(options.Store.Root, options.Request, options.RequestDigest)
+	handoffAuthority, err := resolved.fence.RetainSessionDir(resolved.storeRoot, authority.AggregateID, authority.AggregateDigest)
 	if err != nil {
 		return Result{}, err
 	}
-	state, err := openLaunchStateFromHandoff(options.Request.HandoffID, handoffAuthority, true)
+	state, err := openLaunchStateFromHandoff(authority.AggregateID, handoffAuthority, true)
 	if err != nil {
 		return Result{}, err
 	}
@@ -203,14 +246,14 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 	plan, planDigest, loadPlanErr := state.loadPlan()
 	planReplay := loadPlanErr == nil
 	if planReplay {
-		if err := validatePlanForOptions(plan, options, worktree); err != nil {
+		if err := validatePlanForOptions(plan, options, resolved, worktree); err != nil {
 			return Result{}, err
 		}
 	} else {
 		if !errors.Is(loadPlanErr, os.ErrNotExist) {
 			return Result{}, loadPlanErr
 		}
-		spec, specErr := harnessSpec(options.Request, worktree)
+		spec, specErr := harnessSpecForAuthority(authority, worktree)
 		if specErr != nil {
 			return Result{}, specErr
 		}
@@ -231,11 +274,14 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 			return Result{}, executableErr
 		}
 		plan = launchPlan{
-			SchemaVersion: launchSchemaVersion, HandoffID: options.Request.HandoffID, RequestDigest: options.RequestDigest,
-			SuccessorWBSessionID: options.Request.SuccessorWBSessionID, PredecessorWBSessionID: options.Request.PredecessorWBSessionID,
-			Machine: options.Request.TargetMachine, TmuxName: "wb-session-" + options.Request.SuccessorWBSessionID,
-			Runtime: spec.Runtime, Model: spec.Model, StoreRoot: storeRoot, WorktreeDir: worktree, PinnedCommit: options.PinnedCommit,
-			HandoverPath: options.Request.HandoverPath, WBExecutable: wbExecutable,
+			SchemaVersion: launchSchemaVersion, HandoffID: authority.AggregateID, RequestDigest: digest,
+			SuccessorWBSessionID: authority.SuccessorWBSessionID, PredecessorWBSessionID: authority.PredecessorWBSessionID,
+			Machine: authority.TargetMachine, TmuxName: "wb-session-" + authority.SuccessorWBSessionID,
+			Runtime: spec.Runtime, Model: spec.Model, StoreRoot: storeRoot, WorktreeDir: worktree,
+			PinnedCommit: options.PinnedCommit, PinnedBranch: authority.PinnedBranch,
+			HandoverPath: authority.ContinuationPath, AuthorityFile: authority.AggregateFile,
+			ContinuationKind: string(authority.ContinuationKind), ContinuationDigest: sessionmove.Digest(authority.ContinuationDigest),
+			WBExecutable:      wbExecutable,
 			HarnessExecutable: harnessPath, HarnessArgs: append([]string(nil), spec.Args...),
 		}
 		plan, planDigest, _, err = state.savePlan(plan)
@@ -337,7 +383,7 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 	if err := deps.verifyPinned(ctx, plan); err != nil {
 		return Result{}, err
 	}
-	prepared := Prepared{Request: options.Request, RequestDigest: options.RequestDigest, Session: ready.Session,
+	prepared := Prepared{Request: options.Request, RequestDigest: digest, Authority: authority, Session: ready.Session,
 		AttemptID: attempt.id, AttemptIndex: attempt.index,
 		WorktreeDir: plan.WorktreeDir, PinnedCommit: plan.PinnedCommit}
 	targetWorkLogRef := ""
@@ -598,8 +644,12 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 	if err != nil || string(bytes.TrimSpace(head)) != plan.PinnedCommit {
 		return fmt.Errorf("pinned successor worktree HEAD no longer equals %s", plan.PinnedCommit)
 	}
+	pinnedBranch := plan.PinnedBranch
+	if pinnedBranch == "" { // Read compatibility for already-written launch-plan schema v1 artifacts.
+		pinnedBranch = "wb-session/" + plan.HandoffID
+	}
 	branch, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
-	if err != nil || string(bytes.TrimSpace(branch)) != "wb-session/"+plan.HandoffID {
+	if err != nil || string(bytes.TrimSpace(branch)) != pinnedBranch {
 		return fmt.Errorf("pinned successor worktree is not on its exact WB session branch")
 	}
 	status, err := exec.CommandContext(ctx, gitPath, "-C", plan.WorktreeDir, "status", "--porcelain=v1", "--untracked-files=all").Output()
@@ -613,14 +663,18 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 }
 
 func inspectWithDependencies(ctx context.Context, options Options, deps dependencies, replay bool) (Result, error) {
-	if options.ExecutionLock == nil {
-		return Result{}, fmt.Errorf("successor inspection requires the exact held handoff execution lock")
-	}
-	handoffAuthority, err := options.ExecutionLock.RetainHandoffForStore(options.Store.Root, options.Request, options.RequestDigest)
+	resolved, err := resolveAuthority(options)
 	if err != nil {
 		return Result{}, err
 	}
-	state, err := openLaunchStateFromHandoff(options.Request.HandoffID, handoffAuthority, false)
+	if resolved.fence == nil || !resolved.fence.HeldForSession(resolved.storeRoot, resolved.launch.AggregateID, resolved.launch.AggregateDigest) {
+		return Result{}, fmt.Errorf("successor inspection requires the exact held handoff execution lock")
+	}
+	handoffAuthority, err := resolved.fence.RetainSessionDir(resolved.storeRoot, resolved.launch.AggregateID, resolved.launch.AggregateDigest)
+	if err != nil {
+		return Result{}, err
+	}
+	state, err := openLaunchStateFromHandoff(resolved.launch.AggregateID, handoffAuthority, false)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Result{}, ErrNotReleased
@@ -635,7 +689,11 @@ func inspectWithDependencies(ctx context.Context, options Options, deps dependen
 		}
 		return Result{}, err
 	}
-	if err := validatePlanForOptions(plan, options, options.WorktreeDir); err != nil {
+	worktree, err := filepath.Abs(options.WorktreeDir)
+	if err != nil || filepath.Clean(worktree) != worktree {
+		return Result{}, fmt.Errorf("successor worktree must be a clean absolute path")
+	}
+	if err := validatePlanForOptions(plan, options, resolved, worktree); err != nil {
 		return Result{}, err
 	}
 	started, err := state.loadStarted()
@@ -845,16 +903,28 @@ func cleanAbsoluteExecutable(path string) (string, error) {
 	return path, nil
 }
 
-func validatePlanForOptions(plan launchPlan, options Options, worktree string) error {
-	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != options.Request.HandoffID || plan.RequestDigest != options.RequestDigest ||
-		plan.SuccessorWBSessionID != options.Request.SuccessorWBSessionID || plan.PredecessorWBSessionID != options.Request.PredecessorWBSessionID ||
-		plan.Machine != options.Request.TargetMachine || plan.TmuxName != "wb-session-"+options.Request.SuccessorWBSessionID ||
-		plan.StoreRoot != options.Store.Root ||
-		plan.WorktreeDir != worktree || plan.PinnedCommit != options.PinnedCommit ||
-		plan.HandoverPath != options.Request.HandoverPath {
+func validatePlanForOptions(plan launchPlan, options Options, resolved resolvedAuthority, worktree string) error {
+	authority := resolved.launch
+	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != authority.AggregateID || plan.RequestDigest != sessionmove.Digest(authority.AggregateDigest) ||
+		plan.SuccessorWBSessionID != authority.SuccessorWBSessionID || plan.PredecessorWBSessionID != authority.PredecessorWBSessionID ||
+		plan.Machine != authority.TargetMachine || plan.TmuxName != "wb-session-"+authority.SuccessorWBSessionID ||
+		plan.StoreRoot != resolved.storeRoot || plan.WorktreeDir != worktree ||
+		plan.PinnedCommit != options.PinnedCommit || plan.PinnedCommit != authority.PinnedCommit ||
+		plan.HandoverPath != authority.ContinuationPath {
 		return fmt.Errorf("immutable launch plan conflicts with the admitted request or pinned worktree")
 	}
-	spec, err := harnessSpec(options.Request, worktree)
+	if options.Authority == nil {
+		if plan.PinnedBranch != "" && plan.PinnedBranch != authority.PinnedBranch ||
+			plan.AuthorityFile != "" && plan.AuthorityFile != authority.AggregateFile ||
+			plan.ContinuationKind != "" && plan.ContinuationKind != string(authority.ContinuationKind) ||
+			plan.ContinuationDigest != "" && plan.ContinuationDigest != sessionmove.Digest(authority.ContinuationDigest) {
+			return fmt.Errorf("immutable legacy launch plan conflicts with admitted session-move authority")
+		}
+	} else if plan.PinnedBranch != authority.PinnedBranch || plan.AuthorityFile != authority.AggregateFile ||
+		plan.ContinuationKind != string(authority.ContinuationKind) || plan.ContinuationDigest != sessionmove.Digest(authority.ContinuationDigest) {
+		return fmt.Errorf("immutable launch plan conflicts with admitted parked-session authority")
+	}
+	spec, err := harnessSpecForAuthority(authority, worktree)
 	if err != nil {
 		return err
 	}

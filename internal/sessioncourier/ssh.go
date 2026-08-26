@@ -114,10 +114,14 @@ func (d *sshDeliverer) Deliver(ctx context.Context, raw []byte) (sessionreceive.
 		"-T",
 		"-o", "BatchMode=yes",
 		"-o", fmt.Sprintf("ConnectTimeout=%d", sshConnectTimeout),
-		"--",
-		d.config.Host,
-		remoteWB, "--non-interactive", "session", "receive", "--format", "json",
 	}
+	if d.config.User != "" {
+		args = append(args, "-l", d.config.User)
+	}
+	args = append(args,
+		"--", d.config.Host,
+		remoteWB, "--non-interactive", "session", "receive", "--format", "json",
+	)
 	var stdout, stderr boundedBuffer
 	stdout.limit = maxSSHStdoutBytes
 	stderr.limit = maxSSHStderrBytes

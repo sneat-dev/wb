@@ -68,6 +68,14 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
       ssh:
         host: "vm;touch"
 `,
+		"ssh user shell separator": `session_move:
+  targets:
+    vm:
+      default_courier: ssh
+      ssh:
+        host: vm
+        user: "ai;touch"
+`,
 		"ssh host variable expansion": `session_move:
   targets:
     vm:
@@ -173,6 +181,7 @@ func TestLoadConfigRejectsUnsafeCourierArguments(t *testing.T) {
 func TestSSHConfigAllowsFixedCommandOrShellInertAbsolutePath(t *testing.T) {
 	for _, config := range []SSHConfig{
 		{Host: "hetzner-vm1"},
+		{Host: "178.104.41.143", User: "ai"},
 		{Host: "hetzner.vm_1", WBPath: "/home/ai/go/bin/wb-v1.2+local"},
 	} {
 		if err := config.Validate(); err != nil {

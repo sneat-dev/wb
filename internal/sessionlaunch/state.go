@@ -43,7 +43,11 @@ type launchPlan struct {
 	StoreRoot              string             `json:"store_root"`
 	WorktreeDir            string             `json:"worktree_dir"`
 	PinnedCommit           string             `json:"pinned_commit"`
+	PinnedBranch           string             `json:"pinned_branch"`
 	HandoverPath           string             `json:"handover_path"`
+	AuthorityFile          string             `json:"authority_file"`
+	ContinuationKind       string             `json:"continuation_kind"`
+	ContinuationDigest     sessionmove.Digest `json:"continuation_digest"`
 	WBExecutable           string             `json:"wb_executable"`
 	HarnessExecutable      string             `json:"harness_executable"`
 	HarnessArgs            []string           `json:"harness_args"`

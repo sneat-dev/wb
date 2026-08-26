@@ -4,23 +4,39 @@ package sessionpark
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
+	"github.com/sneat-dev/wb/internal/sessionmove"
 	"golang.org/x/sys/unix"
 )
 
 const (
 	SchemaVersion        = 1
 	MaxContinuationBytes = 64 << 10
+	maxBundleBytes       = 4 << 20
+	maxParkedWorktrees   = 1024
+
+	sourceBundleFileName       = "bundle.json"
+	sourceContinuationFileName = "continuation.md"
+	sourceEventsDirName        = "events"
+	sourceResumeLockName       = "resume.lock"
 )
 
 type Status string
@@ -33,15 +49,23 @@ const (
 // Worktree is exact local evidence at park time. Dirty content is intentionally
 // not captured; it remains in place for local resume and fails closed remotely.
 type Worktree struct {
-	Repository    string `json:"repository"`
-	CanonicalDir  string `json:"canonical_dir,omitempty"`
-	WorktreeDir   string `json:"worktree_dir"`
-	WorktreesRoot string `json:"worktrees_root,omitempty"`
-	Branch        string `json:"branch"`
-	Head          string `json:"head"`
-	Dirty         bool   `json:"dirty"`
-	Status        string `json:"status,omitempty"`
-	RemoteHead    string `json:"remote_head,omitempty"`
+	Repository string `json:"repository"`
+	// RepositoryRemote is the credential-free canonical fetch URL captured at
+	// park time. Remote resume never rediscovers this mutable local setting.
+	RepositoryRemote string `json:"repository_remote,omitempty"`
+	CanonicalDir     string `json:"canonical_dir,omitempty"`
+	WorktreeDir      string `json:"worktree_dir"`
+	WorktreesRoot    string `json:"worktrees_root,omitempty"`
+	Branch           string `json:"branch"`
+	Head             string `json:"head"`
+	Dirty            bool   `json:"dirty"`
+	Status           string `json:"status,omitempty"`
+	RemoteHead       string `json:"remote_head,omitempty"`
+	// WorkLogReference binds this member to the source session's exact active
+	// claim. OwnerEventID binds it to the precise source custody record, so a
+	// later sequential session cannot be mistaken for the parked owner.
+	WorkLogReference string `json:"work_log_reference,omitempty"`
+	OwnerEventID     string `json:"owner_event_id,omitempty"`
 }
 
 type Bundle struct {
@@ -54,21 +78,43 @@ type Bundle struct {
 }
 
 type Event struct {
-	SchemaVersion int             `json:"schema_version"`
-	Sequence      uint64          `json:"sequence"`
-	Type          string          `json:"type"`
-	At            time.Time       `json:"at"`
-	Successor     *session.Record `json:"successor,omitempty"`
+	SchemaVersion  int                `json:"schema_version"`
+	Sequence       uint64             `json:"sequence"`
+	Type           string             `json:"type"`
+	At             time.Time          `json:"at"`
+	Successor      *session.Record    `json:"successor,omitempty"`
+	RemoteResumeID string             `json:"remote_resume_id,omitempty"`
+	RequestDigest  sessionmove.Digest `json:"request_digest,omitempty"`
+	TargetMachine  string             `json:"target_machine,omitempty"`
 }
 
 type State struct {
-	Bundle    Bundle          `json:"bundle"`
-	Events    []Event         `json:"events"`
-	Status    Status          `json:"status"`
-	Successor *session.Record `json:"successor,omitempty"`
+	Bundle        Bundle          `json:"bundle"`
+	Events        []Event         `json:"events"`
+	Status        Status          `json:"status"`
+	Successor     *session.Record `json:"successor,omitempty"`
+	RemoteReceipt *Receipt        `json:"remote_receipt,omitempty"`
 }
 
 type Store struct{ Root string }
+
+type SourceLock struct {
+	mu         sync.Mutex
+	root       *os.File
+	aggregate  *os.File
+	bundleFile *os.File
+	file       *os.File
+	rootPath   string
+	parkID     string
+	bundle     Bundle
+}
+
+type RemoteAdmission struct {
+	Envelope Envelope
+	Raw      []byte
+	Digest   sessionmove.Digest
+	Replay   bool
+}
 
 func NewStore(root string) Store { return Store{Root: root} }
 
@@ -84,21 +130,45 @@ func (s Store) Create(bundle Bundle) (Bundle, error) {
 	if err := validateBundle(bundle); err != nil {
 		return Bundle{}, err
 	}
-	dir := filepath.Join(s.Root, bundle.ParkedSessionID)
-	if err := os.MkdirAll(s.Root, 0o755); err != nil {
-		return Bundle{}, err
-	}
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		return Bundle{}, fmt.Errorf("create parked session aggregate: %w", err)
-	}
-	raw, err := json.MarshalIndent(bundle, "", "  ")
+	raw, err := EncodeBundle(bundle)
 	if err != nil {
 		return Bundle{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "bundle.json"), append(raw, '\n'), 0o600); err != nil {
+	root, err := openPrivateStoreRoot(s.Root, true)
+	if err != nil {
 		return Bundle{}, err
 	}
-	if err := os.Mkdir(filepath.Join(dir, "events"), 0o755); err != nil {
+	defer root.Close()
+	if err := unix.Mkdirat(int(root.Fd()), bundle.ParkedSessionID, 0o700); err != nil {
+		return Bundle{}, fmt.Errorf("create parked session aggregate: %w", err)
+	}
+	aggregate, err := openPrivateDirectoryAt(root, bundle.ParkedSessionID)
+	if err != nil {
+		return Bundle{}, err
+	}
+	defer aggregate.Close()
+	if err := writeExactPrivateAt(aggregate, sourceBundleFileName, raw); err != nil {
+		return Bundle{}, fmt.Errorf("persist exact parked session bundle: %w", err)
+	}
+	if err := writeExactPrivateAt(aggregate, sourceContinuationFileName, []byte(bundle.Continuation)); err != nil {
+		return Bundle{}, fmt.Errorf("persist private parked session continuation: %w", err)
+	}
+	if err := unix.Mkdirat(int(aggregate.Fd()), sourceEventsDirName, 0o700); err != nil {
+		return Bundle{}, err
+	}
+	events, err := openPrivateDirectoryAt(aggregate, sourceEventsDirName)
+	if err != nil {
+		return Bundle{}, err
+	}
+	if err := events.Sync(); err != nil {
+		_ = events.Close()
+		return Bundle{}, err
+	}
+	_ = events.Close()
+	if err := aggregate.Sync(); err != nil {
+		return Bundle{}, err
+	}
+	if err := root.Sync(); err != nil {
 		return Bundle{}, err
 	}
 	return bundle, nil
@@ -108,21 +178,30 @@ func (s Store) Create(bundle Bundle) (Bundle, error) {
 // used to repair a crash between aggregate publication and lifecycle marking,
 // so retry never allocates a second parked identity.
 func (s Store) FindBySource(wbSessionID string) (Bundle, bool, error) {
-	entries, err := os.ReadDir(s.Root)
-	if errors.Is(err, os.ErrNotExist) {
+	if !sessionauthority.ValidID(wbSessionID) {
+		return Bundle{}, false, fmt.Errorf("source WB session ID is invalid")
+	}
+	root, err := openPrivateStoreRoot(s.Root, false)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
 		return Bundle{}, false, nil
 	}
 	if err != nil {
 		return Bundle{}, false, err
 	}
+	defer root.Close()
+	if _, err := root.Seek(0, io.SeekStart); err != nil {
+		return Bundle{}, false, err
+	}
+	entries, err := root.ReadDir(-1)
+	if err != nil {
+		return Bundle{}, false, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
+		if !entry.IsDir() || !validParkID(entry.Name()) {
+			return Bundle{}, false, fmt.Errorf("unexpected parked session store artifact %q", entry.Name())
 		}
 		state, loadErr := s.Load(entry.Name())
-		if errors.Is(loadErr, os.ErrNotExist) {
-			continue
-		}
 		if loadErr != nil {
 			return Bundle{}, false, loadErr
 		}
@@ -134,125 +213,81 @@ func (s Store) FindBySource(wbSessionID string) (Bundle, bool, error) {
 }
 
 func (s Store) Load(id string) (State, error) {
-	if strings.TrimSpace(id) == "" || strings.ContainsAny(id, `/\\`) {
-		return State{}, fmt.Errorf("invalid parked session ID %q", id)
+	if !validParkID(id) {
+		return State{}, fmt.Errorf("invalid parked session ID")
 	}
-	dir := filepath.Join(s.Root, id)
-	raw, err := os.ReadFile(filepath.Join(dir, "bundle.json"))
+	root, err := openPrivateStoreRoot(s.Root, false)
 	if err != nil {
-		return State{}, fmt.Errorf("load parked session %s: %w", id, err)
+		return State{}, fmt.Errorf("open parked session store: %w", err)
 	}
-	var bundle Bundle
-	if err := json.Unmarshal(raw, &bundle); err != nil {
-		return State{}, err
+	defer root.Close()
+	aggregate, err := openPrivateDirectoryAt(root, id)
+	if err != nil {
+		return State{}, fmt.Errorf("open parked session aggregate: %w", err)
 	}
-	if err := validateBundle(bundle); err != nil {
-		return State{}, err
-	}
-	entries, err := os.ReadDir(filepath.Join(dir, "events"))
+	defer aggregate.Close()
+	bundle, _, err := loadBundleAt(aggregate, id)
 	if err != nil {
 		return State{}, err
 	}
-	state := State{Bundle: bundle, Status: StatusParked, Events: []Event{}}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		eventRaw, e := os.ReadFile(filepath.Join(dir, "events", entry.Name()))
-		if e != nil {
-			return State{}, e
-		}
-		var event Event
-		if e = json.Unmarshal(eventRaw, &event); e != nil {
-			return State{}, e
-		}
-		state.Events = append(state.Events, event)
-		if event.Type == "resumed" {
-			state.Status = StatusResumed
-			state.Successor = event.Successor
-		}
-	}
-	return state, nil
+	return loadSourceStateAt(aggregate, bundle)
 }
 
 func (s Store) Resume(id string, successor session.Record, now time.Time) (State, error) {
-	state, err := s.Load(id)
+	lock, err := s.Acquire(context.Background(), id)
 	if err != nil {
 		return State{}, err
-	}
-	if state.Status == StatusResumed {
-		// The durable first successor wins. A retry returns that immutable
-		// lineage even when the caller has since restarted its local process.
-		return state, nil
-	}
-	if successor.PID <= 0 || successor.WBSessionID == "" {
-		return State{}, fmt.Errorf("successor must have a stable WB session ID and positive PID")
-	}
-	if err := os.MkdirAll(filepath.Join(s.Root, id), 0o755); err != nil {
-		return State{}, err
-	}
-	lockPath := filepath.Join(s.Root, id, "resume.lock")
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return State{}, fmt.Errorf("open parked session resume fence: %w", err)
 	}
 	defer lock.Close()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
-		return State{}, fmt.Errorf("lock parked session resume fence: %w", err)
-	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-	// Re-read under the fence; a concurrent successor may have won while this
-	// caller was loading the aggregate above.
-	state, err = s.Load(id)
-	if err != nil {
-		return State{}, err
-	}
-	if state.Status == StatusResumed {
-		return state, nil
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	event := Event{SchemaVersion: SchemaVersion, Sequence: uint64(len(state.Events) + 1), Type: "resumed", At: now.UTC(), Successor: &successor}
-	raw, err := json.MarshalIndent(event, "", "  ")
-	if err != nil {
-		return State{}, err
-	}
-	eventsDir := filepath.Join(s.Root, id, "events")
-	name := fmt.Sprintf("%020d.json", event.Sequence)
-	file, err := os.OpenFile(filepath.Join(eventsDir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		return s.Load(id)
-	}
-	if err != nil {
-		return State{}, err
-	}
-	if _, err := file.Write(append(raw, '\n')); err != nil {
-		_ = file.Close()
-		return State{}, err
-	}
-	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		return State{}, err
-	}
-	if err := file.Close(); err != nil {
-		return State{}, err
-	}
-	return s.Load(id)
+	return s.ResumeUnderLock(lock, successor, now)
 }
 
 func validateBundle(bundle Bundle) error {
 	if bundle.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("parked session schema_version %d unsupported; want %d", bundle.SchemaVersion, SchemaVersion)
 	}
-	if bundle.ParkedSessionID == "" || strings.ContainsAny(bundle.ParkedSessionID, `/\\`) {
+	if !validParkID(bundle.ParkedSessionID) {
 		return fmt.Errorf("parked session ID is invalid")
 	}
-	if bundle.Source.PID <= 0 || bundle.Source.WBSessionID == "" {
+	if bundle.Source.PID <= 0 || !sessionauthority.ValidID(bundle.Source.WBSessionID) ||
+		!sessionauthority.ValidID(bundle.Source.Machine) || strings.TrimSpace(bundle.Source.Runtime) == "" ||
+		bundle.Source.StartedAt.IsZero() || bundle.ParkedAt.IsZero() {
 		return fmt.Errorf("parked session source identity is incomplete")
 	}
-	if len([]byte(bundle.Continuation)) > MaxContinuationBytes {
-		return fmt.Errorf("parked session continuation exceeds %d bytes", MaxContinuationBytes)
+	if len(bundle.Continuation) == 0 || len([]byte(bundle.Continuation)) > MaxContinuationBytes || !utf8.ValidString(bundle.Continuation) {
+		return fmt.Errorf("parked session continuation must be valid UTF-8 and between 1 and %d bytes", MaxContinuationBytes)
+	}
+	if len(bundle.Worktrees) > maxParkedWorktrees {
+		return fmt.Errorf("parked session owns more than %d worktrees", maxParkedWorktrees)
+	}
+	seen := make(map[string]struct{}, len(bundle.Worktrees))
+	for index, member := range bundle.Worktrees {
+		if strings.TrimSpace(member.Repository) == "" || strings.ContainsAny(member.Repository+member.Branch, "\r\n") ||
+			!filepath.IsAbs(member.WorktreeDir) || filepath.Clean(member.WorktreeDir) != member.WorktreeDir ||
+			strings.TrimSpace(member.Branch) == "" || !gitObjectID.MatchString(member.Head) {
+			return fmt.Errorf("parked session worktree %d is invalid", index)
+		}
+		if member.RepositoryRemote != "" {
+			remote, err := gitremote.Parse(member.RepositoryRemote)
+			if err != nil || remote.Identity.Repository != member.Repository {
+				return fmt.Errorf("parked session worktree %d remote is unsafe or conflicts with repository", index)
+			}
+		}
+		if member.RemoteHead != "" && !gitObjectID.MatchString(member.RemoteHead) {
+			return fmt.Errorf("parked session worktree %d remote head is invalid", index)
+		}
+		if member.WorkLogReference != "" {
+			if _, err := sessionmove.ParseWorkLogReference(member.WorkLogReference); err != nil {
+				return fmt.Errorf("parked session worktree %d Work Log reference: %w", index, err)
+			}
+		}
+		if member.OwnerEventID != "" && !validSHA256Hex(member.OwnerEventID) {
+			return fmt.Errorf("parked session worktree %d owner event identity is invalid", index)
+		}
+		if _, exists := seen[member.WorktreeDir]; exists {
+			return fmt.Errorf("parked session worktree path %q is duplicated", member.WorktreeDir)
+		}
+		seen[member.WorktreeDir] = struct{}{}
 	}
 	return nil
 }
@@ -261,10 +296,568 @@ func EncodeBundle(bundle Bundle) ([]byte, error) {
 	if err := validateBundle(bundle); err != nil {
 		return nil, err
 	}
-	return json.MarshalIndent(bundle, "", "  ")
+	raw, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	raw = append(raw, '\n')
+	if len(raw) > maxBundleBytes {
+		return nil, fmt.Errorf("parked session bundle exceeds %d bytes", maxBundleBytes)
+	}
+	return raw, nil
 }
 func EqualBundle(a, b Bundle) bool {
 	ar, _ := EncodeBundle(a)
 	br, _ := EncodeBundle(b)
 	return bytes.Equal(ar, br)
+}
+
+func validParkID(id string) bool {
+	return strings.HasPrefix(id, "park-") && sessionauthority.ValidID(id)
+}
+
+func sourceEnvelopeName(target string) string { return "remote-" + target + ".json" }
+func sourceReceiptName(target string) string  { return "receipt-" + target + ".json" }
+
+func (s Store) Acquire(ctx context.Context, id string) (*SourceLock, error) {
+	if !validParkID(id) {
+		return nil, fmt.Errorf("invalid parked session ID")
+	}
+	rootPath, err := cleanAbsoluteStoreRoot(s.Root)
+	if err != nil {
+		return nil, err
+	}
+	root, err := openPrivateStoreRoot(rootPath, false)
+	if err != nil {
+		return nil, err
+	}
+	aggregate, err := openPrivateDirectoryAt(root, id)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
+	bundleFD, err := unix.Openat(int(aggregate.Fd()), sourceBundleFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		_ = aggregate.Close()
+		_ = root.Close()
+		return nil, err
+	}
+	bundleFile := os.NewFile(uintptr(bundleFD), "wb-parked-source-bundle")
+	bundleRaw, err := readPrivateFile(bundleFile, maxBundleBytes)
+	if err != nil {
+		_ = bundleFile.Close()
+		_ = aggregate.Close()
+		_ = root.Close()
+		return nil, err
+	}
+	var bundle Bundle
+	decodeErr := strictDecode(bundleRaw, &bundle)
+	validationErr := validateBundle(bundle)
+	if decodeErr != nil || validationErr != nil || bundle.ParkedSessionID != id {
+		_ = bundleFile.Close()
+		_ = aggregate.Close()
+		_ = root.Close()
+		return nil, fmt.Errorf("parked session bundle identity is invalid")
+	}
+	canonical, _ := EncodeBundle(bundle)
+	if !bytes.Equal(bundleRaw, canonical) {
+		_ = bundleFile.Close()
+		_ = aggregate.Close()
+		_ = root.Close()
+		return nil, fmt.Errorf("parked session bundle is not canonical")
+	}
+	lockFD, err := openOrCreateRegularAt(int(aggregate.Fd()), sourceResumeLockName, 0o600)
+	if err != nil {
+		_ = bundleFile.Close()
+		_ = aggregate.Close()
+		_ = root.Close()
+		return nil, err
+	}
+	file := os.NewFile(uintptr(lockFD), "wb-parked-source-resume-lock")
+	for {
+		if err := unix.Flock(lockFD, unix.LOCK_EX|unix.LOCK_NB); err == nil {
+			return &SourceLock{root: root, aggregate: aggregate, bundleFile: bundleFile, file: file,
+				rootPath: rootPath, parkID: id, bundle: bundle}, nil
+		} else if !errors.Is(err, unix.EWOULDBLOCK) {
+			_ = file.Close()
+			_ = bundleFile.Close()
+			_ = aggregate.Close()
+			_ = root.Close()
+			return nil, fmt.Errorf("lock parked session resume: %w", err)
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			_ = file.Close()
+			_ = bundleFile.Close()
+			_ = aggregate.Close()
+			_ = root.Close()
+			return nil, fmt.Errorf("wait for parked session resume fence: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (lock *SourceLock) HeldForSession(storeRoot, parkID, digest string) bool {
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	return lock.heldLocked(storeRoot, parkID, digest)
+}
+
+func (lock *SourceLock) held(storeRoot, parkID string) bool {
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	return lock.heldLocked(storeRoot, parkID, "")
+}
+
+func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
+	if lock == nil || lock.root == nil || lock.aggregate == nil || lock.bundleFile == nil || lock.file == nil || lock.parkID != parkID {
+		return false
+	}
+	wantBundle, wantErr := EncodeBundle(lock.bundle)
+	if wantErr != nil || digest != "" && string(sessionmove.DigestBytes(wantBundle)) != digest {
+		return false
+	}
+	rootPath, err := filepath.Abs(storeRoot)
+	if err != nil || filepath.Clean(rootPath) != lock.rootPath {
+		return false
+	}
+	root, err := openPrivateStoreRoot(rootPath, false)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	if !sameFile(lock.root, root) {
+		return false
+	}
+	aggregate, err := openPrivateDirectoryAt(root, parkID)
+	if err != nil {
+		return false
+	}
+	defer aggregate.Close()
+	if !sameFile(lock.aggregate, aggregate) {
+		return false
+	}
+	bundleFD, err := unix.Openat(int(aggregate.Fd()), sourceBundleFileName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	bundleFile := os.NewFile(uintptr(bundleFD), "wb-parked-source-bundle-check")
+	defer bundleFile.Close()
+	if !sameFile(lock.bundleFile, bundleFile) {
+		return false
+	}
+	raw, err := readPrivateFile(bundleFile, maxBundleBytes)
+	if err != nil || !bytes.Equal(raw, wantBundle) {
+		return false
+	}
+	lockFD, err := unix.Openat(int(aggregate.Fd()), sourceResumeLockName, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	file := os.NewFile(uintptr(lockFD), "wb-parked-source-lock-check")
+	defer file.Close()
+	return sameFile(lock.file, file)
+}
+
+func (lock *SourceLock) RetainSessionDir(storeRoot, parkID, digest string) (*os.File, error) {
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	if !lock.heldLocked(storeRoot, parkID, digest) {
+		return nil, fmt.Errorf("parked source lock does not retain the exact admitted aggregate")
+	}
+	fd, err := unix.Dup(int(lock.aggregate.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	unix.CloseOnExec(fd)
+	return os.NewFile(uintptr(fd), "wb-parked-source-retained-aggregate"), nil
+}
+
+func (lock *SourceLock) Bundle() Bundle { return lock.bundle }
+
+func (lock *SourceLock) Close() error {
+	if lock == nil {
+		return nil
+	}
+	lock.mu.Lock()
+	defer lock.mu.Unlock()
+	var errs []error
+	if lock.file != nil {
+		errs = append(errs, unix.Flock(int(lock.file.Fd()), unix.LOCK_UN), lock.file.Close())
+	}
+	for _, file := range []*os.File{lock.bundleFile, lock.aggregate, lock.root} {
+		if file != nil {
+			errs = append(errs, file.Close())
+		}
+	}
+	lock.file, lock.bundleFile, lock.aggregate, lock.root = nil, nil, nil, nil
+	return errors.Join(errs...)
+}
+
+func (s Store) LoadUnderLock(lock *SourceLock) (State, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return State{}, fmt.Errorf("load parked session requires retained resume authority")
+	}
+	return loadSourceStateAt(lock.aggregate, lock.bundle)
+}
+
+// ContinuationPathUnderLock returns the deterministic private local-resume
+// artifact only after re-reading it through the retained aggregate descriptor.
+// Callers must pass it through WB_SESSION_CONTINUATION_FILE, never stdout or
+// harness argv.
+func (s Store) ContinuationPathUnderLock(lock *SourceLock) (string, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return "", fmt.Errorf("read parked continuation requires retained source authority")
+	}
+	raw, err := readPrivateRegularAt(lock.aggregate, sourceContinuationFileName, MaxContinuationBytes)
+	if err != nil || !bytes.Equal(raw, []byte(lock.bundle.Continuation)) {
+		return "", fmt.Errorf("private parked continuation conflicts with exact source bundle")
+	}
+	return filepath.Join(s.Root, lock.parkID, sourceContinuationFileName), nil
+}
+
+func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness string, now time.Time) (RemoteAdmission, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return RemoteAdmission{}, fmt.Errorf("prepare remote park resume requires retained source authority")
+	}
+	if !sessionauthority.ValidID(target) {
+		return RemoteAdmission{}, fmt.Errorf("target machine is not one fixed safe ID")
+	}
+	name := sourceEnvelopeName(target)
+	raw, err := readPrivateRegularAt(lock.aggregate, name, MaxEnvelopeBytes)
+	if err == nil {
+		envelope, decodeErr := DecodeEnvelope(raw)
+		if decodeErr != nil || envelope.Request.ParkedSessionID != lock.parkID || envelope.Request.TargetMachine != target ||
+			envelope.Request.RequestedHarness != strings.TrimSpace(requestedHarness) {
+			return RemoteAdmission{}, fmt.Errorf("durable remote park resume envelope conflicts with requested target or harness")
+		}
+		return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw), Replay: true}, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, unix.ENOENT) {
+		return RemoteAdmission{}, err
+	}
+	state, err := s.LoadUnderLock(lock)
+	if err != nil {
+		return RemoteAdmission{}, err
+	}
+	if state.Status == StatusResumed {
+		return RemoteAdmission{}, fmt.Errorf("parked session was already resumed by a different target")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	request := BuildRemoteRequest(lock.bundle, target, requestedHarness, now.UTC())
+	envelope := Envelope{SchemaVersion: EnvelopeSchemaVersion, Kind: EnvelopeKind, Request: request}
+	raw, err = EncodeEnvelope(envelope)
+	if err != nil {
+		return RemoteAdmission{}, err
+	}
+	if err := writeExactPrivateAt(lock.aggregate, name, raw); err != nil {
+		return RemoteAdmission{}, err
+	}
+	return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw)}, nil
+}
+
+func (s Store) validateRemoteAdmission(lock *SourceLock, admission RemoteAdmission) error {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return fmt.Errorf("remote park resume requires retained source authority")
+	}
+	canonical, err := EncodeEnvelope(admission.Envelope)
+	if err != nil || !bytes.Equal(canonical, admission.Raw) || admission.Digest != sessionmove.DigestBytes(admission.Raw) ||
+		admission.Envelope.Request.ParkedSessionID != lock.parkID {
+		return fmt.Errorf("remote park resume admission is not the exact durable envelope")
+	}
+	durable, err := readPrivateRegularAt(lock.aggregate, sourceEnvelopeName(admission.Envelope.Request.TargetMachine), MaxEnvelopeBytes)
+	if err != nil || !bytes.Equal(durable, admission.Raw) {
+		return fmt.Errorf("remote park resume envelope changed after durable admission")
+	}
+	return nil
+}
+
+func (s Store) LoadRemoteReceiptUnderLock(lock *SourceLock, admission RemoteAdmission) (*Receipt, error) {
+	if err := s.validateRemoteAdmission(lock, admission); err != nil {
+		return nil, err
+	}
+	raw, err := readPrivateRegularAt(lock.aggregate, sourceReceiptName(admission.Envelope.Request.TargetMachine), MaxEnvelopeBytes)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	receipt, err := DecodeReceipt(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateReceipt(receipt, admission.Envelope.Request, admission.Digest); err != nil {
+		return nil, err
+	}
+	return &receipt, nil
+}
+
+// SaveRemoteReceiptUnderLock is the source acknowledgement durability
+// boundary. A crash after this write is repaired without courier redelivery.
+func (s Store) SaveRemoteReceiptUnderLock(lock *SourceLock, admission RemoteAdmission, receipt Receipt) error {
+	if err := s.validateRemoteAdmission(lock, admission); err != nil {
+		return err
+	}
+	if err := ValidateReceipt(receipt, admission.Envelope.Request, admission.Digest); err != nil {
+		return err
+	}
+	raw, err := EncodeReceipt(receipt)
+	if err != nil {
+		return err
+	}
+	return writeExactPrivateAt(lock.aggregate, sourceReceiptName(admission.Envelope.Request.TargetMachine), raw)
+}
+
+func (s Store) FinalizeRemoteUnderLock(lock *SourceLock, admission RemoteAdmission, now time.Time) (State, error) {
+	if err := s.validateRemoteAdmission(lock, admission); err != nil {
+		return State{}, err
+	}
+	state, err := s.LoadUnderLock(lock)
+	if err != nil || state.Status == StatusResumed {
+		return state, err
+	}
+	receipt, err := s.LoadRemoteReceiptUnderLock(lock, admission)
+	if err != nil || receipt == nil {
+		if err == nil {
+			err = fmt.Errorf("remote park resume has no durable validated receipt")
+		}
+		return State{}, err
+	}
+	event := resumedEvent(state, ReceiptSession(*receipt), now)
+	event.RemoteResumeID, event.RequestDigest, event.TargetMachine = admission.Envelope.Request.ResumeID, admission.Digest, admission.Envelope.Request.TargetMachine
+	if err := appendSourceEventAt(lock.aggregate, lock.parkID, event); err != nil {
+		return State{}, err
+	}
+	return s.LoadUnderLock(lock)
+}
+
+func (s Store) ResumeUnderLock(lock *SourceLock, successor session.Record, now time.Time) (State, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return State{}, fmt.Errorf("local park resume requires retained source authority")
+	}
+	state, err := s.LoadUnderLock(lock)
+	if err != nil || state.Status == StatusResumed {
+		return state, err
+	}
+	if successor.PID <= 0 || !sessionauthority.ValidID(successor.WBSessionID) {
+		return State{}, fmt.Errorf("successor must have a stable WB session ID and positive PID")
+	}
+	if successor.PredecessorWBSessionID == "" {
+		successor.PredecessorWBSessionID = lock.bundle.Source.WBSessionID
+	}
+	if successor.WBSessionID == lock.bundle.Source.WBSessionID || successor.PredecessorWBSessionID != lock.bundle.Source.WBSessionID {
+		return State{}, fmt.Errorf("successor lineage does not descend from parked source session")
+	}
+	if err := appendSourceEventAt(lock.aggregate, lock.parkID, resumedEvent(state, successor, now)); err != nil {
+		return State{}, err
+	}
+	return s.LoadUnderLock(lock)
+}
+
+func resumedEvent(state State, successor session.Record, now time.Time) Event {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return Event{SchemaVersion: SchemaVersion, Sequence: uint64(len(state.Events) + 1), Type: "resumed", At: now.UTC(), Successor: &successor}
+}
+
+func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
+	events, err := openPrivateDirectoryAt(aggregate, sourceEventsDirName)
+	if err != nil {
+		return err
+	}
+	defer events.Close()
+	history, err := listSourceEventsAt(events, parkID)
+	if err != nil {
+		return err
+	}
+	if len(history) != int(event.Sequence)-1 {
+		if len(history) != 0 && history[len(history)-1].Type == "resumed" {
+			return nil
+		}
+		return fmt.Errorf("parked session event sequence changed under resume fence")
+	}
+	raw, err := jsonMarshal(event)
+	if err != nil {
+		return err
+	}
+	created, err := writeImmutableAt(events, fmt.Sprintf("%020d.json", event.Sequence), raw, 0o600)
+	if err != nil {
+		return err
+	}
+	if !created {
+		return fmt.Errorf("parked session resumed event already exists with unknown bytes")
+	}
+	return events.Sync()
+}
+
+func loadBundleAt(aggregate *os.File, id string) (Bundle, []byte, error) {
+	raw, err := readPrivateRegularAt(aggregate, sourceBundleFileName, maxBundleBytes)
+	if err != nil {
+		return Bundle{}, nil, fmt.Errorf("load parked session bundle: %w", err)
+	}
+	var bundle Bundle
+	if err := strictDecode(raw, &bundle); err != nil {
+		return Bundle{}, nil, fmt.Errorf("parse parked session bundle: %w", err)
+	}
+	if err := validateBundle(bundle); err != nil || bundle.ParkedSessionID != id {
+		return Bundle{}, nil, fmt.Errorf("parked session bundle identity is invalid")
+	}
+	canonical, _ := EncodeBundle(bundle)
+	if !bytes.Equal(raw, canonical) {
+		return Bundle{}, nil, fmt.Errorf("parked session bundle must use WB's canonical JSON encoding")
+	}
+	return bundle, raw, nil
+}
+
+func loadSourceStateAt(aggregate *os.File, bundle Bundle) (State, error) {
+	events, err := openPrivateDirectoryAt(aggregate, sourceEventsDirName)
+	if err != nil {
+		return State{}, err
+	}
+	history, err := listSourceEventsAt(events, bundle.ParkedSessionID)
+	_ = events.Close()
+	if err != nil {
+		return State{}, err
+	}
+	state := State{Bundle: bundle, Events: history, Status: StatusParked}
+	for index := range history {
+		event := history[index]
+		if event.Type != "resumed" {
+			continue
+		}
+		state.Status, state.Successor = StatusResumed, event.Successor
+		if event.TargetMachine != "" {
+			raw, readErr := readPrivateRegularAt(aggregate, sourceReceiptName(event.TargetMachine), MaxEnvelopeBytes)
+			if readErr != nil {
+				return State{}, fmt.Errorf("load source remote receipt: %w", readErr)
+			}
+			receipt, decodeErr := DecodeReceipt(raw)
+			if decodeErr != nil || receipt.ResumeID != event.RemoteResumeID || receipt.RequestDigest != event.RequestDigest {
+				return State{}, fmt.Errorf("source remote receipt conflicts with resumed event")
+			}
+			state.RemoteReceipt = &receipt
+		}
+	}
+	return state, nil
+}
+
+var sourceEventName = regexp.MustCompile(`^[0-9]{20}\.json$`)
+
+func listSourceEventsAt(events *os.File, parkID string) ([]Event, error) {
+	if _, err := events.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	entries, err := events.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	history := make([]Event, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !sourceEventName.MatchString(entry.Name()) {
+			return nil, fmt.Errorf("unexpected parked session event artifact %q", entry.Name())
+		}
+		raw, err := readPrivateRegularAt(events, entry.Name(), 64<<10)
+		if err != nil {
+			return nil, err
+		}
+		var event Event
+		sequence := uint64(len(history) + 1)
+		if err := strictDecode(raw, &event); err != nil || event.SchemaVersion != SchemaVersion || event.Sequence != sequence ||
+			entry.Name() != fmt.Sprintf("%020d.json", sequence) || event.Type != "resumed" || event.At.IsZero() || event.Successor == nil ||
+			event.Successor.WBSessionID == "" || event.Successor.PredecessorWBSessionID == "" {
+			return nil, fmt.Errorf("invalid parked session event history for %s at %q", parkID, entry.Name())
+		}
+		remote := event.RemoteResumeID != "" || event.RequestDigest != "" || event.TargetMachine != ""
+		if remote && (!sessionauthority.ValidID(event.RemoteResumeID) || !sessionauthority.ValidID(event.TargetMachine) ||
+			!strings.HasPrefix(string(event.RequestDigest), sessionmove.DigestAlgorithmSHA256+":")) {
+			return nil, fmt.Errorf("invalid remote parked session event history at %q", entry.Name())
+		}
+		history = append(history, event)
+	}
+	return history, nil
+}
+
+func openPrivateStoreRoot(root string, create bool) (*os.File, error) {
+	clean, err := cleanAbsoluteStoreRoot(root)
+	if err != nil {
+		return nil, err
+	}
+	parentPath, name := filepath.Dir(clean), filepath.Base(clean)
+	if create {
+		if err := os.MkdirAll(parentPath, 0o700); err != nil {
+			return nil, err
+		}
+	}
+	parentFD, err := unix.Open(parentPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	parent := os.NewFile(uintptr(parentFD), "wb-park-store-parent")
+	defer parent.Close()
+	if create {
+		if err := unix.Mkdirat(parentFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+			return nil, err
+		}
+	}
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	directory := os.NewFile(uintptr(fd), name)
+	if create {
+		if err := unix.Fchmod(fd, 0o700); err != nil {
+			_ = directory.Close()
+			return nil, err
+		}
+		if err := parent.Sync(); err != nil {
+			_ = directory.Close()
+			return nil, err
+		}
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
+		_ = directory.Close()
+		return nil, fmt.Errorf("park resume store root is not one 0700 directory")
+	}
+	return directory, nil
+}
+
+func openPrivateDirectoryAt(parent *os.File, name string) (*os.File, error) {
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFDIR || stat.Mode&0o777 != 0o700 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("private directory %q is not one 0700 directory", name)
+	}
+	return os.NewFile(uintptr(fd), name), nil
+}
+
+func readPrivateRegularAt(directory *os.File, name string, maximum int64) ([]byte, error) {
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	defer file.Close()
+	return readPrivateFile(file, maximum)
+}
+
+func readPrivateFile(file *os.File, maximum int64) ([]byte, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Mode&0o777 != 0o600 || stat.Nlink != 1 {
+		return nil, fmt.Errorf("private artifact is not one 0600 regular file")
+	}
+	return readBoundedRegular(file, maximum)
 }
