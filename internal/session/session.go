@@ -54,6 +54,10 @@ type Record struct {
 	WBPath    string `json:"wb_path,omitempty"`
 
 	StartedAt time.Time `json:"started_at"`
+	// Lifecycle is the local registry projection. Parked sessions remain
+	// addressable but are never considered live/claimable.
+	Lifecycle       string `json:"lifecycle,omitempty"`
+	ParkedSessionID string `json:"parked_session_id,omitempty"`
 }
 
 // View is a record plus its liveness, evaluated when WB reads it. Liveness is
@@ -65,8 +69,9 @@ type View struct {
 
 // Liveness states, matching the vocabulary used for worktree owners.
 const (
-	StateLive = "live"
-	StateGone = "gone"
+	StateLive   = "live"
+	StateGone   = "gone"
+	StateParked = "parked"
 )
 
 func recordPath(dir string, pid int) string {
@@ -98,6 +103,8 @@ func Register(dir string, record Record) (Record, error) {
 	record.TmuxName = strings.TrimSpace(record.TmuxName)
 	record.PredecessorWBSessionID = strings.TrimSpace(record.PredecessorWBSessionID)
 	record.HandoffID = strings.TrimSpace(record.HandoffID)
+	record.Lifecycle = strings.TrimSpace(record.Lifecycle)
+	record.ParkedSessionID = strings.TrimSpace(record.ParkedSessionID)
 	record.AgentID = strings.TrimSpace(record.AgentID)
 	if record.NativeHarnessID != "" && record.AgentID != "" && record.NativeHarnessID != record.AgentID {
 		return Record{}, fmt.Errorf("native harness ID %q conflicts with legacy agent ID %q", record.NativeHarnessID, record.AgentID)
@@ -115,6 +122,12 @@ func Register(dir string, record Record) (Record, error) {
 			record.WBSessionID = previous.WBSessionID
 		}
 		if sameSession {
+			if record.Lifecycle == "" {
+				record.Lifecycle = previous.Lifecycle
+			}
+			if record.ParkedSessionID == "" {
+				record.ParkedSessionID = previous.ParkedSessionID
+			}
 			if record.Machine == "" {
 				record.Machine = previous.Machine
 			}
@@ -173,6 +186,84 @@ func Register(dir string, record Record) (Record, error) {
 	return record, nil
 }
 
+// MarkParked records the non-live registry projection for a session. The
+// original declaration remains untouched in the PID index. A no-replace
+// lifecycle marker changes the live projection while keeping the source
+// auditable and ensuring session resolution cannot treat a parked owner as active.
+func MarkParked(dir string, pid int, parkedID string) (Record, error) {
+	record, ok := readRecord(recordPath(dir, pid))
+	if !ok {
+		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
+	}
+	if record.Lifecycle == "parked" {
+		if record.ParkedSessionID == parkedID {
+			return record, nil
+		}
+		return Record{}, fmt.Errorf("session with pid %d is already parked as %s", pid, record.ParkedSessionID)
+	}
+	if existing, err := os.ReadFile(parkedMarkerPath(dir, record.WBSessionID)); err == nil {
+		var marker struct {
+			ParkedSessionID string `json:"parked_session_id"`
+		}
+		if json.Unmarshal(existing, &marker) == nil && marker.ParkedSessionID == parkedID {
+			record.Lifecycle, record.ParkedSessionID = "parked", parkedID
+			return record, nil
+		}
+		return Record{}, fmt.Errorf("session with pid %d is already parked", pid)
+	}
+	if record.Lifecycle == "resumed" {
+		return Record{}, fmt.Errorf("session with pid %d has already resumed", pid)
+	}
+	if strings.TrimSpace(parkedID) == "" {
+		return Record{}, fmt.Errorf("parked session ID is required")
+	}
+	// The PID registration is immutable history. A separate no-replace marker
+	// changes the live projection without rewriting the declaration itself.
+	markerDir := filepath.Join(dir, "lifecycle")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return Record{}, err
+	}
+	marker := struct {
+		SchemaVersion   int       `json:"schema_version"`
+		WBSessionID     string    `json:"wb_session_id"`
+		ParkedSessionID string    `json:"parked_session_id"`
+		At              time.Time `json:"at"`
+	}{1, record.WBSessionID, parkedID, time.Now().UTC()}
+	raw, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return Record{}, err
+	}
+	path := filepath.Join(markerDir, record.WBSessionID+".parked.json")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return Record{}, fmt.Errorf("session with pid %d is already parked", pid)
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("record parked session lifecycle: %w", err)
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		_ = file.Close()
+		return Record{}, err
+	}
+	if err := file.Close(); err != nil {
+		return Record{}, err
+	}
+	record.Lifecycle = "parked"
+	record.ParkedSessionID = parkedID
+	return record, nil
+}
+
+func parkedMarkerPath(dir, wbSessionID string) string {
+	return filepath.Join(dir, "lifecycle", wbSessionID+".parked.json")
+}
+func parked(dir, wbSessionID string) bool {
+	if wbSessionID == "" {
+		return false
+	}
+	_, err := os.Stat(parkedMarkerPath(dir, wbSessionID))
+	return err == nil
+}
+
 func readRecord(path string) (Record, bool) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -209,7 +300,11 @@ func List(dir string) ([]View, error) {
 		if !ok {
 			continue
 		}
-		views = append(views, View{Record: record, State: state(record.PID)})
+		viewState := state(record.PID)
+		if record.Lifecycle == "parked" || parked(dir, record.WBSessionID) {
+			viewState = StateParked
+		}
+		views = append(views, View{Record: record, State: viewState})
 	}
 	sort.SliceStable(views, func(i, j int) bool {
 		return views[i].StartedAt.After(views[j].StartedAt)
@@ -244,7 +339,7 @@ func Lookup(dir string, pid int) (Record, bool) {
 	if !ok {
 		return Record{}, false
 	}
-	return record, state(record.PID) == StateLive
+	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !parked(dir, record.WBSessionID) && state(record.PID) == StateLive
 }
 
 func state(pid int) string {

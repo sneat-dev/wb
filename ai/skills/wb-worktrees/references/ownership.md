@@ -62,6 +62,14 @@ wb session prune
 
 ## Move a registered session over SSH
 
+## Park and resume a registered session
+
+`wb session park --summary <text>` records an append-only checkpoint containing
+every worktree owned by the active session. It preserves dirty local work and
+does not commit, push, or remove any worktree. A later registered session can
+continue it with `wb session resume <parked-session-id>`; remote resume accepts
+only exact pushed, reconstructable worktrees.
+
 Session movement is fail-closed. The invoking process must belong to a live
 registered session that owns the worktree's active managed Work Log, and the
 worktree must be clean on a named branch that can advance `origin` without a
