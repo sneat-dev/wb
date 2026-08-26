@@ -23,8 +23,19 @@ type AbortOptions struct {
 	ProjectsRoot string
 	Task         string
 	Base         string
-	Disposition  AbortDisposition
-	Successor    string
+	// Filter narrows which repositories within the coordinated task are
+	// inspected further than today's cheap local Git state, preflighted, and
+	// mutated — the same "owner/repository slug (or worktree path) contains
+	// this substring" semantics as ListOptions.Filter and the root --filter
+	// flag. An empty Filter matches everything, preserving today's
+	// all-repositories, all-or-nothing behavior exactly. A repository Filter
+	// excludes is reported via AbortResult.Excluded rather than dropped
+	// silently, its own ineligibility (if any) never blocks the repositories
+	// Filter did select, and it is left completely untouched: the task
+	// remains non-terminal until a later abort call resolves it too.
+	Filter      string
+	Disposition AbortDisposition
+	Successor   string
 	// SuccessorIdentity is the caller's explicit execution identity declaration
 	// for the claim created by an applied handoff/not_landed transition.
 	SuccessorIdentity ClaimExecutionIdentity
@@ -41,15 +52,20 @@ type AbortOptions struct {
 
 type AbortResult struct {
 	ListResult
-	Disposition   AbortDisposition `json:"disposition"`
-	Successor     string           `json:"successor,omitempty"`
-	Eligible      bool             `json:"eligible"`
-	Applied       bool             `json:"applied"`
-	WorktreeGone  bool             `json:"worktree_gone"`
-	BranchDeleted bool             `json:"branch_deleted"`
-	RemoteDeleted bool             `json:"remote_deleted"`
-	BacklogID     string           `json:"backlog_id,omitempty"`
-	Reason        string           `json:"reason,omitempty"`
+	Disposition AbortDisposition `json:"disposition"`
+	Successor   string           `json:"successor,omitempty"`
+	Eligible    bool             `json:"eligible"`
+	// Excluded marks a repository that AbortOptions.Filter left out of this
+	// run. It is never preflighted or mutated regardless of Eligible, and
+	// recording it here — rather than omitting it — is what lets a filtered
+	// abort report precisely which repositories still remain unresolved.
+	Excluded      bool   `json:"excluded,omitempty"`
+	Applied       bool   `json:"applied"`
+	WorktreeGone  bool   `json:"worktree_gone"`
+	BranchDeleted bool   `json:"branch_deleted"`
+	RemoteDeleted bool   `json:"remote_deleted"`
+	BacklogID     string `json:"backlog_id,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 // Abort seals every Work Log in a coordinated task. It is the deliberate
@@ -67,6 +83,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	// while Git reports /private/var made a valid canonical clone look outside
 	// the projects root during the second abort pass.
 	options.ProjectsRoot = projectsRoot
+	filter := strings.TrimSpace(options.Filter)
 	if task == "" {
 		return nil, fmt.Errorf("task is required")
 	}
@@ -124,37 +141,53 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		} else if !entry.Clean && options.Disposition == AbortDiscarded {
 			reason = "discarded worktree has local changes; use handoff/not_landed or checkpoint it"
 		}
-		results[i] = AbortResult{ListResult: entry, Disposition: options.Disposition, Successor: options.Successor, Eligible: eligible, Reason: reason}
+		excluded := abortRepositoryExcludedByFilter(filter, entry.Repository, entry.WorktreeDir)
+		results[i] = AbortResult{ListResult: entry, Disposition: options.Disposition, Successor: options.Successor, Eligible: eligible, Excluded: excluded, Reason: reason}
 	}
 	for _, record := range backlog {
+		excluded := abortRepositoryExcludedByFilter(filter, record.Repository, record.WorktreeDir)
 		results = append(results, AbortResult{ListResult: ListResult{
 			Task: record.Task, Repository: record.Repository, CanonicalDir: record.CanonicalDir,
 			WorktreeDir: record.WorktreeDir, WorktreesRoot: record.WorktreesRoot,
 			Branch: record.Branch, Base: record.Base, HeadSHA: record.HeadSHA,
 			External: record.External,
-		}, Disposition: AbortDiscarded, Eligible: true, WorktreeGone: true,
+		}, Disposition: AbortDiscarded, Eligible: true, Excluded: excluded, WorktreeGone: true,
 			BacklogID: record.ID, Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
-	if len(listed.Diagnostics) > 0 {
+	// A malformed candidate outside the active --filter selection describes a
+	// repository this run already leaves untouched; it must never block the
+	// repositories --filter did select. An empty filter matches everything,
+	// so this reduces to today's "any diagnostic blocks every result" rule.
+	if diagnosticPath := firstFilterMatchingDiagnosticPath(filter, listed.Diagnostics); diagnosticPath != "" {
 		for i := range results {
+			if results[i].Excluded {
+				continue
+			}
 			results[i].Eligible = false
-			results[i].Reason = "task has malformed worktree candidate: " + listed.Diagnostics[0].Path
+			results[i].Reason = "task has malformed worktree candidate: " + diagnosticPath
 		}
 	}
 	if !options.Apply {
 		return results, nil
 	}
 	for _, result := range results {
+		if result.Excluded {
+			continue
+		}
 		if !result.Eligible {
 			return results, fmt.Errorf("task %q cannot be aborted safely: %s", task, result.Reason)
 		}
 	}
 	for backlogIndex := range backlog {
-		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, &backlog[backlogIndex], false); err != nil {
+		record := &backlog[backlogIndex]
+		if abortRepositoryExcludedByFilter(filter, record.Repository, record.WorktreeDir) {
+			continue
+		}
+		if err := resumeLifecycleBacklog(ctx, resolution.Write.Home, record, false); err != nil {
 			return results, err
 		}
 		for resultIndex := range results {
-			if results[resultIndex].BacklogID == backlog[backlogIndex].ID {
+			if results[resultIndex].BacklogID == record.ID {
 				results[resultIndex].Applied = true
 				results[resultIndex].BranchDeleted = true
 				results[resultIndex].Reason = "resumed durable cleanup backlog"
@@ -162,6 +195,19 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		}
 	}
 	if len(listed.Results) == 0 {
+		return results, nil
+	}
+	liveScopeEmpty := true
+	for i := range listed.Results {
+		if !results[i].Excluded {
+			liveScopeEmpty = false
+			break
+		}
+	}
+	if liveScopeEmpty {
+		// --filter selected nothing live to touch (backlog resumption above,
+		// if any, already ran); never contend for the task lock for a run that
+		// mutates nothing.
 		return results, nil
 	}
 	taskHandle, err := acquireCleanupTaskAt(results[0].WorktreesRoot, results[0].Task)
@@ -177,6 +223,9 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	// preflight: a bad second repository cannot be discovered after the first
 	// one has already been destroyed.
 	for i := range listed.Results {
+		if results[i].Excluded {
+			continue
+		}
 		refreshed, remoteHead, preflightErr := preflightAbortRepository(ctx, projectsRoot, options, taskHandle, results[i], resolution.Write.Home)
 		if preflightErr != nil {
 			return results, preflightErr
@@ -185,6 +234,9 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		results[i].RemoteHeadSHA = remoteHead
 	}
 	for i := range listed.Results {
+		if results[i].Excluded {
+			continue
+		}
 		result := &results[i]
 		if options.Disposition == AbortDiscarded {
 			if err := applyDiscardedAbort(ctx, projectsRoot, options, taskHandle, resolution.Write.Home, result); err != nil {
@@ -389,3 +441,25 @@ func applyDiscardedAbort(
 }
 
 func (d AbortDisposition) String() string { return strings.TrimSpace(string(d)) }
+
+// abortRepositoryExcludedByFilter reports whether --filter leaves this
+// repository out of the run, using the same substring-of-slug-or-path
+// semantics as filterMatches/ListOptions.Filter. An empty filter excludes
+// nothing, preserving today's all-repositories behavior exactly.
+func abortRepositoryExcludedByFilter(filter, repository, worktreeDir string) bool {
+	return !filterMatches(filter, repository, worktreeDir)
+}
+
+// firstFilterMatchingDiagnosticPath returns the first malformed-candidate
+// path that --filter selects, or "" when none do (including when there are
+// no diagnostics at all). An empty filter matches every diagnostic, so a
+// non-empty result here reduces to "the first diagnostic" exactly as before
+// --filter existed.
+func firstFilterMatchingDiagnosticPath(filter string, diagnostics []ListDiagnostic) string {
+	for _, diagnostic := range diagnostics {
+		if filterMatches(filter, diagnostic.Path) {
+			return diagnostic.Path
+		}
+	}
+	return ""
+}

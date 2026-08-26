@@ -1636,7 +1636,13 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	}
 	branch, err := git(context.Background(), worktree, "branch", "--show-current")
 	if err != nil || branch != claim.Branch {
-		return fmt.Errorf("live branch %q does not match private claim %q", branch, claim.Branch)
+		// #183: the proven recovery is renaming the live branch back to the
+		// claim name. Landing evidence is commit-based (see corroborateClaim's
+		// own HEAD/base checks below and Cleanup's PR-containment proof), so a
+		// PR already opened from the renamed branch still proves out once the
+		// name matches again — this is a pure message change, not a relaxed
+		// check.
+		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
 	}
 	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
 	if err != nil || head != finalCommit {

@@ -634,6 +634,15 @@ refs after their archive has been sealed. A discarded apply requires --remote;
 an exact matching remote source branch is then retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
+
+--filter (see the root flag) narrows which repositories in the task are
+touched, the same "owner/repository slug contains this substring" semantics
+as wb branch cleanup --filter. A repository --filter excludes is left
+completely untouched and still reported, so one repository blocked on
+something abort cannot fix no longer makes the rest of the task un-abortable.
+The task remains non-terminal — and the remote claim, if any, is not
+released — until every repository is eventually resolved.
+
 The default is a dry-run plan.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
@@ -641,7 +650,7 @@ The default is a dry-run plan.`,
 				return err
 			}
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
-				ProjectsRoot: projectsRoot, Task: args[0], Base: base,
+				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
@@ -649,13 +658,25 @@ The default is a dry-run plan.`,
 			if err != nil {
 				return err
 			}
+			remaining := 0
+			for _, result := range results {
+				if result.Excluded {
+					remaining++
+				}
+			}
 			// Release only follows a disposition that actually ends the
 			// task on this machine: discarded drops it, handoff moves it to
 			// a successor. not_landed leaves the task expected to resume
-			// here, so the claim must stay put.
+			// here, so the claim must stay put. A --filter that left any
+			// repository untouched means the task is not actually finished,
+			// so the remote claim must not be released either.
 			disp := worktrees.AbortDisposition(disposition)
-			if apply && (disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff) {
+			releasable := disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff
+			switch {
+			case apply && releasable && remaining == 0:
 				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], remoteClaimWriter(command))
+			case apply && releasable && remaining > 0:
+				skippedAutoRelease(remoteClaimWriter(command), fmt.Sprintf("%d repositories excluded by --filter still remain", remaining))
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -663,6 +684,16 @@ The default is a dry-run plan.`,
 				return encoder.Encode(results)
 			}
 			for _, result := range results {
+				if result.Excluded {
+					reason := result.Reason
+					if reason == "" {
+						reason = "not evaluated"
+					}
+					if _, err := fmt.Fprintf(command.OutOrStdout(), "excluded by --filter %s %s: %s\n", result.Repository, result.Disposition, reason); err != nil {
+						return err
+					}
+					continue
+				}
 				state := "would seal"
 				if result.Applied && result.WorktreeGone {
 					state = "sealed and removed"
@@ -670,6 +701,11 @@ The default is a dry-run plan.`,
 					state = "sealed and resumable"
 				}
 				if _, err := fmt.Fprintf(command.OutOrStdout(), "%s %s %s\n", state, result.Repository, result.Disposition); err != nil {
+					return err
+				}
+			}
+			if remaining > 0 {
+				if _, err := fmt.Fprintf(command.OutOrStdout(), "%d repositories excluded by --filter remain unresolved for task %q\n", remaining, args[0]); err != nil {
 					return err
 				}
 			}
