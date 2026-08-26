@@ -3970,12 +3970,12 @@
       "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb session park", "flags": ["--context-file", "--format", "--remaining", "--summary", "--validation"], "modes": ["Stores one immutable whole-session checkpoint containing every currently owned worktree and bounded continuation context without changing Git."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb session park --help", "contains": ["--context-file", "--summary", "--validation", "--remaining"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "# Worktree ownership and liveness", "examples": ["wb session park --summary <text>"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkCapturesAllOwnedWorktrees", "kind": "unit"}], "limitation": null}
+        "runtime": {"status": "Partial", "commands": [{"path": "wb session park", "flags": ["--context-file", "--format"], "modes": ["Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint."]}], "limitation": "Parking is implemented, but the public local and remote resume journeys remain fail-closed until coordinator launch and receipt-gated source finalization are wired."},
+        "help": {"status": "Partial", "anchors": [{"command": "wb session park --help", "contains": ["--context-file", "bounded agent-authored continuation file", "--format"]}], "limitation": "Help documents the bounded private context-file input; content-bearing continuation argv flags are intentionally unavailable."},
+        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "## Park and resume a registered session", "examples": ["wb session park --context-file <file>"]}], "limitation": "The documented resume path is explicitly gated at this checkpoint."},
+        "tests": {"status": "Partial", "references": [{"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkCapturesOwnedMembersInDeterministicOrder", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkPublicOutputDoesNotContainContinuation", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkRejectsContentBearingContinuationFlags", "kind": "unit"}], "limitation": "Checkpoint and secrecy boundaries are covered; the end-to-end resume journey is not complete."}
       },
-      "notes": "Parking is a session lifecycle operation, not worktree abort or automatic commit/push."
+      "notes": "Parking is a session lifecycle operation, not worktree abort or automatic commit/push. The private continuation is accepted only from bounded --context-file input or stdin and is never emitted publicly."
     },
     {
       "id": "wb.session.prune",
@@ -4198,6 +4198,81 @@
       "notes": "The typed canonical JSON is intentionally the prompt contract. Acknowledgement is limited to durable target recording plus paste into the corroborated pane, never harness processing."
     },
     {
+      "id": "wb.session.receive-park",
+      "feature_refs": [
+        "spec/features/park-and-resume-agent-sessions/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb session receive-park",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Reads one bounded canonical parked-session envelope from stdin, authenticates the local target, and admits exact bytes through the private no-follow target aggregate.",
+                "Reconstructs exact members and returns one durable target receipt without printing private continuation."
+              ]
+            }
+          ],
+          "limitation": "Target receipt admission is implemented, but public local coordinator launch, remote courier delivery, and source parked-to-resumed finalization remain unavailable."
+        },
+        "help": {
+          "status": "Partial",
+          "anchors": [
+            {
+              "command": "wb session receive-park --help",
+              "contains": [
+                "canonical parked-session envelope",
+                "one durable receipt",
+                "Private continuation material is never printed",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": "Help describes the implemented target boundary and its incomplete end-to-end journey."
+        },
+        "ai_skill": {
+          "status": "Partial",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Receive a parked session bundle",
+              "examples": [
+                "wb session receive-park --format json"
+              ]
+            }
+          ],
+          "limitation": "The target receiver is documented as a bounded leaf; coordinator launch and source finalization are gated."
+        },
+        "tests": {
+          "status": "Partial",
+          "references": [
+            {
+              "path": "cmd/wb/session_receive_park_test.go",
+              "name": "TestSessionReceiveParkPassesExactEnvelopeAndPrintsOnlyReceipt",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_receive_park_test.go",
+              "name": "TestSessionReceiveParkJSONDoesNotDiscloseContinuation",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionparkreceive/receive_test.go",
+              "name": "TestReceiveCompletesOneAndTwoMemberBundles",
+              "kind": "integration"
+            }
+          ],
+          "limitation": "Target admission and output secrecy are covered; the complete remote and local resume journeys are not claimed."
+        }
+      },
+      "notes": "This is the fixed target-side leaf for a parked-session bundle. It is intentionally Partial until coordinator launch, courier delivery, and receipt-gated source finalization are wired."
+    },
+    {
       "id": "wb.session.register",
       "feature_refs": [
         "spec/features/agent-session-move/README.md",
@@ -4368,12 +4443,12 @@
       "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb session resume", "flags": ["--config", "--format", "--to", "--via"], "modes": ["Resumes one parked checkpoint as a fresh successor and returns the immutable successor on retry.", "Refuses remote delivery before transport when any owned worktree is dirty or not at its exact pushed remote tip."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb session resume --help", "contains": ["<parked-session-id>", "--to", "--via"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "# Worktree ownership and liveness", "examples": ["wb session resume <parked-session-id>"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/sessionpark/store_test.go", "name": "TestStoreResumeLineageAndIdenticalRetry", "kind": "integration"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkRemoteReconstructabilityRefusesDirtyEvidence", "kind": "unit"}], "limitation": null}
+        "runtime": {"status": "Partial", "commands": [{"path": "wb session resume", "flags": ["--config", "--format", "--to", "--via"], "modes": ["Loads and validates one parked checkpoint without exposing private continuation.", "Fails closed before local session-registry, parked-aggregate, or custody mutation because coordinator launch is not wired.", "Keeps remote resume explicitly gated after exact target configuration and reconstructability preflight."]}], "limitation": "Neither local coordinator-launched successor attachment nor remote courier/receipt-gated source finalization is available at this checkpoint."},
+        "help": {"status": "Partial", "anchors": [{"command": "wb session resume --help", "contains": ["<parked-session-id>", "--to", "--via"]}], "limitation": "The command is present, but both local and remote journeys are explicitly gated."},
+        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "## Park and resume a registered session", "examples": ["wb session resume <parked-session-id>"]}], "limitation": "The documented resume path is fail-closed until coordinator launch is wired."},
+        "tests": {"status": "Partial", "references": [{"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeLocalFailsClosedWithoutMutation", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeRemoteSingleWorktreeFailsClosed", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeRemoteBundleFailsClosed", "kind": "unit"}], "limitation": "Fail-closed local zero-mutation and remote-gate boundaries are covered; successful resume is not claimed."}
       },
-      "notes": "Local resume is complete for the whole bundle; cross-machine multi-worktree receiver support remains explicitly gated."
+      "notes": "Resume is deliberately fail-closed at the public boundary: legacy Register, Store.Resume, and RecordCustody paths are not used until the coordinator launcher is wired."
     },
     {
       "id": "wb.session.send",

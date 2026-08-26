@@ -64,11 +64,23 @@ wb session prune
 
 ## Park and resume a registered session
 
-`wb session park --summary <text>` records an append-only checkpoint containing
-every worktree owned by the active session. It preserves dirty local work and
-does not commit, push, or remove any worktree. A later registered session can
-continue it with `wb session resume <parked-session-id>`; remote resume accepts
-only exact pushed, reconstructable worktrees.
+`wb session park --context-file <file>` records an append-only checkpoint
+containing every worktree owned by the active session. The context file may be
+`-` for stdin and is read as a bounded, regular, no-follow private input. It
+preserves dirty local work and does not commit, push, or remove any worktree.
+Local `wb session resume <parked-session-id>` is currently fail-closed until
+coordinator launch is wired; remote resume remains explicitly gated.
+
+## Receive a parked session bundle
+
+`wb session receive-park` accepts one bounded canonical parked-session envelope
+on stdin. It authenticates the local target and returns only a durable target
+receipt; private continuation is never printed. The public command is
+implemented, but source resume and coordinator launch remain gated.
+
+```sh
+wb session receive-park --format json
+```
 
 Session movement is fail-closed. The invoking process must belong to a live
 registered session that owns the worktree's active managed Work Log, and the

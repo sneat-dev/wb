@@ -150,7 +150,9 @@ registry, or custody mutation.
 **When** a coordinator resumes it locally
 **Then** exactly one successor launches in the deterministic private neutral directory under the retained aggregate, without using the caller's current directory.
 
-### AC: remote-bundle-resume-completes (verifies REQ:corroborated-all-member-target-barrier, REQ:durable-bundle-receipt)
+### AC: remote-bundle-resume-completes
+
+**Requirements:** REQ:corroborated-all-member-target-barrier, REQ:durable-bundle-receipt
 
 **Given** a parked session has two clean members at exact pushed commits
 **When** a coordinator resumes it to a configured machine through SSH

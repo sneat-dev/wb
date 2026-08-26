@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,12 +24,17 @@ type sessionParkOutput struct {
 	Status          string                 `json:"status"`
 	Source          session.Record         `json:"source"`
 	Worktrees       []sessionpark.Worktree `json:"worktrees"`
-	Continuation    string                 `json:"continuation,omitempty"`
 	Successor       *session.Record        `json:"successor,omitempty"`
 }
 
+var captureParkedSessionWorktree = worktrees.CaptureParkedSessionWorktree
+var captureParkedSessionAggregate = worktrees.CaptureParkedSessionAggregate
+var defaultParkedSessionRemoteDelivery = func(context.Context, sessionpark.State, string) error {
+	return fmt.Errorf("parked-session remote delivery is not implemented")
+}
+
 func newSessionParkCmd() *cobra.Command {
-	var contextFile, summary, validation, remaining, format string
+	var contextFile, format string
 	command := &cobra.Command{
 		Use:   "park",
 		Short: "Suspend this registered session with an auditable whole-session checkpoint",
@@ -49,9 +55,9 @@ func newSessionParkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			continuation := strings.TrimSpace(strings.Join([]string{summary, validation, remaining, string(body)}, "\n"))
+			continuation := strings.TrimSpace(string(body))
 			if continuation == "" {
-				return fmt.Errorf("park requires continuation context via --context-file, --summary, --validation, or --remaining")
+				return fmt.Errorf("park requires non-empty continuation context via --context-file")
 			}
 			if len([]byte(continuation)) > sessionpark.MaxContinuationBytes {
 				return fmt.Errorf("park continuation exceeds %d bytes", sessionpark.MaxContinuationBytes)
@@ -60,37 +66,43 @@ func newSessionParkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			owned := make([]sessionpark.Worktree, 0)
+			ownedResults := make([]worktrees.ListResult, 0, len(results))
 			for _, result := range results {
-				if !ownedBySession(result, source) {
-					continue
+				if ownedBySession(result, source) {
+					ownedResults = append(ownedResults, result)
 				}
-				owned = append(owned, sessionpark.Worktree{Repository: result.Repository, CanonicalDir: result.CanonicalDir, WorktreeDir: result.WorktreeDir, WorktreesRoot: result.WorktreesRoot, Branch: result.Branch, Head: result.HeadSHA, Dirty: !result.Clean, RemoteHead: result.RemoteHeadSHA, Status: fmt.Sprintf("clean=%t head=%s remote=%s", result.Clean, result.HeadSHA, result.RemoteHeadSHA)})
 			}
 			home, err := wbhome.Root(projectsRoot)
 			if err != nil {
 				return err
 			}
 			store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
-			bundle, found, err := store.FindBySource(source.WBSessionID)
+			var id string
+			var owned []sessionpark.Worktree
+			err = captureParkedSessionAggregate(command.Context(), projectsRoot, ownedResults, source, func(captured []sessionpark.Worktree) error {
+				owned = captured
+				bundle, found, findErr := store.FindBySource(source.WBSessionID)
+				if findErr != nil {
+					return findErr
+				}
+				id = bundle.ParkedSessionID
+				if !found {
+					id, findErr = sessionpark.NewID()
+					if findErr != nil {
+						return findErr
+					}
+					bundle = sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: id, Source: source, Continuation: continuation, Worktrees: captured, ParkedAt: time.Now().UTC()}
+					if _, createErr := store.Create(bundle); createErr != nil {
+						return createErr
+					}
+				}
+				_, markErr := session.MarkParked(dir, source.PID, id)
+				return markErr
+			})
 			if err != nil {
 				return err
 			}
-			id := bundle.ParkedSessionID
-			if !found {
-				id, err = sessionpark.NewID()
-				if err != nil {
-					return err
-				}
-				bundle = sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: id, Source: source, Continuation: continuation, Worktrees: owned, ParkedAt: time.Now().UTC()}
-				if _, err := store.Create(bundle); err != nil {
-					return err
-				}
-			}
-			if _, err := session.MarkParked(dir, source.PID, id); err != nil {
-				return err
-			}
-			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), Source: source, Worktrees: owned, Continuation: continuation}
+			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), Source: source, Worktrees: owned}
 			if format == "json" {
 				enc := json.NewEncoder(command.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -101,14 +113,17 @@ func newSessionParkCmd() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&contextFile, "context-file", "", "bounded agent-authored continuation file, or - for stdin")
-	command.Flags().StringVar(&summary, "summary", "", "continuation summary")
-	command.Flags().StringVar(&validation, "validation", "", "validation evidence")
-	command.Flags().StringVar(&remaining, "remaining", "", "remaining work and next action")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
 func newSessionResumeCmd() *cobra.Command {
+	return newSessionResumeCmdWithRemoteDelivery(defaultParkedSessionRemoteDelivery)
+}
+
+type parkedSessionRemoteDelivery func(context.Context, sessionpark.State, string) error
+
+func newSessionResumeCmdWithRemoteDelivery(deliver parkedSessionRemoteDelivery) *cobra.Command {
 	var target, via, configPath, format string
 	command := &cobra.Command{
 		Use: "resume <parked-session-id>", Short: "Resume a parked session as one fresh successor session", Args: cobra.ExactArgs(1),
@@ -142,48 +157,12 @@ func newSessionResumeCmd() *cobra.Command {
 				if err := validateParkedRemoteBundle(state.Bundle, target); err != nil {
 					return err
 				}
+				if deliver == nil {
+					return fmt.Errorf("cross-machine resume delivery boundary is unavailable; no worktree was transferred")
+				}
 				return fmt.Errorf("cross-machine resume to %s via ssh is gated: the parked session contains %d worktrees and the current session receive boundary accepts one worktree; no worktree was transferred", target, len(state.Bundle.Worktrees))
 			}
-			dir, err := sessionDirForRead()
-			if err != nil {
-				return err
-			}
-			successor, ok := session.ResolveForProcess(dir, os.Getpid())
-			if !ok {
-				return fmt.Errorf("session resume requires a later live registered successor session")
-			}
-			if successor.WBSessionID == state.Bundle.Source.WBSessionID {
-				return fmt.Errorf("successor session must be fresh; source session %s is parked", successor.WBSessionID)
-			}
-			if successor.PredecessorWBSessionID == "" {
-				successor.PredecessorWBSessionID = state.Bundle.Source.WBSessionID
-			}
-			// Persist the successor's predecessor edge before attaching worktrees.
-			registered, err := session.Register(dir, successor)
-			if err != nil {
-				return err
-			}
-			successor = registered
-			state, err = store.Resume(args[0], successor, time.Now().UTC())
-			if err != nil {
-				return err
-			}
-			if state.Successor != nil && state.Successor.WBSessionID == successor.WBSessionID {
-				identity := worktrees.AgentIdentity{Runtime: successor.Runtime, AgentID: successor.WBSessionID, Model: successor.Model, PID: successor.PID}
-				for _, wt := range state.Bundle.Worktrees {
-					if err := worktrees.RecordCustody(wt.WorktreeDir, "", identity.Agent(), identity); err != nil {
-						return fmt.Errorf("attach resumed worktree %s: %w", wt.WorktreeDir, err)
-					}
-				}
-			}
-			out := sessionParkOutput{ParkedSessionID: args[0], Status: string(state.Status), Source: state.Bundle.Source, Worktrees: state.Bundle.Worktrees, Continuation: state.Bundle.Continuation, Successor: state.Successor}
-			if format == "json" {
-				enc := json.NewEncoder(command.OutOrStdout())
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
-			}
-			_, err = fmt.Fprintf(command.OutOrStdout(), "resumed parked session %s as successor %s with %d owned worktrees; continuation is available from the parked checkpoint\n", args[0], successor.WBSessionID, len(state.Bundle.Worktrees))
-			return err
+			return fmt.Errorf("local session resume is fail-closed: coordinator launch is not wired; no session, parked aggregate, or custody mutation was performed")
 		},
 	}
 	command.Flags().StringVar(&target, "to", "", "target WB machine for cross-machine resume")
@@ -211,18 +190,37 @@ func ownedBySession(result worktrees.ListResult, source session.Record) bool {
 	return false
 }
 
-func readParkContext(command *cobra.Command, path string) ([]byte, error) {
-	if strings.TrimSpace(path) == "" {
-		return nil, nil
-	}
-	var reader io.Reader = command.InOrStdin()
-	if path != "-" {
-		file, err := os.Open(path)
-		if err != nil {
-			return nil, err
+func captureOwnedParkedWorktrees(ctx context.Context, projectsRoot string, results []worktrees.ListResult, source session.Record) ([]sessionpark.Worktree, error) {
+	owned := make([]worktrees.ListResult, 0, len(results))
+	for _, result := range results {
+		if ownedBySession(result, source) {
+			owned = append(owned, result)
 		}
-		defer file.Close()
-		reader = file
 	}
-	return io.ReadAll(io.LimitReader(reader, sessionpark.MaxContinuationBytes+1))
+	sort.SliceStable(owned, func(i, j int) bool {
+		if owned[i].WorktreeDir != owned[j].WorktreeDir {
+			return owned[i].WorktreeDir < owned[j].WorktreeDir
+		}
+		return owned[i].Repository < owned[j].Repository
+	})
+	captured := make([]sessionpark.Worktree, 0, len(owned))
+	for _, result := range owned {
+		member, err := captureParkedSessionWorktree(ctx, projectsRoot, result, source)
+		if err != nil {
+			return nil, fmt.Errorf("capture parked worktree %s: %w", result.WorktreeDir, err)
+		}
+		captured = append(captured, member)
+	}
+	return captured, nil
+}
+
+func readParkContext(command *cobra.Command, path string) ([]byte, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("park requires --context-file; use - to read stdin")
+	}
+	if path == "-" {
+		return readBounded(command.InOrStdin(), sessionpark.MaxContinuationBytes, "park context")
+	}
+	return readBoundedRegularFile(path, sessionpark.MaxContinuationBytes)
 }

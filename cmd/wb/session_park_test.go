@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +39,177 @@ func TestSessionParkDoesNotTreatDifferentPIDAsOwned(t *testing.T) {
 	}
 }
 
+func TestSessionParkPublicOutputDoesNotContainContinuation(t *testing.T) {
+	secret := "private continuation must never be printed"
+	raw, err := json.Marshal(sessionParkOutput{
+		ParkedSessionID: "park-test", Status: string(sessionpark.StatusParked),
+		Source: session.Record{WBSessionID: "wbs-source"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "continuation") {
+		t.Fatalf("public park output disclosed private continuation: %s", raw)
+	}
+}
+
+func TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces(t *testing.T) {
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", home)
+	dir, err := sessionDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := session.Register(dir, session.Record{PID: os.Getpid(), WBSessionID: "wbs-private-park-source", Machine: "test-machine", Runtime: "codex", StartedAt: time.Now().UTC().Add(-time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "PRIVATE-PARK-CONTEXT-7bff4f8c"
+	workLogProbe := filepath.Join(home, "worklogs", "privacy-probe", "events.ndjson")
+	if err := os.MkdirAll(filepath.Dir(workLogProbe), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workLogProbe, []byte("existing custody evidence\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workLogBefore, err := os.ReadFile(workLogProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextPath := filepath.Join(t.TempDir(), "continuation.md")
+	if err := os.WriteFile(contextPath, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	arguments := []string{"--context-file", contextPath, "--format", "json"}
+	command := newSessionParkCmd()
+	command.SetArgs(arguments)
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for surface, value := range map[string]string{"stdout": stdout.String(), "stderr": stderr.String(), "argv": strings.Join(arguments, "\x00")} {
+		if strings.Contains(value, secret) {
+			t.Fatalf("%s disclosed private continuation", surface)
+		}
+	}
+	var output sessionParkOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
+	state, err := store.Load(output.ParkedSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Bundle.Source.WBSessionID != source.WBSessionID || state.Bundle.Continuation != secret {
+		t.Fatalf("private source continuation was not durably preserved: %#v", state.Bundle)
+	}
+	workLogs := filepath.Join(home, "worklogs")
+	_ = filepath.Walk(workLogs, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil || info.IsDir() {
+			return nil
+		}
+		raw, readErr := os.ReadFile(path)
+		if readErr == nil && bytes.Contains(raw, []byte(secret)) {
+			t.Fatalf("private continuation leaked into Work Log %s", path)
+		}
+		return nil
+	})
+	workLogAfter, err := os.ReadFile(workLogProbe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(workLogBefore, workLogAfter) {
+		t.Fatal("session park changed existing Work Log evidence while storing private continuation")
+	}
+}
+
+func TestSessionParkRejectsContentBearingContinuationFlags(t *testing.T) {
+	for _, flag := range []string{"--summary", "--validation", "--remaining"} {
+		command := newSessionParkCmd()
+		command.SetArgs([]string{flag, "private value"})
+		if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Fatalf("flag %s error = %v, want unknown flag", flag, err)
+		}
+	}
+}
+
+func TestSessionParkCapturesOwnedMembersInDeterministicOrder(t *testing.T) {
+	source := session.Record{PID: 41, WBSessionID: "wbs-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
+	results := []worktrees.ListResult{
+		{Repository: "acme/two", WorktreeDir: "/wt/z", Owners: []worktrees.OwnerView{{OwnerRegistration: worktrees.OwnerRegistration{PID: 41, At: time.Unix(12, 0).UTC()}}}},
+		{Repository: "acme/one", WorktreeDir: "/wt/a", Owners: []worktrees.OwnerView{{OwnerRegistration: worktrees.OwnerRegistration{PID: 41, At: time.Unix(11, 0).UTC()}}}},
+	}
+	var captured []string
+	oldCapture := captureParkedSessionWorktree
+	captureParkedSessionWorktree = func(_ context.Context, _ string, listed worktrees.ListResult, _ session.Record) (sessionpark.Worktree, error) {
+		captured = append(captured, listed.WorktreeDir)
+		return sessionpark.Worktree{WorktreeDir: listed.WorktreeDir}, nil
+	}
+	t.Cleanup(func() { captureParkedSessionWorktree = oldCapture })
+	members, err := captureOwnedParkedWorktrees(context.Background(), "/projects", results, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(captured, []string{"/wt/a", "/wt/z"}) || len(members) != 2 {
+		t.Fatalf("capture order = %v, members = %+v", captured, members)
+	}
+}
+
+func TestSessionResumeLocalFailsClosedWithoutMutation(t *testing.T) {
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", home)
+	parkedID := "park-local-fail-closed"
+	store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
+	source := session.Record{PID: 41, WBSessionID: "wbs-parked-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
+	if _, err := store.Create(sessionpark.Bundle{
+		SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: parkedID, Source: source,
+		Continuation: "private continuation", ParkedAt: time.Unix(11, 0).UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := sessionDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	successor := session.Record{PID: os.Getpid(), WBSessionID: "wbs-local-successor", Runtime: "codex", StartedAt: time.Now().UTC()}
+	if _, err := session.Register(dir, successor); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(dir, fmt.Sprintf("%d.json", os.Getpid()))
+	beforeRecord, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := newSessionResumeCmd()
+	command.SetArgs([]string{parkedID})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "coordinator") {
+		t.Fatalf("local resume error = %v, want fail-closed coordinator checkpoint", err)
+	}
+	afterRecord, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeRecord, afterRecord) {
+		t.Fatal("local resume mutated the successor session registry")
+	}
+	state, err := store.Load(parkedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != sessionpark.StatusParked || len(state.Events) != 0 {
+		t.Fatalf("local resume mutated parked aggregate: status=%s events=%d", state.Status, len(state.Events))
+	}
+}
+
 func TestSessionParkRemoteReconstructabilityRefusesDirtyEvidence(t *testing.T) {
 	bundle := sessionpark.Bundle{ParkedSessionID: "park-dirty", Worktrees: []sessionpark.Worktree{{WorktreeDir: "/tmp/dirty", Head: "a", RemoteHead: "a", Dirty: true}}}
 	err := validateParkedRemoteBundle(bundle, "hetzner-vm1")
@@ -44,40 +219,77 @@ func TestSessionParkRemoteReconstructabilityRefusesDirtyEvidence(t *testing.T) {
 }
 
 // These command-level cases deliberately exercise the public park/resume
-// journey rather than the old reconstructability helper.  They are the
-// regression boundary for delayed SSH handoff: a remotely reconstructable
-// parked bundle must reach the courier/receiver path instead of being rejected
-// by the former hard-coded cross-machine gate.
-func TestSessionResumeRemoteSingleWorktreeReachesTransport(t *testing.T) {
-	parkedID, config := remoteResumeFixture(t, []sessionpark.Worktree{cleanParkedWorktree("/tmp/one", "feature/one")})
-	command := newSessionResumeCmd()
-	command.SetArgs([]string{parkedID, "--to", "target", "--via", "ssh", "--config", config})
+// boundary rather than the old reconstructability helper. Remote delivery is
+// intentionally fail-closed until the coordinator/courier path is wired.
+func TestSessionResumeRemoteSingleWorktreeFailsClosed(t *testing.T) {
+	fixture := remoteResumeFixture(t, []sessionpark.Worktree{cleanParkedWorktree("/tmp/one", "feature/one")})
+	assertRemoteResumeFailsClosedWithoutMutation(t, fixture)
+}
+
+func assertRemoteResumeFailsClosedWithoutMutation(t *testing.T, fixture remoteResumeTestFixture) {
+	t.Helper()
+	beforeTree := snapshotTrees(t, fixture.home, fixture.custodyRoot)
+	store := sessionpark.NewStore(filepath.Join(fixture.home, "parked-sessions"))
+	beforeState, err := store.Load(fixture.parkedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries := 0
+	deliver := func(context.Context, sessionpark.State, string) error {
+		deliveries++
+		return nil
+	}
+	command := newSessionResumeCmdWithRemoteDelivery(deliver)
+	command.SetArgs([]string{fixture.parkedID, "--to", "target", "--via", "ssh", "--config", fixture.config})
 	command.SetOut(new(bytes.Buffer))
-	if err := command.Execute(); err != nil {
-		t.Fatalf("remote single-worktree resume = %v; want delivery through the session courier/receiver boundary", err)
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "gated") {
+		t.Fatalf("remote single-worktree resume = %v; want explicit fail-closed gate", err)
+	}
+	if deliveries != 0 {
+		t.Fatalf("fail-closed remote resume reached delivery seam %d times", deliveries)
+	}
+	afterState, err := store.Load(fixture.parkedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeState, afterState) {
+		t.Fatalf("remote refusal mutated parked aggregate: before=%#v after=%#v", beforeState, afterState)
+	}
+	if afterTree := snapshotTrees(t, fixture.home, fixture.custodyRoot); !reflect.DeepEqual(beforeTree, afterTree) {
+		t.Fatalf("remote refusal mutated session registry, Work Log, or custody tree:\nbefore=%#v\nafter=%#v", beforeTree, afterTree)
 	}
 }
 
-func TestSessionResumeRemoteBundleReachesTransportAsOneSession(t *testing.T) {
-	parkedID, config := remoteResumeFixture(t, []sessionpark.Worktree{
+func TestSessionResumeRemoteBundleFailsClosed(t *testing.T) {
+	fixture := remoteResumeFixture(t, []sessionpark.Worktree{
 		cleanParkedWorktree("/tmp/one", "feature/one"),
 		cleanParkedWorktree("/tmp/two", "feature/two"),
 	})
-	command := newSessionResumeCmd()
-	command.SetArgs([]string{parkedID, "--to", "target", "--via", "ssh", "--config", config})
-	command.SetOut(new(bytes.Buffer))
-	if err := command.Execute(); err != nil {
-		t.Fatalf("remote bundled resume = %v; want one successor transport request for the complete parked bundle", err)
-	}
+	assertRemoteResumeFailsClosedWithoutMutation(t, fixture)
 }
 
-func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) (string, string) {
+type remoteResumeTestFixture struct {
+	parkedID, config, home, custodyRoot string
+}
+
+func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) remoteResumeTestFixture {
 	t.Helper()
 	previousProjectsRoot := projectsRoot
 	projectsRoot = t.TempDir()
 	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
 	home := filepath.Join(t.TempDir(), "wb-home")
 	t.Setenv("WB_HOME", home)
+	custodyRoot := filepath.Join(projectsRoot, "custody")
+	for index := range worktrees {
+		worktrees[index].WorktreeDir = filepath.Join(custodyRoot, fmt.Sprintf("member-%d", index+1))
+		journal := filepath.Join(worktrees[index].WorktreeDir, ".wb", "local", "worklog")
+		if err := os.MkdirAll(journal, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(journal, "events.ndjson"), []byte("source custody evidence\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	parkedID := "park-remote"
 	store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
 	bundle := sessionpark.Bundle{
@@ -88,11 +300,46 @@ func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) (string
 	if _, err := store.Create(bundle); err != nil {
 		t.Fatal(err)
 	}
+	dir, err := sessionDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Register(dir, session.Record{PID: os.Getpid(), WBSessionID: "wbs-remote-coordinator", Machine: "source", Runtime: "codex", StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	config := filepath.Join(t.TempDir(), "wb.yaml")
 	if err := os.WriteFile(config, []byte("session_move:\n  targets:\n    target:\n      default_courier: ssh\n      ssh:\n        host: target\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return parkedID, config
+	return remoteResumeTestFixture{parkedID: parkedID, config: config, home: home, custodyRoot: custodyRoot}
+}
+
+func snapshotTrees(t *testing.T, roots ...string) map[string][]byte {
+	t.Helper()
+	snapshot := make(map[string][]byte)
+	for _, root := range roots {
+		err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.IsDir() {
+				return nil
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			snapshot[path] = append([]byte(nil), raw...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return snapshot
 }
 
 func cleanParkedWorktree(path, branch string) sessionpark.Worktree {
