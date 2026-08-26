@@ -91,12 +91,22 @@ func (client *osTmux) SaveBuffer(ctx context.Context, name string) ([]byte, erro
 }
 
 func (client *osTmux) PasteBuffer(ctx context.Context, name, paneID string) error {
-	_, err := client.run(ctx, []string{"paste-buffer", "-b", name, "-t", paneID}, nil, maxTmuxErrorBytes)
+	// -p asks tmux to wrap the payload in bracketed-paste markers. -r preserves
+	// every LF byte instead of converting it to CR before it reaches the pane.
+	_, err := client.run(ctx, []string{"paste-buffer", "-p", "-r", "-b", name, "-t", paneID}, nil, maxTmuxErrorBytes)
 	return err
 }
 
 func (client *osTmux) DeleteBuffer(ctx context.Context, name string) error {
 	_, err := client.run(ctx, []string{"delete-buffer", "-b", name}, nil, maxTmuxErrorBytes)
+	return err
+}
+
+func (client *osTmux) Submit(ctx context.Context, paneID string) error {
+	if !canonicalPaneID.MatchString(paneID) {
+		return fmt.Errorf("refuse to submit message to non-canonical tmux pane identity")
+	}
+	_, err := client.run(ctx, []string{"send-keys", "-t", paneID, "Enter"}, nil, maxTmuxErrorBytes)
 	return err
 }
 

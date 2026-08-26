@@ -16,9 +16,10 @@ import (
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
-// ErrMessagePasteAmbiguous means a durable intent exists but no durable
-// pasted receipt does. WB will not automatically paste the message again.
-var ErrMessagePasteAmbiguous = errors.New("session message paste outcome is ambiguous")
+// ErrMessageDeliveryAmbiguous means a durable intent exists but no durable
+// submitted receipt does. WB will not automatically paste or submit the
+// message again.
+var ErrMessageDeliveryAmbiguous = errors.New("session message delivery outcome is ambiguous")
 
 // Pane is the exact single pane returned by one bounded list-panes query.
 type Pane struct {
@@ -34,6 +35,7 @@ type tmux interface {
 	SaveBuffer(context.Context, string) ([]byte, error)
 	PasteBuffer(context.Context, string, string) error
 	DeleteBuffer(context.Context, string) error
+	Submit(context.Context, string) error
 }
 
 // WorkLogRecord is the exact target-side evidence passed to the Work Log
@@ -48,7 +50,7 @@ type WorkLogRecord struct {
 }
 
 type Hooks struct {
-	AfterPaste func() error
+	AfterSubmit func() error
 }
 
 type Options struct {
@@ -74,8 +76,8 @@ type Result struct {
 // Receive admits exact canonical bytes before inspecting target state. The
 // typed canonical JSON is intentionally the agent-facing prompt contract: its
 // kind and reply_to fields make even an empty-body request_handoff actionable.
-// Once Receive publishes a paste intent it makes at most one automatic paste
-// attempt.
+// Once Receive publishes a paste intent it makes at most one automatic
+// paste-and-submit attempt.
 func Receive(ctx context.Context, options Options) (Result, error) {
 	var result Result
 	if ctx == nil {
@@ -135,7 +137,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	}
 	if inbox.Intent != nil {
 		return result, fmt.Errorf("%w for message %s; inspect the verified target tmux pane and durable inbox before any manual recovery",
-			ErrMessagePasteAmbiguous, message.MessageID)
+			ErrMessageDeliveryAmbiguous, message.MessageID)
 	}
 
 	lookup := options.LookupSession
@@ -183,15 +185,15 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	if _, replay, err := options.Store.SaveIncomingPasteIntentUnderLock(lock, request.HandoffID, requestDigest, intent); err != nil {
 		return result, err
 	} else if replay {
-		return result, fmt.Errorf("%w for message %s; a concurrent receiver already owns the sole automatic paste attempt",
-			ErrMessagePasteAmbiguous, message.MessageID)
+		return result, fmt.Errorf("%w for message %s; a concurrent receiver already owns the sole automatic paste-and-submit attempt",
+			ErrMessageDeliveryAmbiguous, message.MessageID)
 	}
 	bufferName := "wb-message-" + message.MessageID
-	if err := pasteExact(ctx, tmuxClient, bufferName, pane.ID, options.RawMessage); err != nil {
+	if err := pasteAndSubmitExact(ctx, tmuxClient, bufferName, pane.ID, options.RawMessage); err != nil {
 		return result, ambiguous(message.MessageID, err)
 	}
-	if options.Hooks.AfterPaste != nil {
-		if err := options.Hooks.AfterPaste(); err != nil {
+	if options.Hooks.AfterSubmit != nil {
+		if err := options.Hooks.AfterSubmit(); err != nil {
 			return result, ambiguous(message.MessageID, err)
 		}
 	}
@@ -211,7 +213,7 @@ func Receive(ctx context.Context, options Options) (Result, error) {
 	return result, nil
 }
 
-func pasteExact(ctx context.Context, client tmux, bufferName, paneID string, raw []byte) error {
+func pasteAndSubmitExact(ctx context.Context, client tmux, bufferName, paneID string, raw []byte) error {
 	if err := client.LoadBuffer(ctx, bufferName, raw); err != nil {
 		_ = client.DeleteBuffer(ctx, bufferName)
 		return fmt.Errorf("load exact message bytes into named tmux buffer: %w", err)
@@ -231,6 +233,13 @@ func pasteExact(ctx context.Context, client tmux, bufferName, paneID string, raw
 	}
 	if err := client.DeleteBuffer(ctx, bufferName); err != nil {
 		return fmt.Errorf("delete named tmux buffer after paste: %w", err)
+	}
+	// PasteBuffer uses tmux's bracketed-paste mode without LF-to-CR rewriting,
+	// preserving the verified canonical JSON as one interactive paste. A
+	// separate fixed Enter key submits that completed paste. No
+	// message-controlled bytes are used as argv or interpreted as key names.
+	if err := client.Submit(ctx, paneID); err != nil {
+		return fmt.Errorf("submit pasted message in exact pane: %w", err)
 	}
 	return nil
 }
@@ -264,5 +273,5 @@ func now(options Options) time.Time {
 
 func ambiguous(messageID string, cause error) error {
 	return fmt.Errorf("message %s has a durable paste intent but no receipt; automatic replay is disabled: %w",
-		messageID, errors.Join(ErrMessagePasteAmbiguous, cause))
+		messageID, errors.Join(ErrMessageDeliveryAmbiguous, cause))
 }

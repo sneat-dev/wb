@@ -100,8 +100,9 @@ WB behavior with an injectable fake plus compatibility tests.
 
 Add `session send`, the fixed target message receiver, durable inbox and
 receipts, and `session request-handoff` with its typed reply target. Deliver to
-tmux through load/paste-buffer APIs rather than shell or key interpolation, and
-record sent/received Work Log events without claiming agent processing.
+tmux as one byte-preserving bracketed paste followed by one fixed Enter rather
+than shell or message-controlled key interpolation, and record sent/received
+Work Log events without claiming agent processing.
 
 ### Task 8: Prove end-to-end receiver replay idempotency
 

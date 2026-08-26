@@ -157,10 +157,12 @@ existing source-local applied handoff path MUST NOT be used for this transfer.
 `wb session send <wb-session-id>` MUST deliver a durable typed message through
 the courier recorded in the handoff receipt, append it to the target session's
 inbox, and safely paste it into the recorded tmux session without interpreting
-message text as shell syntax. `wb session request-handoff <wb-session-id>` MUST
-send the standard typed request to hand control back, preserving the lineage
-and reply target. Delivery MUST return a message receipt or an actionable
-failure.
+message text as shell syntax. WB MUST preserve the canonical message as one
+bracketed paste and submit it with exactly one fixed, non-message-controlled
+Enter key. `wb session request-handoff <wb-session-id>` MUST send the standard
+typed request to hand control back, preserving the lineage and reply target.
+Delivery MUST return a message receipt or an actionable failure; the receipt
+MUST NOT claim that the agent processed or acted on the submitted prompt.
 
 ### Failure and optimization boundaries
 
@@ -275,7 +277,7 @@ Then Synchestra delivers the byte-identical bundle to `wb session receive` and W
 Scenario: Address the recorded successor
 Given a completed handoff with a live recorded tmux successor
 When the predecessor sends a message and then requests a handoff back by successor WB session ID
-Then both typed messages are durably recorded, safely delivered into that tmux session, acknowledged to the sender, and retain the original lineage and reply target
+Then both typed messages are durably recorded, safely delivered as one bracketed paste plus one fixed Enter into that tmux session, acknowledged to the sender without claiming agent processing, and retain the original lineage and reply target
 
 ## Rehearse Integration
 

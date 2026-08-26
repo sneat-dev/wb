@@ -25,6 +25,7 @@ type fakeTmux struct {
 	loadErr   error
 	pasteErr  error
 	deleteErr error
+	submitErr error
 }
 
 func (fake *fakeTmux) Inspect(_ context.Context, name string) (Pane, error) {
@@ -68,6 +69,13 @@ func (fake *fakeTmux) DeleteBuffer(_ context.Context, name string) error {
 	return nil
 }
 
+func (fake *fakeTmux) Submit(_ context.Context, paneID string) error {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.calls = append(fake.calls, "submit:"+paneID)
+	return fake.submitErr
+}
+
 func TestReceiveDurablyRecordsVerifiesAndPastesExactMessageOnce(t *testing.T) {
 	fixture := newReceiveFixture(t)
 	var workLogCalls atomic.Int32
@@ -93,9 +101,10 @@ func TestReceiveDurablyRecordsVerifiesAndPastesExactMessageOnce(t *testing.T) {
 	if workLogCalls.Load() != 1 {
 		t.Fatalf("target Work Log calls = %d, want 1", workLogCalls.Load())
 	}
-	if got := fixture.tmux.calls; len(got) != 5 || got[0] != "inspect:wb-session-wbs-successor" ||
+	if got := fixture.tmux.calls; len(got) != 6 || got[0] != "inspect:wb-session-wbs-successor" ||
 		got[1] != "load:wb-message-message-123" || got[2] != "save:wb-message-message-123" ||
-		got[3] != "paste:wb-message-message-123:%7" || got[4] != "delete:wb-message-message-123" {
+		got[3] != "paste:wb-message-message-123:%7" || got[4] != "delete:wb-message-message-123" ||
+		got[5] != "submit:%7" {
 		t.Fatalf("tmux calls = %#v", got)
 	}
 
@@ -155,9 +164,9 @@ func TestReceiveUsesReceiptBackedTargetIdentityWithoutManufacturingSourceTranspo
 
 func TestReceiveDoesNotRepasteAfterAmbiguousPostIntentFailure(t *testing.T) {
 	fixture := newReceiveFixture(t)
-	injected := errors.New("crash after paste")
-	fixture.options.Hooks.AfterPaste = func() error { return injected }
-	if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, injected) || !errors.Is(err, ErrMessagePasteAmbiguous) {
+	injected := errors.New("crash after submission")
+	fixture.options.Hooks.AfterSubmit = func() error { return injected }
+	if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, injected) || !errors.Is(err, ErrMessageDeliveryAmbiguous) {
 		t.Fatalf("first receive error = %v", err)
 	}
 	firstPasteCount := countCallPrefix(fixture.tmux.calls, "paste:")
@@ -165,8 +174,8 @@ func TestReceiveDoesNotRepasteAfterAmbiguousPostIntentFailure(t *testing.T) {
 		t.Fatalf("first paste count = %d", firstPasteCount)
 	}
 	fixture.options.Hooks = Hooks{}
-	if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessagePasteAmbiguous) {
-		t.Fatalf("receiptless intent replay error = %v, want ErrMessagePasteAmbiguous", err)
+	if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessageDeliveryAmbiguous) {
+		t.Fatalf("receiptless intent replay error = %v, want ErrMessageDeliveryAmbiguous", err)
 	}
 	if got := countCallPrefix(fixture.tmux.calls, "paste:"); got != 1 {
 		t.Fatalf("ambiguous replay pasted %d times", got)
@@ -178,17 +187,19 @@ func TestReceiveAttemptsBoundedBufferCleanupOnPastePipelineFailures(t *testing.T
 		name     string
 		mutate   func(*fakeTmux)
 		pastes   int
+		submits  int
 		retained bool
 	}{
-		{"load", func(fake *fakeTmux) { fake.loadErr = errors.New("load failed") }, 0, false},
-		{"paste", func(fake *fakeTmux) { fake.pasteErr = errors.New("paste failed") }, 1, false},
-		{"delete after paste", func(fake *fakeTmux) { fake.deleteErr = errors.New("delete failed") }, 1, true},
+		{"load", func(fake *fakeTmux) { fake.loadErr = errors.New("load failed") }, 0, 0, false},
+		{"paste", func(fake *fakeTmux) { fake.pasteErr = errors.New("paste failed") }, 1, 0, false},
+		{"delete after paste", func(fake *fakeTmux) { fake.deleteErr = errors.New("delete failed") }, 1, 0, true},
+		{"submit after paste", func(fake *fakeTmux) { fake.submitErr = errors.New("submit failed") }, 1, 1, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newReceiveFixture(t)
 			test.mutate(fixture.tmux)
-			if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessagePasteAmbiguous) {
-				t.Fatalf("pipeline failure = %v, want ErrMessagePasteAmbiguous", err)
+			if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessageDeliveryAmbiguous) {
+				t.Fatalf("pipeline failure = %v, want ErrMessageDeliveryAmbiguous", err)
 			}
 			if got := countCallPrefix(fixture.tmux.calls, "delete:"); got != 1 {
 				t.Fatalf("delete-buffer attempts = %d, want 1", got)
@@ -196,11 +207,14 @@ func TestReceiveAttemptsBoundedBufferCleanupOnPastePipelineFailures(t *testing.T
 			if got := countCallPrefix(fixture.tmux.calls, "paste:"); got != test.pastes {
 				t.Fatalf("paste-buffer attempts = %d, want %d", got, test.pastes)
 			}
+			if got := countCallPrefix(fixture.tmux.calls, "submit:"); got != test.submits {
+				t.Fatalf("submit attempts = %d, want %d", got, test.submits)
+			}
 			if retained := fixture.tmux.buffer != nil; retained != test.retained {
 				t.Fatalf("retained named buffer = %v, want %v", retained, test.retained)
 			}
-			fixture.tmux.loadErr, fixture.tmux.pasteErr, fixture.tmux.deleteErr = nil, nil, nil
-			if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessagePasteAmbiguous) {
+			fixture.tmux.loadErr, fixture.tmux.pasteErr, fixture.tmux.deleteErr, fixture.tmux.submitErr = nil, nil, nil, nil
+			if _, err := Receive(context.Background(), fixture.options); !errors.Is(err, ErrMessageDeliveryAmbiguous) {
 				t.Fatalf("ambiguous replay error = %v", err)
 			}
 			if got := countCallPrefix(fixture.tmux.calls, "paste:"); got != test.pastes {
@@ -232,6 +246,9 @@ func TestReceiveConcurrentExactRetriesPasteAtMostOnce(t *testing.T) {
 	}
 	if got := countCallPrefix(fixture.tmux.calls, "paste:"); got != 1 {
 		t.Fatalf("concurrent retry paste count = %d, want 1", got)
+	}
+	if got := countCallPrefix(fixture.tmux.calls, "submit:"); got != 1 {
+		t.Fatalf("concurrent retry submit count = %d, want 1", got)
 	}
 }
 

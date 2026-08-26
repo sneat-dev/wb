@@ -41,6 +41,7 @@ func TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes(t *testing.T) {
 		{stdout: raw},
 		{},
 		{},
+		{},
 	}}
 	client := &osTmux{executable: "/usr/bin/tmux", runner: runner}
 	pane, err := client.Inspect(context.Background(), "wb-session-wbs-successor")
@@ -60,13 +61,17 @@ func TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes(t *testing.T) {
 	if err := client.DeleteBuffer(context.Background(), "wb-message-message-123"); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.Submit(context.Background(), "%7"); err != nil {
+		t.Fatal(err)
+	}
 
 	want := [][]string{
 		{"list-panes", "-s", "-t", "=wb-session-wbs-successor", "-F", "#{session_name}\t#{pane_id}\t#{pane_pid}"},
 		{"load-buffer", "-b", "wb-message-message-123", "-"},
 		{"save-buffer", "-b", "wb-message-message-123", "-"},
-		{"paste-buffer", "-b", "wb-message-message-123", "-t", "%7"},
+		{"paste-buffer", "-p", "-r", "-b", "wb-message-message-123", "-t", "%7"},
 		{"delete-buffer", "-b", "wb-message-message-123"},
+		{"send-keys", "-t", "%7", "Enter"},
 	}
 	for index, args := range want {
 		if !reflect.DeepEqual(runner.runs[index].args, args) {
@@ -84,6 +89,13 @@ func TestOSTmuxUsesOnlyFixedArgvAndExactStdinBufferBytes(t *testing.T) {
 				t.Fatalf("message content leaked into argv %q", arg)
 			}
 		}
+	}
+}
+
+func TestOSTmuxRefusesToSubmitToNonCanonicalPaneIdentity(t *testing.T) {
+	client := &osTmux{executable: "/usr/bin/tmux", runner: &scriptedTmuxRunner{}}
+	if err := client.Submit(context.Background(), "$(touch /tmp/nope)"); err == nil {
+		t.Fatal("Submit accepted a non-canonical pane identity")
 	}
 }
 
