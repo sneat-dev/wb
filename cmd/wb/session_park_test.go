@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,9 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionparkcourier"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -50,11 +53,15 @@ func TestSessionParkRemoteReconstructabilityRefusesDirtyEvidence(t *testing.T) {
 // by the former hard-coded cross-machine gate.
 func TestSessionResumeRemoteSingleWorktreeReachesTransport(t *testing.T) {
 	parkedID, config := remoteResumeFixture(t, []sessionpark.Worktree{cleanParkedWorktree("/tmp/one", "feature/one")})
-	command := newSessionResumeCmd()
+	var deliveries int
+	command := newSessionResumeCmdWithDeps(testSessionResumeDependencies(t, &deliveries))
 	command.SetArgs([]string{parkedID, "--to", "target", "--via", "ssh", "--config", config})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); err != nil {
 		t.Fatalf("remote single-worktree resume = %v; want delivery through the session courier/receiver boundary", err)
+	}
+	if deliveries != 1 {
+		t.Fatalf("courier deliveries = %d, want exactly one", deliveries)
 	}
 }
 
@@ -63,12 +70,59 @@ func TestSessionResumeRemoteBundleReachesTransportAsOneSession(t *testing.T) {
 		cleanParkedWorktree("/tmp/one", "feature/one"),
 		cleanParkedWorktree("/tmp/two", "feature/two"),
 	})
-	command := newSessionResumeCmd()
+	var deliveries int
+	command := newSessionResumeCmdWithDeps(testSessionResumeDependencies(t, &deliveries))
 	command.SetArgs([]string{parkedID, "--to", "target", "--via", "ssh", "--config", config})
 	command.SetOut(new(bytes.Buffer))
 	if err := command.Execute(); err != nil {
 		t.Fatalf("remote bundled resume = %v; want one successor transport request for the complete parked bundle", err)
 	}
+	if deliveries != 1 {
+		t.Fatalf("courier deliveries = %d, want one whole-bundle delivery", deliveries)
+	}
+}
+
+func testSessionResumeDependencies(t *testing.T, deliveries *int) sessionResumeDependencies {
+	t.Helper()
+	deps := defaultSessionResumeDependencies()
+	deps.now = func() time.Time { return time.Unix(20, 0).UTC() }
+	deps.newDeliverer = func(sessionmove.SSHConfig) (sessionparkcourier.Deliverer, error) {
+		return sessionParkDelivererFunc(func(_ context.Context, raw []byte) (sessionparkcourier.Result, error) {
+			*deliveries++
+			envelope, err := sessionpark.DecodeEnvelope(raw)
+			if err != nil {
+				return sessionparkcourier.Result{}, err
+			}
+			request := envelope.Request
+			digest := sessionmove.DigestBytes(raw)
+			receipt := sessionpark.Receipt{
+				SchemaVersion: sessionpark.ReceiptSchemaVersion, ResumeID: request.ResumeID, RequestDigest: digest,
+				ParkedSessionID: request.ParkedSessionID, SuccessorWBSessionID: request.SuccessorWBSessionID,
+				PredecessorWBSessionID: request.PredecessorWBSessionID, TargetMachine: request.TargetMachine,
+				TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: request.SourceRuntime, Model: request.SourceModel,
+				AttemptID: "000001-" + strings.Repeat("a", 32), AttemptIndex: 1, PID: 123, StartedAt: time.Unix(21, 0).UTC(),
+				Members: make([]sessionpark.ReceiptMember, len(request.Members)),
+			}
+			for index, member := range request.Members {
+				reference, referenceErr := sessionpark.TargetWorkLogReference(request, digest, member)
+				if referenceErr != nil {
+					return sessionparkcourier.Result{}, referenceErr
+				}
+				receipt.Members[index] = sessionpark.ReceiptMember{
+					MemberID: member.MemberID, Repository: member.Repository, TargetPath: "/target/" + member.MemberID,
+					Pin: sessionpark.MemberPin(request.ResumeID, member.MemberID), Commit: member.Commit, TargetWorkLogReference: reference,
+				}
+			}
+			return sessionparkcourier.Result{Receipt: receipt}, nil
+		}), nil
+	}
+	return deps
+}
+
+type sessionParkDelivererFunc func(context.Context, []byte) (sessionparkcourier.Result, error)
+
+func (deliver sessionParkDelivererFunc) Deliver(ctx context.Context, raw []byte) (sessionparkcourier.Result, error) {
+	return deliver(ctx, raw)
 }
 
 func remoteResumeFixture(t *testing.T, worktrees []sessionpark.Worktree) (string, string) {

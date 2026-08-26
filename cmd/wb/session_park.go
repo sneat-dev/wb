@@ -12,6 +12,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionparkcourier"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -23,12 +24,39 @@ type sessionParkOutput struct {
 	Status          string                 `json:"status"`
 	Source          session.Record         `json:"source"`
 	Worktrees       []sessionpark.Worktree `json:"worktrees"`
-	Continuation    string                 `json:"continuation,omitempty"`
 	Successor       *session.Record        `json:"successor,omitempty"`
+	Receipt         *sessionpark.Receipt   `json:"receipt,omitempty"`
+}
+
+// sessionResumeDependencies isolates only the bounded courier construction for
+// command-level regression tests. The product journey keeps the real CLI,
+// process transport, and target receiver boundary in session_park_journey_test.
+type sessionResumeDependencies struct {
+	defaultConfigPath func() string
+	loadConfig        func(string) (sessionmove.Config, error)
+	store             func(string) (sessionpark.Store, error)
+	newDeliverer      func(sessionmove.SSHConfig) (sessionparkcourier.Deliverer, error)
+	now               func() time.Time
+}
+
+func defaultSessionResumeDependencies() sessionResumeDependencies {
+	return sessionResumeDependencies{
+		defaultConfigPath: wbconfig.DefaultPath,
+		loadConfig:        sessionmove.LoadConfig,
+		store: func(projectsRoot string) (sessionpark.Store, error) {
+			home, err := wbhome.Root(projectsRoot)
+			if err != nil {
+				return sessionpark.Store{}, err
+			}
+			return sessionpark.NewStore(filepath.Join(home, "parked-sessions")), nil
+		},
+		newDeliverer: sessionparkcourier.NewSSHDeliverer,
+		now:          func() time.Time { return time.Now().UTC() },
+	}
 }
 
 func newSessionParkCmd() *cobra.Command {
-	var contextFile, summary, validation, remaining, format string
+	var contextFile, format string
 	command := &cobra.Command{
 		Use:   "park",
 		Short: "Suspend this registered session with an auditable whole-session checkpoint",
@@ -45,13 +73,16 @@ func newSessionParkCmd() *cobra.Command {
 			if !ok {
 				return fmt.Errorf("session park requires a live registered source session")
 			}
+			if strings.TrimSpace(contextFile) == "" {
+				return fmt.Errorf("park requires a private continuation via --context-file, or --context-file - for stdin")
+			}
 			body, err := readParkContext(command, contextFile)
 			if err != nil {
 				return err
 			}
-			continuation := strings.TrimSpace(strings.Join([]string{summary, validation, remaining, string(body)}, "\n"))
+			continuation := strings.TrimSpace(string(body))
 			if continuation == "" {
-				return fmt.Errorf("park requires continuation context via --context-file, --summary, --validation, or --remaining")
+				return fmt.Errorf("park continuation must not be empty")
 			}
 			if len([]byte(continuation)) > sessionpark.MaxContinuationBytes {
 				return fmt.Errorf("park continuation exceeds %d bytes", sessionpark.MaxContinuationBytes)
@@ -65,7 +96,11 @@ func newSessionParkCmd() *cobra.Command {
 				if !ownedBySession(result, source) {
 					continue
 				}
-				owned = append(owned, sessionpark.Worktree{Repository: result.Repository, CanonicalDir: result.CanonicalDir, WorktreeDir: result.WorktreeDir, WorktreesRoot: result.WorktreesRoot, Branch: result.Branch, Head: result.HeadSHA, Dirty: !result.Clean, RemoteHead: result.RemoteHeadSHA, Status: fmt.Sprintf("clean=%t head=%s remote=%s", result.Clean, result.HeadSHA, result.RemoteHeadSHA)})
+				member, err := worktrees.CaptureParkedSessionWorktree(command.Context(), projectsRoot, result, source)
+				if err != nil {
+					return fmt.Errorf("park worktree %s: %w", result.WorktreeDir, err)
+				}
+				owned = append(owned, member)
 			}
 			home, err := wbhome.Root(projectsRoot)
 			if err != nil {
@@ -90,7 +125,7 @@ func newSessionParkCmd() *cobra.Command {
 			if _, err := session.MarkParked(dir, source.PID, id); err != nil {
 				return err
 			}
-			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), Source: source, Worktrees: owned, Continuation: continuation}
+			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), Source: source, Worktrees: owned}
 			if format == "json" {
 				enc := json.NewEncoder(command.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -101,14 +136,15 @@ func newSessionParkCmd() *cobra.Command {
 		},
 	}
 	command.Flags().StringVar(&contextFile, "context-file", "", "bounded agent-authored continuation file, or - for stdin")
-	command.Flags().StringVar(&summary, "summary", "", "continuation summary")
-	command.Flags().StringVar(&validation, "validation", "", "validation evidence")
-	command.Flags().StringVar(&remaining, "remaining", "", "remaining work and next action")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
 func newSessionResumeCmd() *cobra.Command {
+	return newSessionResumeCmdWithDeps(defaultSessionResumeDependencies())
+}
+
+func newSessionResumeCmdWithDeps(deps sessionResumeDependencies) *cobra.Command {
 	var target, via, configPath, format string
 	command := &cobra.Command{
 		Use: "resume <parked-session-id>", Short: "Resume a parked session as one fresh successor session", Args: cobra.ExactArgs(1),
@@ -116,12 +152,7 @@ func newSessionResumeCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			home, err := wbhome.Root(projectsRoot)
-			if err != nil {
-				return err
-			}
-			store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
-			state, err := store.Load(args[0])
+			store, err := deps.store(projectsRoot)
 			if err != nil {
 				return err
 			}
@@ -130,19 +161,71 @@ func newSessionResumeCmd() *cobra.Command {
 					return fmt.Errorf("unsupported resume courier %q; use ssh", via)
 				}
 				if strings.TrimSpace(configPath) == "" {
-					configPath = wbconfig.DefaultPath()
+					configPath = deps.defaultConfigPath()
 				}
-				config, err := sessionmove.LoadConfig(configPath)
+				config, err := deps.loadConfig(configPath)
 				if err != nil {
 					return fmt.Errorf("load resume courier config: %w", err)
 				}
-				if _, ok := config.Target(target); !ok {
+				targetConfig, ok := config.Target(target)
+				if !ok {
 					return fmt.Errorf("resume target %q is not configured in %s", target, configPath)
+				}
+				if targetConfig.SSH == nil {
+					return fmt.Errorf("resume target %q has no ssh courier configured", target)
+				}
+				lock, err := store.Acquire(command.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				defer lock.Close()
+				state, err := store.LoadUnderLock(lock)
+				if err != nil {
+					return err
 				}
 				if err := validateParkedRemoteBundle(state.Bundle, target); err != nil {
 					return err
 				}
-				return fmt.Errorf("cross-machine resume to %s via ssh is gated: the parked session contains %d worktrees and the current session receive boundary accepts one worktree; no worktree was transferred", target, len(state.Bundle.Worktrees))
+				admission, err := store.PrepareRemoteUnderLock(lock, target, "", deps.now())
+				if err != nil {
+					return err
+				}
+				receipt, err := store.LoadRemoteReceiptUnderLock(lock, admission)
+				if err != nil {
+					return err
+				}
+				if receipt == nil {
+					deliverer, delivererErr := deps.newDeliverer(*targetConfig.SSH)
+					if delivererErr != nil {
+						return delivererErr
+					}
+					delivery, deliveryErr := deliverer.Deliver(command.Context(), admission.Raw)
+					if deliveryErr != nil {
+						return fmt.Errorf("resume parked session %s to %s: %w", args[0], target, deliveryErr)
+					}
+					receipt = &delivery.Receipt
+					if err := store.SaveRemoteReceiptUnderLock(lock, admission, *receipt); err != nil {
+						return err
+					}
+				}
+				state, err = store.FinalizeRemoteUnderLock(lock, admission, deps.now())
+				if err != nil {
+					return err
+				}
+				out := sessionParkOutput{ParkedSessionID: args[0], Status: string(state.Status), Source: state.Bundle.Source,
+					Worktrees: state.Bundle.Worktrees, Successor: state.Successor, Receipt: receipt}
+				if format == "json" {
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					return encoder.Encode(out)
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "resumed parked session %s as successor %s on %s with %d exact target members; durable target receipt and source custody completion recorded\n",
+					args[0], receipt.SuccessorWBSessionID, target, len(receipt.Members))
+				return err
+			}
+			state, err := store.Load(args[0])
+			if err != nil {
+				return err
 			}
 			dir, err := sessionDirForRead()
 			if err != nil {
@@ -164,7 +247,7 @@ func newSessionResumeCmd() *cobra.Command {
 				return err
 			}
 			successor = registered
-			state, err = store.Resume(args[0], successor, time.Now().UTC())
+			state, err = store.Resume(args[0], successor, deps.now())
 			if err != nil {
 				return err
 			}
@@ -176,7 +259,7 @@ func newSessionResumeCmd() *cobra.Command {
 					}
 				}
 			}
-			out := sessionParkOutput{ParkedSessionID: args[0], Status: string(state.Status), Source: state.Bundle.Source, Worktrees: state.Bundle.Worktrees, Continuation: state.Bundle.Continuation, Successor: state.Successor}
+			out := sessionParkOutput{ParkedSessionID: args[0], Status: string(state.Status), Source: state.Bundle.Source, Worktrees: state.Bundle.Worktrees, Successor: state.Successor}
 			if format == "json" {
 				enc := json.NewEncoder(command.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -195,7 +278,7 @@ func newSessionResumeCmd() *cobra.Command {
 
 func validateParkedRemoteBundle(bundle sessionpark.Bundle, target string) error {
 	for _, wt := range bundle.Worktrees {
-		if wt.Dirty || wt.Head == "" || wt.RemoteHead == "" || wt.Head != wt.RemoteHead {
+		if wt.Dirty || wt.Head == "" || wt.RemoteHead == "" || wt.Head != wt.RemoteHead || wt.RepositoryRemote == "" || wt.WorkLogReference == "" {
 			return fmt.Errorf("cannot resume parked session %s to %s: worktree %s is not remotely reconstructable at exact pushed commit (head=%s remote=%s dirty=%t); clean, push, and park again", bundle.ParkedSessionID, target, wt.WorktreeDir, wt.Head, wt.RemoteHead, wt.Dirty)
 		}
 	}
@@ -224,5 +307,12 @@ func readParkContext(command *cobra.Command, path string) ([]byte, error) {
 		defer file.Close()
 		reader = file
 	}
-	return io.ReadAll(io.LimitReader(reader, sessionpark.MaxContinuationBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(reader, sessionpark.MaxContinuationBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > sessionpark.MaxContinuationBytes {
+		return nil, fmt.Errorf("park continuation exceeds %d bytes", sessionpark.MaxContinuationBytes)
+	}
+	return raw, nil
 }

@@ -3970,9 +3970,9 @@
       "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb session park", "flags": ["--context-file", "--format", "--remaining", "--summary", "--validation"], "modes": ["Stores one immutable whole-session checkpoint containing every currently owned worktree and bounded continuation context without changing Git."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb session park --help", "contains": ["--context-file", "--summary", "--validation", "--remaining"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "# Worktree ownership and liveness", "examples": ["wb session park --summary <text>"]}], "limitation": null},
+        "runtime": {"status": "Full", "commands": [{"path": "wb session park", "flags": ["--context-file", "--format"], "modes": ["Stores one immutable whole-session checkpoint containing every currently owned worktree and bounded continuation context without changing Git."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb session park --help", "contains": ["--context-file", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "# Worktree ownership and liveness", "examples": ["wb session park --context-file continuation.md"]}], "limitation": null},
         "tests": {"status": "Full", "references": [{"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkCapturesAllOwnedWorktrees", "kind": "unit"}], "limitation": null}
       },
       "notes": "Parking is a session lifecycle operation, not worktree abort or automatic commit/push."
@@ -4196,6 +4196,18 @@
         }
       },
       "notes": "The typed canonical JSON is intentionally the prompt contract. Acknowledgement is limited to durable target recording plus paste into the corroborated pane, never harness processing."
+    },
+    {
+      "id": "wb.session.receive-park",
+      "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb session receive-park", "flags": ["--format"], "modes": ["Accepts one bounded canonical parked-session envelope from stdin, reconstructs every exact pushed member and target Work Log claim, then releases exactly one successor only after the complete bundle has a durable receipt.", "Identical delivery replays the original target receipt without a second successor, member, or custody mutation."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb session receive-park --help", "contains": ["canonical parked-session envelope", "--format"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "## Park and resume a registered session", "examples": ["wb session receive-park --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/session_receive_park_test.go", "name": "TestSessionReceiveParkPassesExactEnvelopeAndPrintsOnlyReceipt", "kind": "integration"}, {"path": "cmd/wb/session_park_journey_test.go", "name": "TestSessionParkResumeAcrossProcessTransport", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "This is the fixed target courier seam for an all-member parked-session bundle; continuation bytes are never rendered in the receipt or output."
     },
     {
       "id": "wb.session.register",
@@ -4688,6 +4700,30 @@
         }
       },
       "notes": "The command inspects existing clones and does not fetch, commit, or push."
+    },
+    {
+      "id": "wb.verify.receipt",
+      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb verify receipt", "flags": ["--ci-wait", "--deployed-revision", "--local-check", "--output", "--remote-target", "--terminal-cleanup"], "modes": ["Composes five closed, versioned producer documents into one machine-readable graduation receipt for one exact repository revision.", "Refuses prose, producer/schema mismatches, dirty or unequal local revisions, PR-only or failed CI, unequal remote or deployed revisions, future or non-monotonic timestamps, and cleanup that leaves source branches or campaign worktrees behind."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb verify receipt --help", "contains": ["--local-check", "--terminal-cleanup"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/quality.md", "marker": "## Graduation receipts", "examples": ["wb verify receipt --local-check local-check.json --ci-wait ci-wait.json --remote-target remote-target.json --deployed-revision deployment.json --terminal-cleanup cleanup.json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/verify_receipt_test.go", "name": "TestVerifyReceiptComposesExactMachineReadableEvidence", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The command composes producer-bound evidence; it does not deploy, clean up, or infer that a hand-authored status field proves graduation."
+    },
+    {
+      "id": "wb.verify.receipt.remote-target",
+      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb verify receipt remote-target", "flags": ["--output", "--remote", "--repo", "--repository-path", "--target"], "modes": ["Resolves one configured credential-free remote and records one canonical git ls-remote observation for the exact target branch."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb verify receipt remote-target --help", "contains": ["--repo", "--target"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/quality.md", "marker": "## Graduation receipts", "examples": ["wb verify receipt remote-target --repo acme/wb --target main"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/verify_receipt_test.go", "name": "TestVerifyReceiptRemoteTargetUsesFixedGitObservation", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "This read-only collector is the closed WB producer for remote-target equality evidence used by wb verify receipt."
     },
     {
       "id": "wb.version",

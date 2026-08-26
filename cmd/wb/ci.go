@@ -36,7 +36,8 @@ var exactGitObjectID = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 var ciWaitShellSafeArg = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
 
 type ciWaitOutput struct {
-	SchemaVersion int `json:"schema_version"`
+	SchemaVersion int       `json:"schema_version"`
+	ObservedAt    time.Time `json:"observed_at"`
 	orchestrate.PullRequestWaitResult
 	ResumeArgs []string `json:"resume_args,omitempty"`
 }
@@ -86,7 +87,7 @@ it. This command never starts a detached watcher or background loop.`,
 			if err != nil {
 				return err
 			}
-			output := ciWaitOutput{SchemaVersion: 1, PullRequestWaitResult: result}
+			output := ciWaitOutput{SchemaVersion: 1, ObservedAt: time.Now().UTC(), PullRequestWaitResult: result}
 			if result.Status == orchestrate.PullRequestWaitPending {
 				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, jsonOut)
 			}
