@@ -46,6 +46,20 @@ func (report BumpReport) Markdown() string {
 			fmt.Fprintf(&output, "- `%s` — %s\n", skip.Repository, skip.Reason)
 		}
 	}
+	if len(report.DefaultBranchFallbacks) > 0 {
+		output.WriteString("\n## Default branch fallbacks\n\n")
+		fmt.Fprintf(&output, "The repositories below do not have `origin/%s`; discovery and any downstream wave operation used each repository's actual default branch instead:\n\n", report.BaseRef)
+		for _, fallback := range report.DefaultBranchFallbacks {
+			fmt.Fprintf(&output, "- `%s` — base: `%s` (default-branch fallback)\n", fallback.Repository, fallback.Ref)
+		}
+	}
+	if len(report.ManifestWarnings) > 0 {
+		output.WriteString("\n## Manifest warnings\n\n")
+		output.WriteString("Each manifest below failed to parse but was not treated as fatal because it is not its repository's root manifest:\n\n")
+		for _, warning := range report.ManifestWarnings {
+			fmt.Fprintf(&output, "- `%s` (`%s`) — %s\n", warning.Repository, warning.Manifest, warning.Reason)
+		}
+	}
 	for _, wave := range report.Waves {
 		fmt.Fprintf(&output, "\n## Wave %d — `%s`\n\n", wave.Index, wave.Status)
 		output.WriteString("Events:\n\n")

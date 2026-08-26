@@ -95,6 +95,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			graph = goGraph
 		}
 		report.DiscoverySkips = mergeGraphDiscoverySkips(report.DiscoverySkips, graph.Skips())
+		report.DefaultBranchFallbacks = mergeGraphDefaultBranchFallbacks(report.DefaultBranchFallbacks, graph.BaseRefFallbacks())
+		report.ManifestWarnings = mergeGraphManifestWarnings(report.ManifestWarnings, graph.ManifestWarnings())
 		if progressErr != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, progressErr)
@@ -390,6 +392,42 @@ func mergeGraphDiscoverySkips(groups ...[]GraphDiscoverySkip) []GraphDiscoverySk
 		result = append(result, skip)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Repository < result[j].Repository })
+	return result
+}
+
+func mergeGraphDefaultBranchFallbacks(groups ...[]GraphDefaultBranchFallback) []GraphDefaultBranchFallback {
+	byRepository := map[string]GraphDefaultBranchFallback{}
+	for _, group := range groups {
+		for _, fallback := range group {
+			byRepository[fallback.Repository] = fallback
+		}
+	}
+	result := make([]GraphDefaultBranchFallback, 0, len(byRepository))
+	for _, fallback := range byRepository {
+		result = append(result, fallback)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Repository < result[j].Repository })
+	return result
+}
+
+func mergeGraphManifestWarnings(groups ...[]GraphManifestWarning) []GraphManifestWarning {
+	type key struct{ repository, manifest string }
+	byKey := map[key]GraphManifestWarning{}
+	for _, group := range groups {
+		for _, warning := range group {
+			byKey[key{warning.Repository, warning.Manifest}] = warning
+		}
+	}
+	result := make([]GraphManifestWarning, 0, len(byKey))
+	for _, warning := range byKey {
+		result = append(result, warning)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Repository == result[j].Repository {
+			return result[i].Manifest < result[j].Manifest
+		}
+		return result[i].Repository < result[j].Repository
+	})
 	return result
 }
 

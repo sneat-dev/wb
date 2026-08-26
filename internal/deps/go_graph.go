@@ -21,6 +21,8 @@ type goFleetGraph struct {
 	requirements       map[string][]goFleetRequirement
 	repositoryModules  map[string][]string
 	discoverySkips     []GraphDiscoverySkip
+	baseRefFallbacks   []GraphDefaultBranchFallback
+	manifestWarnings   []GraphManifestWarning
 }
 
 type goFleetModule struct {
@@ -56,10 +58,12 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 	type repositoryGraph struct {
 		modules      []goFleetModule
 		requirements []goFleetRequirement
+		warnings     []GraphManifestWarning
 	}
 	results := make([]repositoryGraph, len(repositories))
 	errorsByRepository := make([]error, len(repositories))
 	skipsByRepository := make([]*GraphDiscoverySkip, len(repositories))
+	fallbacksByRepository := make([]*GraphDefaultBranchFallback, len(repositories))
 	workers := options.Parallel
 	if workers > len(repositories) {
 		workers = len(repositories)
@@ -105,11 +109,15 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 					if canonical == "" {
 						canonical = filepath.Join(options.GitHubDir, owner, name)
 					}
-					if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
-						skipsByRepository[index], errorsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
+					resolvedBase, ensureErr := orchestrate.EnsureCanonical(ctx, repository, canonical, options)
+					if ensureErr != nil {
+						skipsByRepository[index], errorsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, ensureErr, policy)
 						return
 					}
-					result, err := inspectRepositoryGoGraph(ctx, repository.Slug, canonical, "origin/"+options.Ref, options)
+					if resolvedBase.Fallback {
+						fallbacksByRepository[index] = &GraphDefaultBranchFallback{Repository: repository.Slug, Ref: resolvedBase.Ref}
+					}
+					result, err := inspectRepositoryGoGraph(ctx, repository.Slug, canonical, "origin/"+resolvedBase.Ref, options)
 					results[index] = result
 					if err != nil {
 						skipsByRepository[index], errorsByRepository[index] = classifyGoGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
@@ -136,6 +144,7 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 		for _, requirement := range result.requirements {
 			graph.requirements[requirement.Dependency] = append(graph.requirements[requirement.Dependency], requirement)
 		}
+		graph.manifestWarnings = append(graph.manifestWarnings, result.warnings...)
 	}
 	var discoveryErrors []error
 	for index, err := range errorsByRepository {
@@ -145,9 +154,22 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 		if skipsByRepository[index] != nil {
 			graph.discoverySkips = append(graph.discoverySkips, *skipsByRepository[index])
 		}
+		if fallbacksByRepository[index] != nil {
+			graph.baseRefFallbacks = append(graph.baseRefFallbacks, *fallbacksByRepository[index])
+		}
 	}
 	sort.Slice(graph.discoverySkips, func(i, j int) bool {
 		return graph.discoverySkips[i].Repository < graph.discoverySkips[j].Repository
+	})
+	sort.Slice(graph.baseRefFallbacks, func(i, j int) bool {
+		return graph.baseRefFallbacks[i].Repository < graph.baseRefFallbacks[j].Repository
+	})
+	sort.Slice(graph.manifestWarnings, func(i, j int) bool {
+		left, right := graph.manifestWarnings[i], graph.manifestWarnings[j]
+		if left.Repository == right.Repository {
+			return left.Manifest < right.Manifest
+		}
+		return left.Repository < right.Repository
 	})
 	for repository := range graph.repositoryModules {
 		sort.Strings(graph.repositoryModules[repository])
@@ -275,10 +297,12 @@ func (graph goFleetGraph) validateUniqueModuleDeclarations() error {
 func inspectRepositoryGoGraph(ctx context.Context, repository, canonical, base string, options orchestrate.Options) (struct {
 	modules      []goFleetModule
 	requirements []goFleetRequirement
+	warnings     []GraphManifestWarning
 }, error) {
 	result := struct {
 		modules      []goFleetModule
 		requirements []goFleetRequirement
+		warnings     []GraphManifestWarning
 	}{}
 	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "ls-tree", "-r", "--name-only", base)
 	if err != nil {
@@ -294,6 +318,21 @@ func inspectRepositoryGoGraph(ctx context.Context, repository, canonical, base s
 		}
 		parsed, err := modfile.Parse(name, []byte(contents), nil)
 		if err != nil {
+			// A go.mod that is not the repository's root manifest is often not a
+			// real module declaration at all — most commonly a code-generator
+			// template (e.g. an EJS `<%= family %>` interpolation in place of a
+			// module path) committed under a tools/ directory. WB cannot safely
+			// assume the same about the ROOT go.mod, so that one still fails the
+			// whole repository; a non-root one is skipped with a warning instead
+			// of aborting an otherwise healthy fleet campaign over a template file
+			// that was never meant to be parsed as Go.
+			if name != "go.mod" {
+				result.warnings = append(result.warnings, GraphManifestWarning{
+					Repository: repository, Manifest: name,
+					Reason: fmt.Sprintf("skipped unparseable non-root go.mod (likely a code-generator template, not a real module declaration): %v", err),
+				})
+				continue
+			}
 			return result, fmt.Errorf("parse %s: %w", name, err)
 		}
 		if parsed.Module == nil || parsed.Module.Mod.Path == "" {
@@ -598,6 +637,21 @@ func (graph goFleetGraph) validateAcyclicPropagation(events []ReleaseEvent) erro
 // ecosystem-neutral bumpFleetGraph interface (see fleet_graph.go); a method
 // cannot share its identifier with a field, hence the capitalized name.
 func (graph goFleetGraph) Skips() []GraphDiscoverySkip { return graph.discoverySkips }
+
+// BaseRefFallbacks lists repositories whose canonical clone did not contain
+// the operation's configured base ref, discovered by falling back to each
+// repository's actual origin/HEAD default branch instead (see
+// orchestrate.EnsureCanonical). Unlike Skips, these repositories were fully
+// discovered and included in the graph — only the ref used to read them
+// differed from the fleet-wide default.
+func (graph goFleetGraph) BaseRefFallbacks() []GraphDefaultBranchFallback {
+	return graph.baseRefFallbacks
+}
+
+// ManifestWarnings lists non-root go.mod files that failed to parse as a Go
+// module declaration but did not abort discovery (see
+// inspectRepositoryGoGraph).
+func (graph goFleetGraph) ManifestWarnings() []GraphManifestWarning { return graph.manifestWarnings }
 
 // requirementsForDependency projects every requirement of one module path
 // into the ecosystem-neutral fleetRequirement shape the bump wave engine

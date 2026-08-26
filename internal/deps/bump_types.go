@@ -74,9 +74,11 @@ type BumpReport struct {
 	Parallel      int             `yaml:"parallel"`
 	// RegistryLookupsSkipped records that this plan intentionally omitted
 	// registry-derived carrier and stale-event evidence.
-	RegistryLookupsSkipped bool                 `yaml:"registry_lookups_skipped,omitempty"`
-	DiscoverySkips         []GraphDiscoverySkip `yaml:"discovery_skips,omitempty"`
-	Waves                  []BumpWaveReport     `yaml:"waves"`
+	RegistryLookupsSkipped bool                         `yaml:"registry_lookups_skipped,omitempty"`
+	DiscoverySkips         []GraphDiscoverySkip         `yaml:"discovery_skips,omitempty"`
+	DefaultBranchFallbacks []GraphDefaultBranchFallback `yaml:"default_branch_fallbacks,omitempty"`
+	ManifestWarnings       []GraphManifestWarning       `yaml:"manifest_warnings,omitempty"`
+	Waves                  []BumpWaveReport             `yaml:"waves"`
 }
 
 // BumpPhase identifies the operation currently represented by a persisted
@@ -136,6 +138,32 @@ type ReleaseEventRefresh struct {
 // helps no one, so it is skipped and reported here instead.
 type GraphDiscoverySkip struct {
 	Repository string `json:"repository" yaml:"repository"`
+	Reason     string `json:"reason" yaml:"reason"`
+}
+
+// GraphDefaultBranchFallback records a repository whose canonical clone did
+// not contain the operation's configured base ref (`origin/<ref>`, "main" by
+// default). Discovery did not fail or skip the repository: it fell back to
+// the repository's actual origin/HEAD default branch and used that ref for
+// both graph inspection and any downstream wave operation on this
+// repository (see orchestrate.EnsureCanonical). Recording it here keeps the
+// substitution visible in the report — the whole point of the skip/fallback
+// model this package uses is that nothing is silently dropped or silently
+// rewritten.
+type GraphDefaultBranchFallback struct {
+	Repository string `json:"repository" yaml:"repository"`
+	Ref        string `json:"ref" yaml:"ref"`
+}
+
+// GraphManifestWarning records one manifest file that could not be parsed
+// but did not abort discovery because it is not the repository's root
+// manifest — most commonly a nested code-generator template rather than a
+// real declaration WB should propagate dependencies through. A repository's
+// ROOT manifest remains a fatal parse failure: WB cannot safely assume
+// relevance there.
+type GraphManifestWarning struct {
+	Repository string `json:"repository" yaml:"repository"`
+	Manifest   string `json:"manifest" yaml:"manifest"`
 	Reason     string `json:"reason" yaml:"reason"`
 }
 
