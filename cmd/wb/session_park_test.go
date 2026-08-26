@@ -129,6 +129,75 @@ func TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces(t *t
 	}
 }
 
+func TestSessionParkCrashRetryRefusesChangedImmutableInputsBeforeLifecycleMarking(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		storedContinuation  string
+		currentContinuation string
+		storedMembers       []sessionpark.Worktree
+		currentlyCaptured   []sessionpark.Worktree
+	}{
+		{name: "continuation changed", storedContinuation: "original continuation", currentContinuation: "changed continuation"},
+		{name: "member evidence changed", storedContinuation: "same continuation", currentContinuation: "same continuation",
+			storedMembers: []sessionpark.Worktree{{
+				Repository: "acme/app", WorktreeDir: "/tmp/original-park-member", Branch: "feature/park",
+				Head: strings.Repeat("a", 40),
+			}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			previousProjectsRoot := projectsRoot
+			projectsRoot = t.TempDir()
+			t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+			home := filepath.Join(t.TempDir(), "wb-home")
+			t.Setenv("WB_HOME", home)
+			dir, err := sessionDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, err := session.Register(dir, session.Record{
+				PID: os.Getpid(), WBSessionID: "wbs-park-retry-" + strings.ReplaceAll(test.name, " ", "-"),
+				Machine: "test-machine", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bundle := sessionpark.Bundle{
+				SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: "park-retry-" + strings.ReplaceAll(test.name, " ", "-"),
+				Source: source, Continuation: test.storedContinuation, Worktrees: test.storedMembers, ParkedAt: time.Unix(20, 0).UTC(),
+			}
+			store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
+			if _, err := store.Create(bundle); err != nil {
+				t.Fatal(err)
+			}
+			oldCapture := captureParkedSessionAggregate
+			captureParkedSessionAggregate = func(_ context.Context, _ string, _ []worktrees.ListResult, _ session.Record, persist func([]sessionpark.Worktree) error) error {
+				return persist(test.currentlyCaptured)
+			}
+			t.Cleanup(func() { captureParkedSessionAggregate = oldCapture })
+			contextPath := filepath.Join(t.TempDir(), "continuation.md")
+			if err := os.WriteFile(contextPath, []byte(test.currentContinuation+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := newSessionParkCmd()
+			command.SetArgs([]string{"--context-file", contextPath})
+			if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "conflicts with the current source, continuation, or member evidence") {
+				t.Fatalf("retry error = %v, want immutable-input conflict", err)
+			}
+			state, err := store.Load(bundle.ParkedSessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !sessionpark.EqualBundle(state.Bundle, bundle) || state.Status != sessionpark.StatusParked || len(state.Events) != 0 {
+				t.Fatalf("retry mutated immutable aggregate: %#v", state)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "lifecycle", source.WBSessionID+".parked.json")); !os.IsNotExist(err) {
+				t.Fatalf("retry marked source parked despite mismatched evidence: %v", err)
+			}
+		})
+	}
+}
+
 func TestSessionParkRejectsContentBearingContinuationFlags(t *testing.T) {
 	for _, flag := range []string{"--summary", "--validation", "--remaining"} {
 		command := newSessionParkCmd()
@@ -136,28 +205,6 @@ func TestSessionParkRejectsContentBearingContinuationFlags(t *testing.T) {
 		if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 			t.Fatalf("flag %s error = %v, want unknown flag", flag, err)
 		}
-	}
-}
-
-func TestSessionParkCapturesOwnedMembersInDeterministicOrder(t *testing.T) {
-	source := session.Record{PID: 41, WBSessionID: "wbs-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
-	results := []worktrees.ListResult{
-		{Repository: "acme/two", WorktreeDir: "/wt/z", Owners: []worktrees.OwnerView{{OwnerRegistration: worktrees.OwnerRegistration{PID: 41, At: time.Unix(12, 0).UTC()}}}},
-		{Repository: "acme/one", WorktreeDir: "/wt/a", Owners: []worktrees.OwnerView{{OwnerRegistration: worktrees.OwnerRegistration{PID: 41, At: time.Unix(11, 0).UTC()}}}},
-	}
-	var captured []string
-	oldCapture := captureParkedSessionWorktree
-	captureParkedSessionWorktree = func(_ context.Context, _ string, listed worktrees.ListResult, _ session.Record) (sessionpark.Worktree, error) {
-		captured = append(captured, listed.WorktreeDir)
-		return sessionpark.Worktree{WorktreeDir: listed.WorktreeDir}, nil
-	}
-	t.Cleanup(func() { captureParkedSessionWorktree = oldCapture })
-	members, err := captureOwnedParkedWorktrees(context.Background(), "/projects", results, source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(captured, []string{"/wt/a", "/wt/z"}) || len(members) != 2 {
-		t.Fatalf("capture order = %v, members = %+v", captured, members)
 	}
 }
 

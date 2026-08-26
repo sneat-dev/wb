@@ -226,6 +226,12 @@ type ParkedTargetCompletionOptions struct {
 	Member        sessionpark.RemoteMember
 	WorktreeDir   string
 	Successor     sessionlaunch.Result
+
+	hooks parkedTargetCompletionHooks
+}
+
+type parkedTargetCompletionHooks struct {
+	beforeCompletionBarrier func() error
 }
 
 func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWorkLogEvent, error) {
@@ -248,6 +254,21 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 		return LocalWorkLogEvent{}, err
 	}
 	defer unlock()
+	if options.hooks.beforeCompletionBarrier != nil {
+		if err := options.hooks.beforeCompletionBarrier(); err != nil {
+			return LocalWorkLogEvent{}, err
+		}
+	}
+	journal, err := openLocalWorkLogDir(options.WorktreeDir, false)
+	if err != nil {
+		return LocalWorkLogEvent{}, err
+	}
+	defer func() { _ = journal.Close() }()
+	unlockJournal, err := lockLocalWorkLog(journal)
+	if err != nil {
+		return LocalWorkLogEvent{}, err
+	}
+	defer unlockJournal()
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
@@ -267,7 +288,7 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	if err := corroborateClaim(options.WorktreeDir, options.Member.Commit, projection, claim); err != nil {
 		return LocalWorkLogEvent{}, err
 	}
-	events, err := readLocalEvents(options.WorktreeDir)
+	events, _, err := readLocalEventsForAppend(journal)
 	if err != nil {
 		return LocalWorkLogEvent{}, err
 	}
@@ -293,7 +314,7 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 		Type: LocalEventHandoff, At: options.Successor.StartedAt.UTC(), Message: "parked successor proved live; target member custody completed",
 		Result: "completed", Extra: extra,
 	}
-	event, _, err = appendLocalEventWithoutCustody(options.WorktreeDir, event)
+	event, _, err = appendLocalEventUnderLock(options.WorktreeDir, journal, event)
 	return event, err
 }
 

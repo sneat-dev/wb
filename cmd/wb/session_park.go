@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -27,7 +26,6 @@ type sessionParkOutput struct {
 	Successor       *session.Record        `json:"successor,omitempty"`
 }
 
-var captureParkedSessionWorktree = worktrees.CaptureParkedSessionWorktree
 var captureParkedSessionAggregate = worktrees.CaptureParkedSessionAggregate
 var defaultParkedSessionRemoteDelivery = func(context.Context, sessionpark.State, string) error {
 	return fmt.Errorf("parked-session remote delivery is not implemented")
@@ -80,13 +78,21 @@ func newSessionParkCmd() *cobra.Command {
 			var id string
 			var owned []sessionpark.Worktree
 			err = captureParkedSessionAggregate(command.Context(), projectsRoot, ownedResults, source, func(captured []sessionpark.Worktree) error {
-				owned = captured
 				bundle, found, findErr := store.FindBySource(source.WBSessionID)
 				if findErr != nil {
 					return findErr
 				}
 				id = bundle.ParkedSessionID
-				if !found {
+				if found {
+					retry := sessionpark.Bundle{
+						SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: bundle.ParkedSessionID,
+						Source: source, Continuation: continuation, Worktrees: captured, ParkedAt: bundle.ParkedAt,
+					}
+					if !sessionpark.EqualBundle(bundle, retry) {
+						return fmt.Errorf("existing immutable parked session %s conflicts with the current source, continuation, or member evidence; use its original park inputs to repair lifecycle marking", bundle.ParkedSessionID)
+					}
+					owned = bundle.Worktrees
+				} else {
 					id, findErr = sessionpark.NewID()
 					if findErr != nil {
 						return findErr
@@ -95,6 +101,7 @@ func newSessionParkCmd() *cobra.Command {
 					if _, createErr := store.Create(bundle); createErr != nil {
 						return createErr
 					}
+					owned = captured
 				}
 				_, markErr := session.MarkParked(dir, source.PID, id)
 				return markErr
@@ -188,30 +195,6 @@ func ownedBySession(result worktrees.ListResult, source session.Record) bool {
 		}
 	}
 	return false
-}
-
-func captureOwnedParkedWorktrees(ctx context.Context, projectsRoot string, results []worktrees.ListResult, source session.Record) ([]sessionpark.Worktree, error) {
-	owned := make([]worktrees.ListResult, 0, len(results))
-	for _, result := range results {
-		if ownedBySession(result, source) {
-			owned = append(owned, result)
-		}
-	}
-	sort.SliceStable(owned, func(i, j int) bool {
-		if owned[i].WorktreeDir != owned[j].WorktreeDir {
-			return owned[i].WorktreeDir < owned[j].WorktreeDir
-		}
-		return owned[i].Repository < owned[j].Repository
-	})
-	captured := make([]sessionpark.Worktree, 0, len(owned))
-	for _, result := range owned {
-		member, err := captureParkedSessionWorktree(ctx, projectsRoot, result, source)
-		if err != nil {
-			return nil, fmt.Errorf("capture parked worktree %s: %w", result.WorktreeDir, err)
-		}
-		captured = append(captured, member)
-	}
-	return captured, nil
 }
 
 func readParkContext(command *cobra.Command, path string) ([]byte, error) {
