@@ -48,6 +48,10 @@ type Graph struct {
 	// ManifestWarnings lists non-root manifest files skipped for failing to
 	// parse instead of aborting discovery.
 	ManifestWarnings []GraphManifestWarning `json:"manifest_warnings,omitempty" yaml:"manifest_warnings,omitempty"`
+	// AmbiguousModules lists modules declared by more than one repository
+	// whose conflict was deterministically resolved instead of aborting the
+	// fleet (Go only; see GraphAmbiguousModuleWarning).
+	AmbiguousModules []GraphAmbiguousModuleWarning `json:"ambiguous_modules,omitempty" yaml:"ambiguous_modules,omitempty"`
 }
 
 // GraphFilters records evidence filters applied after repository discovery.

@@ -23,6 +23,7 @@ type goFleetGraph struct {
 	discoverySkips     []GraphDiscoverySkip
 	baseRefFallbacks   []GraphDefaultBranchFallback
 	manifestWarnings   []GraphManifestWarning
+	ambiguousModules   []GraphAmbiguousModuleWarning
 }
 
 type goFleetModule struct {
@@ -191,11 +192,122 @@ func discoverGoFleetGraph(ctx context.Context, repositories []Repository, option
 			}
 			return left.Repository < right.Repository
 		})
-		if canonical, ok := canonicalGoModuleDeclaration(module, graph.moduleDeclarations[module]); ok {
+		declarations := graph.moduleDeclarations[module]
+		if canonical, ok := canonicalGoModuleDeclaration(module, declarations); ok {
 			graph.modules[module] = canonical
+			if len(declarations) > 1 {
+				graph.ambiguousModules = append(graph.ambiguousModules, ambiguousModuleWarning(
+					module, canonical, declarations, "the module's own declared path names this repository",
+				))
+			}
+			continue
+		}
+		if canonical, ok := resolveDuplicateCloneModuleDeclaration(ctx, declarations, options); ok {
+			graph.modules[module] = canonical
+			graph.ambiguousModules = append(graph.ambiguousModules, ambiguousModuleWarning(
+				module, canonical, declarations,
+				"this repository's own origin remote matches its directory; the other declaration(s) are a stale duplicate clone or an unrelated fork and were not treated as a second real provider",
+			))
 		}
 	}
+	sort.Slice(graph.ambiguousModules, func(i, j int) bool {
+		left, right := graph.ambiguousModules[i], graph.ambiguousModules[j]
+		if left.Module != right.Module {
+			return left.Module < right.Module
+		}
+		return left.Repository < right.Repository
+	})
 	return graph, errors.Join(discoveryErrors...)
+}
+
+// ambiguousModuleWarning records a deterministic pick among a module's
+// multiple declarations, naming every other declaration as a duplicate so
+// the substitution stays visible in the report rather than silent.
+func ambiguousModuleWarning(module string, canonical goFleetModule, declarations []goFleetModule, reason string) GraphAmbiguousModuleWarning {
+	duplicates := make([]string, 0, len(declarations)-1)
+	for _, declaration := range declarations {
+		if declaration.Repository == canonical.Repository && declaration.Manifest == canonical.Manifest {
+			continue
+		}
+		duplicates = append(duplicates, declaration.Repository+":"+declaration.Manifest)
+	}
+	sort.Strings(duplicates)
+	return GraphAmbiguousModuleWarning{
+		Module: module, Repository: canonical.Repository, Manifest: canonical.Manifest,
+		Duplicates: duplicates, Reason: reason,
+	}
+}
+
+// resolveDuplicateCloneModuleDeclaration is the fallback tie-breaker for a
+// module whose declared path does not name any of its declaring
+// repositories (so canonicalGoModuleDeclaration cannot resolve it): two
+// different local directories under --projects-root that are actually
+// clones of the very same GitHub repository — most commonly a stale
+// duplicate left behind by an org move or rename, where the old directory
+// was never deleted and still declares the module under its now-wrong
+// directory-derived slug. It compares each declaring repository's own
+// `origin` remote against the {org}/{repo} its OWN directory name claims.
+// Resolution requires EXACTLY ONE declaration to be self-consistent (its
+// remote actually points at the repository its own slug names): that single
+// case is the signature of a stale duplicate (the other declarations are
+// misplaced clones of it) or an unrelated fork already handled by
+// canonicalGoModuleDeclaration before this runs. Two (or zero)
+// self-consistent declarations mean this is not that pattern — most likely
+// a genuine coincidence between two unrelated, correctly named
+// repositories — and the tie is deliberately left unresolved rather than
+// guessed at.
+func resolveDuplicateCloneModuleDeclaration(ctx context.Context, declarations []goFleetModule, options orchestrate.Options) (goFleetModule, bool) {
+	var consistent []goFleetModule
+	for _, declaration := range declarations {
+		owner, name, ok := strings.Cut(declaration.Repository, "/")
+		if !ok || owner == "" || name == "" {
+			continue
+		}
+		canonicalPath := filepath.Join(options.GitHubDir, owner, name)
+		slug, err := remoteOriginSlug(ctx, canonicalPath, options)
+		if err != nil {
+			continue
+		}
+		if slug == declaration.Repository {
+			consistent = append(consistent, declaration)
+		}
+	}
+	if len(consistent) == 1 {
+		return consistent[0], true
+	}
+	return goFleetModule{}, false
+}
+
+// remoteOriginSlug resolves the actual GitHub {org}/{repo} a canonical
+// clone's `origin` remote points at, independent of the local directory
+// name under --projects-root. It mirrors worktrees.OriginSlug's URL parsing
+// (SSH and HTTPS github.com remotes), kept local to this package so deps
+// discovery does not take on a new cross-package dependency for one string
+// transform.
+func remoteOriginSlug(ctx context.Context, canonical string, options orchestrate.Options) (string, error) {
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
+	remote := strings.TrimSuffix(strings.TrimSpace(output), ".git")
+	remote = strings.TrimSuffix(remote, "/")
+	switch {
+	case strings.Contains(remote, "github.com:"):
+		remote = remote[strings.LastIndex(remote, "github.com:")+len("github.com:"):]
+	case strings.Contains(remote, "github.com/"):
+		remote = remote[strings.LastIndex(remote, "github.com/")+len("github.com/"):]
+	default:
+		parts := strings.Split(remote, "/")
+		if len(parts) < 2 {
+			return "", fmt.Errorf("cannot derive owner/repository from origin %q", remote)
+		}
+		remote = strings.Join(parts[len(parts)-2:], "/")
+	}
+	owner, name, ok := strings.Cut(remote, "/")
+	if !ok || owner == "" || name == "" {
+		return "", fmt.Errorf("origin remote does not identify owner/repository: %q", remote)
+	}
+	return remote, nil
 }
 
 func classifyGoGraphDiscoveryFailure(repository, canonical string, cause error, policy goGraphDiscoveryPolicy) (*GraphDiscoverySkip, error) {
@@ -278,6 +390,14 @@ func (graph goFleetGraph) validateUniqueModuleDeclarations() error {
 	var conflicts []string
 	for module, declarations := range graph.moduleDeclarations {
 		if len(declarations) < 2 {
+			continue
+		}
+		// A module deterministically resolved to one canonical declaration
+		// during discovery (see the resolution loop at the end of
+		// discoverGoFleetGraph) is recorded as a GraphAmbiguousModuleWarning,
+		// not a fatal conflict — only a genuinely unresolvable tie still
+		// aborts the fleet.
+		if _, resolved := graph.modules[module]; resolved {
 			continue
 		}
 		locations := make([]string, 0, len(declarations))
@@ -652,6 +772,13 @@ func (graph goFleetGraph) BaseRefFallbacks() []GraphDefaultBranchFallback {
 // module declaration but did not abort discovery (see
 // inspectRepositoryGoGraph).
 func (graph goFleetGraph) ManifestWarnings() []GraphManifestWarning { return graph.manifestWarnings }
+
+// AmbiguousModules lists modules declared by more than one repository whose
+// conflict was deterministically resolved instead of aborting the fleet
+// (see resolveDuplicateCloneModuleDeclaration and canonicalGoModuleDeclaration).
+func (graph goFleetGraph) AmbiguousModules() []GraphAmbiguousModuleWarning {
+	return graph.ambiguousModules
+}
 
 // requirementsForDependency projects every requirement of one module path
 // into the ecosystem-neutral fleetRequirement shape the bump wave engine

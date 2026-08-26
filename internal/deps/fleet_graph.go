@@ -67,6 +67,10 @@ type bumpFleetGraph interface {
 	// ManifestWarnings lists manifest files that could not be parsed but did
 	// not abort discovery because they are not a repository's root manifest.
 	ManifestWarnings() []GraphManifestWarning
+	// AmbiguousModules lists modules declared by more than one repository
+	// whose conflict was deterministically resolved instead of aborting the
+	// fleet.
+	AmbiguousModules() []GraphAmbiguousModuleWarning
 	// validateUniqueModuleDeclarations rejects a graph where the same
 	// published identity is declared by more than one repository, since a
 	// mutation could otherwise land on the wrong one.

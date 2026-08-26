@@ -95,6 +95,7 @@ func graphFromGoFleet(discovered goFleetGraph, selected []Repository, ref string
 	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
 	graph.DefaultBranchFallbacks = append(graph.DefaultBranchFallbacks, discovered.baseRefFallbacks...)
 	graph.ManifestWarnings = append(graph.ManifestWarnings, discovered.manifestWarnings...)
+	graph.AmbiguousModules = append(graph.AmbiguousModules, discovered.ambiguousModules...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true
