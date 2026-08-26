@@ -34,7 +34,8 @@ func (t osTmux) PanePID(ctx context.Context, name string) (int, bool, error) {
 		var exitErr *exec.ExitError
 		detail := strings.ToLower(string(output))
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 &&
-			(strings.Contains(detail, "can't find session:") || strings.Contains(detail, "no server running on")) {
+			(strings.Contains(detail, "can't find session:") || strings.Contains(detail, "can't find window:") ||
+				strings.Contains(detail, "no server running on")) {
 			return 0, false, nil
 		}
 		return 0, false, fmt.Errorf("inspect tmux successor %s: %w: %s", name, err, boundedTmuxDetail(output))

@@ -2,6 +2,7 @@ package sessionlaunch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,13 @@ func TestTmuxPanePIDDistinguishesMissingSessionFromOperationalFailure(t *testing
 		}
 		return path
 	}
-	if _, exists, err := (osTmux{executable: write("missing", "can't find session: wb-session-x")}).PanePID(context.Background(), "wb-session-x"); err != nil || exists {
-		t.Fatalf("missing session = exists %t err %v", exists, err)
+	for index, diagnostic := range []string{
+		"can't find session: wb-session-x",
+		"can't find window: wb-session-x",
+	} {
+		if _, exists, err := (osTmux{executable: write(fmt.Sprintf("missing-%d", index), diagnostic)}).PanePID(context.Background(), "wb-session-x"); err != nil || exists {
+			t.Fatalf("missing session for %q = exists %t err %v", diagnostic, exists, err)
+		}
 	}
 	if _, _, err := (osTmux{executable: write("broken", "permission denied reading tmux socket")}).PanePID(context.Background(), "wb-session-x"); err == nil || !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("operational error = %v", err)
