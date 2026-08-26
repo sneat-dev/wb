@@ -25,7 +25,8 @@ format: https://specscore.md/features-index-specification
 | [Operations Journal](operations-journal/README.md) | Draft | Append-only journal of every wb operation, bundle-backed preservation for unreachable commits, and a wb restore command that reads reports and journal records back into a branch. |
 | [Dependency and layering policy](dependency-policy/README.md) | Implementing | One declarative policy states which kinds of repository may depend on which |
 | [NPM release propagation](npm-release-propagation/README.md) | Stable | Publish approved npm packages through repository-owned GitHub Actions workflows, verify exact registry evidence, and hand confirmed releases to recalculated dependency waves. |
-| [agent-session-move](agent-session-move/README.md) | Approved | Move an active AI agent session to another WB machine through an interchangeable courier while preserving Git state, handover context, lineage, and Work Log evidence. |
+| [Agent Session Move](agent-session-move/README.md) | Approved | Move an active AI agent session to another WB machine through an interchangeable courier while preserving Git state, handover context, lineage, and Work Log evidence. |
+| [Park and Resume Agent Sessions](park-and-resume-agent-sessions/README.md) | Draft | Park and resume lets an agent suspend one active session while preserving every |
 
 ## Open Questions
 

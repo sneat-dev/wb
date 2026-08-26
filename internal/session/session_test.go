@@ -4,9 +4,42 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
+
+func TestMarkParkedKeepsRegistrationImmutableAndRemovesLiveLookup(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	source, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-park", Runtime: "codex", StartedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(dir, strconv.Itoa(os.Getpid())+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MarkParked(dir, os.Getpid(), "park-test"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(dir, strconv.Itoa(os.Getpid())+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("park rewrote the immutable PID registration")
+	}
+	if _, ok := Lookup(dir, os.Getpid()); ok {
+		t.Fatal("parked session remains live")
+	}
+	views, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].State != StateParked || views[0].WBSessionID != source.WBSessionID {
+		t.Fatalf("views = %#v", views)
+	}
+}
 
 func TestRegisterRecordsWhatWBKnowsAboutItself(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sessions")

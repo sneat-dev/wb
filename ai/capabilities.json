@@ -3966,6 +3966,18 @@
       "notes": "The immutable route makes ambiguous SSH delivery safely retryable without a second checkpoint or target switch. Successor startup is proved, but it is not yet a custody receipt: the predecessor remains active until a later valid receipt."
     },
     {
+      "id": "wb.session.park",
+      "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb session park", "flags": ["--context-file", "--format", "--remaining", "--summary", "--validation"], "modes": ["Stores one immutable whole-session checkpoint containing every currently owned worktree and bounded continuation context without changing Git."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb session park --help", "contains": ["--context-file", "--summary", "--validation", "--remaining"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "# Worktree ownership and liveness", "examples": ["wb session park --summary <text>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkCapturesAllOwnedWorktrees", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Parking is a session lifecycle operation, not worktree abort or automatic commit/push."
+    },
+    {
       "id": "wb.session.prune",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -4350,6 +4362,18 @@
         }
       },
       "notes": "The empty body is intentional: request_handoff plus reply_to_wb_session_id is the standard actionable hand-control-return prompt."
+    },
+    {
+      "id": "wb.session.resume",
+      "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb session resume", "flags": ["--config", "--format", "--to", "--via"], "modes": ["Resumes one parked checkpoint as a fresh successor and returns the immutable successor on retry.", "Refuses remote delivery before transport when any owned worktree is dirty or not at its exact pushed remote tip."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb session resume --help", "contains": ["<parked-session-id>", "--to", "--via"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "# Worktree ownership and liveness", "examples": ["wb session resume <parked-session-id>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/sessionpark/store_test.go", "name": "TestStoreResumeLineageAndIdenticalRetry", "kind": "integration"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkRemoteReconstructabilityRefusesDirtyEvidence", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Local resume is complete for the whole bundle; cross-machine multi-worktree receiver support remains explicitly gated."
     },
     {
       "id": "wb.session.send",

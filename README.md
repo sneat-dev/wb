@@ -55,6 +55,8 @@ wb status [path] [flags]     # compatibility: fleet worklist, or one repo when a
 wb remote publish|status|machines # share fleet state across machines via a git state repo
 wb remote claim|release|claims <task> # reserve, give up, or list fleet-wide task claims
 wb session register|list|prune # register and inspect stable local agent-session identities
+wb session park --summary <text> # suspend a session and checkpoint every owned worktree
+wb session resume <parked-session-id> # resume a parked bundle as one fresh successor
 wb session move --to <machine> --handover-file <file> # checkpoint, SSH-deliver, and start a tmux successor
 wb session move --resume <handoff-id> # retry the exact request and immutable courier route
 wb session receive [--format json] # receive exact stdin bytes and start the pinned successor
