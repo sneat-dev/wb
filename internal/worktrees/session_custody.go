@@ -31,7 +31,9 @@ const externalHandoffEvidenceVersion = 1
 // source-local successor claim.
 type workLogExternalHandoffEvidence struct {
 	Version                int    `json:"version"`
+	Protocol               string `json:"protocol,omitempty"`
 	HandoffID              string `json:"handoff_id"`
+	MemberID               string `json:"member_id,omitempty"`
 	RequestDigest          string `json:"request_digest"`
 	PredecessorWBSessionID string `json:"predecessor_wb_session_id"`
 	SuccessorWBSessionID   string `json:"successor_wb_session_id"`

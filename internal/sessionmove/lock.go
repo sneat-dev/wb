@@ -32,6 +32,39 @@ type ExecutionLock struct {
 	request     Request
 }
 
+// HeldForSession adapts the existing request-bound execution proof to the
+// courier-neutral sessionauthority.Fence interface. The final HeldForStore
+// call still reopens and descriptor-compares the exact store, aggregate,
+// request file, and stable flock inode; this method does not weaken authority
+// to an ID plus digest assertion.
+func (lock *ExecutionLock) HeldForSession(expectedRoot, aggregateID, digest string) bool {
+	if lock == nil {
+		return false
+	}
+	lock.mu.Lock()
+	request, requestDigest := lock.request, lock.digest
+	lock.mu.Unlock()
+	if request.HandoffID != aggregateID || string(requestDigest) != digest {
+		return false
+	}
+	return lock.HeldForStore(expectedRoot, request, requestDigest)
+}
+
+// RetainSessionDir returns a duplicate of the same descriptor-authenticated
+// handoff directory already exposed to legacy session-move callers.
+func (lock *ExecutionLock) RetainSessionDir(expectedRoot, aggregateID, digest string) (*os.File, error) {
+	if lock == nil {
+		return nil, fmt.Errorf("execution lock is required")
+	}
+	lock.mu.Lock()
+	request, requestDigest := lock.request, lock.digest
+	lock.mu.Unlock()
+	if request.HandoffID != aggregateID || string(requestDigest) != digest {
+		return nil, fmt.Errorf("execution lock does not bind the requested session aggregate")
+	}
+	return lock.RetainHandoffForStore(expectedRoot, request, requestDigest)
+}
+
 // HeldForStore reports whether this process still owns the execution fence
 // for the exact admitted request in the exact canonical Store root. Path text
 // alone is not authority: the root, handoff directory, and stable lock entry

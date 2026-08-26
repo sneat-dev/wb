@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
@@ -34,18 +35,28 @@ func ValidateHarnessSelection(sourceRuntime, requested string) error {
 }
 
 func harnessSpec(request sessionmove.Request, worktree string) (HarnessSpec, error) {
-	runtime := strings.TrimSpace(request.RequestedHarness)
-	if runtime == "" {
-		runtime = strings.TrimSpace(request.SourceRuntime)
+	authority := sessionauthority.Launch{
+		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
+		PredecessorWBSessionID: request.PredecessorWBSessionID, SourceRuntime: request.SourceRuntime,
+		SourceModel: request.SourceModel, RequestedHarness: request.RequestedHarness,
+		ContinuationKind: sessionauthority.ContinuationTracked, ContinuationPath: request.HandoverPath,
 	}
-	if err := ValidateHarnessSelection(request.SourceRuntime, request.RequestedHarness); err != nil {
+	return harnessSpecForAuthority(authority, worktree)
+}
+
+func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string) (HarnessSpec, error) {
+	runtime := strings.TrimSpace(authority.RequestedHarness)
+	if runtime == "" {
+		runtime = strings.TrimSpace(authority.SourceRuntime)
+	}
+	if err := ValidateHarnessSelection(authority.SourceRuntime, authority.RequestedHarness); err != nil {
 		return HarnessSpec{}, err
 	}
 	model := ""
-	if runtime == strings.TrimSpace(request.SourceRuntime) {
-		model = strings.TrimSpace(request.SourceModel)
+	if runtime == strings.TrimSpace(authority.SourceRuntime) {
+		model = strings.TrimSpace(authority.SourceModel)
 	}
-	prompt := launchPrompt(request)
+	prompt := launchPromptForAuthority(authority)
 	switch runtime {
 	case RuntimeCodex:
 		args := []string{"-C", worktree}
@@ -59,7 +70,7 @@ func harnessSpec(request sessionmove.Request, worktree string) (HarnessSpec, err
 		if model != "" {
 			args = append(args, "--model", model)
 		}
-		args = append(args, "--name", request.SuccessorWBSessionID, prompt)
+		args = append(args, "--name", authority.SuccessorWBSessionID, prompt)
 		return HarnessSpec{Runtime: runtime, Model: model, Executable: "claude", Args: args}, nil
 	default:
 		return HarnessSpec{}, fmt.Errorf("requested harness %q is unsupported; supported harnesses are %q and %q", runtime, RuntimeCodex, RuntimeClaudeCode)
@@ -67,8 +78,22 @@ func harnessSpec(request sessionmove.Request, worktree string) (HarnessSpec, err
 }
 
 func launchPrompt(request sessionmove.Request) string {
+	return launchPromptForAuthority(sessionauthority.Launch{
+		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
+		PredecessorWBSessionID: request.PredecessorWBSessionID, ContinuationKind: sessionauthority.ContinuationTracked,
+		ContinuationPath: request.HandoverPath,
+	})
+}
+
+func launchPromptForAuthority(authority sessionauthority.Launch) string {
+	if authority.ContinuationKind == sessionauthority.ContinuationTracked {
+		return fmt.Sprintf(
+			"Continue WB handoff %s as session %s from predecessor %s. Read the immutable handover document at %s before acting.",
+			authority.AggregateID, authority.SuccessorWBSessionID, authority.PredecessorWBSessionID, authority.ContinuationPath,
+		)
+	}
 	return fmt.Sprintf(
-		"Continue WB handoff %s as session %s from predecessor %s. Read the immutable handover document at %s before acting.",
-		request.HandoffID, request.SuccessorWBSessionID, request.PredecessorWBSessionID, request.HandoverPath,
+		"Continue WB parked session %s as session %s from predecessor %s. Read the file named by WB_SESSION_CONTINUATION_FILE before acting.",
+		authority.AggregateID, authority.SuccessorWBSessionID, authority.PredecessorWBSessionID,
 	)
 }

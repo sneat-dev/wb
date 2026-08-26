@@ -450,6 +450,43 @@ func inspectSessionMoveWorkLog(projectsRoot, worktree string, source session.Rec
 	return claim, reference, nil
 }
 
+// ParkedSessionWorkLogReference returns the exact active Work Log claim only
+// when it is owned by source. Session parking uses this at its immutable
+// snapshot boundary; it must never adopt another session's latest owner.
+func ParkedSessionWorkLogReference(projectsRoot, worktree string, source session.Record) (string, error) {
+	_, reference, err := inspectSessionMoveWorkLog(projectsRoot, worktree, source)
+	return reference, err
+}
+
+// ParkedSessionWorkLogSnapshot returns both the canonical source claim and the
+// exact latest owner event that proved source custody at park time. Local
+// resume later compares the event ID while holding every member journal lock,
+// so a sequential newer session cannot be silently overwritten.
+func ParkedSessionWorkLogSnapshot(projectsRoot, worktree string, source session.Record) (string, string, error) {
+	_, reference, err := inspectSessionMoveWorkLog(projectsRoot, worktree, source)
+	if err != nil {
+		return "", "", err
+	}
+	events, err := readLocalEvents(worktree)
+	if err != nil {
+		return "", "", fmt.Errorf("inspect exact parked owner event: %w", err)
+	}
+	ownerID := ""
+	for _, event := range events {
+		if event.Type == LocalEventOwner && event.Owner != nil {
+			if event.Owner.PID != source.PID {
+				ownerID = ""
+				continue
+			}
+			ownerID = event.ID
+		}
+	}
+	if ownerID == "" {
+		return "", "", fmt.Errorf("registered source session %s is not the exact latest parked owner", source.WBSessionID)
+	}
+	return reference, ownerID, nil
+}
+
 func verifySessionCheckpointUnchanged(ctx context.Context, preflight *sessionCheckpointPreflight) error {
 	if err := preflight.canonical.validate(); err != nil {
 		return fmt.Errorf("canonical repository changed during source preflight: %w", err)
