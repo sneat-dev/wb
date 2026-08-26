@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -73,6 +74,106 @@ func TestReceiveReturnsExistingReceiptWithoutExecutingTarget(t *testing.T) {
 	state, err := store.Load(request.HandoffID)
 	if err != nil || !stateHasPhase(state, sessionmove.PhaseCompleted) {
 		t.Fatalf("completed receipt replay did not repair completed phase: state=%#v err=%v", state, err)
+	}
+}
+
+func TestReceiveIdenticalRetryReturnsReceiptWithoutDuplicateReceiverEffects(t *testing.T) {
+	request, raw, _ := receiveTestRequest(t)
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	home := filepath.Join(root, "home")
+	t.Setenv("WB_HOME", home)
+	if err := os.MkdirAll(projectsRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := sessionmove.NewStore(filepath.Join(home, sessionmove.DirName))
+	expectedWorktree := receiveTestWorktree(t, projectsRoot, request)
+	sessionDir := filepath.Join(home, session.DirName)
+
+	worktreeCalls, worktreeCreations, tmuxLaunches := 0, 0, 0
+	tmuxSuccessors := make(map[string]bool)
+	options := Options{
+		Store: store, ProjectsRoot: projectsRoot, LocalMachine: request.TargetMachine, RawRequest: raw,
+		workLog: receiveTestWorkLog(),
+		ReceiveWorktree: func(_ context.Context, options worktrees.SessionReceiveOptions) (worktrees.SessionReceiveResult, error) {
+			worktreeCalls++
+			reused := true
+			if _, err := os.Stat(expectedWorktree); errors.Is(err, os.ErrNotExist) {
+				if err := os.MkdirAll(expectedWorktree, 0o755); err != nil {
+					return worktrees.SessionReceiveResult{}, err
+				}
+				worktreeCreations++
+				reused = false
+			} else if err != nil {
+				return worktrees.SessionReceiveResult{}, err
+			}
+			return worktrees.SessionReceiveResult{
+				WorktreeDir: expectedWorktree, Commit: options.Request.BundleCommit, Reused: reused,
+			}, nil
+		},
+		StartSuccessor: func(ctx context.Context, options sessionlaunch.Options) (sessionlaunch.Result, error) {
+			tmuxLaunches++
+			successor, err := receiveTestStart(ctx, options)
+			if err != nil {
+				return sessionlaunch.Result{}, err
+			}
+			successor.PID = 1000 + tmuxLaunches
+			successor.StartedAt = time.Date(2026, time.August, 25, 13, 0, tmuxLaunches, 0, time.UTC)
+			tmuxSuccessors[successor.TmuxName] = true
+			_, err = session.Register(sessionDir, session.Record{
+				PID: successor.PID, WBSessionID: successor.WBSessionID, Machine: successor.TargetMachine,
+				Runtime: successor.Runtime, Model: successor.Model, NativeHarnessID: successor.NativeHarnessID,
+				TmuxName: successor.TmuxName, PredecessorWBSessionID: successor.PredecessorWBSessionID,
+				HandoffID: successor.HandoffID, StartedAt: successor.StartedAt,
+			})
+			return successor, err
+		},
+	}
+
+	accepted, err := Receive(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model an ambiguous courier result by discarding the first response and
+	// delivering the exact same bytes again.
+	replayed, err := Receive(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Receipt == nil || accepted.Replay || replayed.Receipt == nil || !replayed.Replay ||
+		*replayed.Receipt != *accepted.Receipt {
+		t.Fatalf("accepted=%#v replayed=%#v", accepted, replayed)
+	}
+	if worktreeCalls != 1 || worktreeCreations != 1 {
+		t.Fatalf("worktree receiver calls=%d creations=%d, want exactly 1/1", worktreeCalls, worktreeCreations)
+	}
+	worktreesOnDisk, err := filepath.Glob(filepath.Join(home, "worktrees", "session-"+request.HandoffID, "*", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(worktreesOnDisk) != 1 {
+		t.Fatalf("pinned target worktrees=%#v, want [%s]", worktreesOnDisk, expectedWorktree)
+	}
+	gotWorktree, err := os.Stat(worktreesOnDisk[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWorktree, err := os.Stat(expectedWorktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(gotWorktree, wantWorktree) {
+		t.Fatalf("pinned target worktree=%s, want %s", worktreesOnDisk[0], expectedWorktree)
+	}
+	if tmuxLaunches != 1 || len(tmuxSuccessors) != 1 || !tmuxSuccessors[accepted.Receipt.TmuxName] {
+		t.Fatalf("tmux launches=%d successors=%#v, want one launch for %s", tmuxLaunches, tmuxSuccessors, accepted.Receipt.TmuxName)
+	}
+	sessions, err := session.List(sessionDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].WBSessionID != request.SuccessorWBSessionID || sessions[0].HandoffID != request.HandoffID {
+		t.Fatalf("successor WB sessions=%#v, want exactly one for handoff %s", sessions, request.HandoffID)
 	}
 }
 

@@ -103,6 +103,17 @@ receipts, and `session request-handoff` with its typed reply target. Deliver to
 tmux through load/paste-buffer APIs rather than shell or key interpolation, and
 record sent/received Work Log events without claiming agent processing.
 
+### Task 8: Prove end-to-end receiver replay idempotency
+
+**Verifies:** agent-session-move#ac:failed-or-retried-delivery-is-idempotent
+**Status:** complete
+
+Add a receiver-level replay test that delivers the same accepted handoff twice,
+asserts the second delivery returns the existing receipt, and proves there is
+still exactly one pinned target worktree, one tmux successor launch, and one
+successor WB session. Avoid production behavior changes unless the test exposes
+a defect.
+
 ## Open Questions
 
 1. The live smoke test will determine whether Codex and Claude registration
