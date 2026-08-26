@@ -125,14 +125,17 @@ including when it is dirty or off-base. If a repository only supplies read-only
 integration-test input, its clean, freshly synchronized canonical checkout may
 be used. Create a worktree as soon as that repository needs a modification.
 
-Before create, write the exact originating request to a readable non-empty
-0600 private file outside source Git. Every create requires that file and has
-a private Hybrid Work Log. Its per-repository claim is under
+Every create requires the exact originating request via `--original-prompt-file`
+and has a private Hybrid Work Log. Prefer piping it on stdin —
+`--original-prompt-file -` — so WB itself reads and archives it with no
+caller-managed staging file for a concurrent agent to overwrite; fall back to
+a readable non-empty 0600 private file outside source Git only when stdin
+cannot be used, and always give that file a per-invocation-unique name, never
+a shared default. Its per-repository claim is under
 `<WB_HOME>/worklogs/<effort>/runs/<run>/claims/`, while the tiny local
 `.wb-worklog/recovery.json` projection has no prompt/history and its
-`/.wb-worklog/` directory is locally Git-excluded. Pass
-`--original-prompt-file` with the exact private original prompt; never put
-prompt text in a repository or command argument. The local outbox preserves
+`/.wb-worklog/` directory is locally Git-excluded. Never put prompt text in a
+repository or command argument. The local outbox preserves
 recovery evidence while Synchestra is unavailable, so local create, seal, and
 cleanup do not wait for a server. It is not the planned Git-repository
 communication fallback and does not deliver messages to agents.

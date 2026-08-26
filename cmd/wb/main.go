@@ -293,6 +293,15 @@ func propagateRuntimeWBExecutable(
 // separate from main so tests can drive the whole command surface without
 // spawning a process or terminating the test binary.
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithStdin(args, nil, stdout, stderr)
+}
+
+// runWithStdin behaves exactly like run but additionally wires stdin, so a
+// test can drive a command that reads from it (worktree create
+// --original-prompt-file -) without touching the real process's standard
+// input. A nil stdin falls back to the real os.Stdin, matching run's
+// production behavior exactly.
+func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// Handled before Execute so `wb --version` answers even when a later flag
 	// is invalid, and so it never depends on subcommand wiring.
 	if hasVersionFlag(args) {
@@ -302,6 +311,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	commandStarted = false
 	root := newRootCmd()
 	root.SetArgs(args)
+	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
 

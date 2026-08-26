@@ -129,10 +129,13 @@ claim ID is a portable collision-resistant digest of effort, canonical
 repository, branch, and immutable base (never Run ID or an absolute machine
 path), plus a small Git-excluded `.wb-worklog/recovery.json` projection in the
 worktree, and a typed local
-outbox event. Every create requires a readable non-empty
-`--original-prompt-file` containing the exact originating request; WB snapshots
-its bytes and SHA-256 digest before creating a worktree and copies them only
-into the private archive. `--agent`, `--agent-runtime`, and a mandatory explicit
+outbox event. Every create requires the exact originating request via
+`--original-prompt-file`, either a readable non-empty file or `-` to pipe it on
+stdin; WB snapshots its bytes and SHA-256 digest before creating a worktree and
+copies them only into the private archive. Piping on stdin is preferred: WB
+reads it once and writes the private archive itself, so no caller-managed
+staging file exists for a concurrent invocation to overwrite. `--agent`,
+`--agent-runtime`, and a mandatory explicit
 `--model` add run provenance. The dispatcher supplies the exact child model it
 selected or the literal `unknown`; WB never guesses. Pass independent optional
 `--cli` and `--provider` when known (provider is routing/billing metadata only,

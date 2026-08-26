@@ -756,7 +756,14 @@ silently replacing the claim.
 
 --original-prompt-file is mandatory. WB snapshots its exact non-empty bytes
 into the private Work Log under WB_HOME before any worktree is created; prompt
-text never enters the worktree projection, source Git, or normal output.`,
+text never enters the worktree projection, source Git, or normal output.
+
+Pass --original-prompt-file - to supply the prompt on stdin instead of a path.
+WB reads stdin once, in memory, and writes the private 0600 archive itself
+under WB_HOME; no caller-owned staging file ever exists, so two concurrent
+invocations cannot archive each other's prompt by racing on a shared path.
+Empty or whitespace-only stdin is refused, and the bytes are never echoed
+back to stdout, stderr, or argv.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MinimumNArgs(1)(command, args); err != nil {
 				return err
@@ -771,6 +778,17 @@ text never enters the worktree projection, source Git, or normal output.`,
 				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
 				AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
 				RequireOriginalPrompt: true,
+			}
+			if originalPrompt == "-" {
+				stdinBytes, readErr := io.ReadAll(command.InOrStdin())
+				if readErr != nil {
+					return fmt.Errorf("read --original-prompt-file - from stdin: %w", readErr)
+				}
+				var stdinErr error
+				workLog, stdinErr = workLog.WithOriginalPromptFromStdin(stdinBytes)
+				if stdinErr != nil {
+					return stdinErr
+				}
 			}
 			repositories := args[1:]
 			if len(repositories) == 0 {
@@ -856,7 +874,7 @@ text never enters the worktree projection, source Git, or normal output.`,
 	command.Flags().StringVar(&model, "model", "", "required exact child model identifier, or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
-	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt; archived under WB_HOME only")
+	command.Flags().StringVar(&originalPrompt, "original-prompt-file", "", "required readable non-empty file containing the exact original prompt, or - to read it from stdin; archived under WB_HOME only")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

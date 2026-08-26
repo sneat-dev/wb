@@ -281,6 +281,31 @@ func PreflightWorkLogOptions(task string, options WorkLogOptions) error {
 	return snapshotOriginalPrompt(&options)
 }
 
+// originalPromptStdinMarker is recorded as this option's SourceReference when
+// the exact prompt bytes were captured in memory (from stdin) rather than
+// opened from an external file, so the private archive metadata never claims
+// a path that does not exist.
+const originalPromptStdinMarker = "(stdin)"
+
+// WithOriginalPromptFromStdin captures prompt bytes the caller already holds
+// in memory — read once from stdin, never staged to any file — as this
+// option's immutable original prompt. It fails closed on empty or
+// whitespace-only input, exactly like an empty --original-prompt-file.
+// Because the bytes are captured directly instead of reopened from a path,
+// there is no shared staging file and no read-after-write window for a
+// concurrent caller to corrupt: the private archive WB writes later is
+// byte-for-byte these exact contents.
+func (options WorkLogOptions) WithOriginalPromptFromStdin(content []byte) (WorkLogOptions, error) {
+	if len(bytes.TrimSpace(content)) == 0 {
+		return WorkLogOptions{}, fmt.Errorf("--original-prompt-file - requires non-empty stdin so the private Work Log can retain the exact originating request")
+	}
+	digest := sha256.Sum256(content)
+	options.OriginalPrompt = originalPromptStdinMarker
+	options.originalPromptContents = append([]byte(nil), content...)
+	options.originalPromptDigest = hex.EncodeToString(digest[:])
+	return options, nil
+}
+
 func snapshotOriginalPrompt(options *WorkLogOptions) error {
 	if len(options.originalPromptContents) != 0 {
 		digest := sha256.Sum256(options.originalPromptContents)
