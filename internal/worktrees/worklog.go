@@ -1497,6 +1497,25 @@ func preflightWorkLogSeal(home, worktree, finalCommit string) error {
 	if err != nil {
 		return err
 	}
+	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
+}
+
+// preflightWorkLogClaimReadOnly corroborates a Work Log claim without
+// migrating a legacy projection. Cleanup planning must remain read-only; apply
+// repeats preflightWorkLogSeal while holding the task lock before terminalizing
+// the claim or deleting Git state.
+func preflightWorkLogClaimReadOnly(home, worktree, finalCommit string) error {
+	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
+}
+
+func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) error {
 	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
 		return err
@@ -1572,6 +1591,32 @@ func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, er
 		return workLogProjection{}, err
 	}
 	return legacy, nil
+}
+
+// readWorkLogProjectionForReadOnlyClaim selects the same current or legacy
+// projection that apply can corroborate, but never writes the current
+// projection or removes the legacy pointer.
+func readWorkLogProjectionForReadOnlyClaim(worktree string) (workLogProjection, error) {
+	projection, currentErr := readWorkLogProjection(worktree)
+	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
+	switch {
+	case currentErr == nil:
+		if legacyErr == nil && legacy != projection {
+			return workLogProjection{}, fmt.Errorf("legacy and current work-log projections disagree")
+		}
+		if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+			return workLogProjection{}, legacyErr
+		}
+		return projection, nil
+	case !errors.Is(currentErr, os.ErrNotExist):
+		return workLogProjection{}, currentErr
+	case errors.Is(legacyErr, os.ErrNotExist):
+		return workLogProjection{}, errWorkLogProjectionNotFound
+	case legacyErr != nil:
+		return workLogProjection{}, legacyErr
+	default:
+		return legacy, nil
+	}
 }
 
 func readLegacyWorkLogProjection(worktree string) (workLogProjection, error) {
