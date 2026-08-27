@@ -88,34 +88,40 @@ type WorktreeMergeRevertReceipt struct {
 	CandidateSHA      string `json:"candidate_sha"`
 }
 
+type WorktreeMergeSourceRefresh struct {
+	RecordedAt time.Time             `json:"recorded_at"`
+	Sources    []WorktreeMergeSource `json:"sources"`
+}
+
 type WorktreeMergeReceipt struct {
-	SchemaVersion     int                         `json:"schema_version"`
-	ID                string                      `json:"id"`
-	Lane              string                      `json:"lane"`
-	Phase             WorktreeMergePhase          `json:"phase"`
-	Status            WorktreeMergeStatus         `json:"status"`
-	Repository        string                      `json:"repository"`
-	Target            string                      `json:"target"`
-	TargetSHA         string                      `json:"target_sha"`
-	Sources           []WorktreeMergeSource       `json:"sources"`
-	Candidate         WorktreeMergeCandidate      `json:"candidate"`
-	Rebase            *WorktreeMergeRebaseReceipt `json:"rebase,omitempty"`
-	RevertOf          *WorktreeMergeRevertReceipt `json:"revert_of,omitempty"`
-	Route             WorktreeMergeRouteDecision  `json:"route,omitempty"`
-	PullRequest       string                      `json:"pull_request,omitempty"`
-	PreviousTargetSHA string                      `json:"previous_target_sha,omitempty"`
-	LandingSHA        string                      `json:"landing_sha,omitempty"`
-	CanonicalSync     string                      `json:"canonical_sync,omitempty"`
-	Validation        quality.VerificationReport  `json:"validation,omitempty"`
-	Checks            PullRequestWaitResult       `json:"checks,omitempty"`
-	Cleanup           bool                        `json:"cleanup_requested"`
-	CleanupReports    []string                    `json:"cleanup_reports,omitempty"`
-	CleanedTasks      []string                    `json:"cleaned_tasks,omitempty"`
-	Failure           string                      `json:"failure,omitempty"`
-	ResumeArgs        []string                    `json:"resume_args,omitempty"`
-	ReceiptPath       string                      `json:"receipt_path"`
-	CreatedAt         time.Time                   `json:"created_at"`
-	UpdatedAt         time.Time                   `json:"updated_at"`
+	SchemaVersion     int                          `json:"schema_version"`
+	ID                string                       `json:"id"`
+	Lane              string                       `json:"lane"`
+	Phase             WorktreeMergePhase           `json:"phase"`
+	Status            WorktreeMergeStatus          `json:"status"`
+	Repository        string                       `json:"repository"`
+	Target            string                       `json:"target"`
+	TargetSHA         string                       `json:"target_sha"`
+	Sources           []WorktreeMergeSource        `json:"sources"`
+	Candidate         WorktreeMergeCandidate       `json:"candidate"`
+	Rebase            *WorktreeMergeRebaseReceipt  `json:"rebase,omitempty"`
+	RevertOf          *WorktreeMergeRevertReceipt  `json:"revert_of,omitempty"`
+	Route             WorktreeMergeRouteDecision   `json:"route,omitempty"`
+	PullRequest       string                       `json:"pull_request,omitempty"`
+	PreviousTargetSHA string                       `json:"previous_target_sha,omitempty"`
+	LandingSHA        string                       `json:"landing_sha,omitempty"`
+	CanonicalSync     string                       `json:"canonical_sync,omitempty"`
+	Validation        quality.VerificationReport   `json:"validation,omitempty"`
+	Checks            PullRequestWaitResult        `json:"checks,omitempty"`
+	Cleanup           bool                         `json:"cleanup_requested"`
+	CleanupReports    []string                     `json:"cleanup_reports,omitempty"`
+	CleanedTasks      []string                     `json:"cleaned_tasks,omitempty"`
+	SourceRefreshes   []WorktreeMergeSourceRefresh `json:"source_refreshes,omitempty"`
+	Failure           string                       `json:"failure,omitempty"`
+	ResumeArgs        []string                     `json:"resume_args,omitempty"`
+	ReceiptPath       string                       `json:"receipt_path"`
+	CreatedAt         time.Time                    `json:"created_at"`
+	UpdatedAt         time.Time                    `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -192,14 +198,26 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return WorktreeMergeReceipt{}, readErr
 	}
+	var prior *WorktreeMergeReceipt
 	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, receiptPath); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
-		return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)
+		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, *active, sources)
+		if refreshErr != nil {
+			return *active, refreshErr
+		}
+		if !canRefresh {
+			return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)
+		}
+		prior = active
+		operation, receiptPath = active.ID, active.ReceiptPath
 	}
 
 	branch := "wb/integration/" + target + "/" + mergeOperationSuffix(operation)
-	resume := false
+	if prior != nil {
+		branch = prior.Candidate.Branch
+	}
+	resume := prior != nil
 	listed, listErr := worktrees.List(ctx, worktrees.ListOptions{ProjectsRoot: projectsRoot, Task: operation, Base: target, Workers: 1})
 	if listErr != nil {
 		return WorktreeMergeReceipt{}, fmt.Errorf("inspect candidate lane: %w", listErr)
@@ -212,14 +230,35 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		return WorktreeMergeReceipt{}, err
 	}
 	defer lock.Release()
-	// Re-read the durable lane after acquiring exclusivity: another prepare
-	// may have won the race between our first read-only scan and this lock.
+	// Re-read the durable lane after acquiring exclusivity: another prepare may
+	// have advanced the same resumable candidate before this lock was held.
+	if prior != nil {
+		current, readErr := readWorktreeMergeReceipt(receiptPath)
+		if readErr != nil {
+			return WorktreeMergeReceipt{}, readErr
+		}
+		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, current, sources)
+		if refreshErr != nil {
+			return current, refreshErr
+		}
+		if !canRefresh {
+			return current, fmt.Errorf("merger lane %s can no longer refresh receipt %s with the advanced source heads", lane, receiptPath)
+		}
+		prior = &current
+	}
 	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, receiptPath); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)
 	}
-	prompt, err := writeWorktreeMergePrompt(repository, target, sources)
+	promptSources := sources
+	if prior != nil {
+		promptSources = prior.Sources
+		if len(prior.SourceRefreshes) > 0 {
+			promptSources = prior.SourceRefreshes[0].Sources
+		}
+	}
+	prompt, err := writeWorktreeMergePrompt(repository, target, promptSources)
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
@@ -250,14 +289,22 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	candidate := created[0]
 
 	now := time.Now().UTC()
+	createdAt := now
+	var refreshes []WorktreeMergeSourceRefresh
+	if prior != nil {
+		createdAt = prior.CreatedAt
+		refreshes = append(refreshes, prior.SourceRefreshes...)
+		refreshes = append(refreshes, WorktreeMergeSourceRefresh{RecordedAt: now, Sources: append([]WorktreeMergeSource(nil), prior.Sources...)})
+	}
 	receipt := WorktreeMergeReceipt{
 		SchemaVersion: WorktreeMergeSchemaVersion,
 		ID:            operation, Lane: lane, Phase: WorktreeMergePhasePrepare, Status: WorktreeMergePreparing,
 		Repository: repository, Target: target, TargetSHA: candidate.BaseSHA,
-		Sources:     sources,
-		Candidate:   WorktreeMergeCandidate{Task: operation, Worktree: candidate.WorktreeDir, Branch: candidate.Branch},
-		ResumeArgs:  []string{"worktree", "merge", "resume", receiptPath},
-		ReceiptPath: receiptPath, CreatedAt: now, UpdatedAt: now,
+		Sources:         sources,
+		Candidate:       WorktreeMergeCandidate{Task: operation, Worktree: candidate.WorktreeDir, Branch: candidate.Branch},
+		SourceRefreshes: refreshes,
+		ResumeArgs:      []string{"worktree", "merge", "resume", receiptPath},
+		ReceiptPath:     receiptPath, CreatedAt: createdAt, UpdatedAt: now,
 	}
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
@@ -1157,6 +1204,43 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 		}
 	}
 	return nil, nil
+}
+
+func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
+	switch prior.Status {
+	case WorktreeMergePreparing, WorktreeMergePrepared, WorktreeMergeConflict, WorktreeMergeValidationFailed:
+	default:
+		return false, nil
+	}
+	if prior.PullRequest != "" || prior.LandingSHA != "" || prior.Candidate.Worktree == "" || prior.Candidate.Branch == "" || len(prior.Sources) != len(sources) {
+		return false, nil
+	}
+	advanced := false
+	for index := range sources {
+		oldSource, newSource := prior.Sources[index], sources[index]
+		if oldSource.Worktree != newSource.Worktree || oldSource.Branch != newSource.Branch || oldSource.Task != newSource.Task {
+			return false, nil
+		}
+		if oldSource.SHA == newSource.SHA {
+			continue
+		}
+		containsOld, err := isMergeAncestor(ctx, newSource.Worktree, oldSource.SHA, newSource.SHA)
+		if err != nil {
+			return false, err
+		}
+		if !containsOld {
+			return false, nil
+		}
+		advanced = true
+	}
+	if !advanced || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
+		return false, nil
+	}
+	remote, _, err := runCommand(ctx, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(remote) == "", nil
 }
 
 func writeWorktreeMergePrompt(repository, target string, sources []WorktreeMergeSource) (string, error) {

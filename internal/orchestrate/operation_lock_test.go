@@ -74,6 +74,33 @@ func TestAcquireOperationLockRefusesLiveOwner(t *testing.T) {
 	}
 }
 
+func TestOperationLockIsNotInheritedByValidationChild(t *testing.T) {
+	t.Setenv(wbhome.EnvOverride, t.TempDir())
+	githubDir := t.TempDir()
+	const operation = "child-inheritance"
+	lock, err := AcquireOperationLock(githubDir, operation, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command("sh", "-c", "sleep 30")
+	if err := child.Start(); err != nil {
+		_ = lock.Release()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	})
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	reacquired, err := AcquireOperationLock(githubDir, operation, true)
+	if err != nil {
+		t.Fatalf("validation child inherited the merger lock descriptor: %v", err)
+	}
+	defer func() { _ = reacquired.Release() }()
+}
+
 func TestAcquireOperationLockRefusesLiveLegacyOwner(t *testing.T) {
 	// A pre-descriptor-lock WB process used O_EXCL only. Its PID is the only
 	// liveness evidence available, and an alive PID must remain fail-closed.
