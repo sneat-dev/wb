@@ -4323,6 +4323,7 @@
                 "--format",
                 "--handover-file",
                 "--harness",
+                "--override-secret",
                 "--remaining",
                 "--resume",
                 "--summary",
@@ -4332,6 +4333,7 @@
               ],
               "modes": [
                 "Refuses before mutation unless the invoking live registered session owns an active managed Work Log on a clean named branch whose exact checkpoint can advance origin without force.",
+                "Scans --summary, --validation, --remaining, and the handover body against gitleaks-derived named secret patterns before any mutation; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, records an offer, and persists the selected SSH host and remote WB path as an immutable courier route.",
                 "Delivers the canonical request bytes through configured SSH stdin and accepts success only after the target reports the preallocated successor live in deterministic detached tmux at the exact pinned commit; omitting --harness keeps codex or claude-code, while an explicit supported value performs a cross-harness move.",
                 "--resume <handoff-id> sends the byte-identical admitted request through its persisted route without creating another checkpoint or following later config/default changes; an SSH failure never falls back to another courier."
@@ -4351,6 +4353,7 @@
                 "--via",
                 "--harness",
                 "--resume",
+                "--override-secret",
                 "named tmux session"
               ]
             }
@@ -4367,6 +4370,13 @@
                 "wb session move --to hetzner-vm1 --handover-file handover.md",
                 "wb session move --resume <handoff-id>"
               ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Write a safe continuation",
+              "examples": [
+                "wb session move --to hetzner-vm1 --handover-file handover.md"
+              ]
             }
           ],
           "limitation": null
@@ -4382,6 +4392,16 @@
             {
               "path": "cmd/wb/session_move_test.go",
               "name": "TestSessionMoveResumeReusesExactRequestAndImmutableSSHRoute",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveRefusesHandoverContainingNamedSecretPattern",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory",
               "kind": "unit"
             },
             {
@@ -4408,6 +4428,16 @@
               "path": "internal/worktrees/session_checkpoint_test.go",
               "name": "TestCreateSessionCheckpointRefusesBeforeAnyMutation",
               "kind": "integration"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNamedPatternsFailClosed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNeverEchoesMatchedSecret",
+              "kind": "unit"
             }
           ],
           "limitation": null
@@ -4429,9 +4459,11 @@
               "path": "wb session park",
               "flags": [
                 "--context-file",
-                "--format"
+                "--format",
+                "--override-secret"
               ],
               "modes": [
+                "Scans the continuation against gitleaks-derived named secret patterns before storing anything; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint.",
                 "Prompts the agent on stderr for the judgment WB cannot observe -- uncommitted rationale, proven ordering constraints, human-blocked decisions, dispatched lanes, and corrections -- both when the continuation is missing and after the checkpoint seals; stdout stays the machine-readable record."
               ]
@@ -4447,7 +4479,8 @@
               "contains": [
                 "--context-file",
                 "bounded agent-authored continuation file",
-                "--format"
+                "--format",
+                "--override-secret"
               ]
             }
           ],
@@ -4459,6 +4492,13 @@
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
               "marker": "## Park and resume a registered session",
+              "examples": [
+                "wb session park --context-file <file>"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Write a safe continuation",
               "examples": [
                 "wb session park --context-file <file>"
               ]
@@ -4492,6 +4532,26 @@
             {
               "path": "cmd/wb/session_park_test.go",
               "name": "TestSessionParkMissingContextFilePromptsJudgmentChecklist",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkRefusesContinuationContainingNamedSecretPattern",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNamedPatternsFailClosed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNeverEchoesMatchedSecret",
               "kind": "unit"
             }
           ],

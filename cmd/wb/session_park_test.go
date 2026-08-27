@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/secretscan"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
@@ -842,5 +843,91 @@ func TestSessionParkMissingContextFilePromptsJudgmentChecklist(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "corrections") {
 		t.Fatal("judgment checklist must not be written to stdout")
+	}
+}
+
+// TestSessionParkRefusesContinuationContainingNamedSecretPattern proves
+// invariant 1 (fail closed) and invariant 5 (the write is the damage): a
+// continuation carrying a named secret shape must be refused before the
+// parked-session store gets a single byte, since a stored park continuation
+// is immutable from that point on.
+func TestSessionParkRefusesContinuationContainingNamedSecretPattern(t *testing.T) {
+	withDeterministicSecretScanner(t)
+	home := registerParkChecklistSession(t, "wbs-secret-scan-park")
+	contextPath := filepath.Join(t.TempDir(), "continuation.md")
+	secretLine := "leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID()
+	if err := os.WriteFile(contextPath, []byte(secretLine+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("expected a refusal, got nil error")
+	}
+	if !strings.Contains(err.Error(), "aws-access-token") || !strings.Contains(err.Error(), "--override-secret") {
+		t.Fatalf("refusal error = %v", err)
+	}
+	for _, surface := range []string{err.Error(), stdout.String(), stderr.String()} {
+		if strings.Contains(surface, fakeAWSAccessKeyID()) {
+			t.Fatalf("secret scan surface leaked the matched value: %q", surface)
+		}
+	}
+	store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
+	if _, found, findErr := store.FindBySource("wbs-secret-scan-park"); findErr != nil || found {
+		t.Fatalf("a refused park must never create a parked-session record: found=%v err=%v", found, findErr)
+	}
+}
+
+// TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory proves the
+// override contract for park: the exact finding key from a refusal lets the
+// park proceed, and the acknowledgement is visible on stderr, never silent.
+func TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) {
+	withDeterministicSecretScanner(t)
+	secretLine := "leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID()
+	empty := ""
+	scanner, _, err := secretscan.LoadDefault(secretscan.LoadOptions{EnvExtraRulesPath: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := scanner.Scan(secretscan.Segment{Name: "continuation", Content: []byte(secretLine)}).Blocking(nil)
+	if len(blocking) != 1 {
+		t.Fatalf("expected exactly one blocking finding to override, got %+v", blocking)
+	}
+	overrideKey := blocking[0].Key()
+
+	home := registerParkChecklistSession(t, "wbs-secret-override-park")
+	contextPath := filepath.Join(t.TempDir(), "continuation.md")
+	if err := os.WriteFile(contextPath, []byte(secretLine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath, "--format", "json", "--override-secret", overrideKey})
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("park with an exact override should succeed: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "secret scan advisory") || !strings.Contains(stderr.String(), "aws-access-token") {
+		t.Fatalf("override must be logged as a visible advisory, stderr = %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), fakeAWSAccessKeyID()) || strings.Contains(stdout.String(), fakeAWSAccessKeyID()) {
+		t.Fatal("advisory or output echoed the matched secret")
+	}
+	var output sessionParkOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
+	state, err := store.Load(output.ParkedSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Bundle.Continuation != secretLine {
+		t.Fatalf("overridden continuation was not durably preserved: %#v", state.Bundle)
 	}
 }
