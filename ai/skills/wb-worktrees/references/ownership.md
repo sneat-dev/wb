@@ -60,6 +60,76 @@ wb session list --live
 wb session prune
 ```
 
+## Write a safe continuation
+
+`wb session move --handover-file` and `wb session park --context-file` both
+take agent-authored continuation text. Treat what you write there as already
+published: it is persisted to disk, handed verbatim to a successor agent (a
+different session, possibly a different harness or machine), and under the
+handoff-storage plan moves into a durable Git-backed store. Nobody re-reviews
+it for secrets before that happens. Write it that way, not as a scratch note
+to yourself.
+
+**A deterministic scanner also runs on every `move`/`park` before anything is
+written** (gitleaks-derived named patterns: `sk_live_`, `AKIA`, `ghp_`,
+`github_pat_`, `xox[baprs]-`, PEM private-key headers, and more). This
+guidance lowers the odds you write a secret into a continuation in the first
+place; the scanner is the actual gate. Both exist because guidance alone fails
+silently — a leaked key in a continuation reads exactly like a good one — so
+never rely on care alone, and never treat a scanner refusal as a bug to route
+around. This scanner is the *detective* counterpart: it catches a secret that
+already reached a continuation. `spec/ideas/secret-vault-injection.md` is the
+*preventive* counterpart, aiming to let an agent use or set a secret without
+the value ever entering its context in the first place.
+
+Include, concretely:
+
+- **The goal and current state.** What this effort is for, and exactly how
+  far it got — not "made progress," but the specific state a successor would
+  otherwise have to reconstruct from scratch.
+- **Decisions made, and their reasons.** Not just "used approach X" but why X
+  over the alternatives, so a successor does not silently re-litigate and
+  reverse a settled call.
+- **What was verified versus assumed.** Say which claims you watched pass
+  (a command, a test, a CI run) and which you believe but did not check. A
+  successor treats these very differently.
+- **The next concrete step.** One thing to do next, phrased as an action, not
+  a topic.
+- **Traps and dead ends already discovered.** The approach you tried that
+  looked reasonable and failed, and why — this is the single most expensive
+  thing to omit, because a successor without it re-spends the time you already
+  spent finding out.
+- **Exact identifiers a successor needs**: branch name, PR number, task/effort
+  ID, run ID, worktree path. Precise and pasteable, not "the branch I was on."
+
+Exclude, always:
+
+- **Credentials, tokens, keys, or anything resembling them** — even a
+  half-remembered fragment, a "just for reference" example value, or a
+  redacted-looking placeholder that is actually still live. If a step
+  required a secret, name which one (`GITHUB_TOKEN`, `the deploy key in 1Password`)
+  and how to obtain it, never the value.
+- **Full file dumps.** Name the file and the relevant lines; a successor with
+  repo access can read it, and a large paste is exactly where a stray secret
+  hides unnoticed.
+- **Raw command output.** Summarize what it showed. Raw logs and stack traces
+  routinely carry tokens, internal hostnames, or other material nobody meant
+  to persist.
+- **The whole conversation transcript.** A continuation is a briefing, not a
+  recording — see the goal/decisions/traps list above for what actually earns
+  a place in it.
+- **Anything the successor can cheaply re-derive from the repo itself**
+  (current file contents, `git log`, `git diff`) — restate only what is not
+  otherwise recoverable: judgment, reasoning, and what failed.
+
+If the scanner refuses your continuation, it prints the matched rule, its
+location, and a redacted fingerprint — never the matched value. Redact the
+flagged text and retry; only reach for
+`--override-secret <rule-id>:<fingerprint>` (exact key from the refusal, one
+finding at a time) after confirming it is genuinely not a secret. An override
+is logged as an advisory on the command's own output — it is an acknowledged
+exception, never a silent bypass.
+
 ## Move a registered session over SSH
 
 ## Park and resume a registered session
