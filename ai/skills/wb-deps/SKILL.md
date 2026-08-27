@@ -15,14 +15,19 @@ Choose the narrowest operation:
 | Propagate published Go or npm releases through consumers | `wb deps bump` | [bump.md](references/bump.md) |
 | Publish approved npm packages, verify the registry, and propagate consumers | `wb deps publish npm` | [publish-npm.md](references/publish-npm.md) |
 | Enforce which dependencies and import directions are allowed | `wb deps policy` | [policy.md](references/policy.md) |
+| Assess or land the `go 1.26.x` + `toolchain go1.27.0` directive policy | `wb deps go-directive` | [go-directive.md](references/go-directive.md) |
 
 Use `$wb-dependency-campaign` for a breaking or multi-release rollout.
 
 Note that `deps policy` is about which dependencies are *permitted*; the
-other verbs are about which *versions* are selected.
+other verbs are about which *versions* are selected. `deps go-directive` is
+narrower still: it is about one specific pair of directives inside `go.mod`
+itself, not about the module version references the other verbs manage.
 
-Start read-only. `graph`, `drift` and every `policy` verb except `init` are
-read-only; `set` and `bump` provide `--dry-run`.
+Start read-only. `graph`, `drift`, `go-directive report`, `go-directive
+check`, and every `policy` verb except `init` are read-only; `set` and `bump`
+provide `--dry-run`, and `go-directive check` requires `--apply` to write
+anything.
 Inspect scope and reports before publication flags.
 
 WB mutation happens in operation worktrees, not canonical clones. `--push`
