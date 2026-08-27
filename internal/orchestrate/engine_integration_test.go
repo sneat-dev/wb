@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 type textHandler struct{}
@@ -96,6 +97,40 @@ func TestRunCommitsWithoutPushing(t *testing.T) {
 	message := strings.TrimSpace(runEngineGit(t, result.WorktreeDir, "log", "-1", "--format=%s"))
 	if message != "chore: update dependency" {
 		t.Fatalf("message = %q", message)
+	}
+}
+
+// TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard is the Defect C
+// regression: `wb deps bump`/`wb deps set` wave worktrees are created by
+// this exact Run/processRepository path with plain `git worktree add`, not
+// through `wb worktree create`, so they never carried the WB manifest wb's
+// own commit-admission hook requires — wb's own pre-commit hook then
+// rejected the very commit the operation existed to make, with "this
+// worktree has no WB manifest, so nothing records what it is or who asked
+// for it". This drives the exact same admission check the installed
+// pre-commit hook calls (worktrees.Guard with AdmissionEnforce) against a
+// worktree Run actually created, so a regression here fails exactly the way
+// production did.
+func TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard(t *testing.T) {
+	fixture := newEngineFixture(t)
+	options := fixture.options()
+	options.Commit = true
+	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := results[0]
+	if result.Status != "committed" || result.Commit == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	guardResult, err := worktrees.Guard(context.Background(), result.WorktreeDir, worktrees.GuardOptions{
+		ProjectsRoot: fixture.githubDir, Base: "main", Admission: worktrees.AdmissionEnforce,
+	})
+	if err != nil {
+		t.Fatalf("wb's own commit-admission guard rejected the wave worktree it created: %v", err)
+	}
+	if guardResult.Admission == nil || !guardResult.Admission.Admitted {
+		t.Fatalf("admission = %+v, want admitted", guardResult.Admission)
 	}
 }
 

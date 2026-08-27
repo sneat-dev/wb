@@ -384,6 +384,12 @@ func (graph npmFleetGraph) BaseRefFallbacks() []GraphDefaultBranchFallback {
 // satisfies bumpFleetGraph alongside goFleetGraph.
 func (graph npmFleetGraph) ManifestWarnings() []GraphManifestWarning { return nil }
 
+// AmbiguousModules has no npm ecosystem analogue: npm package names carry no
+// owner/repository convention to fall back on, so an ambiguous npm
+// declaration has no canonical provider to deterministically prefer (see
+// graphFromNpmFleet, which reports it as ambiguous rather than guessing).
+func (graph npmFleetGraph) AmbiguousModules() []GraphAmbiguousModuleWarning { return nil }
+
 func (graph npmFleetGraph) requirementsForDependency(dependency string) []fleetRequirement {
 	requirements := graph.requirements[dependency]
 	result := make([]fleetRequirement, 0, len(requirements))

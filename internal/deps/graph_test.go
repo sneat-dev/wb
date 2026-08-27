@@ -91,7 +91,16 @@ func TestGraphPreservesAmbiguousProvidersWhileMutationValidationRejectsThem(t *t
 	}
 }
 
-func TestGraphUsesRepositoryMatchingDeclarationWithoutHidingAmbiguity(t *testing.T) {
+// TestGraphUsesRepositoryMatchingDeclarationAndAllowsMutation pins the
+// deliberate Defect D behavior change: a module declared by more than one
+// repository, where the module's own declared path names exactly one of
+// them (a legitimate fork keeps the upstream's module path — see
+// canonicalGoModuleDeclaration), is deterministically resolved rather than
+// aborting the mutation path outright. The read-only graph view still
+// surfaces the ambiguity (ProviderCandidates, AmbiguousProviders) so it
+// stays visible; it is the fatal mutation-time abort that this pins as
+// gone, because the ambiguity is no longer unresolved.
+func TestGraphUsesRepositoryMatchingDeclarationAndAllowsMutation(t *testing.T) {
 	t.Parallel()
 	const module = "github.com/acme/provider"
 	declarations := []goFleetModule{
@@ -114,8 +123,34 @@ func TestGraphUsesRepositoryMatchingDeclarationWithoutHidingAmbiguity(t *testing
 	if requirement.ProviderRepository != "acme/provider" || len(requirement.ProviderCandidates) != 2 || graph.Summary.AmbiguousProviders != 1 {
 		t.Fatalf("graph = %+v", graph)
 	}
-	if err := discovered.validateUniqueModuleDeclarations(); err == nil {
-		t.Fatal("mutation validation accepted duplicate declarations")
+	if err := discovered.validateUniqueModuleDeclarations(); err != nil {
+		t.Fatalf("a deterministically resolved duplicate declaration must not abort mutation: %v", err)
+	}
+}
+
+// TestValidateUniqueModuleDeclarationsStillFailsWhenUnresolved pins the
+// floor: a module declared by more than one repository that discovery could
+// NOT deterministically resolve (graph.modules has no entry for it) still
+// aborts the mutation path. Deterministic resolution substitutes a
+// known-good pick; it is never license to swallow a genuinely ambiguous
+// conflict.
+func TestValidateUniqueModuleDeclarationsStillFailsWhenUnresolved(t *testing.T) {
+	t.Parallel()
+	const module = "github.com/acme/unrelated"
+	declarations := []goFleetModule{
+		{Path: module, Repository: "other-org/one", Manifest: "go.mod"},
+		{Path: module, Repository: "other-org/two", Manifest: "go.mod"},
+	}
+	discovered := goFleetGraph{
+		modules:            map[string]goFleetModule{},
+		moduleDeclarations: map[string][]goFleetModule{module: declarations},
+	}
+	err := discovered.validateUniqueModuleDeclarations()
+	if err == nil {
+		t.Fatal("an unresolved duplicate declaration must still abort mutation")
+	}
+	if !strings.Contains(err.Error(), module) {
+		t.Fatalf("error must name the module; got %v", err)
 	}
 }
 

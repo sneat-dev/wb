@@ -641,3 +641,116 @@ func newBumpRepository(t *testing.T, root, githubDir, name, goMod string) Reposi
 	runTestGit(t, root, "clone", remote, canonical)
 	return Repository{Slug: "acme/" + name, Path: canonical, CloneURL: remote}
 }
+
+// seedBumpRemoteClone nests its bare remote as <root>/remotes/<owner>/
+// <name>.git, so remoteOriginSlug's generic (non-github.com) URL fallback
+// resolves it to exactly "<owner>/<name>" from the local path alone, the
+// same way a real github.com/<owner>/<name> remote would resolve. It is
+// cloned into <githubDir>/<canonicalOwner>/<canonicalName>, which may differ
+// from owner/name to simulate a repository whose local directory no longer
+// matches its own remote identity (a stale duplicate clone left behind by
+// an org move or rename) — or, when they match, a correctly located one.
+// Two calls sharing owner/name reuse the identical underlying remote,
+// exactly modeling one physical repository cloned into two directories.
+func seedBumpRemoteClone(t *testing.T, root, githubDir, owner, name, canonicalOwner, canonicalName string, files map[string]string) Repository {
+	t.Helper()
+	remote := filepath.Join(root, "remotes", owner, name+".git")
+	if _, err := os.Stat(remote); os.IsNotExist(err) {
+		seed := filepath.Join(root, "seed-"+owner+"-"+name)
+		for path, body := range files {
+			writeTestFile(t, filepath.Join(seed, path), body)
+		}
+		runTestGit(t, seed, "init", "-b", "main")
+		runTestGit(t, seed, "config", "user.name", "WB Test")
+		runTestGit(t, seed, "config", "user.email", "wb@example.test")
+		runTestGit(t, seed, "add", "-A")
+		runTestGit(t, seed, "commit", "-m", "initial")
+		if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		runTestGit(t, root, "clone", "--bare", seed, remote)
+	}
+	canonical := filepath.Join(githubDir, canonicalOwner, canonicalName)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, root, "clone", remote, canonical)
+	return Repository{Slug: canonicalOwner + "/" + canonicalName, Path: canonical, CloneURL: remote}
+}
+
+// TestRunBumpResolvesStaleDuplicateCloneModuleAmbiguity is the Defect D
+// regression: production hit `go module github.com/sneat-co/chatwright is
+// declared by chatwright/cloud:go.mod, sneat-co/chatwright:go.mod` (and the
+// same shape for sneat-co/preferans and sneat-games/chessraiders/go) because
+// an org move/rename left a stale duplicate local clone behind, and ANY
+// ambiguous module declaration anywhere in the fleet aborted the ENTIRE
+// bump — including this one, whose seed events (example.com/provider) have
+// nothing to do with the ambiguous module at all. Exactly one declaring
+// repository here is self-consistent with its own origin remote (the
+// acme/widgets vs. old-org/widgets-copy production shape), so the conflict
+// is resolved and recorded as a warning instead of aborting.
+func TestRunBumpResolvesStaleDuplicateCloneModuleAmbiguity(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n"),
+		newBumpRepository(t, root, githubDir, "consumer", "module example.com/consumer\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n"),
+	}
+	files := map[string]string{"go.mod": "module example.com/mycompany/widgets\n\ngo 1.24\n"}
+	repositories = append(repositories,
+		seedBumpRemoteClone(t, root, githubDir, "acme", "widgets", "acme", "widgets", files),
+		seedBumpRemoteClone(t, root, githubDir, "acme", "widgets", "old-org", "widgets-copy", files),
+	)
+
+	report, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}, repositories, BumpOptions{
+		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 2, DryRun: true},
+	})
+	if err != nil {
+		t.Fatalf("a resolvable duplicate module declaration elsewhere in the fleet must not abort an unrelated bump: %v", err)
+	}
+	if report.Status != "planned" {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.AmbiguousModules) != 1 {
+		t.Fatalf("ambiguous modules = %+v, want exactly one", report.AmbiguousModules)
+	}
+	warning := report.AmbiguousModules[0]
+	if warning.Module != "example.com/mycompany/widgets" || warning.Repository != "acme/widgets" {
+		t.Fatalf("ambiguous module warning = %+v", warning)
+	}
+	if len(warning.Duplicates) != 1 || warning.Duplicates[0] != "old-org/widgets-copy:go.mod" {
+		t.Fatalf("duplicates = %+v, want old-org/widgets-copy:go.mod", warning.Duplicates)
+	}
+	if !strings.Contains(report.Markdown(), "example.com/mycompany/widgets") {
+		t.Fatalf("markdown is missing the ambiguous module resolution:\n%s", report.Markdown())
+	}
+}
+
+// TestRunBumpFailsForGenuinelyUnrelatedModuleCollision pins the floor: two
+// independently self-consistent repositories — each correctly named for its
+// own distinct remote — that coincidentally declare the same (non-
+// github.com) module path are NOT a stale-duplicate-clone pattern, and this
+// must still abort the bump rather than guess a resolution.
+func TestRunBumpFailsForGenuinelyUnrelatedModuleCollision(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n"),
+		newBumpRepository(t, root, githubDir, "consumer", "module example.com/consumer\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n"),
+	}
+	files := map[string]string{"go.mod": "module example.com/shared/lib\n\ngo 1.24\n"}
+	repositories = append(repositories,
+		seedBumpRemoteClone(t, root, githubDir, "vendor-a", "lib", "vendor-a", "lib", files),
+		seedBumpRemoteClone(t, root, githubDir, "vendor-b", "lib", "vendor-b", "lib", files),
+	)
+
+	_, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}, repositories, BumpOptions{
+		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 2, DryRun: true},
+	})
+	if err == nil {
+		t.Fatal("a genuinely unrelated module-path collision elsewhere in the fleet must still abort the bump")
+	}
+	if !strings.Contains(err.Error(), "vendor-a/lib") || !strings.Contains(err.Error(), "vendor-b/lib") {
+		t.Fatalf("error must name both repositories; got %v", err)
+	}
+}
