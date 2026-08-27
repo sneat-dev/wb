@@ -302,7 +302,7 @@ func TestWorktreeAdmissionWarnsAfterCheckoutAndBlocksCommitOrPush(t *testing.T) 
 	if err != nil || checkout.ExitCode != 0 {
 		t.Fatalf("post-checkout result = %#v, error = %v", checkout, err)
 	}
-	for _, message := range []string{"linked worktree is unmanaged", "checkout already happened outside WB's managed worktree hierarchy", "wb worktree rescue is not available yet"} {
+	for _, message := range []string{"linked worktree is unmanaged", "checkout already happened outside WB's managed worktree hierarchy", "wb worktree rescue <path>"} {
 		if !strings.Contains(checkoutErr.String(), message) {
 			t.Errorf("post-checkout warning missing %q: %s", message, checkoutErr.String())
 		}

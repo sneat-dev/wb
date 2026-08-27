@@ -22,7 +22,7 @@ The worktree profile guards `post-checkout`, `pre-commit`, and `pre-push`.
 Git has no pre-checkout hook: post-checkout warns loudly after an unmanaged
 checkout has happened, preserves it for inspection, and exits successfully.
 `pre-commit` and `pre-push` are the blocking enforcement points. Preserve the
-state; `wb worktree rescue` is not available yet.
+state; run `wb worktree rescue <path>` to move it onto a branch first.
 
 Only when WB cannot own checkout policy, make the exception explicit and
 auditable, then repair hooks:

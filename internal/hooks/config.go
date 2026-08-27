@@ -431,7 +431,7 @@ fi
 # hard enforcement boundaries.
 if [ "$WB_HOOK" = "post-checkout" ]; then
     printf '%s\n' "WB warning: checkout already happened outside WB's managed worktree hierarchy; do not edit or commit here." >&2
-    printf '%s\n' "Run 'wb worktree guard .' for details. Preserve the state; wb worktree rescue is not available yet." >&2
+    printf '%s\n' "Run 'wb worktree guard .' for details, and 'wb worktree rescue <path>' to move any uncommitted work onto a branch before anything discards it." >&2
     exit 0
 fi
 exit "$guard_status"
