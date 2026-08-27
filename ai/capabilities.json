@@ -1300,6 +1300,7 @@
               "path": "wb deps go-directive check",
               "flags": [
                 "--apply",
+                "--codeql-ceiling",
                 "--go-version",
                 "--timeout",
                 "--toolchain"
@@ -1307,7 +1308,8 @@
               "modes": [
                 "Discovers every go.mod at or under a directory and assesses each module's achievability by resolving its real build list with go tooling, never by grepping go.mod files.",
                 "Dry-run by default: reports compliant, would-change, cannot-comply naming the exact forcing dependency and version, or below-floor (left unchanged); exits 1 when any module needs attention.",
-                "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted."
+                "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted.",
+                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling — the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
               ]
             }
           ],
@@ -1320,6 +1322,7 @@
               "command": "wb deps go-directive check --help",
               "contains": [
                 "--apply",
+                "--codeql-ceiling",
                 "--go-version",
                 "--toolchain"
               ]
@@ -1358,12 +1361,22 @@
               "path": "cmd/wb/deps_go_directive_test.go",
               "name": "TestDepsGoDirectiveCheckApplyWritesAndLeavesCannotComplyUntouched",
               "kind": "integration"
+            },
+            {
+              "path": "internal/deps/go_directive_test.go",
+              "name": "TestDirectiveAssessmentEffectiveGoVersionIsTheHigherOfCurrentAndCeiling",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/deps_go_directive_test.go",
+              "name": "TestCodeQLRiskFlagsOnlyWhatDefaultSetupCannotRun",
+              "kind": "unit"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against."
+      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run — the concrete failure mode motivating the policy, not a cosmetic preference."
     },
     {
       "id": "wb.deps.go-directive.report",
@@ -1378,6 +1391,7 @@
             {
               "path": "wb deps go-directive report",
               "flags": [
+                "--codeql-ceiling",
                 "--format",
                 "--go-version",
                 "--match",
@@ -1388,7 +1402,8 @@
               "modes": [
                 "Walks every discovered repository and every Go module inside it — one row per module, not per repository — and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
                 "Read-only by construction: there is no --apply flag, so landing the policy anywhere is always the separate, single-repository `wb deps go-directive check --apply`.",
-                "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first."
+                "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first.",
+                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius — the number of repositories the policy actually protects — is a single number in the report."
               ]
             }
           ],
@@ -1402,7 +1417,8 @@
               "contains": [
                 "--match",
                 "--regex",
-                "--format"
+                "--format",
+                "--codeql-ceiling"
               ]
             }
           ],

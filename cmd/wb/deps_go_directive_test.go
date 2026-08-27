@@ -184,3 +184,27 @@ func dirSnapshot(dir string) (string, error) {
 	})
 	return builder.String(), err
 }
+
+// TestCodeQLRiskFlagsOnlyWhatDefaultSetupCannotRun covers the concrete
+// failure mode the policy exists to prevent: GitHub CodeQL default-setup
+// pins GOTOOLCHAIN=local and cannot switch, so a module whose effective go
+// requirement exceeds that pinned ceiling fails Analyze (go) outright,
+// independent of whether the fleet policy considers it would-change or
+// cannot-comply.
+func TestCodeQLRiskFlagsOnlyWhatDefaultSetupCannotRun(t *testing.T) {
+	t.Parallel()
+	atRisk, note := codeQLRisk(deps.DirectiveAssessment{CurrentGoVersion: "1.27.0", Ceiling: "1.24"}, "1.26.7")
+	if !atRisk || !strings.Contains(note, "requires go 1.27.0") || !strings.Contains(note, "pinned to go1.26.7") {
+		t.Fatalf("atRisk=%v note=%q", atRisk, note)
+	}
+	atRisk, note = codeQLRisk(deps.DirectiveAssessment{CurrentGoVersion: "1.26.0", Ceiling: "1.27.0"}, "1.26.7")
+	if !atRisk || !strings.Contains(note, "requires go 1.27.0") {
+		t.Fatalf("a dependency ceiling above the pinned toolchain must also be flagged: atRisk=%v note=%q", atRisk, note)
+	}
+	if atRisk, _ := codeQLRisk(deps.DirectiveAssessment{CurrentGoVersion: "1.26.0", Ceiling: "1.24"}, "1.26.7"); atRisk {
+		t.Fatal("a module within the pinned ceiling must not be flagged")
+	}
+	if atRisk, _ := codeQLRisk(deps.DirectiveAssessment{CurrentGoVersion: "", Ceiling: ""}, "1.26.7"); atRisk {
+		t.Fatal("an assessment with no known version must not be flagged")
+	}
+}

@@ -69,3 +69,16 @@ repository with no `go.mod` at all. This command has no `--apply` flag: it
 never writes to any repository, by construction. The `cannot-comply` rows read
 as one worklist of which upstream module needs fixing first before its
 consumers can move.
+
+## Why this is not a consistency preference
+
+`--codeql-ceiling` (default `1.26.7`) names the Go toolchain GitHub's CodeQL
+default-setup scan currently pins via `GOTOOLCHAIN=local`. Default setup
+cannot switch toolchains, so a module whose *effective* go requirement —
+its own current directive, or a dependency's ceiling, whichever is higher —
+exceeds that ceiling fails the `Analyze (go)` job outright, independent of
+`toolchain` lines (`GOTOOLCHAIN=local` ignores them). Both `check` and
+`report` annotate every at-risk module with this and `report` totals them, so
+the number of repositories the policy protects is one line in the output —
+this is the concrete, reproducible failure mode the policy exists to prevent,
+not an aesthetic argument for consistency.

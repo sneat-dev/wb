@@ -194,6 +194,34 @@ func TestApplyDirectiveNoOpOnCannotComply(t *testing.T) {
 	}
 }
 
+// TestDirectiveAssessmentEffectiveGoVersionIsTheHigherOfCurrentAndCeiling
+// covers the value a caller comparing against a fixed local toolchain (for
+// example GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local) must use:
+// what the repository actually requires today, not what the fleet policy
+// would set.
+func TestDirectiveAssessmentEffectiveGoVersionIsTheHigherOfCurrentAndCeiling(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		current string
+		ceiling string
+		want    string
+	}{
+		{name: "current higher", current: "1.27.0", ceiling: "1.24", want: "1.27.0"},
+		{name: "ceiling higher", current: "1.26.0", ceiling: "1.27.0", want: "1.27.0"},
+		{name: "no ceiling known", current: "1.26.1", ceiling: "", want: "1.26.1"},
+		{name: "no current known", current: "", ceiling: "1.24", want: "1.24"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			assessment := DirectiveAssessment{CurrentGoVersion: testCase.current, Ceiling: testCase.ceiling}
+			if got := assessment.EffectiveGoVersion(); got != testCase.want {
+				t.Fatalf("EffectiveGoVersion() = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
 func mustReadFile(t *testing.T, path string) string {
 	t.Helper()
 	contents, err := os.ReadFile(path)
