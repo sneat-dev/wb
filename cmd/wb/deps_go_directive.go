@@ -235,6 +235,10 @@ fixing first.`,
 func sweepDirectives(ctx context.Context, repositories []deps.Repository, policy deps.DirectivePolicy, options deps.Options) []directiveRow {
 	var rows []directiveRow
 	for _, repository := range repositories {
+		if repository.Path == "" {
+			rows = append(rows, directiveRow{Repository: repository.Slug, Verdict: verdictNoModule, Detail: "remote-only — not cloned locally, cannot be assessed"})
+			continue
+		}
 		modules := discoverModules(repository.Path)
 		if len(modules) == 0 {
 			rows = append(rows, directiveRow{Repository: repository.Slug, Verdict: verdictNoModule, Detail: "no Go module"})
