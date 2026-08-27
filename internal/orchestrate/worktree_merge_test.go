@@ -204,8 +204,8 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
 
 	failed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
-		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
-		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteDirect,
+		Cleanup: true, OnFailure: "revert", Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
 	})
 	if err == nil || !strings.Contains(err.Error(), "conflicts while rebasing") || failed.Status != WorktreeMergeConflict {
 		t.Fatalf("rebase conflict receipt=%+v err=%v", failed, err)
@@ -221,6 +221,26 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 	}
 	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main")); !strings.HasPrefix(got, advancedTarget+"\t") {
 		t.Fatalf("remote target changed during failed rebase: %q", got)
+	}
+	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !failed.Cleanup || !persisted.Cleanup || persisted.Route.Requested != WorktreeMergeRouteDirect || persisted.OnFailure != "revert" {
+		t.Fatalf("landing intent was not durable across interruption: returned=%+v persisted=%+v", failed, persisted)
+	}
+	resume := strings.Join(persisted.ResumeArgs, " ")
+	for _, required := range []string{"--route direct", "--cleanup", "--on-failure revert"} {
+		if !strings.Contains(resume, required) {
+			t.Fatalf("resume args %q lost %q", resume, required)
+		}
+	}
+	bareResume := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, OnFailure: "stop"}
+	if retainWorktreeMergeLandIntent(&persisted, &bareResume) {
+		t.Fatal("bare resume unexpectedly changed already-durable landing intent")
+	}
+	if bareResume.Route != WorktreeMergeRouteDirect || !bareResume.Cleanup || bareResume.OnFailure != "revert" {
+		t.Fatalf("bare resume did not restore durable landing intent: %+v", bareResume)
 	}
 }
 

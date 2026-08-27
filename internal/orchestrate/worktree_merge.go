@@ -114,6 +114,7 @@ type WorktreeMergeReceipt struct {
 	Validation        quality.VerificationReport   `json:"validation,omitempty"`
 	Checks            PullRequestWaitResult        `json:"checks,omitempty"`
 	Cleanup           bool                         `json:"cleanup_requested"`
+	OnFailure         string                       `json:"on_failure,omitempty"`
 	CleanupReports    []string                     `json:"cleanup_reports,omitempty"`
 	CleanedTasks      []string                     `json:"cleaned_tasks,omitempty"`
 	SourceRefreshes   []WorktreeMergeSourceRefresh `json:"source_refreshes,omitempty"`
@@ -393,6 +394,12 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			_ = lock.Release()
 		}
 	}()
+	if retainWorktreeMergeLandIntent(&receipt, &options) {
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
 		if observeErr != nil {
@@ -540,7 +547,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if receipt.PreviousTargetSHA == "" {
 		receipt.PreviousTargetSHA = remoteTarget
 	}
-	receipt.Cleanup = options.Cleanup
+	receipt.Cleanup = receipt.Cleanup || options.Cleanup
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
@@ -625,7 +632,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
 	}
-	if !options.Cleanup {
+	if !receipt.Cleanup {
 		return receipt, nil
 	}
 	if err := lock.Release(); err != nil {
@@ -662,6 +669,43 @@ func canonicalForMergeSource(ctx context.Context, source string) (string, error)
 
 func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, error) {
 	return LandWorktreeMerge(ctx, options)
+}
+
+// retainWorktreeMergeLandIntent makes a combined command's requested landing
+// semantics part of the durable receipt before any target-drift, policy, push,
+// or check boundary can interrupt it. A bare resume therefore cannot silently
+// downgrade direct to auto, forget cleanup, or lose a requested forward revert.
+func retainWorktreeMergeLandIntent(receipt *WorktreeMergeReceipt, options *WorktreeMergeLandOptions) bool {
+	requestedRoute := options.Route
+	if requestedRoute == "" {
+		requestedRoute = WorktreeMergeRouteAuto
+	}
+	if receipt.Route.Requested != "" && (options.Route == "" || options.Route == WorktreeMergeRouteAuto) {
+		requestedRoute = receipt.Route.Requested
+	}
+	onFailure := strings.TrimSpace(options.OnFailure)
+	if onFailure == "" {
+		onFailure = "stop"
+	}
+	if receipt.OnFailure != "" && (strings.TrimSpace(options.OnFailure) == "" || options.OnFailure == "stop") {
+		onFailure = receipt.OnFailure
+	}
+	cleanup := receipt.Cleanup || options.Cleanup
+	resumeArgs := []string{"worktree", "merge", "resume", receipt.ReceiptPath, "--route", string(requestedRoute)}
+	if cleanup {
+		resumeArgs = append(resumeArgs, "--cleanup")
+	}
+	resumeArgs = append(resumeArgs, "--on-failure", onFailure)
+	changed := receipt.Route.Requested != requestedRoute || receipt.Cleanup != cleanup || receipt.OnFailure != onFailure ||
+		strings.Join(receipt.ResumeArgs, "\x00") != strings.Join(resumeArgs, "\x00")
+	receipt.Route.Requested = requestedRoute
+	receipt.Cleanup = cleanup
+	receipt.OnFailure = onFailure
+	receipt.ResumeArgs = resumeArgs
+	options.Route = requestedRoute
+	options.Cleanup = cleanup
+	options.OnFailure = onFailure
+	return changed
 }
 
 func RunWorktreeMerge(ctx context.Context, prepare WorktreeMergePrepareOptions, land WorktreeMergeLandOptions) (WorktreeMergeReceipt, error) {
