@@ -81,6 +81,13 @@ no-shared-writer workflow.
   a durable private stage before worktree removal; rerunning the same named
   journey resumes exact local-branch retirement after proving the worktree
   path/registration and remote branch are absent and the local ref did not move.
+- Implemented branch-identity reconciliation: `wb worktree log recover
+  --reconcile-branch` plans read-only by default and, on explicit apply,
+  preserves distinct local and remote immutable-claim heads in private verified
+  bundles before exact lease retirement. Its private stage record resumes after
+  every mutation, leaves the claim unchanged, appends one idempotent
+  `branch_reconciled` event, and returns a normal-cleanup-ready receipt only
+  after final corroboration.
 - Partially implemented: live worktree inventory and recycle crash recovery.
   The capability manifest names their exact limitations; seven-day history and
   every process-crash replay point remain open.

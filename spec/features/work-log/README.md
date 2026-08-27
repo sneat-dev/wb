@@ -340,7 +340,20 @@ a configured future worker.
 immutable base, recorded head, local lock state, and live Git state before a
 new Run can write. A mismatched branch/head, non-clean unknown state, active
 claim, unresolved Synchestra ownership loss, or malformed journal is a blocker
-with a specific remedy. Cleanup seals a finalized journal into
+with a specific remedy.
+
+When a merged landing deliberately leaves a live worktree on a different branch
+than its immutable active claim, `wb worktree log recover --reconcile-branch`
+MUST remain dry-run by default. Its applied mode MUST require the exact live
+branch and head, clean managed-worktree and readable-owner evidence, no open
+dependent pull request, exact fetched target containment, and unchanged local
+and remote claim refs. Before either ref is retired it MUST preserve both heads
+in verifiable private recovery bundles, journal every mutation stage, rebind
+only the live branch to the existing claim identity, append one idempotent
+`branch_reconciled` event, and re-corroborate the claim. It MUST never rewrite
+the immutable claim; interrupted applies resume only from their exact recorded
+stage and a completed receipt explicitly states that normal cleanup may proceed.
+Cleanup seals a finalized journal into
 `<WB_HOME>/worklogs/<effort-id>/`, where it remains visible as **recent** for
 seven days; thereafter `wb worktree log archive` moves it atomically below
 `<WB_HOME>/worklogs/archive/<YYYY>/<MM>/<effort-id>/`. Worktree cleanup MUST

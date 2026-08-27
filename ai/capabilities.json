@@ -5739,11 +5739,17 @@
               "flags": [
                 "--actor",
                 "--apply",
+                "--event-id",
+                "--expected-head",
                 "--format",
+                "--reason",
+                "--reconcile-branch",
+                "--remote",
                 "--takeover"
               ],
               "modes": [
-                "Diagnoses journal/claim disagreement; --apply rewrites projection.json; --takeover records explicit takeover."
+                "Diagnoses journal/claim disagreement; --apply rewrites projection.json; --takeover records explicit takeover.",
+                "--reconcile-branch is dry-run by default. With --apply --remote plus exact head, actor, reason, and event ID, it verifies immutable claim/live worktree/owner/PR/target/remote evidence, preserves both old claim refs in private verified bundles, retires them with exact leases, rebinds the live branch, appends one idempotent branch_reconciled event, resumes from its private stage record, and reports ready_for_normal_cleanup."
               ]
             }
           ],
@@ -5756,6 +5762,9 @@
               "command": "wb worktree log recover --help",
               "contains": [
                 "--apply",
+                "--reconcile-branch",
+                "--expected-head",
+                "--remote",
                 "--takeover"
               ]
             }
@@ -5786,6 +5795,16 @@
             {
               "path": "internal/worktrees/log_verbs_test.go",
               "name": "TestLogRecoverDryRunAndApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/branch_reconciliation_test.go",
+              "name": "TestReconcileClaimBranchApplyPreservesOldLocalAndRemoteHeads",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_test.go",
+              "name": "TestWorktreeLogRecoverReconcileBranchFlagsWireAndRequireInputs",
               "kind": "integration"
             }
           ],
