@@ -131,7 +131,7 @@ func TestDepsGoDirectiveReportWalksFleetAndNeverWrites(t *testing.T) {
 		{Slug: "acme/compliant", Path: compliantDir},
 		{Slug: "acme/empty", Path: noModuleDir},
 	}
-	rows := sweepDirectives(context.Background(), repositories, deps.DirectivePolicy{GoVersion: "1.26.0", Toolchain: "go1.27.0"}, deps.Options{Timeout: time.Minute, Retry: 1})
+	rows := sweepDirectives(context.Background(), repositories, deps.DirectivePolicy{GoVersion: "1.26.0", Toolchain: "go1.27.0"}, deps.Options{Timeout: time.Minute, Retry: 1}, defaultCodeQLCeiling)
 	if len(rows) != 2 {
 		t.Fatalf("rows = %+v", rows)
 	}

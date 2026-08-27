@@ -74,9 +74,37 @@ type DirectiveAssessment struct {
 	// still falls within the same language version (e.g. policy 1.26.0 but a
 	// dependency requires 1.26.4 exactly).
 	TargetGoVersion string
-	Verdict         DirectiveVerdict
-	Forcing         []ForcingDependency
-	Detail          string
+	// Ceiling is the highest `go` directive found among this module's
+	// dependencies in its resolved build list, independent of policy — empty
+	// when the graph was not resolved (below-floor, error) or no dependency
+	// declares one. It is the value Go's own MVS would require regardless of
+	// what this module's own `go` line says.
+	Ceiling string
+	Verdict DirectiveVerdict
+	Forcing []ForcingDependency
+	Detail  string
+}
+
+// EffectiveGoVersion is the `go` language version this module actually needs
+// today, as committed — the value `go build`/`go list` would require right
+// now, regardless of the fleet policy this assessment was run against. It is
+// the higher of the module's own current `go` directive and its dependency
+// ceiling: MVS never lets a module's effective requirement fall below either.
+// A caller comparing against what a fixed local toolchain can run (for
+// example GitHub CodeQL's default-setup, which pins GOTOOLCHAIN=local) should
+// use this value, not TargetGoVersion — that field is what the fleet policy
+// would set, not what the repository requires as committed.
+func (a DirectiveAssessment) EffectiveGoVersion() string {
+	switch {
+	case a.CurrentGoVersion == "":
+		return a.Ceiling
+	case a.Ceiling == "":
+		return a.CurrentGoVersion
+	case version.Compare(goSyntax(a.Ceiling), goSyntax(a.CurrentGoVersion)) > 0:
+		return a.Ceiling
+	default:
+		return a.CurrentGoVersion
+	}
 }
 
 // AssessDirective resolves moduleDir's actual build list with `go` tooling
@@ -155,6 +183,7 @@ func AssessDirective(ctx context.Context, moduleDir string, policy DirectivePoli
 		}
 	}
 	sort.Slice(forcing, func(i, j int) bool { return forcing[i].Path < forcing[j].Path })
+	assessment.Ceiling = ceilingGoVersion
 
 	if ceilingGoVersion != "" && version.Compare(version.Lang(goSyntax(ceilingGoVersion)), targetLang) > 0 {
 		assessment.Verdict = DirectiveCannotComply

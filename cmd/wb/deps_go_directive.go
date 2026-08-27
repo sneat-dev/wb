@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	goversion "go/version"
 	"io"
 	"path/filepath"
 	"sort"
@@ -22,6 +23,41 @@ const (
 	defaultDirectiveGoVersion = "1.26.0"
 	defaultDirectiveToolchain = "go1.27.0"
 )
+
+// defaultCodeQLCeiling is the Go toolchain GitHub's CodeQL default-setup
+// scan currently pins via GOTOOLCHAIN=local. Default setup cannot switch
+// toolchains, so a module whose *effective* go requirement (its own current
+// directive, or a dependency's ceiling — whichever is higher; see
+// DirectiveAssessment.EffectiveGoVersion) exceeds this fails the Analyze (go)
+// job outright, regardless of an explicit `toolchain` line (GOTOOLCHAIN=local
+// ignores it). This is the concrete failure mode the fleet policy exists to
+// prevent, not a cosmetic consistency preference: bump the ceiling here when
+// GitHub advances CodeQL's bundled toolchain.
+const defaultCodeQLCeiling = "1.26.7"
+
+// codeQLRisk reports whether a module's current, committed state — not the
+// policy's proposed target — already exceeds what CodeQL default-setup's
+// pinned local toolchain can run, and if so, a one-line explanation naming
+// both versions.
+func codeQLRisk(assessment deps.DirectiveAssessment, ceiling string) (bool, string) {
+	effective := assessment.EffectiveGoVersion()
+	if effective == "" || ceiling == "" {
+		return false, ""
+	}
+	if goversion.Compare(goversion.Lang(goSyntaxLocal(effective)), goversion.Lang(goSyntaxLocal(ceiling))) <= 0 {
+		return false, ""
+	}
+	return true, fmt.Sprintf("CodeQL default setup would fail here: requires go %s, pinned to go%s (GOTOOLCHAIN=local)", effective, ceiling)
+}
+
+// goSyntaxLocal mirrors internal/deps's unexported goSyntax: prefix a bare
+// go.mod-style version with "go" for go/version comparisons.
+func goSyntaxLocal(v string) string {
+	if len(v) >= 2 && v[:2] == "go" {
+		return v
+	}
+	return "go" + v
+}
 
 const goDirectiveLongHelp = `Assess, and (with --apply) land, the fleet's Go directive policy: a ` + "`go`" + `
 language directive of ` + "`" + defaultDirectiveGoVersion + "`" + ` paired with ` + "`toolchain " + defaultDirectiveToolchain + "`" + `.
@@ -59,7 +95,7 @@ func directiveFlags(command *cobra.Command, goVersion, toolchain *string, timeou
 
 func newDepsGoDirectiveCheckCmd() *cobra.Command {
 	var apply bool
-	var goVersion, toolchain string
+	var goVersion, toolchain, codeQLCeiling string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:   "check [directory]",
@@ -85,7 +121,7 @@ the edit was not silently reverted by a forcing dependency assessment missed.`,
 			modules := discoverModules(absolute)
 			out := cmd.OutOrStdout()
 			if len(modules) == 0 {
-				fmt.Fprintf(out, "no Go module found at or under %s\n", root)
+				_, _ = fmt.Fprintf(out, "no Go module found at or under %s\n", root)
 				return nil
 			}
 			policy := deps.DirectivePolicy{GoVersion: goVersion, Toolchain: toolchain}
@@ -102,10 +138,14 @@ the edit was not silently reverted by a forcing dependency assessment missed.`,
 				}
 				if assessErr != nil {
 					attention++
-					fmt.Fprintf(out, "x  %-40s %s\n", label, assessErr.Error())
+					_, _ = fmt.Fprintf(out, "x  %-40s %s\n", label, assessErr.Error())
 					continue
 				}
-				fmt.Fprintf(out, "%s  %-40s %s\n", directiveMarker(assessment.Verdict), label, assessment.Detail)
+				detail := assessment.Detail
+				if atRisk, note := codeQLRisk(assessment, codeQLCeiling); atRisk {
+					detail += " — " + note
+				}
+				_, _ = fmt.Fprintf(out, "%s  %-40s %s\n", directiveMarker(assessment.Verdict), label, detail)
 				if needsAttention(assessment.Verdict, apply) {
 					attention++
 				}
@@ -117,6 +157,7 @@ the edit was not silently reverted by a forcing dependency assessment missed.`,
 		},
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "write the go/toolchain directives for modules that can comply (default: report only, changes nothing)")
+	command.Flags().StringVar(&codeQLCeiling, "codeql-ceiling", defaultCodeQLCeiling, "Go toolchain version CodeQL default-setup's GOTOOLCHAIN=local currently pins; annotate a module whose effective go requirement exceeds it")
 	directiveFlags(command, &goVersion, &toolchain, &timeout)
 	return command
 }
@@ -165,17 +206,18 @@ func directiveMarker(verdict deps.DirectiveVerdict) string {
 // directiveRow is one module's fleet-wide assessment row, projected for text
 // and JSON reporting.
 type directiveRow struct {
-	Repository string                   `json:"repository"`
-	Module     string                   `json:"module,omitempty"`
-	Verdict    string                   `json:"verdict"`
-	Detail     string                   `json:"detail"`
-	Forcing    []deps.ForcingDependency `json:"forcing,omitempty"`
+	Repository   string                   `json:"repository"`
+	Module       string                   `json:"module,omitempty"`
+	Verdict      string                   `json:"verdict"`
+	Detail       string                   `json:"detail"`
+	Forcing      []deps.ForcingDependency `json:"forcing,omitempty"`
+	CodeQLAtRisk bool                     `json:"codeQLAtRisk,omitempty"`
 }
 
 const verdictNoModule = "no-module"
 
 func newDepsGoDirectiveReportCmd() *cobra.Command {
-	var match, regex, goVersion, toolchain, format string
+	var match, regex, goVersion, toolchain, format, codeQLCeiling string
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:   "report",
@@ -198,7 +240,7 @@ fixing first.`,
 			}
 			policy := deps.DirectivePolicy{GoVersion: goVersion, Toolchain: toolchain}
 			options := deps.Options{Timeout: timeout, Retry: 1}
-			rows := sweepDirectives(cmd.Context(), repositories, policy, options)
+			rows := sweepDirectives(cmd.Context(), repositories, policy, options, codeQLCeiling)
 			out := cmd.OutOrStdout()
 			if format == "json" {
 				if err := writeJSONTo(out, rows); err != nil {
@@ -207,7 +249,7 @@ fixing first.`,
 			} else {
 				writeDirectiveReportText(out, rows)
 			}
-			cannotComply, errored := 0, 0
+			cannotComply, errored, codeQLAtRisk := 0, 0, 0
 			for _, row := range rows {
 				switch row.Verdict {
 				case string(deps.DirectiveCannotComply):
@@ -215,10 +257,13 @@ fixing first.`,
 				case string(deps.DirectiveError):
 					errored++
 				}
+				if row.CodeQLAtRisk {
+					codeQLAtRisk++
+				}
 			}
 			if cannotComply > 0 || errored > 0 {
 				return &exitError{code: exitFindings, message: fmt.Sprintf(
-					"%d module(s) cannot comply, %d module(s) errored — see the report above", cannotComply, errored)}
+					"%d module(s) cannot comply, %d module(s) errored, %d at risk under CodeQL default setup — see the report above", cannotComply, errored, codeQLAtRisk)}
 			}
 			return nil
 		},
@@ -226,13 +271,14 @@ fixing first.`,
 	command.Flags().StringVar(&match, "match", "", "select repositories whose owner/name matches this glob")
 	command.Flags().StringVar(&regex, "regex", "", "select repositories whose owner/name matches this expression")
 	command.Flags().StringVar(&format, "format", "text", "output format: text or json")
+	command.Flags().StringVar(&codeQLCeiling, "codeql-ceiling", defaultCodeQLCeiling, "Go toolchain version CodeQL default-setup's GOTOOLCHAIN=local currently pins; flags a module whose effective go requirement exceeds it")
 	directiveFlags(command, &goVersion, &toolchain, &timeout)
 	return command
 }
 
 // sweepDirectives walks every Go module in the selected repositories and
 // assesses each one. It never applies — the fleet report has no --apply.
-func sweepDirectives(ctx context.Context, repositories []deps.Repository, policy deps.DirectivePolicy, options deps.Options) []directiveRow {
+func sweepDirectives(ctx context.Context, repositories []deps.Repository, policy deps.DirectivePolicy, options deps.Options, codeQLCeiling string) []directiveRow {
 	var rows []directiveRow
 	for _, repository := range repositories {
 		if repository.Path == "" {
@@ -257,6 +303,10 @@ func sweepDirectives(ctx context.Context, repositories []deps.Repository, policy
 			row.Verdict = string(assessment.Verdict)
 			row.Detail = assessment.Detail
 			row.Forcing = assessment.Forcing
+			if atRisk, note := codeQLRisk(assessment, codeQLCeiling); atRisk {
+				row.CodeQLAtRisk = true
+				row.Detail += " — " + note
+			}
 			rows = append(rows, row)
 		}
 	}
@@ -271,8 +321,12 @@ func sweepDirectives(ctx context.Context, repositories []deps.Repository, policy
 
 func writeDirectiveReportText(out io.Writer, rows []directiveRow) {
 	counts := map[string]int{}
+	codeQLAtRisk := 0
 	for _, row := range rows {
 		counts[row.Verdict]++
+		if row.CodeQLAtRisk {
+			codeQLAtRisk++
+		}
 		marker := "x"
 		switch deps.DirectiveVerdict(row.Verdict) {
 		case deps.DirectiveCompliant:
@@ -291,9 +345,9 @@ func writeDirectiveReportText(out io.Writer, rows []directiveRow) {
 		if row.Module != "" {
 			label = row.Repository + " (" + row.Module + ")"
 		}
-		fmt.Fprintf(out, "%s  %-56s %s\n", marker, label, row.Detail)
+		_, _ = fmt.Fprintf(out, "%s  %-56s %s\n", marker, label, row.Detail)
 	}
-	fmt.Fprintf(out, "\n%d module(s): ", len(rows))
+	_, _ = fmt.Fprintf(out, "\n%d module(s): ", len(rows))
 	keys := make([]string, 0, len(counts))
 	for key := range counts {
 		keys = append(keys, key)
@@ -305,9 +359,12 @@ func writeDirectiveReportText(out io.Writer, rows []directiveRow) {
 	}
 	for i, part := range parts {
 		if i > 0 {
-			fmt.Fprint(out, ", ")
+			_, _ = fmt.Fprint(out, ", ")
 		}
-		fmt.Fprint(out, part)
+		_, _ = fmt.Fprint(out, part)
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
+	if codeQLAtRisk > 0 {
+		_, _ = fmt.Fprintf(out, "%d module(s) at risk under CodeQL default setup's pinned GOTOOLCHAIN=local\n", codeQLAtRisk)
+	}
 }
