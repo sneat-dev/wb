@@ -58,10 +58,15 @@ type Progress struct {
 // repository. Unsupported stacks and missing optional Node scripts are skipped
 // rather than treated as failures.
 type VerificationReport struct {
-	Repository string              `yaml:"repository" json:"repository"`
-	Path       string              `yaml:"path" json:"path"`
-	Status     Status              `yaml:"status" json:"status"`
-	Results    []VerificationEntry `yaml:"results" json:"results"`
+	Repository string `yaml:"repository" json:"repository"`
+	Path       string `yaml:"path" json:"path"`
+	// Revision and WorkspaceClean are populated by the WB command adapter
+	// around the complete verification run. They let a downstream receipt bind
+	// successful mechanisms to the exact clean Git tree they exercised.
+	Revision       string              `yaml:"revision,omitempty" json:"revision,omitempty"`
+	WorkspaceClean bool                `yaml:"workspace_clean,omitempty" json:"workspace_clean,omitempty"`
+	Status         Status              `yaml:"status" json:"status"`
+	Results        []VerificationEntry `yaml:"results" json:"results"`
 }
 
 // VerificationEntry is one command WB attempted or intentionally skipped.
