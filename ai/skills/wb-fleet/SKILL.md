@@ -15,6 +15,7 @@ Choose one command that answers the question:
 | Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
 | Find local changes, stashes, conflicts, or unpushed commits | `wb fleet status` | [status.md](references/status.md) |
 | Audit or clean non-canonical clone placement | `wb layout audit` / `wb layout clean` | [layout.md](references/layout.md) |
+| Delete a local clone whose repository is archived on GitHub, only when nothing would be lost | `wb archive clean` | [archive.md](references/archive.md) |
 | Inspect one repository checkout | `wb repo status` | [status.md](references/status.md) |
 | Measure Go coverage | `wb coverage` | [quality.md](references/quality.md) |
 | Run conventional lint/test/build | `wb verify` | [quality.md](references/quality.md) |

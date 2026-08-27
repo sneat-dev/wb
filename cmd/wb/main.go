@@ -107,6 +107,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newStatusCmd())
 	root.AddCommand(newFleetCmd())
 	root.AddCommand(newLayoutCmd())
+	root.AddCommand(newArchiveCmd())
 	root.AddCommand(newRepoCmd())
 	root.AddCommand(newWorktreeCmd())
 	root.AddCommand(newBranchCmd())
@@ -132,7 +133,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"fleet":          true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
 		"remote status": true, "remote machines": true,
 		"remote claim": true, "remote release": true, "remote claims": true,
-		"layout audit": true, "layout clean": true,
+		"layout audit": true, "layout clean": true, "archive clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
@@ -156,6 +157,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree summary": true, "worktree abort": true,
 		"branch list": true, "branch cleanup": true,
+		"archive clean": true,
 	},
 	"org": {"sync": true, "run": true, "deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true},
 	// This is a root rendering/input-safety guarantee. Commands without a TUI

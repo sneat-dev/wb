@@ -4,6 +4,126 @@
   "binary": "wb",
   "capabilities": [
     {
+      "id": "wb.archive.clean",
+      "feature_refs": [
+        "spec/features/archived-clone-cleanup/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb archive clean",
+              "flags": [
+                "--apply",
+                "--format"
+              ],
+              "modes": [
+                "Dry-run plan is the default; --apply is required to delete anything",
+                "A clone is eligible only when its repository is confirmed archived on GitHub via a live per-repository check, the working tree has no uncommitted or untracked changes, there is no stash, every local branch and tag exists on origin, no linked worktree is registered against it, no non-terminal WB Work Log claim references it, and it is not marked wb.skip-sync",
+                "Any check that cannot be completed (GitHub unreachable, a ref that will not resolve, a claim that cannot be read) makes that clone not deletable; wb never guesses",
+                "One repository's evaluation failure never aborts the sweep over the rest of the fleet",
+                "Every clone is reported, deletable or not, with the exact reason; skips are reported as prominently as deletions"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb archive clean --help",
+              "contains": [
+                "--apply",
+                "confirmed archived on GitHub",
+                "no linked worktrees",
+                "wb.skip-sync"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/archive.md",
+              "marker": "# Archived clone cleanup",
+              "examples": [
+                "wb archive clean --filter acme",
+                "wb archive clean --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_DeletesCleanArchivedClone",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesUnpushedCommitOnNonCheckedOutBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesUntrackedFiles",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesStash",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesLinkedWorktree",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesRepositoryThatIsNotArchived",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesWhenGitHubCheckFails",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesLocalOnlyBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesUnpushedTag",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_RefusesNonTerminalWorkLogClaim",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/archive_test.go",
+              "name": "TestArchiveCleanCLI",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Deliberately not a mode of wb sync: sync mutates by default and its own archived-clone pruning uses a looser check with no linked-worktree, local-only-branch, unpushed-tag, or WB Work Log awareness."
+    },
+    {
       "id": "wb.branch.cleanup",
       "feature_refs": [
         "spec/features/branch-hygiene/README.md"

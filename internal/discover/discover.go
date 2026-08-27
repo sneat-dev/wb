@@ -5,6 +5,7 @@ package discover
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,6 +129,35 @@ func ListRemote(owner string) ([]Repo, error) {
 		})
 	}
 	return repos, nil
+}
+
+// IsArchived confirms, live against GitHub, whether the repository named by
+// slug ("owner/repository") is archived right now. It is deliberately a
+// single per-repository query rather than a reuse of a fleet-wide listing
+// (ListRemote, or a caller's own cached Repo.Archived): a bulk listing can be
+// stale by the time a destructive decision is made from it, can silently omit
+// a repository the caller lacks org-listing access to, and answers "was this
+// archived when the list was built" rather than "is this archived now". A
+// caller about to delete a local clone based on archived status must ask this
+// exact question about this exact repository immediately before acting, and
+// must treat any error (network, auth, rate limit, unknown repository) as
+// "could not confirm" rather than guessing either way.
+func IsArchived(slug string) (bool, error) {
+	command := exec.Command("gh", "repo", "view", slug, "--json", "isArchived", "--jq", ".isArchived")
+	command.Env = console.Env()
+	out, err := command.Output()
+	if err != nil {
+		return false, fmt.Errorf("confirm archived status of %s: %w", slug, err)
+	}
+	value := strings.TrimSpace(string(out))
+	switch value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("confirm archived status of %s: unexpected gh output %q", slug, value)
+	}
 }
 
 // AuthUser returns the authenticated GitHub login via gh.
