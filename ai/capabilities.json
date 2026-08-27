@@ -1309,7 +1309,7 @@
                 "Discovers every go.mod at or under a directory and assesses each module's achievability by resolving its real build list with go tooling, never by grepping go.mod files.",
                 "Dry-run by default: reports compliant, would-change, cannot-comply naming the exact forcing dependency and version, or below-floor (left unchanged); exits 1 when any module needs attention.",
                 "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted.",
-                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling — the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
+                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling \u2014 the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
               ]
             }
           ],
@@ -1376,7 +1376,7 @@
           "limitation": null
         }
       },
-      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run — the concrete failure mode motivating the policy, not a cosmetic preference."
+      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run \u2014 the concrete failure mode motivating the policy, not a cosmetic preference."
     },
     {
       "id": "wb.deps.go-directive.report",
@@ -1400,10 +1400,10 @@
                 "--toolchain"
               ],
               "modes": [
-                "Walks every discovered repository and every Go module inside it — one row per module, not per repository — and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
+                "Walks every discovered repository and every Go module inside it \u2014 one row per module, not per repository \u2014 and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
                 "Read-only by construction: there is no --apply flag, so landing the policy anywhere is always the separate, single-repository `wb deps go-directive check --apply`.",
                 "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first.",
-                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius — the number of repositories the policy actually protects — is a single number in the report."
+                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius \u2014 the number of repositories the policy actually protects \u2014 is a single number in the report."
               ]
             }
           ],
@@ -2569,6 +2569,149 @@
         }
       },
       "notes": "Fleet status matches the no-path form of wb status; it does not imply remote freshness."
+    },
+    {
+      "id": "wb.hooks.agent.install",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks agent install",
+              "flags": [
+                "--settings",
+                "--dry-run"
+              ],
+              "modes": [
+                "Merges the pre-tool-use guard into a Claude Code settings file, preserving every other key and hook.",
+                "Idempotent: a second run reports the guard is already registered and rewrites nothing."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks agent install --help",
+              "contains": [
+                "--settings",
+                "--dry-run"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-hooks/SKILL.md",
+              "marker": "## Agent tool-call guard",
+              "examples": [
+                "wb hooks agent install"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestMergeAgentHookSettingsIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestAgentHookShellCommandForcesExitZero",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Registers `wb hooks agent pre-tool-use` in a Claude Code settings file as `<wb> hooks agent pre-tool-use 2>/dev/null; exit 0`. The wrapper is the fail-open guarantee, not decoration: Claude Code blocks a tool call whose PreToolUse hook exits 2, and WB spends exit 2 on usage errors, so a WB too old to know the subcommand would otherwise refuse every tool call on the machine."
+    },
+    {
+      "id": "wb.hooks.agent.pre-tool-use",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks agent pre-tool-use",
+              "flags": [
+                "--input"
+              ],
+              "modes": [
+                "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
+                "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
+                "Never refuses a read, a linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks agent pre-tool-use --help",
+              "contains": [
+                "--input"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-hooks/SKILL.md",
+              "marker": "## Agent tool-call guard",
+              "examples": [
+                "wb hooks agent pre-tool-use --input payload.json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestGuardFailsOpen",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashRefusesWritesIntoACanonicalClone",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashAllowsWhatACanonicalCloneExistsToDo",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestAgentHookNeverExitsNonZero",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses an agent tool call that would write into a canonical clone, one layer earlier than any Git hook can see. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, and known generators \u2014 and every unmodelled construct, including an interpreter given an inline script and a working directory reached through a variable, is allowed rather than guessed at."
     },
     {
       "id": "wb.hooks.check",
@@ -5252,7 +5395,9 @@
     },
     {
       "id": "wb.verify.receipt",
-      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -5318,7 +5463,9 @@
     },
     {
       "id": "wb.verify.receipt.remote-target",
-      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -7207,6 +7354,81 @@
       "notes": null
     },
     {
+      "id": "wb.worktree.marker",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree marker",
+              "flags": [
+                "--fleet",
+                "--dry-run",
+                "--format",
+                "--base"
+              ],
+              "modes": [
+                "Writes .worktree.md into one checkout, or refreshes every canonical clone and registered worktree with --fleet.",
+                "Idempotent: a marker differing only by its timestamp is left alone, so refreshing on every sync and create costs nothing."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree marker --help",
+              "contains": [
+                "--fleet",
+                "--dry-run"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Know which checkout you are in",
+              "examples": [
+                "wb worktree marker .",
+                "wb worktree marker --fleet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/checkoutmarker/checkoutmarker_test.go",
+              "name": "TestApplyKeepsGitStatusClean",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/checkoutmarker/checkoutmarker_test.go",
+              "name": "TestApplyIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_marker_test.go",
+              "name": "TestWorktreeMarkerMarksBothKindsAndKeepsStatusClean",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Every checkout gets a marker, not only the ones that must stay clean: a warning present only where writing is wrong makes a MISSING file read as permission. The file stays untracked and is paired with an anchored rule in the common directory's info/exclude, because a committed marker WB rewrites would show as a modification and dirty the very clone this protects."
+    },
+    {
       "id": "wb.worktree.orphans",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -7511,6 +7733,87 @@
         }
       },
       "notes": "Safe removal remains the default lifecycle path; recycle is explicit and audited."
+    },
+    {
+      "id": "wb.worktree.rescue",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree rescue",
+              "flags": [
+                "--apply",
+                "--push",
+                "--restore",
+                "--allow-unpushed",
+                "--fleet",
+                "--branch",
+                "--remote",
+                "--format"
+              ],
+              "modes": [
+                "Reports what a canonical clone holds without changing anything, and finds every dirty clone with --fleet.",
+                "--apply captures modified, staged, and untracked content onto a branch through a temporary index, leaving the clone's HEAD, branch, index, and working tree untouched.",
+                "--restore is the only destructive step and refuses unless every reported path is verifiably inside the rescue commit and the branch is on the remote."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree rescue --help",
+              "contains": [
+                "--apply",
+                "--restore",
+                "--fleet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Rescue work stranded in a canonical clone",
+              "examples": [
+                "wb worktree rescue --fleet",
+                "wb worktree rescue <path> --apply --push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/canonicalrescue/canonicalrescue_test.go",
+              "name": "TestCaptureLeavesTheCloneExactlyAsItFoundIt",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/canonicalrescue/canonicalrescue_test.go",
+              "name": "TestRestoreRefusesUntilTheContentIsProvablySomewhereElse",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_rescue_test.go",
+              "name": "TestWorktreeRescueFullJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
     },
     {
       "id": "wb.worktree.set",

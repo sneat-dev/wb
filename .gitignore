@@ -4,3 +4,6 @@ dist/
 *.test
 *.out
 .DS_Store
+
+# Generated per-checkout marker; see AGENTS.md. Never commit it.
+/.worktree.md

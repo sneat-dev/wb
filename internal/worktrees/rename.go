@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"golang.org/x/sys/unix"
@@ -1298,6 +1299,12 @@ func verifyRecycleState(ctx context.Context, worktree string, preserve []string)
 		"-e", journalRootDirectory+"/"+journalLocalDirectory,
 		"-e", workLogProjectionDirectory,
 		"-e", legacyWorkLogProjectionName,
+		// The generated per-checkout marker is WB control-plane metadata that
+		// WB regenerates on demand, exactly like the journal above. It holds
+		// no work and inherits nothing, so refusing a recycle because of it
+		// would make every marked worktree unrecyclable — the marker tripping
+		// the very policy it advertises.
+		"-e", checkoutmarker.FileName,
 	)
 	for _, path := range preserve {
 		args = append(args, "-e", path)

@@ -191,3 +191,36 @@ Never substitute `git switch -c`, `git checkout -b`, or `git worktree add`.
 Never reset, clean, stash, bypass hooks, or overwrite work to satisfy a guard.
 If a WB command fails, inspect state before retrying; a hook may reject an
 operation after Git has already changed state.
+
+## Know which checkout you are in
+
+Every WB-managed checkout carries a generated `.worktree.md` at its root, in
+canonical clones and worktrees alike. Read it before the first write: it states
+`kind: canonical | worktree` and `writable: false | true`, plus the repository,
+branch, and task. A **missing** marker means unknown, not safe — establish the
+location before writing.
+
+```sh
+wb worktree marker .
+wb worktree marker --fleet
+```
+
+The marker is generated, untracked, and git-ignored. It is never committed, and
+its ignore rule lives in the common Git directory, so one rule covers a
+canonical clone and every worktree cut from it and `git status` stays clean.
+
+## Rescue work stranded in a canonical clone
+
+Uncommitted work in a canonical clone is invisible to WB and one routine
+checkout away from being destroyed. Never reset, clean, or check out over it.
+
+```sh
+wb worktree rescue --fleet
+wb worktree rescue <path> --apply --push
+```
+
+Reporting is the default. `--apply` captures the content — modified, staged and
+untracked alike — onto a branch through a temporary index, leaving the clone's
+HEAD, branch, index, and working tree untouched. The clone stays dirty until an
+explicit `--restore`, which refuses unless every reported path is verifiably in
+the rescue commit and the branch is on the remote.

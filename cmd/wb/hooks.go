@@ -25,6 +25,7 @@ func newHooksCmd() *cobra.Command {
 	cmd.AddCommand(newHooksCheckCmd())
 	cmd.AddCommand(newHooksInstallCmd(true))
 	cmd.AddCommand(newHooksRunCmd())
+	cmd.AddCommand(newHooksAgentCmd())
 	cmd.AddCommand(newHooksMetricsCmd())
 	return cmd
 }
