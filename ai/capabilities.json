@@ -4258,13 +4258,86 @@
     },
     {
       "id": "wb.session.park",
-      "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
+      "feature_refs": [
+        "spec/features/park-and-resume-agent-sessions/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb session park", "flags": ["--context-file", "--format"], "modes": ["Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint.", "Prompts the agent on stderr for the judgment WB cannot observe -- uncommitted rationale, proven ordering constraints, human-blocked decisions, dispatched lanes, and corrections -- both when the continuation is missing and after the checkpoint seals; stdout stays the machine-readable record."]}], "limitation": null},
-        "help": {"status": "Partial", "anchors": [{"command": "wb session park --help", "contains": ["--context-file", "bounded agent-authored continuation file", "--format"]}], "limitation": "Help documents the bounded private context-file input; content-bearing continuation argv flags are intentionally unavailable."},
-        "ai_skill": {"status": "Partial", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "## Park and resume a registered session", "examples": ["wb session park --context-file <file>"]}], "limitation": "The skill documents the park verb and its private context-file input; the judgment checklist is a stderr prompt and is not reproduced in the skill."},
-        "tests": {"status": "Partial", "references": [{"path": "internal/worktrees/session_park_aggregate_test.go", "name": "TestCaptureParkedSessionAggregateRetainsEveryCustodyLockThroughPersistence", "kind": "integration"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces", "kind": "integration"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkRejectsContentBearingContinuationFlags", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout", "kind": "integration"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionParkMissingContextFilePromptsJudgmentChecklist", "kind": "unit"}], "limitation": "Checkpoint and secrecy boundaries are covered; the end-to-end resume journey is not complete."}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session park",
+              "flags": [
+                "--context-file",
+                "--format"
+              ],
+              "modes": [
+                "Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint.",
+                "Prompts the agent on stderr for the judgment WB cannot observe -- uncommitted rationale, proven ordering constraints, human-blocked decisions, dispatched lanes, and corrections -- both when the continuation is missing and after the checkpoint seals; stdout stays the machine-readable record."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Partial",
+          "anchors": [
+            {
+              "command": "wb session park --help",
+              "contains": [
+                "--context-file",
+                "bounded agent-authored continuation file",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": "Help documents the bounded private context-file input; content-bearing continuation argv flags are intentionally unavailable."
+        },
+        "ai_skill": {
+          "status": "Partial",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Park and resume a registered session",
+              "examples": [
+                "wb session park --context-file <file>"
+              ]
+            }
+          ],
+          "limitation": "The skill documents the park verb and its private context-file input; the judgment checklist is a stderr prompt and is not reproduced in the skill."
+        },
+        "tests": {
+          "status": "Partial",
+          "references": [
+            {
+              "path": "internal/worktrees/session_park_aggregate_test.go",
+              "name": "TestCaptureParkedSessionAggregateRetainsEveryCustodyLockThroughPersistence",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkCommandKeepsPrivateContextOutOfPublicAndWorkLogSurfaces",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkRejectsContentBearingContinuationFlags",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkMissingContextFilePromptsJudgmentChecklist",
+              "kind": "unit"
+            }
+          ],
+          "limitation": "Checkpoint and secrecy boundaries are covered; the end-to-end resume journey is not complete."
+        }
       },
       "notes": "Parking is a session lifecycle operation, not worktree abort or automatic commit/push. The private continuation is accepted only from bounded --context-file input or stdin and is never emitted publicly."
     },
@@ -4731,13 +4804,105 @@
     },
     {
       "id": "wb.session.resume",
-      "feature_refs": ["spec/features/park-and-resume-agent-sessions/README.md"],
+      "feature_refs": [
+        "spec/features/park-and-resume-agent-sessions/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb session resume", "flags": ["--config", "--format", "--to", "--via"], "modes": ["Loads and validates one parked checkpoint without exposing private continuation.", "Launches exactly one local successor, attaches it to every member, and preserves dirty or unpushed member bytes without Git mutation.", "Claims a durable single-winner resume route so local and remote resume cannot both proceed, and retries converge on the same successor.", "Delivers remote resume over a fixed-argv SSH courier to wb session receive-park and finalizes the source only after validating the exact target receipt."]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb session resume --help", "contains": ["<parked-session-id>", "--to", "--via"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-worktrees/references/ownership.md", "marker": "## Park and resume a registered session", "examples": ["wb session resume <parked-session-id>"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeRemoteSingleWorktreeReachesTransport", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeRemoteBundleReachesTransport", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint", "kind": "unit"}, {"path": "cmd/wb/session_park_test.go", "name": "TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery", "kind": "unit"}, {"path": "cmd/wb/session_park_journey_test.go", "name": "TestSessionParkResumeAcrossProcessTransport", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb session resume",
+              "flags": [
+                "--config",
+                "--format",
+                "--to",
+                "--via"
+              ],
+              "modes": [
+                "Loads and validates one parked checkpoint without exposing private continuation.",
+                "Launches exactly one local successor, attaches it to every member, and preserves dirty or unpushed member bytes without Git mutation.",
+                "Claims a durable single-winner resume route so local and remote resume cannot both proceed, and retries converge on the same successor.",
+                "Delivers remote resume over a fixed-argv SSH courier to wb session receive-park and finalizes the source only after validating the exact target receipt."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb session resume --help",
+              "contains": [
+                "<parked-session-id>",
+                "--to",
+                "--via"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Park and resume a registered session",
+              "examples": [
+                "wb session resume <parked-session-id>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeLocalZeroMemberLaunchesOnceAndReplays",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeLocalInterruptionReusesAuthenticatedAttempt",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeRemoteSingleWorktreeReachesTransport",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeRemoteBundleReachesTransport",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_journey_test.go",
+              "name": "TestSessionParkResumeAcrossProcessTransport",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "Resume claims a durable single-winner route before any custody mutation, refuses when a member's branch, HEAD, Work Log claim, or latest owner has moved since park, and finalizes the source only against the exact validated target receipt."
     },
@@ -4912,11 +5077,13 @@
               "flags": [
                 "--dry-run",
                 "--org",
-                "--publish",
-                "--parallel"
+                "--parallel",
+                "--prune-archived",
+                "--publish"
               ],
               "modes": [
-                "Clones, fast-forwards, and safely prunes canonical owner/repository clones, with dry-run preview.",
+                "Clones missing repositories and fast-forwards clean ones; an archived repository is treated like any other by default (pulled, never deleted).",
+                "--prune-archived deletes a local clone confirmed archived on GitHub only when it passes the exact internal/archiveprune.Evaluate safety predicate that 'wb archive clean' uses (shared code, not a reimplementation); without it, an archived repository's clone is still reported so it is never silently indistinguishable from an ordinary one.",
                 "--publish runs wb remote publish after a clean sync; a publish failure is reported and does not change the sync exit code."
               ]
             }
@@ -4931,8 +5098,9 @@
               "contains": [
                 "--dry-run",
                 "--org",
-                "--publish",
-                "--parallel"
+                "--parallel",
+                "--prune-archived",
+                "--publish"
               ]
             }
           ],
@@ -4945,7 +5113,8 @@
               "path": "ai/skills/wb-fleet/references/sync.md",
               "marker": "# Synchronize canonical clones",
               "examples": [
-                "wb sync --dry-run"
+                "wb sync --dry-run",
+                "wb sync --prune-archived --dry-run"
               ]
             }
           ],
@@ -4955,6 +5124,26 @@
           "status": "Full",
           "references": [
             {
+              "path": "cmd/wb/remote_test.go",
+              "name": "TestFinishSyncPublishesAfterCleanSync",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/fleetsync/fleetsync_test.go",
+              "name": "TestSyncArchivedDefaultDoesNotPrune",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/fleetsync/fleetsync_test.go",
+              "name": "TestSyncArchivedWithFlagRefusesLinkedWorktree",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/fleetsync/fleetsync_test.go",
+              "name": "TestSyncArchivedWithFlagRemovesQualifyingDryRun",
+              "kind": "integration"
+            },
+            {
               "path": "internal/fleetsync/fleetsync_test.go",
               "name": "TestSyncCloneMissing",
               "kind": "integration"
@@ -4963,22 +5152,12 @@
               "path": "internal/fleetsync/fleetsync_test.go",
               "name": "TestSyncSkipDirty",
               "kind": "integration"
-            },
-            {
-              "path": "internal/fleetsync/fleetsync_test.go",
-              "name": "TestSyncArchivedRemoveSafeDryRun",
-              "kind": "integration"
-            },
-            {
-              "path": "cmd/wb/remote_test.go",
-              "name": "TestFinishSyncPublishesAfterCleanSync",
-              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Canonical clones are always resolved under the deterministic owner/repository layout; dirty or unpushed clones are preserved."
+      "notes": "Canonical clones are always resolved under the deterministic owner/repository layout; dirty or unpushed clones are preserved. Archived-repository deletion is opt-in via --prune-archived and always defers to internal/archiveprune's predicate."
     },
     {
       "id": "wb.verify",
@@ -5054,6 +5233,136 @@
         }
       },
       "notes": "The command inspects existing clones and does not fetch, commit, or push."
+    },
+    {
+      "id": "wb.verify.receipt",
+      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb verify receipt",
+              "flags": [
+                "--ci-wait",
+                "--deployed-revision",
+                "--local-check",
+                "--output",
+                "--remote-target",
+                "--terminal-cleanup"
+              ],
+              "modes": [
+                "Composes five closed, versioned producer documents into one machine-readable graduation receipt for one exact repository revision.",
+                "Refuses prose, producer/schema mismatches, dirty or unequal local revisions, PR-only or failed CI, unequal remote or deployed revisions, future or non-monotonic timestamps, and cleanup that leaves source branches or campaign worktrees behind."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb verify receipt --help",
+              "contains": [
+                "--local-check",
+                "--terminal-cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "## Graduation receipts",
+              "examples": [
+                "wb verify receipt --local-check local-check.json --ci-wait ci-wait.json --remote-target remote-target.json --deployed-revision deployment.json --terminal-cleanup cleanup.json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/verify_receipt_test.go",
+              "name": "TestVerifyReceiptComposesExactMachineReadableEvidence",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The command composes producer-bound evidence; it does not deploy, clean up, or infer that a hand-authored status field proves graduation."
+    },
+    {
+      "id": "wb.verify.receipt.remote-target",
+      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb verify receipt remote-target",
+              "flags": [
+                "--output",
+                "--remote",
+                "--repo",
+                "--repository-path",
+                "--target"
+              ],
+              "modes": [
+                "Resolves one configured credential-free remote and records one canonical git ls-remote observation for the exact target branch."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb verify receipt remote-target --help",
+              "contains": [
+                "--repo",
+                "--target"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "## Graduation receipts",
+              "examples": [
+                "wb verify receipt remote-target --repo acme/wb --target main"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/verify_receipt_test.go",
+              "name": "TestVerifyReceiptRemoteTargetUsesFixedGitObservation",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This read-only collector is the closed WB producer for remote-target equality evidence used by wb verify receipt."
     },
     {
       "id": "wb.version",

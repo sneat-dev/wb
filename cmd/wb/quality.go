@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -141,7 +142,7 @@ func newVerifyCmd() *cobra.Command {
 			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
 			progress.finish()
 			quality.SortVerificationReports(reports)
-			report := verificationIndex{SchemaVersion: 1, Checks: checks, Repositories: reports}
+			report := verificationIndex{SchemaVersion: 1, GeneratedAt: time.Now().UTC(), Checks: checks, Repositories: reports}
 			if options.resume {
 				report = mergeVerificationReports(previous, report)
 			}
@@ -161,6 +162,7 @@ func newVerifyCmd() *cobra.Command {
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write verify.md and verify.yaml to this directory")
+	command.AddCommand(newVerifyReceiptCmd())
 	return command
 }
 
@@ -205,7 +207,7 @@ func newCheckCmd() *cobra.Command {
 			reports := runVerificationTargets(targets, checks, options.parallel, runOptions)
 			progress.finish()
 			quality.SortVerificationReports(reports)
-			report := verificationIndex{SchemaVersion: 1, Profile: profile, Checks: checks, Repositories: reports}
+			report := verificationIndex{SchemaVersion: 1, GeneratedAt: time.Now().UTC(), Profile: profile, Checks: checks, Repositories: reports}
 			if options.resume {
 				report = mergeVerificationReports(previous, report)
 			}
@@ -325,10 +327,39 @@ func runVerificationTargets(targets []qualityTarget, checks []quality.Check, par
 	runTargets(len(targets), parallel, func(index int) {
 		target := targets[index]
 		targetOptions := qualityRunOptionsForTarget(options, target.repository)
-		reports[index] = quality.VerifyWithOptions(context.Background(), target.repository, target.path, checks, targetOptions)
+		before := verificationGitSnapshot(target.path)
+		report := quality.VerifyWithOptions(context.Background(), target.repository, target.path, checks, targetOptions)
+		after := verificationGitSnapshot(target.path)
+		if before.err == nil && after.err == nil && before.clean && after.clean && before.revision == after.revision {
+			report.Revision = before.revision
+			report.WorkspaceClean = true
+		}
+		reports[index] = report
 		reportQualityRepositoryCompleted(options, target.repository, reports[index].Status)
 	})
 	return reports
+}
+
+type verificationGitState struct {
+	revision string
+	clean    bool
+	err      error
+}
+
+func verificationGitSnapshot(repositoryPath string) verificationGitState {
+	revisionOutput, err := exec.Command("git", "-C", repositoryPath, "rev-parse", "--verify", "HEAD").Output()
+	if err != nil {
+		return verificationGitState{err: err}
+	}
+	revision := strings.ToLower(strings.TrimSpace(string(revisionOutput)))
+	if !exactGitObjectID.MatchString(revision) {
+		return verificationGitState{err: fmt.Errorf("invalid Git revision %q", revision)}
+	}
+	statusOutput, err := exec.Command("git", "-C", repositoryPath, "status", "--porcelain=v1", "--untracked-files=all").Output()
+	if err != nil {
+		return verificationGitState{err: err}
+	}
+	return verificationGitState{revision: revision, clean: len(statusOutput) == 0}
 }
 
 func qualityRunOptionsForTarget(options quality.RunOptions, repository string) quality.RunOptions {
@@ -385,6 +416,7 @@ func coverageFailed(report quality.CoverageReport) bool {
 
 type verificationIndex struct {
 	SchemaVersion int                          `yaml:"schema_version" json:"schema_version"`
+	GeneratedAt   time.Time                    `yaml:"generated_at" json:"generated_at"`
 	Profile       string                       `yaml:"profile,omitempty" json:"profile,omitempty"`
 	Checks        []quality.Check              `yaml:"checks" json:"checks"`
 	Repositories  []quality.VerificationReport `yaml:"repositories" json:"repositories"`

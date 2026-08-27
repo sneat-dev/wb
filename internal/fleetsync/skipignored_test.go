@@ -1,6 +1,7 @@
 package fleetsync
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,7 +27,7 @@ func markedRepo(t *testing.T) discover.Repo {
 func TestSyncSkipsMarkedRepo(t *testing.T) {
 	repo := markedRepo(t)
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != SkippedIgnored {
 		t.Fatalf("Status = %v (err=%v), want SkippedIgnored", res.Status, res.Err)
@@ -39,7 +40,7 @@ func TestSyncKeepsMarkedArchivedClone(t *testing.T) {
 	repo := markedRepo(t)
 	repo.Archived = true
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != SkippedIgnored {
 		t.Fatalf("Status = %v (err=%v), want SkippedIgnored", res.Status, res.Err)
@@ -62,7 +63,7 @@ func TestSyncFailsOnMalformedMarker(t *testing.T) {
 	git(t, dir, "config", "--local", gitops.SkipSyncKey, "garbage")
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: dir, Remote: true}
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != Failed {
 		t.Fatalf("Status = %v, want Failed for a malformed marker", res.Status)
