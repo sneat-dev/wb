@@ -359,6 +359,40 @@ func TestPrepareWorktreeMergeKeepsOneExclusiveActiveTargetLane(t *testing.T) {
 	}
 }
 
+func TestPrepareWorktreeMergeRefreshesUnpublishedCandidateWhenSourceAdvances(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "refresh-source", "feature/refresh", "first.txt", "first\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "second.txt"), "second\n")
+	runEngineGit(t, source.WorktreeDir, "add", "second.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "feat: advance prepared source")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+
+	refreshed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.ID != first.ID || refreshed.ReceiptPath != first.ReceiptPath || refreshed.Candidate.Worktree != first.Candidate.Worktree {
+		t.Fatalf("source advance created a competing candidate: first=%+v refreshed=%+v", first, refreshed)
+	}
+	if len(refreshed.SourceRefreshes) != 1 || refreshed.SourceRefreshes[0].Sources[0].SHA != first.Sources[0].SHA {
+		t.Fatalf("source refresh audit = %+v", refreshed.SourceRefreshes)
+	}
+	if refreshed.Sources[0].SHA != advancedSource || refreshed.Candidate.SHA == first.Candidate.SHA {
+		t.Fatalf("refreshed exact heads = source %s candidate %s", refreshed.Sources[0].SHA, refreshed.Candidate.SHA)
+	}
+	if _, err := os.Stat(filepath.Join(refreshed.Candidate.Worktree, "second.txt")); err != nil {
+		t.Fatalf("refreshed candidate lacks advanced source content: %v", err)
+	}
+}
+
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
 	for _, test := range []struct {
 		name       string
