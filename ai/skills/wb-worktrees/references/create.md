@@ -86,6 +86,22 @@ wb --projects-root <root> worktree log <printed-worktree-path> --format json
 (ordinals/digests only). `log` includes private prompt bodies for agent
 bootstrap. Do not commit or publish that private output.
 
+## Land it when ready
+
+Creation starts the lifecycle; it does not define completion. When one or more
+created worktrees are clean, validated, and compatible without a judgment call,
+use the paired landing command:
+
+```sh
+wb worktree merge <printed-worktree-path...> --route auto --cleanup --format json
+```
+
+This may be used many times against the same target. For a two-phase handoff,
+run `wb worktree merge prepare ...` so dependent agents can consume the exact
+candidate SHA, then `wb worktree merge land <receipt> ...`. Resume the receipt
+after interruption; do not manually reconstruct its PR, target, or cleanup
+state. See [merge.md](merge.md) and the `wb-merge` skill for the full contract.
+
 One command covering multiple repositories is one Run. WB writes a separate
 immutable claim for each repository below
 `<WB_HOME>/worklogs/<effort>/runs/<run>/claims/<claim-id>.json`; claim IDs are

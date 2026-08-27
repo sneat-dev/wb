@@ -15,9 +15,12 @@ Compose the low-level skills; do not restate their command details.
 5. Implement and run the smallest targeted checks, then one complete local
    pre-push path.
 6. Push once per meaningful revision and let the managed pre-push hook run.
-7. Open or update PRs, wait for required checks, and merge in dependency order.
-8. After every coordinated PR merges, use `$wb-worktrees` to inspect the
-   cleanup dry run, then apply safe task cleanup.
+7. Hand each conflict-free completed batch to `$wb-merge` and use
+   `wb worktree merge <source-worktree...> --route auto --cleanup`; split it
+   into `prepare` and `land` only when dependent agents need the candidate SHA
+   before remote checks finish. Escalate actual conflicts or behavioral choices.
+8. Confirm the receipt reached the exact remote target and cleanup is complete;
+   resume the same receipt rather than rebuilding PR/merge state manually.
 
 Read [completion.md](references/completion.md) before reporting a terminal
 result. It is the canonical definition of done for this workflow; always state

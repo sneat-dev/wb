@@ -7429,6 +7429,54 @@
       "notes": "Every checkout gets a marker, not only the ones that must stay clean: a warning present only where writing is wrong makes a MISSING file read as permission. The file stays untracked and is paired with an anchored rule in the common directory's info/exclude, because a committed marker WB rewrites would show as a modification and dirty the very clone this protects."
     },
     {
+      "id": "wb.worktree.merge.land",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge land", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--retry", "--route", "--timeout"], "modes": ["Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy", "Waits for exact-head and post-target check receipts, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge land --help", "contains": ["exact integration candidate", "--route", "--cleanup"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge land <candidate-worktree-or-receipt> --route auto --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The candidate or receipt, never branch naming alone, is the continuation identity."
+    },
+    {
+      "id": "wb.worktree.merge.prepare",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare", "flags": ["--agent-id", "--agent-runtime", "--cli", "--format", "--model", "--provider", "--retry", "--target", "--timeout"], "modes": ["Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, and persists a resumable receipt", "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare --help", "contains": ["isolated local integration candidate", "--target", "--model"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare <source-worktree...> --target main --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge prepare <source-worktree...> --target <branch> --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Prepared means local and validated, not remotely landed."
+    },
+    {
+      "id": "wb.worktree.merge.resume",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge resume", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--retry", "--route", "--timeout"], "modes": ["Replays immutable completed boundaries and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge resume --help", "contains": ["Resume a receipt", "--route"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge resume <candidate-worktree-or-receipt> --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge resume <candidate-worktree-or-receipt> --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments."
+    },
+    {
+      "id": "wb.worktree.merge.revert",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge revert", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--retry", "--route", "--timeout"], "modes": ["Creates a new forward candidate by applying the inverse before/after landing delta to the current target, then lands it through the same verified route"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge revert --help", "contains": ["forward revert", "--route"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge revert <landing-receipt> --route auto --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge revert <landing-receipt> --route auto --cleanup --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "The landing receipt retains the remote before and after identities needed to construct the inverse tree delta."
+    },
+    {
       "id": "wb.worktree.orphans",
       "feature_refs": [
         "spec/features/work-log/README.md"

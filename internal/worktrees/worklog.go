@@ -25,8 +25,31 @@ const (
 	workLogProjectionDirectory  = ".wb-worklog"
 	workLogProjectionName       = "recovery.json"
 	workLogProjectionExclude    = "/.wb-worklog/"
+	worktreeInstructionsName    = ".worktree.md"
+	worktreeInstructionsExclude = "/.worktree.md"
 	legacyWorkLogProjectionName = ".wb-worklog.json"
 )
+
+const worktreeInstructions = `<!-- wb-managed-worktree -->
+# WB managed worktree
+
+Keep this checkout on its WB feature branch. Do not switch the canonical clone
+or use raw Git worktree cleanup commands.
+
+When the work is clean, validated, and ready to merge without a conflict or
+behavioral judgment, use the normal completion command:
+
+` + "```sh" + `
+wb worktree merge . --route auto --cleanup --format json
+` + "```" + `
+
+Pass multiple worktree paths to land a compatible batch. Use ` + "`merge prepare`" + `
+when other agents need the immutable candidate SHA before remote checks finish,
+then use the receipt's exact ` + "`merge land`" + ` or ` + "`merge resume`" + ` command. Auto
+landing rebases an unpublished candidate over clean target drift and stops on a
+conflict. A landed failure can use ` + "`merge revert`" + ` to create a forward inverse
+candidate; never reset or force-push shared history.
+`
 
 var errWorkLogProjectionNotFound = errors.New("work-log projection not found")
 
@@ -1172,7 +1195,10 @@ func writeWorkLogProjection(worktree string, projection workLogProjection) error
 		return err
 	}
 	defer func() { _ = directory.Close() }()
-	return writeJSONAtomicAt(directory, workLogProjectionName, projection, 0o600)
+	if err := writeJSONAtomicAt(directory, workLogProjectionName, projection, 0o600); err != nil {
+		return err
+	}
+	return writeManagedWorktreeInstructions(worktree)
 }
 
 func ensureWorkLogProjectionExclude(worktree string) error {
@@ -1190,12 +1216,41 @@ func ensureWorkLogProjectionExclude(worktree string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read per-worktree exclude: %w", err)
 	}
-	if !strings.Contains("\n"+string(exclude)+"\n", "\n"+workLogProjectionExclude+"\n") {
-		if err := writeBytesAtomic(filepath.Dir(gitPath), filepath.Base(gitPath), append(exclude, []byte("\n"+workLogProjectionExclude+"\n")...), 0o600); err != nil {
+	updated := append([]byte(nil), exclude...)
+	for _, rule := range []string{workLogProjectionExclude, worktreeInstructionsExclude} {
+		if strings.Contains("\n"+string(updated)+"\n", "\n"+rule+"\n") {
+			continue
+		}
+		updated = append(updated, []byte("\n"+rule+"\n")...)
+	}
+	if !bytes.Equal(updated, exclude) {
+		if err := writeBytesAtomic(filepath.Dir(gitPath), filepath.Base(gitPath), updated, 0o600); err != nil {
 			return fmt.Errorf("exclude work-log projection: %w", err)
 		}
 	}
 	return nil
+}
+
+func writeManagedWorktreeInstructions(worktree string) error {
+	root, err := openAbsoluteDirectoryNoFollow(worktree, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	fd, openErr := unix.Openat(int(root.Fd()), worktreeInstructionsName, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+	if openErr == nil {
+		existingFile := os.NewFile(uintptr(fd), worktreeInstructionsName)
+		existing, readErr := io.ReadAll(existingFile)
+		_ = existingFile.Close()
+		if readErr != nil || !bytes.HasPrefix(existing, []byte("<!-- wb-managed-worktree -->\n")) {
+			// A repository- or user-owned file always wins; WB never overwrites it.
+			return nil
+		}
+	} else if !errors.Is(openErr, unix.ENOENT) {
+		// Symlinks, directories, and other non-regular occupants are preserved.
+		return nil
+	}
+	return writeBytesAtomicAt(root, worktreeInstructionsName, []byte(worktreeInstructions), 0o600)
 }
 
 func openWorkLogProjectionDirectory(worktree string, create bool) (*os.File, error) {
