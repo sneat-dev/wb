@@ -30,13 +30,17 @@ import (
 const (
 	SchemaVersion        = 1
 	MaxContinuationBytes = 64 << 10
-	maxBundleBytes       = 4 << 20
+	MaxBundleBytes       = 4 << 20
 	maxParkedWorktrees   = 1024
+	SourceDirName        = "parked-sessions"
+	BundleFileName       = "bundle.json"
+	LocalNeutralDirName  = "local-resume-root"
 
-	sourceBundleFileName       = "bundle.json"
+	sourceBundleFileName       = BundleFileName
 	sourceContinuationFileName = "continuation.md"
 	sourceEventsDirName        = "events"
 	sourceResumeLockName       = "resume.lock"
+	sourceResumeRouteFileName  = "resume-route.json"
 )
 
 type Status string
@@ -94,7 +98,24 @@ type State struct {
 	Status        Status          `json:"status"`
 	Successor     *session.Record `json:"successor,omitempty"`
 	RemoteReceipt *Receipt        `json:"remote_receipt,omitempty"`
+	ResumeRoute   *ResumeRoute    `json:"resume_route,omitempty"`
 }
+
+type ResumeRoute struct {
+	SchemaVersion   int       `json:"schema_version"`
+	ParkedSessionID string    `json:"parked_session_id"`
+	Mode            string    `json:"mode"`
+	TargetMachine   string    `json:"target_machine,omitempty"`
+	Courier         string    `json:"courier,omitempty"`
+	SSHHost         string    `json:"ssh_host,omitempty"`
+	SSHUser         string    `json:"ssh_user,omitempty"`
+	ClaimedAt       time.Time `json:"claimed_at"`
+}
+
+const (
+	ResumeRouteLocal  = "local"
+	ResumeRouteRemote = "remote"
+)
 
 type Store struct{ Root string }
 
@@ -113,6 +134,7 @@ type RemoteAdmission struct {
 	Envelope Envelope
 	Raw      []byte
 	Digest   sessionmove.Digest
+	Route    ResumeRoute
 	Replay   bool
 }
 
@@ -239,6 +261,9 @@ func (s Store) Resume(id string, successor session.Record, now time.Time) (State
 		return State{}, err
 	}
 	defer lock.Close()
+	if _, _, err := s.PrepareLocalUnderLock(lock, now); err != nil {
+		return State{}, err
+	}
 	return s.ResumeUnderLock(lock, successor, now)
 }
 
@@ -301,10 +326,28 @@ func EncodeBundle(bundle Bundle) ([]byte, error) {
 		return nil, err
 	}
 	raw = append(raw, '\n')
-	if len(raw) > maxBundleBytes {
-		return nil, fmt.Errorf("parked session bundle exceeds %d bytes", maxBundleBytes)
+	if len(raw) > MaxBundleBytes {
+		return nil, fmt.Errorf("parked session bundle exceeds %d bytes", MaxBundleBytes)
 	}
 	return raw, nil
+}
+
+func DecodeBundle(raw []byte) (Bundle, error) {
+	var bundle Bundle
+	if len(raw) == 0 || len(raw) > MaxBundleBytes {
+		return bundle, fmt.Errorf("parked session bundle must be non-empty and bounded")
+	}
+	if err := strictDecode(raw, &bundle); err != nil {
+		return bundle, fmt.Errorf("parse parked session bundle: %w", err)
+	}
+	if err := validateBundle(bundle); err != nil {
+		return bundle, err
+	}
+	canonical, err := EncodeBundle(bundle)
+	if err != nil || !bytes.Equal(canonical, raw) {
+		return bundle, fmt.Errorf("parked session bundle must use WB canonical JSON encoding")
+	}
+	return bundle, nil
 }
 func EqualBundle(a, b Bundle) bool {
 	ar, _ := EncodeBundle(a)
@@ -343,7 +386,7 @@ func (s Store) Acquire(ctx context.Context, id string) (*SourceLock, error) {
 		return nil, err
 	}
 	bundleFile := os.NewFile(uintptr(bundleFD), "wb-parked-source-bundle")
-	bundleRaw, err := readPrivateFile(bundleFile, maxBundleBytes)
+	bundleRaw, err := readPrivateFile(bundleFile, MaxBundleBytes)
 	if err != nil {
 		_ = bundleFile.Close()
 		_ = aggregate.Close()
@@ -450,7 +493,7 @@ func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
 	if !sameFile(lock.bundleFile, bundleFile) {
 		return false
 	}
-	raw, err := readPrivateFile(bundleFile, maxBundleBytes)
+	raw, err := readPrivateFile(bundleFile, MaxBundleBytes)
 	if err != nil || !bytes.Equal(raw, wantBundle) {
 		return false
 	}
@@ -520,12 +563,138 @@ func (s Store) ContinuationPathUnderLock(lock *SourceLock) (string, error) {
 	return filepath.Join(s.Root, lock.parkID, sourceContinuationFileName), nil
 }
 
-func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness string, now time.Time) (RemoteAdmission, error) {
+// EnsureLocalSuccessorContextUnderLock publishes the single private file read
+// by a local successor. It binds the original continuation to every retained
+// member path without copying or modifying worktree bytes.
+func (s Store) EnsureLocalSuccessorContextUnderLock(lock *SourceLock) (string, []byte, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return "", nil, fmt.Errorf("publish local successor context requires retained source authority")
+	}
+	if _, err := s.validateResumeRouteUnderLock(lock, ResumeRouteLocal, ""); err != nil {
+		return "", nil, err
+	}
+	var body strings.Builder
+	body.WriteString(lock.bundle.Continuation)
+	if !strings.HasSuffix(lock.bundle.Continuation, "\n") {
+		body.WriteByte('\n')
+	}
+	body.WriteString("\nRetained local worktrees:\n")
+	if len(lock.bundle.Worktrees) == 0 {
+		body.WriteString("- none\n")
+	}
+	for index, member := range lock.bundle.Worktrees {
+		fmt.Fprintf(&body, "- member-%03d %s\n  path: %s\n  branch: %s\n  commit: %s\n  work_log: %s\n",
+			index+1, member.Repository, member.WorktreeDir, member.Branch, member.Head, member.WorkLogReference)
+	}
+	raw := []byte(body.String())
+	if len(raw) > MaxSuccessorContextBytes {
+		return "", nil, fmt.Errorf("private local successor context exceeds %d bytes", MaxSuccessorContextBytes)
+	}
+	if err := writeExactPrivateAt(lock.aggregate, SuccessorContextFileName, raw); err != nil {
+		return "", nil, err
+	}
+	return filepath.Join(s.Root, lock.parkID, SuccessorContextFileName), raw, nil
+}
+
+func (s Store) LoadLocalSuccessorContextUnderLock(lock *SourceLock) (string, []byte, bool, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return "", nil, false, fmt.Errorf("inspect local successor context requires retained source authority")
+	}
+	if _, err := s.validateResumeRouteUnderLock(lock, ResumeRouteLocal, ""); err != nil {
+		return "", nil, false, err
+	}
+	raw, err := readPrivateRegularAt(lock.aggregate, SuccessorContextFileName, MaxSuccessorContextBytes)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
+		return "", nil, false, nil
+	}
+	if err != nil {
+		return "", nil, false, err
+	}
+	if !bytes.HasPrefix(raw, []byte(lock.bundle.Continuation)) {
+		return "", nil, false, fmt.Errorf("private local successor context conflicts with exact parked bundle")
+	}
+	return filepath.Join(s.Root, lock.parkID, SuccessorContextFileName), raw, true, nil
+}
+
+func (s Store) ExistingLocalLaunchRootUnderLock(lock *SourceLock) (string, bool, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return "", false, fmt.Errorf("inspect local launch root requires retained source authority")
+	}
+	if _, err := s.validateResumeRouteUnderLock(lock, ResumeRouteLocal, ""); err != nil {
+		return "", false, err
+	}
+	if len(lock.bundle.Worktrees) != 0 {
+		return lock.bundle.Worktrees[0].WorktreeDir, true, nil
+	}
+	neutral, err := openPrivateDirectoryAt(lock.aggregate, LocalNeutralDirName)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	_ = neutral.Close()
+	return filepath.Join(s.Root, lock.parkID, LocalNeutralDirName), true, nil
+}
+
+// LocalLaunchRootUnderLock returns the first exact retained member, or creates
+// the deterministic aggregate-bound 0700 neutral root for a zero-member park.
+func (s Store) LocalLaunchRootUnderLock(lock *SourceLock) (string, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return "", fmt.Errorf("select local launch root requires retained source authority")
+	}
+	if _, err := s.validateResumeRouteUnderLock(lock, ResumeRouteLocal, ""); err != nil {
+		return "", err
+	}
+	if len(lock.bundle.Worktrees) != 0 {
+		return lock.bundle.Worktrees[0].WorktreeDir, nil
+	}
+	if err := unix.Mkdirat(int(lock.aggregate.Fd()), LocalNeutralDirName, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+		return "", fmt.Errorf("create private local resume root: %w", err)
+	}
+	neutral, err := openPrivateDirectoryAt(lock.aggregate, LocalNeutralDirName)
+	if err != nil {
+		return "", fmt.Errorf("open private local resume root: %w", err)
+	}
+	defer neutral.Close()
+	if err := neutral.Sync(); err != nil {
+		return "", err
+	}
+	if err := lock.aggregate.Sync(); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.Root, lock.parkID, LocalNeutralDirName), nil
+}
+
+// PrepareLocalUnderLock durably selects the only permitted resume route before
+// any local context, launch plan, or successor process can be created.
+func (s Store) PrepareLocalUnderLock(lock *SourceLock, now time.Time) (ResumeRoute, bool, error) {
+	return s.claimResumeRouteUnderLock(lock, ResumeRouteLocal, "", "", sessionmove.SSHConfig{}, now)
+}
+
+func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness, courier string, ssh sessionmove.SSHConfig, now time.Time) (RemoteAdmission, error) {
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return RemoteAdmission{}, fmt.Errorf("prepare remote park resume requires retained source authority")
 	}
 	if !sessionauthority.ValidID(target) {
 		return RemoteAdmission{}, fmt.Errorf("target machine is not one fixed safe ID")
+	}
+	if courier != string(sessionmove.CourierSSH) || ssh.WBPath != "" {
+		return RemoteAdmission{}, fmt.Errorf("parked-session remote route must use the fixed SSH courier")
+	}
+	if err := ssh.Validate(); err != nil {
+		return RemoteAdmission{}, fmt.Errorf("parked-session SSH route is invalid")
+	}
+	state, err := s.LoadUnderLock(lock)
+	if err != nil {
+		return RemoteAdmission{}, err
+	}
+	if state.Status == StatusResumed {
+		return RemoteAdmission{}, fmt.Errorf("parked session was already resumed by a different target")
+	}
+	route, _, err := s.claimResumeRouteUnderLock(lock, ResumeRouteRemote, target, courier, ssh, now)
+	if err != nil {
+		return RemoteAdmission{}, err
 	}
 	name := sourceEnvelopeName(target)
 	raw, err := readPrivateRegularAt(lock.aggregate, name, MaxEnvelopeBytes)
@@ -535,17 +704,10 @@ func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness
 			envelope.Request.RequestedHarness != strings.TrimSpace(requestedHarness) {
 			return RemoteAdmission{}, fmt.Errorf("durable remote park resume envelope conflicts with requested target or harness")
 		}
-		return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw), Replay: true}, nil
+		return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw), Route: route, Replay: true}, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, unix.ENOENT) {
 		return RemoteAdmission{}, err
-	}
-	state, err := s.LoadUnderLock(lock)
-	if err != nil {
-		return RemoteAdmission{}, err
-	}
-	if state.Status == StatusResumed {
-		return RemoteAdmission{}, fmt.Errorf("parked session was already resumed by a different target")
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -559,12 +721,19 @@ func (s Store) PrepareRemoteUnderLock(lock *SourceLock, target, requestedHarness
 	if err := writeExactPrivateAt(lock.aggregate, name, raw); err != nil {
 		return RemoteAdmission{}, err
 	}
-	return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw)}, nil
+	return RemoteAdmission{Envelope: envelope, Raw: raw, Digest: sessionmove.DigestBytes(raw), Route: route}, nil
 }
 
 func (s Store) validateRemoteAdmission(lock *SourceLock, admission RemoteAdmission) error {
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return fmt.Errorf("remote park resume requires retained source authority")
+	}
+	durableRoute, err := s.validateResumeRouteUnderLock(lock, ResumeRouteRemote, admission.Envelope.Request.TargetMachine)
+	if err != nil {
+		return err
+	}
+	if durableRoute != admission.Route {
+		return fmt.Errorf("remote park resume admission is not bound to the exact durable courier route")
 	}
 	canonical, err := EncodeEnvelope(admission.Envelope)
 	if err != nil || !bytes.Equal(canonical, admission.Raw) || admission.Digest != sessionmove.DigestBytes(admission.Raw) ||
@@ -642,6 +811,9 @@ func (s Store) ResumeUnderLock(lock *SourceLock, successor session.Record, now t
 	if lock == nil || !lock.held(s.Root, lock.parkID) {
 		return State{}, fmt.Errorf("local park resume requires retained source authority")
 	}
+	if _, err := s.validateResumeRouteUnderLock(lock, ResumeRouteLocal, ""); err != nil {
+		return State{}, err
+	}
 	state, err := s.LoadUnderLock(lock)
 	if err != nil || state.Status == StatusResumed {
 		return state, err
@@ -666,6 +838,104 @@ func resumedEvent(state State, successor session.Record, now time.Time) Event {
 		now = time.Now().UTC()
 	}
 	return Event{SchemaVersion: SchemaVersion, Sequence: uint64(len(state.Events) + 1), Type: "resumed", At: now.UTC(), Successor: &successor}
+}
+
+func (s Store) claimResumeRouteUnderLock(lock *SourceLock, mode, target, courier string, ssh sessionmove.SSHConfig, now time.Time) (ResumeRoute, bool, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return ResumeRoute{}, false, fmt.Errorf("claim park resume route requires retained source authority")
+	}
+	if mode != ResumeRouteLocal && mode != ResumeRouteRemote {
+		return ResumeRoute{}, false, fmt.Errorf("park resume route mode is invalid")
+	}
+	if (mode == ResumeRouteLocal && (target != "" || courier != "" || ssh != (sessionmove.SSHConfig{}))) ||
+		(mode == ResumeRouteRemote && (!sessionauthority.ValidID(target) || courier != string(sessionmove.CourierSSH) || ssh.WBPath != "" || ssh.Validate() != nil)) {
+		return ResumeRoute{}, false, fmt.Errorf("park resume route target is invalid")
+	}
+	existing, found, err := loadResumeRouteAt(lock.aggregate, lock.parkID)
+	if err != nil {
+		return ResumeRoute{}, false, err
+	}
+	if found {
+		if existing.Mode != mode || existing.TargetMachine != target || existing.Courier != courier || existing.SSHHost != ssh.Host || existing.SSHUser != ssh.User {
+			return ResumeRoute{}, false, fmt.Errorf("parked session resume route is already claimed by %s", resumeRouteLabel(existing))
+		}
+		return existing, true, nil
+	}
+	state, err := s.LoadUnderLock(lock)
+	if err != nil {
+		return ResumeRoute{}, false, err
+	}
+	if state.Status == StatusResumed {
+		return ResumeRoute{}, false, fmt.Errorf("resumed parked session has no authenticated route marker")
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	route := ResumeRoute{SchemaVersion: SchemaVersion, ParkedSessionID: lock.parkID, Mode: mode, TargetMachine: target,
+		Courier: courier, SSHHost: ssh.Host, SSHUser: ssh.User, ClaimedAt: now.UTC()}
+	raw, err := jsonMarshal(route)
+	if err != nil {
+		return ResumeRoute{}, false, err
+	}
+	if err := writeExactPrivateAt(lock.aggregate, sourceResumeRouteFileName, raw); err != nil {
+		return ResumeRoute{}, false, err
+	}
+	return route, false, nil
+}
+
+func (s Store) validateResumeRouteUnderLock(lock *SourceLock, mode, target string) (ResumeRoute, error) {
+	if lock == nil || !lock.held(s.Root, lock.parkID) {
+		return ResumeRoute{}, fmt.Errorf("validate park resume route requires retained source authority")
+	}
+	route, found, err := loadResumeRouteAt(lock.aggregate, lock.parkID)
+	if err != nil {
+		return ResumeRoute{}, err
+	}
+	if !found || route.Mode != mode || route.TargetMachine != target {
+		if found {
+			return ResumeRoute{}, fmt.Errorf("parked session resume route is claimed by %s, not %s", resumeRouteLabel(route), resumeRouteLabel(ResumeRoute{Mode: mode, TargetMachine: target}))
+		}
+		return ResumeRoute{}, fmt.Errorf("parked session resume route is not durably claimed")
+	}
+	return route, nil
+}
+
+func (route ResumeRoute) SSHConfig() (sessionmove.SSHConfig, error) {
+	config := sessionmove.SSHConfig{Host: route.SSHHost, User: route.SSHUser}
+	if route.Mode != ResumeRouteRemote || route.Courier != string(sessionmove.CourierSSH) || config.Validate() != nil {
+		return sessionmove.SSHConfig{}, fmt.Errorf("stored parked-session SSH route is invalid")
+	}
+	return config, nil
+}
+
+func loadResumeRouteAt(aggregate *os.File, parkID string) (ResumeRoute, bool, error) {
+	raw, err := readPrivateRegularAt(aggregate, sourceResumeRouteFileName, 16<<10)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
+		return ResumeRoute{}, false, nil
+	}
+	if err != nil {
+		return ResumeRoute{}, false, err
+	}
+	var route ResumeRoute
+	if err := strictDecode(raw, &route); err != nil {
+		return ResumeRoute{}, false, fmt.Errorf("decode parked session resume route: %w", err)
+	}
+	canonical, marshalErr := jsonMarshal(route)
+	ssh := sessionmove.SSHConfig{Host: route.SSHHost, User: route.SSHUser}
+	if marshalErr != nil || !bytes.Equal(raw, canonical) || route.SchemaVersion != SchemaVersion || route.ParkedSessionID != parkID || route.ClaimedAt.IsZero() ||
+		(route.Mode != ResumeRouteLocal && route.Mode != ResumeRouteRemote) ||
+		(route.Mode == ResumeRouteLocal && (route.TargetMachine != "" || route.Courier != "" || route.SSHHost != "" || route.SSHUser != "")) ||
+		(route.Mode == ResumeRouteRemote && (!sessionauthority.ValidID(route.TargetMachine) || route.Courier != string(sessionmove.CourierSSH) || ssh.Validate() != nil)) {
+		return ResumeRoute{}, false, fmt.Errorf("parked session resume route is invalid")
+	}
+	return route, true, nil
+}
+
+func resumeRouteLabel(route ResumeRoute) string {
+	if route.Mode == ResumeRouteRemote {
+		return ResumeRouteRemote + ":" + route.TargetMachine
+	}
+	return route.Mode
 }
 
 func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
@@ -699,7 +969,7 @@ func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
 }
 
 func loadBundleAt(aggregate *os.File, id string) (Bundle, []byte, error) {
-	raw, err := readPrivateRegularAt(aggregate, sourceBundleFileName, maxBundleBytes)
+	raw, err := readPrivateRegularAt(aggregate, sourceBundleFileName, MaxBundleBytes)
 	if err != nil {
 		return Bundle{}, nil, fmt.Errorf("load parked session bundle: %w", err)
 	}
@@ -728,6 +998,11 @@ func loadSourceStateAt(aggregate *os.File, bundle Bundle) (State, error) {
 		return State{}, err
 	}
 	state := State{Bundle: bundle, Events: history, Status: StatusParked}
+	if route, found, routeErr := loadResumeRouteAt(aggregate, bundle.ParkedSessionID); routeErr != nil {
+		return State{}, routeErr
+	} else if found {
+		state.ResumeRoute = &route
+	}
 	for index := range history {
 		event := history[index]
 		if event.Type != "resumed" {

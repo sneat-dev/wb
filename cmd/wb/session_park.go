@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,8 +11,10 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/sessionpark"
+	"github.com/sneat-dev/wb/internal/sessionparkcourier"
 	"github.com/sneat-dev/wb/internal/wbconfig"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -19,17 +22,12 @@ import (
 )
 
 type sessionParkOutput struct {
-	ParkedSessionID string                 `json:"parked_session_id"`
-	Status          string                 `json:"status"`
-	Source          session.Record         `json:"source"`
-	Worktrees       []sessionpark.Worktree `json:"worktrees"`
-	Successor       *session.Record        `json:"successor,omitempty"`
+	ParkedSessionID string `json:"parked_session_id"`
+	Status          string `json:"status"`
+	MemberCount     int    `json:"member_count"`
 }
 
 var captureParkedSessionAggregate = worktrees.CaptureParkedSessionAggregate
-var defaultParkedSessionRemoteDelivery = func(context.Context, sessionpark.State, string) error {
-	return fmt.Errorf("parked-session remote delivery is not implemented")
-}
 
 func newSessionParkCmd() *cobra.Command {
 	var contextFile, format string
@@ -109,7 +107,7 @@ func newSessionParkCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), Source: source, Worktrees: owned}
+			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), MemberCount: len(owned)}
 			if format == "json" {
 				enc := json.NewEncoder(command.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -125,12 +123,64 @@ func newSessionParkCmd() *cobra.Command {
 }
 
 func newSessionResumeCmd() *cobra.Command {
-	return newSessionResumeCmdWithRemoteDelivery(defaultParkedSessionRemoteDelivery)
+	return newSessionResumeCmdWithDependencies(defaultSessionResumeDependencies())
 }
 
-type parkedSessionRemoteDelivery func(context.Context, sessionpark.State, string) error
+type sessionResumeOutput struct {
+	ParkedSessionID      string             `json:"parked_session_id"`
+	Status               string             `json:"status"`
+	TargetMachine        string             `json:"target_machine"`
+	SuccessorWBSessionID string             `json:"successor_wb_session_id"`
+	MemberCount          int                `json:"member_count"`
+	ReceiptDigest        sessionmove.Digest `json:"receipt_digest,omitempty"`
+	Replay               bool               `json:"replay"`
+}
 
-func newSessionResumeCmdWithRemoteDelivery(deliver parkedSessionRemoteDelivery) *cobra.Command {
+type sessionResumeDependencies struct {
+	now               func() time.Time
+	deliverSSH        func(context.Context, sessionmove.SSHConfig, []byte) (sessionparkcourier.Result, error)
+	withRemoteCustody func(context.Context, string, sessionpark.Bundle, func() error) error
+	withLocalCustody  func(context.Context, string, sessionpark.Bundle, string, func(*worktrees.ParkedLocalCustody) error) error
+	attachLocal       func(context.Context, *worktrees.ParkedLocalCustody, session.Record, string, uint64) error
+	startLocal        func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error)
+	inspectLocal      func(context.Context, sessionlaunch.Options) (sessionlaunch.Result, error)
+	inspectPrepared   func(context.Context, sessionlaunch.Options) (string, error)
+	afterLocalLaunch  func(sessionlaunch.Result) error
+	markResumed       func(string, int, string, string) (session.Record, error)
+}
+
+func defaultSessionResumeDependencies() sessionResumeDependencies {
+	return sessionResumeDependencies{
+		now: func() time.Time { return time.Now().UTC() },
+		deliverSSH: func(ctx context.Context, config sessionmove.SSHConfig, raw []byte) (sessionparkcourier.Result, error) {
+			deliverer, err := sessionparkcourier.NewSSHDeliverer(config)
+			if err != nil {
+				return sessionparkcourier.Result{}, err
+			}
+			return deliverer.Deliver(ctx, raw)
+		},
+		withRemoteCustody: worktrees.WithParkedRemoteResumeCustody,
+		withLocalCustody:  worktrees.WithParkedLocalResumeCustodyForAttempt,
+		attachLocal: func(ctx context.Context, custody *worktrees.ParkedLocalCustody, successor session.Record, attemptID string, attemptIndex uint64) error {
+			return custody.Attach(ctx, successor, attemptID, attemptIndex)
+		},
+		startLocal:   sessionlaunch.Start,
+		inspectLocal: sessionlaunch.Inspect,
+		inspectPrepared: func(ctx context.Context, options sessionlaunch.Options) (string, error) {
+			evidence, err := sessionlaunch.InspectPrepared(ctx, options)
+			if err != nil {
+				return "", err
+			}
+			if options.Authority == nil || !evidence.Authenticates(options.Authority.AggregateID, sessionmove.Digest(options.Authority.AggregateDigest)) {
+				return "", fmt.Errorf("prepared local launcher evidence is not authenticated to the exact parked aggregate")
+			}
+			return evidence.AttemptID, nil
+		},
+		markResumed: session.MarkResumed,
+	}
+}
+
+func newSessionResumeCmdWithDependencies(deps sessionResumeDependencies) *cobra.Command {
 	var target, via, configPath, format string
 	command := &cobra.Command{
 		Use: "resume <parked-session-id>", Short: "Resume a parked session as one fresh successor session", Args: cobra.ExactArgs(1),
@@ -142,34 +192,47 @@ func newSessionResumeCmdWithRemoteDelivery(deliver parkedSessionRemoteDelivery) 
 			if err != nil {
 				return err
 			}
-			store := sessionpark.NewStore(filepath.Join(home, "parked-sessions"))
-			state, err := store.Load(args[0])
+			store := sessionpark.NewStore(filepath.Join(home, sessionpark.SourceDirName))
+			lock, err := store.Acquire(command.Context(), args[0])
 			if err != nil {
 				return err
 			}
+			defer lock.Close()
+			state, err := store.LoadUnderLock(lock)
+			if err != nil {
+				return err
+			}
+			now := time.Now().UTC()
+			if deps.now != nil {
+				now = deps.now()
+			}
 			if target != "" {
-				if via != "" && via != "ssh" {
-					return fmt.Errorf("unsupported resume courier %q; use ssh", via)
-				}
-				if strings.TrimSpace(configPath) == "" {
-					configPath = wbconfig.DefaultPath()
-				}
-				config, err := sessionmove.LoadConfig(configPath)
+				output, err := resumeParkedRemote(command.Context(), deps, store, lock, state, target, via, configPath, now)
 				if err != nil {
-					return fmt.Errorf("load resume courier config: %w", err)
-				}
-				if _, ok := config.Target(target); !ok {
-					return fmt.Errorf("resume target %q is not configured in %s", target, configPath)
-				}
-				if err := validateParkedRemoteBundle(state.Bundle, target); err != nil {
 					return err
 				}
-				if deliver == nil {
-					return fmt.Errorf("cross-machine resume delivery boundary is unavailable; no worktree was transferred")
+				if deps.markResumed == nil {
+					return fmt.Errorf("session resumed lifecycle projection dependency is unavailable")
 				}
-				return fmt.Errorf("cross-machine resume to %s via ssh is gated: the parked session contains %d worktrees and the current session receive boundary accepts one worktree; no worktree was transferred", target, len(state.Bundle.Worktrees))
+				if _, err := deps.markResumed(filepath.Join(home, session.DirName), state.Bundle.Source.PID, state.Bundle.ParkedSessionID, output.SuccessorWBSessionID); err != nil {
+					return err
+				}
+				return writeSessionResumeOutput(command, format, output)
 			}
-			return fmt.Errorf("local session resume is fail-closed: coordinator launch is not wired; no session, parked aggregate, or custody mutation was performed")
+			if via != "" || configPath != "" {
+				return fmt.Errorf("--via and --config require --to for remote resume")
+			}
+			output, err := resumeParkedLocal(command.Context(), deps, store, lock, state, now)
+			if err != nil {
+				return err
+			}
+			if deps.markResumed == nil {
+				return fmt.Errorf("session resumed lifecycle projection dependency is unavailable")
+			}
+			if _, err := deps.markResumed(filepath.Join(home, session.DirName), state.Bundle.Source.PID, state.Bundle.ParkedSessionID, output.SuccessorWBSessionID); err != nil {
+				return err
+			}
+			return writeSessionResumeOutput(command, format, output)
 		},
 	}
 	command.Flags().StringVar(&target, "to", "", "target WB machine for cross-machine resume")
@@ -179,9 +242,276 @@ func newSessionResumeCmdWithRemoteDelivery(deliver parkedSessionRemoteDelivery) 
 	return command
 }
 
+func resumeParkedRemote(ctx context.Context, deps sessionResumeDependencies, store sessionpark.Store, lock *sessionpark.SourceLock, state sessionpark.State, target, via, configPath string, now time.Time) (sessionResumeOutput, error) {
+	if via != "" && via != string(sessionmove.CourierSSH) {
+		return sessionResumeOutput{}, fmt.Errorf("unsupported resume courier %q; use ssh", via)
+	}
+	if state.Status == sessionpark.StatusResumed {
+		if state.ResumeRoute == nil || state.ResumeRoute.Mode != sessionpark.ResumeRouteRemote || state.ResumeRoute.TargetMachine != target ||
+			state.RemoteReceipt == nil || state.RemoteReceipt.TargetMachine != target || state.Successor == nil {
+			return sessionResumeOutput{}, fmt.Errorf("parked session was already resumed by a different local or remote winner")
+		}
+		if _, err := parkedRemoteSSHConfig(state.ResumeRoute, target, via, configPath); err != nil {
+			return sessionResumeOutput{}, err
+		}
+		return sessionResumeOutput{ParkedSessionID: state.Bundle.ParkedSessionID, Status: string(state.Status), TargetMachine: target,
+			SuccessorWBSessionID: state.Successor.WBSessionID, MemberCount: len(state.Bundle.Worktrees),
+			ReceiptDigest: publicReceiptDigest(*state.RemoteReceipt), Replay: true}, nil
+	}
+	sshConfig, err := parkedRemoteSSHConfig(state.ResumeRoute, target, via, configPath)
+	if err != nil {
+		return sessionResumeOutput{}, err
+	}
+	if err := validateParkedRemoteBundle(state.Bundle, target); err != nil {
+		return sessionResumeOutput{}, err
+	}
+	if deps.withRemoteCustody == nil || deps.deliverSSH == nil {
+		return sessionResumeOutput{}, fmt.Errorf("remote parked-session resume dependencies are unavailable")
+	}
+	var final sessionpark.State
+	var receipt *sessionpark.Receipt
+	replay := false
+	err = deps.withRemoteCustody(ctx, projectsRoot, state.Bundle, func() error {
+		admission, err := store.PrepareRemoteUnderLock(lock, target, "", string(sessionmove.CourierSSH), sshConfig, now)
+		if err != nil {
+			return err
+		}
+		replay = admission.Replay
+		receipt, err = store.LoadRemoteReceiptUnderLock(lock, admission)
+		if err != nil {
+			return err
+		}
+		if receipt == nil {
+			retainedSSH, routeErr := admission.Route.SSHConfig()
+			if routeErr != nil {
+				return routeErr
+			}
+			delivery, deliverErr := deps.deliverSSH(ctx, retainedSSH, admission.Raw)
+			if deliverErr != nil {
+				return deliverErr
+			}
+			replay = replay || delivery.Replay
+			if err := store.SaveRemoteReceiptUnderLock(lock, admission, delivery.Receipt); err != nil {
+				return err
+			}
+			receipt = &delivery.Receipt
+		} else {
+			replay = true
+		}
+		final, err = store.FinalizeRemoteUnderLock(lock, admission, now)
+		return err
+	})
+	if err != nil {
+		return sessionResumeOutput{}, err
+	}
+	if final.Status != sessionpark.StatusResumed || final.Successor == nil || receipt == nil {
+		return sessionResumeOutput{}, fmt.Errorf("remote parked-session resume completed without one finalized source receipt")
+	}
+	return sessionResumeOutput{ParkedSessionID: final.Bundle.ParkedSessionID, Status: string(final.Status), TargetMachine: target,
+		SuccessorWBSessionID: final.Successor.WBSessionID, MemberCount: len(final.Bundle.Worktrees),
+		ReceiptDigest: publicReceiptDigest(*receipt), Replay: replay}, nil
+}
+
+func parkedRemoteSSHConfig(route *sessionpark.ResumeRoute, target, via, configPath string) (sessionmove.SSHConfig, error) {
+	if route != nil {
+		if route.Mode != sessionpark.ResumeRouteRemote || route.TargetMachine != target {
+			return sessionmove.SSHConfig{}, fmt.Errorf("parked session was already claimed by a different local or remote winner")
+		}
+		retained, err := route.SSHConfig()
+		if err != nil {
+			return sessionmove.SSHConfig{}, err
+		}
+		if strings.TrimSpace(configPath) == "" {
+			return retained, nil
+		}
+		configured, err := loadParkedRemoteSSHConfig(target, via, configPath)
+		if err != nil || configured != retained {
+			return sessionmove.SSHConfig{}, fmt.Errorf("configured parked-session SSH route differs from the retained route")
+		}
+		return retained, nil
+	}
+	return loadParkedRemoteSSHConfig(target, via, configPath)
+}
+
+func loadParkedRemoteSSHConfig(target, via, configPath string) (sessionmove.SSHConfig, error) {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = wbconfig.DefaultPath()
+	}
+	config, err := sessionmove.LoadConfig(configPath)
+	if err != nil {
+		return sessionmove.SSHConfig{}, fmt.Errorf("load parked-session resume courier configuration")
+	}
+	targetConfig, ok := config.Target(target)
+	if !ok || targetConfig.SSH == nil || targetConfig.SSH.WBPath != "" || via == "" && targetConfig.DefaultCourier != sessionmove.CourierSSH {
+		return sessionmove.SSHConfig{}, fmt.Errorf("parked-session target does not configure the fixed SSH courier")
+	}
+	if err := targetConfig.SSH.Validate(); err != nil {
+		return sessionmove.SSHConfig{}, fmt.Errorf("parked-session SSH courier configuration is invalid")
+	}
+	return *targetConfig.SSH, nil
+}
+
+func resumeParkedLocal(ctx context.Context, deps sessionResumeDependencies, store sessionpark.Store, lock *sessionpark.SourceLock, state sessionpark.State, now time.Time) (sessionResumeOutput, error) {
+	if state.Status == sessionpark.StatusResumed {
+		if state.ResumeRoute == nil || state.ResumeRoute.Mode != sessionpark.ResumeRouteLocal || state.RemoteReceipt != nil || state.Successor == nil {
+			return sessionResumeOutput{}, fmt.Errorf("parked session was already resumed by a remote winner")
+		}
+		return sessionResumeOutput{ParkedSessionID: state.Bundle.ParkedSessionID, Status: string(state.Status),
+			TargetMachine: state.Successor.Machine, SuccessorWBSessionID: state.Successor.WBSessionID,
+			MemberCount: len(state.Bundle.Worktrees), Replay: true}, nil
+	}
+	if deps.withLocalCustody == nil || deps.attachLocal == nil || deps.startLocal == nil || deps.inspectLocal == nil || deps.inspectPrepared == nil {
+		return sessionResumeOutput{}, fmt.Errorf("local parked-session resume dependencies are unavailable")
+	}
+	bundleRaw, err := sessionpark.EncodeBundle(state.Bundle)
+	if err != nil {
+		return sessionResumeOutput{}, err
+	}
+	digest := sessionmove.DigestBytes(bundleRaw)
+	replayAttemptID := ""
+	var inspected *sessionlaunch.Result
+	if state.ResumeRoute != nil {
+		if state.ResumeRoute.Mode != sessionpark.ResumeRouteLocal {
+			return sessionResumeOutput{}, fmt.Errorf("parked session resume route is already claimed by remote:%s", state.ResumeRoute.TargetMachine)
+		}
+		if continuationPath, continuation, found, inspectErr := store.LoadLocalSuccessorContextUnderLock(lock); inspectErr != nil {
+			return sessionResumeOutput{}, inspectErr
+		} else if found {
+			if root, rootFound, rootErr := store.ExistingLocalLaunchRootUnderLock(lock); rootErr != nil {
+				return sessionResumeOutput{}, rootErr
+			} else if rootFound {
+				authority, authorityErr := sessionpark.LocalLaunchAuthority(state.Bundle, digest, continuationPath, continuation)
+				if authorityErr != nil {
+					return sessionResumeOutput{}, authorityErr
+				}
+				inspectOptions := sessionlaunch.Options{
+					ProjectsRoot: projectsRoot, Authority: &authority, StoreRoot: store.Root, Fence: lock,
+					WorktreeDir: root, PinnedCommit: authority.PinnedCommit,
+				}
+				candidate, candidateErr := deps.inspectLocal(ctx, inspectOptions)
+				switch {
+				case candidateErr == nil:
+					replayAttemptID = candidate.AttemptID
+					inspected = &candidate
+				case errors.Is(candidateErr, sessionlaunch.ErrNotReleased):
+					preparedAttemptID, preparedErr := deps.inspectPrepared(ctx, inspectOptions)
+					if preparedErr == nil {
+						if preparedAttemptID == "" {
+							return sessionResumeOutput{}, fmt.Errorf("prepared local launcher inspection returned an empty attempt ID")
+						}
+						replayAttemptID = preparedAttemptID
+					} else if !errors.Is(preparedErr, sessionlaunch.ErrNotReleased) {
+						return sessionResumeOutput{}, preparedErr
+					}
+				case errors.Is(candidateErr, sessionlaunch.ErrRetryableLaunch):
+					var failure *sessionlaunch.AttemptFailureError
+					if errors.As(candidateErr, &failure) {
+						replayAttemptID = failure.Evidence.AttemptID
+					}
+				default:
+					return sessionResumeOutput{}, candidateErr
+				}
+			}
+		}
+	}
+	var final sessionpark.State
+	replay := false
+	err = deps.withLocalCustody(ctx, projectsRoot, state.Bundle, replayAttemptID, func(custody *worktrees.ParkedLocalCustody) error {
+		if _, _, err := store.PrepareLocalUnderLock(lock, now); err != nil {
+			return err
+		}
+		continuationPath, continuation, err := store.EnsureLocalSuccessorContextUnderLock(lock)
+		if err != nil {
+			return err
+		}
+		root, err := store.LocalLaunchRootUnderLock(lock)
+		if err != nil {
+			return err
+		}
+		authority, err := sessionpark.LocalLaunchAuthority(state.Bundle, digest, continuationPath, continuation)
+		if err != nil {
+			return err
+		}
+		beforeRelease := func(ctx context.Context, prepared sessionlaunch.Prepared) (string, error) {
+			record := prepared.Session
+			if err := deps.attachLocal(ctx, custody, record, prepared.AttemptID, prepared.AttemptIndex); err != nil {
+				return "", err
+			}
+			if len(state.Bundle.Worktrees) == 0 {
+				return "", nil
+			}
+			return state.Bundle.Worktrees[0].WorkLogReference, nil
+		}
+		launchOptions := sessionlaunch.Options{
+			ProjectsRoot: projectsRoot, Authority: &authority, StoreRoot: store.Root, Fence: lock,
+			WorktreeDir: root, PinnedCommit: authority.PinnedCommit, BeforeRelease: beforeRelease,
+		}
+		var launch sessionlaunch.Result
+		if inspected != nil {
+			launch = *inspected
+			record := session.Record{PID: launch.PID, WBSessionID: launch.WBSessionID, PredecessorWBSessionID: launch.PredecessorWBSessionID,
+				Machine: launch.TargetMachine, Runtime: launch.Runtime, Model: launch.Model, NativeHarnessID: launch.NativeHarnessID,
+				TmuxName: launch.TmuxName, HandoffID: launch.HandoffID, StartedAt: launch.StartedAt}
+			if err := deps.attachLocal(ctx, custody, record, launch.AttemptID, launch.AttemptIndex); err != nil {
+				return err
+			}
+		} else {
+			launch, err = deps.startLocal(ctx, launchOptions)
+			if err != nil {
+				return err
+			}
+		}
+		if deps.afterLocalLaunch != nil {
+			if err := deps.afterLocalLaunch(launch); err != nil {
+				return err
+			}
+		}
+		successor := session.Record{PID: launch.PID, WBSessionID: launch.WBSessionID, PredecessorWBSessionID: launch.PredecessorWBSessionID,
+			Machine: launch.TargetMachine, Runtime: launch.Runtime, Model: launch.Model, NativeHarnessID: launch.NativeHarnessID,
+			TmuxName: launch.TmuxName, HandoffID: launch.HandoffID, StartedAt: launch.StartedAt}
+		final, err = store.ResumeUnderLock(lock, successor, now)
+		replay = launch.Reused
+		return err
+	})
+	if err != nil {
+		return sessionResumeOutput{}, err
+	}
+	if final.Status != sessionpark.StatusResumed || final.Successor == nil {
+		return sessionResumeOutput{}, fmt.Errorf("local parked-session resume completed without one finalized successor")
+	}
+	return sessionResumeOutput{ParkedSessionID: final.Bundle.ParkedSessionID, Status: string(final.Status), TargetMachine: final.Successor.Machine,
+		SuccessorWBSessionID: final.Successor.WBSessionID, MemberCount: len(final.Bundle.Worktrees), Replay: replay}, nil
+}
+
+func publicReceiptDigest(receipt sessionpark.Receipt) sessionmove.Digest {
+	raw, err := sessionpark.EncodeReceipt(receipt)
+	if err != nil {
+		return ""
+	}
+	return sessionmove.DigestBytes(raw)
+}
+
+func writeSessionResumeOutput(command *cobra.Command, format string, output sessionResumeOutput) error {
+	if format == "json" {
+		encoder := json.NewEncoder(command.OutOrStdout())
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(output)
+	}
+	verb := "resumed"
+	if output.Replay {
+		verb = "replayed"
+	}
+	_, err := fmt.Fprintf(command.OutOrStdout(), "%s parked session %s as successor %s on %s with %d worktrees\n",
+		verb, output.ParkedSessionID, output.SuccessorWBSessionID, output.TargetMachine, output.MemberCount)
+	return err
+}
+
 func validateParkedRemoteBundle(bundle sessionpark.Bundle, target string) error {
+	if len(bundle.Worktrees) == 0 || len(bundle.Worktrees) > sessionpark.MaxMembers {
+		return fmt.Errorf("cannot resume parked session %s to %s: remote resume requires between 1 and %d owned worktrees", bundle.ParkedSessionID, target, sessionpark.MaxMembers)
+	}
 	for _, wt := range bundle.Worktrees {
-		if wt.Dirty || wt.Head == "" || wt.RemoteHead == "" || wt.Head != wt.RemoteHead {
+		if wt.Dirty || wt.Head == "" || wt.RemoteHead == "" || wt.Head != wt.RemoteHead || wt.WorkLogReference == "" || wt.OwnerEventID == "" {
 			return fmt.Errorf("cannot resume parked session %s to %s: worktree %s is not remotely reconstructable at exact pushed commit (head=%s remote=%s dirty=%t); clean, push, and park again", bundle.ParkedSessionID, target, wt.WorktreeDir, wt.Head, wt.RemoteHead, wt.Dirty)
 		}
 	}

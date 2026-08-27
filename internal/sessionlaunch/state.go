@@ -44,6 +44,7 @@ type launchPlan struct {
 	WorktreeDir            string             `json:"worktree_dir"`
 	PinnedCommit           string             `json:"pinned_commit"`
 	PinnedBranch           string             `json:"pinned_branch"`
+	RootMode               string             `json:"root_mode,omitempty"`
 	HandoverPath           string             `json:"handover_path"`
 	AuthorityFile          string             `json:"authority_file"`
 	ContinuationKind       string             `json:"continuation_kind"`

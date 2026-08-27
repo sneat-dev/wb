@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -38,6 +39,51 @@ func TestMarkParkedKeepsRegistrationImmutableAndRemovesLiveLookup(t *testing.T) 
 	}
 	if len(views) != 1 || views[0].State != StateParked || views[0].WBSessionID != source.WBSessionID {
 		t.Fatalf("views = %#v", views)
+	}
+}
+
+func TestMarkResumedAppendsProjectionAndListPrefersIt(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sessions")
+	source, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-resume-source", Runtime: "codex", StartedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registration := filepath.Join(dir, strconv.Itoa(os.Getpid())+".json")
+	before, err := os.ReadFile(registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MarkParked(dir, source.PID, "park-resume-test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MarkResumed(dir, source.PID, "park-resume-test", "wbs-resume-successor"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := MarkResumed(dir, source.PID, "park-resume-test", "wbs-resume-successor"); err != nil {
+		t.Fatalf("identical resumed retry: %v", err)
+	}
+	after, err := os.ReadFile(registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("resumed projection rewrote immutable PID registration")
+	}
+	if _, ok := Lookup(dir, source.PID); ok {
+		t.Fatal("resumed source remains live")
+	}
+	views, err := List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].State != StateResumed || views[0].Lifecycle != "resumed" || views[0].ParkedSessionID != "park-resume-test" {
+		t.Fatalf("views = %#v", views)
+	}
+	if _, err := os.Stat(parkedMarkerPath(dir, source.WBSessionID)); err != nil {
+		t.Fatalf("immutable parked history disappeared: %v", err)
+	}
+	if _, err := MarkResumed(dir, source.PID, "park-resume-test", "wbs-other"); err == nil {
+		t.Fatal("conflicting resumed projection accepted")
 	}
 }
 

@@ -18,6 +18,10 @@ func testBundle(t *testing.T) Bundle {
 	return Bundle{SchemaVersion: SchemaVersion, ParkedSessionID: "park-test", Source: session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}, Continuation: "continue from checkpoint", ParkedAt: time.Unix(20, 0).UTC(), Worktrees: []Worktree{{Repository: "acme/app", WorktreeDir: "/tmp/app-a", Branch: "feature/a", Head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Dirty: true}, {Repository: "acme/app", WorktreeDir: "/tmp/app-b", Branch: "feature/b", Head: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", RemoteHead: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}}
 }
 
+func testParkedSSH() sessionmove.SSHConfig {
+	return sessionmove.SSHConfig{Host: "target.example", User: "ai"}
+}
+
 func TestStorePreservesMultipleWorktreesAndDirtyEvidence(t *testing.T) {
 	store := NewStore(t.TempDir())
 	bundle := testBundle(t)
@@ -130,11 +134,11 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstAt := time.Unix(100, 0).UTC()
-	first, err := store.PrepareRemoteUnderLock(lock, "target", "", firstAt)
+	first, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), firstAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.PrepareRemoteUnderLock(lock, "target", "", firstAt.Add(time.Hour))
+	second, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), firstAt.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +162,7 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Close()
-	replayed, err := store.PrepareRemoteUnderLock(lock, "target", "", firstAt.Add(2*time.Hour))
+	replayed, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), firstAt.Add(2*time.Hour))
 	if err != nil || !replayed.Replay || replayed.Digest != first.Digest {
 		t.Fatalf("replayed admission = %#v, err=%v", replayed, err)
 	}
@@ -168,6 +172,138 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 	}
 	if state.Status != StatusResumed || state.Successor == nil || state.Successor.WBSessionID != receipt.SuccessorWBSessionID || state.RemoteReceipt == nil {
 		t.Fatalf("final source state = %#v", state)
+	}
+}
+
+func TestSourceStoreRemoteRouteBindsExactSSHEndpoint(t *testing.T) {
+	store := NewStore(t.TempDir())
+	bundle := remoteTestBundle(t)
+	if _, err := store.Create(bundle); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.Acquire(context.Background(), bundle.ParkedSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	firstAt := time.Unix(100, 0).UTC()
+	endpointA := sessionmove.SSHConfig{Host: "host-a.example", User: "user_alpha_sentinel"}
+	first, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), endpointA, firstAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointB := sessionmove.SSHConfig{Host: "host-b.example", User: "user_beta_sentinel"}
+	if _, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), endpointB, firstAt.Add(time.Hour)); err == nil {
+		t.Fatal("mutable SSH endpoint replaced the durable route")
+	} else if strings.Contains(err.Error(), endpointA.Host) || strings.Contains(err.Error(), endpointA.User) ||
+		strings.Contains(err.Error(), endpointB.Host) || strings.Contains(err.Error(), endpointB.User) {
+		t.Fatalf("endpoint-bearing diagnostic = %q", err)
+	}
+	replayed, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), endpointA, firstAt.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replay || replayed.Route != first.Route || replayed.Route.ClaimedAt != firstAt ||
+		!strings.EqualFold(string(replayed.Raw), string(first.Raw)) {
+		t.Fatalf("retained endpoint replay changed durable admission: first=%#v replay=%#v", first, replayed)
+	}
+}
+
+func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
+	t.Run("ambiguous remote delivery refuses local", func(t *testing.T) {
+		store := NewStore(t.TempDir())
+		bundle := remoteTestBundle(t)
+		if _, err := store.Create(bundle); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := store.Acquire(context.Background(), bundle.ParkedSessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(100, 0)); err != nil {
+			t.Fatal(err)
+		}
+		_ = lock.Close()
+		lock, err = store.Acquire(context.Background(), bundle.ParkedSessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(200, 0)); err == nil || !strings.Contains(err.Error(), "remote:target") {
+			t.Fatalf("competing local route error = %v", err)
+		}
+	})
+
+	t.Run("prepared local launch refuses remote", func(t *testing.T) {
+		store := NewStore(t.TempDir())
+		bundle := remoteTestBundle(t)
+		if _, err := store.Create(bundle); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := store.Acquire(context.Background(), bundle.ParkedSessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(100, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := store.EnsureLocalSuccessorContextUnderLock(lock); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(200, 0)); err == nil || !strings.Contains(err.Error(), "local") {
+			t.Fatalf("competing remote route error = %v", err)
+		}
+	})
+}
+
+func TestSourceStoreConcurrentLocalRemoteRouteHasOneWinner(t *testing.T) {
+	store := NewStore(t.TempDir())
+	bundle := remoteTestBundle(t)
+	if _, err := store.Create(bundle); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan string, 2)
+	var wg sync.WaitGroup
+	for _, mode := range []string{ResumeRouteLocal, ResumeRouteRemote} {
+		wg.Add(1)
+		go func(mode string) {
+			defer wg.Done()
+			<-start
+			lock, err := store.Acquire(context.Background(), bundle.ParkedSessionID)
+			if err == nil {
+				if mode == ResumeRouteLocal {
+					_, _, err = store.PrepareLocalUnderLock(lock, time.Unix(100, 0))
+				} else {
+					_, err = store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(100, 0))
+				}
+				_ = lock.Close()
+			}
+			if err == nil {
+				results <- mode
+			} else {
+				results <- "refused"
+			}
+		}(mode)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	winners, refusals := 0, 0
+	for result := range results {
+		if result == "refused" {
+			refusals++
+		} else {
+			winners++
+		}
+	}
+	if winners != 1 || refusals != 1 {
+		t.Fatalf("route outcomes winners=%d refusals=%d", winners, refusals)
+	}
+	state, err := store.Load(bundle.ParkedSessionID)
+	if err != nil || state.ResumeRoute == nil {
+		t.Fatalf("state=%#v err=%v", state, err)
 	}
 }
 
@@ -335,7 +471,7 @@ func TestSourceStoreRefusesSecondTargetAfterDurableResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := store.PrepareRemoteUnderLock(lock, "target-a", "", time.Unix(100, 0))
+	first, err := store.PrepareRemoteUnderLock(lock, "target-a", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(100, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +489,7 @@ func TestSourceStoreRefusesSecondTargetAfterDurableResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Close()
-	if _, err := store.PrepareRemoteUnderLock(lock, "target-b", "", time.Unix(300, 0)); err == nil {
+	if _, err := store.PrepareRemoteUnderLock(lock, "target-b", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(300, 0)); err == nil {
 		t.Fatal("resumed source admitted a competing target")
 	}
 	if _, err := os.Stat(filepath.Join(store.Root, bundle.ParkedSessionID, sourceEnvelopeName("target-b"))); !os.IsNotExist(err) {

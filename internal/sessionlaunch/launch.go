@@ -15,6 +15,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
+	"github.com/sneat-dev/wb/internal/sessionpark"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -39,6 +40,36 @@ type Prepared struct {
 	AttemptIndex  uint64
 	WorktreeDir   string
 	PinnedCommit  string
+}
+
+// PreparedEvidence is the narrow recovery identity for a launcher that
+// durably published exact ready/process artifacts but may not yet have a
+// release. It authorizes only that attempt ID at an external custody barrier;
+// Start still decides whether the same wrapper can release or must be replaced.
+type PreparedEvidence struct {
+	HandoffID     string
+	RequestDigest sessionmove.Digest
+	AttemptID     string
+	AttemptIndex  uint64
+	PID           int
+	StartedAt     time.Time
+	authority     *preparedEvidenceAuthority
+}
+
+type preparedEvidenceAuthority struct {
+	HandoffID     string
+	RequestDigest sessionmove.Digest
+	AttemptID     string
+	AttemptIndex  uint64
+	PID           int
+	StartedAt     time.Time
+}
+
+func (e PreparedEvidence) Authenticates(handoffID string, digest sessionmove.Digest) bool {
+	a := e.authority
+	return a != nil && e.HandoffID == a.HandoffID && e.RequestDigest == a.RequestDigest && e.AttemptID == a.AttemptID &&
+		e.AttemptIndex == a.AttemptIndex && e.PID == a.PID && e.StartedAt.Equal(a.StartedAt) &&
+		e.HandoffID == handoffID && e.RequestDigest == digest
 }
 
 // FailureEvidence is descriptor-validated immutable launcher evidence for one
@@ -213,6 +244,130 @@ func Inspect(ctx context.Context, options Options) (Result, error) {
 	return inspectWithDependencies(ctx, options, deps, true)
 }
 
+// InspectPrepared authenticates the most recent descriptor-bound ready
+// attempt when no launch has been released. It never declares success and
+// never chooses retry policy; Start performs the live-wrapper/abandonment
+// checks again while holding the same aggregate fence.
+func InspectPrepared(_ context.Context, options Options) (PreparedEvidence, error) {
+	resolved, err := resolveAuthority(options)
+	if err != nil {
+		return PreparedEvidence{}, err
+	}
+	authority := resolved.launch
+	if resolved.fence == nil || !resolved.fence.HeldForSession(resolved.storeRoot, authority.AggregateID, authority.AggregateDigest) {
+		return PreparedEvidence{}, fmt.Errorf("prepared successor inspection requires the exact held handoff execution lock")
+	}
+	handoffAuthority, err := resolved.fence.RetainSessionDir(resolved.storeRoot, authority.AggregateID, authority.AggregateDigest)
+	if err != nil {
+		return PreparedEvidence{}, err
+	}
+	state, err := openLaunchStateFromHandoff(authority.AggregateID, handoffAuthority, false)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PreparedEvidence{}, ErrNotReleased
+		}
+		return PreparedEvidence{}, err
+	}
+	defer state.Close()
+	plan, planDigest, err := state.loadPlan()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return PreparedEvidence{}, ErrNotReleased
+		}
+		return PreparedEvidence{}, err
+	}
+	worktree, err := filepath.Abs(options.WorktreeDir)
+	if err != nil || filepath.Clean(worktree) != worktree {
+		return PreparedEvidence{}, fmt.Errorf("successor worktree must be a clean absolute path")
+	}
+	if err := validatePlanForOptions(plan, options, resolved, worktree); err != nil {
+		return PreparedEvidence{}, err
+	}
+	if _, err := state.loadStarted(); err == nil {
+		return PreparedEvidence{}, fmt.Errorf("successor already has an immutable started marker")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return PreparedEvidence{}, err
+	}
+	refs, err := state.listAttempts()
+	if err != nil {
+		return PreparedEvidence{}, err
+	}
+	for index := len(refs) - 1; index >= 0; index-- {
+		attempt, openErr := state.openAttempt(refs[index].id)
+		if openErr != nil {
+			return PreparedEvidence{}, openErr
+		}
+		release, releaseDigest, releaseErr := attempt.loadRelease()
+		if releaseErr == nil {
+			// A newer claimed attempt can exist only after Start proved this
+			// released attempt terminal and retryable. If the coordinator then
+			// crashed before the newer wrapper became ready, external custody
+			// still names this exact prior attempt.
+			if index == len(refs)-1 {
+				_ = attempt.Close()
+				return PreparedEvidence{}, fmt.Errorf("prepared successor inspection found an already released latest attempt")
+			}
+			ready, readyDigest, readyErr := attempt.loadReady(release.PID)
+			if readyErr != nil {
+				_ = attempt.Close()
+				return PreparedEvidence{}, readyErr
+			}
+			failure, found, failureErr := attempt.loadExecFailure(release.PID)
+			if failureErr != nil {
+				_ = attempt.Close()
+				return PreparedEvidence{}, failureErr
+			}
+			if !found || release.RequestDigest != plan.RequestDigest || release.PlanDigest != planDigest || release.ReadyDigest != readyDigest ||
+				ready.RequestDigest != plan.RequestDigest || ready.PlanDigest != planDigest || failure.RequestDigest != plan.RequestDigest ||
+				failure.PlanDigest != planDigest || failure.ReadyDigest != readyDigest || failure.ReleaseDigest != releaseDigest ||
+				!sameReadySession(plan, ready, ready.Session) {
+				_ = attempt.Close()
+				return PreparedEvidence{}, fmt.Errorf("prior released custody attempt lacks exact terminal evidence")
+			}
+			evidence := preparedEvidenceFrom(attempt, plan, ready)
+			_ = attempt.Close()
+			return evidence, nil
+		} else if !errors.Is(releaseErr, os.ErrNotExist) {
+			_ = attempt.Close()
+			return PreparedEvidence{}, releaseErr
+		}
+		pid, found, evidenceErr := attempt.preReleaseProcessEvidence()
+		if evidenceErr != nil {
+			_ = attempt.Close()
+			return PreparedEvidence{}, evidenceErr
+		}
+		if !found {
+			_ = attempt.Close()
+			continue
+		}
+		ready, _, readyErr := attempt.loadReady(pid)
+		if errors.Is(readyErr, os.ErrNotExist) {
+			_ = attempt.Close()
+			continue
+		}
+		if readyErr != nil {
+			_ = attempt.Close()
+			return PreparedEvidence{}, readyErr
+		}
+		if ready.RequestDigest != plan.RequestDigest || ready.PlanDigest != planDigest || !sameReadySession(plan, ready, ready.Session) {
+			_ = attempt.Close()
+			return PreparedEvidence{}, fmt.Errorf("prepared successor evidence conflicts with its immutable plan")
+		}
+		evidence := preparedEvidenceFrom(attempt, plan, ready)
+		_ = attempt.Close()
+		return evidence, nil
+	}
+	return PreparedEvidence{}, ErrNotReleased
+}
+
+func preparedEvidenceFrom(attempt *launchAttempt, plan launchPlan, ready launcherReady) PreparedEvidence {
+	evidence := PreparedEvidence{HandoffID: plan.HandoffID, RequestDigest: plan.RequestDigest,
+		AttemptID: attempt.id, AttemptIndex: attempt.index, PID: ready.PID, StartedAt: ready.Session.StartedAt}
+	evidence.authority = &preparedEvidenceAuthority{HandoffID: evidence.HandoffID, RequestDigest: evidence.RequestDigest,
+		AttemptID: evidence.AttemptID, AttemptIndex: evidence.AttemptIndex, PID: evidence.PID, StartedAt: evidence.StartedAt}
+	return evidence
+}
+
 func startWithDependencies(ctx context.Context, options Options, deps dependencies) (Result, error) {
 	resolved, err := resolveAuthority(options)
 	if err != nil {
@@ -279,6 +434,7 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 			Machine: authority.TargetMachine, TmuxName: "wb-session-" + authority.SuccessorWBSessionID,
 			Runtime: spec.Runtime, Model: spec.Model, StoreRoot: storeRoot, WorktreeDir: worktree,
 			PinnedCommit: options.PinnedCommit, PinnedBranch: authority.PinnedBranch,
+			RootMode:     string(authority.RootMode),
 			HandoverPath: authority.ContinuationPath, AuthorityFile: authority.AggregateFile,
 			ContinuationKind: string(authority.ContinuationKind), ContinuationDigest: sessionmove.Digest(authority.ContinuationDigest),
 			WBExecutable:      wbExecutable,
@@ -632,6 +788,18 @@ func inspectStarted(ctx context.Context, options Options, deps dependencies, sta
 }
 
 func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
+	mode := sessionauthority.LaunchRootMode(plan.RootMode)
+	if mode == "" {
+		mode = sessionauthority.LaunchRootPinnedClean
+	}
+	if mode == sessionauthority.LaunchRootParkedNeutral {
+		want := filepath.Join(plan.StoreRoot, plan.HandoffID, sessionpark.LocalNeutralDirName)
+		info, err := os.Lstat(plan.WorktreeDir)
+		if err != nil || plan.WorktreeDir != want || !info.IsDir() || info.Mode().Perm() != 0o700 {
+			return fmt.Errorf("parked-neutral successor root is not the exact private 0700 aggregate directory")
+		}
+		return nil
+	}
 	gitPath, err := exec.LookPath("git")
 	if err != nil {
 		return fmt.Errorf("fixed git executable is unavailable for launch verification: %w", err)
@@ -656,7 +824,7 @@ func verifyPinnedWorktree(ctx context.Context, plan launchPlan) error {
 	if err != nil {
 		return fmt.Errorf("inspect pinned successor worktree status: %w", err)
 	}
-	if len(status) != 0 {
+	if len(status) != 0 && mode != sessionauthority.LaunchRootParkedLocal {
 		return fmt.Errorf("pinned successor worktree is dirty before harness release")
 	}
 	return nil
@@ -909,7 +1077,7 @@ func validatePlanForOptions(plan launchPlan, options Options, resolved resolvedA
 		plan.SuccessorWBSessionID != authority.SuccessorWBSessionID || plan.PredecessorWBSessionID != authority.PredecessorWBSessionID ||
 		plan.Machine != authority.TargetMachine || plan.TmuxName != "wb-session-"+authority.SuccessorWBSessionID ||
 		plan.StoreRoot != resolved.storeRoot || plan.WorktreeDir != worktree ||
-		plan.PinnedCommit != options.PinnedCommit || plan.PinnedCommit != authority.PinnedCommit ||
+		plan.PinnedCommit != options.PinnedCommit || plan.PinnedCommit != authority.PinnedCommit || plan.RootMode != string(authority.RootMode) ||
 		plan.HandoverPath != authority.ContinuationPath {
 		return fmt.Errorf("immutable launch plan conflicts with the admitted request or pinned worktree")
 	}

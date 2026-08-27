@@ -13,6 +13,7 @@ import (
 )
 
 type ContinuationKind string
+type LaunchRootMode string
 
 const (
 	ContinuationEnvironment = "WB_SESSION_CONTINUATION_FILE"
@@ -21,7 +22,10 @@ const (
 	ContinuationTracked ContinuationKind = "tracked"
 	// ContinuationPrivate is a 0600 regular file outside the target worktree,
 	// retained below the admitted aggregate directory.
-	ContinuationPrivate ContinuationKind = "private"
+	ContinuationPrivate     ContinuationKind = "private"
+	LaunchRootPinnedClean   LaunchRootMode   = "pinned_clean"
+	LaunchRootParkedLocal   LaunchRootMode   = "parked_local"
+	LaunchRootParkedNeutral LaunchRootMode   = "parked_neutral"
 )
 
 // Fence is the descriptor-retaining execution authority common to admitted
@@ -50,6 +54,9 @@ type Launch struct {
 	ContinuationKind       ContinuationKind
 	ContinuationPath       string
 	ContinuationDigest     string
+	// RootMode is immutable launch authority. Empty is accepted only as read
+	// compatibility for legacy pinned-clean launch artifacts.
+	RootMode LaunchRootMode
 }
 
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -93,11 +100,27 @@ func (launch Launch) Validate() error {
 	if strings.ContainsAny(launch.SourceModel, "\r\n") || strings.ContainsAny(launch.RequestedHarness, "\r\n") {
 		return fmt.Errorf("model and requested harness must be single-line")
 	}
-	if !gitObjectID.MatchString(launch.PinnedCommit) {
-		return fmt.Errorf("pinned commit must be one full lowercase Git object ID")
+	mode := launch.RootMode
+	if mode == "" {
+		mode = LaunchRootPinnedClean
 	}
-	if strings.TrimSpace(launch.PinnedBranch) == "" || strings.ContainsAny(launch.PinnedBranch, "\r\n") {
-		return fmt.Errorf("pinned branch is required and must be single-line")
+	switch mode {
+	case LaunchRootPinnedClean, LaunchRootParkedLocal:
+		if !gitObjectID.MatchString(launch.PinnedCommit) {
+			return fmt.Errorf("pinned commit must be one full lowercase Git object ID")
+		}
+		if strings.TrimSpace(launch.PinnedBranch) == "" || strings.ContainsAny(launch.PinnedBranch, "\r\n") {
+			return fmt.Errorf("pinned branch is required and must be single-line")
+		}
+		if mode == LaunchRootParkedLocal && launch.ContinuationKind != ContinuationPrivate {
+			return fmt.Errorf("parked-local launch requires private continuation authority")
+		}
+	case LaunchRootParkedNeutral:
+		if launch.PinnedCommit != "" || launch.PinnedBranch != "" || launch.ContinuationKind != ContinuationPrivate {
+			return fmt.Errorf("parked-neutral launch requires private continuation authority without a Git pin")
+		}
+	default:
+		return fmt.Errorf("launch root mode %q is unsupported", mode)
 	}
 	switch launch.ContinuationKind {
 	case ContinuationTracked:

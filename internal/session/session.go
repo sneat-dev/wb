@@ -69,10 +69,26 @@ type View struct {
 
 // Liveness states, matching the vocabulary used for worktree owners.
 const (
-	StateLive   = "live"
-	StateGone   = "gone"
-	StateParked = "parked"
+	StateLive    = "live"
+	StateGone    = "gone"
+	StateParked  = "parked"
+	StateResumed = "resumed"
 )
+
+type parkedLifecycleMarker struct {
+	SchemaVersion   int       `json:"schema_version"`
+	WBSessionID     string    `json:"wb_session_id"`
+	ParkedSessionID string    `json:"parked_session_id"`
+	At              time.Time `json:"at"`
+}
+
+type resumedLifecycleMarker struct {
+	SchemaVersion        int       `json:"schema_version"`
+	WBSessionID          string    `json:"wb_session_id"`
+	ParkedSessionID      string    `json:"parked_session_id"`
+	SuccessorWBSessionID string    `json:"successor_wb_session_id"`
+	At                   time.Time `json:"at"`
+}
 
 func recordPath(dir string, pid int) string {
 	return filepath.Join(dir, strconv.Itoa(pid)+".json")
@@ -201,10 +217,11 @@ func MarkParked(dir string, pid int, parkedID string) (Record, error) {
 		}
 		return Record{}, fmt.Errorf("session with pid %d is already parked as %s", pid, record.ParkedSessionID)
 	}
+	if _, resumed := readResumedMarker(dir, record.WBSessionID); resumed {
+		return Record{}, fmt.Errorf("session with pid %d has already resumed", pid)
+	}
 	if existing, err := os.ReadFile(parkedMarkerPath(dir, record.WBSessionID)); err == nil {
-		var marker struct {
-			ParkedSessionID string `json:"parked_session_id"`
-		}
+		var marker parkedLifecycleMarker
 		if json.Unmarshal(existing, &marker) == nil && marker.ParkedSessionID == parkedID {
 			record.Lifecycle, record.ParkedSessionID = "parked", parkedID
 			return record, nil
@@ -223,12 +240,7 @@ func MarkParked(dir string, pid int, parkedID string) (Record, error) {
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
 		return Record{}, err
 	}
-	marker := struct {
-		SchemaVersion   int       `json:"schema_version"`
-		WBSessionID     string    `json:"wb_session_id"`
-		ParkedSessionID string    `json:"parked_session_id"`
-		At              time.Time `json:"at"`
-	}{1, record.WBSessionID, parkedID, time.Now().UTC()}
+	marker := parkedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID, At: time.Now().UTC()}
 	raw, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return Record{}, err
@@ -253,15 +265,122 @@ func MarkParked(dir string, pid int, parkedID string) (Record, error) {
 	return record, nil
 }
 
+// MarkResumed appends the terminal local registry projection without
+// rewriting either the immutable PID registration or the parked history.
+// An identical retry repairs a crash after the parked-session store finalized.
+func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Record, error) {
+	record, ok := readRecord(recordPath(dir, pid))
+	if !ok {
+		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
+	}
+	parkedMarker, parked := readParkedMarker(dir, record.WBSessionID)
+	if !parked || parkedMarker.ParkedSessionID != parkedID {
+		return Record{}, fmt.Errorf("session with pid %d is not parked as %s", pid, parkedID)
+	}
+	successorWBSessionID = strings.TrimSpace(successorWBSessionID)
+	if successorWBSessionID == "" || successorWBSessionID == record.WBSessionID {
+		return Record{}, fmt.Errorf("resumed session requires a distinct successor WB session ID")
+	}
+	if existing, found := readResumedMarker(dir, record.WBSessionID); found {
+		if existing.ParkedSessionID != parkedID || existing.SuccessorWBSessionID != successorWBSessionID {
+			return Record{}, fmt.Errorf("session with pid %d already has a different resumed projection", pid)
+		}
+		record.Lifecycle, record.ParkedSessionID = "resumed", parkedID
+		return record, nil
+	}
+	markerDir := filepath.Join(dir, "lifecycle")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return Record{}, err
+	}
+	marker := resumedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID,
+		SuccessorWBSessionID: successorWBSessionID, At: time.Now().UTC()}
+	raw, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return Record{}, err
+	}
+	path := resumedMarkerPath(dir, record.WBSessionID)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		if existing, found := readResumedMarker(dir, record.WBSessionID); found && existing.ParkedSessionID == parkedID && existing.SuccessorWBSessionID == successorWBSessionID {
+			record.Lifecycle, record.ParkedSessionID = "resumed", parkedID
+			return record, nil
+		}
+		return Record{}, fmt.Errorf("session with pid %d already has a different resumed projection", pid)
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("record resumed session lifecycle: %w", err)
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		_ = file.Close()
+		return Record{}, err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return Record{}, err
+	}
+	if err := file.Close(); err != nil {
+		return Record{}, err
+	}
+	directory, err := os.Open(markerDir)
+	if err != nil {
+		return Record{}, err
+	}
+	err = directory.Sync()
+	_ = directory.Close()
+	if err != nil {
+		return Record{}, err
+	}
+	record.Lifecycle, record.ParkedSessionID = "resumed", parkedID
+	return record, nil
+}
+
 func parkedMarkerPath(dir, wbSessionID string) string {
 	return filepath.Join(dir, "lifecycle", wbSessionID+".parked.json")
 }
+
+func resumedMarkerPath(dir, wbSessionID string) string {
+	return filepath.Join(dir, "lifecycle", wbSessionID+".resumed.json")
+}
+
+func readParkedMarker(dir, wbSessionID string) (parkedLifecycleMarker, bool) {
+	raw, err := os.ReadFile(parkedMarkerPath(dir, wbSessionID))
+	if err != nil {
+		return parkedLifecycleMarker{}, false
+	}
+	var marker parkedLifecycleMarker
+	if json.Unmarshal(raw, &marker) != nil || marker.SchemaVersion != 1 || marker.WBSessionID != wbSessionID || marker.ParkedSessionID == "" || marker.At.IsZero() {
+		return parkedLifecycleMarker{}, false
+	}
+	return marker, true
+}
+
+func readResumedMarker(dir, wbSessionID string) (resumedLifecycleMarker, bool) {
+	raw, err := os.ReadFile(resumedMarkerPath(dir, wbSessionID))
+	if err != nil {
+		return resumedLifecycleMarker{}, false
+	}
+	var marker resumedLifecycleMarker
+	if json.Unmarshal(raw, &marker) != nil || marker.SchemaVersion != 1 || marker.WBSessionID != wbSessionID ||
+		marker.ParkedSessionID == "" || marker.SuccessorWBSessionID == "" || marker.At.IsZero() {
+		return resumedLifecycleMarker{}, false
+	}
+	return marker, true
+}
+
 func parked(dir, wbSessionID string) bool {
 	if wbSessionID == "" {
 		return false
 	}
 	_, err := os.Stat(parkedMarkerPath(dir, wbSessionID))
 	return err == nil
+}
+
+func resumed(dir, wbSessionID string) bool {
+	if wbSessionID == "" {
+		return false
+	}
+	_, ok := readResumedMarker(dir, wbSessionID)
+	return ok
 }
 
 func readRecord(path string) (Record, bool) {
@@ -301,7 +420,11 @@ func List(dir string) ([]View, error) {
 			continue
 		}
 		viewState := state(record.PID)
-		if record.Lifecycle == "parked" || parked(dir, record.WBSessionID) {
+		if marker, ok := readResumedMarker(dir, record.WBSessionID); ok {
+			record.Lifecycle, record.ParkedSessionID = "resumed", marker.ParkedSessionID
+			viewState = StateResumed
+		} else if record.Lifecycle == "parked" || parked(dir, record.WBSessionID) {
+			record.Lifecycle = "parked"
 			viewState = StateParked
 		}
 		views = append(views, View{Record: record, State: viewState})
@@ -339,7 +462,7 @@ func Lookup(dir string, pid int) (Record, bool) {
 	if !ok {
 		return Record{}, false
 	}
-	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !parked(dir, record.WBSessionID) && state(record.PID) == StateLive
+	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !resumed(dir, record.WBSessionID) && !parked(dir, record.WBSessionID) && state(record.PID) == StateLive
 }
 
 func state(pid int) string {

@@ -282,6 +282,73 @@ func TestReleasedExactFailureRetriesOneNewAttempt(t *testing.T) {
 	}
 }
 
+func TestInspectPreparedAuthenticatesExactPreReleaseAttempt(t *testing.T) {
+	fixture := newLauncherRetryFixture(t)
+	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := state.createAttempt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const pid = 929292
+	fence, err := attempt.acquireExecFence(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fence.Close() })
+	record := session.Record{PID: pid, WBSessionID: fixture.plan.SuccessorWBSessionID, Machine: fixture.plan.Machine,
+		Runtime: fixture.plan.Runtime, Model: fixture.plan.Model, TmuxName: fixture.plan.TmuxName,
+		PredecessorWBSessionID: fixture.plan.PredecessorWBSessionID, HandoffID: fixture.plan.HandoffID, StartedAt: fixture.deps.now()}
+	if _, err := attempt.saveReady(fixture.plan, fixture.planDigest, record); err != nil {
+		t.Fatal(err)
+	}
+	wantID := attempt.id
+	_ = attempt.Close()
+	_ = state.Close()
+
+	evidence, err := InspectPrepared(context.Background(), fixture.options(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.AttemptID != wantID || evidence.AttemptIndex != 1 || evidence.PID != pid ||
+		!evidence.Authenticates(fixture.request.HandoffID, fixture.digest) {
+		t.Fatalf("prepared evidence = %#v", evidence)
+	}
+	mutated := evidence
+	mutated.AttemptID = "000002-00000000000000000000000000000002"
+	if mutated.Authenticates(fixture.request.HandoffID, fixture.digest) {
+		t.Fatal("mutated prepared attempt retained authentication")
+	}
+}
+
+func TestInspectPreparedRecoversPriorCustodyWhenNewAttemptHasNoEvidence(t *testing.T) {
+	fixture := newLauncherRetryFixture(t)
+	fixture.createReleasedAttempt(t, true, false)
+	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := state.createAttempt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = next.Close()
+	_ = state.Close() // crash after replacement claim, before its wrapper/ready evidence
+
+	if _, err := inspectWithDependencies(context.Background(), fixture.options(nil), fixture.deps, true); !errors.Is(err, ErrNotReleased) {
+		t.Fatalf("released inspection error = %v, want ErrNotReleased for empty latest attempt", err)
+	}
+	evidence, err := InspectPrepared(context.Background(), fixture.options(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.AttemptIndex != 1 || evidence.PID != 919191 || !evidence.Authenticates(fixture.request.HandoffID, fixture.digest) {
+		t.Fatalf("prior exact custody evidence = %#v", evidence)
+	}
+}
+
 func TestClaimedAttemptCrashCompletesSameAttemptWithoutSecondClaim(t *testing.T) {
 	fixture := newLauncherRetryFixture(t)
 	state, err := openLaunchState(fixture.store.Root, fixture.request.HandoffID, false)

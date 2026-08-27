@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -54,7 +55,7 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 	storeRoot, handoffID, attemptID, expectedPlanDigest := args[0], args[1], args[2], sessionmove.Digest(args[3])
 	storeKind := filepath.Base(storeRoot)
 	if !filepath.IsAbs(storeRoot) || filepath.Clean(storeRoot) != storeRoot ||
-		storeKind != sessionmove.DirName && storeKind != sessionpark.TargetDirName {
+		storeKind != sessionmove.DirName && storeKind != sessionpark.TargetDirName && storeKind != sessionpark.SourceDirName {
 		return fmt.Errorf("private launcher requires the exact clean absolute handoff store root")
 	}
 	store := sessionmove.NewStore(storeRoot)
@@ -272,31 +273,50 @@ func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request) error 
 // the expected launch authority from that envelope, and then compares every
 // plan field before the private continuation path can enter the environment.
 func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error) {
-	if plan.AuthorityFile != sessionpark.EnvelopeFileName ||
-		sessionauthority.ContinuationKind(plan.ContinuationKind) != sessionauthority.ContinuationPrivate {
+	if sessionauthority.ContinuationKind(plan.ContinuationKind) != sessionauthority.ContinuationPrivate {
 		return "", fmt.Errorf("parked launcher plan does not name the fixed private authority artifacts")
 	}
-	raw, err := readPrivateArtifactAt(state.handoff, sessionpark.EnvelopeFileName, sessionpark.MaxEnvelopeBytes)
+	maximum := sessionpark.MaxEnvelopeBytes
+	if plan.AuthorityFile == sessionpark.BundleFileName {
+		maximum = sessionpark.MaxBundleBytes
+	} else if plan.AuthorityFile != sessionpark.EnvelopeFileName {
+		return "", fmt.Errorf("parked launcher plan does not name the fixed private authority artifacts")
+	}
+	raw, err := readPrivateArtifactAt(state.handoff, plan.AuthorityFile, maximum)
 	if err != nil {
-		return "", fmt.Errorf("read admitted parked-session envelope: %w", err)
+		return "", fmt.Errorf("read admitted parked-session authority: %w", err)
 	}
 	if !plan.RequestDigest.Matches(raw) {
-		return "", fmt.Errorf("admitted parked-session envelope digest changed")
-	}
-	envelope, err := sessionpark.DecodeEnvelope(raw)
-	if err != nil {
-		return "", err
-	}
-	canonical, err := sessionpark.EncodeEnvelope(envelope)
-	if err != nil || !bytes.Equal(canonical, raw) {
-		return "", fmt.Errorf("admitted parked-session envelope is not canonical")
+		return "", fmt.Errorf("admitted parked-session authority digest changed")
 	}
 	continuationPath := filepath.Join(plan.StoreRoot, plan.HandoffID, sessionpark.SuccessorContextFileName)
 	continuation, err := readPrivateArtifactAt(state.handoff, sessionpark.SuccessorContextFileName, sessionpark.MaxSuccessorContextBytes)
 	if err != nil {
 		return "", fmt.Errorf("read private parked successor context: %w", err)
 	}
-	authority, err := sessionpark.LaunchAuthority(envelope.Request, plan.RequestDigest, continuationPath, continuation)
+	var authority sessionauthority.Launch
+	var localBundle *sessionpark.Bundle
+	var continuationPrefix []byte
+	if plan.AuthorityFile == sessionpark.EnvelopeFileName {
+		envelope, decodeErr := sessionpark.DecodeEnvelope(raw)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		canonical, encodeErr := sessionpark.EncodeEnvelope(envelope)
+		if encodeErr != nil || !bytes.Equal(canonical, raw) {
+			return "", fmt.Errorf("admitted parked-session envelope is not canonical")
+		}
+		authority, err = sessionpark.LaunchAuthority(envelope.Request, plan.RequestDigest, continuationPath, continuation)
+		continuationPrefix = []byte(envelope.Request.Continuation)
+	} else {
+		bundle, decodeErr := sessionpark.DecodeBundle(raw)
+		if decodeErr != nil {
+			return "", decodeErr
+		}
+		localBundle = &bundle
+		authority, err = sessionpark.LocalLaunchAuthority(bundle, plan.RequestDigest, continuationPath, continuation)
+		continuationPrefix = []byte(bundle.Continuation)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -304,8 +324,10 @@ func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error
 		plan.SuccessorWBSessionID != authority.SuccessorWBSessionID || plan.PredecessorWBSessionID != authority.PredecessorWBSessionID ||
 		plan.Machine != authority.TargetMachine || plan.TmuxName != "wb-session-"+authority.SuccessorWBSessionID ||
 		plan.PinnedCommit != authority.PinnedCommit || plan.PinnedBranch != authority.PinnedBranch ||
+		plan.RootMode != string(authority.RootMode) ||
 		plan.HandoverPath != authority.ContinuationPath || plan.ContinuationDigest != sessionmove.Digest(authority.ContinuationDigest) ||
-		plan.StoreRoot == "" || filepath.Base(plan.StoreRoot) != sessionpark.TargetDirName {
+		plan.StoreRoot == "" || plan.AuthorityFile == sessionpark.EnvelopeFileName && filepath.Base(plan.StoreRoot) != sessionpark.TargetDirName ||
+		plan.AuthorityFile == sessionpark.BundleFileName && filepath.Base(plan.StoreRoot) != sessionpark.SourceDirName {
 		return "", fmt.Errorf("immutable launch plan does not match admitted parked-session envelope")
 	}
 	spec, err := harnessSpecForAuthority(authority, plan.WorktreeDir)
@@ -317,7 +339,7 @@ func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error
 		return "", fmt.Errorf("immutable parked launch plan does not match fixed %s harness argv", spec.Runtime)
 	}
 	for _, argument := range plan.HarnessArgs {
-		if strings.Contains(argument, continuationPath) || strings.Contains(argument, envelope.Request.Continuation) {
+		if strings.Contains(argument, continuationPath) || strings.Contains(argument, string(continuationPrefix)) {
 			return "", fmt.Errorf("private continuation data must not appear in harness argv")
 		}
 	}
@@ -343,10 +365,66 @@ func validatePrivateParkPlan(state *launchState, plan launchPlan) (string, error
 	if err != nil || !os.SameFile(wantInfo, gotInfo) {
 		return "", fmt.Errorf("private launcher is not rooted in the pinned target worktree")
 	}
-	if !plan.ContinuationDigest.Matches(continuation) || !bytes.HasPrefix(continuation, []byte(envelope.Request.Continuation)) {
+	if !plan.ContinuationDigest.Matches(continuation) || !bytes.HasPrefix(continuation, continuationPrefix) {
 		return "", fmt.Errorf("private parked continuation conflicts with admitted envelope")
 	}
+	if localBundle != nil {
+		if !bytes.HasPrefix(continuation, []byte(localBundle.Continuation)) {
+			return "", fmt.Errorf("private parked continuation conflicts with admitted bundle")
+		}
+		if err := verifyPrivateLocalRoot(state, *localBundle, plan); err != nil {
+			return "", err
+		}
+	}
 	return continuationPath, nil
+}
+
+func verifyPrivateLocalRoot(state *launchState, bundle sessionpark.Bundle, plan launchPlan) error {
+	mode := sessionauthority.LaunchRootMode(plan.RootMode)
+	if len(bundle.Worktrees) == 0 {
+		want := filepath.Join(plan.StoreRoot, bundle.ParkedSessionID, sessionpark.LocalNeutralDirName)
+		fd, err := openPrivateDirectoryAt(int(state.handoff.Fd()), sessionpark.LocalNeutralDirName, false)
+		if err != nil {
+			return fmt.Errorf("retain private launcher neutral root: %w", err)
+		}
+		neutral, err := fileForFD(fd, "wb-parked-local-neutral-root")
+		if err != nil {
+			return err
+		}
+		defer neutral.Close()
+		neutralInfo, neutralErr := neutral.Stat()
+		cwd, cwdErr := os.Open(".")
+		if cwdErr != nil {
+			return cwdErr
+		}
+		defer cwd.Close()
+		cwdInfo, cwdInfoErr := cwd.Stat()
+		if neutralErr != nil || cwdInfoErr != nil || mode != sessionauthority.LaunchRootParkedNeutral || plan.WorktreeDir != want ||
+			!os.SameFile(neutralInfo, cwdInfo) {
+			return fmt.Errorf("private launcher neutral root is not the exact descriptor-authenticated parked aggregate directory")
+		}
+		return nil
+	}
+	if mode != sessionauthority.LaunchRootParkedLocal || plan.WorktreeDir != bundle.Worktrees[0].WorktreeDir {
+		return fmt.Errorf("private launcher local root does not match the exact first parked member")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return fmt.Errorf("fixed git executable is unavailable for parked-local launch verification: %w", err)
+	}
+	gitPath, err = cleanAbsoluteExecutable(gitPath)
+	if err != nil {
+		return err
+	}
+	for _, member := range bundle.Worktrees {
+		branch, branchErr := exec.Command(gitPath, "-C", member.WorktreeDir, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+		head, headErr := exec.Command(gitPath, "-C", member.WorktreeDir, "rev-parse", "--verify", "HEAD^{commit}").Output()
+		if branchErr != nil || headErr != nil || string(bytes.TrimSpace(branch)) != member.Branch ||
+			string(bytes.TrimSpace(head)) != member.Head {
+			return fmt.Errorf("parked-local member branch or HEAD changed immediately before harness exec")
+		}
+	}
+	return nil
 }
 
 func readPrivateArtifactAt(directory *os.File, name string, maximum int) ([]byte, error) {

@@ -258,6 +258,31 @@ func LaunchAuthority(request RemoteRequest, digest sessionmove.Digest, continuat
 		RequestedHarness: request.RequestedHarness, ContinuationKind: sessionauthority.ContinuationPrivate,
 		ContinuationPath: continuationPath, ContinuationDigest: string(sessionmove.DigestBytes(continuation)),
 		PinnedCommit: request.Members[0].Commit, PinnedBranch: MemberPin(request.ResumeID, request.Members[0].MemberID),
+		RootMode: sessionauthority.LaunchRootPinnedClean,
+	}
+	return launch, launch.Validate()
+}
+
+func LocalLaunchAuthority(bundle Bundle, digest sessionmove.Digest, continuationPath string, continuation []byte) (sessionauthority.Launch, error) {
+	if err := validateBundle(bundle); err != nil {
+		return sessionauthority.Launch{}, err
+	}
+	if !validDigest(digest) || len(continuation) == 0 || len(continuation) > MaxSuccessorContextBytes ||
+		!bytes.HasPrefix(continuation, []byte(bundle.Continuation)) {
+		return sessionauthority.Launch{}, fmt.Errorf("private local successor context does not match the exact parked bundle")
+	}
+	seed := sha256.Sum256([]byte("wb.session.park-local.v1\x00" + bundle.ParkedSessionID))
+	launch := sessionauthority.Launch{
+		AggregateID: bundle.ParkedSessionID, AggregateDigest: string(digest), AggregateFile: BundleFileName,
+		SuccessorWBSessionID: "wbs-" + hex.EncodeToString(seed[:16]), PredecessorWBSessionID: bundle.Source.WBSessionID,
+		TargetMachine: bundle.Source.Machine, SourceRuntime: bundle.Source.Runtime, SourceModel: bundle.Source.Model,
+		ContinuationKind: sessionauthority.ContinuationPrivate, ContinuationPath: continuationPath,
+		ContinuationDigest: string(sessionmove.DigestBytes(continuation)), RootMode: sessionauthority.LaunchRootParkedNeutral,
+	}
+	if len(bundle.Worktrees) != 0 {
+		launch.PinnedCommit = bundle.Worktrees[0].Head
+		launch.PinnedBranch = bundle.Worktrees[0].Branch
+		launch.RootMode = sessionauthority.LaunchRootParkedLocal
 	}
 	return launch, launch.Validate()
 }
