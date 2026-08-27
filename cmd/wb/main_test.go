@@ -9,11 +9,15 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
+		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == worktrees.SecureCleanupGitHelperArgument {
 		os.Exit(worktrees.RunSecureCleanupGitHelper(os.Args[2:]))
 	}

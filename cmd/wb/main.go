@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
@@ -135,7 +136,8 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
 		"worktree own":     true,
-		"session register": true, "session list": true, "session prune": true,
+		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,
+		"session send": true, "session request-handoff": true, "session receive-message": true,
 		"branch list": true, "branch cleanup": true,
 		"worktree log init": true, "worktree log steer": true, "worktree log show": true,
 		"worktree log checkpoint": true, "worktree log refresh": true, "worktree log integrate": true,
@@ -237,6 +239,9 @@ func main() {
 	// Publish the link-time version before anything can record provenance, so
 	// a release build stamps its own version into whatever it writes.
 	buildinfo.Set(version)
+	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
+		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
+	}
 	installSessionResolver()
 	if err := propagateRuntimeWBExecutable(os.LookupEnv, os.Executable, os.Setenv); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, "wb: establish runtime executable for child Git hooks:", err)

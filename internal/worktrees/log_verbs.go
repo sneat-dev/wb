@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/sessionmove"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
@@ -499,15 +500,27 @@ func branchPublished(ctx context.Context, worktree string) (bool, error) {
 
 // LogHandoffOptions configures wb worktree log handoff.
 type LogHandoffOptions struct {
-	ProjectsRoot string
-	Worktree     string
-	Summary      string
-	NextAction   string
-	Successor    string
-	Model        string
-	CLI          string
-	Provider     string
-	Apply        bool
+	ProjectsRoot  string
+	Worktree      string
+	HandoffID     string
+	TargetMachine string
+	BundleCommit  string
+	Summary       string
+	NextAction    string
+	Successor     string
+	Model         string
+	CLI           string
+	Provider      string
+	Apply         bool
+	// EventID/At and lineage fields are optional for ordinary manual verbs.
+	// Session checkpoint supplies them to make its offer immutable evidence
+	// derivable from the exact request digest.
+	EventID                string
+	At                     time.Time
+	RequestDigest          sessionmove.Digest
+	SourceWorkLogReference string
+	PredecessorWBSessionID string
+	SourceMachine          string
 }
 
 // LogHandoff records a durable handoff offer and optionally transfers the Hybrid claim.
@@ -528,14 +541,36 @@ func LogHandoff(ctx context.Context, options LogHandoffOptions) (LogVerbResult, 
 	}
 	home := fence.home
 	gitEvidence := observeLocalGit(ctx, root)
+	extra := map[string]any{
+		"successor": strings.TrimSpace(options.Successor),
+		"apply":     options.Apply,
+	}
+	if value := strings.TrimSpace(options.HandoffID); value != "" {
+		extra["handoff_id"] = value
+	}
+	if value := strings.TrimSpace(options.TargetMachine); value != "" {
+		extra["target_machine"] = value
+	}
+	if value := strings.TrimSpace(options.BundleCommit); value != "" {
+		extra["bundle_commit"] = value
+	}
+	if options.RequestDigest != "" {
+		extra["request_digest"] = string(options.RequestDigest)
+	}
+	if value := strings.TrimSpace(options.SourceWorkLogReference); value != "" {
+		extra["source_work_log_reference"] = value
+	}
+	if value := strings.TrimSpace(options.PredecessorWBSessionID); value != "" {
+		extra["predecessor_wb_session_id"] = value
+	}
+	if value := strings.TrimSpace(options.SourceMachine); value != "" {
+		extra["source_machine"] = value
+	}
 	event, projection, err := appendLocalEvent(root, LocalWorkLogEvent{
+		ID: strings.TrimSpace(options.EventID), At: options.At,
 		Type: LocalEventHandoff, Message: strings.TrimSpace(options.Summary),
 		NextAction: strings.TrimSpace(options.NextAction), Git: &gitEvidence,
-		Result: "offered",
-		Extra: map[string]any{
-			"successor": strings.TrimSpace(options.Successor),
-			"apply":     options.Apply,
-		},
+		Result: "offered", Extra: extra,
 	})
 	if fence.unlock != nil {
 		fence.unlock()

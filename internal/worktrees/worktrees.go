@@ -1516,29 +1516,44 @@ func trimSecureGitOutput(output []byte) string {
 }
 
 func gitCanonical(ctx context.Context, canonical *canonicalRepository, args ...string) (string, error) {
-	if err := canonical.authorizeForGit(); err != nil {
+	output, err := gitCanonicalBytes(ctx, canonical, args...)
+	if err != nil {
 		return "", err
+	}
+	return trimSecureGitOutput(output), nil
+}
+
+// gitCanonicalBytes returns Git stdout without trimming or mixing in stderr.
+// Callers that authenticate blob contents need the byte-exact stream, while
+// the canonical helper still supplies the same retained-descriptor authority.
+func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args ...string) ([]byte, error) {
+	if err := canonical.authorizeForGit(); err != nil {
+		return nil, err
 	}
 	executable, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("locate WB canonical Git helper: %w", err)
+		return nil, fmt.Errorf("locate WB canonical Git helper: %w", err)
 	}
 	gitExecutable, err := trustedGitExecutable()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalGitHelperArgument, canonical.path, gitExecutable}, args...)...)
 	command.Env = console.Env()
 	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
-	output, err := command.CombinedOutput()
+	output, err := command.Output()
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			detail = strings.TrimSpace(string(exitErr.Stderr))
+		}
 		if detail == "" {
 			detail = err.Error()
 		}
-		return "", fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
+		return nil, fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
 	}
-	return trimSecureGitOutput(output), nil
+	return output, nil
 }
 
 // RunSecureCanonicalGitHelper runs Git from the inherited canonical root only

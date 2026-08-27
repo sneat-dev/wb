@@ -29,6 +29,14 @@ liveness from the declared PID when the record is read.`,
 	command.AddCommand(newSessionRegisterCmd())
 	command.AddCommand(newSessionListCmd())
 	command.AddCommand(newSessionPruneCmd())
+	command.AddCommand(newSessionMoveCmd())
+	command.AddCommand(newSessionParkCmd())
+	command.AddCommand(newSessionResumeCmd())
+	command.AddCommand(newSessionReceiveCmd())
+	command.AddCommand(newSessionReceiveParkCmd())
+	command.AddCommand(newSessionSendCmd())
+	command.AddCommand(newSessionRequestHandoffCmd())
+	command.AddCommand(newSessionReceiveMessageCmd())
 	return command
 }
 
@@ -69,9 +77,13 @@ func installSessionResolver() {
 		if !ok {
 			return worktrees.AgentIdentity{}, false
 		}
+		nativeID := record.NativeHarnessID
+		if nativeID == "" {
+			nativeID = record.AgentID
+		}
 		return worktrees.AgentIdentity{
 			Runtime: record.Runtime,
-			AgentID: record.AgentID,
+			AgentID: nativeID,
 			Model:   record.Model,
 			PID:     record.PID,
 		}, true

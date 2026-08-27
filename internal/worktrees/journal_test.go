@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -92,6 +93,43 @@ func TestManifestIsImmutableOnceWritten(t *testing.T) {
 	}
 }
 
+func TestConcurrentManifestWritersCannotReplaceWinner(t *testing.T) {
+	worktree := newJournalWorktree(t)
+	manifests := []Manifest{newCreatedManifest("first-effort"), newCreatedManifest("second-effort")}
+	start := make(chan struct{})
+	errorsByWriter := make([]error, len(manifests))
+	var wait sync.WaitGroup
+	for index := range manifests {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			errorsByWriter[index] = WriteManifest(worktree, manifests[index])
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	winner := -1
+	for index, err := range errorsByWriter {
+		if err == nil {
+			if winner >= 0 {
+				t.Fatalf("both conflicting manifest writers succeeded: errors=%#v", errorsByWriter)
+			}
+			winner = index
+		}
+	}
+	if winner < 0 {
+		t.Fatalf("neither manifest writer won: errors=%#v", errorsByWriter)
+	}
+	stored, err := ReadManifest(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EffortID != manifests[winner].EffortID {
+		t.Fatalf("stored manifest=%#v, want exact winner %#v", stored, manifests[winner])
+	}
+}
+
 func TestReconstructedManifestMustRecordWhatWasInferred(t *testing.T) {
 	worktree := newJournalWorktree(t)
 	manifest := newCreatedManifest("legacy-effort")
@@ -127,11 +165,17 @@ func TestPromptOrdinalsStayOrderedPastNine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 12 {
-		t.Fatalf("expected 12 prompts, got %d", len(names))
+	promptNames := make([]os.DirEntry, 0, len(names))
+	for _, name := range names {
+		if promptFileName.MatchString(name.Name()) {
+			promptNames = append(promptNames, name)
+		}
 	}
-	if !strings.HasPrefix(names[0].Name(), "0000-") || !strings.HasPrefix(names[10].Name(), "0010-") {
-		t.Fatalf("directory order must equal ordinal order: %s ... %s", names[0].Name(), names[10].Name())
+	if len(promptNames) != 12 {
+		t.Fatalf("expected 12 prompts, got %d", len(promptNames))
+	}
+	if !strings.HasPrefix(promptNames[0].Name(), "0000-") || !strings.HasPrefix(promptNames[10].Name(), "0010-") {
+		t.Fatalf("directory order must equal ordinal order: %s ... %s", promptNames[0].Name(), promptNames[10].Name())
 	}
 	prompts, err := ListPrompts(worktree)
 	if err != nil {
@@ -140,6 +184,45 @@ func TestPromptOrdinalsStayOrderedPastNine(t *testing.T) {
 	for index, prompt := range prompts {
 		if prompt.Seq != index {
 			t.Fatalf("prompt %d records seq %d", index, prompt.Seq)
+		}
+	}
+}
+
+func TestConcurrentPromptWritersSerializeOrdinalsWithoutOverwrite(t *testing.T) {
+	worktree := newJournalWorktree(t)
+	bodies := [][]byte{[]byte("first exact concurrent prompt\n"), []byte("second exact concurrent prompt\n")}
+	start := make(chan struct{})
+	names := make([]string, len(bodies))
+	errorsByWriter := make([]error, len(bodies))
+	var wait sync.WaitGroup
+	for index := range bodies {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			names[index], errorsByWriter[index] = AppendPrompt(worktree, PromptHeader{
+				Source: PromptSourceAgent, Slug: "same-slug", At: time.Date(2026, 8, 25, 12, 0, index, 0, time.UTC),
+			}, bodies[index])
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	for index, err := range errorsByWriter {
+		if err != nil {
+			t.Fatalf("prompt writer %d: %v", index, err)
+		}
+	}
+	if names[0] == names[1] {
+		t.Fatalf("concurrent prompts selected one replaceable path %q", names[0])
+	}
+	prompts, err := ListPrompts(worktree)
+	if err != nil || len(prompts) != 2 || prompts[0].Seq != 0 || prompts[1].Seq != 1 {
+		t.Fatalf("concurrent prompt sequence=%#v err=%v", prompts, err)
+	}
+	for index, name := range names {
+		stored, err := os.ReadFile(filepath.Join(worktree, journalRootDirectory, journalLocalDirectory, promptsDirectory, name))
+		if err != nil || !strings.HasSuffix(string(stored), string(bodies[index])) {
+			t.Fatalf("prompt %d path=%q bytes=%q err=%v", index, name, stored, err)
 		}
 	}
 }

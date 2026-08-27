@@ -33,6 +33,20 @@ later writes by matching its own ancestors against registered sessions — which
 confirms a declaration rather than guessing an owner, since an unregistered
 ancestor is never treated as one.
 
+Registration assigns a stable WB session ID and records the local machine.
+The ID is independent of the PID and any harness-native session ID, and is
+preserved when the same PID re-registers. A WB-managed successor supplies its
+preallocated identity and lineage explicitly:
+
+```sh
+wb session register --pid 12345 --wb-session-id wbs-successor \
+  --machine hetzner-vm1 --runtime codex --native-harness-id native-123 \
+  --tmux-name wb-session-wbs-successor \
+  --predecessor-wb-session-id wbs-source --handoff-id handoff-123
+```
+
+`--agent-id` remains a legacy alias for `--native-harness-id`.
+
 A start-up hook cannot do this on the session's behalf: hooks run in an
 isolated subprocess whose parent is an intermediate shell, not the agent, and
 they cannot export variables into the session either. A hook should prompt the
@@ -44,6 +58,148 @@ Inspect what registered:
 wb session list
 wb session list --live
 wb session prune
+```
+
+## Move a registered session over SSH
+
+## Park and resume a registered session
+
+`wb session park --context-file <file>` records an append-only checkpoint
+containing every worktree owned by the active session. The context file may be
+`-` for stdin and is read as a bounded, regular, no-follow private input. It
+preserves dirty local work and does not commit, push, or remove any worktree.
+Local `wb session resume <parked-session-id>` is currently fail-closed until
+coordinator launch is wired; remote resume remains explicitly gated.
+
+## Receive a parked session bundle
+
+`wb session receive-park` accepts one bounded canonical parked-session envelope
+on stdin. It authenticates the local target and returns only a durable target
+receipt; private continuation is never printed. The public command is
+implemented, but source resume and coordinator launch remain gated.
+
+```sh
+wb session receive-park --format json
+```
+
+Session movement is fail-closed. The invoking process must belong to a live
+registered session that owns the worktree's active managed Work Log, and the
+worktree must be clean on a named branch that can advance `origin` without a
+force push. Supply the agent-authored continuation from a regular file (or use
+`--handover-file -` with piped stdin):
+
+```sh
+wb session move --to hetzner-vm1 --handover-file handover.md
+wb session move --to hetzner-vm1 --via ssh --harness claude-code \
+  --handover-file handover.md
+```
+
+Omit `--harness` to continue in the source runtime. The only supported
+harnesses are `codex` and `claude-code`; same-harness moves retain the source
+model, while cross-harness moves use the target harness's default model.
+
+Before checkpoint mutation, WB validates the requested harness and resolves
+the configured courier. It preallocates the successor identity, generates and
+commits only `.wb/handoffs/<handoff-id>.md`, pushes normally, verifies that
+exact commit as the remote branch tip, and records an offer. The request
+carries the validated, credential-free fetch URL; an independently configured
+push URL must identify the same logical repository, and WB publishes through
+the already-validated exact push URL without putting that URL in the handover.
+
+After the checkpoint is durable, WB persists the selected SSH host and optional
+remote `wb_path` as the handoff's immutable courier route. It sends the
+canonical request bytes only on SSH stdin, with batch mode, no TTY, bounded
+timeouts, and no request data in remote argv. An SSH failure never falls back
+to another courier. The target's validated `remote.machine` must match the
+request, with `tmux` and the selected harness available on its `PATH`.
+
+Successful delivery means the target has verified the exact pinned worktree,
+registered the preallocated WB successor identity, and started the selected
+harness in detached tmux named
+`wb-session-<successor-wb-session-id>`. The reported phase is
+`successor_started`; the predecessor remains active until a later valid
+receipt transfers custody.
+
+An interrupted SSH connection is ambiguous: the target may already be live.
+Use the exact handoff ID printed by WB:
+
+```sh
+wb session move --resume <handoff-id>
+```
+
+Resume does not checkpoint again. It reloads the byte-identical admitted
+request and immutable courier address, so a later `wb.yaml` host/default change
+cannot redirect the handoff. Do not start a fresh move to recover an ambiguous
+attempt.
+
+## Receive a pinned target checkpoint
+
+`wb session receive` is the fixed target boundary used by couriers. Feed the
+exact request bytes on stdin; do not parse and re-encode them or add a digest or
+machine flag:
+
+```sh
+wb session receive --format json < exact-request.json
+```
+
+WB computes the digest from those bytes, verifies the request's target against
+the local validated `remote.machine`, and replays an existing receipt when one
+already exists. Otherwise it serializes execution for the handoff, verifies
+the canonical clone's full remote identity (or securely clones it when
+missing), fetches the declared branch directly, and requires the live tip to
+equal the exact bundle commit. It then verifies source ancestry and the tracked
+handover blob before creating or reusing one clean linked worktree pinned to
+that commit. It then selects a fixed Codex or Claude Code argv, creates or
+reuses the deterministic tmux session, registers the preallocated WB identity
+against the exact pane PID, and releases that process to `exec` the harness
+only after registration and PID binding are durable.
+
+A moved branch, wrong remote, missing/non-ancestor commit, digest mismatch, or
+unsafe existing worktree records an actionable failed phase before any
+successor can be released. Identical retries serialize by handoff ID and reuse
+the matching worktree, launch state, tmux session, and successor PID; a
+completed `successor_started` replay performs no Git fetch. The receiver does
+not create a receipt or change predecessor custody in this stage.
+
+## Message a recorded successor and request handoff back
+
+After a completed move, address the successor only by the stable WB session ID
+printed in the receipt. WB resolves the immutable successor address and its
+recorded SSH or Synchestra courier; there is no host, runner, tmux, or PID
+override on these commands.
+
+```sh
+wb session send <successor-wb-session-id> --message-file message.txt
+wb session send <successor-wb-session-id> --message-file - < message.txt
+wb session request-handoff <successor-wb-session-id>
+```
+
+`send` accepts exactly one bounded `--message` or `--message-file` input. The
+standard `request-handoff` message has an empty body; its typed kind and
+`reply_to_wb_session_id` identify the predecessor to which control should
+return. WB durably records the exact canonical JSON before courier use, and the
+receiver pastes those exact typed bytes through a verified named tmux buffer.
+Acknowledgement proves durable recording and paste to the recorded live pane;
+it does not assert that the agent processed the input.
+
+If delivery is ambiguous, use the exact successor and message ID printed by
+WB. Resume reloads the already-durable bytes and rejects a replacement body:
+
+```sh
+wb session send <successor-wb-session-id> --resume <message-id>
+wb session request-handoff <successor-wb-session-id> --resume <message-id>
+```
+
+Never start a fresh message to recover an ambiguous attempt. The target will
+not automatically paste again when a durable paste intent exists without a
+receipt; inspect the recorded pane and inbox before manual recovery.
+
+`wb session receive-message` is the fixed courier boundary. It consumes exact
+canonical message JSON on stdin and, for `--format json`, returns only the
+canonical recorded-and-pasted receipt:
+
+```sh
+wb session receive-message --format json < exact-message.json
 ```
 
 `wb session list` joins each session to the worktree owner entries recorded

@@ -5,3 +5,14 @@ project:
     host: github.com
     org: sneat-dev
     repo: wb
+
+gates:
+    feature.approved:
+        reviewers:
+            - name: human-approval
+              type: human
+    implementation.pre_commit:
+        reviewers:
+            - name: auto-approve
+              type: auto-approve
+              description: Implementation batches commit autonomously after lint and conflict checks.
