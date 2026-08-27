@@ -34,6 +34,24 @@ type Result struct {
 	Replay  bool
 }
 
+// remoteStderrFileName is the private journal file that receives unredacted
+// remote stderr on a failed delivery.
+const remoteStderrFileName = "remote-stderr.log"
+
+// Options carries the two host-side concerns the courier itself must not
+// decide: where an ignored-configuration warning is surfaced, and which
+// private directory may receive remote diagnostics.
+type Options struct {
+	// Warn receives operator warnings about configuration that park ignores.
+	// A nil Warn discards them.
+	Warn io.Writer
+	// DiagnosticDir is a private per-resume directory that receives remote
+	// stderr on failure. An empty DiagnosticDir disables capture entirely, in
+	// which case a failure reports that stderr was suppressed rather than
+	// printing it.
+	DiagnosticDir string
+}
+
 type commandRunner interface {
 	Run(context.Context, string, []string, []byte, io.Writer, io.Writer) error
 }
@@ -52,21 +70,27 @@ type SSHDeliverer struct {
 	config     sessionmove.SSHConfig
 	executable string
 	runner     commandRunner
+	options    Options
 }
 
-func NewSSHDeliverer(config sessionmove.SSHConfig) (*SSHDeliverer, error) {
-	return newSSHDeliverer(config, exec.LookPath, execCommandRunner{})
+func NewSSHDeliverer(config sessionmove.SSHConfig, options Options) (*SSHDeliverer, error) {
+	return newSSHDeliverer(config, exec.LookPath, execCommandRunner{}, options)
 }
 
-func newSSHDeliverer(config sessionmove.SSHConfig, lookPath func(string) (string, error), runner commandRunner) (*SSHDeliverer, error) {
+func newSSHDeliverer(config sessionmove.SSHConfig, lookPath func(string) (string, error), runner commandRunner, options Options) (*SSHDeliverer, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	// sessionmove.SSHConfig retains wb_path for the legacy session-move
-	// protocol. Parked-session resume deliberately has no configurable remote
-	// executable: its production command is always the fixed name "wb".
-	if config.WBPath != "" {
-		return nil, fmt.Errorf("parked-session SSH resume does not permit ssh.wb_path; remote command is fixed to wb")
+	// protocol, which is a different verb with different requirements. Park
+	// always uses a fixed non-shell argv, so wb_path cannot apply here.
+	//
+	// Rejecting it outright would punish an operator who set the key
+	// legitimately for session move. Silently ignoring it would be its own
+	// failure: the key would read as configured and behave as not. Warning is
+	// what makes ignoring it honest.
+	if config.WBPath != "" && options.Warn != nil {
+		fmt.Fprintf(options.Warn, "warning: ssh.wb_path is set but ignored by `session park`\n  (park requires a fixed non-shell argv); it still applies to `session move`.\n")
 	}
 	if lookPath == nil {
 		return nil, fmt.Errorf("resolve ssh executable: executable lookup is unavailable")
@@ -85,7 +109,7 @@ func newSSHDeliverer(config sessionmove.SSHConfig, lookPath func(string) (string
 	if runner == nil {
 		return nil, fmt.Errorf("run SSH parked-session delivery: command runner is unavailable")
 	}
-	return &SSHDeliverer{config: config, executable: executable, runner: runner}, nil
+	return &SSHDeliverer{config: config, executable: executable, runner: runner, options: options}, nil
 }
 
 func (deliverer *SSHDeliverer) Deliver(ctx context.Context, raw []byte) (Result, error) {
@@ -111,9 +135,12 @@ func (deliverer *SSHDeliverer) Deliver(ctx context.Context, raw []byte) (Result,
 		if contextErr := deliveryContext.Err(); contextErr != nil {
 			return result, fmt.Errorf("SSH parked-session delivery failed: %w", contextErr)
 		}
-		// Remote stderr is intentionally never echoed. It may contain a
-		// receiver diagnostic derived from private continuation or credentials.
-		return result, fmt.Errorf("SSH parked-session delivery failed without a receipt: %w", err)
+		// Remote stderr is never echoed to terminal output or CI logs: it may
+		// carry a receiver diagnostic derived from private continuation or
+		// credentials, and sanitizing control characters makes text safe to
+		// print, not safe to disclose. It is written unredacted to the private
+		// local journal instead, and only its path is reported.
+		return result, fmt.Errorf("courier failed on target host: %w\n  %s", err, deliverer.captureRemoteStderr(stderr.Bytes()))
 	}
 	if stdout.exceeded {
 		return result, fmt.Errorf("SSH parked-session response exceeds %d bytes", maxSSHStdoutBytes)
@@ -173,3 +200,21 @@ func (buffer *boundedBuffer) Write(value []byte) (int, error) {
 }
 
 func (buffer *boundedBuffer) Bytes() []byte { return buffer.buffer.Bytes() }
+
+// captureRemoteStderr writes unredacted remote stderr to the private local
+// journal and returns a caller-safe sentence naming the path. It never returns
+// the diagnostic itself: if the journal cannot be written, the diagnostic is
+// dropped rather than disclosed.
+func (deliverer *SSHDeliverer) captureRemoteStderr(diagnostic []byte) string {
+	if deliverer.options.DiagnosticDir == "" || len(diagnostic) == 0 {
+		return "remote stderr suppressed; journal unavailable"
+	}
+	if err := os.MkdirAll(deliverer.options.DiagnosticDir, 0o700); err != nil {
+		return "remote stderr suppressed; journal unavailable"
+	}
+	path := filepath.Join(deliverer.options.DiagnosticDir, remoteStderrFileName)
+	if err := os.WriteFile(path, diagnostic, 0o600); err != nil {
+		return "remote stderr suppressed; journal unavailable"
+	}
+	return "remote stderr written to:\n  " + path
+}

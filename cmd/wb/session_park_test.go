@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -520,7 +521,7 @@ func assertRemoteResumeReachesTransport(t *testing.T, fixture remoteResumeTestFi
 	deps.withRemoteCustody = func(_ context.Context, _ string, _ sessionpark.Bundle, proceed func() error) error {
 		return proceed()
 	}
-	deps.deliverSSH = func(context.Context, sessionmove.SSHConfig, []byte) (sessionparkcourier.Result, error) {
+	deps.deliverSSH = func(context.Context, sessionmove.SSHConfig, []byte, sessionparkcourier.Options) (sessionparkcourier.Result, error) {
 		deliveries++
 		return sessionparkcourier.Result{}, transportReached
 	}
@@ -571,18 +572,18 @@ func TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint(t *testing.T) {
 	var delivered []sessionmove.SSHConfig
 	deps := defaultSessionResumeDependencies()
 	deps.withRemoteCustody = func(_ context.Context, _ string, _ sessionpark.Bundle, proceed func() error) error { return proceed() }
-	deps.deliverSSH = func(_ context.Context, config sessionmove.SSHConfig, _ []byte) (sessionparkcourier.Result, error) {
+	deps.deliverSSH = func(_ context.Context, config sessionmove.SSHConfig, _ []byte, _ sessionparkcourier.Options) (sessionparkcourier.Result, error) {
 		delivered = append(delivered, config)
 		return sessionparkcourier.Result{}, transportReached
 	}
-	if _, err := resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", fixture.config, time.Unix(100, 0)); !errors.Is(err, transportReached) {
+	if _, err := resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", fixture.config, time.Unix(100, 0), io.Discard, t.TempDir()); !errors.Is(err, transportReached) {
 		t.Fatalf("first delivery error = %v", err)
 	}
 	state, err = store.LoadUnderLock(lock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", "", time.Unix(200, 0)); !errors.Is(err, transportReached) {
+	if _, err := resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", "", time.Unix(200, 0), io.Discard, t.TempDir()); !errors.Is(err, transportReached) {
 		t.Fatalf("retained-route replay error = %v", err)
 	}
 	if len(delivered) != 2 || delivered[0].Host != "target" || delivered[1] != delivered[0] {
@@ -592,7 +593,7 @@ func TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint(t *testing.T) {
 	if err := os.WriteFile(driftConfig, []byte("session_move:\n  targets:\n    target:\n      default_courier: ssh\n      ssh:\n        host: changed.example\n        user: other\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", driftConfig, time.Unix(300, 0))
+	_, err = resumeParkedRemote(context.Background(), deps, store, lock, state, "target", "ssh", driftConfig, time.Unix(300, 0), io.Discard, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "differs from the retained route") {
 		t.Fatalf("explicit endpoint drift error = %v", err)
 	}
@@ -610,7 +611,7 @@ func TestSessionResumeRemoteReceiptRetryRepairsRegistryWithoutRedelivery(t *test
 	projectionCrash := errors.New("crash after source finalization before registry projection")
 	deps := defaultSessionResumeDependencies()
 	deps.withRemoteCustody = func(_ context.Context, _ string, _ sessionpark.Bundle, proceed func() error) error { return proceed() }
-	deps.deliverSSH = func(_ context.Context, _ sessionmove.SSHConfig, raw []byte) (sessionparkcourier.Result, error) {
+	deps.deliverSSH = func(_ context.Context, _ sessionmove.SSHConfig, raw []byte, _ sessionparkcourier.Options) (sessionparkcourier.Result, error) {
 		deliveries++
 		return validRemoteCourierResult(t, raw), nil
 	}

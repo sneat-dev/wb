@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,7 +170,7 @@ type sessionResumeOutput struct {
 
 type sessionResumeDependencies struct {
 	now               func() time.Time
-	deliverSSH        func(context.Context, sessionmove.SSHConfig, []byte) (sessionparkcourier.Result, error)
+	deliverSSH        func(context.Context, sessionmove.SSHConfig, []byte, sessionparkcourier.Options) (sessionparkcourier.Result, error)
 	withRemoteCustody func(context.Context, string, sessionpark.Bundle, func() error) error
 	withLocalCustody  func(context.Context, string, sessionpark.Bundle, string, func(*worktrees.ParkedLocalCustody) error) error
 	attachLocal       func(context.Context, *worktrees.ParkedLocalCustody, session.Record, string, uint64) error
@@ -183,8 +184,8 @@ type sessionResumeDependencies struct {
 func defaultSessionResumeDependencies() sessionResumeDependencies {
 	return sessionResumeDependencies{
 		now: func() time.Time { return time.Now().UTC() },
-		deliverSSH: func(ctx context.Context, config sessionmove.SSHConfig, raw []byte) (sessionparkcourier.Result, error) {
-			deliverer, err := sessionparkcourier.NewSSHDeliverer(config)
+		deliverSSH: func(ctx context.Context, config sessionmove.SSHConfig, raw []byte, options sessionparkcourier.Options) (sessionparkcourier.Result, error) {
+			deliverer, err := sessionparkcourier.NewSSHDeliverer(config, options)
 			if err != nil {
 				return sessionparkcourier.Result{}, err
 			}
@@ -238,7 +239,7 @@ func newSessionResumeCmdWithDependencies(deps sessionResumeDependencies) *cobra.
 				now = deps.now()
 			}
 			if target != "" {
-				output, err := resumeParkedRemote(command.Context(), deps, store, lock, state, target, via, configPath, now)
+				output, err := resumeParkedRemote(command.Context(), deps, store, lock, state, target, via, configPath, now, command.ErrOrStderr(), home)
 				if err != nil {
 					return err
 				}
@@ -273,7 +274,7 @@ func newSessionResumeCmdWithDependencies(deps sessionResumeDependencies) *cobra.
 	return command
 }
 
-func resumeParkedRemote(ctx context.Context, deps sessionResumeDependencies, store sessionpark.Store, lock *sessionpark.SourceLock, state sessionpark.State, target, via, configPath string, now time.Time) (sessionResumeOutput, error) {
+func resumeParkedRemote(ctx context.Context, deps sessionResumeDependencies, store sessionpark.Store, lock *sessionpark.SourceLock, state sessionpark.State, target, via, configPath string, now time.Time, warn io.Writer, home string) (sessionResumeOutput, error) {
 	if via != "" && via != string(sessionmove.CourierSSH) {
 		return sessionResumeOutput{}, fmt.Errorf("unsupported resume courier %q; use ssh", via)
 	}
@@ -317,7 +318,14 @@ func resumeParkedRemote(ctx context.Context, deps sessionResumeDependencies, sto
 			if routeErr != nil {
 				return routeErr
 			}
-			delivery, deliverErr := deps.deliverSSH(ctx, retainedSSH, admission.Raw)
+			// Remote diagnostics land in the private local journal, under the
+			// same posture as the Work Log: never in source Git, public
+			// reports, or Synchestra envelopes.
+			courierOptions := sessionparkcourier.Options{
+				Warn:          warn,
+				DiagnosticDir: parkResumeDiagnosticDir(home, state.Bundle.ParkedSessionID),
+			}
+			delivery, deliverErr := deps.deliverSSH(ctx, retainedSSH, admission.Raw, courierOptions)
 			if deliverErr != nil {
 				return deliverErr
 			}
@@ -373,7 +381,9 @@ func loadParkedRemoteSSHConfig(target, via, configPath string) (sessionmove.SSHC
 		return sessionmove.SSHConfig{}, fmt.Errorf("load parked-session resume courier configuration")
 	}
 	targetConfig, ok := config.Target(target)
-	if !ok || targetConfig.SSH == nil || targetConfig.SSH.WBPath != "" || via == "" && targetConfig.DefaultCourier != sessionmove.CourierSSH {
+	// ssh.wb_path is not rejected here: park ignores it (and warns) rather
+	// than refusing an operator who set it legitimately for session move.
+	if !ok || targetConfig.SSH == nil || via == "" && targetConfig.DefaultCourier != sessionmove.CourierSSH {
 		return sessionmove.SSHConfig{}, fmt.Errorf("parked-session target does not configure the fixed SSH courier")
 	}
 	if err := targetConfig.SSH.Validate(); err != nil {
@@ -568,4 +578,15 @@ func readParkContext(command *cobra.Command, path string) ([]byte, error) {
 		return readBounded(command.InOrStdin(), sessionpark.MaxContinuationBytes, "park context")
 	}
 	return readBoundedRegularFile(path, sessionpark.MaxContinuationBytes)
+}
+
+// parkResumeDiagnosticDir is the private per-resume journal directory that may
+// receive remote courier diagnostics. It follows the Work Log's existing
+// private-data conventions -- under WB_HOME/worklogs, never inside a worktree,
+// 0700 directories and 0600 files -- rather than inventing a new location.
+func parkResumeDiagnosticDir(home, parkedSessionID string) string {
+	if home == "" || parkedSessionID == "" {
+		return ""
+	}
+	return filepath.Join(home, "worklogs", sessionpark.TargetDirName, parkedSessionID)
 }
