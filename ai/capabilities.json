@@ -1309,7 +1309,7 @@
                 "Discovers every go.mod at or under a directory and assesses each module's achievability by resolving its real build list with go tooling, never by grepping go.mod files.",
                 "Dry-run by default: reports compliant, would-change, cannot-comply naming the exact forcing dependency and version, or below-floor (left unchanged); exits 1 when any module needs attention.",
                 "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted.",
-                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling — the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
+                "Annotates a module whose effective go requirement (its own current directive, or a dependency's ceiling, whichever is higher) exceeds --codeql-ceiling \u2014 the Go toolchain GitHub CodeQL default-setup pins via GOTOOLCHAIN=local, which cannot switch, so this is the concrete failure mode the policy prevents."
               ]
             }
           ],
@@ -1376,7 +1376,7 @@
           "limitation": null
         }
       },
-      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run — the concrete failure mode motivating the policy, not a cosmetic preference."
+      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against. --codeql-ceiling flags a module whose EffectiveGoVersion (current directive or dependency ceiling, whichever is higher) exceeds what GitHub CodeQL default-setup's pinned GOTOOLCHAIN=local can run \u2014 the concrete failure mode motivating the policy, not a cosmetic preference."
     },
     {
       "id": "wb.deps.go-directive.report",
@@ -1400,10 +1400,10 @@
                 "--toolchain"
               ],
               "modes": [
-                "Walks every discovered repository and every Go module inside it — one row per module, not per repository — and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
+                "Walks every discovered repository and every Go module inside it \u2014 one row per module, not per repository \u2014 and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
                 "Read-only by construction: there is no --apply flag, so landing the policy anywhere is always the separate, single-repository `wb deps go-directive check --apply`.",
                 "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first.",
-                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius — the number of repositories the policy actually protects — is a single number in the report."
+                "Flags every module whose effective go requirement exceeds --codeql-ceiling and totals them, so the CodeQL default-setup blast radius \u2014 the number of repositories the policy actually protects \u2014 is a single number in the report."
               ]
             }
           ],
@@ -2569,6 +2569,149 @@
         }
       },
       "notes": "Fleet status matches the no-path form of wb status; it does not imply remote freshness."
+    },
+    {
+      "id": "wb.hooks.agent.install",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks agent install",
+              "flags": [
+                "--settings",
+                "--dry-run"
+              ],
+              "modes": [
+                "Merges the pre-tool-use guard into a Claude Code settings file, preserving every other key and hook.",
+                "Idempotent: a second run reports the guard is already registered and rewrites nothing."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks agent install --help",
+              "contains": [
+                "--settings",
+                "--dry-run"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-hooks/SKILL.md",
+              "marker": "## Agent tool-call guard",
+              "examples": [
+                "wb hooks agent install"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestMergeAgentHookSettingsIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestAgentHookShellCommandForcesExitZero",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Registers `wb hooks agent pre-tool-use` in a Claude Code settings file as `<wb> hooks agent pre-tool-use 2>/dev/null; exit 0`. The wrapper is the fail-open guarantee, not decoration: Claude Code blocks a tool call whose PreToolUse hook exits 2, and WB spends exit 2 on usage errors, so a WB too old to know the subcommand would otherwise refuse every tool call on the machine."
+    },
+    {
+      "id": "wb.hooks.agent.pre-tool-use",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks agent pre-tool-use",
+              "flags": [
+                "--input"
+              ],
+              "modes": [
+                "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
+                "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
+                "Never refuses a read, a linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks agent pre-tool-use --help",
+              "contains": [
+                "--input"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-hooks/SKILL.md",
+              "marker": "## Agent tool-call guard",
+              "examples": [
+                "wb hooks agent pre-tool-use --input payload.json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestGuardFailsOpen",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashRefusesWritesIntoACanonicalClone",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestBashAllowsWhatACanonicalCloneExistsToDo",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/hooks_agent_test.go",
+              "name": "TestAgentHookNeverExitsNonZero",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Refuses an agent tool call that would write into a canonical clone, one layer earlier than any Git hook can see. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, and known generators \u2014 and every unmodelled construct, including an interpreter given an inline script and a working directory reached through a variable, is allowed rather than guessed at."
     },
     {
       "id": "wb.hooks.check",
@@ -4180,6 +4323,7 @@
                 "--format",
                 "--handover-file",
                 "--harness",
+                "--override-secret",
                 "--remaining",
                 "--resume",
                 "--summary",
@@ -4189,6 +4333,7 @@
               ],
               "modes": [
                 "Refuses before mutation unless the invoking live registered session owns an active managed Work Log on a clean named branch whose exact checkpoint can advance origin without force.",
+                "Scans --summary, --validation, --remaining, and the handover body against gitleaks-derived named secret patterns before any mutation; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Generates and commits only .wb/handoffs/<id>.md, pushes and verifies the exact remote tip, records an offer, and persists the selected SSH host and remote WB path as an immutable courier route.",
                 "Delivers the canonical request bytes through configured SSH stdin and accepts success only after the target reports the preallocated successor live in deterministic detached tmux at the exact pinned commit; omitting --harness keeps codex or claude-code, while an explicit supported value performs a cross-harness move.",
                 "--resume <handoff-id> sends the byte-identical admitted request through its persisted route without creating another checkpoint or following later config/default changes; an SSH failure never falls back to another courier."
@@ -4208,6 +4353,7 @@
                 "--via",
                 "--harness",
                 "--resume",
+                "--override-secret",
                 "named tmux session"
               ]
             }
@@ -4223,6 +4369,13 @@
               "examples": [
                 "wb session move --to hetzner-vm1 --handover-file handover.md",
                 "wb session move --resume <handoff-id>"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Write a safe continuation",
+              "examples": [
+                "wb session move --to hetzner-vm1 --handover-file handover.md"
               ]
             }
           ],
@@ -4242,6 +4395,16 @@
               "kind": "unit"
             },
             {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveRefusesHandoverContainingNamedSecretPattern",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_move_test.go",
+              "name": "TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory",
+              "kind": "unit"
+            },
+            {
               "path": "internal/sessioncourier/ssh_test.go",
               "name": "TestSSHDelivererUsesFixedArgvAndExactRequestStdin",
               "kind": "unit"
@@ -4258,13 +4421,23 @@
             },
             {
               "path": "internal/worktrees/session_checkpoint_test.go",
-              "name": "TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer",
+              "name": "TestCreateSessionCheckpointNeverWritesIntoTheSourceRepo",
               "kind": "integration"
             },
             {
               "path": "internal/worktrees/session_checkpoint_test.go",
               "name": "TestCreateSessionCheckpointRefusesBeforeAnyMutation",
               "kind": "integration"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNamedPatternsFailClosed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNeverEchoesMatchedSecret",
+              "kind": "unit"
             }
           ],
           "limitation": null
@@ -4286,9 +4459,11 @@
               "path": "wb session park",
               "flags": [
                 "--context-file",
-                "--format"
+                "--format",
+                "--override-secret"
               ],
               "modes": [
+                "Scans the continuation against gitleaks-derived named secret patterns before storing anything; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint.",
                 "Prompts the agent on stderr for the judgment WB cannot observe -- uncommitted rationale, proven ordering constraints, human-blocked decisions, dispatched lanes, and corrections -- both when the continuation is missing and after the checkpoint seals; stdout stays the machine-readable record."
               ]
@@ -4304,7 +4479,8 @@
               "contains": [
                 "--context-file",
                 "bounded agent-authored continuation file",
-                "--format"
+                "--format",
+                "--override-secret"
               ]
             }
           ],
@@ -4316,6 +4492,13 @@
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
               "marker": "## Park and resume a registered session",
+              "examples": [
+                "wb session park --context-file <file>"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/ownership.md",
+              "marker": "## Write a safe continuation",
               "examples": [
                 "wb session park --context-file <file>"
               ]
@@ -4349,6 +4532,26 @@
             {
               "path": "cmd/wb/session_park_test.go",
               "name": "TestSessionParkMissingContextFilePromptsJudgmentChecklist",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkRefusesContinuationContainingNamedSecretPattern",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkAcceptsOverriddenSecretFindingAndLogsAdvisory",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNamedPatternsFailClosed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/secretscan/scan_test.go",
+              "name": "TestNeverEchoesMatchedSecret",
               "kind": "unit"
             }
           ],
@@ -5252,7 +5455,9 @@
     },
     {
       "id": "wb.verify.receipt",
-      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -5318,7 +5523,9 @@
     },
     {
       "id": "wb.verify.receipt.remote-target",
-      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "feature_refs": [
+        "spec/features/fleet-quality/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -5977,8 +6184,6 @@
                 "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes",
                 "Creation from a dirty or off-base canonical checkout preserves its branch, index, and working tree while creating from the fetched remote base",
                 "Resume recovers the registered branch and active claim before current naming policy and preserves that claim unless an audited handoff is requested",
-                "Create help points agents to wb worktree merge as the normal repeated completion counterpart for conflict-free worktrees",
-                "Each created managed worktree receives a locally ignored .worktree.md merge/land/resume/revert reminder, while an existing repository-owned file is preserved unchanged",
                 "A post-publication Work Log failure yields typed exact outcomes and coordinated reverse-order rollback; uncertain assets remain visible through durable cleanup backlog or the returned receipt"
               ]
             }
@@ -5996,8 +6201,7 @@
                 "--branch-prefix",
                 "without switching or updating",
                 "active Work Log claim",
-                "audited handoff",
-                "wb worktree merge"
+                "audited handoff"
               ]
             }
           ],
@@ -6022,11 +6226,6 @@
             {
               "path": "internal/worktrees/worklog_test.go",
               "name": "TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun",
-              "kind": "integration"
-            },
-            {
-              "path": "internal/worktrees/worklog_test.go",
-              "name": "TestManagedWorktreeInstructionsPreserveRepositoryOwnedFile",
               "kind": "integration"
             },
             {
@@ -7215,29 +7414,24 @@
       "notes": null
     },
     {
-      "id": "wb.worktree.merge.land",
-      "feature_refs": [
-        "spec/features/mechanical-worktree-merge/README.md"
-      ],
-      "since": "unreleased",
+      "id": "wb.worktree.marker",
+      "feature_refs": [],
+      "since": "existing",
       "surfaces": {
         "runtime": {
           "status": "Full",
           "commands": [
             {
-              "path": "wb worktree merge land",
+              "path": "wb worktree marker",
               "flags": [
-                "--check-interval",
-                "--cleanup",
+                "--fleet",
+                "--dry-run",
                 "--format",
-                "--on-failure",
-                "--retry",
-                "--route",
-                "--timeout"
+                "--base"
               ],
               "modes": [
-                "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
-                "Waits for exact-head and post-target check receipts, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested"
+                "Writes .worktree.md into one checkout, or refreshes every canonical clone and registered worktree with --fleet.",
+                "Idempotent: a marker differing only by its timestamp is left alone, so refreshing on every sync and create costs nothing."
               ]
             }
           ],
@@ -7247,11 +7441,10 @@
           "status": "Full",
           "anchors": [
             {
-              "command": "wb worktree merge land --help",
+              "command": "wb worktree marker --help",
               "contains": [
-                "exact integration candidate",
-                "--route",
-                "--cleanup"
+                "--fleet",
+                "--dry-run"
               ]
             }
           ],
@@ -7261,17 +7454,11 @@
           "status": "Full",
           "skills": [
             {
-              "path": "ai/skills/wb-merge/references/worktree-merge.md",
-              "marker": "# Mechanical worktree merge",
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Know which checkout you are in",
               "examples": [
-                "wb worktree merge land <candidate-worktree-or-receipt> --route auto --format json"
-              ]
-            },
-            {
-              "path": "ai/skills/wb-worktrees/references/merge.md",
-              "marker": "# Merge and land completed worktrees",
-              "examples": [
-                "wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --format json"
+                "wb worktree marker .",
+                "wb worktree marker --fleet"
               ]
             }
           ],
@@ -7281,242 +7468,71 @@
           "status": "Full",
           "references": [
             {
-              "path": "cmd/wb/worktree_merge_test.go",
-              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "path": "internal/checkoutmarker/checkoutmarker_test.go",
+              "name": "TestApplyKeepsGitStatusClean",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/checkoutmarker/checkoutmarker_test.go",
+              "name": "TestApplyIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_marker_test.go",
+              "name": "TestWorktreeMarkerMarksBothKindsAndKeepsStatusClean",
               "kind": "integration"
             }
           ],
           "limitation": null
         }
+      },
+      "notes": "Every checkout gets a marker, not only the ones that must stay clean: a warning present only where writing is wrong makes a MISSING file read as permission. The file stays untracked and is paired with an anchored rule in the common directory's info/exclude, because a committed marker WB rewrites would show as a modification and dirty the very clone this protects."
+    },
+    {
+      "id": "wb.worktree.merge.land",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge land", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--retry", "--route", "--timeout"], "modes": ["Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy", "Waits for exact-head and post-target check receipts, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge land --help", "contains": ["exact integration candidate", "--route", "--cleanup"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge land <candidate-worktree-or-receipt> --route auto --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
       },
       "notes": "The candidate or receipt, never branch naming alone, is the continuation identity."
     },
     {
       "id": "wb.worktree.merge.prepare",
-      "feature_refs": [
-        "spec/features/mechanical-worktree-merge/README.md"
-      ],
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb worktree merge prepare",
-              "flags": [
-                "--agent-id",
-                "--agent-runtime",
-                "--cli",
-                "--format",
-                "--model",
-                "--provider",
-                "--retry",
-                "--target",
-                "--timeout"
-              ],
-              "modes": [
-                "Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, and persists a resumable receipt",
-                "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb worktree merge prepare --help",
-              "contains": [
-                "isolated local integration candidate",
-                "--target",
-                "--model"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-merge/references/worktree-merge.md",
-              "marker": "# Mechanical worktree merge",
-              "examples": [
-                "wb worktree merge prepare <source-worktree...> --target main --format json"
-              ]
-            },
-            {
-              "path": "ai/skills/wb-worktrees/references/merge.md",
-              "marker": "# Merge and land completed worktrees",
-              "examples": [
-                "wb worktree merge prepare <source-worktree...> --target <branch> --format json"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "internal/orchestrate/worktree_merge_test.go",
-              "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare", "flags": ["--agent-id", "--agent-runtime", "--cli", "--format", "--model", "--provider", "--retry", "--target", "--timeout"], "modes": ["Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, and persists a resumable receipt", "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare --help", "contains": ["isolated local integration candidate", "--target", "--model"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare <source-worktree...> --target main --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge prepare <source-worktree...> --target <branch> --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate", "kind": "integration"}], "limitation": null}
       },
       "notes": "Prepared means local and validated, not remotely landed."
     },
     {
       "id": "wb.worktree.merge.resume",
-      "feature_refs": [
-        "spec/features/mechanical-worktree-merge/README.md"
-      ],
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb worktree merge resume",
-              "flags": [
-                "--check-interval",
-                "--cleanup",
-                "--format",
-                "--on-failure",
-                "--retry",
-                "--route",
-                "--timeout"
-              ],
-              "modes": [
-                "Replays immutable completed boundaries and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb worktree merge resume --help",
-              "contains": [
-                "Resume a receipt",
-                "--route"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-merge/references/worktree-merge.md",
-              "marker": "# Mechanical worktree merge",
-              "examples": [
-                "wb worktree merge resume <candidate-worktree-or-receipt> --format json"
-              ]
-            },
-            {
-              "path": "ai/skills/wb-worktrees/references/merge.md",
-              "marker": "# Merge and land completed worktrees",
-              "examples": [
-                "wb worktree merge resume <candidate-worktree-or-receipt> --format json"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "cmd/wb/worktree_merge_test.go",
-              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge resume", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--retry", "--route", "--timeout"], "modes": ["Replays immutable completed boundaries and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge resume --help", "contains": ["Resume a receipt", "--route"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge resume <candidate-worktree-or-receipt> --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge resume <candidate-worktree-or-receipt> --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
       },
       "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments."
     },
     {
       "id": "wb.worktree.merge.revert",
-      "feature_refs": [
-        "spec/features/mechanical-worktree-merge/README.md"
-      ],
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {
-          "status": "Full",
-          "commands": [
-            {
-              "path": "wb worktree merge revert",
-              "flags": [
-                "--check-interval",
-                "--cleanup",
-                "--format",
-                "--on-failure",
-                "--retry",
-                "--route",
-                "--timeout"
-              ],
-              "modes": [
-                "Creates a new forward candidate by applying the inverse before/after landing delta to the current target, then lands it through the same verified route"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "help": {
-          "status": "Full",
-          "anchors": [
-            {
-              "command": "wb worktree merge revert --help",
-              "contains": [
-                "forward revert",
-                "--route"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "ai_skill": {
-          "status": "Full",
-          "skills": [
-            {
-              "path": "ai/skills/wb-merge/references/worktree-merge.md",
-              "marker": "# Mechanical worktree merge",
-              "examples": [
-                "wb worktree merge revert <landing-receipt> --route auto --format json"
-              ]
-            },
-            {
-              "path": "ai/skills/wb-worktrees/references/merge.md",
-              "marker": "# Merge and land completed worktrees",
-              "examples": [
-                "wb worktree merge revert <landing-receipt> --route auto --format json"
-              ]
-            }
-          ],
-          "limitation": null
-        },
-        "tests": {
-          "status": "Full",
-          "references": [
-            {
-              "path": "cmd/wb/worktree_merge_test.go",
-              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
-              "kind": "integration"
-            }
-          ],
-          "limitation": null
-        }
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge revert", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--retry", "--route", "--timeout"], "modes": ["Creates a new forward candidate by applying the inverse before/after landing delta to the current target, then lands it through the same verified route"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge revert --help", "contains": ["forward revert", "--route"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge revert <landing-receipt> --route auto --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge revert <landing-receipt> --route auto --cleanup --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
       },
       "notes": "The landing receipt retains the remote before and after identities needed to construct the inverse tree delta."
     },
@@ -7825,6 +7841,87 @@
         }
       },
       "notes": "Safe removal remains the default lifecycle path; recycle is explicit and audited."
+    },
+    {
+      "id": "wb.worktree.rescue",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree rescue",
+              "flags": [
+                "--apply",
+                "--push",
+                "--restore",
+                "--allow-unpushed",
+                "--fleet",
+                "--branch",
+                "--remote",
+                "--format"
+              ],
+              "modes": [
+                "Reports what a canonical clone holds without changing anything, and finds every dirty clone with --fleet.",
+                "--apply captures modified, staged, and untracked content onto a branch through a temporary index, leaving the clone's HEAD, branch, index, and working tree untouched.",
+                "--restore is the only destructive step and refuses unless every reported path is verifiably inside the rescue commit and the branch is on the remote."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree rescue --help",
+              "contains": [
+                "--apply",
+                "--restore",
+                "--fleet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Rescue work stranded in a canonical clone",
+              "examples": [
+                "wb worktree rescue --fleet",
+                "wb worktree rescue <path> --apply --push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/canonicalrescue/canonicalrescue_test.go",
+              "name": "TestCaptureLeavesTheCloneExactlyAsItFoundIt",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/canonicalrescue/canonicalrescue_test.go",
+              "name": "TestRestoreRefusesUntilTheContentIsProvablySomewhereElse",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_rescue_test.go",
+              "name": "TestWorktreeRescueFullJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
     },
     {
       "id": "wb.worktree.set",

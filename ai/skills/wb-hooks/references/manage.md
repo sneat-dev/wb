@@ -38,7 +38,8 @@ an explicitly selected `WB_HOME` remains authoritative.
 Worktree admission is enabled by default at post-checkout, pre-commit, and
 pre-push. Post-checkout reports an unmanaged checkout after Git has already
 made it and preserves the state; pre-commit and pre-push block work until it
-is recovered. `wb worktree rescue` is not available yet. Only if WB cannot own
+is recovered. Run `wb worktree rescue <path>` first to move any uncommitted
+work onto a branch. Only if WB cannot own
 checkout policy, record the explicit exception in `.wb/hooks.yaml`, run repair,
 and leave it visible to `hooks check`:
 

@@ -36,3 +36,30 @@ up conflicts, but replacement is still an explicit decision.
 For a non-default projects root, pass the same `--projects-root` to every WB
 command. Let Git invoke hidden `wb hooks run`; it is an internal dispatcher,
 not the normal way to test policy.
+
+## Agent tool-call guard
+
+Git hooks judge a commit. They cannot see the write that never reaches one,
+and a canonical clone is ruined by the write: a `git checkout -- .` that
+discards an unlanded lesson never commits anything.
+
+`wb hooks agent pre-tool-use` closes that gap. It reads a Claude Code
+PreToolUse payload on stdin and refuses a tool call that would write inside
+`<projects-root>/<owner>/<repository>`, naming `wb worktree create` as the
+remedy. Register it once per machine:
+
+```sh
+wb hooks agent install
+```
+
+It fails open without exception — an unreadable payload, an unknown tool, a
+shell construct it cannot model, and a WB too old to know the subcommand all
+allow the call. It never refuses a read, never refuses a write inside a linked
+worktree, and leaves `git fetch`, `git merge --ff-only`, `git status`, and
+`git log` alone inside a canonical clone.
+
+Rehearse a decision against a saved payload without a pipe:
+
+```sh
+wb hooks agent pre-tool-use --input payload.json
+```

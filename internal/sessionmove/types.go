@@ -37,6 +37,11 @@ const (
 	// by a request. Keeping the source-authored content in the immutable
 	// request lets crash repair recreate the offer without parsing Markdown.
 	MaxSourceOfferFieldBytes = 64 << 10
+	// MaxHandoverContentBytes bounds Request.HandoverContent: the rendered
+	// handover document, which wraps an operator-supplied body (itself capped
+	// at 1<<20 bytes at the CLI boundary) in a small fixed header. The extra
+	// headroom here is for that wrapper, not a separate operator-facing limit.
+	MaxHandoverContentBytes = 2 << 20
 )
 
 // Digest identifies exact bytes at a courier or durable-state boundary. Its
@@ -81,27 +86,41 @@ func (d Digest) Matches(raw []byte) bool {
 // Request is the immutable courier-neutral handoff description. Its encoded
 // bytes, rather than a re-marshalled projection, are what Digest authenticates.
 type Request struct {
-	SchemaVersion          int       `json:"schema_version"`
-	HandoffID              string    `json:"handoff_id"`
-	SuccessorWBSessionID   string    `json:"successor_wb_session_id"`
-	PredecessorWBSessionID string    `json:"predecessor_wb_session_id"`
-	SourceMachine          string    `json:"source_machine"`
-	TargetMachine          string    `json:"target_machine"`
-	RepositoryRemote       string    `json:"repository_remote"`
-	Branch                 string    `json:"branch"`
-	SourceWorkCommit       string    `json:"source_work_commit"`
-	BundleCommit           string    `json:"bundle_commit"`
-	HandoverPath           string    `json:"handover_path"`
-	HandoverDigest         Digest    `json:"handover_digest"`
-	SourceRuntime          string    `json:"source_runtime"`
-	SourceModel            string    `json:"source_model,omitempty"`
-	SourceNativeHarnessID  string    `json:"source_native_harness_id,omitempty"`
-	RequestedHarness       string    `json:"requested_harness,omitempty"`
-	WorkLogReference       string    `json:"work_log_reference"`
-	SourceOfferMessage     string    `json:"source_offer_message"`
-	SourceOfferNextAction  string    `json:"source_offer_next_action"`
-	SourceOfferDigest      Digest    `json:"source_offer_digest"`
-	CreatedAt              time.Time `json:"created_at"`
+	SchemaVersion          int    `json:"schema_version"`
+	HandoffID              string `json:"handoff_id"`
+	SuccessorWBSessionID   string `json:"successor_wb_session_id"`
+	PredecessorWBSessionID string `json:"predecessor_wb_session_id"`
+	SourceMachine          string `json:"source_machine"`
+	TargetMachine          string `json:"target_machine"`
+	RepositoryRemote       string `json:"repository_remote"`
+	Branch                 string `json:"branch"`
+	SourceWorkCommit       string `json:"source_work_commit"`
+	BundleCommit           string `json:"bundle_commit"`
+	// HandoverPath is deprecated and retained only so a handoff admitted by a
+	// binary older than the ContinuationPrivate cutover still decodes and
+	// replays: it names the repository-relative path, under the pinned
+	// worktree, where that older binary committed the handover document into
+	// the repo under work. It is set only together with an empty
+	// HandoverContent, and no code path emits it anymore.
+	HandoverPath   string `json:"handover_path,omitempty"`
+	HandoverDigest Digest `json:"handover_digest"`
+	// HandoverContent is the rendered handover document itself, carried
+	// inline so it never touches the repo under work. A non-empty value
+	// means this handoff is delivered as sessionauthority.ContinuationPrivate:
+	// the target materializes it as a private 0600 file (see
+	// Store.EnsureHandoverUnderLock) and hands the successor that path via
+	// WB_SESSION_CONTINUATION_FILE. Every checkpoint created after the
+	// ContinuationPrivate cutover sets this and leaves HandoverPath empty.
+	HandoverContent       string    `json:"handover_content,omitempty"`
+	SourceRuntime         string    `json:"source_runtime"`
+	SourceModel           string    `json:"source_model,omitempty"`
+	SourceNativeHarnessID string    `json:"source_native_harness_id,omitempty"`
+	RequestedHarness      string    `json:"requested_harness,omitempty"`
+	WorkLogReference      string    `json:"work_log_reference"`
+	SourceOfferMessage    string    `json:"source_offer_message"`
+	SourceOfferNextAction string    `json:"source_offer_next_action"`
+	SourceOfferDigest     Digest    `json:"source_offer_digest"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 // Receipt is written only after the target successor is durably registered.
@@ -382,9 +401,25 @@ func (r Request) validate() error {
 	if err := r.HandoverDigest.validate(); err != nil {
 		return fmt.Errorf("handover_digest: %w", err)
 	}
-	cleanHandover := path.Clean(r.HandoverPath)
-	if cleanHandover != r.HandoverPath || !strings.HasPrefix(cleanHandover, ".wb/handoffs/") || strings.HasSuffix(cleanHandover, "/") {
-		return fmt.Errorf("handover_path %q must be a clean repository-relative path under .wb/handoffs", r.HandoverPath)
+	if r.HandoverContent == "" {
+		// Legacy pre-cutover shape only: the handover was committed into the
+		// pinned worktree at this repository-relative path. Nothing emits this
+		// anymore; it is validated only so an already-admitted handoff created
+		// before the ContinuationPrivate cutover still decodes and replays.
+		cleanHandover := path.Clean(r.HandoverPath)
+		if r.HandoverPath == "" || cleanHandover != r.HandoverPath || path.IsAbs(r.HandoverPath) || strings.HasSuffix(cleanHandover, "/") {
+			return fmt.Errorf("handover_path %q must be a clean repository-relative path", r.HandoverPath)
+		}
+	} else {
+		if r.HandoverPath != "" {
+			return fmt.Errorf("handover_path must be empty when handover_content is set")
+		}
+		if len(r.HandoverContent) > MaxHandoverContentBytes {
+			return fmt.Errorf("handover_content exceeds %d bytes", MaxHandoverContentBytes)
+		}
+		if !r.HandoverDigest.Matches([]byte(r.HandoverContent)) {
+			return fmt.Errorf("handover_content does not match handover_digest")
+		}
 	}
 	if strings.TrimSpace(r.SourceRuntime) == "" {
 		return fmt.Errorf("source_runtime is required")

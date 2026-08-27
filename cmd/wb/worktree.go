@@ -41,6 +41,8 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeCreateCmd())
 	command.AddCommand(newWorktreeMergeCmd())
 	command.AddCommand(newWorktreeGuardCmd())
+	command.AddCommand(newWorktreeMarkerCmd())
+	command.AddCommand(newWorktreeRescueCmd())
 	command.AddCommand(newWorktreeListCmd())
 	command.AddCommand(newWorktreeSummaryCmd())
 	command.AddCommand(newWorktreeCleanupCmd())
@@ -848,6 +850,15 @@ eligible canonical checkout, and cleans the finished branch/worktree.`,
 			if err != nil {
 				return err
 			}
+			// A fresh worktree gets its .worktree.md before the agent that
+			// asked for it is told where to go, so the first thing readable at
+			// that path already says the checkout is writable and which task
+			// it carries. The canonical clone it was cut from is marked in the
+			// same pass, because that is the checkout the agent has to be
+			// steered away from. Marking is best-effort: a checkout WB just
+			// created is not made unusable by a marker it could not write, and
+			// the reason goes to stderr rather than into the result document.
+			markCreatedCheckouts(command, base, results)
 			switch format {
 			case "text":
 				for _, result := range results {
@@ -1810,6 +1821,12 @@ for the new private Work Log.`,
 				if _, err := fmt.Fprintf(command.ErrOrStderr(), "warning: rename skipped malformed candidate in task %s: %s: %s\n", diagnostic.Task, diagnostic.Path, diagnostic.Message); err != nil {
 					return err
 				}
+			}
+			// A recycled worktree carries a new path, task, and branch, so the
+			// marker it inherited from the old effort is now wrong about all
+			// three. Rewrite it before anything reads it.
+			if apply {
+				markRenamedCheckouts(command, base, outcome.Results)
 			}
 			switch format {
 			case "text":

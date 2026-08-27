@@ -98,8 +98,13 @@ func validateSessionReceiveSpec(ctx context.Context, spec SessionReceiveSpec) er
 	if spec.SourceWorkCommit != "" && !isGitObjectID(spec.SourceWorkCommit) {
 		return fmt.Errorf("session receive source commit is not one full Git object ID")
 	}
-	if spec.HandoverPath == "" != (spec.HandoverDigest == "") {
-		return fmt.Errorf("session receive tracked handover path and digest must be supplied together")
+	// HandoverPath names a legacy tracked-in-worktree location and is only
+	// ever set together with HandoverDigest (a pre-cutover move request). A
+	// new-style move request carries its handover inline instead: no path,
+	// but still a digest to verify the inline content against. A park member
+	// carries neither. A path without a digest is never valid.
+	if spec.HandoverPath != "" && spec.HandoverDigest == "" {
+		return fmt.Errorf("session receive tracked handover path requires a digest")
 	}
 	if spec.AuthorityStore != "" {
 		if !filepath.IsAbs(spec.AuthorityStore) || filepath.Clean(spec.AuthorityStore) != spec.AuthorityStore || spec.Fence == nil {

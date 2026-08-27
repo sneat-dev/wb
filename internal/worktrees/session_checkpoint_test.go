@@ -1,7 +1,6 @@
 package worktrees
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,12 +16,21 @@ import (
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
-func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer(t *testing.T) {
+// TestCreateSessionCheckpointNeverWritesIntoTheSourceRepo is the regression
+// test for the ContinuationPrivate cutover: a handoff must never again be
+// committed, staged, or otherwise written into the repo under work. It
+// captures the complete tracked-file list and full worktree byte state
+// before the checkpoint and asserts neither changed, on top of the ordinary
+// positive-path assertions that the handover instead travels inline on
+// Request.HandoverContent and the source's own HEAD is what gets pinned and
+// pushed unchanged.
+func TestCreateSessionCheckpointNeverWritesIntoTheSourceRepo(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-source")
 	// The fetch URL is the portable request identity. Publication still uses
 	// origin's independently configured, logically equivalent push route.
 	gitTest(t, worktree, "remote", "set-url", "--push", "origin", "file://"+fixture.remote)
 	sourceHead := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	trackedFilesBefore := gitTestOutput(t, worktree, "ls-files")
 	now := source.StartedAt.Add(time.Second)
 
 	result, err := CreateSessionCheckpoint(context.Background(), SessionCheckpointOptions{
@@ -51,11 +59,16 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 	if result.Request.RepositoryRemote != fixture.remote {
 		t.Fatalf("repository remote = %q, want credential-free fetch URL %q", result.Request.RepositoryRemote, fixture.remote)
 	}
-	if result.Request.BundleCommit == sourceHead || result.Request.BundleCommit == "" {
-		t.Fatalf("bundle commit = %q, source = %q", result.Request.BundleCommit, sourceHead)
+	// No commit is created on top of the source's own work: the exact commit
+	// pinned for the successor is the source commit itself.
+	if result.Request.BundleCommit != sourceHead {
+		t.Fatalf("bundle commit = %q, want exact source commit %q", result.Request.BundleCommit, sourceHead)
 	}
-	if result.Request.HandoverPath != ".wb/handoffs/handoff-123.md" {
-		t.Fatalf("handover path = %q", result.Request.HandoverPath)
+	if result.Request.HandoverPath != "" {
+		t.Fatalf("handover path = %q, want empty: the handover must not name a path in the repo under work", result.Request.HandoverPath)
+	}
+	if result.Request.HandoverContent == "" || result.Request.HandoverContent != string(result.HandoverBytes) {
+		t.Fatalf("handover content = %q, want it to carry the rendered document inline", result.Request.HandoverContent)
 	}
 	if result.Digest != sessionmove.DigestBytes(result.RequestBytes) {
 		t.Fatalf("request digest = %q, computed %q", result.Digest, sessionmove.DigestBytes(result.RequestBytes))
@@ -68,16 +81,20 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 	if remoteTip != result.Request.BundleCommit {
 		t.Fatalf("remote tip = %q, want exact bundle %q", remoteTip, result.Request.BundleCommit)
 	}
-	changed := strings.Split(gitTestOutput(t, worktree, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"), "\n")
-	if len(changed) != 1 || changed[0] != result.Request.HandoverPath {
-		t.Fatalf("bundle commit paths = %#v", changed)
+	// HEAD, the tracked file list, and the full worktree status must be
+	// byte-for-byte unchanged: the checkpoint mutates WB's own private
+	// handoff store, never the repo under work.
+	if got := gitTestOutput(t, worktree, "rev-parse", "HEAD"); got != sourceHead {
+		t.Fatalf("HEAD moved from %s to %s", sourceHead, got)
 	}
-	if got := gitTestOutput(t, worktree, "status", "--porcelain=v1"); got != "" {
-		t.Fatalf("worktree is dirty after checkpoint: %q", got)
+	if got := gitTestOutput(t, worktree, "ls-files"); got != trackedFilesBefore {
+		t.Fatalf("tracked files changed:\nbefore: %q\nafter:  %q", trackedFilesBefore, got)
 	}
-	document, err := os.ReadFile(filepath.Join(worktree, filepath.FromSlash(result.Request.HandoverPath)))
-	if err != nil {
-		t.Fatal(err)
+	if got := gitTestOutput(t, worktree, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
+		t.Fatalf("worktree is not clean after checkpoint: %q", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktree, ".wb", "handoffs")); !os.IsNotExist(statErr) {
+		t.Fatalf("handoff directory exists in the repo under work: %v", statErr)
 	}
 	for _, want := range []string{
 		"handoff-123", "wbs-successor", "wbs-source", "laptop", "hetzner-vm1",
@@ -85,8 +102,8 @@ func TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer
 		"Continue the source checkpoint implementation.", "go test ./internal/worktrees",
 		"Implement the target receiver in the next task.",
 	} {
-		if !strings.Contains(string(document), want) {
-			t.Errorf("handover document does not contain %q:\n%s", want, document)
+		if !strings.Contains(result.Request.HandoverContent, want) {
+			t.Errorf("handover document does not contain %q:\n%s", want, result.Request.HandoverContent)
 		}
 	}
 
@@ -355,85 +372,26 @@ func TestCreateSessionCheckpointRefusesBeforeAnyMutation(t *testing.T) {
 	}
 }
 
-func TestVerifySessionBundleCommitRejectsCommittedBlobMismatchWhenWorktreeMatches(t *testing.T) {
-	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-blob-mismatch")
-	options := SessionCheckpointOptions{
-		ProjectsRoot:  fixture.projectsRoot,
-		Worktree:      worktree,
-		SourceSession: source,
-		TargetMachine: "hetzner-vm1",
-		Handover:      SessionHandover{Body: []byte("expected handover\n")},
-		Now:           source.StartedAt.Add(time.Second),
-	}
-	preflight, err := preflightSessionCheckpoint(context.Background(), options, "handoff-blob-mismatch", "wbs-successor")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer preflight.close()
-
-	wantedPath := ".wb/handoffs/handoff-blob-mismatch.md"
-	wantedBytes := []byte("expected handover\n")
-	committedBytes := []byte("different committed handover\n")
-	absolutePath := filepath.Join(worktree, filepath.FromSlash(wantedPath))
-	if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(absolutePath, committedBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, worktree, "add", "--force", "--", wantedPath)
-	gitTest(t, worktree, "commit", "-m", "commit mismatched handover", "--", wantedPath)
-	if err := os.WriteFile(absolutePath, wantedBytes, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A hook can hide its restored worktree edit from status. Bundle
-	// verification must therefore authenticate the committed blob itself,
-	// rather than trusting either status or the ambient worktree bytes.
-	gitTest(t, worktree, "update-index", "--assume-unchanged", "--", wantedPath)
-	if got := gitTestOutput(t, worktree, "status", "--porcelain=v1", "--untracked-files=all"); got != "" {
-		t.Fatalf("test setup must appear clean, got status %q", got)
-	}
-	if got, err := os.ReadFile(absolutePath); err != nil || !bytes.Equal(got, wantedBytes) {
-		t.Fatalf("test setup worktree bytes = %q, err = %v", got, err)
-	}
-
-	_, err = verifySessionBundleCommit(context.Background(), preflight, wantedPath, wantedBytes)
-	if err == nil || !strings.Contains(err.Error(), "committed handover bytes changed") {
-		t.Fatalf("error = %v, want committed blob mismatch refusal", err)
-	}
-}
-
-func TestCreateSessionCheckpointRefusesSanitizedPostCommitRemoteRedirectBeforePush(t *testing.T) {
-	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-remote-redirect")
-	hooksPath := gitTestOutput(t, worktree, "rev-parse", "--git-path", "hooks")
-	if !filepath.IsAbs(hooksPath) {
-		hooksPath = filepath.Join(worktree, hooksPath)
-	}
-	if err := os.MkdirAll(hooksPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	hook := []byte("#!/bin/sh\ngit config remote.origin.pushurl 'https://user:top-secret@example.invalid/acme/app.git'\n")
-	if err := os.WriteFile(filepath.Join(hooksPath, "post-commit"), hook, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	branch := gitTestOutput(t, worktree, "branch", "--show-current")
-
-	_, err := CreateSessionCheckpoint(context.Background(), SessionCheckpointOptions{
-		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, SourceSession: source,
-		TargetMachine: "hetzner-vm1", HandoffID: "handoff-redirect", SuccessorWBSessionID: "wbs-successor",
-		Handover: SessionHandover{Body: []byte("continue safely\n")},
-		Now:      source.StartedAt.Add(time.Second),
-	})
-	if err == nil || !strings.Contains(err.Error(), "origin remote changed after handover commit") {
-		t.Fatalf("error = %v, want post-commit remote redirect refusal", err)
-	}
-	if strings.Contains(err.Error(), "top-secret") || strings.Contains(err.Error(), "user:") {
-		t.Fatalf("remote redirect refusal exposed credential-bearing URL: %v", err)
-	}
-	if got := remoteBranchTipIfPresent(t, worktree, branch); got != "" {
-		t.Fatalf("remote branch advanced despite pre-push redirect refusal: %s", got)
-	}
-}
+// Two tests formerly lived here:
+//
+//   - TestVerifySessionBundleCommitRejectsCommittedBlobMismatchWhenWorktreeMatches
+//     tested verifySessionBundleCommit, which authenticated the blob of a
+//     commit WB generated inside the source worktree. That function is
+//     deleted along with the commit it verified: the ContinuationPrivate
+//     cutover means CreateSessionCheckpoint no longer creates any commit in
+//     the repo under work, so there is no generated commit left for a hook
+//     to tamper with.
+//   - TestCreateSessionCheckpointRefusesSanitizedPostCommitRemoteRedirectBeforePush
+//     used a real post-commit Git hook to prove a hook rewriting
+//     remote.origin.pushurl right after WB's generated commit was caught
+//     before publication. That trigger point is also gone for the same
+//     reason: nothing commits in the source worktree anymore, so a
+//     post-commit hook never fires during a checkpoint.
+//
+// The surviving config-changed-around-a-mutating-git-operation threat is the
+// exact same one TestCreateSessionCheckpointUsesAuthenticatedExactPushURLDespiteOriginConfigTOCTOU
+// below already covers, deterministically, via the afterPushRemoteAuthentication
+// test seam, so that coverage is not reproduced with a different Git hook.
 
 func TestCreateSessionCheckpointUsesAuthenticatedExactPushURLDespiteOriginConfigTOCTOU(t *testing.T) {
 	fixture, worktree, source := newSessionCheckpointFixture(t, "session-move-push-url-toctou")
@@ -508,11 +466,6 @@ func remoteBranchTip(t *testing.T, worktree, branch string) string {
 		t.Fatalf("unexpected remote branch response: %#v", fields)
 	}
 	return fields[0]
-}
-
-func remoteBranchTipIfPresent(t *testing.T, worktree, branch string) string {
-	t.Helper()
-	return remoteBranchTipFrom(t, worktree, "origin", branch)
 }
 
 func remoteBranchTipFrom(t *testing.T, worktree, remote, branch string) string {

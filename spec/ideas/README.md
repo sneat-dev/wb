@@ -16,6 +16,8 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | 2026-08-27 | alex | mechanical-worktree-merge |
 | [migration-release-handoff](migration-release-handoff.md) | Draft | 2026-07-21 | alex | — |
 | [quality-diff-and-thresholds](quality-diff-and-thresholds.md) | Draft | 2026-07-21 | alex | — |
+| [secret-vault-injection](secret-vault-injection.md) | Draft | 2026-08-27 | alex | — |
+| [unify-session-move-and-park-continuation-storage](unify-session-move-and-park-continuation-storage.md) | Draft | 2026-08-27 | alex | — |
 
 ## Open Questions
 

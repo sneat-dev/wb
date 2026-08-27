@@ -27,6 +27,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `ci wait` | rejected | rejected | rejected | yes |
 | `hooks install`, `check`, `repair` | yes | `--fleet` only | rejected | yes |
 | hidden `hooks run` | yes | rejected | rejected | yes |
+| `hooks agent pre-tool-use`, `hooks agent install` | yes | rejected | rejected | yes |
 | `hooks metrics` | rejected | rejected | rejected | yes |
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
@@ -38,6 +39,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/secretscan"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
 	"github.com/sneat-dev/wb/internal/sessioncustody"
@@ -94,16 +95,19 @@ func newSessionMoveCmd() *cobra.Command {
 func newSessionMoveCmdWithDeps(deps sessionMoveDependencies) *cobra.Command {
 	var targetMachine, via, configPath, handoverFile, harness, resume string
 	var summary, validation, remaining, format string
+	var overrideSecrets []string
 	command := &cobra.Command{
 		Use:   "move [worktree-path]",
 		Short: "Move this registered session through an exact receipt-gated handoff",
 		Long: `Create the source-owned checkpoint for a portable session move.
 
 WB requires a live registered session, an active managed Work Log, a clean
-named branch, and a non-empty handover supplied from a file or stdin. It
-generates and commits only .wb/handoffs/<id>.md, performs a normal non-force
-push, verifies that exact commit as the remote branch tip, and records an
-offer without transferring source custody. It then delivers the exact request
+named branch, and a non-empty handover supplied from a file or stdin. The
+handover never touches the repo under work: it travels inline in WB's own
+private handoff request and is later materialized as a private file for the
+successor. WB performs a normal non-force push of the exact source commit,
+verifies that exact commit as the remote branch tip, and records an offer
+without transferring source custody. It then delivers the exact request
 through the selected immutable courier route and starts the successor in a
 named tmux session. Only a durable target receipt lets WB publish the stable
 successor address and seal predecessor custody. If delivery or acknowledgement
@@ -167,6 +171,20 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 			if err != nil {
 				return err
 			}
+			overrides, err := secretscan.ParseOverrides(overrideSecrets)
+			if err != nil {
+				return err
+			}
+			secretWarnings, err := scanContinuationForSecrets(overrides,
+				secretscan.Segment{Name: "summary", Content: []byte(summary)},
+				secretscan.Segment{Name: "validation", Content: []byte(validation)},
+				secretscan.Segment{Name: "remaining", Content: []byte(remaining)},
+				secretscan.Segment{Name: "handover-body", Content: body},
+			)
+			if err != nil {
+				return err
+			}
+			printSecretScanAdvisories(command, secretWarnings)
 			result, err := deps.checkpoint(command.Context(), worktrees.SessionCheckpointOptions{
 				ProjectsRoot:     projectsRoot,
 				Worktree:         argumentOrCurrent(args),
@@ -225,12 +243,14 @@ aggregate and never creates a second checkpoint or successor for that retry.`,
 	command.Flags().StringVar(&harness, "harness", "", "requested successor harness (default: source runtime)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&resume, "resume", "", "retry the exact immutable courier route for an existing handoff ID")
+	command.Flags().StringArrayVar(&overrideSecrets, secretOverrideFlagName, nil, secretOverrideFlagHelp)
 	return command
 }
 
 func runSessionMoveResume(command *cobra.Command, deps sessionMoveDependencies, handoffID, via, configPath, format string, args []string) error {
 	if len(args) != 0 || command.Flags().Changed("handover-file") || command.Flags().Changed("harness") || command.Flags().Changed("summary") ||
-		command.Flags().Changed("validation") || command.Flags().Changed("remaining") || command.Flags().Changed("to") {
+		command.Flags().Changed("validation") || command.Flags().Changed("remaining") || command.Flags().Changed("to") ||
+		command.Flags().Changed(secretOverrideFlagName) {
 		return fmt.Errorf("--resume accepts only an existing handoff ID plus optional --via, --config, and --format")
 	}
 	source, ok, err := deps.resolveSource()

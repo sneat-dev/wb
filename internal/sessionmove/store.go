@@ -32,6 +32,10 @@ const (
 	eventsDirName   = "events"
 	maxReceiptBytes = 1 << 20
 	maxEventBytes   = 64 << 10
+	// HandoverFileName is the fixed private artifact EnsureHandoverUnderLock
+	// materializes inside a handoff's retained aggregate directory. It is
+	// never a repository path; see PrivateHandoverPath.
+	HandoverFileName = "handover.md"
 )
 
 // Store persists handoff state at Root, normally <WB_HOME>/handoffs.
@@ -40,6 +44,59 @@ type Store struct {
 }
 
 func NewStore(root string) Store { return Store{Root: root} }
+
+// PrivateHandoverPath returns the deterministic absolute path of the private
+// materialized handover for handoffID under storeRoot. It never depends on
+// caller-supplied data beyond identifiers already validated elsewhere, so
+// both the writer (EnsureHandoverUnderLock) and every reader can recompute it
+// without trusting a persisted path value.
+func PrivateHandoverPath(storeRoot, handoffID string) string {
+	return filepath.Join(storeRoot, handoffID, HandoverFileName)
+}
+
+// EnsureHandoverUnderLock durably and idempotently materializes an admitted
+// request's inline handover content (Request.HandoverContent) as a private
+// 0600 file inside the retained handoff directory, for delivery to the
+// successor as sessionauthority.ContinuationPrivate, and returns its absolute
+// path. Repeat calls for the same handoff are safe: the content comes from
+// the immutable admitted request, so it is always byte-identical, and
+// publishImmutableAt's first-caller-wins publication makes a repeat write a
+// no-op. A pre-cutover request with no inline content is never materialized
+// here; it is delivered the old way instead, by reading the content already
+// committed into the pinned worktree at its legacy HandoverPath.
+func (s Store) EnsureHandoverUnderLock(lock *ExecutionLock, handoffID string, digest Digest) (string, error) {
+	request, handoff, err := s.retainHandoffUnderLock(lock, handoffID, digest)
+	if err != nil {
+		return "", fmt.Errorf("retain handoff for private handover materialization: %w", err)
+	}
+	defer func() { _ = handoff.Close() }()
+	if request.HandoverContent == "" {
+		return "", fmt.Errorf("handoff %s has no inline handover content to materialize", handoffID)
+	}
+	raw := []byte(request.HandoverContent)
+	if !request.HandoverDigest.Matches(raw) {
+		return "", fmt.Errorf("%w: handoff %s inline handover content does not match its digest", ErrHandoffConflict, handoffID)
+	}
+	if _, err := publishImmutableAt(handoff, HandoverFileName, raw, 0o600); err != nil {
+		return "", fmt.Errorf("persist private handover: %w", err)
+	}
+	return PrivateHandoverPath(s.Root, handoffID), nil
+}
+
+// ReadHandover re-reads and re-verifies the private artifact
+// EnsureHandoverUnderLock materialized, using the same hardened single-link,
+// mode-0600 checks as every other durable handoff artifact. It is the
+// exec-time counterpart the private launcher calls right before handing the
+// harness its continuation, so a change to the file between materialization
+// and exec is caught rather than silently trusted.
+func (s Store) ReadHandover(handoffID string) ([]byte, error) {
+	handoff, err := s.openHandoff(handoffID, false)
+	if err != nil {
+		return nil, fmt.Errorf("open handoff for private handover read: %w", err)
+	}
+	defer func() { _ = handoff.Close() }()
+	return readImmutableAt(handoff, HandoverFileName, MaxHandoverContentBytes, "private handover")
+}
 
 // Admit durably installs exact request bytes. The first caller wins an atomic
 // no-replace publication. Later callers with the same ID must present both the

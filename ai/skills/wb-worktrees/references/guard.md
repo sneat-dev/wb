@@ -37,7 +37,8 @@ general detached checkout as safe.
 Git has no pre-checkout hook. WB's `post-checkout` guard therefore reports an
 unmanaged checkout only after Git has made it, then exits successfully to avoid
 leaving a deceptive half-failed `git checkout && ...` flow. Inspect and
-preserve the branch; `wb worktree rescue` is not available yet. Restore
+preserve the branch, and run `wb worktree rescue <path>` to move any
+uncommitted work onto a branch first. Restore
 canonical `main` only when doing so is known to be safe. `pre-commit` and
 `pre-push` remain blocking boundaries.
 
