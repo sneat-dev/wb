@@ -136,6 +136,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"layout audit": true, "layout clean": true, "archive clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true,
 		"worktree list": true, "worktree cleanup": true, "worktree rename": true,
+		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
 		"worktree own":     true,
 		"session register": true, "session list": true, "session prune": true, "session move": true, "session receive": true, "session receive-park": true, "session park": true, "session resume": true,

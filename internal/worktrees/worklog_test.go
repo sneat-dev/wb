@@ -62,6 +62,13 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 		if _, err := git(context.Background(), worktree, "check-ignore", ".wb-worklog/recovery.json"); err != nil {
 			t.Fatalf("projection at %s is not locally ignored: %v", worktree, err)
 		}
+		if _, err := git(context.Background(), worktree, "check-ignore", worktreeInstructionsName); err != nil {
+			t.Fatalf("worktree instructions at %s are not locally ignored: %v", worktree, err)
+		}
+		instructions, err := os.ReadFile(filepath.Join(worktree, worktreeInstructionsName))
+		if err != nil || !bytes.Contains(instructions, []byte("wb worktree merge . --route auto --cleanup")) {
+			t.Fatalf("worktree merge instructions at %s = %q err=%v", worktree, instructions, err)
+		}
 		contents, err := os.ReadFile(filepath.Join(worktree, workLogProjectionDirectory, workLogProjectionName))
 		if err != nil {
 			t.Fatal(err)
@@ -69,6 +76,29 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 		if bytes.Contains(contents, []byte(worktree)) || bytes.Contains(contents, []byte("repository")) || bytes.Contains(contents, []byte("prompt")) {
 			t.Fatalf("projection leaked private/path metadata: %s", contents)
 		}
+	}
+}
+
+func TestManagedWorktreeInstructionsPreserveRepositoryOwnedFile(t *testing.T) {
+	worktree := t.TempDir()
+	worktree, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(worktree, worktreeInstructionsName)
+	want := []byte("# Repository instructions\n\nDo not replace me.\n")
+	if err := os.WriteFile(path, want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManagedWorktreeInstructions(worktree); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("repository-owned .worktree.md changed: got %q want %q", got, want)
 	}
 }
 

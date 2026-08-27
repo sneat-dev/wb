@@ -357,6 +357,12 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 		t.Fatal(err)
 	}
 	oldWorktree := created[0].WorktreeDir
+	// Simulate an older WB-managed projection carrying task-specific stale
+	// guidance. Rename must replace managed content, not carry it into the next
+	// effort. (Repository-owned files without the marker are preserved.)
+	if err := os.WriteFile(filepath.Join(oldWorktree, worktreeInstructionsName), []byte("<!-- wb-managed-worktree -->\nold-task stale instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	untracked := filepath.Join(oldWorktree, "node_modules", "left-behind.txt")
 	if err := os.MkdirAll(filepath.Dir(untracked), 0o755); err != nil {
 		t.Fatal(err)
@@ -420,6 +426,13 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 	}
 	if _, err := Guard(context.Background(), wantNewWorktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
 		t.Fatalf("renamed worktree failed guard: %v", err)
+	}
+	instructions, err := os.ReadFile(filepath.Join(wantNewWorktree, worktreeInstructionsName))
+	if err != nil {
+		t.Fatalf("read regenerated worktree instructions: %v", err)
+	}
+	if !strings.Contains(string(instructions), "wb worktree merge . --route auto --cleanup") || strings.Contains(string(instructions), "old-task stale instructions") {
+		t.Fatalf("renamed worktree instructions were not regenerated for the new task:\n%s", instructions)
 	}
 
 	// The old task root is retained (matching Cleanup's convention), not

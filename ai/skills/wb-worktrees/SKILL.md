@@ -1,6 +1,6 @@
 ---
 name: wb-worktrees
-description: Use WB to create, guard, resume, and inspect isolated task worktrees, move registered agent sessions between machines, and safely clean up leftover worktrees and branches — for one finished task or as a historic, fleet-wide sweep across every repository. Use when asked to move or resume an agent session, clean up branches, delete merged branches, prune remote branches, remove stale or leftover worktrees, tidy historic leftovers, or audit repository hygiene, and also before editing or branching, when coordinating repositories, when checking task state, after pull requests merge, or when recovering from an unsafe checkout. Never hand-roll `git branch -d`, `git branch --merged`, `git worktree remove`, or `git push --delete` branch or worktree sweeps.
+description: Use WB for the full isolated-worktree lifecycle: create, guard, inspect, resume, mechanically merge/land one or many completed worktrees to a default or target branch, synchronize the canonical clone, revert a landed batch forward, and safely clean branches/worktrees. Use before editing or branching and whenever asked to merge, integrate, land, finish, deliver, push to main, create/merge a PR, drain completed agent branches, resume a merge, clean up, delete merged branches, remove stale worktrees, move/resume an agent session, or audit repository hygiene. Prefer `wb worktree merge` for conflict-free AI-agent handoffs; never hand-roll Git worktree/branch cleanup or a repeated PR landing sequence.
 ---
 
 # WB worktrees
@@ -22,6 +22,10 @@ recognizes legacy linked worktrees there during migration.
 ## Route
 
 - Read [create.md](references/create.md) to start or resume a task.
+- Read [merge.md](references/merge.md) whenever one or more worktrees are ready
+  to integrate, land, push to a target, deliver through a PR, finish, clean up,
+  resume after interruption, or revert after a landed failure. This is the
+  normal repeated counterpart to creation, not an exceptional release tool.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
 - Read [cleanup.md](references/cleanup.md) for ANY hygiene request — deleting
   merged branches, removing stale or leftover worktrees, or sweeping historic
@@ -111,6 +115,7 @@ wb worktree info <printed-worktree-path>
 wb worktree log <printed-worktree-path>
 wb worktree guard <printed-worktree-path>
 wb worktree list <task>
+wb worktree merge <source-worktree...> --route auto --cleanup --format json
 ```
 
 With no prefix, WB uses the task slug itself as the branch name. Use

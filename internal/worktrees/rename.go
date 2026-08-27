@@ -1297,6 +1297,9 @@ func verifyRecycleState(ctx context.Context, worktree string, preserve []string)
 	args = append(args,
 		"-e", journalRootDirectory+"/"+journalLocalDirectory,
 		"-e", workLogProjectionDirectory,
+		// .worktree.md is a generated WB control-plane projection. Rename
+		// regenerates it for the new task after the branch and path move.
+		"-e", worktreeInstructionsName,
 		"-e", legacyWorkLogProjectionName,
 	)
 	for _, path := range preserve {

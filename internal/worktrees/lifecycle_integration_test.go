@@ -1100,6 +1100,49 @@ func TestCleanupFilterExcludesMismatchedCandidateOutsideSelection(t *testing.T) 
 	}
 }
 
+func TestCleanupExactRepositoryCannotActOnAnotherRepository(t *testing.T) {
+	const task = "cleanup-exact-repository"
+	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot:    fixture.projectsRoot,
+		Task:            task,
+		Base:            "main",
+		ExactRepository: "acme/other",
+		Apply:           true,
+		DeleteRemote:    true,
+		OlderThan:       0,
+		Now:             func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "has no repository") {
+		t.Fatalf("wrong exact-repository cleanup error = %v", err)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("wrong exact-repository cleanup touched selected task worktree: %v", statErr)
+	}
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot:    fixture.projectsRoot,
+		Task:            task,
+		Base:            "main",
+		ExactRepository: "acme/app",
+		Apply:           true,
+		DeleteRemote:    true,
+		OlderThan:       0,
+		Now:             func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || outcome.Results[0].Repository != "acme/app" || !outcome.Results[0].Applied {
+		t.Fatalf("exact-repository cleanup outcome = %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("exact selected worktree remains after cleanup: %v", statErr)
+	}
+}
+
 func TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository(t *testing.T) {
 	const task = "cleanup-retired-stage"
 	fixture, result, head, mergedAt := prepareMergedTask(t, task)

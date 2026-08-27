@@ -1,14 +1,21 @@
 ---
 name: wb-merge
-description: Integrate compatible completed agent branches, prove remote receipt, and terminalize their WB worktrees without leaving branch or worktree debt. Use for a dedicated merger role, release handoff, or draining completed implementation branches.
+description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed.
 ---
 
 # WB merge
+
+For a clean conflict-free handoff, start with `wb worktree merge`; this is the
+default AI-agent landing path and is expected to be used at least once for most
+created worktrees, often multiple times for a long-lived target. Use the manual
+steps below only for unsupported policy, conflicts, or behavioral judgment.
 
 This is the canonical, harness-neutral merger contract. It is an operational
 skill, not a branch-prefix convention and not a model profile. Read
 [ci-polling.md](references/ci-polling.md) when CI must be observed and
 [adapters.md](references/adapters.md) when installing or migrating a harness.
+For conflict-free receipt-backed automation, read
+[worktree-merge.md](references/worktree-merge.md).
 
 The dedicated merger agent captures current `main` and selected-target failures
 as baseline diagnostics but never waits for current target CI to turn green;
@@ -78,8 +85,9 @@ than a fictional queue.
    and obtain a new receipt. Merge-group observation is planned; this
    source-head workflow must fail closed for a merge queue rather than claim
    synthetic-SHA support.
-   WB does not yet expose a generic `merge` subcommand: do not invent one or
-   represent an unverified local integration as landed.
+   `wb worktree merge` now composes this conflict-free mechanical path. Its
+   prepare receipt remains explicitly local and not landed until Phase 2
+   proves the exact remote target.
 5. Push whichever ref was integrated immediately after validation. For a
    direct route, push the exact target and verify its remote SHA. For a PR route,
    push the source branch, wait for its exact source-head and PR receipt, then
