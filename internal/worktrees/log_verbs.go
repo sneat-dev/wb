@@ -32,7 +32,8 @@ type LogVerbResult struct {
 	// remote push was attempted. Its Notice field always carries
 	// NotALandingReceiptNotice: a remote checkpoint is a durability aid,
 	// never proof that the checkpointed task landed anywhere.
-	RemoteCheckpoint *RemoteCheckpointResult `json:"remote_checkpoint,omitempty"`
+	RemoteCheckpoint      *RemoteCheckpointResult `json:"remote_checkpoint,omitempty"`
+	ReadyForNormalCleanup bool                    `json:"ready_for_normal_cleanup,omitempty"`
 }
 
 type claimFence struct {
@@ -641,15 +642,30 @@ func LogHandoff(ctx context.Context, options LogHandoffOptions) (LogVerbResult, 
 
 // LogRecoverOptions configures wb worktree log recover.
 type LogRecoverOptions struct {
-	ProjectsRoot string
-	Worktree     string
-	Apply        bool
-	Takeover     bool
-	Actor        string
+	ProjectsRoot    string
+	Worktree        string
+	Apply           bool
+	Takeover        bool
+	Actor           string
+	ReconcileBranch string
+	ExpectedHead    string
+	Remote          bool
+	Reason          string
+	EventID         string
+	// Test-only interruption points are deliberately unexported. They model a
+	// process death after durable stages without widening the CLI contract.
+	testFailAfterBundle string
+	testStopAfterStage  string
+	// testBeforeBundleCheck models a ref moving after immutable recovery
+	// coordinates are recorded but before either destructive retirement stage.
+	testBeforeBundleCheck func()
 }
 
 // LogRecover rebuilds derived state and diagnoses claim/journal disagreement.
 func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, error) {
+	if strings.TrimSpace(options.ReconcileBranch) != "" {
+		return reconcileClaimBranch(ctx, options)
+	}
 	root, err := resolveWorktreeRoot(ctx, options.Worktree)
 	if err != nil {
 		return LogVerbResult{}, err

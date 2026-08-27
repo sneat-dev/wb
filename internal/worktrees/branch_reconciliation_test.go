@@ -411,4 +411,3 @@ func installOpenReconciliationPullRequestFixture(t *testing.T, head string) {
 	t.Setenv("WB_TEST_OPEN_PULL", string(payload))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
-

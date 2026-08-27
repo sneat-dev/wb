@@ -584,4 +584,3 @@ func requireLocalClaimAbsent(ctx context.Context, canonical *canonicalRepository
 func localProjectionForReconciliation(projection workLogProjection) *LocalWorkLogProjection {
 	return &LocalWorkLogProjection{Version: 1, EffortID: projection.EffortID, RunID: projection.RunID, ClaimID: projection.ClaimID, Lifecycle: projection.Lifecycle}
 }
-
