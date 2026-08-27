@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 type textHandler struct{}
@@ -98,6 +100,108 @@ func TestRunCommitsWithoutPushing(t *testing.T) {
 	}
 }
 
+// TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard is the Defect C
+// regression: `wb deps bump`/`wb deps set` wave worktrees are created by
+// this exact Run/processRepository path with plain `git worktree add`, not
+// through `wb worktree create`, so they never carried the WB manifest wb's
+// own commit-admission hook requires — wb's own pre-commit hook then
+// rejected the very commit the operation existed to make, with "this
+// worktree has no WB manifest, so nothing records what it is or who asked
+// for it". This drives the exact same admission check the installed
+// pre-commit hook calls (worktrees.Guard with AdmissionEnforce) against a
+// worktree Run actually created, so a regression here fails exactly the way
+// production did.
+func TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard(t *testing.T) {
+	fixture := newEngineFixture(t)
+	options := fixture.options()
+	options.Commit = true
+	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := results[0]
+	if result.Status != "committed" || result.Commit == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	guardResult, err := worktrees.Guard(context.Background(), result.WorktreeDir, worktrees.GuardOptions{
+		ProjectsRoot: fixture.githubDir, Base: "main", Admission: worktrees.AdmissionEnforce,
+	})
+	if err != nil {
+		t.Fatalf("wb's own commit-admission guard rejected the wave worktree it created: %v", err)
+	}
+	if guardResult.Admission == nil || !guardResult.Admission.Admitted {
+		t.Fatalf("admission = %+v, want admitted", guardResult.Admission)
+	}
+}
+
+// TestRunFallsBackToRepositoryDefaultBranchForDownstreamWaveOperation pins
+// that a repository whose default branch is not the operation's configured
+// --ref (default "main") is not just tolerated during graph discovery: any
+// downstream wave operation — worktree creation, commit, and the eventual
+// pull request base — must use the repository's actual default branch too.
+// Before EnsureCanonical returned the resolved base, this exact repository
+// state made `wb deps bump go --fleet` fail outright for every fleet
+// repository whose default branch is "master".
+func TestRunFallsBackToRepositoryDefaultBranchForDownstreamWaveOperation(t *testing.T) {
+	fixture := newEngineFixtureOnBranch(t, "master")
+	options := fixture.options()
+	options.Commit = true
+	results, err := Run(context.Background(), []Repository{fixture.repository}, textHandler{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := results[0]
+	if result.Status != "committed" || result.Commit == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Ref != "master" {
+		t.Fatalf("result.Ref = %q, want the repository's actual default branch %q", result.Ref, "master")
+	}
+	if ahead := strings.TrimSpace(runEngineGit(t, result.WorktreeDir, "rev-list", "origin/master..HEAD")); ahead == "" {
+		t.Fatalf("worktree was not branched from origin/master")
+	}
+}
+
+// TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent is a
+// focused unit test of EnsureCanonical itself: the function callers actually
+// depend on for base-ref resolution, isolated from the rest of the Run
+// pipeline exercised above.
+func TestEnsureCanonicalFallsBackToDefaultBranchWhenConfiguredRefIsAbsent(t *testing.T) {
+	fixture := newEngineFixtureOnBranch(t, "master")
+	resolved, err := EnsureCanonical(context.Background(), fixture.repository, fixture.canonical, Options{
+		GitHubDir: fixture.githubDir, Ref: "main", Timeout: time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("EnsureCanonical returned an error instead of falling back: %v", err)
+	}
+	if resolved.Ref != "master" || !resolved.Fallback {
+		t.Fatalf("resolved = %+v, want ref=master fallback=true", resolved)
+	}
+}
+
+// TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve
+// pins the floor: a repository whose origin has no resolvable ref at all
+// must still fail loudly rather than silently resolving to nothing.
+func TestEnsureCanonicalFailsWhenNeitherConfiguredRefNorDefaultBranchResolve(t *testing.T) {
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote.git")
+	runEngineGit(t, root, "init", "--bare", remote)
+	canonical := filepath.Join(root, "projects", "acme", "broken")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, root, "clone", remote, canonical)
+	_, err := EnsureCanonical(context.Background(), Repository{Slug: "acme/broken", Path: canonical, CloneURL: remote}, canonical, Options{
+		GitHubDir: filepath.Join(root, "projects"), Ref: "main", Timeout: time.Minute,
+	})
+	if err == nil {
+		t.Fatal("a repository with no resolvable ref at all must fail, not silently resolve")
+	}
+	if !strings.Contains(err.Error(), "acme/broken") {
+		t.Fatalf("error must name the repository; got %v", err)
+	}
+}
+
 type rejectingPublishHandler struct{ textHandler }
 
 func (rejectingPublishHandler) ValidatePublishable(context.Context, string, Repository) error {
@@ -120,14 +224,19 @@ func TestRunValidatesPublishabilityBeforeCommit(t *testing.T) {
 func TestRunSkipsArchivedRepository(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
+	var events []progress.Event
 	results, err := Run(context.Background(), []Repository{{Slug: "acme/retired", Archived: true}}, textHandler{}, Options{
 		GitHubDir: directory, Operation: "archived-test", DryRun: true,
+		Progress: func(event progress.Event) { events = append(events, event) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if results[0].Status != "skipped" || results[0].Reason != "repository is archived" {
 		t.Fatalf("result = %+v", results[0])
+	}
+	if len(events) != 2 || events[0].State != progress.Started || events[1].State != progress.Completed || events[1].Completed != 1 || events[1].Total != 1 {
+		t.Fatalf("progress events = %#v", events)
 	}
 }
 
@@ -291,6 +400,16 @@ type engineFixture struct {
 
 func newEngineFixture(t *testing.T) engineFixture {
 	t.Helper()
+	return newEngineFixtureOnBranch(t, "main")
+}
+
+// newEngineFixtureOnBranch mirrors newEngineFixture but seeds the remote and
+// canonical clone on an arbitrary default branch, so tests can pin
+// EnsureCanonical's default-branch fallback (see
+// TestRunFallsBackToRepositoryDefaultBranchForDownstreamWaveOperation) without
+// duplicating the whole fixture.
+func newEngineFixtureOnBranch(t *testing.T, branch string) engineFixture {
+	t.Helper()
 	root := t.TempDir()
 	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp
 	// githubDir has no legacy .wb, so wbhome.Root falls through to the real
@@ -303,7 +422,7 @@ func newEngineFixture(t *testing.T) engineFixture {
 	githubDir := filepath.Join(root, "projects")
 	canonical := filepath.Join(githubDir, "acme", "app")
 	writeEngineFile(t, filepath.Join(seed, "dependency.txt"), "old\n")
-	runEngineGit(t, seed, "init", "-b", "main")
+	runEngineGit(t, seed, "init", "-b", branch)
 	runEngineGit(t, seed, "config", "user.name", "WB Test")
 	runEngineGit(t, seed, "config", "user.email", "wb@example.test")
 	runEngineGit(t, seed, "add", "-A")

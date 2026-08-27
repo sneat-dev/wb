@@ -74,6 +74,33 @@ func TestCleanupNamedTaskStillFailsWhenItCannotBeCorroborated(t *testing.T) {
 	}
 }
 
+func TestCleanupNamedTaskDryRunRejectsUncorroboratedClaim(t *testing.T) {
+	fixture := newGitFixture(t)
+	broken, brokenHead, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-broken")
+	installMergedPullRequestFixtures(t, []string{brokenHead}, mergedAt)
+	gitTest(t, broken.WorktreeDir, "checkout", "-b", "renovate/unclaimed-by-the-work-log")
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-broken",
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatalf("plan cleanup for an uncorroborated named task: %v", err)
+	}
+	if len(outcome.Results) != 1 {
+		t.Fatalf("cleanup plan results = %d, want 1: %#v", len(outcome.Results), outcome.Results)
+	}
+	result := outcome.Results[0]
+	if result.Eligible {
+		t.Fatalf("dry-run cleanup marked an uncorroborated claim eligible: %#v", result)
+	}
+	wantReason := `preflight Work Log for acme/app: live branch "renovate/unclaimed-by-the-work-log" does not match private claim "cleanup-broken"; recovery: rename the live branch back to the claim name (git branch -m cleanup-broken) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again`
+	if result.Reason != wantReason {
+		t.Fatalf("dry-run cleanup reason = %q, want %q", result.Reason, wantReason)
+	}
+}
+
 func cleanupApplied(outcome CleanupOutcome, task string) bool {
 	for _, result := range outcome.Results {
 		if result.Task == task && result.Applied {

@@ -5,10 +5,56 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+func TestCampaignReportsAllApplyPhasesWithZeroBasedLayers(t *testing.T) {
+	test := newCampaignIntegrationFixture(t)
+	var mu sync.Mutex
+	var events []progress.Event
+	_, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
+		GitHubDir: test.githubDir,
+		Apply:     true,
+		Verify:    VerifyNone,
+		Parallel:  2,
+		CloneURL:  test.cloneURL,
+		Progress: func(event progress.Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	wanted := map[string]bool{
+		"plan": false, "prepare": false,
+		"apply_sources": false, "update_manifests": false, "verify": false,
+	}
+	foundLayerZero := false
+	for _, event := range events {
+		if _, ok := wanted[event.Phase]; ok {
+			wanted[event.Phase] = true
+		}
+		if event.Layer != nil && *event.Layer == 0 {
+			foundLayerZero = true
+		}
+	}
+	for phase, found := range wanted {
+		if !found {
+			t.Fatalf("missing %s progress event: %#v", phase, events)
+		}
+	}
+	if !foundLayerZero {
+		t.Fatalf("missing zero-based layer progress event: %#v", events)
+	}
+}
 
 func TestCampaignUsesIsolatedWorktreesAndCanResumeAndClean(t *testing.T) {
 	test := newCampaignIntegrationFixture(t)

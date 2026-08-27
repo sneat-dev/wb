@@ -284,6 +284,31 @@ func PreflightWorkLogOptions(task string, options WorkLogOptions) error {
 	return snapshotOriginalPrompt(&options)
 }
 
+// originalPromptStdinMarker is recorded as this option's SourceReference when
+// the exact prompt bytes were captured in memory (from stdin) rather than
+// opened from an external file, so the private archive metadata never claims
+// a path that does not exist.
+const originalPromptStdinMarker = "(stdin)"
+
+// WithOriginalPromptFromStdin captures prompt bytes the caller already holds
+// in memory — read once from stdin, never staged to any file — as this
+// option's immutable original prompt. It fails closed on empty or
+// whitespace-only input, exactly like an empty --original-prompt-file.
+// Because the bytes are captured directly instead of reopened from a path,
+// there is no shared staging file and no read-after-write window for a
+// concurrent caller to corrupt: the private archive WB writes later is
+// byte-for-byte these exact contents.
+func (options WorkLogOptions) WithOriginalPromptFromStdin(content []byte) (WorkLogOptions, error) {
+	if len(bytes.TrimSpace(content)) == 0 {
+		return WorkLogOptions{}, fmt.Errorf("--original-prompt-file - requires non-empty stdin so the private Work Log can retain the exact originating request")
+	}
+	digest := sha256.Sum256(content)
+	options.OriginalPrompt = originalPromptStdinMarker
+	options.originalPromptContents = append([]byte(nil), content...)
+	options.originalPromptDigest = hex.EncodeToString(digest[:])
+	return options, nil
+}
+
 func snapshotOriginalPrompt(options *WorkLogOptions) error {
 	if len(options.originalPromptContents) != 0 {
 		digest := sha256.Sum256(options.originalPromptContents)
@@ -1478,6 +1503,25 @@ func preflightWorkLogSeal(home, worktree, finalCommit string) error {
 	if err != nil {
 		return err
 	}
+	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
+}
+
+// preflightWorkLogClaimReadOnly corroborates a Work Log claim without
+// migrating a legacy projection. Cleanup planning must remain read-only; apply
+// repeats preflightWorkLogSeal while holding the task lock before terminalizing
+// the claim or deleting Git state.
+func preflightWorkLogClaimReadOnly(home, worktree, finalCommit string) error {
+	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
+}
+
+func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) error {
 	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
 		return err
@@ -1553,6 +1597,32 @@ func readWorkLogProjectionForClaim(home, worktree string) (workLogProjection, er
 		return workLogProjection{}, err
 	}
 	return legacy, nil
+}
+
+// readWorkLogProjectionForReadOnlyClaim selects the same current or legacy
+// projection that apply can corroborate, but never writes the current
+// projection or removes the legacy pointer.
+func readWorkLogProjectionForReadOnlyClaim(worktree string) (workLogProjection, error) {
+	projection, currentErr := readWorkLogProjection(worktree)
+	legacy, legacyErr := readLegacyWorkLogProjection(worktree)
+	switch {
+	case currentErr == nil:
+		if legacyErr == nil && legacy != projection {
+			return workLogProjection{}, fmt.Errorf("legacy and current work-log projections disagree")
+		}
+		if legacyErr != nil && !errors.Is(legacyErr, os.ErrNotExist) {
+			return workLogProjection{}, legacyErr
+		}
+		return projection, nil
+	case !errors.Is(currentErr, os.ErrNotExist):
+		return workLogProjection{}, currentErr
+	case errors.Is(legacyErr, os.ErrNotExist):
+		return workLogProjection{}, errWorkLogProjectionNotFound
+	case legacyErr != nil:
+		return workLogProjection{}, legacyErr
+	default:
+		return legacy, nil
+	}
 }
 
 func readLegacyWorkLogProjection(worktree string) (workLogProjection, error) {
@@ -1632,7 +1702,13 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	}
 	branch, err := git(context.Background(), worktree, "branch", "--show-current")
 	if err != nil || branch != claim.Branch {
-		return fmt.Errorf("live branch %q does not match private claim %q", branch, claim.Branch)
+		// #183: the proven recovery is renaming the live branch back to the
+		// claim name. Landing evidence is commit-based (see corroborateClaim's
+		// own HEAD/base checks below and Cleanup's PR-containment proof), so a
+		// PR already opened from the renamed branch still proves out once the
+		// name matches again — this is a pure message change, not a relaxed
+		// check.
+		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
 	}
 	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
 	if err != nil || head != finalCommit {

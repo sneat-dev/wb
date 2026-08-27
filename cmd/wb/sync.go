@@ -30,7 +30,7 @@ func newSyncCmd() *cobra.Command {
 			if code := runSync(projectsRoot, filterFlag, owners, workers, dryRun, publish, defaultRemoteDeps()); code != 0 {
 				return &exitError{
 					code:    code,
-					message: "one or more repositories failed to sync; each failure is listed after the summary above",
+					message: "sync did not complete; see diagnostics above",
 				}
 			}
 			return nil
@@ -69,22 +69,42 @@ func requestedSyncOwners(cmd *cobra.Command, only []string) []string {
 // otherwise it auto-discovers the authenticated user plus their member orgs.
 // Unlike fleetOwners, there is no "extra" concept here — -o restricts rather
 // than adds.
-func syncOwners(only []string) []string {
+func syncOwners(only []string) ([]string, error) {
+	return resolveSyncOwners(only, discover.AuthUser, discover.MemberOrgs)
+}
+
+// resolveSyncOwners verifies GitHub authentication before selecting owners.
+// Sync must never silently treat an authentication failure as "not owned":
+// doing so leaves every local repository unmanaged while reporting success.
+func resolveSyncOwners(
+	only []string,
+	authUser func() (string, error),
+	memberOrgs func() ([]string, error),
+) ([]string, error) {
+	user, err := authUser()
+	if err != nil {
+		return nil, fmt.Errorf("GitHub authentication failed: %w", err)
+	}
 	if len(only) > 0 {
-		return only
+		return only, nil
 	}
-	var owners []string
-	if user, err := discover.AuthUser(); err == nil && user != "" {
-		owners = append(owners, user)
+	if user == "" {
+		return nil, fmt.Errorf("GitHub authentication failed: authenticated user is empty")
 	}
-	if orgs, err := discover.MemberOrgs(); err == nil {
-		owners = append(owners, orgs...)
+	orgs, err := memberOrgs()
+	if err != nil {
+		return nil, fmt.Errorf("could not list GitHub organizations: %w", err)
 	}
-	return owners
+	return append([]string{user}, orgs...), nil
 }
 
 func runSync(projectsRoot, filter string, only []string, workers int, dryRun, publish bool, deps remoteDeps) int {
-	repos, err := fleet(projectsRoot, filter, func() []string { return syncOwners(only) })
+	owners, err := syncOwners(only)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wb: %v\nRe-authenticate with: gh auth login -h github.com\n", err)
+		return exitFindings
+	}
+	repos, err := fleet(projectsRoot, filter, func() []string { return owners })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discovery error:", err)
 		return 1
@@ -109,16 +129,9 @@ func runSync(projectsRoot, filter string, only []string, workers int, dryRun, pu
 			results = runSyncPlain(repos, projectsRoot, workers, dryRun)
 		}
 
-		printSyncSummary(results)
+		printSyncSummary(os.Stdout, results)
 
-		needsReview := false
-		for _, res := range results {
-			if tui.Reviewable(res) {
-				needsReview = true
-			}
-		}
-
-		if interactive && needsReview {
+		if interactive {
 			if err := runResultsBrowser(results); err != nil {
 				fmt.Fprintln(os.Stderr, "results browser error:", err)
 			}
@@ -148,7 +161,7 @@ func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDep
 	if publish {
 		if dryRun {
 			_, _ = fmt.Fprintln(out, "dry-run: skipping remote publish")
-		} else if err := runRemotePublish(deps, projectsRoot, filter, workers, false, false, out); err != nil {
+		} else if err := runRemotePublishWithProgress(deps, projectsRoot, filter, workers, false, false, out, errOut); err != nil {
 			_, _ = fmt.Fprintln(errOut, "remote publish failed (sync itself succeeded):", err)
 		}
 	}
@@ -233,38 +246,33 @@ func runResultsBrowser(results []fleetsync.Result) error {
 	return err
 }
 
-func printSyncSummary(results []fleetsync.Result) {
-	counts := map[fleetsync.Status]int{}
-	for _, r := range results {
-		counts[r.Status]++
+func printSyncSummary(out io.Writer, results []fleetsync.Result) {
+	groups := fleetsync.Summary(results)
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "━━━ Summary ━━━")
+	printCount := func(label string, count int) { _, _ = fmt.Fprintf(out, "%-20s%d\n", label, count) }
+	var section fleetsync.SummarySection
+	for _, group := range groups {
+		if group.Section != section {
+			section = group.Section
+			_, _ = fmt.Fprintf(out, "\n%s\n", section)
+		}
+		printCount(group.Label, len(group.Results))
 	}
-	fmt.Printf("\n━━━ Summary ━━━\n")
-	fmt.Printf("Not owned/fork    %d\n", counts[fleetsync.NoOp])
-	fmt.Printf("Cloned            %d\n", counts[fleetsync.Cloned])
-	fmt.Printf("Pulled            %d\n", counts[fleetsync.Pulled])
-	fmt.Printf("Skipped (dirty)   %d\n", counts[fleetsync.SkippedDirty])
-	fmt.Printf("Skipped (ignored) %d\n", counts[fleetsync.SkippedIgnored])
-	fmt.Printf("Empty remote      %d\n", counts[fleetsync.EmptyRemote])
-	fmt.Printf("Archived removed  %d\n", counts[fleetsync.RemovedArchived])
-	fmt.Printf("Archived kept     %d\n", counts[fleetsync.KeptArchived])
-	fmt.Printf("Archived absent   %d\n", counts[fleetsync.AbsentArchived])
-	fmt.Printf("Needs attention   %d\n", counts[fleetsync.Diverged]+counts[fleetsync.NoUpstream]+
-		counts[fleetsync.Unpushed]+counts[fleetsync.ArchivedUnlandable])
-	fmt.Printf("Errors            %d\n", counts[fleetsync.Failed])
-	for _, r := range results {
+	attention, _ := fleetsync.SummaryGroupByLabel(groups, "Needs attention")
+	for _, r := range attention.Results {
 		switch r.Status {
 		case fleetsync.Diverged, fleetsync.NoUpstream:
-			fmt.Printf("  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
+			_, _ = fmt.Fprintf(out, "  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
 		case fleetsync.Unpushed:
-			fmt.Printf("  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
+			_, _ = fmt.Fprintf(out, "  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
 		case fleetsync.ArchivedUnlandable:
-			fmt.Printf("  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
+			_, _ = fmt.Fprintf(out, "  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
 				r.Repo.Slug(), r.Detail.Summary())
 		}
 	}
-	for _, r := range results {
-		if r.Status == fleetsync.Failed {
-			fmt.Printf("  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
-		}
+	errors, _ := fleetsync.SummaryGroupByLabel(groups, "Errors")
+	for _, r := range errors.Results {
+		_, _ = fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
 	}
 }

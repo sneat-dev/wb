@@ -6,6 +6,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -38,6 +39,27 @@ type Options struct {
 	Push              bool
 	PR                bool
 	Merge             bool
+	Progress          progress.Reporter
+
+	// Prompt is recorded as the originating instruction in the WB manifest
+	// journal of every worktree this operation creates, satisfying wb's own
+	// commit-admission hook (internal/worktrees.CheckAdmission) — without it,
+	// a worktree this engine creates and then commits into is rejected by
+	// wb's own pre-commit hook as carrying no record of what it is or who
+	// asked for it. Normalize fills in an operation-derived default when
+	// empty, so every caller gets a truthful record even if it has nothing
+	// more specific to say.
+	Prompt string
+	// Model, AgentRuntime, Initiator, CLI, and Provider identify who or what
+	// asked for this operation, recorded in the same manifest for
+	// provenance. Normalize defaults Model to "unknown" when empty, matching
+	// the same explicit-over-guessed convention used everywhere else a
+	// child model identity is recorded (see internal/worktrees.WorkLogOptions).
+	Model        string
+	AgentRuntime string
+	Initiator    string
+	CLI          string
+	Provider     string
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.
@@ -85,6 +107,16 @@ type PullRequestWaitOptions struct {
 	Head              string
 	Slice             time.Duration
 	CheckPollInterval time.Duration
+	// Progress receives completed GitHub observations. It is diagnostic only;
+	// callers must use the returned result as the authoritative receipt.
+	Progress func(PullRequestWaitProgress)
+}
+
+// PullRequestWaitProgress is one completed observation inside a bounded wait.
+type PullRequestWaitProgress struct {
+	Observation int
+	Result      PullRequestWaitResult
+	NextPoll    time.Duration
 }
 
 // PullRequestWaitStatus is intentionally small so callers can branch on a

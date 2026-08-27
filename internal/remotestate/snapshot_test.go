@@ -92,15 +92,19 @@ func TestBuildListsOnlyNonCleanRepositoriesAndCountsAll(t *testing.T) {
 }
 
 func TestBuildRedactsUnpushedSubjectsToCounts(t *testing.T) {
-	repos := []RepositoryInput{{Repository: "acme/x", Path: "/p/x", Status: gitops.RepoStatus{Unpushed: []string{"abc feat", "def fix"}}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}}}
+	attribution := []gitops.UnpushedBranch{{Branch: "feature", Worktree: "/p/feature", Commits: []string{"abc feat", "def fix"}}}
+	repos := []RepositoryInput{{Repository: "acme/x", Path: "/p/x", Status: gitops.RepoStatus{Unpushed: []string{"abc feat", "def fix"}, UnpushedBranches: attribution}, Tracking: gitops.TrackingState{Branch: "main", Upstream: "origin/main", Ahead: 2}}}
 
 	full := Build(identity(), repos, nil, RedactNone)
 	if len(full.Repositories[0].Unpushed) != 2 || full.Repositories[0].UnpushedCount != 2 {
 		t.Fatalf("subjects mode: Unpushed=%v UnpushedCount=%d", full.Repositories[0].Unpushed, full.Repositories[0].UnpushedCount)
 	}
+	if !reflect.DeepEqual(full.Repositories[0].UnpushedBranches, attribution) {
+		t.Fatalf("subjects mode: UnpushedBranches=%+v, want %+v", full.Repositories[0].UnpushedBranches, attribution)
+	}
 	redacted := Build(identity(), repos, nil, RedactUnpushed)
-	if redacted.Repositories[0].Unpushed != nil || redacted.Repositories[0].UnpushedCount != 2 {
-		t.Fatalf("counts mode: Unpushed=%v UnpushedCount=%d", redacted.Repositories[0].Unpushed, redacted.Repositories[0].UnpushedCount)
+	if redacted.Repositories[0].Unpushed != nil || redacted.Repositories[0].UnpushedBranches != nil || redacted.Repositories[0].UnpushedCount != 2 {
+		t.Fatalf("counts mode: Unpushed=%v UnpushedBranches=%+v UnpushedCount=%d", redacted.Repositories[0].Unpushed, redacted.Repositories[0].UnpushedBranches, redacted.Repositories[0].UnpushedCount)
 	}
 }
 
@@ -197,6 +201,25 @@ func TestDecodeRejectsNewerSchema(t *testing.T) {
 func TestDecodeRejectsGarbage(t *testing.T) {
 	if _, err := Decode([]byte("{not yaml")); err == nil {
 		t.Fatal("expected YAML error")
+	}
+}
+
+func TestHeartbeatIsLaterOfPublishedAndLastSeen(t *testing.T) {
+	published := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+
+	zeroLastSeen := Snapshot{PublishedAt: published}
+	if got := zeroLastSeen.Heartbeat(); !got.Equal(published) {
+		t.Fatalf("Heartbeat() with zero LastSeenAt = %v, want PublishedAt %v", got, published)
+	}
+
+	laterLastSeen := Snapshot{PublishedAt: published, LastSeenAt: published.Add(48 * time.Hour)}
+	if got, want := laterLastSeen.Heartbeat(), laterLastSeen.LastSeenAt; !got.Equal(want) {
+		t.Fatalf("Heartbeat() with later LastSeenAt = %v, want %v", got, want)
+	}
+
+	laterPublished := Snapshot{PublishedAt: published, LastSeenAt: published.Add(-1 * time.Hour)}
+	if got := laterPublished.Heartbeat(); !got.Equal(published) {
+		t.Fatalf("Heartbeat() with later PublishedAt = %v, want %v", got, published)
 	}
 }
 

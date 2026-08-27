@@ -42,7 +42,7 @@ func TestPullRetryDelayBacksOffAndStaggersCheckouts(t *testing.T) {
 	}
 }
 
-func git(t *testing.T, dir string, args ...string) {
+func git(t testing.TB, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir

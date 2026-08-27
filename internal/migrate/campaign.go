@@ -23,6 +23,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/encode"
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -53,6 +54,7 @@ type CampaignOptions struct {
 	Merge      bool
 	Parallel   int
 	ReportDir  string
+	Progress   progress.Reporter
 
 	// CloneURL overrides the canonical GitHub clone URL for a repository. It is
 	// primarily useful for hermetic integration tests; normal campaigns use
@@ -213,10 +215,13 @@ func RunCampaign(spec Spec, sourceRoot string, options CampaignOptions) (Campaig
 		}
 		defer func() { _ = lock.release() }()
 	}
+	progress.Report(options.Progress, progress.Event{Operation: spec.ID, Phase: "plan", State: progress.Running})
 	c, err := planCampaign(spec, sourceRoot, options)
 	if err != nil {
+		progress.Report(options.Progress, progress.Event{Operation: spec.ID, Phase: "plan", State: progress.Failed, Detail: err.Error()})
 		return CampaignReport{}, err
 	}
+	progress.Report(options.Progress, progress.Event{Operation: spec.ID, Phase: "plan", State: progress.Completed, Completed: len(c.repos), Total: len(c.repos)})
 	if !options.Apply {
 		return c.report, nil
 	}
@@ -439,7 +444,7 @@ func campaignDiscoveryRoot(spec Spec, sourceRoot string, options CampaignOptions
 
 func (c *campaign) apply() error {
 	defer c.syncReport()
-	if err := runRepositoriesParallel(c.repos, c.options.Parallel, prepareCampaignRepository); err != nil {
+	if err := runRepositoriesParallel(c.repos, c.options.Parallel, c.progressAction("prepare", 0, c.repos, prepareCampaignRepository)); err != nil {
 		return err
 	}
 	moduleRoots := map[string]string{}
@@ -459,7 +464,8 @@ func (c *campaign) apply() error {
 	}
 	layers := flattenRepositoryComponentLayers(componentLayers)
 	var localVerificationErrors []error
-	for _, componentLayer := range componentLayers {
+	for layerIndex, componentLayer := range componentLayers {
+		layerNumber := layerIndex
 		layer := flattenRepositoryComponents(componentLayer)
 		var preflightErrors []error
 		var cycleBootstraps []cycleBootstrap
@@ -472,25 +478,32 @@ func (c *campaign) apply() error {
 				repo *campaignRepository,
 				allowedUnreleased map[string]bool,
 			) (map[string]bool, error) {
-				return c.preflightRepository(repo, moduleRoots, allowedUnreleased)
+				progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "preflight", Repository: repo.repository, State: progress.Running, Layer: progress.Index(layerNumber)})
+				releases, err := c.preflightRepository(repo, moduleRoots, allowedUnreleased)
+				state := progress.Completed
+				if err != nil {
+					state = progress.Failed
+				}
+				progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "preflight", Repository: repo.repository, State: state, Layer: progress.Index(layerNumber)})
+				return releases, err
 			})
 			if len(layer) == 0 {
 				return errors.Join(preflightErrors...)
 			}
 		}
-		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+		if err := runRepositoriesParallel(layer, c.options.Parallel, c.progressAction("apply_sources", layerNumber, layer, func(repo *campaignRepository) error {
 			return c.applyRepositorySources(repo)
-		}); err != nil {
+		})); err != nil {
 			return err
 		}
-		if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+		if err := runRepositoriesParallel(layer, c.options.Parallel, c.progressAction("update_manifests", layerNumber, layer, func(repo *campaignRepository) error {
 			return c.updateRepositoryManifests(repo, moduleRoots)
-		}); err != nil {
+		})); err != nil {
 			return err
 		}
-		verificationErrors := runRepositoriesParallelErrors(layer, c.options.Parallel, func(repo *campaignRepository) error {
+		verificationErrors := runRepositoriesParallelErrors(layer, c.options.Parallel, c.progressAction("verify", layerNumber, layer, func(repo *campaignRepository) error {
 			return c.verifyRepository(repo, false)
-		})
+		}))
 		if len(verificationErrors) > 0 {
 			if c.options.Commit {
 				return errors.Join(verificationErrors...)
@@ -508,19 +521,19 @@ func (c *campaign) apply() error {
 					bootstrapVersions[path] = version
 				}
 			}
-			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, c.progressAction("finalize_manifests", layerNumber, layer, func(repo *campaignRepository) error {
 				return c.finalizeRepositoryManifests(repo, moduleRoots, bootstrapVersions)
-			}); err != nil {
+			})); err != nil {
 				return err
 			}
-			if err := runRepositoriesParallel(layer, c.options.Parallel, func(repo *campaignRepository) error {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, c.progressAction("verify_publishable", layerNumber, layer, func(repo *campaignRepository) error {
 				return c.verifyRepository(repo, true)
-			}); err != nil {
+			})); err != nil {
 				return err
 			}
 		}
 		if c.options.Commit {
-			if err := runRepositoriesParallel(layer, c.options.Parallel, c.commitAndPublishRepository); err != nil {
+			if err := runRepositoriesParallel(layer, c.options.Parallel, c.progressAction("commit_publish", layerNumber, layer, c.commitAndPublishRepository)); err != nil {
 				return err
 			}
 		}
@@ -545,6 +558,7 @@ func (c *campaign) apply() error {
 			if repo.report.PR == "" {
 				continue
 			}
+			progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "required_checks", Repository: repo.repository, State: progress.Waiting})
 			checks, ready, err := requiredChecksGreen(repo.worktree, repo.report.PR)
 			repo.report.RequiredChecks = checks
 			if err != nil {
@@ -558,6 +572,7 @@ func (c *campaign) apply() error {
 			if repo.report.PR == "" {
 				continue
 			}
+			progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: "merge", Repository: repo.repository, State: progress.Running})
 			if _, err := runIn(repo.worktree, "gh", "pr", "merge", repo.report.PR, "--merge"); err != nil {
 				return err
 			}
@@ -566,6 +581,25 @@ func (c *campaign) apply() error {
 	}
 	c.syncReport()
 	return nil
+}
+
+func (c *campaign) progressAction(phase string, layer int, repositories []*campaignRepository, action func(*campaignRepository) error) func(*campaignRepository) error {
+	var mu sync.Mutex
+	completed := 0
+	return func(repo *campaignRepository) error {
+		progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: phase, Repository: repo.repository, State: progress.Running, Layer: progress.Index(layer), Total: len(repositories)})
+		err := action(repo)
+		mu.Lock()
+		completed++
+		state := progress.Completed
+		if err != nil {
+			state = progress.Failed
+		}
+		completedSnapshot := completed
+		mu.Unlock()
+		progress.Report(c.options.Progress, progress.Event{Operation: c.spec.ID, Phase: phase, Repository: repo.repository, State: state, Layer: progress.Index(layer), Completed: completedSnapshot, Total: len(repositories)})
+		return err
+	}
 }
 
 func (c *campaign) preflightRepository(

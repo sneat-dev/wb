@@ -368,6 +368,39 @@ func WriteManifest(worktree string, manifest Manifest) error {
 	return writeBytesImmutableAt(directory, manifestName, encoded, 0o600, false)
 }
 
+// EnsureManifest writes the creation manifest for a worktree that some
+// caller other than `wb worktree create` assembled directly — most notably
+// an internal orchestration engine (deps bump/set wave processing) that
+// creates a worktree with `git worktree add` rather than through wb's own
+// CLI. It is idempotent: a worktree that already carries a manifest (most
+// commonly a --resume'd operation) is left untouched, since a manifest is
+// immutable by design — this only ever fills in a genuinely missing record,
+// it never second-guesses one already written.
+func EnsureManifest(worktree string, manifest Manifest) error {
+	if err := WriteManifest(worktree, manifest); err != nil {
+		if strings.Contains(err.Error(), "immutable") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// EnsurePrompt records header/body as the worktree's originating instruction
+// unless one is already recorded. See EnsureManifest for why this must be
+// idempotent rather than erroring on a second call.
+func EnsurePrompt(worktree string, header PromptHeader, body []byte) error {
+	existing, err := ListPrompts(worktree)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	_, err = AppendPrompt(worktree, header, body)
+	return err
+}
+
 // ReadManifest loads the creation record from the worktree alone.
 func ReadManifest(worktree string) (Manifest, error) {
 	directory, err := openJournalDirectory(worktree, false)

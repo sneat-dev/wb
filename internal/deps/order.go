@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/progress"
 )
 
 // LayerSelection restricts an ordered run to one layer or a contiguous range
@@ -108,6 +109,7 @@ func orderForRepositories(ctx context.Context, repositories []Repository, target
 	graph, err := BuildGraph(ctx, repositories, GraphOptions{
 		Ecosystem: EcosystemGo, GitHubDir: lifecycle.GitHubDir, Ref: lifecycle.Ref,
 		Parallel: lifecycle.Parallel, Timeout: lifecycle.Timeout, Retry: lifecycle.Retry,
+		Progress: lifecycle.Progress,
 	})
 	if err != nil {
 		return GraphOrder{}, err
@@ -196,14 +198,18 @@ func runOrderedLayers[T any](ctx context.Context, order GraphOrder, repositories
 				})
 			}
 		default:
+			progress.Report(lifecycle.Progress, progress.Event{Operation: lifecycle.Operation, Phase: "process_layer", Detail: fmt.Sprintf("%d repositories", len(layer.repositories)), State: progress.Started, Layer: progress.Index(layer.index), Total: len(layer.repositories)})
 			layerResults, err := orchestrate.Run(ctx, layer.repositories, handler, lifecycle)
 			results = append(results, layerResults...)
 			entry.Status = "completed"
+			progressState := progress.Completed
 			if err != nil {
 				entry.Status = "failed"
+				progressState = progress.Failed
 				failed = layer.index
 				runErrors = append(runErrors, fmt.Errorf("layer %02d: %w", layer.index, err))
 			}
+			progress.Report(lifecycle.Progress, progress.Event{Operation: lifecycle.Operation, Phase: "process_layer", State: progressState, Layer: progress.Index(layer.index), Completed: len(layerResults), Total: len(layer.repositories)})
 		}
 		report.Layers = append(report.Layers, entry)
 	}

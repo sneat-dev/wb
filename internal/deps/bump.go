@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	progresspkg "github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/mod/modfile"
 	modmodule "golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
@@ -58,6 +59,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		return report, err
 	}
 	for waveIndex := startWave; ; waveIndex++ {
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", State: progresspkg.Started, Wave: waveIndex, Total: len(repositories)})
 		report.Phase = BumpPhaseDiscoveringGraph
 		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(repositories)}
 		if err := persistBumpReport(options, report); err != nil {
@@ -67,8 +69,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		var progressErr error
 		onProgress := func(progress graphDiscoveryProgress) {
 			progressMu.Lock()
-			defer progressMu.Unlock()
 			if progressErr != nil {
+				progressMu.Unlock()
 				return
 			}
 			report.Progress = BumpProgress{
@@ -78,6 +80,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				LastRepository:        progress.LastRepository,
 			}
 			progressErr = persistBumpReport(options, report)
+			progressMu.Unlock()
+			progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", Repository: progress.LastRepository, State: progresspkg.Completed, Completed: progress.RepositoriesCompleted, Total: progress.RepositoriesTotal, Wave: waveIndex})
 		}
 		var graph bumpFleetGraph
 		var err error
@@ -91,6 +95,9 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			graph = goGraph
 		}
 		report.DiscoverySkips = mergeGraphDiscoverySkips(report.DiscoverySkips, graph.Skips())
+		report.DefaultBranchFallbacks = mergeGraphDefaultBranchFallbacks(report.DefaultBranchFallbacks, graph.BaseRefFallbacks())
+		report.ManifestWarnings = mergeGraphManifestWarnings(report.ManifestWarnings, graph.ManifestWarnings())
+		report.AmbiguousModules = mergeGraphAmbiguousModules(report.AmbiguousModules, graph.AmbiguousModules())
 		if progressErr != nil {
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, progressErr)
@@ -114,6 +121,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			return report, persistBumpFailure(options, report, err)
 		}
 		report.Phase = BumpPhasePlanningWave
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "plan_wave", State: progresspkg.Running, Wave: waveIndex})
 		if err := persistBumpReport(options, report); err != nil {
 			return report, err
 		}
@@ -194,6 +202,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		report.Waves = append(report.Waves, wave)
 		waveReport := &report.Waves[len(report.Waves)-1]
 		report.Phase = BumpPhaseProcessingWave
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "process_wave", State: progresspkg.Started, Wave: waveIndex, Total: len(affectedRepositories)})
 		report.Progress = BumpProgress{Wave: waveIndex, RepositoriesTotal: len(affectedRepositories)}
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr
@@ -201,6 +210,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		waveLifecycle := lifecycle
 		waveLifecycle.Operation = fmt.Sprintf("%s-wave-%02d", lifecycle.Operation, waveIndex)
 		waveLifecycle.Branch = fmt.Sprintf("wb/deps/bump-%s-wave-%02d", strings.TrimPrefix(lifecycle.Operation, bumpOperationPrefix(options.Ecosystem)), waveIndex)
+		waveLifecycle.Prompt = bumpWavePrompt(options.Ecosystem, waveIndex, report.SeedEvents)
 		handler := waveHandler{ecosystem: options.Ecosystem, targetsByRepository: targetsByRepository, options: options.Options}
 		results, runErr := orchestrate.Run(ctx, affectedRepositories, handler, waveLifecycle)
 		for _, result := range results {
@@ -233,6 +243,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			}
 			return report, nil
 		}
+		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "observe_releases", State: progresspkg.Waiting, Wave: waveIndex})
 		waveReport.Status = "merged"
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr
@@ -386,6 +397,57 @@ func mergeGraphDiscoverySkips(groups ...[]GraphDiscoverySkip) []GraphDiscoverySk
 	return result
 }
 
+func mergeGraphDefaultBranchFallbacks(groups ...[]GraphDefaultBranchFallback) []GraphDefaultBranchFallback {
+	byRepository := map[string]GraphDefaultBranchFallback{}
+	for _, group := range groups {
+		for _, fallback := range group {
+			byRepository[fallback.Repository] = fallback
+		}
+	}
+	result := make([]GraphDefaultBranchFallback, 0, len(byRepository))
+	for _, fallback := range byRepository {
+		result = append(result, fallback)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Repository < result[j].Repository })
+	return result
+}
+
+func mergeGraphManifestWarnings(groups ...[]GraphManifestWarning) []GraphManifestWarning {
+	type key struct{ repository, manifest string }
+	byKey := map[key]GraphManifestWarning{}
+	for _, group := range groups {
+		for _, warning := range group {
+			byKey[key{warning.Repository, warning.Manifest}] = warning
+		}
+	}
+	result := make([]GraphManifestWarning, 0, len(byKey))
+	for _, warning := range byKey {
+		result = append(result, warning)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Repository == result[j].Repository {
+			return result[i].Manifest < result[j].Manifest
+		}
+		return result[i].Repository < result[j].Repository
+	})
+	return result
+}
+
+func mergeGraphAmbiguousModules(groups ...[]GraphAmbiguousModuleWarning) []GraphAmbiguousModuleWarning {
+	byModule := map[string]GraphAmbiguousModuleWarning{}
+	for _, group := range groups {
+		for _, warning := range group {
+			byModule[warning.Module] = warning
+		}
+	}
+	result := make([]GraphAmbiguousModuleWarning, 0, len(byModule))
+	for _, warning := range byModule {
+		result = append(result, warning)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Module < result[j].Module })
+	return result
+}
+
 func resumeReleaseObservations(ctx context.Context, previous []ReleaseObservation, options BumpOptions) ([]ReleaseObservation, error) {
 	observations := append([]ReleaseObservation(nil), previous...)
 	errorsByObservation := make([]error, len(observations))
@@ -535,6 +597,25 @@ func BumpOperationIDFor(ecosystem Ecosystem, events []ReleaseEvent) string {
 	}
 	digest := sha256.Sum256([]byte(identity.String()))
 	return bumpOperationPrefix(ecosystem) + hex.EncodeToString(digest[:6])
+}
+
+// bumpWavePrompt renders the root release events a wave is propagating as
+// the originating instruction recorded in every wave worktree's WB manifest
+// journal (see orchestrate.Options.Prompt and
+// internal/worktrees.CheckAdmission) — the exact record wb's own
+// commit-admission hook requires before it will accept a commit into a
+// worktree wb itself created.
+func bumpWavePrompt(ecosystem Ecosystem, waveIndex int, seedEvents []ReleaseEvent) string {
+	events := append([]ReleaseEvent(nil), seedEvents...)
+	sort.Slice(events, func(i, j int) bool { return events[i].Dependency < events[j].Dependency })
+	releases := make([]string, 0, len(events))
+	for _, event := range events {
+		releases = append(releases, event.Dependency+"@"+event.Version)
+	}
+	return fmt.Sprintf(
+		"wb deps bump %s wave %d: propagate root release event(s) %s through the dependency fleet.",
+		ecosystem, waveIndex, strings.Join(releases, ", "),
+	)
 }
 
 func selectWaveRepositories(repositories []Repository, targets map[string][]Target) []Repository {

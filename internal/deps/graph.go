@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/progress"
 )
 
 // BuildGraph scans selected repositories once and returns canonical evidence.
 func BuildGraph(ctx context.Context, repositories []Repository, options GraphOptions) (Graph, error) {
+	progress.Report(options.Progress, progress.Event{Operation: "deps graph", Phase: "discover_graph", State: progress.Started, Total: len(repositories)})
 	if options.Ecosystem == "" {
 		options.Ecosystem = EcosystemGo
 	}
@@ -34,7 +36,7 @@ func BuildGraph(ctx context.Context, repositories []Repository, options GraphOpt
 		}
 		// Same policy as the Go path: a repository that fails inspection and is
 		// provably not an npm repository must not abort a fleet-wide npm graph.
-		discovered, err := discoverNpmFleetGraph(ctx, repositories, lifecycle, npmGraphDiscoveryPolicy{SkipFailedNonNPM: true}, nil)
+		discovered, err := discoverNpmFleetGraph(ctx, repositories, lifecycle, npmGraphDiscoveryPolicy{SkipFailedNonNPM: true}, graphProgressReporter(options.Progress, "deps graph"))
 		if err != nil {
 			return Graph{}, err
 		}
@@ -51,12 +53,24 @@ func BuildGraph(ctx context.Context, repositories []Repository, options GraphOpt
 	// provably not a Go repository must not abort a fleet-wide Go graph. Without
 	// this, one website without origin/main empties the whole graph, which is how
 	// `wb deps graph --fleet` came to exit 1 with no output at all.
-	discovered, err := discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, nil)
+	discovered, err := discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, graphProgressReporter(options.Progress, "deps graph"))
 	if err != nil {
 		return Graph{}, err
 	}
 	graph := graphFromGoFleet(discovered, repositories, lifecycle.Ref, filters)
 	return graph, nil
+}
+
+func graphProgressReporter(reporter progress.Reporter, operation string) func(graphDiscoveryProgress) {
+	if reporter == nil {
+		return nil
+	}
+	return func(item graphDiscoveryProgress) {
+		progress.Report(reporter, progress.Event{
+			Operation: operation, Phase: "discover_graph", Repository: item.LastRepository,
+			State: progress.Completed, Completed: item.RepositoriesCompleted, Total: item.RepositoriesTotal,
+		})
+	}
 }
 
 func normalizeGraphDependencies(values []string) ([]string, error) {
@@ -79,6 +93,9 @@ func normalizeGraphDependencies(values []string) ([]string, error) {
 func graphFromGoFleet(discovered goFleetGraph, selected []Repository, ref string, filters []string) Graph {
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemGo, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
 	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
+	graph.DefaultBranchFallbacks = append(graph.DefaultBranchFallbacks, discovered.baseRefFallbacks...)
+	graph.ManifestWarnings = append(graph.ManifestWarnings, discovered.manifestWarnings...)
+	graph.AmbiguousModules = append(graph.AmbiguousModules, discovered.ambiguousModules...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true
@@ -223,6 +240,7 @@ func graphModuleDeclarations(graph goFleetGraph, module string) []goFleetModule 
 func graphFromNpmFleet(discovered npmFleetGraph, selected []Repository, ref string, filters []string) Graph {
 	graph := Graph{SchemaVersion: 1, Ecosystem: EcosystemNPM, BaseRef: ref, Filters: GraphFilters{Dependencies: append([]string(nil), filters...)}}
 	graph.DiscoverySkips = append(graph.DiscoverySkips, discovered.discoverySkips...)
+	graph.DefaultBranchFallbacks = append(graph.DefaultBranchFallbacks, discovered.baseRefFallbacks...)
 	filterSet := map[string]bool{}
 	for _, dependency := range filters {
 		filterSet[dependency] = true

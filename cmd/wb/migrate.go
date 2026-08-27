@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/migrate"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -45,7 +47,7 @@ func newMigrateCmd() *cobra.Command {
 					apply: apply, check: check, format: format, reportDir: reportDir, githubDir: githubDir,
 					ref: ref, moduleRefs: moduleRefs, verify: verify, noVerify: noVerify, commit: commit, push: push,
 					pr: pr, merge: merge, parallel: parallel, resume: resume, cleanup: cleanup,
-					verifyExplicit: cmd.Flags().Changed("verify"),
+					verifyExplicit: cmd.Flags().Changed("verify"), progressOut: cmd.ErrOrStderr(),
 				})
 				if code != 0 {
 					return &exitError{
@@ -96,6 +98,7 @@ type hierarchicalMigrationOptions struct {
 	moduleRefs                                                       []string
 	parallel                                                         int
 	verifyExplicit                                                   bool
+	progressOut                                                      io.Writer
 }
 
 func runHierarchicalMigration(specPath string, roots []string, options hierarchicalMigrationOptions) int {
@@ -157,11 +160,22 @@ func runHierarchicalMigration(specPath string, roots []string, options hierarchi
 		}
 		reportDir = filepath.Join(home, "reports", spec.ID)
 	}
+	progressOut := options.progressOut
+	if progressOut == nil {
+		progressOut = os.Stderr
+	}
+	campaign := newCampaignProgress(progressOut, console.Interactive(progressOut, nonInteractive), "migrate "+spec.ID)
 	report, runErr := migrate.RunCampaign(spec, roots[0], migrate.CampaignOptions{
 		GitHubDir: githubDir, Ref: options.ref, ModuleRefs: refs, Apply: options.apply,
 		Verify: verification, Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge, Resume: options.resume,
 		Parallel: options.parallel, ReportDir: reportDir,
+		Progress: campaign.reporter(),
 	})
+	if runErr != nil {
+		campaign.finish("failed")
+	} else {
+		campaign.finish("completed")
+	}
 	if err := migrate.WriteCampaignReports(reportDir, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2

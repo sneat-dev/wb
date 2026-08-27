@@ -82,10 +82,12 @@ soften to reference "you". Refreshing a claim MUST apply only to the exact
 
 #### REQ: claim-staleness-from-heartbeat
 
-A claim MUST be stale exactly when its holder machine's most recent
-published snapshot's `published_at` is older than the `--stale` window
-(default `24h`), or when the holder has no snapshot at all. A claim MUST
-have no separate expiry or TTL.
+A claim MUST be stale exactly when its holder machine's effective
+heartbeat — the later of its snapshot's `published_at` and `last_seen_at`
+(stamped by the claim, refresh, release, and take-over mutations
+themselves) — is older than the `--stale` window (default `24h`), or when
+the holder has no snapshot at all. A claim MUST have no separate expiry or
+TTL.
 
 #### REQ: claim-take-over-stale-only
 
@@ -99,8 +101,8 @@ claim, stale or fresh, and MUST print who is being overridden.
 
 `wb remote claim <task>` MUST exit 0 on acquire or refresh, exit 1 when held
 by another holder without `--take-over`/`--force` succeeding (naming the
-holder, their heartbeat age, and whether `--take-over` would work), and
-exit 2 when `remote:` is unconfigured.
+holder, their effective-heartbeat age, and whether `--take-over` would
+work), and exit 2 when `remote:` is unconfigured.
 
 #### REQ: claim-command-release
 
@@ -111,9 +113,9 @@ Releasing a task with no claim MUST be a no-op that exits 0.
 #### REQ: claim-command-claims
 
 `wb remote claims` MUST list every claim (task, holder, `claimed_at`,
-holder-heartbeat age, `STALE` flag) and MUST exit 0 even when some claim
-files cannot be decoded, rendering those as error rows instead of dropping
-them.
+holder's effective-heartbeat age, `STALE` flag) and MUST exit 0 even when
+some claim files cannot be decoded, rendering those as error rows instead
+of dropping them.
 
 #### REQ: claim-command-flag-scope
 
@@ -179,7 +181,8 @@ holder.
 **Requirements:** remote-claims#req:claim-staleness-from-heartbeat, remote-claims#req:claim-take-over-stale-only
 
 A claim carries no expiry of its own; it is stale exactly when its holder's
-publish heartbeat is stale (or absent). `--take-over` only ever replaces a
+effective heartbeat — the later of publish and claim activity
+(`last_seen_at`) — is stale (or absent). `--take-over` only ever replaces a
 stale claim; only `--force` replaces a fresh one, loudly.
 
 ### AC: three-commands-share-consistent-flags-and-exit-codes

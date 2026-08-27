@@ -176,6 +176,76 @@ func TestRemoteClaimTakeOverRequiresStaleness(t *testing.T) {
 	}
 }
 
+// TestHolderStaleHonoursLastSeen is the production regression this whole
+// feature exists for: a holder whose PUBLISHED snapshot is old but who has
+// been actively claiming/refreshing through the store recently must not be
+// treated as stale. bob publishes 48h stale, then claims task-7 "now" —
+// that claim stamps bob's own snapshot's last_seen_at to "now" in the same
+// commit — so bob's effective heartbeat is fresh even though published_at
+// stays 48h old. alice's --take-over must therefore be refused exactly like
+// an ordinary fresh-claim refusal, not silently allowed through stale
+// published_at.
+func TestHolderStaleHonoursLastSeen(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	// bob publishes stale: published_at is 48h before "now".
+	if err := runRemotePublish(g.deps("bob", at.Add(-48*time.Hour)), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	// bob claims task-7 "now": this stamps bob's own snapshot's
+	// last_seen_at to "now" in the same store commit (bob already has a
+	// snapshot on disk from the publish above).
+	out.Reset()
+	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, false, 24*time.Hour, &out)
+	var exit *exitError
+	if !errors.As(err, &exit) || exit.code != exitFindings || !strings.Contains(err.Error(), "claim is fresh") {
+		t.Fatalf("err = %v, want exitFindings 'claim is fresh': fresh claim activity must beat a stale published_at", err)
+	}
+}
+
+// TestTakeOverAllowedWhenBothOld proves the effective-heartbeat switch does
+// not loosen take-over eligibility when there has been no recent claim
+// activity at all: with both published_at and last_seen_at old, the holder
+// is still judged stale and --take-over still succeeds.
+func TestTakeOverAllowedWhenBothOld(t *testing.T) {
+	f := newRemoteFixture(t, "laptop")
+	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
+	oldAt := at.Add(-48 * time.Hour)
+	g := secondMachine(t, f, "desktop")
+
+	var out bytes.Buffer
+	// bob publishes stale, then claims task-7 at that same stale time, so
+	// last_seen_at is stamped just as old as published_at — both old, no
+	// recent activity of any kind.
+	if err := runRemotePublish(g.deps("bob", oldAt), g.projectsRoot, "", 2, false, false, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runRemoteClaim(g.deps("bob", oldAt), g.projectsRoot, "task-7", "", false, false, false, 24*time.Hour, &out); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runRemoteClaim(f.deps("alice", at), f.projectsRoot, "task-7", "", true, false, true, 24*time.Hour, &out); err != nil {
+		t.Fatalf("take-over should succeed when both published_at and last_seen_at are stale: %v", err)
+	}
+	var outcome remotestate.ClaimOutcome
+	if err := json.Unmarshal(out.Bytes(), &outcome); err != nil {
+		t.Fatalf("json: %v: %s", err, out.String())
+	}
+	if outcome.Kind != remotestate.ClaimTookOver {
+		t.Fatalf("Kind = %v, want took_over", outcome.Kind)
+	}
+}
+
 func TestRemoteClaimNoSnapshotHolderIsStale(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)

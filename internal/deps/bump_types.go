@@ -74,9 +74,12 @@ type BumpReport struct {
 	Parallel      int             `yaml:"parallel"`
 	// RegistryLookupsSkipped records that this plan intentionally omitted
 	// registry-derived carrier and stale-event evidence.
-	RegistryLookupsSkipped bool                 `yaml:"registry_lookups_skipped,omitempty"`
-	DiscoverySkips         []GraphDiscoverySkip `yaml:"discovery_skips,omitempty"`
-	Waves                  []BumpWaveReport     `yaml:"waves"`
+	RegistryLookupsSkipped bool                          `yaml:"registry_lookups_skipped,omitempty"`
+	DiscoverySkips         []GraphDiscoverySkip          `yaml:"discovery_skips,omitempty"`
+	DefaultBranchFallbacks []GraphDefaultBranchFallback  `yaml:"default_branch_fallbacks,omitempty"`
+	ManifestWarnings       []GraphManifestWarning        `yaml:"manifest_warnings,omitempty"`
+	AmbiguousModules       []GraphAmbiguousModuleWarning `yaml:"ambiguous_modules,omitempty"`
+	Waves                  []BumpWaveReport              `yaml:"waves"`
 }
 
 // BumpPhase identifies the operation currently represented by a persisted
@@ -137,6 +140,52 @@ type ReleaseEventRefresh struct {
 type GraphDiscoverySkip struct {
 	Repository string `json:"repository" yaml:"repository"`
 	Reason     string `json:"reason" yaml:"reason"`
+}
+
+// GraphDefaultBranchFallback records a repository whose canonical clone did
+// not contain the operation's configured base ref (`origin/<ref>`, "main" by
+// default). Discovery did not fail or skip the repository: it fell back to
+// the repository's actual origin/HEAD default branch and used that ref for
+// both graph inspection and any downstream wave operation on this
+// repository (see orchestrate.EnsureCanonical). Recording it here keeps the
+// substitution visible in the report — the whole point of the skip/fallback
+// model this package uses is that nothing is silently dropped or silently
+// rewritten.
+type GraphDefaultBranchFallback struct {
+	Repository string `json:"repository" yaml:"repository"`
+	Ref        string `json:"ref" yaml:"ref"`
+}
+
+// GraphManifestWarning records one manifest file that could not be parsed
+// but did not abort discovery because it is not the repository's root
+// manifest — most commonly a nested code-generator template rather than a
+// real declaration WB should propagate dependencies through. A repository's
+// ROOT manifest remains a fatal parse failure: WB cannot safely assume
+// relevance there.
+type GraphManifestWarning struct {
+	Repository string `json:"repository" yaml:"repository"`
+	Manifest   string `json:"manifest" yaml:"manifest"`
+	Reason     string `json:"reason" yaml:"reason"`
+}
+
+// GraphAmbiguousModuleWarning records a Go module declared by more than one
+// repository whose conflict was NOT treated as fatal because WB could
+// deterministically pick a canonical declaration: either the module's own
+// declared path names that repository (a legitimate fork keeps the
+// upstream's module path, and the repository matching it is preferred), or
+// the repository's own origin remote matches the {org}/{repo} its directory
+// name claims while the others do not (a stale duplicate local clone left
+// behind by an org move or rename, still declaring the module under its
+// now-wrong directory-derived slug). Every other declaration is named as a
+// duplicate so the substitution stays visible rather than silent. A module
+// where no declaration can be preferred this way remains a fatal conflict
+// (see goFleetGraph.validateUniqueModuleDeclarations).
+type GraphAmbiguousModuleWarning struct {
+	Module     string   `json:"module" yaml:"module"`
+	Repository string   `json:"repository" yaml:"repository"`
+	Manifest   string   `json:"manifest" yaml:"manifest"`
+	Duplicates []string `json:"duplicates" yaml:"duplicates"`
+	Reason     string   `json:"reason" yaml:"reason"`
 }
 
 // ReleaseObservation prevents the wave engine from inventing provider versions.

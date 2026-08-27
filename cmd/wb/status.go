@@ -103,7 +103,7 @@ func runRepositoryStatus(request repositoryStatusRequest) error {
 	}
 	progress := newStatusProgress(
 		request.progress,
-		request.fleet && console.Interactive(request.progress, nonInteractive),
+		console.Interactive(request.progress, nonInteractive),
 	)
 	progress.start(len(targets))
 	repositories := runStatusTargetsWithProgress(targets, request.options.parallel, progress.complete)
@@ -152,16 +152,17 @@ type statusIndex struct {
 }
 
 type repositoryStatusInfo struct {
-	Repository string   `yaml:"repository" json:"repository"`
-	Path       string   `yaml:"path" json:"path"`
-	Status     string   `yaml:"status" json:"status"`
-	Summary    string   `yaml:"summary,omitempty" json:"summary,omitempty"`
-	Modified   []string `yaml:"modified,omitempty" json:"modified,omitempty"`
-	Untracked  []string `yaml:"untracked,omitempty" json:"untracked,omitempty"`
-	Conflicted []string `yaml:"conflicted,omitempty" json:"conflicted,omitempty"`
-	Unpushed   []string `yaml:"unpushed,omitempty" json:"unpushed,omitempty"`
-	Stashed    []string `yaml:"stashed,omitempty" json:"stashed,omitempty"`
-	Error      string   `yaml:"error,omitempty" json:"error,omitempty"`
+	Repository       string                  `yaml:"repository" json:"repository"`
+	Path             string                  `yaml:"path" json:"path"`
+	Status           string                  `yaml:"status" json:"status"`
+	Summary          string                  `yaml:"summary,omitempty" json:"summary,omitempty"`
+	Modified         []string                `yaml:"modified,omitempty" json:"modified,omitempty"`
+	Untracked        []string                `yaml:"untracked,omitempty" json:"untracked,omitempty"`
+	Conflicted       []string                `yaml:"conflicted,omitempty" json:"conflicted,omitempty"`
+	Unpushed         []string                `yaml:"unpushed,omitempty" json:"unpushed,omitempty"`
+	UnpushedBranches []gitops.UnpushedBranch `yaml:"unpushed_branches,omitempty" json:"unpushed_branches,omitempty"`
+	Stashed          []string                `yaml:"stashed,omitempty" json:"stashed,omitempty"`
+	Error            string                  `yaml:"error,omitempty" json:"error,omitempty"`
 }
 
 func runStatusTargets(targets []qualityTarget, parallel int) []repositoryStatusInfo {
@@ -189,15 +190,16 @@ func runStatusTargetsWithProgress(
 			status = "attention"
 		}
 		reports[index] = repositoryStatusInfo{
-			Repository: target.repository,
-			Path:       target.path,
-			Status:     status,
-			Summary:    state.Summary(),
-			Modified:   state.Modified,
-			Untracked:  state.Untracked,
-			Conflicted: state.Conflicted,
-			Unpushed:   state.Unpushed,
-			Stashed:    state.Stashed,
+			Repository:       target.repository,
+			Path:             target.path,
+			Status:           status,
+			Summary:          state.Summary(),
+			Modified:         state.Modified,
+			Untracked:        state.Untracked,
+			Conflicted:       state.Conflicted,
+			Unpushed:         state.Unpushed,
+			UnpushedBranches: state.UnpushedBranches,
+			Stashed:          state.Stashed,
 		}
 		if complete != nil {
 			complete(target, reports[index])
@@ -318,15 +320,33 @@ func writeStatusDetails(out *strings.Builder, repository repositoryStatusInfo) {
 		{"Modified", repository.Modified},
 		{"Untracked", repository.Untracked},
 		{"Conflicted", repository.Conflicted},
-		{"Unpushed", repository.Unpushed},
-		{"Stashed", repository.Stashed},
 	} {
-		if len(group.items) == 0 {
-			continue
+		writeStatusDetailGroup(out, repository.Repository, group.name, group.items)
+	}
+	if len(repository.UnpushedBranches) == 0 {
+		writeStatusDetailGroup(out, repository.Repository, "Unpushed", repository.Unpushed)
+	} else {
+		fmt.Fprintf(out, "\n%s — Unpushed:\n", repository.Repository)
+		for _, branch := range repository.UnpushedBranches {
+			if branch.Worktree == "" {
+				fmt.Fprintf(out, "- Branch `%s`:\n", branch.Branch)
+			} else {
+				fmt.Fprintf(out, "- Branch `%s` in worktree `%s`:\n", branch.Branch, branch.Worktree)
+			}
+			for _, commit := range branch.Commits {
+				fmt.Fprintf(out, "  - `%s`\n", commit)
+			}
 		}
-		fmt.Fprintf(out, "\n%s — %s:\n", repository.Repository, group.name)
-		for _, item := range group.items {
-			fmt.Fprintf(out, "- `%s`\n", item)
-		}
+	}
+	writeStatusDetailGroup(out, repository.Repository, "Stashed", repository.Stashed)
+}
+
+func writeStatusDetailGroup(out *strings.Builder, repository, name string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\n%s — %s:\n", repository, name)
+	for _, item := range items {
+		fmt.Fprintf(out, "- `%s`\n", item)
 	}
 }

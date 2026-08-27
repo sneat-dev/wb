@@ -135,10 +135,13 @@ claim ID is a portable collision-resistant digest of effort, canonical
 repository, branch, and immutable base (never Run ID or an absolute machine
 path), plus a small Git-excluded `.wb-worklog/recovery.json` projection in the
 worktree, and a typed local
-outbox event. Every create requires a readable non-empty
-`--original-prompt-file` containing the exact originating request; WB snapshots
-its bytes and SHA-256 digest before creating a worktree and copies them only
-into the private archive. `--agent`, `--agent-runtime`, and a mandatory explicit
+outbox event. Every create requires the exact originating request via
+`--original-prompt-file`, either a readable non-empty file or `-` to pipe it on
+stdin; WB snapshots its bytes and SHA-256 digest before creating a worktree and
+copies them only into the private archive. Piping on stdin is preferred: WB
+reads it once and writes the private archive itself, so no caller-managed
+staging file exists for a concurrent invocation to overwrite. `--agent`,
+`--agent-runtime`, and a mandatory explicit
 `--model` add run provenance. The dispatcher supplies the exact child model it
 selected or the literal `unknown`; WB never guesses. Pass independent optional
 `--cli` and `--provider` when known (provider is routing/billing metadata only,
@@ -288,7 +291,11 @@ unchanged remote source branch and removes a clean, unlocked worktree/local
 branch after the archive is durable and the live checkout is revalidated at
 the deletion boundary. The same discarded command resumes an exact durable
 post-removal branch backlog after interruption; it never relies on live
-worktree inventory alone.
+worktree inventory alone. The persistent `--filter` flag scopes which
+repositories in the task abort touches: a repository it excludes is reported,
+never mutated, and the task stays non-terminal until a later abort call
+resolves it too — so one repository blocked on something abort cannot fix no
+longer makes the whole coordinated task un-abortable.
 
 Plan-overlap/migration-scope detection, periodic refresh notifications,
 distributed Synchestra fences, and Git-backed communication fallback are
@@ -431,10 +438,19 @@ clone directly below `<projects-root>/<repository>`.
 
 Runs against every repo owned by your GitHub account and every org you
 belong to, in parallel, with a live progress UI (overall + per-org bars, a
-live tail of in-flight repos). Anything left needing your attention (a hard
-error, or a repo skipped/kept because it's dirty) opens an interactive
-drill-down after the run — pick a repo to see exactly what's wrong
-(modified/untracked/conflicted files, unpushed commits, stash entries).
+live tail of in-flight repos). The live UI and final summary separately count
+planned, attempted, and successful pull actions, and existing clones whose
+checked-out commit actually advanced from the remote; already-current pulls
+and dry runs do not inflate the update count. Anything left
+needing your attention remains visible as its own summary category. After an
+interactive run, the compact, sectioned final summary becomes the navigable
+left panel. Selecting any count fills a filterable repository list on the
+right; `Tab` moves focus between panes, and selecting a repository shows its
+modified/untracked/conflicted files, unpushed commits, stash entries, or errors
+below the repository list.
+The detail panel wraps and scrolls with Page Up/Page Down, and narrow terminals
+stack the list above the details. While the list filter is active, `q` is search
+text rather than an accidental quit.
 Non-interactive runs (piped output, no TTY) print a plain summary instead
 and skip the drill-down.
 
@@ -588,6 +604,8 @@ for repositories with `spec/`. `--timeout` applies to each external command;
 `--retry=N` retries only failed commands N additional times; and
 `--resume --report-dir DIR` selects only repository failures from the previous
 YAML report. These controls also apply to `wb coverage` and `wb verify`.
+Interactive fleet and single-repository runs show their current repository,
+module, and check on stderr without contaminating the report on stdout.
 
 ### `wb fleet` / `wb status` — local fleet Git health
 
@@ -621,7 +639,12 @@ These commands read only local Git state—never fetch, pull, modify, commit, or
 push—and report clean, attention, or inspection-error status. Attention covers
 modified, untracked, conflicted, stashed, and unpushed work. Markdown defaults
 to concise summaries; YAML/JSON and `--details` provide individual paths and
-Git entries. `wb fleet` / `stats` always include layout placement counts and
+Git entries. Unpushed commit details identify the local branch and, when it is
+checked out, the canonical or linked worktree holding it. Interactive fleet
+and single-repository status scans show a live
+counter and continuously refreshed elapsed time on stderr; structured output
+remains on stdout, and `--non-interactive` suppresses the live line. `wb fleet`
+/ `stats` always include layout placement counts and
 managed worktree rollups. Pass `--remote` for sync-drift counts or `--hooks`
 for managed-hook findings. Use `wb layout audit` for the placement worklist,
 `wb sync --dry-run` for GitHub reconciliation, and `wb worktree orphans` for
@@ -829,6 +852,12 @@ downstream repositories; it never invents the next version. If a release is
 not visible before `--timeout`, the report remains `awaiting_release` and
 `--resume` continues from the persisted pre-merge baseline.
 
+Interactive set/bump campaigns report repository selection immediately, then
+their current wave, repository, and lifecycle phase on stderr. The elapsed time
+continues to refresh during silent discovery, verification, and release-waiting
+phases. Structured reports stay on stdout, and `--non-interactive` disables the
+progress renderer.
+
 A campaign can wait long enough for a still newer provider version to appear.
 Before starting downstream work, WB rechecks accumulated release events older
 than `--refresh-after` (default `5m`). A newer registry version replaces the
@@ -896,6 +925,8 @@ the same recalculated `wb deps bump npm` wave engine. Add `--merge` only as a
 separate explicit approval for downstream consumer changes. If publication or
 registry evidence times out, retain `--report-dir` and use the same tuples
 with `--resume --apply`; WB reuses receipted runs without redispatching them.
+Interactive apply/resume runs show head resolution, dispatch, workflow polling,
+registry verification, and downstream wave progress on stderr.
 
 See the [NPM release propagation feature specification](spec/features/npm-release-propagation/README.md)
 and the [publish-npm reference](ai/skills/wb-deps/references/publish-npm.md)
@@ -910,6 +941,12 @@ registry versions are required. Fleet reports group each module path and
 classify `converged`, `divergent`, `replaced`, and `major_path_split` states.
 `--fail-on-drift` turns those drift classes into an exit gate after the complete
 report is written.
+
+Fleet and single-repository drift and graph scans show live selection and
+per-repository progress on an interactive terminal. The elapsed time keeps
+refreshing during silent phases. The progress line is written to stderr, so
+Markdown/YAML/JSON/SVG/HTML stdout remains machine-readable;
+`--non-interactive` suppresses it completely.
 
 ```sh
 wb deps drift .
@@ -1286,6 +1323,12 @@ Use `--hierarchical` when the migration must move a Go dependency graph rather
 than one checked-out repository. It reads the source module's `go mod graph`,
 finds the reverse dependency closure of the module paths referenced by the
 migration, and prepares each GitHub repository independently.
+
+Interactive runs show the current dependency layer, repository, and campaign
+phase (prepare, rewrite, manifest update, verification, publication, checks,
+and merge) on stderr. The elapsed time refreshes even while a phase emits no
+events. `--non-interactive` keeps the same report and exit contract without
+terminal progress.
 
 ```sh
 # Plan only. No clone, fetch, worktree, source, commit, or push occurs.

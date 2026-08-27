@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -38,23 +39,71 @@ func (p *Provider) readClaim(task string) (claim remotestate.Claim, exists bool,
 	return c, true, nil, nil
 }
 
+// stampOwnLastSeen best-effort records claim activity in the calling
+// machine's own machines/<login>/<machine>/snapshot.yaml by setting
+// LastSeenAt to at and rewriting the file in place. Per the spec's
+// failure-handling rule, this never fails the calling mutation: if the
+// snapshot is absent (this machine never published) or present but
+// undecodable, it returns without touching anything — the claim still
+// lands, and published_at is never modified. Callers MUST pass only their
+// own login/machine; the per-machine file-ownership rule holds, and this
+// method has no way to enforce it itself.
+func (p *Provider) stampOwnLastSeen(login, machine string, at time.Time) string {
+	rel := SnapshotPath(login, machine)
+	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "" // absent (or unreadable): skip silently, never create one
+	}
+	snap, err := remotestate.Decode(data)
+	if err != nil {
+		return "" // corrupt: skip silently, leave the bytes exactly as they are
+	}
+	snap.LastSeenAt = at
+	encoded, err := remotestate.Encode(snap)
+	if err != nil {
+		return ""
+	}
+	if err := os.WriteFile(abs, encoded, 0o644); err != nil {
+		return ""
+	}
+	return rel
+}
+
 // mutateStore commits and pushes a claims-directory mutation performed by
 // mutate, retrying once via rebase on a rejected push. mutate writes or
-// deletes the one claim file it owns and returns the commit message plus
-// whether it actually changed anything on disk — a byte-identical refresh
-// changes nothing, so no commit or push happens and the current HEAD is
-// returned as-is. claimPath names the claim file mutate touches; it is used
-// only to name the mutation in error messages.
+// deletes the one claim file it owns — and, via stampOwnLastSeen, may also
+// best-effort rewrite the caller's own machines/.../snapshot.yaml — and
+// returns the commit message plus whether it actually changed anything on
+// disk — a byte-identical refresh changes nothing, so no commit or push
+// happens and the current HEAD is returned as-is. claimPath names the claim
+// file mutate touches; it is used only to name the mutation in error
+// messages.
 //
 // onLostRace runs only when a rebase after a rejected push fails with a
-// genuine conflict. Since every commit this function makes touches exactly
-// one file (the caller's own claim path), such a conflict can only mean
-// someone else raced for that same claim: mutateStore aborts the conflicted
-// rebase, hard-resets the clone to @{u} (discarding the local commit
-// entirely so the clone reflects the winner), and returns onLostRace()'s
-// error. A rebase that completes cleanly (e.g. a concurrent commit for a
-// different task) is not a race for THIS claim, so mutateStore simply
-// pushes again.
+// genuine conflict. A commit this function makes can touch up to two
+// files — the caller's own claim path, and, when stampOwnLastSeen fired,
+// the caller's own machines/.../snapshot.yaml — so a conflict has two
+// possible causes: someone else raced for that same claim (a conflict on
+// the claim path), or this same login/machine is operating concurrently
+// from two places — two clones, or a claim/release racing its own
+// Publish — and stepped on its own snapshot file (a conflict on the
+// snapshot path with no claim-path conflict at all). Either way,
+// mutateStore aborts the conflicted rebase, hard-resets the clone to @{u}
+// (discarding the local commit entirely so the clone reflects upstream),
+// and returns onLostRace()'s error. For the acquire path (Claim/Release),
+// onLostRace re-reads the claim after that reset: a snapshot-only conflict
+// leaves the claim path exactly as it was upstream, so the reread reports
+// it free or held-by-upstream, errStorePathFreed fires, and the whole
+// operation retries and lands cleanly — absorbing the snapshot-only case
+// without ever misreporting it as a claim race. The one gap is a refresh
+// or take-over conflicting with itself this way: onLostRace's reread finds
+// the claim still held by the caller's own login/machine, which reads as
+// "still held" rather than "freed," so it reports a lost race even though
+// no one else was ever contending for the claim. Accepted for now, low
+// reachability — see review follow-up. A rebase that completes cleanly
+// (e.g. a concurrent commit for a different task) is not a conflict at
+// all, so mutateStore simply pushes again.
 //
 // A second push rejection (after that rebase-and-retry) is handled
 // differently here than in Provider.Publish, which keeps its local commit
@@ -69,15 +118,19 @@ func (p *Provider) readClaim(task string) (claim remotestate.Claim, exists bool,
 // re-creatable (just claim/release again), so mutateStore instead discards
 // the local commit and resets the clone to upstream, leaving it healthy for
 // the next attempt.
-func (p *Provider) mutateStore(claimPath string, mutate func() (message string, changed bool, err error), onLostRace func() error) (sha string, err error) {
-	message, changed, err := mutate()
+func (p *Provider) mutateStore(claimPath string, mutate func() (message string, changed bool, extraPaths []string, err error), onLostRace func() error) (sha string, err error) {
+	message, changed, extraPaths, err := mutate()
 	if err != nil {
 		return "", err
 	}
 	if !changed {
 		return gitops.HeadSHA(p.opts.ClonePath)
 	}
-	committed, err := gitops.AddCommit(p.opts.ClonePath, message, "claims")
+	// Scoped staging: the claims directory plus exactly the paths mutate
+	// says it touched (the caller's own snapshot stamp). Never "." — with
+	// no inter-process lock on the clone, a bare "." could sweep another
+	// process's half-written files into a claim commit.
+	committed, err := gitops.AddCommit(p.opts.ClonePath, message, append([]string{"claims"}, extraPaths...)...)
 	if err != nil {
 		return "", err
 	}
@@ -186,17 +239,25 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 		return remotestate.ClaimOutcome{}, err
 	}
 
-	mutate := func() (string, bool, error) {
+	mutate := func() (string, bool, []string, error) {
 		if old, readErr := os.ReadFile(abs); readErr == nil && string(old) == string(data) {
-			return message, false, nil
+			return message, false, nil, nil
 		}
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			return "", false, err
+			return "", false, nil, err
 		}
 		if err := os.WriteFile(abs, data, 0o644); err != nil {
-			return "", false, err
+			return "", false, nil, err
 		}
-		return message, true, nil
+		// Best-effort: stamp the claimant's own snapshot in the same commit
+		// as the claim write. Only reached when the claim file itself is
+		// actually changing, so a byte-identical refresh (handled above)
+		// never dirties the clone with an uncommitted stamp.
+		var extra []string
+		if stamped := p.stampOwnLastSeen(claim.Login, claim.Machine, claim.ClaimedAt); stamped != "" {
+			extra = append(extra, stamped)
+		}
+		return message, true, extra, nil
 	}
 	onLostRace := func() error {
 		other, stillExists, dErr, rErr := p.readClaim(claim.Task)
@@ -270,14 +331,22 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 	abs := filepath.Join(p.opts.ClonePath, filepath.FromSlash(rel))
 	message := fmt.Sprintf("wb: release %s by %s/%s", task, login, machine)
 
-	mutate := func() (string, bool, error) {
+	mutate := func() (string, bool, []string, error) {
 		if err := os.Remove(abs); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return message, false, nil
+				return message, false, nil, nil
 			}
-			return "", false, err
+			return "", false, nil, err
 		}
-		return message, true, nil
+		// Best-effort: stamp the releasing machine's own snapshot in the
+		// same commit as the claim removal. Release has no caller-supplied
+		// operation time (unlike Claim's ClaimedAt), so it self-stamps with
+		// the current time.
+		var extra []string
+		if stamped := p.stampOwnLastSeen(login, machine, time.Now().UTC()); stamped != "" {
+			extra = append(extra, stamped)
+		}
+		return message, true, extra, nil
 	}
 	onLostRace := func() error {
 		other, stillExists, dErr, rErr := p.readClaim(task)

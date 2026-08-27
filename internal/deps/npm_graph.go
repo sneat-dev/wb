@@ -28,6 +28,7 @@ type npmFleetGraph struct {
 	requirements        map[string][]npmFleetRequirement
 	repositoryPackages  map[string][]string
 	discoverySkips      []GraphDiscoverySkip
+	baseRefFallbacks    []GraphDefaultBranchFallback
 }
 
 // npmFleetPackage is one published (non-private, named) package.json
@@ -74,6 +75,7 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 	results := make([]repositoryGraph, len(repositories))
 	errorsByRepository := make([]error, len(repositories))
 	skipsByRepository := make([]*GraphDiscoverySkip, len(repositories))
+	fallbacksByRepository := make([]*GraphDefaultBranchFallback, len(repositories))
 	workers := options.Parallel
 	if workers > len(repositories) {
 		workers = len(repositories)
@@ -90,11 +92,12 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 			return
 		}
 		progressMu.Lock()
-		defer progressMu.Unlock()
 		completed++
-		onProgress(graphDiscoveryProgress{
+		item := graphDiscoveryProgress{
 			RepositoriesTotal: len(repositories), RepositoriesCompleted: completed, LastRepository: repository,
-		})
+		}
+		progressMu.Unlock()
+		onProgress(item)
 	}
 	for range workers {
 		group.Add(1)
@@ -116,11 +119,15 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 					if canonical == "" {
 						canonical = filepath.Join(options.GitHubDir, owner, name)
 					}
-					if err := orchestrate.EnsureCanonical(ctx, repository, canonical, options); err != nil {
-						skipsByRepository[index], errorsByRepository[index] = classifyNpmGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
+					resolvedBase, ensureErr := orchestrate.EnsureCanonical(ctx, repository, canonical, options)
+					if ensureErr != nil {
+						skipsByRepository[index], errorsByRepository[index] = classifyNpmGraphDiscoveryFailure(repository.Slug, canonical, ensureErr, policy)
 						return
 					}
-					result, err := inspectRepositoryNpmGraph(ctx, repository.Slug, canonical, "origin/"+options.Ref, options)
+					if resolvedBase.Fallback {
+						fallbacksByRepository[index] = &GraphDefaultBranchFallback{Repository: repository.Slug, Ref: resolvedBase.Ref}
+					}
+					result, err := inspectRepositoryNpmGraph(ctx, repository.Slug, canonical, "origin/"+resolvedBase.Ref, options)
 					results[index] = result
 					if err != nil {
 						skipsByRepository[index], errorsByRepository[index] = classifyNpmGraphDiscoveryFailure(repository.Slug, canonical, err, policy)
@@ -156,8 +163,14 @@ func discoverNpmFleetGraph(ctx context.Context, repositories []Repository, optio
 		if skipsByRepository[index] != nil {
 			graph.discoverySkips = append(graph.discoverySkips, *skipsByRepository[index])
 		}
+		if fallbacksByRepository[index] != nil {
+			graph.baseRefFallbacks = append(graph.baseRefFallbacks, *fallbacksByRepository[index])
+		}
 	}
 	sort.Slice(graph.discoverySkips, func(i, j int) bool { return graph.discoverySkips[i].Repository < graph.discoverySkips[j].Repository })
+	sort.Slice(graph.baseRefFallbacks, func(i, j int) bool {
+		return graph.baseRefFallbacks[i].Repository < graph.baseRefFallbacks[j].Repository
+	})
 	for repository := range graph.repositoryPackages {
 		sort.Strings(graph.repositoryPackages[repository])
 	}
@@ -359,6 +372,23 @@ func parseNpmWorkspaceRequirements(repository, manifest string, contents []byte)
 }
 
 func (graph npmFleetGraph) Skips() []GraphDiscoverySkip { return graph.discoverySkips }
+
+// BaseRefFallbacks mirrors goFleetGraph.BaseRefFallbacks for the npm ecosystem.
+func (graph npmFleetGraph) BaseRefFallbacks() []GraphDefaultBranchFallback {
+	return graph.baseRefFallbacks
+}
+
+// ManifestWarnings has no npm ecosystem analogue yet: nothing in the npm
+// discovery path treats a manifest as skippable-but-warned rather than fatal
+// or fully ignored (see ignoredManifestPath). It exists so npmFleetGraph
+// satisfies bumpFleetGraph alongside goFleetGraph.
+func (graph npmFleetGraph) ManifestWarnings() []GraphManifestWarning { return nil }
+
+// AmbiguousModules has no npm ecosystem analogue: npm package names carry no
+// owner/repository convention to fall back on, so an ambiguous npm
+// declaration has no canonical provider to deterministically prefer (see
+// graphFromNpmFleet, which reports it as ambiguous rather than guessing).
+func (graph npmFleetGraph) AmbiguousModules() []GraphAmbiguousModuleWarning { return nil }
 
 func (graph npmFleetGraph) requirementsForDependency(dependency string) []fleetRequirement {
 	requirements := graph.requirements[dependency]

@@ -15,7 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/deps"
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -28,6 +30,7 @@ type depsSetOptions struct {
 	timeout, releasePoll, refreshAfter                         time.Duration
 	goPrivate                                                  []string
 	layers                                                     deps.LayerSelection
+	campaign                                                   *campaignProgress
 }
 
 func newDepsCmd() *cobra.Command {
@@ -61,6 +64,7 @@ func newDepsGraphCmd() *cobra.Command {
 		Short: "Project dependency evidence as repository, dependency, and version graphs",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps graph")
 			if options.fleet && len(args) == 1 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
@@ -81,18 +85,23 @@ func newDepsGraphCmd() *cobra.Command {
 			repositories, err := dependencyRepositories(repositoryArgs, depsSetOptions{
 				fleet: options.fleet, match: options.match, regex: options.regex, ref: options.ref,
 				parallel: options.parallel, retry: options.retry, timeout: options.timeout,
+				campaign: campaign,
 			})
 			if err != nil {
+				campaign.finish("failed")
 				return err
 			}
 			graph, err := deps.BuildGraph(command.Context(), repositories, deps.GraphOptions{
 				Ecosystem: ecosystem, GitHubDir: projectsRoot, Ref: options.ref,
 				Parallel: options.parallel, Timeout: options.timeout, Retry: options.retry,
 				Dependencies: options.dependencies,
+				Progress:     campaign.reporter(),
 			})
 			if err != nil {
+				campaign.finish("failed")
 				return err
 			}
+			campaign.finish("completed")
 			reportDirectory := options.reportDir
 			if reportDirectory == "" {
 				home, err := wbhome.EnsureRoot(projectsRoot)
@@ -164,6 +173,7 @@ non-zero after the complete report when divergent, replaced, or major-path-split
 groups are present. Inspection errors always exit non-zero after the report.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps drift")
 			if options.fleet && len(args) == 1 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
@@ -181,18 +191,26 @@ groups are present. Inspection errors always exit non-zero after the report.`,
 			repositories, err := dependencyRepositories(repositoryArgs, depsSetOptions{
 				fleet: options.fleet, match: options.match, regex: options.regex, ref: options.ref,
 				parallel: options.parallel, retry: options.retry, timeout: options.timeout,
-				goPrivate: options.goPrivate,
+				goPrivate: options.goPrivate, campaign: campaign,
 			})
 			if err != nil {
+				campaign.finish("failed")
 				return err
 			}
 			report, err := deps.AnalyzeDrift(command.Context(), repositories, deps.DriftOptions{
 				GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
 				Timeout: options.timeout, Retry: options.retry, GoPrivate: options.goPrivate,
 				Dependencies: options.dependencies, Online: options.online, FailOnDrift: options.failOnDrift,
+				Progress: campaign.reporter(),
 			})
 			if err != nil {
+				campaign.finish("failed")
 				return err
+			}
+			if deps.DriftFailed(report, options.failOnDrift) {
+				campaign.finish("completed with findings")
+			} else {
+				campaign.finish("completed")
 			}
 			reportDirectory := options.reportDir
 			if reportDirectory == "" {
@@ -293,11 +311,15 @@ func newDepsSetCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps set")
+			options.campaign = campaign
 			repositories, err := dependencyRepositories(args, options)
 			if err != nil {
+				campaign.finish("failed")
 				return err
 			}
 			lifecycle := dependencyOptions(options, checks)
+			lifecycle.Progress = campaign.reporter()
 			if options.propagate {
 				if !options.fleet {
 					return fmt.Errorf("--propagate requires --fleet")
@@ -308,7 +330,12 @@ func newDepsSetCmd() *cobra.Command {
 				events := []deps.ReleaseEvent{{Dependency: target.Dependency, Version: target.Version, Source: "exact_set"}}
 				return runDepsBump(command, deps.EcosystemGo, events, repositories, options, lifecycle)
 			}
-			report, runErr := deps.Run(context.Background(), target, repositories, lifecycle)
+			report, runErr := deps.Run(commandExecutionContext(command), target, repositories, lifecycle)
+			if runErr != nil {
+				campaign.finish("failed")
+			} else {
+				campaign.finish("completed")
+			}
 			reportDirectory := options.reportDir
 			if reportDirectory == "" && report.Operation != "" {
 				home, homeErr := wbhome.EnsureRoot(projectsRoot)
@@ -384,8 +411,11 @@ func newDepsBumpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps bump")
+			options.campaign = campaign
 			repositories, err := dependencyRepositories([]string{args[0], "events"}, options)
 			if err != nil {
+				campaign.finish("failed")
 				return err
 			}
 			return runDepsBump(command, ecosystem, events, repositories, options, dependencyOptions(options, checks))
@@ -446,6 +476,13 @@ func parseReleaseEvents(ecosystem deps.Ecosystem, values []string) ([]deps.Relea
 
 func runDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options) error {
 	report, _, runErr := executeDepsBump(command, ecosystem, events, repositories, options, lifecycle)
+	if options.campaign != nil {
+		if runErr != nil {
+			options.campaign.finish("failed")
+		} else {
+			options.campaign.finish("completed")
+		}
+	}
 	if report.Operation == "" {
 		return runErr
 	}
@@ -467,6 +504,13 @@ func executeDepsBump(command *cobra.Command, ecosystem deps.Ecosystem, events []
 // wave engine while allowing a publication plan to prove that it did not
 // consult an npm registry before a provider workflow has run.
 func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ecosystem, events []deps.ReleaseEvent, repositories []deps.Repository, options depsSetOptions, lifecycle deps.Options, noRegistry bool) (deps.BumpReport, string, error) {
+	campaign := options.campaign
+	ownedCampaign := false
+	if campaign == nil {
+		campaign = newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps bump")
+		ownedCampaign = true
+	}
+	lifecycle.Progress = campaign.reporter()
 	operation := deps.BumpOperationIDFor(ecosystem, events)
 	reportDirectory := options.reportDir
 	if reportDirectory == "" {
@@ -492,6 +536,13 @@ func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ec
 		}
 	}
 	report, runErr := deps.RunBump(commandExecutionContext(command), events, repositories, bumpOptions)
+	if ownedCampaign {
+		if runErr != nil {
+			campaign.finish("failed")
+		} else {
+			campaign.finish("completed")
+		}
+	}
 	if report.Operation == "" {
 		return report, reportDirectory, runErr
 	}
@@ -527,6 +578,11 @@ func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repos
 			return nil, fmt.Errorf("invalid --match: %w", err)
 		}
 	}
+	reporter := progress.Reporter(nil)
+	if options.campaign != nil {
+		reporter = options.campaign.reporter()
+	}
+	progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", State: progress.Waiting})
 	if !options.fleet {
 		repositoryPath := "."
 		if len(args) == 3 {
@@ -546,6 +602,7 @@ func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repos
 		if filterFlag != "" && !strings.Contains(slug, filterFlag) {
 			return nil, fmt.Errorf("repository %s does not match --filter %q", slug, filterFlag)
 		}
+		progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", Repository: slug, State: progress.Completed, Completed: 1, Total: 1})
 		return []deps.Repository{{Slug: slug, Path: absolute, CloneURL: cloneURL}}, nil
 	}
 	selected, err := fleet(projectsRoot, filterFlag, func() []string { return fleetOwners(extraOrgs) })
@@ -565,6 +622,7 @@ func dependencyRepositories(args []string, options depsSetOptions) ([]deps.Repos
 	if len(repositories) == 0 {
 		return nil, fmt.Errorf("no repositories match the selected fleet filters")
 	}
+	progress.Report(reporter, progress.Event{Operation: "deps", Phase: "select_repositories", State: progress.Completed, Completed: len(repositories), Total: len(repositories)})
 	return repositories, nil
 }
 

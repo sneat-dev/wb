@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatusProgressRendersCompletionCounter(t *testing.T) {
@@ -34,6 +35,22 @@ func TestStatusProgressRendersCompletionCounter(t *testing.T) {
 	}
 	if !strings.HasSuffix(rendered, "\n") {
 		t.Errorf("finished progress did not end its live line: %q", rendered)
+	}
+}
+
+func TestStatusProgressHeartbeatRefreshesAndStops(t *testing.T) {
+	var out bytes.Buffer
+	progress := newStatusProgressWithHeartbeat(&out, true, 5*time.Millisecond)
+	progress.start(1)
+	time.Sleep(18 * time.Millisecond)
+	progress.finish()
+	finishedLength := out.Len()
+	if count := strings.Count(out.String(), "status: 0/1 repositories inspected"); count < 2 {
+		t.Fatalf("heartbeat rendered status %d times, want at least 2: %q", count, out.String())
+	}
+	time.Sleep(12 * time.Millisecond)
+	if out.Len() != finishedLength {
+		t.Fatalf("heartbeat wrote after finish: before=%d after=%d", finishedLength, out.Len())
 	}
 }
 
