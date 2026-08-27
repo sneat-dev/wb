@@ -4906,6 +4906,136 @@
       "notes": "The command inspects existing clones and does not fetch, commit, or push."
     },
     {
+      "id": "wb.verify.receipt",
+      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb verify receipt",
+              "flags": [
+                "--ci-wait",
+                "--deployed-revision",
+                "--local-check",
+                "--output",
+                "--remote-target",
+                "--terminal-cleanup"
+              ],
+              "modes": [
+                "Composes five closed, versioned producer documents into one machine-readable graduation receipt for one exact repository revision.",
+                "Refuses prose, producer/schema mismatches, dirty or unequal local revisions, PR-only or failed CI, unequal remote or deployed revisions, future or non-monotonic timestamps, and cleanup that leaves source branches or campaign worktrees behind."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb verify receipt --help",
+              "contains": [
+                "--local-check",
+                "--terminal-cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "## Graduation receipts",
+              "examples": [
+                "wb verify receipt --local-check local-check.json --ci-wait ci-wait.json --remote-target remote-target.json --deployed-revision deployment.json --terminal-cleanup cleanup.json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/verify_receipt_test.go",
+              "name": "TestVerifyReceiptComposesExactMachineReadableEvidence",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The command composes producer-bound evidence; it does not deploy, clean up, or infer that a hand-authored status field proves graduation."
+    },
+    {
+      "id": "wb.verify.receipt.remote-target",
+      "feature_refs": ["spec/features/fleet-quality/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb verify receipt remote-target",
+              "flags": [
+                "--output",
+                "--remote",
+                "--repo",
+                "--repository-path",
+                "--target"
+              ],
+              "modes": [
+                "Resolves one configured credential-free remote and records one canonical git ls-remote observation for the exact target branch."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb verify receipt remote-target --help",
+              "contains": [
+                "--repo",
+                "--target"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/references/quality.md",
+              "marker": "## Graduation receipts",
+              "examples": [
+                "wb verify receipt remote-target --repo acme/wb --target main"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/verify_receipt_test.go",
+              "name": "TestVerifyReceiptRemoteTargetUsesFixedGitObservation",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This read-only collector is the closed WB producer for remote-target equality evidence used by wb verify receipt."
+    },
+    {
       "id": "wb.version",
       "feature_refs": [],
       "since": "existing",

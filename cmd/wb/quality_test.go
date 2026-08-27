@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -56,6 +57,41 @@ func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.
 				t.Fatalf("direct owner/repository selector error = %v", err)
 			}
 		})
+	}
+}
+
+func TestVerificationReportBindsOnlyAnUnchangedCleanGitRevision(t *testing.T) {
+	repository := t.TempDir()
+	git := func(arguments ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", repository}, arguments...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(arguments, " "), err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	git("init", "--initial-branch=main")
+	git("config", "user.name", "WB Test")
+	git("config", "user.email", "wb@example.test")
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("clean\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("add", "README.md")
+	git("-c", "commit.gpgSign=false", "commit", "-m", "initial")
+	wantRevision := git("rev-parse", "HEAD")
+
+	reports := runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
+	if len(reports) != 1 || reports[0].Revision != wantRevision || !reports[0].WorkspaceClean {
+		t.Fatalf("clean exact verification identity = %#v", reports)
+	}
+
+	if err := os.WriteFile(filepath.Join(repository, "dirty.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reports = runVerificationTargets([]qualityTarget{{repository: "acme/repo", path: repository}}, nil, 1, quality.RunOptions{})
+	if reports[0].Revision != "" || reports[0].WorkspaceClean {
+		t.Fatalf("dirty workspace received exact verification identity = %#v", reports[0])
 	}
 }
 

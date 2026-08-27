@@ -78,6 +78,30 @@ When `--resume` and `--report-dir` are supplied, a quality command MUST read its
 
 The default stdout format MUST be Markdown. Both commands MUST also support YAML and JSON stdout, and `--report-dir` MUST write Markdown and YAML files with stable names. Coverage reports include repository and fleet statement totals; verification reports include each executed command and a bounded failure detail.
 
+#### REQ: graduation-receipt
+
+`wb verify receipt` MUST compose five explicit, versioned machine-readable
+producer documents into one graduation receipt: a one-repository
+`wb check --profile ci --format json` report, a direct final-target
+`wb ci wait --json` receipt, an exact `wb verify receipt remote-target`
+observation, an external deployed-revision receipt, and the real
+`wb worktree cleanup --apply --remote` report. Every component MUST resolve to
+the same repository and full Git revision. The local report MUST bind its
+passed lint, test, and build mechanisms to an unchanged clean checkout at that
+revision; PR-only CI is not final-target CI; and the deployment provider's
+structured payload MUST expose the revision through a declared JSON pointer
+whose bytes match its digest and credential-free immutable run URL.
+
+Terminal cleanup MUST attest that every campaign worktree and local source
+branch is gone and each remote source branch was deleted or was already absent.
+It MUST retain the canonical target checkout and bind the selected repository's
+cleanup to the same remote-target revision. The command MUST reject a missing,
+failed, malformed, mismatched, future/non-monotonic, prose, or hand-authored
+status component rather than infer that a recently green branch was deployed
+or cleaned. Its receipt records the exact source digest and producer timestamp
+of all five components so an independent reviewer can audit the complete
+graduation journey without treating any one check as completion.
+
 #### REQ: custom-stack-recipes
 
 WB MUST keep ecosystem-specific custom verification outside this command's hard-coded behavior. Python, workspace-specific Node, and other custom stacks remain expressible through `wb run` recipes until they have a stable, conventional adapter contract.
@@ -96,9 +120,22 @@ A selected local fleet has predictable filtering and bounded execution, and its 
 
 ### AC: complete-conventional-verification
 
-**Requirements:** fleet-quality#req:conventional-go-checks, fleet-quality#req:conventional-node-checks, fleet-quality#req:complete-index, fleet-quality#req:check-profiles, fleet-quality#req:bounded-command-execution, fleet-quality#req:report-resume, fleet-quality#req:dual-audience-reports, fleet-quality#req:custom-stack-recipes
+**Requirements:** fleet-quality#req:conventional-go-checks, fleet-quality#req:conventional-node-checks, fleet-quality#req:complete-index, fleet-quality#req:check-profiles, fleet-quality#req:bounded-command-execution, fleet-quality#req:report-resume, fleet-quality#req:dual-audience-reports, fleet-quality#req:graduation-receipt, fleet-quality#req:custom-stack-recipes
 
 Every applicable conventional check appears in a complete, tool-readable and human-readable index. Unsupported custom stacks are not guessed and remain available through explicit recipes.
+
+### AC: exact-graduation-receipt
+
+**Requirements:** fleet-quality#req:graduation-receipt
+
+**Given** exact-clean-revision local evidence, direct final-target CI, a remote
+target observation, a structured deployed-revision receipt, and terminal
+campaign cleanup evidence for one repository and commit
+**When** `wb verify receipt` composes them
+**Then** it emits one machine-readable receipt binding all five components to
+that exact identity. If any component names another revision, reports a failed
+mechanism, or leaves a worktree or source branch behind, the command refuses
+without emitting a graduation receipt.
 
 ## Open Questions
 
