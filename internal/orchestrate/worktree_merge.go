@@ -1300,7 +1300,8 @@ func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeRece
 		}
 		advanced = true
 	}
-	if !advanced || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
+	retrySameCandidate := !advanced && prior.Status == WorktreeMergeValidationFailed
+	if (!advanced && !retrySameCandidate) || requireCleanMergeWorktree(ctx, prior.Candidate.Worktree) != nil {
 		return false, nil
 	}
 	remote, _, err := runCommand(ctx, 0, 0, prior.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+prior.Candidate.Branch)
