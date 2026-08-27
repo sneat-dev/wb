@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -17,17 +18,30 @@ import (
 
 func newSyncCmd() *cobra.Command {
 	var (
-		dryRun  bool
-		workers int
-		only    []string
-		publish bool
+		dryRun        bool
+		workers       int
+		only          []string
+		publish       bool
+		pruneArchived bool
 	)
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Clone/pull/prune local clones to match GitHub (parallel, with a live progress UI)",
+		Long: `Clone missing repositories, fast-forward existing ones, and — only with
+--prune-archived — delete a local clone whose repository is confirmed archived
+on GitHub, exactly when it passes the same safety predicate 'wb archive clean'
+uses (live-confirmed archived status, no uncommitted/untracked changes, no
+stash, no unpushed commits on any branch, no local-only branch, no unpushed
+tag, no linked worktree, no non-terminal WB Work Log claim, not marked
+wb.skip-sync).
+
+Without --prune-archived, an archived repository is never deleted: sync pulls
+its local clone exactly like any other repository's, and the report still
+names it as archived so it is never silently indistinguishable from an
+ordinary clone.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			owners := requestedSyncOwners(cmd, only)
-			if code := runSync(projectsRoot, filterFlag, owners, workers, dryRun, publish, defaultRemoteDeps()); code != 0 {
+			if code := runSync(cmd.Context(), projectsRoot, filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps()); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "sync did not complete; see diagnostics above",
@@ -37,6 +51,7 @@ func newSyncCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the plan; change nothing")
+	cmd.Flags().BoolVar(&pruneArchived, "prune-archived", false, "delete a local clone whose repository is confirmed archived on GitHub, but only when it passes the same safety predicate as 'wb archive clean' (default: pull archived repos like any other, never delete)")
 	// --parallel is the fleet-wide name for this ceiling: six other commands
 	// already spell it that way, and "workers" reads as a second noun beside
 	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so
@@ -98,7 +113,7 @@ func resolveSyncOwners(
 	return append([]string{user}, orgs...), nil
 }
 
-func runSync(projectsRoot, filter string, only []string, workers int, dryRun, publish bool, deps remoteDeps) int {
+func runSync(ctx context.Context, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps) int {
 	owners, err := syncOwners(only)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wb: %v\nRe-authenticate with: gh auth login -h github.com\n", err)
@@ -124,12 +139,12 @@ func runSync(projectsRoot, filter string, only []string, workers int, dryRun, pu
 		interactive := console.Interactive(os.Stdout, nonInteractive)
 
 		if interactive {
-			results = runSyncTUI(repos, orgTotal, projectsRoot, workers, dryRun)
+			results = runSyncTUI(ctx, repos, orgTotal, projectsRoot, workers, dryRun, pruneArchived)
 		} else {
-			results = runSyncPlain(repos, projectsRoot, workers, dryRun)
+			results = runSyncPlain(ctx, repos, projectsRoot, workers, dryRun, pruneArchived)
 		}
 
-		printSyncSummary(os.Stdout, results)
+		printSyncSummary(os.Stdout, results, pruneArchived)
 
 		if interactive {
 			if err := runResultsBrowser(results); err != nil {
@@ -171,7 +186,7 @@ func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDep
 
 // runSyncPlain runs the worker pool without a TUI, for non-interactive
 // (piped/CI) runs. Still parallel — --parallel applies regardless of TTY.
-func runSyncPlain(repos []discover.Repo, projectsRoot string, workers int, dryRun bool) []fleetsync.Result {
+func runSyncPlain(ctx context.Context, repos []discover.Repo, projectsRoot string, workers int, dryRun, pruneArchived bool) []fleetsync.Result {
 	jobs := make(chan discover.Repo)
 	go func() {
 		for _, r := range repos {
@@ -187,7 +202,7 @@ func runSyncPlain(repos []discover.Repo, projectsRoot string, workers int, dryRu
 		go func() {
 			defer wg.Done()
 			for r := range jobs {
-				resultsCh <- fleetsync.Sync(r, projectsRoot, dryRun)
+				resultsCh <- fleetsync.Sync(ctx, r, projectsRoot, dryRun, pruneArchived)
 			}
 		}()
 	}
@@ -205,7 +220,7 @@ func runSyncPlain(repos []discover.Repo, projectsRoot string, workers int, dryRu
 
 // runSyncTUI runs the worker pool while a bubbletea progress program renders
 // overall + per-org bars and a live tail of in-flight repos.
-func runSyncTUI(repos []discover.Repo, orgTotal map[string]int, projectsRoot string, workers int, dryRun bool) []fleetsync.Result {
+func runSyncTUI(ctx context.Context, repos []discover.Repo, orgTotal map[string]int, projectsRoot string, workers int, dryRun, pruneArchived bool) []fleetsync.Result {
 	p := tea.NewProgram(tui.NewProgressModel(orgTotal, workers))
 
 	go func() {
@@ -223,7 +238,7 @@ func runSyncTUI(repos []discover.Repo, orgTotal map[string]int, projectsRoot str
 				defer wg.Done()
 				for r := range jobs {
 					p.Send(tui.RepoStarted{Org: r.Org, Name: r.Name})
-					res := fleetsync.Sync(r, projectsRoot, dryRun)
+					res := fleetsync.Sync(ctx, r, projectsRoot, dryRun, pruneArchived)
 					p.Send(tui.RepoDone{Result: res})
 				}
 			}()
@@ -246,7 +261,7 @@ func runResultsBrowser(results []fleetsync.Result) error {
 	return err
 }
 
-func printSyncSummary(out io.Writer, results []fleetsync.Result) {
+func printSyncSummary(out io.Writer, results []fleetsync.Result, pruneArchived bool) {
 	groups := fleetsync.Summary(results)
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "━━━ Summary ━━━")
@@ -261,18 +276,51 @@ func printSyncSummary(out io.Writer, results []fleetsync.Result) {
 	}
 	attention, _ := fleetsync.SummaryGroupByLabel(groups, "Needs attention")
 	for _, r := range attention.Results {
-		switch r.Status {
-		case fleetsync.Diverged, fleetsync.NoUpstream:
+		switch {
+		case r.Status == fleetsync.Diverged, r.Status == fleetsync.NoUpstream:
 			_, _ = fmt.Fprintf(out, "  ! %s — %s; not pulled\n", r.Repo.Slug(), r.Tracking.Summary())
-		case fleetsync.Unpushed:
+		case r.Status == fleetsync.Unpushed:
 			_, _ = fmt.Fprintf(out, "  ! %s — pulled, but holds %s\n", r.Repo.Slug(), r.Detail.Summary())
-		case fleetsync.ArchivedUnlandable:
+		case r.Status == fleetsync.ArchivedUnlandable:
 			_, _ = fmt.Fprintf(out, "  ! %s — archived, so its %s can never be pushed; discard them or unarchive\n",
 				r.Repo.Slug(), r.Detail.Summary())
+		case r.ArchivedNotPruned:
+			_, _ = fmt.Fprintf(out, "  ! %s — archived; not pruned (pass --prune-archived to enable cleanup)\n", r.Repo.Slug())
 		}
 	}
 	errors, _ := fleetsync.SummaryGroupByLabel(groups, "Errors")
 	for _, r := range errors.Results {
 		_, _ = fmt.Fprintf(out, "  ✗ %s — %s\n", r.Repo.Slug(), r.Err)
+	}
+	if pruneArchived {
+		printArchivedPruning(out, results)
+	}
+}
+
+// printArchivedPruning names, per archived repository, exactly what
+// --prune-archived did or refused and why — the same "no bare count" honesty
+// wb archive clean's own report gives.
+func printArchivedPruning(out io.Writer, results []fleetsync.Result) {
+	var archived []fleetsync.Result
+	for _, r := range results {
+		if r.Archived {
+			archived = append(archived, r)
+		}
+	}
+	if len(archived) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(out, "\nArchived (--prune-archived)")
+	for _, r := range archived {
+		switch r.Status {
+		case fleetsync.RemovedArchived:
+			_, _ = fmt.Fprintf(out, "  deleted      %s — %s\n", r.Repo.Slug(), r.Reason)
+		case fleetsync.KeptArchived, fleetsync.ArchivedUnlandable:
+			_, _ = fmt.Fprintf(out, "  skipped      %s — %s\n", r.Repo.Slug(), r.Reason)
+		case fleetsync.AbsentArchived:
+			_, _ = fmt.Fprintf(out, "  absent       %s — not cloned locally; nothing to prune\n", r.Repo.Slug())
+		case fleetsync.Failed:
+			_, _ = fmt.Fprintf(out, "  failed       %s — %s\n", r.Repo.Slug(), r.Err)
+		}
 	}
 }

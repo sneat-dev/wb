@@ -1,6 +1,7 @@
 package fleetsync
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestSyncReportsDivergenceRatherThanFailing(t *testing.T) {
 	repo, local := divergedClone(t)
 	before := revParse(t, local, "HEAD")
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != Diverged {
 		t.Fatalf("Status = %v (err=%v), want Diverged", res.Status, res.Err)
@@ -69,7 +70,7 @@ func TestSyncLeavesDivergedLocalCommitInPlace(t *testing.T) {
 	repo, local := divergedClone(t)
 	git(t, local, "config", "pull.rebase", "false")
 
-	if res := Sync(repo, "", false); res.Status != Diverged {
+	if res := Sync(context.Background(), repo, "", false, false); res.Status != Diverged {
 		t.Fatalf("Status = %v (err=%v), want Diverged", res.Status, res.Err)
 	}
 
@@ -89,7 +90,7 @@ func TestSyncReportsNoUpstreamRatherThanFailing(t *testing.T) {
 	repo, local := divergedClone(t)
 	git(t, local, "switch", "-q", "-c", "detour")
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != NoUpstream {
 		t.Fatalf("Status = %v (err=%v), want NoUpstream", res.Status, res.Err)
@@ -119,7 +120,7 @@ func TestSyncStillFastForwardsWhenOnlyBehind(t *testing.T) {
 	git(t, seed, "push", "-q", "origin", "main")
 
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
-	if res := Sync(repo, "", false); res.Status != Pulled {
+	if res := Sync(context.Background(), repo, "", false, false); res.Status != Pulled {
 		t.Fatalf("Status = %v (err=%v), want Pulled", res.Status, res.Err)
 	}
 	if got := revParse(t, local, "HEAD"); got != revParse(t, seed, "HEAD") {
