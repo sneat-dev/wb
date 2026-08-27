@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/session"
+	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
@@ -279,6 +280,147 @@ func TestRunPrivateLauncherPublishesReadyThenExecsFixedArgvAfterRelease(t *testi
 	}
 	if !sleepCalled || !execCalled {
 		t.Fatalf("sleep=%t exec=%t", sleepCalled, execCalled)
+	}
+}
+
+// TestRunPrivateLauncherReadsPrivateHandoverForNewStyleRequestsWithoutTouchingTheWorktree
+// is the regression/integration test for the ContinuationPrivate cutover's
+// exec-time read path: internal/sessionlaunch/private.go's
+// verifyLauncherWorktree previously always read the handover relative to the
+// pinned worktree, so removing the source-side write into that worktree
+// without also fixing this exec-time read would have broken every live
+// session move silently, right before the harness exec. This drives
+// runPrivateLauncher end to end for a request carrying inline handover
+// content (never a legacy HandoverPath) and asserts: the private materialized
+// file is what gets read and verified, the successor's exec environment
+// carries WB_SESSION_CONTINUATION_FILE pointing at it, and — the same
+// guarantee TestCreateSessionCheckpointNeverWritesIntoTheSourceRepo proves on
+// the source side — no .wb/handoffs directory ever appears in the pinned
+// target worktree either.
+func TestRunPrivateLauncherReadsPrivateHandoverForNewStyleRequestsWithoutTouchingTheWorktree(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	t.Setenv("WB_HOME", home)
+	request := completeLaunchTestRequest(t)
+	handoverContent := "private handover\n"
+	request.HandoverPath = ""
+	request.HandoverContent = handoverContent
+	request.HandoverDigest = sessionmove.DigestBytes([]byte(handoverContent))
+	store := sessionmove.NewStore(filepath.Join(home, sessionmove.DirName))
+	raw, err := sessionmove.EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sessionmove.DigestBytes(raw)
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoverPath, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pinned worktree exists, as it does for a real successor, but
+	// nothing ever creates a .wb/handoffs directory inside it.
+	worktree := filepath.Join(root, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"codex", "wb"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("fixture"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spec, err := harnessSpec(request, worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := launchPlan{SchemaVersion: launchSchemaVersion, HandoffID: request.HandoffID, RequestDigest: digest,
+		SuccessorWBSessionID: request.SuccessorWBSessionID, PredecessorWBSessionID: request.PredecessorWBSessionID,
+		Machine: request.TargetMachine, TmuxName: "wb-session-" + request.SuccessorWBSessionID, Runtime: spec.Runtime, Model: spec.Model,
+		StoreRoot:   store.Root,
+		WorktreeDir: worktree, PinnedCommit: request.BundleCommit,
+		HandoverPath: handoverPath, ContinuationKind: string(sessionauthority.ContinuationPrivate), ContinuationDigest: request.HandoverDigest,
+		WBExecutable: filepath.Join(bin, "wb"), HarnessExecutable: filepath.Join(bin, "codex"), HarnessArgs: spec.Args}
+	_, planDigest, _, err := savePlan(store.Root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launchState, err := openLaunchState(store.Root, request.HandoffID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := launchState.createAttempt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attemptID := attempt.id
+	_ = attempt.Close()
+	_ = launchState.Close()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(worktree); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(previous) }()
+	execCalled, sleepCalled := false, false
+	var execEnv []string
+	deps := privateLauncherDependencies{pid: os.Getpid, register: session.Register,
+		verifyPinned: func(context.Context, launchPlan) error { return nil },
+		wbExecutable: func() (string, error) { return plan.WBExecutable, nil },
+		sleep: func(time.Duration) {
+			if sleepCalled {
+				t.Fatal("launcher waited after release")
+			}
+			sleepCalled = true
+			ready, _, loadErr := loadReady(store.Root, request.HandoffID, os.Getpid())
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if _, _, saveErr := saveRelease(store.Root, plan, planDigest, ready, "worklog-target", time.Now().UTC()); saveErr != nil {
+				t.Fatal(saveErr)
+			}
+		},
+		exec: func(path string, argv, environment []string) error {
+			execCalled = true
+			execEnv = environment
+			if path != plan.HarnessExecutable || !reflect.DeepEqual(argv, append([]string{plan.HarnessExecutable}, plan.HarnessArgs...)) {
+				t.Fatalf("exec = %q %#v", path, argv)
+			}
+			return nil
+		},
+	}
+	if err := runPrivateLauncher([]string{store.Root, request.HandoffID, attemptID, string(planDigest)}, deps); err != nil {
+		t.Fatal(err)
+	}
+	if !sleepCalled || !execCalled {
+		t.Fatalf("sleep=%t exec=%t", sleepCalled, execCalled)
+	}
+	wantEnv := sessionauthority.ContinuationEnvironment + "=" + handoverPath
+	found := false
+	for _, entry := range execEnv {
+		if entry == wantEnv {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("harness environment = %#v, want it to contain %q", execEnv, wantEnv)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktree, ".wb", "handoffs")); !os.IsNotExist(statErr) {
+		t.Fatalf("handoff directory exists in the pinned worktree: %v", statErr)
 	}
 }
 

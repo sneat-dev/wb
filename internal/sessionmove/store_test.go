@@ -1156,3 +1156,123 @@ func TestVersionedProtocolTypesRejectNewerSchemas(t *testing.T) {
 		t.Fatalf("DecodeMessage error = %v", err)
 	}
 }
+
+// validRequestWithInlineHandover returns a request shaped the way every
+// checkpoint created after the ContinuationPrivate cutover is: no legacy
+// HandoverPath, and the rendered document carried inline instead.
+func validRequestWithInlineHandover(content string) Request {
+	request := validRequest()
+	request.HandoverPath = ""
+	request.HandoverContent = content
+	request.HandoverDigest = DigestBytes([]byte(content))
+	return request
+}
+
+func TestEnsureHandoverUnderLockMaterializesPrivateFileReadableByReadHandover(t *testing.T) {
+	request := validRequestWithInlineHandover("# handover\n\ncontinue here\n")
+	raw, err := EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := DigestBytes(raw)
+	root := filepath.Join(t.TempDir(), DirName)
+	store := NewStore(root)
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	path, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := PrivateHandoverPath(root, request.HandoffID)
+	if path != wantPath {
+		t.Fatalf("materialized path = %q, want %q", path, wantPath)
+	}
+	if !filepath.IsAbs(path) {
+		t.Fatalf("materialized path %q is not absolute", path)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("private handover mode = %v", info.Mode())
+	}
+
+	got, err := store.ReadHandover(request.HandoffID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != request.HandoverContent {
+		t.Fatalf("read handover = %q, want %q", got, request.HandoverContent)
+	}
+
+	// Repeat materialization is a safe no-op: the content is derived from the
+	// same immutable admitted request, so it is always byte-identical.
+	again, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
+	if err != nil || again != path {
+		t.Fatalf("repeat EnsureHandoverUnderLock = (%q, %v), want (%q, nil)", again, err, path)
+	}
+}
+
+func TestEnsureHandoverUnderLockRejectsRequestWithNoInlineContent(t *testing.T) {
+	request := validRequest() // legacy shape: HandoverPath set, HandoverContent empty
+	raw, err := EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := DigestBytes(raw)
+	store := NewStore(filepath.Join(t.TempDir(), DirName))
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	if _, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest); err == nil {
+		t.Fatal("EnsureHandoverUnderLock accepted a request with no inline handover content")
+	}
+}
+
+func TestReadHandoverRejectsAModifiedPrivateFile(t *testing.T) {
+	request := validRequestWithInlineHandover("original content\n")
+	raw, err := EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := DigestBytes(raw)
+	root := filepath.Join(t.TempDir(), DirName)
+	store := NewStore(root)
+	if _, err := store.Admit(raw, digest); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.AcquireExecutionLock(context.Background(), request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	path, err := store.EnsureHandoverUnderLock(lock, request.HandoffID, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The immutable single-link publication is not writable through the
+	// normal store API; simulate tampering directly to prove ReadHandover's
+	// hardened reader (mode/link-count checks) still catches it, exactly as
+	// it does for every other durable handoff artifact.
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadHandover(request.HandoffID); err == nil {
+		t.Fatal("ReadHandover accepted a private handover with a changed mode")
+	}
+}

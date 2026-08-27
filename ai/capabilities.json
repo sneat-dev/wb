@@ -4258,7 +4258,7 @@
             },
             {
               "path": "internal/worktrees/session_checkpoint_test.go",
-              "name": "TestCreateSessionCheckpointPublishesOnlyTheTrackedHandoverAndRecordsAnOffer",
+              "name": "TestCreateSessionCheckpointNeverWritesIntoTheSourceRepo",
               "kind": "integration"
             },
             {

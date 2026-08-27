@@ -152,13 +152,33 @@ func resolveAuthority(options Options) (resolvedAuthority, error) {
 		if _, err := sessionmove.EncodeRequest(options.Request); err != nil {
 			return resolvedAuthority{}, err
 		}
+		// A request with inline handover content (every checkpoint created
+		// after the ContinuationPrivate cutover) is delivered as a private
+		// file outside the pinned worktree, materialized here into the same
+		// retained handoff directory the request itself lives in. A
+		// pre-cutover request has no inline content and keeps the deprecated
+		// ContinuationTracked delivery, reading the handover already
+		// committed into the pinned worktree at its legacy HandoverPath.
+		continuationKind := sessionauthority.ContinuationTracked
+		continuationPath := options.Request.HandoverPath
+		if options.Request.HandoverContent != "" {
+			if options.ExecutionLock == nil {
+				return resolvedAuthority{}, fmt.Errorf("resolve private handover authority requires the exact held handoff execution lock")
+			}
+			path, err := options.Store.EnsureHandoverUnderLock(options.ExecutionLock, options.Request.HandoffID, options.RequestDigest)
+			if err != nil {
+				return resolvedAuthority{}, fmt.Errorf("materialize private handover: %w", err)
+			}
+			continuationKind = sessionauthority.ContinuationPrivate
+			continuationPath = path
+		}
 		launch := sessionauthority.Launch{
 			AggregateID: options.Request.HandoffID, AggregateDigest: string(options.RequestDigest), AggregateFile: "request.json",
 			SuccessorWBSessionID: options.Request.SuccessorWBSessionID, PredecessorWBSessionID: options.Request.PredecessorWBSessionID,
 			TargetMachine: options.Request.TargetMachine, SourceRuntime: options.Request.SourceRuntime,
 			SourceModel: options.Request.SourceModel, RequestedHarness: options.Request.RequestedHarness,
 			PinnedCommit: options.Request.BundleCommit, PinnedBranch: "wb-session/" + options.Request.HandoffID,
-			ContinuationKind: sessionauthority.ContinuationTracked, ContinuationPath: options.Request.HandoverPath,
+			ContinuationKind: continuationKind, ContinuationPath: continuationPath,
 			ContinuationDigest: string(options.Request.HandoverDigest),
 		}
 		if err := launch.Validate(); err != nil {

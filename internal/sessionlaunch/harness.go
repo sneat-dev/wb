@@ -34,12 +34,29 @@ func ValidateHarnessSelection(sourceRuntime, requested string) error {
 	return nil
 }
 
+// requestContinuationKind reports how request's handover is delivered: the
+// deprecated ContinuationTracked (read from the pinned worktree at the
+// legacy HandoverPath) for a pre-cutover request, or ContinuationPrivate for
+// every request created after the ContinuationPrivate cutover.
+func requestContinuationKind(request sessionmove.Request) sessionauthority.ContinuationKind {
+	if request.HandoverContent != "" {
+		return sessionauthority.ContinuationPrivate
+	}
+	return sessionauthority.ContinuationTracked
+}
+
 func harnessSpec(request sessionmove.Request, worktree string) (HarnessSpec, error) {
 	authority := sessionauthority.Launch{
 		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
 		PredecessorWBSessionID: request.PredecessorWBSessionID, SourceRuntime: request.SourceRuntime,
 		SourceModel: request.SourceModel, RequestedHarness: request.RequestedHarness,
-		ContinuationKind: sessionauthority.ContinuationTracked, ContinuationPath: request.HandoverPath,
+		// ContinuationPath is only ever interpolated into the prompt for the
+		// Tracked branch (see launchPromptForAuthority); leaving it at the
+		// legacy HandoverPath (empty for a new-style request) is therefore
+		// harmless here. The real, resolved private path is computed once by
+		// resolveAuthority, which is the only caller that needs it to be
+		// exact.
+		ContinuationKind: requestContinuationKind(request), ContinuationPath: request.HandoverPath,
 	}
 	return harnessSpecForAuthority(authority, worktree)
 }
@@ -80,7 +97,7 @@ func harnessSpecForAuthority(authority sessionauthority.Launch, worktree string)
 func launchPrompt(request sessionmove.Request) string {
 	return launchPromptForAuthority(sessionauthority.Launch{
 		AggregateID: request.HandoffID, SuccessorWBSessionID: request.SuccessorWBSessionID,
-		PredecessorWBSessionID: request.PredecessorWBSessionID, ContinuationKind: sessionauthority.ContinuationTracked,
+		PredecessorWBSessionID: request.PredecessorWBSessionID, ContinuationKind: requestContinuationKind(request),
 		ContinuationPath: request.HandoverPath,
 	})
 }

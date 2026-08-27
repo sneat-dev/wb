@@ -100,10 +100,12 @@ func newSessionMoveCmdWithDeps(deps sessionMoveDependencies) *cobra.Command {
 		Long: `Create the source-owned checkpoint for a portable session move.
 
 WB requires a live registered session, an active managed Work Log, a clean
-named branch, and a non-empty handover supplied from a file or stdin. It
-generates and commits only .wb/handoffs/<id>.md, performs a normal non-force
-push, verifies that exact commit as the remote branch tip, and records an
-offer without transferring source custody. It then delivers the exact request
+named branch, and a non-empty handover supplied from a file or stdin. The
+handover never touches the repo under work: it travels inline in WB's own
+private handoff request and is later materialized as a private file for the
+successor. WB performs a normal non-force push of the exact source commit,
+verifies that exact commit as the remote branch tip, and records an offer
+without transferring source custody. It then delivers the exact request
 through the selected immutable courier route and starts the successor in a
 named tmux session. Only a durable target receipt lets WB publish the stable
 successor address and seal predecessor custody. If delivery or acknowledgement
