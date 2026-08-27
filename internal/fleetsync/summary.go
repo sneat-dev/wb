@@ -39,7 +39,12 @@ func Summary(results []Result) []SummaryGroup {
 		return func(result Result) bool { return result.Status == want }
 	}
 	return []SummaryGroup{
-		group("Not owned/fork", SummaryFinalOutcomes, status(NoOp)),
+		group("Not owned", SummaryFinalOutcomes, func(result Result) bool {
+			return result.Status == NoOp && !result.Repo.Remote
+		}),
+		group("Fork", SummaryFinalOutcomes, func(result Result) bool {
+			return result.Status == NoOp && result.Repo.Remote && result.Repo.IsFork
+		}),
 		group("Cloned", SummaryFinalOutcomes, status(Cloned)),
 		group("Pulled", SummaryFinalOutcomes, status(Pulled)),
 		group("Skipped (dirty)", SummaryFinalOutcomes, status(SkippedDirty)),

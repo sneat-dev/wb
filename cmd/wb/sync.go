@@ -30,7 +30,7 @@ func newSyncCmd() *cobra.Command {
 			if code := runSync(projectsRoot, filterFlag, owners, workers, dryRun, publish, defaultRemoteDeps()); code != 0 {
 				return &exitError{
 					code:    code,
-					message: "one or more repositories failed to sync; each failure is listed after the summary above",
+					message: "sync did not complete; see diagnostics above",
 				}
 			}
 			return nil
@@ -69,22 +69,42 @@ func requestedSyncOwners(cmd *cobra.Command, only []string) []string {
 // otherwise it auto-discovers the authenticated user plus their member orgs.
 // Unlike fleetOwners, there is no "extra" concept here — -o restricts rather
 // than adds.
-func syncOwners(only []string) []string {
+func syncOwners(only []string) ([]string, error) {
+	return resolveSyncOwners(only, discover.AuthUser, discover.MemberOrgs)
+}
+
+// resolveSyncOwners verifies GitHub authentication before selecting owners.
+// Sync must never silently treat an authentication failure as "not owned":
+// doing so leaves every local repository unmanaged while reporting success.
+func resolveSyncOwners(
+	only []string,
+	authUser func() (string, error),
+	memberOrgs func() ([]string, error),
+) ([]string, error) {
+	user, err := authUser()
+	if err != nil {
+		return nil, fmt.Errorf("GitHub authentication failed: %w", err)
+	}
 	if len(only) > 0 {
-		return only
+		return only, nil
 	}
-	var owners []string
-	if user, err := discover.AuthUser(); err == nil && user != "" {
-		owners = append(owners, user)
+	if user == "" {
+		return nil, fmt.Errorf("GitHub authentication failed: authenticated user is empty")
 	}
-	if orgs, err := discover.MemberOrgs(); err == nil {
-		owners = append(owners, orgs...)
+	orgs, err := memberOrgs()
+	if err != nil {
+		return nil, fmt.Errorf("could not list GitHub organizations: %w", err)
 	}
-	return owners
+	return append([]string{user}, orgs...), nil
 }
 
 func runSync(projectsRoot, filter string, only []string, workers int, dryRun, publish bool, deps remoteDeps) int {
-	repos, err := fleet(projectsRoot, filter, func() []string { return syncOwners(only) })
+	owners, err := syncOwners(only)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wb: %v\nRe-authenticate with: gh auth login -h github.com\n", err)
+		return exitFindings
+	}
+	repos, err := fleet(projectsRoot, filter, func() []string { return owners })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discovery error:", err)
 		return 1

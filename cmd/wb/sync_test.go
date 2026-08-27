@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -40,5 +42,25 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 			t.Fatalf("summary sections are not ordered %v: %q", sections, out.String())
 		}
 		previous = index
+	}
+}
+
+func TestResolveSyncOwnersRequiresAuthentication(t *testing.T) {
+	_, err := resolveSyncOwners(nil,
+		func() (string, error) { return "", fmt.Errorf("invalid token") },
+		func() ([]string, error) { return nil, nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "GitHub authentication failed") {
+		t.Fatalf("resolveSyncOwners() error = %v, want authentication failure", err)
+	}
+}
+
+func TestResolveSyncOwnersSeparatesRequestedOwnersFromMembership(t *testing.T) {
+	owners, err := resolveSyncOwners([]string{"sneat-co"},
+		func() (string, error) { return "trakhimenok", nil },
+		func() ([]string, error) { t.Fatal("member org lookup should not run for --org"); return nil, nil },
+	)
+	if err != nil || !reflect.DeepEqual(owners, []string{"sneat-co"}) {
+		t.Fatalf("resolveSyncOwners() = %v, %v; want [sneat-co], nil", owners, err)
 	}
 }

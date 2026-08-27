@@ -15,11 +15,11 @@ func TestSummaryIsOrderedSharedAccountingModel(t *testing.T) {
 		{Repo: discover.Repo{Org: "c", Name: "broken"}, Status: Failed, PullAttempted: true},
 	}
 	groups := Summary(results)
-	if len(groups) != 16 {
-		t.Fatalf("groups = %d, want 16", len(groups))
+	if len(groups) != 17 {
+		t.Fatalf("groups = %d, want 17", len(groups))
 	}
 	wantLabels := []string{
-		"Not owned/fork", "Cloned", "Pulled", "Skipped (dirty)", "Skipped (ignored)",
+		"Not owned", "Fork", "Cloned", "Pulled", "Skipped (dirty)", "Skipped (ignored)",
 		"Empty remote", "Archived removed", "Archived kept", "Archived absent",
 		"Pull planned", "Pull attempted", "Pull succeeded", "Updated from remote", "Already current",
 		"Needs attention", "Errors",
