@@ -28,11 +28,12 @@ func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
 			repo, toolLog := prepareNodeProfileTest(t, test.lockfile, "lint,test", "node", "npm", "pnpm", "yarn", "bun")
 
 			result, err := Run(RunOptions{
-				RepoPath: repo,
-				Hook:     "pre-push",
-				Stdin:    strings.NewReader("refs/heads/main\n"),
-				Stdout:   &bytes.Buffer{},
-				Stderr:   &bytes.Buffer{},
+				RepoPath:     repo,
+				Hook:         "pre-push",
+				Stdin:        strings.NewReader("refs/heads/main\n"),
+				Stdout:       &bytes.Buffer{},
+				Stderr:       &bytes.Buffer{},
+				WBExecutable: testPushTierExecutable(t, 2),
 			})
 			if err != nil || result.ExitCode != 0 {
 				t.Fatalf("run result = %#v, error = %v", result, err)
@@ -51,7 +52,7 @@ func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
 
 func TestBuiltInNodePrePushSkipsUndefinedScripts(t *testing.T) {
 	repo, toolLog := prepareNodeProfileTest(t, "", "lint", "node", "npm")
-	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-push", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, WBExecutable: testPushTierExecutable(t, 2)})
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("run result = %#v, error = %v", result, err)
 	}
