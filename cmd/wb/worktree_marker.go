@@ -217,6 +217,14 @@ func registeredWorktrees(ctx context.Context, canonical string) []string {
 		if path == "" || resolvedPath(path) == resolvedPath(canonical) {
 			continue
 		}
+		// Git keeps listing a worktree whose directory is gone until someone
+		// prunes it. Marking is not the place to report that — `wb worktree
+		// orphans` is — and letting stale registrations fail here made a fleet
+		// sweep exit non-zero every run, which is how a useful signal gets
+		// ignored.
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
 		paths = append(paths, path)
 	}
 	return paths

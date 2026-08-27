@@ -117,6 +117,38 @@ func TestClassifyDistinguishesCanonicalFromLinked(t *testing.T) {
 	}
 }
 
+// TestClassifyProtectsADotPrefixedRepository covers <owner>/.github, which
+// every organisation has and WB clones like any other repository. Rejecting it
+// as an internal directory left thirteen canonical clones on the real fleet
+// unguarded, while `<projects-root>/.wb` must still never read as a coordinate.
+func TestClassifyProtectsADotPrefixedRepository(t *testing.T) {
+	repositories := newFixture(t)
+	profile := filepath.Join(repositories.ProjectsRoot, "sneat-co", ".github")
+	if err := os.MkdirAll(filepath.Join(profile, ".git"), 0o755); err != nil {
+		t.Fatalf("create the profile repository: %v", err)
+	}
+	location := Classify(repositories.ProjectsRoot, filepath.Join(profile, "workflows", "ci.yml"))
+	if location.Kind != KindCanonical {
+		t.Fatalf("Classify(<owner>/.github) = %q, want %q", location.Kind, KindCanonical)
+	}
+	if location.Slug() != "sneat-co/.github" {
+		t.Fatalf("slug = %q, want sneat-co/.github", location.Slug())
+	}
+	decision := Inspect(bashCall("git checkout -- .", profile), Options{ProjectsRoot: repositories.ProjectsRoot})
+	if !decision.Deny {
+		t.Fatal("a write into <owner>/.github was allowed")
+	}
+
+	// WB's own hierarchy is still not a repository coordinate.
+	internal := filepath.Join(repositories.ProjectsRoot, ".wb", "worktrees")
+	if err := os.MkdirAll(filepath.Join(internal, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := Classify(repositories.ProjectsRoot, internal); got.Kind == KindCanonical {
+		t.Fatalf("<projects-root>/.wb/worktrees read as a canonical clone: %+v", got)
+	}
+}
+
 // TestClassifyFollowsASymlinkedGitDirectory covers a canonical clone whose
 // .git is a symlink to a directory. Reading that as a file would silently
 // downgrade the clone to a writable worktree.
