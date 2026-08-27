@@ -192,7 +192,7 @@ func TestHooksInstallReportsAndBlocksRawWorktreeAtAdmission(t *testing.T) {
 	}
 	for _, message := range []string{
 		"checkout already happened outside WB's managed worktree hierarchy",
-		"wb worktree rescue is not available yet",
+		"wb worktree rescue <path>",
 	} {
 		if !strings.Contains(output, message) {
 			t.Fatalf("raw worktree admission report is missing %q:\n%s", message, output)

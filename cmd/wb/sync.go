@@ -173,6 +173,14 @@ func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDep
 		return 1
 	}
 
+	// A clone sync just created, refreshed, or moved is a checkout an agent may
+	// arrive at next, so it gets its .worktree.md here. A dry run writes
+	// nothing, and a marker WB could not write never fails a sync that
+	// otherwise succeeded — the whole file is an orientation aid.
+	if !dryRun {
+		refreshSyncedCheckoutMarkers(results, projectsRoot, errOut)
+	}
+
 	if publish {
 		if dryRun {
 			_, _ = fmt.Fprintln(out, "dry-run: skipping remote publish")

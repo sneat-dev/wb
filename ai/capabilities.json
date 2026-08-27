@@ -7354,6 +7354,81 @@
       "notes": null
     },
     {
+      "id": "wb.worktree.marker",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree marker",
+              "flags": [
+                "--fleet",
+                "--dry-run",
+                "--format",
+                "--base"
+              ],
+              "modes": [
+                "Writes .worktree.md into one checkout, or refreshes every canonical clone and registered worktree with --fleet.",
+                "Idempotent: a marker differing only by its timestamp is left alone, so refreshing on every sync and create costs nothing."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree marker --help",
+              "contains": [
+                "--fleet",
+                "--dry-run"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Know which checkout you are in",
+              "examples": [
+                "wb worktree marker .",
+                "wb worktree marker --fleet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/checkoutmarker/checkoutmarker_test.go",
+              "name": "TestApplyKeepsGitStatusClean",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/checkoutmarker/checkoutmarker_test.go",
+              "name": "TestApplyIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_marker_test.go",
+              "name": "TestWorktreeMarkerMarksBothKindsAndKeepsStatusClean",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Every checkout gets a marker, not only the ones that must stay clean: a warning present only where writing is wrong makes a MISSING file read as permission. The file stays untracked and is paired with an anchored rule in the common directory's info/exclude, because a committed marker WB rewrites would show as a modification and dirty the very clone this protects."
+    },
+    {
       "id": "wb.worktree.orphans",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -7658,6 +7733,87 @@
         }
       },
       "notes": "Safe removal remains the default lifecycle path; recycle is explicit and audited."
+    },
+    {
+      "id": "wb.worktree.rescue",
+      "feature_refs": [],
+      "since": "existing",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree rescue",
+              "flags": [
+                "--apply",
+                "--push",
+                "--restore",
+                "--allow-unpushed",
+                "--fleet",
+                "--branch",
+                "--remote",
+                "--format"
+              ],
+              "modes": [
+                "Reports what a canonical clone holds without changing anything, and finds every dirty clone with --fleet.",
+                "--apply captures modified, staged, and untracked content onto a branch through a temporary index, leaving the clone's HEAD, branch, index, and working tree untouched.",
+                "--restore is the only destructive step and refuses unless every reported path is verifiably inside the rescue commit and the branch is on the remote."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree rescue --help",
+              "contains": [
+                "--apply",
+                "--restore",
+                "--fleet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Rescue work stranded in a canonical clone",
+              "examples": [
+                "wb worktree rescue --fleet",
+                "wb worktree rescue <path> --apply --push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/canonicalrescue/canonicalrescue_test.go",
+              "name": "TestCaptureLeavesTheCloneExactlyAsItFoundIt",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/canonicalrescue/canonicalrescue_test.go",
+              "name": "TestRestoreRefusesUntilTheContentIsProvablySomewhereElse",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_rescue_test.go",
+              "name": "TestWorktreeRescueFullJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
     },
     {
       "id": "wb.worktree.set",

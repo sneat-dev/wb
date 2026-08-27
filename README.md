@@ -321,7 +321,8 @@ the exclusion remains visible in `wb hooks check`. The guard runs the same
 `wb worktree guard` policy at `post-checkout`, `pre-commit`, and `pre-push`.
 Git has no pre-checkout hook: `post-checkout` prints a loud warning after an
 unmanaged checkout has already happened, then preserves that state for
-inspection (the future `wb worktree rescue` command is not available yet). The
+inspection; `wb worktree rescue <path>` moves any uncommitted work onto a
+branch before anything can discard it. The
 commit and push guards are the hard boundary that prevents unsafe work from
 progressing.
 
@@ -1676,6 +1677,86 @@ The broader direction—named build/test spans, cache and machine diagnostics,
 local/CI/deployment correlation, CI-minute savings, and privacy-safe team
 comparisons—is captured in the SpecScore idea
 [`developer-lifecycle-metrics`](spec/ideas/developer-lifecycle-metrics.md).
+
+### `.worktree.md` — every checkout says what it is
+
+WB writes a generated `.worktree.md` at the root of **every** checkout it
+manages, canonical clones and worktrees alike. An agent, a human, or any future
+tool reads one file and knows where it is:
+
+```yaml
+---
+wb_checkout: 1
+kind: canonical | worktree
+writable: false | true
+repository: "owner/name"
+checkout_path: "…"
+canonical_path: "…"
+branch: "…"
+base_branch: "main"
+task: "…"            # worktrees only
+worktrees_root: "…"  # worktrees only
+generated_by: "wb vX.Y.Z"
+generated_at: "…"
+---
+```
+
+Universality is the design, not a convenience. A warning file dropped only into
+canonical clones is a negative signal, so a **missing** file would read as
+"nothing objects here, go ahead" — the wrong default for the checkout WB has
+not reached yet. With a marker everywhere, absence means *unknown, verify*:
+run `wb worktree guard .`, then `wb worktree marker .`.
+
+It also reaches readers a Claude Code hook cannot: Codex, a person, and
+whatever comes next.
+
+**It is never committed.** A committed marker that WB rewrites would show as
+` M .worktree.md` — a dirty canonical clone, the exact condition this exists to
+prevent — and would conflict on any pull that touched it. `.gitignore` cannot
+help there: it has no effect on an already-tracked file. So WB generates the
+file locally and pairs every write with an anchored rule in the repository's
+Git exclude file. One rule in the **common** Git directory covers the canonical
+clone and every worktree cut from it, because linked worktrees have no
+`info/exclude` of their own — verified against real Git, in both directions.
+WB's own hooks read `git status --porcelain`, which never lists an ignored
+path, so the marker cannot trip the policy it advertises.
+
+```sh
+wb worktree marker .                 # one checkout
+wb worktree marker --fleet           # every clone and every registered worktree
+wb worktree marker --fleet --dry-run # report only
+```
+
+Markers are refreshed on `wb sync` and on `wb worktree create`, and re-running
+is free: a marker that would differ only by its timestamp is left alone.
+
+### `wb worktree rescue` — get work out of a canonical clone without losing it
+
+Uncommitted work in a canonical clone is invisible to WB and one routine
+checkout away from being destroyed. On 2026-08-27 a complete, unlanded 42-line
+lesson sat untracked in one and survived by luck.
+
+```sh
+wb worktree rescue --fleet                    # find every dirty canonical clone
+wb worktree rescue <path>                     # report; changes nothing
+wb worktree rescue <path> --apply --push      # preserve onto a branch, publish it
+wb worktree rescue <path> --apply --branch <b> --restore   # then clean the clone
+```
+
+**Reporting is the default and discarding is never one.** `--apply` preserves
+and stops; returning the clone to a clean checkout is a second decision behind
+`--restore`, which refuses unless every path the report named is verifiably
+inside the rescue commit *and* the branch is on the remote (or
+`--allow-unpushed` accepts that risk). The `git clean` it then runs omits `-x`,
+so ignored paths — the generated marker among them — survive.
+
+The capture never disturbs the clone. WB copies the clone's index to a scratch
+file, stages the working tree into the copy, writes a tree from it, and commits
+that tree with `git commit-tree` parented on HEAD. The branch ends up holding
+every modified, staged, and untracked path while the clone's HEAD, branch,
+index, and working tree are unchanged. `git stash` is deliberately not used:
+its stack is shared with every linked worktree, and `git stash create` does not
+capture untracked files — which is exactly the content most at risk.
 
 ### `wb hooks agent` — refuse an agent write into a canonical clone
 
