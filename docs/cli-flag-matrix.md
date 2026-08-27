@@ -35,6 +35,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
+| `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
 | `worktree list`, `cleanup`, `rename`, `summary` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |

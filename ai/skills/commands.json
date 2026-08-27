@@ -1,6 +1,9 @@
 {
   "version": 1,
   "commands": {
+    "archive": [
+      "wb-fleet"
+    ],
     "branch": [
       "wb-branches"
     ],

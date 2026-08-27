@@ -27,6 +27,7 @@ format: https://specscore.md/features-index-specification
 | [NPM release propagation](npm-release-propagation/README.md) | Stable | Publish approved npm packages through repository-owned GitHub Actions workflows, verify exact registry evidence, and hand confirmed releases to recalculated dependency waves. |
 | [Agent Session Move](agent-session-move/README.md) | Approved | Move an active AI agent session to another WB machine through an interchangeable courier while preserving Git state, handover context, lineage, and Work Log evidence. |
 | [Park and Resume Agent Sessions](park-and-resume-agent-sessions/README.md) | Approved | Park and resume lets a coordinator suspend one active WB session while |
+| [Archived Clone Cleanup](archived-clone-cleanup/README.md) | Implementing | wb archive clean safely removes local clones of repositories confirmed archived on GitHub, but only when the clone holds nothing that would be lost. |
 | [Go directive fleet policy](go-directive-policy/README.md) | Approved | Assess and, per repository, land the go 1.26.x directive / toolchain go1.27.0 pairing across the fleet, refusing where a dependency's own go directive forces a higher floor. |
 
 ## Open Questions
