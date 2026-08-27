@@ -413,6 +413,58 @@ func TestPrepareWorktreeMergeRefreshesUnpublishedCandidateWhenSourceAdvances(t *
 	}
 }
 
+func TestPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "published-refresh-source", "feature/published-refresh", "first.txt", "first\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", first.Candidate.SHA+":refs/heads/"+first.Candidate.Branch)
+	first.Status = WorktreeMergeChecksFailed
+	first.Phase = WorktreeMergePhaseLand
+	first.PullRequest = "https://example.test/acme/app/pull/29"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
+	first.PreviousTargetSHA = first.TargetSHA
+	first.Cleanup = true
+	first.OnFailure = "revert"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")
+	runEngineGit(t, source.WorktreeDir, "add", "repair.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: repair failed checks")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+
+	refreshed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.ID != first.ID || refreshed.PullRequest != first.PullRequest || refreshed.PublishedCandidateSHA != first.Candidate.SHA {
+		t.Fatalf("published refresh lost lane or PR identity: first=%+v refreshed=%+v", first, refreshed)
+	}
+	if refreshed.Sources[0].SHA != advancedSource || refreshed.Candidate.SHA == first.Candidate.SHA {
+		t.Fatalf("published refresh did not advance exact source/candidate: %+v", refreshed)
+	}
+	if refreshed.Route != first.Route || refreshed.PreviousTargetSHA != first.PreviousTargetSHA || !refreshed.Cleanup || refreshed.OnFailure != "revert" {
+		t.Fatalf("published refresh lost landing intent: %+v", refreshed)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, refreshed.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+refreshed.Candidate.Branch)); !strings.HasPrefix(got, first.Candidate.SHA+"\t") {
+		t.Fatalf("prepare rewrote published branch instead of retaining old exact head: %q", got)
+	}
+	installWorktreeMergePublishedRepairGH(t)
+	t.Setenv("WB_TEST_PUBLISHED_SHA", first.Candidate.SHA)
+	if landing, merged, err := pullRequestLandingReceipt(context.Background(), refreshed, WorktreeMergeLandOptions{Timeout: time.Second}); err != nil || merged || landing != "" {
+		t.Fatalf("open PR at recorded predecessor was not accepted for additive repair: landing=%q merged=%t err=%v", landing, merged, err)
+	}
+}
+
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -546,6 +598,24 @@ set -eu
 case "$*" in
   'pr view https://example.test/acme/app/pull/23 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
     printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
+  *) echo "unexpected gh command: $*" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installWorktreeMergePublishedRepairGH(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := filepath.Join(bin, "gh")
+	body := `#!/bin/sh
+set -eu
+case "$*" in
+  'pr view https://example.test/acme/app/pull/29 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
+    printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_PUBLISHED_SHA" ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
