@@ -1,12 +1,29 @@
 # Synchronize canonical clones
 
-`wb sync` can clone missing repositories, fast-forward clean clones, and prune
-safe archived clones. Preview the exact scope:
+`wb sync` clones missing repositories and fast-forwards clean ones. An
+archived repository is treated exactly like any other by default — pulled if
+present, never deleted. Preview the exact scope:
 
 ```sh
 wb sync --dry-run
 wb sync --dry-run --org <owner>
 ```
+
+Pass `--prune-archived` to additionally delete a local clone whose repository
+is confirmed archived on GitHub, but only when it passes the exact same
+safety predicate `wb archive clean` uses (live-confirmed archived status, no
+uncommitted/untracked changes, no stash, no unpushed commits on any branch, no
+local-only branch, no unpushed tag, no linked worktree, no non-terminal WB
+Work Log claim, not marked `wb.skip-sync`):
+
+```sh
+wb sync --prune-archived --dry-run
+wb sync --prune-archived
+```
+
+Without `--prune-archived`, an archived repository's clone still shows up in
+the report (never silently indistinguishable from an ordinary one) — it is
+simply pulled or left alone, never removed.
 
 Review planned removals and skipped dirty repositories, then repeat without
 `--dry-run`:

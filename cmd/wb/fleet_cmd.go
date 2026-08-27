@@ -339,7 +339,10 @@ func fleetRemoteRollup(projects, filter string, options qualityOptions) (fleetRe
 		if repository.Remote && !repository.Local && !repository.Archived && !repository.IsFork {
 			stats.RemoteOnly++
 		}
-		result := fleetsync.Sync(repository, projects, true)
+		// Always dry-run here, so pruneArchived=true only classifies what
+		// wb sync --prune-archived would do; nothing is ever deleted by a
+		// fleet status/overview pass.
+		result := fleetsync.Sync(context.Background(), repository, projects, true, true)
 		switch result.Status {
 		case fleetsync.Cloned:
 			stats.WouldClone++

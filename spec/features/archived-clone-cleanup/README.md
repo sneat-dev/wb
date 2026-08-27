@@ -79,6 +79,26 @@ regardless of any other state. Output lists every inspected clone, deletable
 or not, with the exact reason; skips are reported as prominently as deletions,
 never summarized away as a bare count.
 
+### `wb sync --prune-archived`
+
+`wb sync` reconciles local clones with GitHub fleet-wide and, on its own,
+already removed a clean archived clone by default — gated only on a plain
+working-tree/stash/unpushed check with no awareness of linked worktrees,
+local-only branches, unpushed tags, or WB Work Log claims, and with no way to
+opt out short of `--dry-run`. The founder ruled this out explicitly: archived
+handling in `wb sync` must be **opt-in**, via one explicit flag
+(`--prune-archived`), and when opted in it must use the exact same predicate
+above — not a second, weaker implementation of it.
+
+With `--prune-archived` absent (the default), an archived repository is
+synced exactly like any other: pulled if its clone exists and is clean, never
+deleted; its clone is still reported as archived so it is never silently
+indistinguishable from an ordinary one. With `--prune-archived` present, an
+archived repository's clone is evaluated against the identical eligibility
+check `wb archive clean` uses (the same function, not a re-derivation) and
+removed only if it passes every check above; a refusal names the reason,
+exactly like `wb archive clean`'s own report.
+
 ## Acceptance Criteria
 
 - AC-001: **Given** a local clone of a repository confirmed archived on
@@ -117,6 +137,15 @@ never summarized away as a bare count.
 - AC-010: **Given** an otherwise-clean archived clone referenced by a live WB
   task worktree or a non-terminal Work Log claim, **when** `wb archive clean
   [--apply]` runs, **then** the clone is refused, naming the referencing task.
+- AC-011: **Given** a clean archived clone, **when** `wb sync` runs **without**
+  `--prune-archived`, **then** the clone is never deleted — it is pulled (or
+  left alone) exactly like an ordinary clone — and the report still names it
+  as archived.
+- AC-012: **Given** the same fleet, **when** `wb sync --prune-archived` runs,
+  **then** each archived repository's clone is evaluated with the identical
+  predicate AC-001 through AC-010 describe (the shared implementation, not a
+  re-derivation): a qualifying clone is deleted, and a disqualified one is
+  refused with the reason named, matching `wb archive clean`'s own report.
 
 ## Open Questions
 

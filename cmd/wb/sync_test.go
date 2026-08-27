@@ -17,7 +17,7 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 		{Status: fleetsync.Pulled, PullAttempted: true, PullSucceeded: true},
 		{Status: fleetsync.Unpushed, PullAttempted: true, PullSucceeded: true, Updated: true},
 		{Status: fleetsync.Pulled, PullPlanned: true},
-	})
+	}, false)
 	for _, want := range []string{
 		"Final outcomes",
 		"Pulled              3",
