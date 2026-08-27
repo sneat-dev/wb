@@ -28,6 +28,11 @@ type LogVerbResult struct {
 	Outbox     int                     `json:"outbox,omitempty"`
 	Notes      []string                `json:"notes,omitempty"`
 	Diagnosis  []string                `json:"diagnosis,omitempty"`
+	// RemoteCheckpoint is set only by the checkpoint verb, and only when a
+	// remote push was attempted. Its Notice field always carries
+	// NotALandingReceiptNotice: a remote checkpoint is a durability aid,
+	// never proof that the checkpointed task landed anywhere.
+	RemoteCheckpoint *RemoteCheckpointResult `json:"remote_checkpoint,omitempty"`
 }
 
 type claimFence struct {
@@ -279,9 +284,21 @@ type LogCheckpointOptions struct {
 	EstimatedCost *float64
 	Currency      string
 	ProviderRef   string
+	// SkipRemote suppresses the remote checkpoint push, keeping the verb
+	// exactly as local-only as it was before this ref namespace existed.
+	// Use it offline, on a detached HEAD, or wherever the extra network call
+	// is unwanted; the local Work Log checkpoint always still happens.
+	SkipRemote bool
 }
 
-// LogCheckpoint appends a typed checkpoint with observed Git evidence.
+// LogCheckpoint appends a typed checkpoint with observed Git evidence, then
+// -- unless SkipRemote or the worktree has no task identity or resolvable
+// HEAD -- best-effort force-pushes that exact HEAD to
+// refs/wb/checkpoints/<task>. The remote push is deliberately non-fatal: a
+// network failure must never cost the (already durable) local journal entry,
+// but the result and its Notes always say plainly whether the remote push
+// happened, and RemoteCheckpoint.Notice always repeats that a checkpoint is
+// not a landing receipt.
 func LogCheckpoint(ctx context.Context, options LogCheckpointOptions) (LogVerbResult, error) {
 	root, err := resolveWorktreeRoot(ctx, options.Worktree)
 	if err != nil {
@@ -309,7 +326,32 @@ func LogCheckpoint(ctx context.Context, options LogCheckpointOptions) (LogVerbRe
 	if err != nil {
 		return LogVerbResult{}, err
 	}
-	return LogVerbResult{Worktree: root, Verb: "checkpoint", Event: &event, Projection: &projection, Applied: true}, nil
+	result := LogVerbResult{Worktree: root, Verb: "checkpoint", Event: &event, Projection: &projection, Applied: true}
+	result.Notes = append(result.Notes, remoteCheckpointFromLog(ctx, root, fence.claim.Task, gitEvidence, options.SkipRemote, &result)...)
+	return result, nil
+}
+
+// remoteCheckpointFromLog is LogCheckpoint's best-effort remote-push step,
+// split out so the happy path above stays readable. It never returns an
+// error: every outcome -- skipped, missing identity, push failure, or
+// success -- is reported as a Note plus, on success, a populated
+// RemoteCheckpoint on result.
+func remoteCheckpointFromLog(ctx context.Context, root, task string, gitEvidence LocalGitEvidence, skip bool, result *LogVerbResult) []string {
+	if skip {
+		return []string{"remote checkpoint skipped (--skip-remote)"}
+	}
+	if strings.TrimSpace(task) == "" {
+		return []string{"remote checkpoint not attempted: this worktree's Work Log claim has no task identity"}
+	}
+	if !isGitObjectID(gitEvidence.Head) {
+		return []string{"remote checkpoint not attempted: HEAD could not be resolved"}
+	}
+	pushed, err := PushRemoteCheckpoint(ctx, PushRemoteCheckpointOptions{Root: root, Task: task, HeadSHA: gitEvidence.Head})
+	if err != nil {
+		return []string{fmt.Sprintf("remote checkpoint not pushed: %v", err)}
+	}
+	result.RemoteCheckpoint = &pushed
+	return []string{fmt.Sprintf("remote checkpoint pushed to %s at %s (%s)", pushed.Ref, pushed.SHA, NotALandingReceiptNotice)}
 }
 
 // LogRefreshOptions configures wb worktree log refresh.

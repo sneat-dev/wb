@@ -5924,6 +5924,74 @@
       "notes": "Additive and idempotent so a fleet with live agents adopts without stopping. Never fabricates a prompt."
     },
     {
+      "id": "wb.worktree.checkpoint-fetch",
+      "feature_refs": [
+        "spec/features/pre-push-tiering-and-remote-checkpoints/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree checkpoint-fetch",
+              "flags": [
+                "--format",
+                "--task"
+              ],
+              "modes": [
+                "Fetches origin's refs/wb/checkpoints/<task> into the identically named local ref, never a branch."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree checkpoint-fetch --help",
+              "contains": [
+                "--task",
+                "NOT a landing receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/worklog.md",
+              "marker": "## Remote checkpoints",
+              "examples": [
+                "wb worktree checkpoint-fetch . --task <task>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_test.go",
+              "name": "TestWorktreeLogMutatingVerbsCLI",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/checkpoint_remote_test.go",
+              "name": "TestFetchRemoteCheckpointRetrievesIntoALocalRefNeverABranch",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cross-machine retrieval side of 'wb worktree log checkpoint'. Never a landing receipt: proves a commit reached the remote, never that it merged anywhere."
+    },
+    {
       "id": "wb.worktree.cleanup",
       "feature_refs": [
         "spec/features/work-log/README.md",
@@ -6705,7 +6773,8 @@
     {
       "id": "wb.worktree.log.checkpoint",
       "feature_refs": [
-        "spec/features/work-log/README.md"
+        "spec/features/work-log/README.md",
+        "spec/features/pre-push-tiering-and-remote-checkpoints/README.md"
       ],
       "since": "unreleased",
       "surfaces": {
@@ -6723,10 +6792,12 @@
                 "--next-action",
                 "--output-tokens",
                 "--provider-ref",
+                "--skip-remote",
                 "--usage-discriminator"
               ],
               "modes": [
-                "Appends a typed checkpoint with observed Git evidence and optional usage."
+                "Appends a typed checkpoint with observed Git evidence and optional usage.",
+                "Unless --skip-remote, also force-pushes exact HEAD to refs/wb/checkpoints/<task> (Tier 0 only, never a landing receipt)."
               ]
             }
           ],
@@ -6739,7 +6810,8 @@
               "command": "wb worktree log checkpoint --help",
               "contains": [
                 "--message",
-                "--next-action"
+                "--next-action",
+                "--skip-remote"
               ]
             }
           ],
@@ -6769,6 +6841,11 @@
             {
               "path": "internal/worktrees/log_verbs_test.go",
               "name": "TestLogVerbsSteerCheckpointRefreshFinalize",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/checkpoint_remote_test.go",
+              "name": "TestLogCheckpointPushesRemoteCheckpointAndNeverClaimsLanding",
               "kind": "integration"
             }
           ],

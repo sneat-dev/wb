@@ -27,6 +27,7 @@ func newHooksCmd() *cobra.Command {
 	cmd.AddCommand(newHooksRunCmd())
 	cmd.AddCommand(newHooksAgentCmd())
 	cmd.AddCommand(newHooksMetricsCmd())
+	cmd.AddCommand(newHooksPushTierCmd())
 	return cmd
 }
 
@@ -372,6 +373,36 @@ func newHooksRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "explicit hooks policy")
+	return cmd
+}
+
+// newHooksPushTierCmd classifies one pending push into the fixed 0/1/2 tier
+// contract the BuiltinGoPrePush and BuiltinNodePrePush templates dispatch on.
+// The exit code IS the answer, and it deliberately falls outside wb's normal
+// 0=ok/1=findings/2=usage-rejected convention (see exitOK/exitFindings/
+// exitUsage in main.go) -- so this bypasses cobra's usual error-to-exit-code
+// path with a direct os.Exit, the same established pattern main.go already
+// uses for the other hidden git-hook-adjacent helpers. That makes it
+// untestable in-process through run(); cmd/wb's own integration test builds
+// the real binary once and drives it as a subprocess instead.
+func newHooksPushTierCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "push-tier",
+		Short:  "Classify a pending push into tier 0 (skip), 1 (lint only), or 2 (lint + test)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			classification, err := hooks.ClassifyPendingPush(cmd.InOrStdin(), ".")
+			if err != nil {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
+					"WB hook: tier 1 — classification failed (%v); defaulting to the fast lane, CI is the real gate\n", err)
+				os.Exit(1)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "WB hook: tier %d — %s\n", classification.ExitCode(), classification.Reason)
+			os.Exit(classification.ExitCode())
+			return nil
+		},
+	}
 	return cmd
 }
 

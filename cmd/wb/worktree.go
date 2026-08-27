@@ -55,6 +55,52 @@ func newWorktreeCmd() *cobra.Command {
 	command.AddCommand(newWorktreeOrphansCmd())
 	command.AddCommand(newWorktreeBackfillCmd())
 	command.AddCommand(newWorktreeAdoptCmd())
+	command.AddCommand(newWorktreeCheckpointFetchCmd())
+	return command
+}
+
+func newWorktreeCheckpointFetchCmd() *cobra.Command {
+	var task, format string
+	command := &cobra.Command{
+		Use:   "checkpoint-fetch [worktree-path]",
+		Short: "Fetch another machine's remote checkpoint (refs/wb/checkpoints/<task>)",
+		Long: `Fetch origin's refs/wb/checkpoints/<task> into the same-named local ref.
+
+This is the cross-machine retrieval side of 'wb worktree log checkpoint
+--skip-remote=false' (the default): another machine's checkpoint arrives as a
+local refs/wb/checkpoints/<task> ref, never as a branch and never checked out
+automatically. Deciding what to do with it -- inspect it, branch from it,
+build a worktree on it -- is left to the caller.
+
+A fetched checkpoint is NOT a landing receipt: it proves a commit reached the
+remote, never that it merged anywhere. Land work only by merging it to its
+target branch.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			if strings.TrimSpace(task) == "" {
+				return fmt.Errorf("--task is required")
+			}
+			result, err := worktrees.FetchRemoteCheckpoint(command.Context(), worktrees.FetchRemoteCheckpointOptions{
+				Root: worktreeLogPath(args), Task: task,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(result)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "fetched %s at %s into local ref %s\n%s\n",
+				result.Ref, result.SHA, result.LocalRef, result.Notice)
+			return err
+		},
+	}
+	command.Flags().StringVar(&task, "task", "", "task slug whose checkpoint ref to fetch (refs/wb/checkpoints/<task>)")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
@@ -326,11 +372,20 @@ func newWorktreeLogCheckpointCmd() *cobra.Command {
 	var message, nextAction, usageDisc, currency, providerRef, format string
 	var inputTokens, outputTokens int64
 	var estimatedCost float64
-	var haveInput, haveOutput, haveCost bool
+	var haveInput, haveOutput, haveCost, skipRemote bool
 	command := &cobra.Command{
 		Use:   "checkpoint [worktree-path]",
 		Short: "Append a progress checkpoint with observed Git evidence",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Append a progress checkpoint with observed Git evidence to the local Work Log.
+
+Unless --skip-remote is given, this also force-pushes the exact current HEAD
+to refs/wb/checkpoints/<task> at origin: a fast, Tier-0-only persistence path
+that never runs lint or test and never triggers CI. A remote checkpoint is
+NOT a landing receipt -- it proves a commit reached the remote, never that it
+merged anywhere. Work is landed only when it is merged and pushed to its
+target branch on origin. Retrieve a checkpoint from another machine with
+'wb worktree checkpoint-fetch --task <task>'.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
@@ -350,7 +405,7 @@ func newWorktreeLogCheckpointCmd() *cobra.Command {
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
 				Message: message, NextAction: nextAction, UsageDisc: usageDisc,
 				InputTokens: inPtr, OutputTokens: outPtr, EstimatedCost: costPtr,
-				Currency: currency, ProviderRef: providerRef,
+				Currency: currency, ProviderRef: providerRef, SkipRemote: skipRemote,
 			})
 			if err != nil {
 				return err
@@ -367,6 +422,7 @@ func newWorktreeLogCheckpointCmd() *cobra.Command {
 	command.Flags().StringVar(&currency, "currency", "", "optional currency for estimated cost")
 	command.Flags().StringVar(&providerRef, "provider-ref", "", "optional provider usage reference")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().BoolVar(&skipRemote, "skip-remote", false, "record the local checkpoint only; do not push refs/wb/checkpoints/<task>")
 	command.PreRun = func(cmd *cobra.Command, _ []string) {
 		haveInput = cmd.Flags().Changed("input-tokens")
 		haveOutput = cmd.Flags().Changed("output-tokens")
