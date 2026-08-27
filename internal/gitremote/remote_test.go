@@ -63,3 +63,34 @@ func mustParse(t *testing.T, raw string) Remote {
 	}
 	return remote
 }
+
+// TestIdentityHostSeparatesHostedFromLocalRemotes proves Host exposes a
+// hosted remote's host, including an explicit port, while a local remote
+// reports no host at all. Callers rely on the empty string to tell a
+// published remote from a path that exists only on one machine.
+func TestIdentityHostSeparatesHostedFromLocalRemotes(t *testing.T) {
+	hosted := map[string]string{
+		"git@github.com:sneat-dev/wb.git":          "github.com",
+		"https://GitHub.com/sneat-dev/wb.git":      "github.com",
+		"ssh://git@git.example.test/sneat-dev/wb":  "git.example.test",
+		"https://github.com:8443/sneat-dev/wb.git": "github.com:8443",
+	}
+	for raw, want := range hosted {
+		remote, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse(%q) = %v, want a hosted remote", raw, err)
+		}
+		if got := remote.Identity.Host(); got != want {
+			t.Errorf("Parse(%q).Identity.Host() = %q, want %q", raw, got, want)
+		}
+	}
+	for _, raw := range []string{"/projects/sneat-dev/wb", "file:///projects/sneat-dev/wb"} {
+		remote, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse(%q) = %v, want a local remote", raw, err)
+		}
+		if got := remote.Identity.Host(); got != "" {
+			t.Errorf("Parse(%q).Identity.Host() = %q, want an empty host", raw, got)
+		}
+	}
+}

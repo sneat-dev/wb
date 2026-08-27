@@ -40,6 +40,62 @@ func TestComposeRefusesDivergentIncompleteOrSelfAttestedEvidence(t *testing.T) {
 		change func(*Inputs, time.Time) time.Time
 		want   string
 	}{
+		"CI wait omits the observed target head": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.CIWait.ObservedTargetHead = ""
+				return now
+			},
+			want: "exact observed head",
+		},
+		"CI wait target head differs from the candidate": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.CIWait.ObservedTargetHead = strings.Repeat("b", 40)
+				return now
+			},
+			want: "exact observed head",
+		},
+		"CI wait does not prove the candidate contains the target": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.CIWait.CandidateContainsTarget = false
+				return now
+			},
+			want: "exact observed head",
+		},
+		"remote URL names another repository": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.RemoteTarget.RemoteURL = "git@github.com:sneat-dev/other.git"
+				return now
+			},
+			want: "not the graduated repository",
+		},
+		"remote URL embeds credentials": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.RemoteTarget.RemoteURL = "https://token@github.com/sneat-dev/wb.git"
+				return now
+			},
+			want: "safe credential-free Git remote",
+		},
+		"remote URL carries an explicit port": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.RemoteTarget.RemoteURL = "https://github.com:8443/sneat-dev/wb.git"
+				return now
+			},
+			want: "explicit port",
+		},
+		"remote URL is a local path": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.RemoteTarget.RemoteURL = "/projects/sneat-dev/wb"
+				return now
+			},
+			want: "hosted remote",
+		},
+		"cleanup result is the target branch itself": {
+			change: func(inputs *Inputs, now time.Time) time.Time {
+				inputs.TerminalCleanup.Results[0].Branch = "main"
+				return now
+			},
+			want: "lacks terminal WB cleanup evidence",
+		},
 		"dirty local workspace": {
 			change: func(inputs *Inputs, now time.Time) time.Time {
 				inputs.LocalCheck.Repositories[0].WorkspaceClean = false
@@ -197,6 +253,7 @@ func validInputs() (Inputs, time.Time) {
 	}}}
 	ciWait := CIWaitReceipt{SchemaVersion: SchemaVersion, ObservedAt: ciAt, PullRequestWaitResult: orchestrate.PullRequestWaitResult{
 		Status: orchestrate.PullRequestWaitPassed, Repository: repository, Target: "main", Head: revision, ObservedHead: revision,
+		ObservedTargetHead: revision, CandidateContainsTarget: true,
 		Checks:                  []orchestrate.RemoteCheck{{Name: "test", Bucket: "pass", Link: "https://github.test/runs/42"}},
 		RequiredChecksAuthority: "github-rulesets", StableObservations: 2,
 	}}
@@ -215,4 +272,47 @@ func validInputs() (Inputs, time.Time) {
 		TerminalCleanup: cleanup, CleanupSHA256: Digest([]byte("cleanup")), CleanupObservedAt: cleanupAt,
 	}
 	return inputs, cleanupAt.Add(time.Minute)
+}
+
+// TestValidateRemoteURLIsHostNeutral proves the remote-target identity check
+// binds a remote to its repository on any Git host WB supports, rather than
+// hard-coding one forge. A forge-specific check fails open on every other
+// host, which is the worse failure for a check whose only job is proving
+// remote identity.
+func TestValidateRemoteURLIsHostNeutral(t *testing.T) {
+	const repository = "sneat-dev/wb"
+	accepted := []string{
+		"git@github.com:sneat-dev/wb.git",
+		"https://github.com/sneat-dev/wb.git",
+		"https://gitlab.com/sneat-dev/wb.git",
+		"ssh://git@codeberg.org/sneat-dev/wb.git",
+		"https://git.self-hosted.test/sneat-dev/wb",
+	}
+	for _, remote := range accepted {
+		if err := ValidateRemoteURL(repository, remote); err != nil {
+			t.Errorf("ValidateRemoteURL(%q) = %v, want accepted", remote, err)
+		}
+	}
+	refused := map[string]string{
+		"":                                   "safe credential-free Git remote",
+		"git@github.com:sneat-dev/other.git": "not the graduated repository",
+		"https://gitlab.com/sneat-dev/other": "not the graduated repository",
+		"https://user:pass@github.com/sneat-dev/wb.git": "safe credential-free Git remote",
+		"ssh://mallory@github.com/sneat-dev/wb.git":     "safe credential-free Git remote",
+		"https://github.com:8443/sneat-dev/wb":          "explicit port",
+		"/projects/sneat-dev/wb":                        "hosted remote",
+		"file:///projects/sneat-dev/wb":                 "hosted remote",
+		"https://github.com/sneat-dev/wb?x=1":           "safe credential-free Git remote",
+		"--upload-pack=touch /tmp/pwned":                "safe credential-free Git remote",
+	}
+	for remote, want := range refused {
+		err := ValidateRemoteURL(repository, remote)
+		if err == nil {
+			t.Errorf("ValidateRemoteURL(%q) = nil, want refusal containing %q", remote, want)
+			continue
+		}
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("ValidateRemoteURL(%q) = %v, want refusal containing %q", remote, err, want)
+		}
+	}
 }

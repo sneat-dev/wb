@@ -27,6 +27,12 @@ type Identity struct {
 	localPath  string
 }
 
+// Host reports the lowercase host of a hosted remote, including any explicit
+// port, and returns an empty string for a local remote. Only the host is
+// exposed: a local remote's path stays private so diagnostics can never
+// present it as a remote URL.
+func (identity Identity) Host() string { return identity.host }
+
 // Equal reports whether two safe remote spellings identify the same logical
 // repository. SSH and HTTPS spellings on the same host compare equal; local
 // remotes compare only when their clean absolute paths are exactly equal.
