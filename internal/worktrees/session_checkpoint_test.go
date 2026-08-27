@@ -468,11 +468,6 @@ func remoteBranchTip(t *testing.T, worktree, branch string) string {
 	return fields[0]
 }
 
-func remoteBranchTipIfPresent(t *testing.T, worktree, branch string) string {
-	t.Helper()
-	return remoteBranchTipFrom(t, worktree, "origin", branch)
-}
-
 func remoteBranchTipFrom(t *testing.T, worktree, remote, branch string) string {
 	t.Helper()
 	fields := strings.Fields(gitTestOutput(t, worktree, "ls-remote", "--heads", "--", remote, "refs/heads/"+branch))

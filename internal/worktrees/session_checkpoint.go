@@ -531,11 +531,6 @@ func runSessionCanonicalGit(ctx context.Context, preflight *sessionCheckpointPre
 		preflight.worktree.parentPath, preflight.worktree.worktreePath, args...)
 }
 
-func runSessionWorktreeGit(ctx context.Context, preflight *sessionCheckpointPreflight, args ...string) error {
-	return runSecureRenameGitWithHeldWorktree(ctx, preflight.canonicalDir, preflight.worktreesRoot,
-		preflight.root, preflight.worktree.worktree, args...)
-}
-
 func runSessionPushGit(ctx context.Context, preflight *sessionCheckpointPreflight, dryRun bool) error {
 	arguments := []string{"push"}
 	if dryRun {
