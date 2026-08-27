@@ -27,7 +27,7 @@ func TestTargetStoreAdmitsPrivateExactArtifactsAndStrictEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if _, err := store.AppendEventUnderLock(lock, admission.Envelope.Request, admission.Digest, "received", time.Unix(110, 0)); err != nil {
 		t.Fatal(err)
 	}

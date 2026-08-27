@@ -106,7 +106,7 @@ func (deliverer *synchestraMessageDeliverer) DeliverMessage(ctx context.Context,
 			return receipt, nil
 		}
 		if polls >= maxSynchestraStatusPolls {
-			return sessionmove.MessageReceipt{}, fmt.Errorf("Synchestra message dispatch %s did not complete after %d bounded status polls",
+			return sessionmove.MessageReceipt{}, fmt.Errorf("message dispatch %s to Synchestra did not complete after %d bounded status polls",
 				deliverer.options.Dispatch.DispatchID, maxSynchestraStatusPolls)
 		}
 		if err := deliverer.transport.sleep(deliveryContext, synchestraPollInterval); err != nil {
@@ -184,16 +184,16 @@ func validateSynchestraMessageResumeIdentity(identity sessionmove.MessageSynches
 
 func synchestraMessageTerminalReceipt(output synchestraInvocationOutput, message sessionmove.Message, raw []byte) (sessionmove.MessageReceipt, bool, error) {
 	if output.Dispatch == nil {
-		return sessionmove.MessageReceipt{}, false, fmt.Errorf("Synchestra message response has no dispatch")
+		return sessionmove.MessageReceipt{}, false, fmt.Errorf("message response from Synchestra has no dispatch")
 	}
 	switch output.Dispatch.Status {
 	case "queued", "leased", "running":
 		return sessionmove.MessageReceipt{}, true, nil
 	case "failed", "cancelled":
-		return sessionmove.MessageReceipt{}, false, fmt.Errorf("Synchestra message dispatch %s ended %s without a WB receipt", output.Dispatch.ID, output.Dispatch.Status)
+		return sessionmove.MessageReceipt{}, false, fmt.Errorf("message dispatch %s to Synchestra ended %s without a WB receipt", output.Dispatch.ID, output.Dispatch.Status)
 	case "completed":
 	default:
-		return sessionmove.MessageReceipt{}, false, fmt.Errorf("Synchestra message dispatch status %q is unsupported", output.Dispatch.Status)
+		return sessionmove.MessageReceipt{}, false, fmt.Errorf("message dispatch status %q from Synchestra is unsupported", output.Dispatch.Status)
 	}
 	completed, reference := 0, ""
 	for _, attempt := range output.Attempts {

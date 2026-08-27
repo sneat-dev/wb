@@ -51,9 +51,9 @@ var parkJudgmentCategories = []string{
 // json it must stay machine-readable.
 func writeParkJudgmentChecklist(command *cobra.Command, lead string) {
 	out := command.ErrOrStderr()
-	fmt.Fprintln(out, lead)
+	_, _ = fmt.Fprintln(out, lead)
 	for _, category := range parkJudgmentCategories {
-		fmt.Fprintf(out, "  - %s\n", category)
+		_, _ = fmt.Fprintf(out, "  - %s\n", category)
 	}
 }
 
@@ -229,7 +229,7 @@ func newSessionResumeCmdWithDependencies(deps sessionResumeDependencies) *cobra.
 			if err != nil {
 				return err
 			}
-			defer lock.Close()
+			defer func() { _ = lock.Close() }()
 			state, err := store.LoadUnderLock(lock)
 			if err != nil {
 				return err

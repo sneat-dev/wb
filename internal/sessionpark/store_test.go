@@ -161,7 +161,7 @@ func TestSourceStoreRemoteEnvelopeAndReceiptCrashRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	replayed, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), testParkedSSH(), firstAt.Add(2*time.Hour))
 	if err != nil || !replayed.Replay || replayed.Digest != first.Digest {
 		t.Fatalf("replayed admission = %#v, err=%v", replayed, err)
@@ -185,7 +185,7 @@ func TestSourceStoreRemoteRouteBindsExactSSHEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	firstAt := time.Unix(100, 0).UTC()
 	endpointA := sessionmove.SSHConfig{Host: "host-a.example", User: "user_alpha_sentinel"}
 	first, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), endpointA, firstAt)
@@ -228,7 +228,7 @@ func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer lock.Close()
+		defer func() { _ = lock.Close() }()
 		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(200, 0)); err == nil || !strings.Contains(err.Error(), "remote:target") {
 			t.Fatalf("competing local route error = %v", err)
 		}
@@ -244,7 +244,7 @@ func TestSourceStoreImmutableResumeRouteRefusesCrossModeRetry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer lock.Close()
+		defer func() { _ = lock.Close() }()
 		if _, _, err := store.PrepareLocalUnderLock(lock, time.Unix(100, 0)); err != nil {
 			t.Fatal(err)
 		}
@@ -399,7 +399,7 @@ func TestSourceStoreRejectsTraversalSymlinkAndNonPrivateBundle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer lock.Close()
+			defer func() { _ = lock.Close() }()
 			if _, err := store.ContinuationPathUnderLock(lock); err == nil {
 				t.Fatal("unsafe continuation artifact accepted")
 			}
@@ -488,7 +488,7 @@ func TestSourceStoreRefusesSecondTargetAfterDurableResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if _, err := store.PrepareRemoteUnderLock(lock, "target-b", "", string(sessionmove.CourierSSH), testParkedSSH(), time.Unix(300, 0)); err == nil {
 		t.Fatal("resumed source admitted a competing target")
 	}

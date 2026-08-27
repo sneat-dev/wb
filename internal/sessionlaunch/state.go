@@ -644,7 +644,7 @@ func (state *launchState) openOrRecoverClaimedAttempt(attemptID string) (*launch
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	entries, err := root.ReadDir(-1)
 	if err != nil {
 		return nil, err
@@ -804,36 +804,6 @@ func (attempt *launchAttempt) directory(child string) (*os.File, error) {
 	}
 }
 
-func (attempt *launchAttempt) hasReady() (bool, error) {
-	if _, err := attempt.ready.Seek(0, io.SeekStart); err != nil {
-		return false, err
-	}
-	entries, err := attempt.ready.ReadDir(-1)
-	if err != nil {
-		return false, err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		pidText := strings.TrimSuffix(name, ".json")
-		pid, parseErr := strconv.Atoi(pidText)
-		if parseErr != nil || pid <= 0 || name != strconv.Itoa(pid)+".json" {
-			return false, fmt.Errorf("unexpected launcher ready artifact %q", name)
-		}
-	}
-	return len(entries) != 0, nil
-}
-
-func (attempt *launchAttempt) hasExecEvidence() (bool, error) {
-	if _, err := attempt.exec.Seek(0, io.SeekStart); err != nil {
-		return false, err
-	}
-	entries, err := attempt.exec.ReadDir(-1)
-	if err != nil {
-		return false, err
-	}
-	return len(entries) != 0, nil
-}
-
 func (attempt *launchAttempt) preReleaseProcessEvidence() (int, bool, error) {
 	if _, err := attempt.ready.Seek(0, io.SeekStart); err != nil {
 		return 0, false, err
@@ -932,7 +902,7 @@ func readLaunchArtifact(directory *os.File, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if err := validatePrivateLaunchFile(fd, name, maxLaunchArtifactBytes); err != nil {
 		return nil, err
 	}
@@ -1062,7 +1032,7 @@ func (attempt *launchAttempt) execFenceHeld(pid int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 	if err := validatePrivateLaunchFile(fd, name, 0); err != nil {
 		return false, err
 	}
@@ -1086,7 +1056,7 @@ func savePlan(root string, plan launchPlan) (launchPlan, sessionmove.Digest, boo
 	if err != nil {
 		return launchPlan{}, "", false, err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	return state.savePlan(plan)
 }
 
@@ -1095,22 +1065,8 @@ func loadPlan(root, handoffID string) (launchPlan, sessionmove.Digest, error) {
 	if err != nil {
 		return launchPlan{}, "", err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	return state.loadPlan()
-}
-
-func saveReady(root string, plan launchPlan, planDigest sessionmove.Digest, record session.Record) (launcherReady, error) {
-	state, err := openLaunchState(root, plan.HandoffID, true)
-	if err != nil {
-		return launcherReady{}, err
-	}
-	defer state.Close()
-	attempt, err := latestOrCreateAttempt(state)
-	if err != nil {
-		return launcherReady{}, err
-	}
-	defer attempt.Close()
-	return attempt.saveReady(plan, planDigest, record)
 }
 
 func loadReady(root, handoffID string, pid int) (launcherReady, sessionmove.Digest, error) {
@@ -1118,12 +1074,12 @@ func loadReady(root, handoffID string, pid int) (launcherReady, sessionmove.Dige
 	if err != nil {
 		return launcherReady{}, "", err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	attempt, err := latestAttempt(state)
 	if err != nil {
 		return launcherReady{}, "", err
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	return attempt.loadReady(pid)
 }
 
@@ -1132,12 +1088,12 @@ func saveRelease(root string, plan launchPlan, planDigest sessionmove.Digest, re
 	if err != nil {
 		return launcherRelease{}, false, err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	attempt, err := state.openAttempt(ready.AttemptID)
 	if err != nil {
 		return launcherRelease{}, false, err
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	return attempt.saveRelease(plan, planDigest, ready, targetWorkLogRef, now)
 }
 
@@ -1146,28 +1102,13 @@ func loadRelease(root, handoffID string) (launcherRelease, sessionmove.Digest, e
 	if err != nil {
 		return launcherRelease{}, "", err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	attempt, err := latestAttempt(state)
 	if err != nil {
 		return launcherRelease{}, "", err
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	return attempt.loadRelease()
-}
-
-func latestOrCreateAttempt(state *launchState) (*launchAttempt, error) {
-	refs, err := state.listAttempts()
-	if err != nil {
-		return nil, err
-	}
-	if len(refs) == 0 {
-		return state.createAttempt()
-	}
-	attempt, err := state.openAttempt(refs[len(refs)-1].id)
-	if err == nil || !errors.Is(err, os.ErrNotExist) {
-		return attempt, err
-	}
-	return state.openOrRecoverClaimedAttempt(refs[len(refs)-1].id)
 }
 
 func latestAttempt(state *launchState) (*launchAttempt, error) {

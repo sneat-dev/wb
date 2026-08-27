@@ -90,7 +90,7 @@ func newSSHDeliverer(config sessionmove.SSHConfig, lookPath func(string) (string
 	// failure: the key would read as configured and behave as not. Warning is
 	// what makes ignoring it honest.
 	if config.WBPath != "" && options.Warn != nil {
-		fmt.Fprintf(options.Warn, "warning: ssh.wb_path is set but ignored by `session park`\n  (park requires a fixed non-shell argv); it still applies to `session move`.\n")
+		_, _ = fmt.Fprintf(options.Warn, "warning: ssh.wb_path is set but ignored by `session park`\n  (park requires a fixed non-shell argv); it still applies to `session move`.\n")
 	}
 	if lookPath == nil {
 		return nil, fmt.Errorf("resolve ssh executable: executable lookup is unavailable")

@@ -160,7 +160,7 @@ func (s Store) Create(bundle Bundle) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	if err := unix.Mkdirat(int(root.Fd()), bundle.ParkedSessionID, 0o700); err != nil {
 		return Bundle{}, fmt.Errorf("create parked session aggregate: %w", err)
 	}
@@ -168,7 +168,7 @@ func (s Store) Create(bundle Bundle) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
-	defer aggregate.Close()
+	defer func() { _ = aggregate.Close() }()
 	if err := writeExactPrivateAt(aggregate, sourceBundleFileName, raw); err != nil {
 		return Bundle{}, fmt.Errorf("persist exact parked session bundle: %w", err)
 	}
@@ -210,7 +210,7 @@ func (s Store) FindBySource(wbSessionID string) (Bundle, bool, error) {
 	if err != nil {
 		return Bundle{}, false, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	if _, err := root.Seek(0, io.SeekStart); err != nil {
 		return Bundle{}, false, err
 	}
@@ -242,12 +242,12 @@ func (s Store) Load(id string) (State, error) {
 	if err != nil {
 		return State{}, fmt.Errorf("open parked session store: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	aggregate, err := openPrivateDirectoryAt(root, id)
 	if err != nil {
 		return State{}, fmt.Errorf("open parked session aggregate: %w", err)
 	}
-	defer aggregate.Close()
+	defer func() { _ = aggregate.Close() }()
 	bundle, _, err := loadBundleAt(aggregate, id)
 	if err != nil {
 		return State{}, err
@@ -260,7 +260,7 @@ func (s Store) Resume(id string, successor session.Record, now time.Time) (State
 	if err != nil {
 		return State{}, err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if _, _, err := s.PrepareLocalUnderLock(lock, now); err != nil {
 		return State{}, err
 	}
@@ -472,7 +472,7 @@ func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
 	if err != nil {
 		return false
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	if !sameFile(lock.root, root) {
 		return false
 	}
@@ -480,7 +480,7 @@ func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
 	if err != nil {
 		return false
 	}
-	defer aggregate.Close()
+	defer func() { _ = aggregate.Close() }()
 	if !sameFile(lock.aggregate, aggregate) {
 		return false
 	}
@@ -489,7 +489,7 @@ func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
 		return false
 	}
 	bundleFile := os.NewFile(uintptr(bundleFD), "wb-parked-source-bundle-check")
-	defer bundleFile.Close()
+	defer func() { _ = bundleFile.Close() }()
 	if !sameFile(lock.bundleFile, bundleFile) {
 		return false
 	}
@@ -502,7 +502,7 @@ func (lock *SourceLock) heldLocked(storeRoot, parkID, digest string) bool {
 		return false
 	}
 	file := os.NewFile(uintptr(lockFD), "wb-parked-source-lock-check")
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return sameFile(lock.file, file)
 }
 
@@ -656,7 +656,7 @@ func (s Store) LocalLaunchRootUnderLock(lock *SourceLock) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open private local resume root: %w", err)
 	}
-	defer neutral.Close()
+	defer func() { _ = neutral.Close() }()
 	if err := neutral.Sync(); err != nil {
 		return "", err
 	}
@@ -943,7 +943,7 @@ func appendSourceEventAt(aggregate *os.File, parkID string, event Event) error {
 	if err != nil {
 		return err
 	}
-	defer events.Close()
+	defer func() { _ = events.Close() }()
 	history, err := listSourceEventsAt(events, parkID)
 	if err != nil {
 		return err
@@ -1077,7 +1077,7 @@ func openPrivateStoreRoot(root string, create bool) (*os.File, error) {
 		return nil, err
 	}
 	parent := os.NewFile(uintptr(parentFD), "wb-park-store-parent")
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 	if create {
 		if err := unix.Mkdirat(parentFD, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 			return nil, err
@@ -1125,7 +1125,7 @@ func readPrivateRegularAt(directory *os.File, name string, maximum int64) ([]byt
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), name)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return readPrivateFile(file, maximum)
 }
 

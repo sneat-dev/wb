@@ -34,6 +34,8 @@ func (deliverer *fakeMessageDeliverer) DeliverMessage(_ context.Context, raw []b
 }
 
 func TestSendRejectsNilContextBeforeDurableLookup(t *testing.T) {
+	// The nil context is exactly what this test asserts is rejected.
+	//nolint:staticcheck // SA1012: passing nil is the behaviour under test.
 	_, err := Send(nil, Options{TargetWBSessionID: "wbs-successor"})
 	if err == nil || !strings.Contains(err.Error(), "context is required") {
 		t.Fatalf("Send(nil) error = %v, want context requirement", err)

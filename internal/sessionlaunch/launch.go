@@ -268,7 +268,7 @@ func InspectPrepared(_ context.Context, options Options) (PreparedEvidence, erro
 		}
 		return PreparedEvidence{}, err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	plan, planDigest, err := state.loadPlan()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -397,7 +397,7 @@ func startWithDependencies(ctx context.Context, options Options, deps dependenci
 	if err != nil {
 		return Result{}, err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	plan, planDigest, loadPlanErr := state.loadPlan()
 	planReplay := loadPlanErr == nil
 	if planReplay {
@@ -775,7 +775,7 @@ func inspectStarted(ctx context.Context, options Options, deps dependencies, sta
 	if err != nil {
 		return Result{}, err
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	release, releaseDigest, err := attempt.loadRelease()
 	if err != nil {
 		return Result{}, err
@@ -849,7 +849,7 @@ func inspectWithDependencies(ctx context.Context, options Options, deps dependen
 		}
 		return Result{}, err
 	}
-	defer state.Close()
+	defer func() { _ = state.Close() }()
 	plan, planDigest, err := state.loadPlan()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -880,7 +880,7 @@ func inspectWithDependencies(ctx context.Context, options Options, deps dependen
 		}
 		return Result{}, err
 	}
-	defer attempt.Close()
+	defer func() { _ = attempt.Close() }()
 	release, releaseDigest, err := attempt.loadRelease()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

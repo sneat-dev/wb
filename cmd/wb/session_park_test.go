@@ -485,7 +485,7 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if _, err := store.PrepareRemoteUnderLock(lock, "target", "", string(sessionmove.CourierSSH), sessionmove.SSHConfig{Host: "target.example", User: "ai"}, time.Now().UTC()); err != nil {
 		t.Fatalf("subsequent remote route could not claim after zero-mutation local refusal: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestSessionResumeRemoteRetryUsesRetainedSSHEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	state, err := store.LoadUnderLock(lock)
 	if err != nil {
 		t.Fatal(err)
