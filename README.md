@@ -1677,6 +1677,57 @@ local/CI/deployment correlation, CI-minute savings, and privacy-safe team
 comparisons—is captured in the SpecScore idea
 [`developer-lifecycle-metrics`](spec/ideas/developer-lifecycle-metrics.md).
 
+### `wb hooks agent` — refuse an agent write into a canonical clone
+
+A Git hook judges a commit. It cannot see the write that never reaches one,
+and a canonical clone is ruined by the write, not by the commit: a
+`git checkout origin/main -- .` run to read one file stages the whole tree
+against a stale HEAD and discards whatever was sitting there uncommitted. A
+hook that does fire can also be walked around — `git -c core.hooksPath=/dev/null
+commit` is one line.
+
+`wb hooks agent pre-tool-use` moves the refusal one layer earlier. It reads a
+Claude Code PreToolUse payload on stdin and writes a deny document when the
+tool call would write inside `<projects-root>/<owner>/<repository>`, naming
+`wb worktree create` as the remedy.
+
+```sh
+wb hooks agent install                      # register it in ~/.claude/settings.json
+wb hooks agent install --dry-run            # show the merged document instead
+wb hooks agent pre-tool-use --input p.json  # rehearse one decision
+```
+
+**It fails open, without exception.** An unreadable payload, an unrecognised
+tool, a shell construct it does not model, a path it cannot resolve, an
+internal panic, and a WB too old to know the subcommand all allow the call. The
+installed command is `wb hooks agent pre-tool-use 2>/dev/null; exit 0`: Claude
+Code blocks a tool call whose PreToolUse hook exits 2, and WB spends exit 2 on
+usage errors, so forcing exit 0 leaves the JSON document on stdout as the only
+channel through which this hook can ever say no.
+
+What it never refuses:
+
+- any read, of anything, anywhere;
+- any write inside a linked worktree, including one nested inside a canonical
+  clone such as `.claude/worktrees/<name>`;
+- inside a canonical clone: `git fetch`, `git merge --ff-only`, `git pull
+  --ff-only`, `git status`, `git log`, `git show`, `git ls-tree`, `git diff`,
+  `git push`, `git apply --check`, `git clean --dry-run`, `git stash list`, and
+  every unrecognised program.
+
+What it refuses inside a canonical clone: Git subcommands that mutate the tree,
+index, or history; output redirections into the clone; `sed -i` and friends;
+`rm`/`mv`/`cp`/`tee` and other file mutators naming a path inside it; write
+verbs of known generators (`specscore … new`, `go mod tidy`, `pnpm install`,
+`gofmt -w`) run with the clone as the working directory; and any Git invocation
+that disables the repository's managed hooks.
+
+Bash detection is deliberately partial and documented as such in
+`internal/agentguard/bash.go`. It models no shell expansion, so a working
+directory reached through a variable and a file written by a script inside a
+heredoc both pass. An honest, partial guard that never blocks legitimate work
+beats an aggressive one agents learn to route around.
+
 ### `wb self-update` — update the installed binary (alias: `wb update`)
 
 `self-update` is the canonical name because in a CLI whose other verbs act on

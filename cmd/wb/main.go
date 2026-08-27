@@ -128,6 +128,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"ci audit":      true,
 		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
+		"hooks agent pre-tool-use": true, "hooks agent install": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"verify receipt": true,
 		"fleet":          true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
