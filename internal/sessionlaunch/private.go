@@ -85,8 +85,11 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 		if err := validatePrivatePlan(state, plan); err != nil {
 			return err
 		}
-		if err := verifyLauncherWorktree(plan, state.Request); err != nil {
+		if err := verifyLauncherWorktree(plan, state.Request, store); err != nil {
 			return err
+		}
+		if state.Request.HandoverContent != "" {
+			privateContinuation = plan.HandoverPath
 		}
 	} else {
 		privateContinuation, err = validatePrivateParkPlan(launchState, plan)
@@ -210,16 +213,27 @@ func runPrivateLauncher(args []string, deps privateLauncherDependencies) error {
 
 func validatePrivatePlan(state sessionmove.State, plan launchPlan) error {
 	request := state.Request
+	// HandoverPath means two different things depending on how this handoff
+	// delivers its handover: the legacy repository-relative path for a
+	// pre-cutover (ContinuationTracked) request, or the deterministic
+	// private materialized path for a new-style (ContinuationPrivate) one.
+	// Both are recomputed here rather than trusted from the plan.
+	expectedHandoverPath := request.HandoverPath
+	expectedContinuationKind := sessionauthority.ContinuationTracked
+	if request.HandoverContent != "" {
+		expectedHandoverPath = sessionmove.PrivateHandoverPath(plan.StoreRoot, request.HandoffID)
+		expectedContinuationKind = sessionauthority.ContinuationPrivate
+	}
 	if plan.SchemaVersion != launchSchemaVersion || plan.HandoffID != request.HandoffID || plan.RequestDigest != state.Digest ||
 		plan.SuccessorWBSessionID != request.SuccessorWBSessionID || plan.PredecessorWBSessionID != request.PredecessorWBSessionID ||
 		plan.Machine != request.TargetMachine || plan.TmuxName != "wb-session-"+request.SuccessorWBSessionID ||
-		plan.PinnedCommit != request.BundleCommit || plan.HandoverPath != request.HandoverPath ||
+		plan.PinnedCommit != request.BundleCommit || plan.HandoverPath != expectedHandoverPath ||
 		plan.StoreRoot == "" {
 		return fmt.Errorf("immutable launch plan does not match admitted handoff")
 	}
 	if plan.PinnedBranch != "" && plan.PinnedBranch != "wb-session/"+request.HandoffID ||
 		plan.AuthorityFile != "" && plan.AuthorityFile != "request.json" ||
-		plan.ContinuationKind != "" && plan.ContinuationKind != string(sessionauthority.ContinuationTracked) ||
+		plan.ContinuationKind != "" && plan.ContinuationKind != string(expectedContinuationKind) ||
 		plan.ContinuationDigest != "" && plan.ContinuationDigest != request.HandoverDigest {
 		return fmt.Errorf("immutable launch plan does not match admitted handoff")
 	}
@@ -244,7 +258,16 @@ func validatePrivatePlan(state sessionmove.State, plan launchPlan) error {
 	return nil
 }
 
-func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request) error {
+// verifyLauncherWorktree is the last check before the private launcher exec's
+// the harness: it re-reads the exact handover the successor is about to be
+// told to read and confirms it still matches the digest fixed in the
+// immutable request. Where it reads from depends on how this handoff
+// delivers its handover: a new-style (ContinuationPrivate) request reads the
+// materialized private file inside the handoff's own retained aggregate
+// directory (never the worktree); a pre-cutover (ContinuationTracked)
+// request reads the legacy path inside the pinned worktree, exactly as
+// before the ContinuationPrivate cutover.
+func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request, store sessionmove.Store) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -257,9 +280,17 @@ func verifyLauncherWorktree(plan launchPlan, request sessionmove.Request) error 
 	if err != nil || !os.SameFile(wantInfo, gotInfo) {
 		return fmt.Errorf("private launcher is not rooted in the pinned target worktree")
 	}
-	handover, err := os.ReadFile(filepath.Join(plan.WorktreeDir, filepath.FromSlash(request.HandoverPath)))
-	if err != nil {
-		return fmt.Errorf("read pinned handover before harness exec: %w", err)
+	var handover []byte
+	if request.HandoverContent != "" {
+		handover, err = store.ReadHandover(request.HandoffID)
+		if err != nil {
+			return fmt.Errorf("read private handover before harness exec: %w", err)
+		}
+	} else {
+		handover, err = os.ReadFile(filepath.Join(plan.WorktreeDir, filepath.FromSlash(request.HandoverPath)))
+		if err != nil {
+			return fmt.Errorf("read pinned handover before harness exec: %w", err)
+		}
 	}
 	if !request.HandoverDigest.Matches(handover) {
 		return fmt.Errorf("pinned handover digest changed before harness exec")

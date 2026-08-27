@@ -127,7 +127,7 @@ func PrepareExternalSessionWorkLog(ctx context.Context, options ExternalSessionW
 	}
 	handover := options.HandoverBytes
 	if len(handover) == 0 {
-		handover, err = readBoundedRelativeRegular(worktree, request.HandoverPath, 1<<20)
+		handover, err = requestHandoverBytes(worktree, request)
 		if err != nil {
 			return result, fmt.Errorf("read admitted handover document: %w", err)
 		}
@@ -512,7 +512,7 @@ func EnsureExternalSourceOfferEvidence(options ExternalSourceOfferOptions) (Exte
 			return result, fmt.Errorf("admitted predecessor session is not live")
 		}
 	}
-	handover, err := readBoundedRelativeRegular(claim.Worktree, options.Request.HandoverPath, 1<<20)
+	handover, err := requestHandoverBytes(claim.Worktree, options.Request)
 	if err != nil || !options.Request.HandoverDigest.Matches(handover) {
 		return result, fmt.Errorf("source handover document does not match admitted immutable bytes")
 	}
@@ -718,7 +718,7 @@ func validateExternalSourceOffer(worktree string, request sessionmove.Request, d
 	if err != nil {
 		return fmt.Errorf("read source Work Log handoff offer: %w", err)
 	}
-	handover, err := readBoundedRelativeRegular(worktree, request.HandoverPath, 1<<20)
+	handover, err := requestHandoverBytes(worktree, request)
 	if err != nil || !request.HandoverDigest.Matches(handover) {
 		return fmt.Errorf("source handover document does not match admitted immutable bytes")
 	}
@@ -1230,6 +1230,20 @@ func expectedExternalClaimID(claim workLogClaim) (string, error) {
 		return "", fmt.Errorf("private external target Work Log lineage is invalid")
 	}
 	return sessionmove.ExternalHandoffClaimID(sessionmove.Digest(evidence.RequestDigest), claim.AgentID)
+}
+
+// requestHandoverBytes returns the exact bytes source or target must
+// reverify against request.HandoverDigest before custody advances. A request
+// with inline handover content (every checkpoint created after the
+// ContinuationPrivate cutover) never wrote anything into the worktree, so its
+// content is read from the immutable admitted request itself. A pre-cutover
+// request has no inline content and is read from its legacy HandoverPath
+// inside the worktree, exactly as before the cutover.
+func requestHandoverBytes(worktree string, request sessionmove.Request) ([]byte, error) {
+	if request.HandoverContent != "" {
+		return []byte(request.HandoverContent), nil
+	}
+	return readBoundedRelativeRegular(worktree, request.HandoverPath, 1<<20)
 }
 
 func readBoundedRelativeRegular(rootPath, relative string, limit int64) ([]byte, error) {

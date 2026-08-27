@@ -137,11 +137,15 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 	}
 	defer preflight.close()
 
-	handoverPath := filepath.ToSlash(filepath.Join(".wb", "handoffs", handoffID+".md"))
+	// The handover document is never written into the repo under work: it
+	// travels inline on Request.HandoverContent instead, admitted straight
+	// into WB's own private handoff store below. See
+	// sessionmove.Store.EnsureHandoverUnderLock for how the target later
+	// materializes it as a private file for the successor.
 	document := renderSessionHandover(options, preflight, handoffID, successorID)
 	handoverDigest := sessionmove.DigestBytes(document)
 	offerMessage, offerNextAction := sessionmove.NormalizeSourceOfferContent(
-		normalizedHandoverSummary(options.Handover), normalizedRemainingWork(options.Handover, handoverPath),
+		normalizedHandoverSummary(options.Handover), normalizedRemainingWork(options.Handover),
 	)
 	request := sessionmove.Request{
 		SchemaVersion:          sessionmove.RequestSchemaVersion,
@@ -153,77 +157,58 @@ func CreateSessionCheckpoint(ctx context.Context, options SessionCheckpointOptio
 		RepositoryRemote:       preflight.repositoryRemote,
 		Branch:                 preflight.branch,
 		SourceWorkCommit:       preflight.sourceCommit,
-		BundleCommit:           strings.Repeat("0", 40),
-		HandoverPath:           handoverPath,
-		HandoverDigest:         handoverDigest,
-		SourceRuntime:          options.SourceSession.Runtime,
-		SourceModel:            options.SourceSession.Model,
-		SourceNativeHarnessID:  sourceNativeHarnessID(options.SourceSession),
-		RequestedHarness:       options.RequestedHarness,
-		WorkLogReference:       preflight.workLogReference,
-		SourceOfferMessage:     offerMessage,
-		SourceOfferNextAction:  offerNextAction,
-		SourceOfferDigest:      sessionmove.DigestSourceOffer(offerMessage, offerNextAction),
-		CreatedAt:              options.Now,
+		// No commit is added on top of the source's own work anymore, so the
+		// exact commit the successor pins is simply the source commit itself.
+		BundleCommit:          preflight.sourceCommit,
+		HandoverContent:       string(document),
+		HandoverDigest:        handoverDigest,
+		SourceRuntime:         options.SourceSession.Runtime,
+		SourceModel:           options.SourceSession.Model,
+		SourceNativeHarnessID: sourceNativeHarnessID(options.SourceSession),
+		RequestedHarness:      options.RequestedHarness,
+		WorkLogReference:      preflight.workLogReference,
+		SourceOfferMessage:    offerMessage,
+		SourceOfferNextAction: offerNextAction,
+		SourceOfferDigest:     sessionmove.DigestSourceOffer(offerMessage, offerNextAction),
+		CreatedAt:             options.Now,
 	}
 	// Validate every request-carried value while the operation is still
-	// read-only. The all-zero commit is a syntactically valid placeholder and
-	// never leaves this process.
+	// read-only.
 	if _, err := sessionmove.EncodeRequest(request); err != nil {
 		return result, fmt.Errorf("validate session checkpoint before mutation: %w", err)
 	}
 	if err := verifySessionCheckpointUnchanged(ctx, preflight); err != nil {
 		return result, err
 	}
-	if err := requireAbsentHandover(preflight.root, handoverPath); err != nil {
-		return result, err
-	}
-
-	if err := writeSessionHandover(preflight.worktree.worktree, handoffID+".md", document); err != nil {
-		return result, fmt.Errorf("write tracked session handover: %w", err)
-	}
-	if err := runSessionWorktreeGit(ctx, preflight, "add", "--force", "--", handoverPath); err != nil {
-		return result, fmt.Errorf("stage generated handover only: %w", err)
-	}
-	if err := verifyOnlyStagedPath(ctx, preflight.root, handoverPath); err != nil {
-		return result, err
-	}
-	message := "chore(session): add handoff " + handoffID
-	if err := runSessionWorktreeGit(ctx, preflight, "commit", "--only", "-m", message, "--", handoverPath); err != nil {
-		return result, fmt.Errorf("commit generated handover: %w", err)
-	}
-	bundleCommit, err := verifySessionBundleCommit(ctx, preflight, handoverPath, document)
-	if err != nil {
-		return result, err
-	}
-	request.BundleCommit = bundleCommit
 	requestRaw, err := sessionmove.EncodeRequest(request)
 	if err != nil {
 		return result, fmt.Errorf("encode exact session move request: %w", err)
 	}
 	digest := sessionmove.DigestBytes(requestRaw)
 
-	// Git hooks ran while creating the checkpoint commit. Re-authenticate both
-	// descriptor-read origin routes before allowing the first network mutation;
-	// a hook must not redirect publication after the zero-mutation preflight.
+	// preflight's dry run already proved this exact HEAD (== request.BundleCommit)
+	// can be pushed without force, and nothing local has mutated it since.
+	// Re-authenticate both descriptor-read origin routes before allowing the
+	// first network mutation; a hook must not redirect publication after the
+	// zero-mutation preflight.
 	if err := verifySessionCheckpointRemotesUnchanged(ctx, preflight); err != nil {
-		return result, fmt.Errorf("origin remote changed after handover commit; refusing publication: %w", err)
+		return result, fmt.Errorf("origin remote changed after checkpoint validation; refusing publication: %w", err)
 	}
 	if options.afterPushRemoteAuthentication != nil {
 		options.afterPushRemoteAuthentication()
 	}
 	if err := runSessionPushGit(ctx, preflight, false); err != nil {
-		return result, fmt.Errorf("push exact handover commit without force: %w", err)
+		return result, fmt.Errorf("push exact source commit without force: %w", err)
 	}
 	if err := verifySessionCheckpointRemotesUnchanged(ctx, preflight); err != nil {
-		return result, fmt.Errorf("origin remote changed while publishing handover commit: %w", err)
+		return result, fmt.Errorf("origin remote changed while publishing source commit: %w", err)
 	}
 	remoteTip, err := sessionRemoteBranchTip(ctx, preflight, preflight.branch)
 	if err != nil {
 		return result, fmt.Errorf("verify exact remote branch tip after push: %w", err)
 	}
-	if remoteTip != bundleCommit {
-		return result, fmt.Errorf("remote branch %s tip is %q after push, want exact handover commit %s", preflight.branch, remoteTip, bundleCommit)
+	if remoteTip != request.BundleCommit {
+		return result, fmt.Errorf("remote branch %s tip is %q after push, want exact source commit %s", preflight.branch, remoteTip, request.BundleCommit)
 	}
 
 	home, err := wbhome.Root(options.ProjectsRoot)
@@ -385,11 +370,11 @@ func preflightSessionCheckpoint(ctx context.Context, options SessionCheckpointOp
 		PredecessorWBSessionID: options.SourceSession.WBSessionID,
 		SourceMachine:          options.SourceSession.Machine, TargetMachine: options.TargetMachine,
 		RepositoryRemote: parsedFetch.Raw, Branch: branch,
-		SourceWorkCommit: head, BundleCommit: strings.Repeat("0", 40),
-		HandoverPath:   filepath.ToSlash(filepath.Join(".wb", "handoffs", handoffID+".md")),
-		HandoverDigest: sessionmove.DigestBytes([]byte("probe")), SourceRuntime: options.SourceSession.Runtime,
+		SourceWorkCommit: head, BundleCommit: head,
+		HandoverContent: "probe", HandoverDigest: sessionmove.DigestBytes([]byte("probe")),
+		SourceRuntime:      options.SourceSession.Runtime,
 		WorkLogReference:   preflight.workLogReference,
-		SourceOfferMessage: "Session handoff offered", SourceOfferNextAction: "Continue from .wb/handoffs/" + handoffID + ".md",
+		SourceOfferMessage: "Session handoff offered", SourceOfferNextAction: "Continue from the retained WB session handover for this handoff.",
 		CreatedAt: options.Now,
 	}
 	probe.SourceOfferDigest = sessionmove.DigestSourceOffer(probe.SourceOfferMessage, probe.SourceOfferNextAction)
@@ -561,83 +546,6 @@ func runSessionPushGit(ctx context.Context, preflight *sessionCheckpointPrefligh
 	return runSessionCanonicalGit(ctx, preflight, arguments...)
 }
 
-func requireAbsentHandover(root, relative string) error {
-	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(relative)))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect generated handover destination: %w", err)
-	}
-	return fmt.Errorf("immutable handover already exists: %s", relative)
-}
-
-func writeSessionHandover(worktree *os.File, name string, document []byte) error {
-	wbFD, err := openOrCreateNoFollowDirectory(int(worktree.Fd()), ".wb")
-	if err != nil {
-		return err
-	}
-	wb := os.NewFile(uintptr(wbFD), "wb-session-handover-root")
-	defer func() { _ = wb.Close() }()
-	handoffsFD, err := openOrCreateNoFollowDirectory(int(wb.Fd()), "handoffs")
-	if err != nil {
-		return err
-	}
-	handoffs := os.NewFile(uintptr(handoffsFD), "wb-session-handoffs")
-	defer func() { _ = handoffs.Close() }()
-	if err := writeBytesImmutableAt(handoffs, name, document, 0o644, false); err != nil {
-		return err
-	}
-	return worktree.Sync()
-}
-
-func verifyOnlyStagedPath(ctx context.Context, root, wanted string) error {
-	output, err := git(ctx, root, "diff", "--cached", "--name-only", "-z")
-	if err != nil {
-		return err
-	}
-	paths := strings.Split(strings.TrimSuffix(output, "\x00"), "\x00")
-	if len(paths) != 1 || paths[0] != wanted {
-		return fmt.Errorf("refusing checkpoint: staged paths are %q, want only %q", paths, wanted)
-	}
-	return nil
-}
-
-func verifySessionBundleCommit(ctx context.Context, preflight *sessionCheckpointPreflight, wantedPath string, wantedBytes []byte) (string, error) {
-	head, err := git(ctx, preflight.root, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil || !isGitObjectID(head) || head == preflight.sourceCommit {
-		return "", fmt.Errorf("generated handover commit was not created")
-	}
-	parents, err := git(ctx, preflight.root, "rev-list", "--parents", "-n", "1", head)
-	if err != nil {
-		return "", err
-	}
-	fields := strings.Fields(parents)
-	if len(fields) != 2 || fields[1] != preflight.sourceCommit {
-		return "", fmt.Errorf("handover commit is not a single-parent child of source work commit %s", preflight.sourceCommit)
-	}
-	paths, err := git(ctx, preflight.root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", head)
-	if err != nil {
-		return "", err
-	}
-	changed := strings.Split(strings.TrimSuffix(paths, "\x00"), "\x00")
-	if len(changed) != 1 || changed[0] != wantedPath {
-		return "", fmt.Errorf("handover commit changed %q, want only %q", changed, wantedPath)
-	}
-	committedBytes, err := gitCanonicalBytes(ctx, preflight.canonical, "cat-file", "blob", head+":"+wantedPath)
-	if err != nil {
-		return "", fmt.Errorf("read exact committed handover blob: %w", err)
-	}
-	if !bytes.Equal(committedBytes, wantedBytes) {
-		return "", fmt.Errorf("committed handover bytes changed during Git hooks")
-	}
-	status, err := git(ctx, preflight.root, "status", "--porcelain=v1", "--untracked-files=all")
-	if err != nil || status != "" {
-		return "", fmt.Errorf("source worktree is not clean after generated handover commit")
-	}
-	return head, nil
-}
-
 func sessionRemoteBranchTip(ctx context.Context, preflight *sessionCheckpointPreflight, branch string) (string, error) {
 	output, err := gitCanonical(ctx, preflight.canonical, "ls-remote", "--heads", "--", preflight.repositoryRemote, "refs/heads/"+branch)
 	if err != nil {
@@ -708,11 +616,11 @@ func normalizedHandoverSummary(handover SessionHandover) string {
 	return "Session handoff offered"
 }
 
-func normalizedRemainingWork(handover SessionHandover, path string) string {
+func normalizedRemainingWork(handover SessionHandover) string {
 	if remaining := strings.TrimSpace(handover.RemainingWork); remaining != "" {
 		return remaining
 	}
-	return "Continue from " + path
+	return "Continue from the retained WB session handover for this handoff."
 }
 
 func sourceNativeHarnessID(source session.Record) string {
