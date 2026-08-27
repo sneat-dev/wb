@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/secretscan"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessioncourier"
 	"github.com/sneat-dev/wb/internal/sessioncustody"
@@ -685,5 +686,147 @@ func completedMoveTestAcknowledgement(t *testing.T, options sessioncustody.Optio
 			TargetWorkLogReference: receipt.TargetWorkLogReference,
 			SealedAt:               receipt.StartedAt.Add(time.Second),
 		},
+	}
+}
+
+// fakeAWSAccessKeyID returns a fixture value shaped exactly like an AWS
+// access key ID, built from split literal fragments so the shape never
+// appears contiguously in this repository's own source text -- it must not
+// be able to trip a source-text secret scanner (this repository's own gate,
+// or GitHub push protection) on this repository. It is provably synthetic:
+// fixed filler characters, never a value that was ever live anywhere.
+func fakeAWSAccessKeyID() string { return "AKIA" + "ABCDEFGHIJKLMNOP" }
+
+// withDeterministicSecretScanner points the package-level secret scanner
+// loader at the real embedded gitleaks-derived ruleset only, ignoring
+// whatever extra rules file might exist on the host running the test, so
+// these tests are hermetic.
+func withDeterministicSecretScanner(t *testing.T) {
+	t.Helper()
+	previous := loadSecretScanner
+	empty := ""
+	loadSecretScanner = func() (*secretscan.Scanner, []string, error) {
+		return secretscan.LoadDefault(secretscan.LoadOptions{EnvExtraRulesPath: &empty})
+	}
+	t.Cleanup(func() { loadSecretScanner = previous })
+}
+
+func minimalWorkingSessionMoveDeps(t *testing.T, source session.Record, checkpoint func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error)) sessionMoveDependencies {
+	t.Helper()
+	store := sessionmove.NewStore(t.TempDir())
+	return sessionMoveDependencies{
+		defaultConfigPath: func() string { return "/unused/default.yaml" },
+		loadConfig: func(string) (sessionmove.Config, error) {
+			return sessionmove.Config{Targets: map[string]sessionmove.TargetConfig{
+				"hetzner-vm1": {Machine: "hetzner-vm1", DefaultCourier: sessionmove.CourierSSH, SSH: &sessionmove.SSHConfig{Host: "hetzner-vm1"}},
+			}}, nil
+		},
+		resolveSource: func() (session.Record, bool, error) { return source, true, nil },
+		store:         func(string) (sessionmove.Store, error) { return store, nil },
+		newDeliverer: func(sessionmove.TargetConfig, sessionmove.Courier, sessioncourier.SynchestraOptions) (sessioncourier.Deliverer, error) {
+			return delivererFunc(func(_ context.Context, raw []byte) (sessionreceive.Result, error) {
+				request, err := sessionmove.DecodeRequest(raw)
+				if err != nil {
+					return sessionreceive.Result{}, err
+				}
+				return completedMoveTestDelivery(t, request, raw, true), nil
+			}), nil
+		},
+		checkpoint: checkpoint,
+		acknowledge: func(_ context.Context, options sessioncustody.Options) (sessioncustody.Result, error) {
+			return completedMoveTestAcknowledgement(t, options), nil
+		},
+	}
+}
+
+// TestSessionMoveRefusesHandoverContainingNamedSecretPattern proves
+// invariant 1 (fail closed) and invariant 5 (scan before the write, not just
+// before commit) end to end through the real CLI command: a handover
+// carrying a named secret shape must never reach CreateSessionCheckpoint,
+// which is the first place session move touches Git or the durable store.
+func TestSessionMoveRefusesHandoverContainingNamedSecretPattern(t *testing.T) {
+	withDeterministicSecretScanner(t)
+	source := session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", Model: "gpt-5", StartedAt: time.Now().UTC()}
+	checkpointCalled := false
+	deps := minimalWorkingSessionMoveDeps(t, source, func(context.Context, worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+		checkpointCalled = true
+		return worktrees.SessionCheckpointResult{}, nil
+	})
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-"})
+	command.SetIn(strings.NewReader("leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID() + "\n"))
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("expected a refusal, got nil error")
+	}
+	if !strings.Contains(err.Error(), "aws-access-token") || !strings.Contains(err.Error(), "--override-secret") {
+		t.Fatalf("refusal error = %v", err)
+	}
+	if strings.Contains(err.Error(), fakeAWSAccessKeyID()) {
+		t.Fatalf("refusal echoed the matched secret: %v", err)
+	}
+	if checkpointCalled {
+		t.Fatal("checkpoint must never run when the handover is refused for a named secret pattern")
+	}
+}
+
+// TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory proves the
+// override contract: the exact finding key printed by a refusal, and only
+// that exact key, lets the move proceed, and the acknowledgement is logged
+// as a visible advisory rather than silently dropped.
+func TestSessionMoveAcceptsOverriddenSecretFindingAndLogsAdvisory(t *testing.T) {
+	withDeterministicSecretScanner(t)
+	secretLine := "leftover debug line: AWS_ACCESS_KEY_ID=" + fakeAWSAccessKeyID()
+	empty := ""
+	scanner, _, err := secretscan.LoadDefault(secretscan.LoadOptions{EnvExtraRulesPath: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocking := scanner.Scan(secretscan.Segment{Name: "handover-body", Content: []byte(secretLine)}).Blocking(nil)
+	if len(blocking) != 1 {
+		t.Fatalf("expected exactly one blocking finding to override, got %+v", blocking)
+	}
+	overrideKey := blocking[0].Key()
+
+	source := session.Record{PID: 123, WBSessionID: "wbs-source", Machine: "laptop", Runtime: "codex", Model: "gpt-5", StartedAt: time.Now().UTC()}
+	store := sessionmove.NewStore(t.TempDir())
+	checkpointCalled := false
+	deps := minimalWorkingSessionMoveDeps(t, source, func(_ context.Context, options worktrees.SessionCheckpointOptions) (worktrees.SessionCheckpointResult, error) {
+		checkpointCalled = true
+		request := completeMoveTestRequest(sessionmove.Request{
+			SchemaVersion: sessionmove.RequestSchemaVersion, HandoffID: "handoff-override", SuccessorWBSessionID: "wbs-successor",
+			PredecessorWBSessionID: "wbs-source", SourceMachine: "laptop", TargetMachine: "hetzner-vm1",
+			RepositoryRemote: "/tmp/acme/app.git", Branch: "feature/session", SourceWorkCommit: strings.Repeat("b", 40),
+			BundleCommit: strings.Repeat("a", 40), HandoverPath: ".wb/handoffs/handoff-override.md",
+			HandoverDigest: sessionmove.DigestBytes(options.Handover.Body), SourceRuntime: "codex", SourceModel: "gpt-5", CreatedAt: time.Now().UTC(),
+		})
+		raw := mustEncodeMoveTestRequest(t, request)
+		digest := sessionmove.DigestBytes(raw)
+		if _, err := store.Admit(raw, digest); err != nil {
+			return worktrees.SessionCheckpointResult{}, err
+		}
+		return worktrees.SessionCheckpointResult{Request: request, Digest: digest, RequestBytes: raw}, nil
+	})
+	deps.store = func(string) (sessionmove.Store, error) { return store, nil }
+	command := newSessionMoveCmdWithDeps(deps)
+	command.SetArgs([]string{"--to", "hetzner-vm1", "--handover-file", "-", "--override-secret", overrideKey})
+	command.SetIn(strings.NewReader(secretLine))
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	var stdout bytes.Buffer
+	command.SetOut(&stdout)
+	if err := command.Execute(); err != nil {
+		t.Fatalf("session move with an exact override should succeed: %v", err)
+	}
+	if !checkpointCalled {
+		t.Fatal("expected checkpoint to run once the exact finding was acknowledged")
+	}
+	if !strings.Contains(stderr.String(), "secret scan advisory") || !strings.Contains(stderr.String(), "aws-access-token") {
+		t.Fatalf("override must be logged as a visible advisory, stderr = %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), fakeAWSAccessKeyID()) {
+		t.Fatalf("advisory echoed the matched secret: %q", stderr.String())
 	}
 }

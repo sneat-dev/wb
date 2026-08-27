@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/secretscan"
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/sessionmove"
@@ -59,6 +60,7 @@ func writeParkJudgmentChecklist(command *cobra.Command, lead string) {
 
 func newSessionParkCmd() *cobra.Command {
 	var contextFile, format string
+	var overrideSecrets []string
 	command := &cobra.Command{
 		Use:   "park",
 		Short: "Suspend this registered session with an auditable whole-session checkpoint",
@@ -85,6 +87,18 @@ func newSessionParkCmd() *cobra.Command {
 			}
 			if len([]byte(continuation)) > sessionpark.MaxContinuationBytes {
 				return fmt.Errorf("park continuation exceeds %d bytes", sessionpark.MaxContinuationBytes)
+			}
+			overrides, err := secretscan.ParseOverrides(overrideSecrets)
+			if err != nil {
+				return err
+			}
+			// The continuation becomes immutable the instant it is stored
+			// below (store.Create / the retry-equality check), so the scan
+			// must run, and can only refuse, before that point: the write is
+			// the damage, not a later commit or push of it.
+			secretWarnings, err := scanContinuationForSecrets(overrides, secretscan.Segment{Name: "continuation", Content: []byte(continuation)})
+			if err != nil {
+				return err
 			}
 			results, err := worktrees.List(command.Context(), worktrees.ListOptions{ProjectsRoot: projectsRoot, Workers: 1})
 			if err != nil {
@@ -136,6 +150,7 @@ func newSessionParkCmd() *cobra.Command {
 				return err
 			}
 			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), MemberCount: len(owned)}
+			printSecretScanAdvisories(command, secretWarnings)
 			// The continuation is immutable once parked, so this is a
 			// verification prompt rather than an invitation to edit: a
 			// re-park with different continuation is refused by design.
@@ -151,6 +166,7 @@ func newSessionParkCmd() *cobra.Command {
 	}
 	command.Flags().StringVar(&contextFile, "context-file", "", "bounded agent-authored continuation file, or - for stdin")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.Flags().StringArrayVar(&overrideSecrets, secretOverrideFlagName, nil, secretOverrideFlagHelp)
 	return command
 }
 
