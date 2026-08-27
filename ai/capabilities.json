@@ -1167,6 +1167,156 @@
       "notes": "v1 is Go-only and offline-first. Latest versions are never claimed without --online. Forcing edges are direct require rows, not full MVS why-paths."
     },
     {
+      "id": "wb.deps.go-directive.check",
+      "feature_refs": [
+        "spec/features/go-directive-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps go-directive check",
+              "flags": [
+                "--apply",
+                "--go-version",
+                "--timeout",
+                "--toolchain"
+              ],
+              "modes": [
+                "Discovers every go.mod at or under a directory and assesses each module's achievability by resolving its real build list with go tooling, never by grepping go.mod files.",
+                "Dry-run by default: reports compliant, would-change, cannot-comply naming the exact forcing dependency and version, or below-floor (left unchanged); exits 1 when any module needs attention.",
+                "--apply writes the go/toolchain directives only for a would-change module, then runs go mod tidy and re-resolves to confirm the edit was not silently reverted."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps go-directive check --help",
+              "contains": [
+                "--apply",
+                "--go-version",
+                "--toolchain"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/go-directive.md",
+              "marker": "# Go directive fleet policy",
+              "examples": [
+                "wb deps go-directive check ./backend",
+                "wb deps go-directive check ./backend --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deps/go_directive_test.go",
+              "name": "TestAssessDirectiveCannotComplyNamesForcingDependency",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/deps/go_directive_test.go",
+              "name": "TestApplyDirectiveWritesAndSurvivesTidy",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/deps_go_directive_test.go",
+              "name": "TestDepsGoDirectiveCheckApplyWritesAndLeavesCannotComplyUntouched",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Achievability is resolved with `go list -m -json all` against an isolated scratch copy of the module's own go.mod/go.sum, so a read-only assessment never writes to the repository being assessed. A relative local `replace` directive is reported as an error rather than resolved, because the scratch copy cannot preserve the path it resolves against."
+    },
+    {
+      "id": "wb.deps.go-directive.report",
+      "feature_refs": [
+        "spec/features/go-directive-policy/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps go-directive report",
+              "flags": [
+                "--format",
+                "--go-version",
+                "--match",
+                "--regex",
+                "--timeout",
+                "--toolchain"
+              ],
+              "modes": [
+                "Walks every discovered repository and every Go module inside it — one row per module, not per repository — and reports the same five verdicts as check, plus a row for a repository with no go.mod at all.",
+                "Read-only by construction: there is no --apply flag, so landing the policy anywhere is always the separate, single-repository `wb deps go-directive check --apply`.",
+                "Exits 1 when any module cannot comply or errored, so the cannot-comply rows read as one worklist of which upstream module needs fixing first."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps go-directive report --help",
+              "contains": [
+                "--match",
+                "--regex",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/go-directive.md",
+              "marker": "## Watch the fleet",
+              "examples": [
+                "wb deps go-directive report --match 'acme/*'",
+                "wb deps go-directive report --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/deps_go_directive_test.go",
+              "name": "TestDepsGoDirectiveReportWalksFleetAndNeverWrites",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Multi-module repositories (for example a root go.mod plus backend/go.mod) contribute one row per module. A repository with no go.mod at all is reported once with verdict no-module rather than silently omitted."
+    },
+    {
       "id": "wb.deps.graph",
       "feature_refs": [],
       "since": "existing",
