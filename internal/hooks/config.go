@@ -312,34 +312,41 @@ fi
 		// naming "go" once, to cover its Go repositories, forces this on for
 		// every other repository too, so it must tolerate running somewhere
 		// with no go.mod rather than assume Detection already screened it out.
+		//
+		// Tiering: `wb hooks push-tier` reads the same pushed-ref list Git
+		// streams on stdin and decides which of Tier 1 (go vet) and Tier 2
+		// (go test) this exact push needs, printing its decision and reason
+		// on stdout before this script acts on it. Its exit code is the fixed
+		// contract: 0 skips both (a deletion-only or WB checkpoint-ref push),
+		// 1 runs vet only (the fast lane — a feature branch with no open pull
+		// request), 2 runs vet and test (a publication push: the default
+		// branch, a tag, or a branch with an open pull request). Tier 0 — the
+		// base diff-check, worktree admission, and canonical-clone guard
+		// blocks — is a different, always-on layer this script never touches.
 		return `#!/bin/sh
 set -eu
 if [ ! -f go.mod ]; then
     exit 0
 fi
-# A pure remote-ref deletion publishes no Go object. Keep the base,
-# worktree-admission, custom-policy, and metrics blocks active, but do not run
-# publication tests that need compiler caches for a deletion-only push.
-if [ ! -t 0 ]; then
-    saw_update=false
-    deletion_only=true
-    while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
-        if [ -z "$local_ref$local_sha$remote_ref$remote_sha" ]; then
-            continue
-        fi
-        saw_update=true
-        case "$local_sha" in
-            0000000000000000000000000000000000000000|0000000000000000000000000000000000000000000000000000000000000000) ;;
-            *) deletion_only=false ;;
-        esac
-    done
-    if [ "$saw_update" = true ] && [ "$deletion_only" = true ]; then
-        echo "WB hook: remote-ref deletion only; Go publication tests are not applicable."
-        exit 0
-    fi
+tier=2
+set +e
+"$WB_EXECUTABLE" hooks push-tier
+tier=$?
+set -e
+case "$tier" in
+    0|1|2) ;;
+    *)
+        echo "WB hook: push-tier classifier exited $tier unexpectedly; running the full tier (vet + test) as a safe default." >&2
+        tier=2
+        ;;
+esac
+if [ "$tier" -eq 0 ]; then
+    exit 0
 fi
 go vet ./...
-go test ./...
+if [ "$tier" -eq 2 ]; then
+    go test ./...
+fi
 `, true
 	case BuiltinNodePrePush:
 		return `#!/bin/sh
@@ -367,8 +374,29 @@ run_if_present() {
         "$package_manager" run "$script_name"
     fi
 }
+# See the go-pre-push template for the full tiering contract: 'wb hooks
+# push-tier' reads the pushed-ref list from stdin and exits 0 (skip lint and
+# test), 1 (lint only -- the fast lane), or 2 (lint and test -- a publication
+# push). Tier 0 is the separate, always-on base/worktree-admission layer.
+tier=2
+set +e
+"$WB_EXECUTABLE" hooks push-tier
+tier=$?
+set -e
+case "$tier" in
+    0|1|2) ;;
+    *)
+        echo "WB hook: push-tier classifier exited $tier unexpectedly; running the full tier (lint + test) as a safe default." >&2
+        tier=2
+        ;;
+esac
+if [ "$tier" -eq 0 ]; then
+    exit 0
+fi
 run_if_present lint
-run_if_present test
+if [ "$tier" -eq 2 ]; then
+    run_if_present test
+fi
 `, true
 	case BuiltinWorktreeGuard:
 		return `#!/bin/sh

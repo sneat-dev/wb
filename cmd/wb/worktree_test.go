@@ -634,6 +634,7 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 	}
 	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-log-verbs", "acme", "app")
 
+	var checkpointOutput string
 	for _, args := range [][]string{
 		{"--projects-root", projects, "worktree", "log", "init", worktree, "--format", "json"},
 		{"--projects-root", projects, "worktree", "log", "steer", worktree, "--prompt", "next slice", "--format", "json"},
@@ -646,9 +647,47 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 		if code := run(args, &stdout, &stderr); code != exitOK {
 			t.Fatalf("%v failed: code=%d stdout=%s stderr=%s", args, code, stdout.String(), stderr.String())
 		}
+		if args[4] == "checkpoint" {
+			checkpointOutput = stdout.String()
+		}
 	}
 	if strings.Contains(stdout.String(), "mutating verbs journey") {
 		t.Fatalf("log show leaked private prompt body: %s", stdout.String())
+	}
+
+	// The checkpoint verb defaults to pushing refs/wb/checkpoints/<task>;
+	// checkpoint-fetch is the cross-machine retrieval side of that same push,
+	// exercised here end to end through the CLI.
+	var checkpointResult struct {
+		RemoteCheckpoint struct {
+			Ref    string `json:"ref"`
+			SHA    string `json:"sha"`
+			Notice string `json:"notice"`
+		} `json:"remote_checkpoint"`
+	}
+	if err := json.Unmarshal([]byte(checkpointOutput), &checkpointResult); err != nil {
+		t.Fatalf("decode checkpoint output: %v\n%s", err, checkpointOutput)
+	}
+	if checkpointResult.RemoteCheckpoint.Ref != "refs/wb/checkpoints/cli-log-verbs" || checkpointResult.RemoteCheckpoint.Notice != worktrees.NotALandingReceiptNotice {
+		t.Fatalf("checkpoint did not report a remote checkpoint: %+v", checkpointResult)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	fetchArgs := []string{"worktree", "checkpoint-fetch", worktree, "--task", "cli-log-verbs", "--format", "json"}
+	if code := run(fetchArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("checkpoint-fetch failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var fetchResult struct {
+		Ref    string `json:"ref"`
+		SHA    string `json:"sha"`
+		Notice string `json:"notice"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &fetchResult); err != nil {
+		t.Fatalf("decode checkpoint-fetch output: %v\n%s", err, stdout.String())
+	}
+	if fetchResult.SHA != checkpointResult.RemoteCheckpoint.SHA || fetchResult.Notice != worktrees.NotALandingReceiptNotice {
+		t.Fatalf("checkpoint-fetch = %+v, want SHA %s and the not-a-landing-receipt notice", fetchResult, checkpointResult.RemoteCheckpoint.SHA)
 	}
 }
 

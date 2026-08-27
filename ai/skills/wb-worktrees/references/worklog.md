@@ -25,3 +25,30 @@ pass `--apply` to transfer or seal the hybrid claim.
 `log init` also appends the invoking agent/session to the worktree's local
 owner history. Read [ownership.md](ownership.md) for PID liveness and takeover
 triage.
+
+## Remote checkpoints — persist often without paying the full test tax
+
+Unless `--skip-remote` is given, `log checkpoint` also force-pushes the exact
+current HEAD to `refs/wb/checkpoints/<task>` at origin:
+
+```sh
+wb worktree log checkpoint . --message progress
+wb worktree log checkpoint . --message progress --skip-remote
+```
+
+This is a fast, Tier-0-only persistence path: WB's managed pre-push hook
+recognizes the `refs/wb/checkpoints/*` namespace and runs neither lint nor
+test for it, and the namespace never triggers CI. Retrieve a checkpoint from
+another machine with:
+
+```sh
+wb worktree checkpoint-fetch . --task <task>
+```
+
+which lands the commit under the identically named local
+`refs/wb/checkpoints/<task>` ref — never a branch, never checked out
+automatically. **A checkpoint is NOT a landing receipt.** It proves a commit
+reached the remote, never that it merged anywhere. Work is landed only when
+it is merged and pushed to its target branch on origin — never use a
+checkpoint ref, and never bypass Git's own hook enforcement, as a substitute
+for that.

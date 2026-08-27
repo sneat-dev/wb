@@ -54,11 +54,27 @@ Resolve relative templates from the YAML file declaring them. Keep expensive
 E2E work in `pre-push`, not `pre-commit`. Prefer one orchestrating command that
 reuses results over multiple overlapping blocks.
 
-The built-in Go pre-push block skips vet/test only when every update is a
-40- or 64-zero-SHA remote-ref deletion: no Go object is being published. Base,
-worktree, custom, and metrics policy still run. A mixed or ordinary push runs
-the full Go checks. General secure-hook cache and durable metrics authority is
-tracked in WB issue #61; do not treat the deletion rule as that broader fix.
+The built-in Go and Node pre-push blocks are tiered by what is actually being
+pushed, via `wb hooks push-tier` (the base/worktree/custom/metrics Tier 0
+layer above always runs first, regardless of tier):
+
+- **Tier 0** (always, sub-second): base `git diff --check`, worktree
+  admission, canonical-clone guard, custom policy, metrics. Never skippable.
+- **Tier 1** (`go vet` / `lint`): runs on any push that is not a pure
+  remote-ref deletion (40- or 64-zero-SHA) and not confined to the
+  `refs/wb/checkpoints/*` checkpoint namespace.
+- **Tier 2** (`go test` / `test`): runs only on a *publication* push — the
+  default branch, a tag, or a branch with an open pull request. An unresolved
+  PR status (no network, or the bounded `gh` lookup timed out or missed)
+  degrades to Tier 1, never silently up to Tier 2; CI is the real gate for a
+  publication push either way.
+
+Every invocation prints one line naming the tier and the reason. There is no
+Git-hook-bypass escape hatch: Tier 0 is mandatory on every push, including a
+`refs/wb/checkpoints/*` checkpoint push (see `wb worktree log checkpoint` in
+the wb-worktrees skill), which is Tier 0 only by classification, not by
+skipping the hook. General secure-hook cache and durable metrics authority is
+tracked in WB issue #61; do not treat this tiering as that broader fix.
 
 After editing policy:
 
