@@ -762,3 +762,84 @@ func cleanParkedWorktree(path, branch string) sessionpark.Worktree {
 		OwnerEventID:     strings.Repeat("c", 64),
 	}
 }
+
+// registerParkChecklistSession sets up a registered source session in a private
+// WB home so the park command reaches its continuation handling.
+func registerParkChecklistSession(t *testing.T, wbSessionID string) string {
+	t.Helper()
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", home)
+	dir, err := sessionDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.Register(dir, session.Record{
+		PID: os.Getpid(), WBSessionID: wbSessionID, Machine: "test-machine",
+		Runtime: "codex", StartedAt: time.Now().UTC().Add(-time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func TestSessionParkChecklistPromptsJudgmentOnStderrWithoutTouchingStdout(t *testing.T) {
+	home := registerParkChecklistSession(t, "wbs-checklist-park-source")
+	contextPath := filepath.Join(t.TempDir(), "continuation.md")
+	if err := os.WriteFile(contextPath, []byte("carrying the campaign forward\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--context-file", contextPath, "--format", "json"})
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	// stdout must stay exactly the machine-readable record: a prompt that
+	// polluted stdout would break every --format json consumer.
+	var output sessionParkOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatalf("checklist corrupted --format json stdout: %v", err)
+	}
+	if output.ParkedSessionID == "" {
+		t.Fatal("park did not report a parked session ID")
+	}
+	for _, category := range parkJudgmentCategories {
+		if !strings.Contains(stderr.String(), category) {
+			t.Fatalf("stderr is missing judgment category %q", category)
+		}
+		if strings.Contains(stdout.String(), category) {
+			t.Fatalf("judgment category %q leaked into stdout", category)
+		}
+	}
+	// The highest-value category is the one an agent forgets: corrections.
+	if !strings.Contains(stderr.String(), "corrections") {
+		t.Fatal("checklist must prompt for corrections to earlier disproved claims")
+	}
+	_ = home
+}
+
+func TestSessionParkMissingContextFilePromptsJudgmentChecklist(t *testing.T) {
+	registerParkChecklistSession(t, "wbs-checklist-missing-context")
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	command := newSessionParkCmd()
+	command.SetArgs([]string{"--format", "json"})
+	command.SetOut(stdout)
+	command.SetErr(stderr)
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--context-file") {
+		t.Fatalf("park without a continuation error = %v, want a --context-file refusal", err)
+	}
+	for _, category := range parkJudgmentCategories {
+		if !strings.Contains(stderr.String(), category) {
+			t.Fatalf("refusal did not prompt judgment category %q", category)
+		}
+	}
+	if strings.Contains(stdout.String(), "corrections") {
+		t.Fatal("judgment checklist must not be written to stdout")
+	}
+}

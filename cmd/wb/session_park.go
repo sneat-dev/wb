@@ -29,6 +29,33 @@ type sessionParkOutput struct {
 
 var captureParkedSessionAggregate = worktrees.CaptureParkedSessionAggregate
 
+// parkJudgmentCategories are the non-derivable halves of a parked session.
+// WB derives every observable fact itself (branch, HEAD, dirty paths, claims,
+// owners) and refuses to replay a stale claim as current state, so the only
+// thing an agent must supply is judgment WB cannot observe. These categories
+// are a prompt, never a schema: they are printed to stderr so an agent notices
+// an omission, and are never parsed, required section-by-section, or written
+// into the continuation artifact. Structure that gets filled in with "n/a" is
+// worse than prose.
+var parkJudgmentCategories = []string{
+	"why anything was left uncommitted (a correct fix whose proving test is unwritten is not a finished fix)",
+	"ordering constraints proven the hard way, and what proved them",
+	"what is blocked on a human decision, and the exact question being asked",
+	"which lanes were dispatched, against which repos, and what each was told",
+	"corrections: claims made earlier this session that were later disproved",
+}
+
+// writeParkJudgmentChecklist prints the judgment prompt to stderr. It never
+// goes to stdout: stdout carries the parked-session record, and on --format
+// json it must stay machine-readable.
+func writeParkJudgmentChecklist(command *cobra.Command, lead string) {
+	out := command.ErrOrStderr()
+	fmt.Fprintln(out, lead)
+	for _, category := range parkJudgmentCategories {
+		fmt.Fprintf(out, "  - %s\n", category)
+	}
+}
+
 func newSessionParkCmd() *cobra.Command {
 	var contextFile, format string
 	command := &cobra.Command{
@@ -108,6 +135,10 @@ func newSessionParkCmd() *cobra.Command {
 				return err
 			}
 			out := sessionParkOutput{ParkedSessionID: id, Status: string(sessionpark.StatusParked), MemberCount: len(owned)}
+			// The continuation is immutable once parked, so this is a
+			// verification prompt rather than an invitation to edit: a
+			// re-park with different continuation is refused by design.
+			writeParkJudgmentChecklist(command, "parked. Continuation is now immutable; confirm it records:")
 			if format == "json" {
 				enc := json.NewEncoder(command.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -530,6 +561,7 @@ func ownedBySession(result worktrees.ListResult, source session.Record) bool {
 func readParkContext(command *cobra.Command, path string) ([]byte, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
+		writeParkJudgmentChecklist(command, "park requires an agent-authored continuation. WB derives observable state itself; record what it cannot observe:")
 		return nil, fmt.Errorf("park requires --context-file; use - to read stdin")
 	}
 	if path == "-" {
