@@ -26,7 +26,9 @@ credential (`SYNCHESTRA_TOKEN` appeared only as an environment-variable name),
 and it was deleted (PR #201, `sneat-dev/wb`). Two things followed in the same
 session:
 
-1. A narrow, already-landed fix (branch `fix/session-move-private-handover`):
+1. A narrow, already-landed fix (branch `fix/session-move-private-handover`,
+   merged to `sneat-dev/wb` `main` as PR #202,
+   `9c2c0f717333de61c560b99694a5f3fe6b4fb15f`):
    `wb session move` no longer writes the handover into the repo under work at
    all. The rendered document now travels inline on a new
    `sessionmove.Request.HandoverContent` field, gets materialized as a private
@@ -68,6 +70,31 @@ interim fix) but still only supports one repo per handoff, where park's
 other has, and both would benefit from one shared, once-hardened
 implementation of the parts that are genuinely the same problem.
 
+### What remains unmerged today
+
+So a cold reader does not assume more has already happened than has: as of
+the interim fix (PR #202) plus PR #201, **none of the following is unified
+yet** — this Idea's Recommended Direction below is what would unify them,
+none of it is implemented:
+
+- **Storage.** `wb session park` still writes to a private local file under
+  `~/.wb/parked-sessions/…` and moves it to the resuming machine over direct
+  SSH (`~/.wb/park-resumes/…`). `wb session move`'s interim fix stores in its
+  own local `sessionmove.Store`. Neither uses a durable, git-backed,
+  third-machine-reachable store yet.
+- **Content schema.** Move's structured Markdown document and park's flat
+  opaque `Continuation` string remain two independent shapes; nothing has
+  been generalized into one schema yet.
+- **Shared package.** No shared store/reader package exists yet; move and
+  park each still call their own storage and materialization code.
+- **Config.** No new `continuations`-style config key exists; `wb remote`'s
+  existing `remote.repo` (state) key is untouched by the interim fix.
+- **Privacy-mode switch.** The `repo` vs. `local-only` config-level choice
+  described under Open Questions does not exist yet — there is no switch
+  because there is no repo-backed store yet to switch to.
+- **`sneat-dev/wb-handoffs`.** The repository exists and is private, per
+  founder provisioning, but is currently empty — nothing publishes to it yet.
+
 ### The trap this Idea's implementer must not fall into again
 
 `internal/sessionlaunch/private.go`'s `verifyLauncherWorktree` is the exec-time
@@ -99,6 +126,92 @@ binary must still be able to decode and complete it by reading the legacy
 path from the pinned worktree, exactly as before. Only revisit deleting
 `ContinuationTracked` once no un-replayed pre-cutover handoff can plausibly
 exist anywhere in the fleet — not as part of this Idea, and not casually.
+
+## Journey
+
+Both `wb session move` and `wb session park` are the same underlying act —
+one agent handing a task to a successor — differing only in *when* the
+successor picks it up. The journey below walks both branches from a single
+shared start, because that shared premise is exactly what this Idea's
+storage unification is for.
+
+1. **Start (shared).** An agent is mid-task in one or more WB-managed
+   worktrees and needs to hand off — either right now, to a successor it can
+   watch start, or later, to whoever picks it up next, possibly on hardware
+   that doesn't exist yet. Observable good result: nothing has moved yet; the
+   predecessor still holds custody of every worktree in its Session, and a
+   person watching sees ordinary, uninterrupted agent work.
+
+2. **Branch A — immediate torch-pass (`wb session move`).**
+   a. The predecessor runs `wb session move` naming a target. Observable good
+      result: within that one command's lifetime, a person watching sees a
+      successor process start on the target, already inside the correct
+      pinned worktree(s), already narrating the same task the predecessor was
+      on — no separate manual re-briefing step in between.
+      *(Anticipated task 6 — move points its `HandoverContent` at the shared
+      store; will carry its own `Verifies:` once specified.)*
+   b. The successor's launcher receives the continuation via
+      `sessionauthority.ContinuationPrivate` /
+      `WB_SESSION_CONTINUATION_FILE` — never a re-read of anything committed
+      into the worktree. Observable good result: the target repo's Git
+      history gains no new commit anywhere containing the continuation text,
+      and `internal/sessionlaunch/private.go`'s exec-time check is the thing
+      that actually ran, not a path a future refactor quietly bypassed.
+      *(Anticipated task 4's exec-time integration test pattern, generalized
+      to move's read path.)*
+   c. The predecessor releases custody only once it holds a durable receipt
+      that the successor is alive. Observable good result: querying
+      source-side state mid-handoff shows custody still with the
+      predecessor; only after the receipt lands does it show the successor's
+      session — there is no window where a person can observe custody as
+      simultaneously nowhere or ambiguous.
+   **Terminal good result for Branch A:** the successor is actually doing the
+   work — new commits or new interactive output are visibly flowing from the
+   successor's session — and the predecessor process is gone.
+
+3. **Branch B — delayed resume (`wb session park`).**
+   a. The agent runs `wb session park`. Observable good result: the terminal
+      returns control to whoever's watching, the parked bundle now exists
+      somewhere durable, and the originating machine is free to go away —
+      sleep, reboot, get wiped — without anything depending on it staying up.
+   b. **Null-action step.** Nobody does anything with the parked session for
+      a while — no successor runs, no predecessor runs, the origin machine
+      may be powered off entirely. Observable good result: time passes
+      (minutes, hours, days) and the parked session is simply unchanged;
+      nothing decays, nothing needs to be kept alive to remain valid, and a
+      listing command still reports it as resumable exactly as it did the
+      moment it was parked.
+   c. Later, from a machine that is **not** the one that parked it, someone
+      runs the resume command. Observable good result: the successor lands
+      in the correct pinned worktree(s) and receives the same continuation
+      content an immediate torch-pass would have delivered on Branch A — the
+      delay changed nothing about what arrives.
+      *(Anticipated task 4 — park's cutover to the shared store and reader.)*
+   d. That resuming machine never spoke to the origin machine to do this —
+      the origin may be gone, offline, or decommissioned by the time resume
+      happens. Observable good result, **and this is the terminal state that
+      does not exist today:** resume succeeds purely by fetching from the
+      durable `wb-handoffs` store; no SSH reachability to the origin, or to
+      any machine that ever touched this session, is required.
+      *(Anticipated task 5 — the third-machine resume integration test —
+      plus the new Docker journey test in Validation Strategy below, which
+      is the one that proves this end to end rather than as an isolated
+      fixture.)*
+   **Terminal good result for Branch B:** a parked session survives its
+   origin machine and is resumed, correctly, from a third machine that never
+   spoke to the origin. Every other property in this journey already exists
+   in one protocol or the other today; this is the one property neither
+   protocol has, and the one this Idea's MVP has to newly deliver.
+
+4. **Divergent epilogues (either branch).**
+   - **Closes.** The successor finishes the task. The Session terminates
+     cleanly; a person checking custody/Work Log state afterward sees no
+     dangling claim on either the origin or any intermediate machine.
+   - **Shares/replays.** The successor itself later hands off again — moves
+     or parks in turn. Observable good result: the same journey composes at
+     arbitrary depth (a second parked bundle, a second resume, and so on)
+     with no step anywhere depending on the first origin machine still being
+     reachable.
 
 ## Recommended Direction
 
@@ -167,6 +280,68 @@ machines separate. Concretely:
    recorded here so whoever writes it later inherits it rather than
    discovering it the hard way.
 
+## Validation Strategy
+
+The founder's requirement, in his words: the implementer must validate this
+both ways — from this MacBook to the Hetzner VM and back — the same way the
+handoff work was validated, and where possible, automate the journey so it
+does not depend on a person remembering to re-run a manual checklist. That
+gives this Idea two validation tiers, with distinct roles. Neither
+substitutes for the other.
+
+### Tier 1 — automated Docker journey test (primary, CI gate)
+
+Two containers stand in for two machines and exercise the full Journey above
+end to end, on every change: Branch A (immediate torch-pass), Branch B
+(delayed resume, including the null-action step — the parked container's
+session sits untouched for a beat before a *different* container resumes
+it), and the terminal Branch B property — the resuming container has no
+network path back to the container that parked it.
+
+This test must assert the **mechanism**, not just the outcome. "The
+successor started" is not sufficient for a continuation-delivery feature —
+the assertion has to show the successor received the *right* continuation
+content *through the intended path*: read from `wb-handoffs` via the shared
+reader, materialized as a 0600 `ContinuationPrivate` file, handed over via
+`WB_SESSION_CONTINUATION_FILE` — not a fluke of some other channel still
+being open, and not a stale copy left over from local disk.
+
+This is real engineering in its own right — image build, SSH (or equivalent)
+between containers, key material handling, deterministic teardown so runs
+don't leak state into each other — and should be scoped, budgeted, and
+verified as **its own anticipated task with its own `Verifies:`** (task 8
+below), not a bullet folded into another task's acceptance criteria. If it
+turns out disproportionately expensive relative to the rest of this Idea's
+MVP, that is a trade-off to surface to the founder explicitly, not to quietly
+absorb by cutting corners on the containers, the assertions, or the two
+branches covered.
+
+### Tier 2 — real MacBook ↔ Hetzner VM walk, both directions (one-time acceptance)
+
+Required as a real-hardware acceptance step, not a suggestion, exactly as the
+handoff work was validated: once **this MacBook → the Hetzner VM**, and once
+**the Hetzner VM → back to this MacBook**. Both directions are required
+because a one-way pass can be green while the reverse path is broken by an
+asymmetry Docker cannot see: real SSH config differences between the two
+specific machines, PATH differences, and which side holds custody. **`wb`
+version skew between the two machines is itself a live risk worth calling
+out explicitly** — nothing guarantees both sides are running the same build
+during this walk, and a skew-induced failure would look identical to a
+protocol bug from the outside.
+
+One specific, previously time-costly gotcha to build into any scripted
+invocation: on the Hetzner VM, `wb` lives at `~/go/bin/wb` and is **not on
+the SSH PATH** — a bare `ssh <vm> wb ...` will fail to find it. Any scripted
+step of this walk must use the full path.
+
+State the reasoning plainly so a later reader does not "simplify" this away
+once Tier 1 is green: **a container pair is a model of two machines, not two
+machines.** The Docker journey test proves the protocol; the real-machine
+walk proves the deployment. Re-run Tier 2 whenever the transport layer
+changes (SSH/Synchestra courier changes, config-key changes, a `wb` release
+that touches session move/park) — it is not a one-and-done checkbox that
+stays valid forever once passed.
+
 ## Alternatives Considered
 
 - **Keep `wb session move` on `ContinuationPrivate` alone, leave `wb session
@@ -202,6 +377,13 @@ merging their state machines. `wb session move` itself does not need to
 change again in the MVP beyond pointing its already-inline `HandoverContent`
 at the new shared store instead of (or in addition to) WB's local
 `sessionmove.Store`.
+
+The MVP is not done when the code merges and unit tests pass. It is done
+when the Journey above can actually be walked for both branches, and both
+tiers in Validation Strategy pass: the automated Docker journey test (Branch
+A, Branch B including the null-action step, and the no-network-path
+third-machine assertion) is green, and the real MacBook↔Hetzner-VM walk has
+succeeded in both directions.
 
 ## Not Doing (and Why)
 
@@ -290,6 +472,25 @@ intended shape immediately.
 7. **PR description states explicitly why the two custody/lifecycle state
    machines were not merged** (Recommended Direction point 6), so a future
    reader doesn't "simplify" them together.
+8. **Automated Docker journey test.** Given two containers standing in for
+   two machines with no shared filesystem, when the full Journey above is
+   driven end to end against them — Branch A torch-pass, Branch B park →
+   null-action pause → resume from a *different* container with no network
+   path to the parking container — then every stage's observable good result
+   holds, and the assertions verify the successor received its continuation
+   through the shared reader (`wb-handoffs` fetch → digest verify →
+   `ContinuationPrivate` materialize → `WB_SESSION_CONTINUATION_FILE`), not
+   merely that a successor process started. This is its own task, scoped and
+   budgeted independently (see Validation Strategy) — do not fold it into
+   task 4 or task 5's acceptance criteria.
+9. **Real MacBook ↔ Hetzner VM walk, both directions.** Given the fully
+   cut-over implementation, when the walk is run once this-MacBook→VM and
+   once VM→this-MacBook (any scripted VM-side invocation using the VM's full
+   `~/go/bin/wb` path, since it is not on the SSH PATH), then both directions
+   complete with no asymmetry in custody, delivery, or `wb` version between
+   the two machines. Required as real-hardware acceptance in addition to
+   task 8, not instead of it (see Validation Strategy); re-run whenever the
+   transport layer changes.
 
 ## Open Questions
 
