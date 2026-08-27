@@ -463,6 +463,19 @@ func TestPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail(t *testi
 	if landing, merged, err := pullRequestLandingReceipt(context.Background(), refreshed, WorktreeMergeLandOptions{Timeout: time.Second}); err != nil || merged || landing != "" {
 		t.Fatalf("open PR at recorded predecessor was not accepted for additive repair: landing=%q merged=%t err=%v", landing, merged, err)
 	}
+	refreshed.Status = WorktreeMergeValidationFailed
+	if err := persistWorktreeMergeReceipt(refreshed); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retried.Candidate.SHA != refreshed.Candidate.SHA || retried.PullRequest != refreshed.PullRequest || retried.PublishedCandidateSHA != refreshed.PublishedCandidateSHA {
+		t.Fatalf("same-source validation retry lost exact candidate or published PR identity: refreshed=%+v retried=%+v", refreshed, retried)
+	}
 }
 
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
