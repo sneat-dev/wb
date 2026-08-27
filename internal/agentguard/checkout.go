@@ -149,7 +149,7 @@ func canonicalCoordinates(projectsRoot, root string) (owner, repository string, 
 				continue
 			}
 			parts := strings.Split(filepath.ToSlash(relative), "/")
-			if len(parts) != 2 || !validSegment(parts[0]) || !validSegment(parts[1]) {
+			if len(parts) != 2 || !validOwnerSegment(parts[0]) || !validRepositorySegment(parts[1]) {
 				continue
 			}
 			return parts[0], parts[1], true
@@ -173,17 +173,22 @@ func pathVariants(path string) []string {
 	return variants
 }
 
-// validSegment rejects a path component that cannot be an owner or repository
-// name, so `<projects-root>/.wb/worktrees` and similar internal directories
-// never read as a repository coordinate.
-func validSegment(segment string) bool {
-	if segment == "" || segment == "." || segment == ".." {
-		return false
-	}
-	if strings.HasPrefix(segment, ".") {
-		return false
-	}
-	return true
+// validOwnerSegment rejects a directory that cannot be a GitHub owner. The
+// dot-prefix rule lives here and not on the repository half: it exists to keep
+// WB's own `<projects-root>/.wb` hierarchy from reading as a repository
+// coordinate, and no real owner is dot-prefixed.
+func validOwnerSegment(segment string) bool {
+	return validRepositorySegment(segment) && !strings.HasPrefix(segment, ".")
+}
+
+// validRepositorySegment rejects a directory that cannot be a repository name.
+//
+// A dot-prefixed repository IS legitimate: `<owner>/.github` is a real
+// repository every organisation has, and WB clones it under the projects root
+// like any other. Refusing it left thirteen canonical clones on this fleet
+// unguarded and unmarked.
+func validRepositorySegment(segment string) bool {
+	return segment != "" && segment != "." && segment != ".."
 }
 
 // absolutePath makes a tool-supplied path absolute, expanding a leading ~.
