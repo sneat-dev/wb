@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -212,7 +213,7 @@ func Compose(inputs Inputs, now time.Time) (Receipt, error) {
 	if err := validateDeployedRevision(inputs.DeployedRevision, repository, revision); err != nil {
 		return Receipt{}, fmt.Errorf("deployed-revision evidence: %w", err)
 	}
-	if err := validateTerminalCleanup(inputs.TerminalCleanup, repository, revision); err != nil {
+	if err := validateTerminalCleanup(inputs.TerminalCleanup, repository, inputs.CIWait.Target, revision); err != nil {
 		return Receipt{}, fmt.Errorf("terminal-cleanup evidence: %w", err)
 	}
 	for name, digest := range map[string]string{
@@ -271,7 +272,8 @@ func localCheckRepository(evidence VerificationIndex) string {
 
 func validateCIWait(evidence CIWaitReceipt, repository string) error {
 	result := evidence.PullRequestWaitResult
-	if evidence.SchemaVersion != SchemaVersion || evidence.ObservedAt.IsZero() || result.Status != orchestrate.PullRequestWaitPassed || result.Repository != repository || result.PullRequest != "" || !gitRevision.MatchString(result.Head) || result.ObservedHead != result.Head || result.StableObservations < 2 || !nonBlank(result.RequiredChecksAuthority) || !nonBlank(result.Target) || len(result.Checks) == 0 {
+	if evidence.SchemaVersion != SchemaVersion || evidence.ObservedAt.IsZero() || result.Status != orchestrate.PullRequestWaitPassed || result.Repository != repository || result.PullRequest != "" || !gitRevision.MatchString(result.Head) || result.ObservedHead != result.Head || result.ObservedTargetHead != result.Head ||
+		!result.CandidateContainsTarget || result.StableObservations < 2 || !nonBlank(result.RequiredChecksAuthority) || !nonBlank(result.Target) || len(result.Checks) == 0 {
 		return fmt.Errorf("must be a schema v1 passed wb ci wait JSON receipt for the exact observed head")
 	}
 	passed := false
@@ -293,6 +295,39 @@ func validateRemoteTarget(evidence RemoteTargetEvidence, repository, target, rev
 	}
 	if evidence.ObservedOutput != evidence.Revision+"\t"+evidence.TargetRef+"\n" || evidence.ObservedOutputSHA256 != Digest([]byte(evidence.ObservedOutput)) {
 		return fmt.Errorf("git ls-remote payload or digest conflicts with target identity")
+	}
+	if err := ValidateRemoteURL(repository, evidence.RemoteURL); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateRemoteURL binds the recorded remote URL to the repository the
+// receipt claims to graduate. Without it remote_url is an unchecked
+// free-text field: any string satisfies a non-blank test, so a receipt can
+// name one repository while citing a remote that publishes another. The
+// check is host-neutral by construction — gitremote.Parse already rejects
+// embedded credentials, query strings, fragments, encoded paths, and
+// option-like arguments on every supported host, so WB does not need to know
+// which forge served the remote in order to prove its identity.
+func ValidateRemoteURL(repository, raw string) error {
+	remote, err := gitremote.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("remote URL is not one safe credential-free Git remote: %w", err)
+	}
+	// A local or file:// remote proves nothing about publication: the
+	// revision may exist only on this machine.
+	host := remote.Identity.Host()
+	if host == "" {
+		return fmt.Errorf("remote URL must be a hosted remote, not a local path")
+	}
+	// An explicit port is a non-canonical spelling of an otherwise
+	// trustworthy-looking host, so it is refused rather than resolved.
+	if strings.Contains(host, ":") {
+		return fmt.Errorf("remote URL must not carry an explicit port")
+	}
+	if remote.Identity.Repository != repository {
+		return fmt.Errorf("remote URL identifies %s, not the graduated repository %s", remote.Identity.Repository, repository)
 	}
 	return nil
 }
@@ -317,7 +352,7 @@ func validateDeployedRevision(evidence DeployedRevisionEvidence, repository, rev
 	return nil
 }
 
-func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, revision string) error {
+func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, target, revision string) error {
 	if evidence.Phase != "applied" || !evidence.Apply || !evidence.DeleteRemote || !nonBlank(evidence.Task) || evidence.GeneratedAt.IsZero() || len(evidence.Results) == 0 || len(evidence.Diagnostics) != 0 {
 		return fmt.Errorf("must be an applied wb worktree cleanup --remote report")
 	}
@@ -329,7 +364,7 @@ func validateTerminalCleanup(evidence TerminalCleanupEvidence, repository, revis
 		}
 		seen[result.Repository] = true
 		remoteAbsent := result.RemoteDeleted || result.RemoteHeadSHA == ""
-		if !gitRevision.MatchString(result.HeadSHA) || !result.Eligible || !result.Clean || !result.Applied || !result.WorktreeGone || !result.BranchDeleted || !remoteAbsent || result.WorktreeDir == result.CanonicalDir {
+		if !gitRevision.MatchString(result.HeadSHA) || !result.Eligible || !result.Clean || !result.Applied || !result.WorktreeGone || !result.BranchDeleted || !remoteAbsent || result.WorktreeDir == result.CanonicalDir || result.Branch == target {
 			return fmt.Errorf("campaign worktree %s lacks terminal WB cleanup evidence", result.Repository)
 		}
 		if result.Repository == repository {
