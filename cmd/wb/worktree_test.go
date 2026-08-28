@@ -120,6 +120,13 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	}
 }
 
+func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {
+	command := newWorktreeCleanupCmd()
+	if err := command.Args(command, []string{"landed-app", "landed-lib"}); err != nil {
+		t.Fatalf("cleanup should accept an exact set of task names: %v", err)
+	}
+}
+
 // TestWorktreeCleanupRetireShellsRejectsIncompatibleSelectors proves
 // --retire-shells sweeps every task on its own: it cannot be pointed at one
 // named task or combined with --all-merged, both of which select worktrees

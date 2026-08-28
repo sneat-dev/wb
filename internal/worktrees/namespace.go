@@ -60,7 +60,7 @@ func removeEmptyTaskDirectory(task *cleanupTaskHandle) bool {
 // that would have selected them are long gone. Discovery is read-only and
 // happens before any apply, so a namespace a concurrent `wb worktree create`
 // makes after this scan can never appear in the list an apply acts on.
-func emptyTaskNamespaces(layouts []wbhome.Layout, task, filter string) ([]LifecycleArtifact, error) {
+func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter string) ([]LifecycleArtifact, error) {
 	artifacts := make([]LifecycleArtifact, 0)
 	seen := make(map[string]bool, len(layouts))
 	for _, layout := range layouts {
@@ -80,7 +80,7 @@ func emptyTaskNamespaces(layouts []wbhome.Layout, task, filter string) ([]Lifecy
 			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 				continue
 			}
-			if task != "" && entry.Name() != task {
+			if !taskSelectionMatches(tasks, entry.Name()) {
 				continue
 			}
 			// A malformed task directory name is already reported as its own

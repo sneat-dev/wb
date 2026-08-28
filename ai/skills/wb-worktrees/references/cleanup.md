@@ -176,23 +176,25 @@ against the exact origin target you name, and nothing else.
 
 ```sh
 wb worktree cleanup <task>
+wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
 wb worktree cleanup --all-merged
 wb worktree cleanup --all-merged --older-than 0
 wb worktree cleanup --all-merged --format json
 wb --filter acme worktree cleanup --all-merged
 ```
 
-`cleanup` requires exactly one of a named task or `--all-merged`; the two
-cannot be combined. A named task defaults to immediate eligibility
+`cleanup` requires one or more named tasks or `--all-merged`; the two cannot
+be combined. Named tasks default to immediate eligibility
 (`--older-than 0`) because that is its terminalization journey; `--all-merged`
 keeps a 24-hour merged-PR grace window unless `--older-than` overrides it.
 
-For a named task, `--apply` **refuses without `--remote`**: definition of done
+For named tasks, `--apply` **refuses without `--remote`**: definition of done
 includes retiring the source remote branch, not only the local worktree and
 branch.
 
 ```sh
 wb worktree cleanup <task> --apply --remote --older-than 0
+wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
 ```
 
 Full flag surface: `--base`, `--all-merged`, `--apply`, `--remote`,

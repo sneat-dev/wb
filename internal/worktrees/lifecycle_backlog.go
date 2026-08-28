@@ -220,7 +220,7 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	return nil
 }
 
-func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, task, filter, disposition string) ([]lifecycleBacklogRecord, error) {
+func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string) ([]lifecycleBacklogRecord, error) {
 	directory, err := openLifecycleBacklogDirectory(home, false)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
 		return nil, nil
@@ -253,7 +253,7 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) || !allowedRoots[filepath.Clean(record.WorktreesRoot)] {
 			continue
 		}
-		if task != "" && record.Task != task || !filterMatches(filter, record.Repository) {
+		if !taskSelectionMatches(tasks, record.Task) || !filterMatches(filter, record.Repository) {
 			continue
 		}
 		switch record.Stage {

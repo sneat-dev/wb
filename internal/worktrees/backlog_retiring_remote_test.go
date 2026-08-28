@@ -55,7 +55,7 @@ func TestRetiringRemoteBacklogIsResumable(t *testing.T) {
 
 	found, err := loadResumableLifecycleBacklog(
 		context.Background(), fixture.home, fixture.projectsRoot,
-		[]string{filepath.Join(fixture.home, "worktrees")}, record.Task, "", "removed",
+		[]string{filepath.Join(fixture.home, "worktrees")}, taskSelectionSet([]string{record.Task}), "", "removed",
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -122,7 +122,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		for _, layout := range resolution.Read {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}
-		backlog, err = loadResumableLifecycleBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, task, "", string(AbortDiscarded))
+		backlog, err = loadResumableLifecycleBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, taskSelectionSet([]string{task}), "", string(AbortDiscarded))
 		if err != nil {
 			return nil, err
 		}
