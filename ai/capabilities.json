@@ -5857,6 +5857,7 @@
             {
               "path": "wb worktree abort",
               "flags": [
+                "--all",
                 "--apply",
                 "--base",
                 "--cli",
@@ -5869,6 +5870,7 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
                 "handoff/not_landed require a creator-declared successor model and preserve independent optional CLI/provider route identity",
                 "a durable post-removal backlog resumes exact local-ref retirement after interruption"
               ]
@@ -5887,6 +5889,7 @@
                 "--cli",
                 "--provider",
                 "--remote",
+                "--all",
                 "resumable",
                 "discarded"
               ]
