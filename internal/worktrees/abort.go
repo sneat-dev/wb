@@ -33,7 +33,11 @@ type AbortOptions struct {
 	// silently, its own ineligibility (if any) never blocks the repositories
 	// Filter did select, and it is left completely untouched: the task
 	// remains non-terminal until a later abort call resolves it too.
-	Filter      string
+	Filter string
+	// All acknowledges that this invocation intentionally applies a terminal
+	// disposition to every member of a coordinated task. Multi-repository
+	// tasks otherwise require an explicit member filter.
+	All         bool
 	Disposition AbortDisposition
 	Successor   string
 	// SuccessorIdentity is the caller's explicit execution identity declaration
@@ -153,6 +157,9 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			External: record.External,
 		}, Disposition: AbortDiscarded, Eligible: true, Excluded: excluded, WorktreeGone: true,
 			BacklogID: record.ID, Reason: "durable cleanup backlog awaiting exact local branch retirement"})
+	}
+	if len(results) > 1 && filter == "" && !options.All {
+		return results, fmt.Errorf("task %q has %d repositories; select a member with --filter or acknowledge every member with --all", task, len(results))
 	}
 	// A malformed candidate outside the active --filter selection describes a
 	// repository this run already leaves untouched; it must never block the
@@ -457,6 +464,9 @@ func abortRepositoryExcludedByFilter(filter, repository, worktreeDir string) boo
 // --filter existed.
 func firstFilterMatchingDiagnosticPath(filter string, diagnostics []ListDiagnostic) string {
 	for _, diagnostic := range diagnostics {
+		if diagnostic.NonBlocking {
+			continue
+		}
 		if filterMatches(filter, diagnostic.Path) {
 			return diagnostic.Path
 		}
