@@ -518,8 +518,8 @@ func TestGoReleaserUsesCompatibleDarwinLinkerFlagsOnly(t *testing.T) {
 			t.Fatalf("wb Darwin override goarch = %q, want amd64 or arm64", override.Goarch)
 		}
 		seenArch[override.Goarch] = true
-		if got := strings.Join(override.Ldflags, " "); got != "-s -w -macos=12.0 -macsdk=12.1" {
-			t.Fatalf("wb Darwin %s ldflags = %q, want -s -w -macos=12.0 -macsdk=12.1", override.Goarch, got)
+		if got := strings.Join(override.Ldflags, " "); got != "-s -w -macos=13.0 -macsdk=13.0" {
+			t.Fatalf("wb Darwin %s ldflags = %q, want -s -w -macos=13.0 -macsdk=13.0", override.Goarch, got)
 		}
 	}
 	if !seenArch["amd64"] || !seenArch["arm64"] {
