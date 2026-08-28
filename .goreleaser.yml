@@ -20,6 +20,20 @@ builds:
       - arm64
     ldflags:
       - -s -w
+    # Go 1.27's Darwin linker defaults to a newer deployment target and SDK
+    # than the macOS versions used by WB's supported runners. Keep these
+    # compatibility flags scoped to Darwin; Linux must use the base flags.
+    # GoReleaser replaces, rather than appends, ldflags in an override, so
+    # repeat -s -w here.
+    overrides:
+      - goos: darwin
+        goarch: amd64
+        ldflags:
+          - -s -w -macos=12.0 -macsdk=12.1
+      - goos: darwin
+        goarch: arm64
+        ldflags:
+          - -s -w -macos=12.0 -macsdk=12.1
 
 archives:
   - id: wb

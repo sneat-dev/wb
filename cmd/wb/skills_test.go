@@ -456,6 +456,75 @@ func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
 	if strings.Contains(string(releaseContents), "- go mod tidy\n") {
 		t.Fatalf("%s mutates source before stamping release artifacts", releasePath)
 	}
+	releaseWorkflowPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
+	releaseWorkflowContents, err := os.ReadFile(releaseWorkflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(releaseWorkflowContents), "uses: strongo/cicd/.github/workflows/release.yml@v1.14.11") {
+		t.Fatalf("%s must pin the shared strongo/cicd release workflow to v1.14.11", releaseWorkflowPath)
+	}
+}
+
+func TestGoReleaserUsesCompatibleDarwinLinkerFlagsOnly(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	releasePath := filepath.Join(repoRoot, ".goreleaser.yml")
+	contents, err := os.ReadFile(releasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Builds []struct {
+			ID        string   `yaml:"id"`
+			Ldflags   []string `yaml:"ldflags"`
+			Overrides []struct {
+				Goos    string   `yaml:"goos"`
+				Goarch  string   `yaml:"goarch"`
+				Ldflags []string `yaml:"ldflags"`
+			} `yaml:"overrides"`
+		} `yaml:"builds"`
+	}
+	if err := yaml.Unmarshal(contents, &config); err != nil {
+		t.Fatalf("parse %s: %v", releasePath, err)
+	}
+	wbBuildIndex := -1
+	for i := range config.Builds {
+		if config.Builds[i].ID == "wb" {
+			wbBuildIndex = i
+			break
+		}
+	}
+	if wbBuildIndex < 0 {
+		t.Fatalf("%s has no wb build", releasePath)
+	}
+	wbBuild := config.Builds[wbBuildIndex]
+	if strings.Join(wbBuild.Ldflags, " ") != "-s -w" {
+		t.Fatalf("base wb ldflags = %q, want exactly -s -w", wbBuild.Ldflags)
+	}
+	for _, flag := range wbBuild.Ldflags {
+		if strings.Contains(flag, "-macos=") || strings.Contains(flag, "-macsdk=") {
+			t.Fatalf("base wb ldflags must not contain Darwin-only flags: %q", flag)
+		}
+	}
+	if len(wbBuild.Overrides) != 2 {
+		t.Fatalf("wb Darwin overrides = %d, want one for each Darwin architecture", len(wbBuild.Overrides))
+	}
+	seenArch := map[string]bool{}
+	for _, override := range wbBuild.Overrides {
+		if override.Goos != "darwin" {
+			t.Fatalf("wb override goos = %q, want darwin", override.Goos)
+		}
+		if override.Goarch != "amd64" && override.Goarch != "arm64" {
+			t.Fatalf("wb Darwin override goarch = %q, want amd64 or arm64", override.Goarch)
+		}
+		seenArch[override.Goarch] = true
+		if got := strings.Join(override.Ldflags, " "); got != "-s -w -macos=12.0 -macsdk=12.1" {
+			t.Fatalf("wb Darwin %s ldflags = %q, want -s -w -macos=12.0 -macsdk=12.1", override.Goarch, got)
+		}
+	}
+	if !seenArch["amd64"] || !seenArch["arm64"] {
+		t.Fatalf("wb Darwin overrides must cover amd64 and arm64, got %v", seenArch)
+	}
 }
 
 // TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne Checked-in

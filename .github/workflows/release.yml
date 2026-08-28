@@ -54,7 +54,7 @@ concurrency:
 
 jobs:
   release:
-    uses: strongo/cicd/.github/workflows/release.yml@v1
+    uses: strongo/cicd/.github/workflows/release.yml@v1.14.11
     permissions:
       contents: write
     with:
