@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Fleet, process, or governance work → sneat-co/backstage
+    url: https://github.com/sneat-co/backstage/issues/new/choose
+    about: Use Backstage when the change spans repositories or concerns Sneat Co. fleet process.
+  - name: One repository must change
+    url: https://github.com/search?type=repositories
+    about: Search GitHub, then file the issue in the repository that owns the code, test, documentation, packaging, or release change.
