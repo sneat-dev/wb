@@ -242,6 +242,37 @@ func TestRetireTaskShellsPreservesReservedStageEntry(t *testing.T) {
 	}
 }
 
+func TestRetireTaskShellsRetiresEmptyRetiredStageButPreservesEvidence(t *testing.T) {
+	projectsRoot, worktreesRoot := setUpShellRetirementFixture(t)
+	emptyTask := filepath.Join(worktreesRoot, "discarded-empty-stage")
+	emptyStage := filepath.Join(emptyTask, ".wb-retired-stage-0123456789abcdef")
+	if err := os.MkdirAll(emptyStage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	nonemptyTask := filepath.Join(worktreesRoot, "discarded-nonempty-stage")
+	nonemptyStage := filepath.Join(nonemptyTask, ".wb-retired-stage-fedcba9876543210")
+	if err := os.MkdirAll(nonemptyStage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonemptyStage, "evidence"), []byte("preserve\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := RetireTaskShells(context.Background(), RetireShellsOptions{ProjectsRoot: projectsRoot, Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 2 || !outcome.Results[0].Eligible || !outcome.Results[0].Applied {
+		t.Fatalf("empty retired stage did not retire to zero: %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(emptyTask); !os.IsNotExist(statErr) {
+		t.Fatalf("empty retired-stage task remains invisible to sweep: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(nonemptyStage, "evidence")); statErr != nil {
+		t.Fatalf("non-empty retired-stage evidence was removed: %v", statErr)
+	}
+}
+
 // TestRetireTaskShellsFilterNarrowsTheSweep matches the --filter behavior of
 // every other WB fleet sweep: an unmatched task is invisible to the run.
 func TestRetireTaskShellsFilterNarrowsTheSweep(t *testing.T) {

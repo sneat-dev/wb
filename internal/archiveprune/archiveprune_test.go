@@ -322,6 +322,7 @@ func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	mustMkdirAll(t, claimDir)
 	claim := map[string]any{
+		"claim_id":   "claim",
 		"repository": f.slug(),
 		"task":       "some-task",
 		"worktree":   "/wherever/it/was",
@@ -352,6 +353,7 @@ func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	mustMkdirAll(t, claimDir)
 	claim := map[string]any{
+		"claim_id":   "claim",
 		"repository": f.slug(),
 		"task":       "some-task",
 		"worktree":   "/wherever/it/was",
@@ -366,6 +368,70 @@ func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
 	result := cleanOne(context.Background(), t, f, true)
 	if !result.Eligible || !result.Applied {
 		t.Fatalf("terminal claim incorrectly blocked deletion: %+v", result)
+	}
+}
+
+func TestClean_TerminalSiblingSealOverridesStaleClaimLifecycle(t *testing.T) {
+	home := isolateWBHome(t)
+	f := newFixture(t, "acme", "widgets")
+	f.archived()
+	runDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1")
+	if err := os.MkdirAll(filepath.Join(runDir, "claims"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(runDir, "terminals"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	claimID := "claim-123"
+	claim := map[string]any{"claim_id": claimID, "repository": f.slug(), "task": "some-task", "worktree": "/gone", "lifecycle": "active"}
+	terminal := map[string]any{"claim_id": claimID, "repository": f.slug(), "task": "some-task", "worktree": "/gone", "lifecycle": "terminal", "worktree_disposition": "discarded"}
+	for path, value := range map[string]map[string]any{
+		filepath.Join(runDir, "claims", claimID+".json"):    claim,
+		filepath.Join(runDir, "terminals", claimID+".json"): terminal,
+	} {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, path, string(raw))
+	}
+
+	result := cleanOne(context.Background(), t, f, true)
+	if !result.Eligible || !result.Applied {
+		t.Fatalf("terminal sibling seal incorrectly blocked deletion: %+v", result)
+	}
+}
+
+func TestNonTerminalClaimsRefusesMalformedOrMismatchedTerminalSeal(t *testing.T) {
+	home := isolateWBHome(t)
+	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
+	terminalDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "terminals")
+	if err := os.MkdirAll(claimDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(terminalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	claimID := "claim-456"
+	claim := map[string]any{"claim_id": claimID, "repository": "acme/widgets", "task": "some-task", "worktree": "/gone", "lifecycle": "active"}
+	raw, err := json.Marshal(claim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(claimDir, claimID+".json"), string(raw))
+	terminalPath := filepath.Join(terminalDir, claimID+".json")
+	mustWriteFile(t, terminalPath, "{")
+	if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "parse terminal seal") {
+		t.Fatalf("malformed sibling terminal seal error = %v", err)
+	}
+	mismatch := map[string]any{"claim_id": claimID, "repository": "acme/other", "task": "some-task", "worktree": "/gone", "lifecycle": "terminal"}
+	raw, err = json.Marshal(mismatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, terminalPath, string(raw))
+	if _, err := nonTerminalClaims(t.TempDir(), "acme/widgets"); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched sibling terminal seal error = %v", err)
 	}
 }
 

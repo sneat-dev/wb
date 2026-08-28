@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
@@ -73,6 +75,44 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 	if guarded.Kind != "linked" || guarded.CanonicalDir != fixture.canonical {
 		t.Fatalf("guard result = %#v", guarded)
+	}
+}
+
+func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *testing.T) {
+	fixture := newGitFixture(t)
+	ready := make(chan struct{}, 2)
+	release := make(chan struct{})
+	type result struct {
+		created []CreateResult
+		err     error
+	}
+	results := make(chan result, 2)
+	var wait sync.WaitGroup
+	for _, task := range []string{"concurrent-repair-one", "concurrent-repair-two"} {
+		wait.Add(1)
+		go func(task string) {
+			defer wait.Done()
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot, Operation: task, WorkLog: WorkLogOptions{Model: "unknown"},
+				afterWorktreeRepair: func() { ready <- struct{}{}; <-release },
+			})
+			results <- result{created: created, err: err}
+		}(task)
+	}
+	for range 2 {
+		select {
+		case <-ready:
+		case <-time.After(20 * time.Second):
+			t.Fatal("concurrent creations did not both reach registration repair")
+		}
+	}
+	close(release)
+	wait.Wait()
+	close(results)
+	for result := range results {
+		if result.err != nil || len(result.created) != 1 || result.created[0].Action != "created" {
+			t.Fatalf("concurrent different-task create = %#v, err=%v", result, result.err)
+		}
 	}
 }
 

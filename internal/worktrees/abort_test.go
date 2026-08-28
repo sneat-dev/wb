@@ -10,6 +10,106 @@ import (
 	"testing"
 )
 
+func TestAbortMultiRepositoryRequiresExplicitSelection(t *testing.T) {
+	fixture := newGitFixture(t)
+	otherCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
+	if err := os.MkdirAll(filepath.Dir(otherCanonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Dir(otherCanonical), "clone", fixture.remote, otherCanonical)
+	configureGitUser(t, otherCanonical)
+
+	created, err := Create(context.Background(), []string{"acme/app", "acme/storage"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "explicit-abort-selection", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("created = %#v", created)
+	}
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "explicit-abort-selection", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true,
+	})
+	if err == nil {
+		t.Fatalf("unselected multi-repository abort succeeded: %#v", results)
+	}
+	for _, result := range created {
+		if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+			t.Fatalf("unselected abort changed %s: %v", result.Repository, statErr)
+		}
+	}
+	results, err = Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "explicit-abort-selection", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true, All: true,
+	})
+	if err != nil || len(results) != 2 || !results[0].Applied || !results[1].Applied {
+		t.Fatalf("explicit all-member abort = %#v, err=%v", results, err)
+	}
+}
+
+func TestAbortIgnoresForeignDebrisButRefusesAmbiguousWBPath(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "foreign-debris-abort", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskRoot := filepath.Join(fixture.home, "worktrees", "foreign-debris-abort")
+	foreign := filepath.Join(taskRoot, "foreign", "debris")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "foreign-debris-abort", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatalf("foreign debris blocked real abort: %v, results=%#v", err, results)
+	}
+	if len(results) != 1 || !results[0].Applied || !results[0].WorktreeGone {
+		t.Fatalf("foreign-debris abort result = %#v", results)
+	}
+	if _, statErr := os.Stat(foreign); statErr != nil {
+		t.Fatalf("foreign debris was not retained: %v", statErr)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("real worktree remains: %v", statErr)
+	}
+
+	// A path whose canonical repository exists is WB-shaped corruption, not
+	// harmless foreign debris, and must remain a blocking diagnostic.
+	fixture = newGitFixture(t)
+	otherCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
+	if err := os.MkdirAll(filepath.Dir(otherCanonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Dir(otherCanonical), "clone", fixture.remote, otherCanonical)
+	configureGitUser(t, otherCanonical)
+	created, err = Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "ambiguous-debris-abort", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ambiguous := filepath.Join(fixture.home, "worktrees", "ambiguous-debris-abort", "acme", "storage")
+	if err := os.MkdirAll(ambiguous, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	results, err = Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "ambiguous-debris-abort", Disposition: AbortDiscarded,
+		DeleteRemote: true, Apply: true,
+	})
+	if err == nil {
+		t.Fatalf("ambiguous WB-shaped path did not fail closed: %#v", results)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("failed-close abort changed real worktree: %v", statErr)
+	}
+}
+
 func TestAbortDiscardedResumesExactBranchAfterWorktreeRemoval(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -65,7 +165,7 @@ func TestAbortDiscardedUnusedWorktreesIsAudited(t *testing.T) {
 	}
 	results, err := Abort(context.Background(), AbortOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "unused-storage", Disposition: AbortDiscarded,
-		DeleteRemote: true, Apply: true,
+		DeleteRemote: true, Apply: true, All: true,
 	})
 	if err != nil {
 		t.Fatal(err)

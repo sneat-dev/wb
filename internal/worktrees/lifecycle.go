@@ -254,6 +254,11 @@ type ListDiagnostic struct {
 	WorktreesRoot string `json:"worktrees_root,omitempty"`
 	Path          string `json:"path"`
 	Message       string `json:"message"`
+	// NonBlocking identifies visible foreign filesystem debris that has no
+	// corresponding canonical repository. It is never a validated WB asset
+	// and must not prevent a real sibling from reaching its own safe terminal
+	// transition. Any WB-shaped path remains blocking.
+	NonBlocking bool `json:"non_blocking,omitempty"`
 }
 
 // LifecycleArtifact is WB-owned control-plane state, never a user worktree
@@ -886,7 +891,13 @@ func listLayout(
 					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "invalid repository directory name"))
 					continue
 				}
-				diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root"))
+				diagnostic := listDiagnostic(layout.WorktreesRoot, taskEntry.Name(), repositoryPath, "candidate is not a Git worktree root")
+				canonicalPath := filepath.Join(projectsRoot, entry.Name(), repositoryEntry.Name())
+				if !hasGitMetadata(canonicalPath) || !isGitRoot(ctx, canonicalPath) {
+					diagnostic.NonBlocking = true
+					diagnostic.Message = "foreign non-Git debris (no canonical repository); visible but does not block valid siblings"
+				}
+				diagnostics = append(diagnostics, diagnostic)
 			}
 		}
 	}
