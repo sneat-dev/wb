@@ -8,10 +8,10 @@ import (
 	"time"
 )
 
-// A fleet sweep is a different question from a named task. One task that cannot
+// An explicit batch is a different question from one named task. One task that cannot
 // be corroborated at preflight says nothing about the tasks already proven
 // eligible beside it, and each of those cost a `git fetch` to prove. This is the
-// regression for a live `--all-merged --apply` that verified ninety-nine
+// regression for a live named cleanup batch that verified ninety-nine
 // eligible tasks, applied ten, and then threw the remaining eighty-nine away
 // because a single worktree sat on a branch its Work Log claim did not name:
 //
@@ -21,7 +21,7 @@ import (
 // CleanupOutcome already documents the intended contract — a bad candidate
 // "blocks eligibility only for its own coordinated task ... Every other task in
 // the run proceeds normally" — and the task loop contradicted it.
-func TestCleanupAllMergedKeepsSweepingWhenOneTaskCannotBeCorroborated(t *testing.T) {
+func TestCleanupNamedTasksKeepSweepingWhenOneTaskCannotBeCorroborated(t *testing.T) {
 	fixture := newGitFixture(t)
 	healthy, healthyHead, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-healthy")
 	broken, brokenHead, _ := prepareMergedTaskInFixture(t, fixture, "cleanup-broken")
@@ -33,7 +33,7 @@ func TestCleanupAllMergedKeepsSweepingWhenOneTaskCannotBeCorroborated(t *testing
 
 	outcome, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		AllMerged:    true,
+		Tasks:        []string{"cleanup-healthy", "cleanup-broken"},
 		Apply:        true,
 		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
 	})

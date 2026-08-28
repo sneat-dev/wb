@@ -1581,7 +1581,7 @@ func newWorktreeCleanupCmd() *cobra.Command {
 	var olderThan time.Duration
 	var workers int
 	command := &cobra.Command{
-		Use:   "cleanup [task]",
+		Use:   "cleanup [task...]",
 		Short: "Plan or remove clean WB tasks integrated into the exact origin target",
 		Long: `Plan or apply cleanup of WB-managed task worktrees and local branches.
 
@@ -1616,7 +1616,7 @@ backlog. Apply descriptor-safely archives an exact recognized empty stage
 outside the active task. A non-empty, symlinked, replaced, or invalid stage
 blocks the task and is preserved for audited recovery.
 
-For a specifically named task, the implicit age window is zero and --apply
+For one or more specifically named tasks, the implicit age window is zero and --apply
 requires --remote: definition of done includes retirement of the source remote
 branch as well as the local worktree/branch. --all-merged fleet sweeping keeps
 the 24-hour merged-PR grace window unless --older-than overrides it.
@@ -1631,7 +1631,7 @@ count. Remote branch deletions are bounded more tightly still, against
 GitHub's per-account secondary rate limit. --parallel 1 restores the fully
 serial apply. Whatever order tasks finish in, the report reads in walk order.
 
---filter (see the root flag) and a named [task] both narrow which candidates
+--filter (see the root flag) and named [task...] arguments both narrow which candidates
 are inspected at all, before any of the above safety checks run. A malformed
 candidate outside that selection is invisible to the run. One inside it is
 never fatal: it is reported as a warning and blocks eligibility only for its
@@ -1653,9 +1653,6 @@ Anything else is left untouched and reported. It cannot be combined with a
 task argument or --all-merged, and is itself dry-run by default; --apply is
 required to remove anything.`,
 		Args: func(command *cobra.Command, args []string) error {
-			if err := cobra.MaximumNArgs(1)(command, args); err != nil {
-				return err
-			}
 			if retireShells {
 				if len(args) != 0 {
 					return fmt.Errorf("--retire-shells sweeps every task; it cannot be combined with a task argument")
@@ -1666,10 +1663,10 @@ required to remove anything.`,
 				return nil
 			}
 			if len(args) == 0 && !allMerged {
-				return fmt.Errorf("supply one task or use --all-merged")
+				return fmt.Errorf("supply one or more tasks or use --all-merged")
 			}
-			if len(args) == 1 && allMerged {
-				return fmt.Errorf("task and --all-merged cannot be combined")
+			if len(args) != 0 && allMerged {
+				return fmt.Errorf("tasks and --all-merged cannot be combined")
 			}
 			return nil
 		},
@@ -1697,17 +1694,14 @@ required to remove anything.`,
 					return fmt.Errorf("unsupported format %q; use text or json", format)
 				}
 			}
-			task := ""
-			if len(args) == 1 {
-				task = args[0]
-			}
-			if task != "" && !command.Flags().Changed("older-than") {
+			tasks := append([]string(nil), args...)
+			if len(tasks) != 0 && !command.Flags().Changed("older-than") {
 				olderThan = 0
 			}
-			if task != "" && apply && !deleteRemote {
+			if len(tasks) != 0 && apply && !deleteRemote {
 				return fmt.Errorf("named terminal cleanup requires --remote so the retired source branch cannot remain as backlog")
 			}
-			if resumeInterrupted && task == "" {
+			if resumeInterrupted && len(tasks) != 1 {
 				return fmt.Errorf("--resume-interrupted requires one explicit task")
 			}
 			now := time.Now()
@@ -1715,7 +1709,7 @@ required to remove anything.`,
 			defer progress.finish()
 			outcome, err := worktrees.Cleanup(command.Context(), worktrees.CleanupOptions{
 				ProjectsRoot:      projectsRoot,
-				Task:              task,
+				Tasks:             tasks,
 				Base:              base,
 				Filter:            filterFlag,
 				AbsorbedBy:        absorbedBy,
@@ -1762,19 +1756,26 @@ required to remove anything.`,
 			default:
 				return fmt.Errorf("unsupported format %q; use text or json", format)
 			}
-			if apply && task != "" {
+			if apply && len(tasks) != 0 {
+				appliedTasks := make(map[string]bool, len(tasks))
 				for _, result := range outcome.Results {
 					if result.Applied {
-						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
-						return nil
+						appliedTasks[result.Task] = true
 					}
 				}
 				for _, artifact := range outcome.Artifacts {
 					if artifact.Applied {
-						return nil
+						appliedTasks[artifact.Task] = true
 					}
 				}
-				return fmt.Errorf("task %q was not removed because it did not satisfy cleanup safety", task)
+				for _, task := range tasks {
+					if appliedTasks[task] {
+						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
+					}
+				}
+				if len(tasks) == 1 && !appliedTasks[tasks[0]] {
+					return fmt.Errorf("task %q was not removed because it did not satisfy cleanup safety", tasks[0])
+				}
 			}
 			return nil
 		},

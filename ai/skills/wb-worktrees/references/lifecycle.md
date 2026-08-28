@@ -82,12 +82,13 @@ For work landed outside `wb worktree merge --cleanup`, always inspect the dry ru
 
 ```sh
 wb worktree cleanup <task>
+wb worktree cleanup <task-a> <task-b> --parallel 2
 wb worktree cleanup --all-merged
 wb worktree cleanup fair-split
 wb worktree cleanup fair-split --resume-interrupted
 ```
 
-A specifically named task defaults to immediate eligibility (`--older-than 0`)
+A specifically named task, or exact named batch, defaults to immediate eligibility (`--older-than 0`)
 because this is its terminalization journey. `--all-merged` fleet sweeping
 keeps the 24-hour grace window unless explicitly overridden.
 
@@ -124,9 +125,11 @@ Apply only after reading the plan:
 ```sh
 wb worktree cleanup <task> --apply --remote --older-than 0
 wb worktree cleanup fair-split --apply --remote --older-than 0
+wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
+wb worktree cleanup task-a task-b --apply --remote --parallel 2
 ```
 
-For a named terminal task, `--apply` refuses without `--remote`. WB removes the
+For a named terminal task or batch, `--apply` refuses without `--remote`. WB removes the
 linked worktree and exact local branch, then retires an existing remote source
 branch with force-with-lease against the previously observed SHA. It rechecks
 safety immediately before mutation and writes an audit report below the

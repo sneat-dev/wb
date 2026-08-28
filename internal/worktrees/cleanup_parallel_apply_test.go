@@ -2,9 +2,11 @@ package worktrees
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -176,7 +178,7 @@ func TestCleanupAppliesDifferentRepositoriesConcurrently(t *testing.T) {
 	overlap := newRendezvous(2, overlapDeadline)
 	outcome, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot:                 fixture.projectsRoot,
-		AllMerged:                    true,
+		Tasks:                        []string{"task-in-app", "task-in-lib"},
 		Apply:                        true,
 		Workers:                      4,
 		Now:                          func() time.Time { return testMergedAt.Add(time.Hour) },
@@ -211,11 +213,13 @@ func TestCleanupParallelApplyReportsInWalkOrderNotCompletionOrder(t *testing.T) 
 	_, fastHeads := prepareMergedTaskInRepositories(t, fixture, "zzz-fast-failure", "lib")
 	installMergedPullRequestFixtures(t, append(slowHeads, fastHeads...), testMergedAt)
 
+	reportDir := t.TempDir()
 	outcome, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot,
-		AllMerged:    true,
+		Tasks:        []string{"aaa-slow-failure", "zzz-fast-failure"},
 		Apply:        true,
 		Workers:      4,
+		ReportDir:    reportDir,
 		Now:          func() time.Time { return testMergedAt.Add(time.Hour) },
 		afterCleanupWorktreeRemoval: func(worktree string) error {
 			if strings.Contains(worktree, "aaa-slow-failure") {
@@ -251,6 +255,20 @@ func TestCleanupParallelApplyReportsInWalkOrderNotCompletionOrder(t *testing.T) 
 			t.Fatalf("results left walk order: %v", tasks)
 		}
 	}
+	contents, readErr := os.ReadFile(filepath.Join(reportDir, "cleanup.json"))
+	if readErr != nil {
+		t.Fatalf("read cleanup report: %v", readErr)
+	}
+	var report cleanupReport
+	if err := json.Unmarshal(contents, &report); err != nil {
+		t.Fatalf("decode cleanup report: %v", err)
+	}
+	if got, want := report.Tasks, []string{"aaa-slow-failure", "zzz-fast-failure"}; !slices.Equal(got, want) {
+		t.Fatalf("report task selection = %v, want %v", got, want)
+	}
+	if len(report.Diagnostics) != len(want) || report.Diagnostics[0].Task != want[0] || report.Diagnostics[1].Task != want[1] {
+		t.Fatalf("report diagnostics order = %#v, want %v", report.Diagnostics, want)
+	}
 }
 
 // modeOfDirectory is the platform-neutral half of the owner-directory
@@ -279,7 +297,7 @@ func TestCleanupSerialisesApplyWithinOneRepository(t *testing.T) {
 	collision := newRendezvous(2, exclusionWindow)
 	outcome, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot:                 fixture.projectsRoot,
-		AllMerged:                    true,
+		Tasks:                        []string{"same-repo-one", "same-repo-two"},
 		Apply:                        true,
 		Workers:                      4,
 		Now:                          func() time.Time { return testMergedAt.Add(time.Hour) },
@@ -319,7 +337,7 @@ func TestCleanupAppliesCoordinatedMultiRepositoryTasksWithoutDeadlock(t *testing
 	go func() {
 		outcome, err := Cleanup(context.Background(), CleanupOptions{
 			ProjectsRoot: fixture.projectsRoot,
-			AllMerged:    true,
+			Tasks:        []string{"coordinated-one", "coordinated-two"},
 			Apply:        true,
 			Workers:      4,
 			Now:          func() time.Time { return testMergedAt.Add(time.Hour) },
@@ -423,7 +441,7 @@ func TestCleanupBoundsConcurrentRemoteBranchDeletions(t *testing.T) {
 // task locks and that many worktrees open at once, whatever the fleet's shape,
 // or an --all-merged run over a large fleet is back to retaining everything it
 // has ever touched.
-func TestCleanupAllMergedNeverExceedsTheWorkerCeiling(t *testing.T) {
+func TestCleanupNamedTasksNeverExceedsTheWorkerCeiling(t *testing.T) {
 	fixture := newGitFixture(t)
 	heads := []string{}
 	for _, repository := range []string{"lib", "tool"} {
@@ -441,7 +459,7 @@ func TestCleanupAllMergedNeverExceedsTheWorkerCeiling(t *testing.T) {
 	inFlight := newRendezvous(ceiling, overlapDeadline).holding(exclusionWindow)
 	outcome, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot:                 fixture.projectsRoot,
-		AllMerged:                    true,
+		Tasks:                        []string{"ceiling-app", "ceiling-lib", "ceiling-tool"},
 		Apply:                        true,
 		Workers:                      ceiling,
 		Now:                          func() time.Time { return testMergedAt.Add(time.Hour) },

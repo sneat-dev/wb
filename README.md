@@ -67,7 +67,7 @@ wb worktree info [path]      # redacted identity + digests for one worktree
 wb worktree log [path]       # dump initial prompt + local work log for an agent
                              # (mutating verbs: init|steer|show|checkpoint|…)
 wb worktree list [task]      # inspect local WB task worktrees
-wb worktree cleanup <task>   # plan or apply safe merged-task cleanup
+wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
@@ -202,6 +202,8 @@ After every PR in a coordinated task has merged, plan cleanup first:
 ```sh
 wb worktree cleanup bots-e2e
 wb worktree cleanup bots-e2e --apply --remote --older-than 0
+# Retire an exact completed batch without widening the scope to every merged task.
+wb worktree cleanup bots-web bots-api bots-worker --apply --remote --parallel 3
 ```
 
 Cleanup is a dry run by default. It removes nothing unless every repository in
@@ -209,10 +211,14 @@ the task is clean, unlocked, and its exact branch tip is contained in the
 freshly fetched `origin/<target>`. A matching merged GitHub PR supplies
 merge-age evidence, while an exact direct-push integration is also supported;
 a local merge that has not reached the remote target remains `awaiting_push`.
-Named cleanup defaults to an immediate age window and refuses `--apply`
-without `--remote`, because done means the retired source remote branch is gone
-as well as the local worktree/branch. Fleet `--all-merged` sweeping retains the
-default 24-hour merged-PR grace window. `--apply` writes an audit report
+One or more exact task names default to an immediate age window and refuse
+`--apply` without `--remote`, because done means the retired source remote
+branch is gone as well as the local worktree/branch. A named batch uses the
+same bounded scheduler as `wb sync`: independent repositories overlap up to
+`--parallel`, while tasks sharing a canonical clone remain serialized and the
+report stays in task/repository order. One failed task is reported without
+discarding another selected task's safe cleanup. Fleet `--all-merged` sweeping
+retains the default 24-hour merged-PR grace window. `--apply` writes an audit report
 below the authoritative WB home (normally `~/.wb/reports/worktree-cleanup/`)
 before removing exact worktree and branch refs; remote retirement uses
 force-with-lease against the observed source-branch SHA.
@@ -224,6 +230,7 @@ computing. `--parallel` bounds how many repositories are inspected at once:
 
 ```sh
 wb worktree cleanup --all-merged --parallel 16
+wb worktree cleanup bots-web bots-api bots-worker --parallel 3
 wb worktree list --github --parallel 4
 wb worktree cleanup --all-merged --parallel 1   # fully sequential
 ```

@@ -26,7 +26,10 @@ import (
 type ListOptions struct {
 	ProjectsRoot string
 	Task         string
-	Base         string
+	// Tasks is an exact set of task names. Task remains for compatibility with
+	// callers that select one task; callers must not set both.
+	Tasks []string
+	Base  string
 	// Filter narrows the inventory to candidates whose owner/repository slug
 	// (or, for a candidate that cannot be identified that cleanly, whatever
 	// raw path-derived identity is available) contains this substring — the
@@ -293,7 +296,10 @@ type ListOutcome struct {
 type CleanupOptions struct {
 	ProjectsRoot string
 	Task         string
-	Base         string
+	// Tasks is an exact set of task names. Task remains for compatibility with
+	// callers that select one task; callers must not set both.
+	Tasks []string
+	Base  string
 	// ExactRepository limits a named-task cleanup transaction to one exact
 	// owner/repository slug. It is intended for repository-scoped orchestrators
 	// such as worktree merge, where another repository may share the same task.
@@ -417,6 +423,7 @@ type cleanupReport struct {
 	GeneratedAt  time.Time                `json:"generated_at"`
 	Phase        string                   `json:"phase"`
 	Task         string                   `json:"task,omitempty"`
+	Tasks        []string                 `json:"tasks,omitempty"`
 	Filter       string                   `json:"filter,omitempty"`
 	AllMerged    bool                     `json:"all_merged"`
 	Apply        bool                     `json:"apply"`
@@ -685,7 +692,15 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	if options.OwnerState != "" && options.OwnerState != "active" && options.OwnerState != "orphaned" {
 		return ListOutcome{}, fmt.Errorf("unsupported owner state %q; use active or orphaned", options.OwnerState)
 	}
-	projectsRoot, task, base, filter, err := normalizeListOptions(options)
+	tasks, err := normalizeTaskSelection(options.Task, options.Tasks)
+	if err != nil {
+		return ListOutcome{}, err
+	}
+	// normalizeListOptions owns the common path/base/filter validation. Task
+	// selection is normalized above because it may now contain several exact
+	// names rather than one string.
+	options.Task = ""
+	projectsRoot, _, base, filter, err := normalizeListOptions(options)
 	if err != nil {
 		return ListOutcome{}, err
 	}
@@ -709,7 +724,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	reporter := &listProgressReporter{report: options.Progress}
 	for _, layout := range resolution.Read {
 		results, diagnostics, artifacts, listErr := listLayout(
-			ctx, projectsRoot, layout, task, base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter,
+			ctx, projectsRoot, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter,
 		)
 		if listErr != nil {
 			return ListOutcome{}, listErr
@@ -750,7 +765,8 @@ func listLayout(
 	ctx context.Context,
 	projectsRoot string,
 	layout wbhome.Layout,
-	task, base, filter, absorbedBy string,
+	tasks map[string]bool,
+	base, filter, absorbedBy string,
 	withGitHub bool,
 	workers int,
 	reporter *listProgressReporter,
@@ -770,7 +786,7 @@ func listLayout(
 	// remote cannot hold up the other several hundred.
 	pending := make([]pendingInspect, 0)
 	for _, taskEntry := range taskEntries {
-		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || (task != "" && taskEntry.Name() != task) {
+		if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || !taskSelectionMatches(tasks, taskEntry.Name()) {
 			continue
 		}
 		if !validSafeSegment(taskEntry.Name()) {
@@ -1164,7 +1180,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot: normalized.ProjectsRoot,
-		Task:         normalized.Task,
+		Tasks:        normalized.Tasks,
 		Base:         normalized.Base,
 		Filter:       normalized.Filter,
 		AbsorbedBy:   normalized.AbsorbedBy,
@@ -1195,7 +1211,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	for _, layout := range resolution.Read {
 		recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 	}
-	backlog, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, normalized.Task, normalized.Filter, "removed")
+	backlog, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, taskSelectionSet(normalized.Tasks), normalized.Filter, "removed")
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -1214,7 +1230,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// A task directory with no repositories under it yields no candidate and no
 	// diagnostic, so it is invisible to inventory. Discover it here, before any
 	// apply, so a dry run states it and an apply acts only on what was planned.
-	namespaces, err := emptyTaskNamespaces(resolution.Read, normalized.Task, normalized.Filter)
+	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter)
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -1226,8 +1242,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// cleanup everywhere else. --filter (and the exact-match task argument
 	// above) already scoped listed.Diagnostics to the current selection, so
 	// every diagnostic here is one the caller asked to see.
-	if normalized.Task != "" && len(listed.Results) == 0 && len(listed.Diagnostics) == 0 && len(listed.Artifacts) == 0 && len(backlog) == 0 {
-		return CleanupOutcome{}, fmt.Errorf("WB worktree task %q was not found", normalized.Task)
+	for _, task := range normalized.Tasks {
+		if !cleanupTaskWasFound(task, listed, backlog) {
+			return CleanupOutcome{}, fmt.Errorf("WB worktree task %q was not found", task)
+		}
 	}
 
 	results := make([]CleanupResult, len(listed.Results))
@@ -1287,7 +1305,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// failure contract when the read-only Work Log gate has already found the
 	// same mismatch that apply's locked preflight would reject. Fleet cleanup
 	// instead reports the ineligible task and keeps processing healthy tasks.
-	if normalized.Task != "" {
+	if len(normalized.Tasks) == 1 {
 		for _, result := range outcome.Results {
 			if strings.HasPrefix(result.Reason, "preflight Work Log for ") {
 				return fail(errors.New(result.Reason))
@@ -1661,11 +1679,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		}
 		return nil
 	}
-	// Interrupted-lock recovery is named-task-only (see CleanupOptions), and a
-	// named task is the operator's exact subject whose failure still ends the
-	// command — so both stay on the serial path with the recovered handle they
-	// were written for. Only a fleet sweep fans out.
-	taskErrs := runCleanupApply(entries, normalized.Workers, repositoryLocks, !normalized.AllMerged, applyTask)
+	// Interrupted-lock recovery and one named task stay on the serial path with
+	// the recovered handle they were written for. An explicit named batch and a
+	// fleet sweep fan out through the same scheduler.
+	taskErrs := runCleanupApply(entries, normalized.Workers, repositoryLocks, len(normalized.Tasks) == 1 && !normalized.AllMerged, applyTask)
 	// Fold the per-task outcomes back in walk order, never completion order, so
 	// the report reads identically however the workers happened to interleave.
 	for index := range entries {
@@ -1674,9 +1691,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			continue
 		}
 		selection := entries[index].selection
-		// A named task is the operator's exact subject, so its failure is the
-		// answer to what they asked and still ends the command.
-		if !normalized.AllMerged {
+		// One named task is the operator's exact subject, so its failure is the
+		// answer to what they asked and still ends the command. A named batch is
+		// intentionally fleet-like here: one failure is scoped to that task.
+		if len(normalized.Tasks) == 1 && !normalized.AllMerged {
 			return fail(cleanupErr)
 		}
 		// A fleet sweep is a different question. One task that cannot be
@@ -1814,9 +1832,12 @@ func normalizeListOptions(options ListOptions) (projectsRoot, task, base, filter
 }
 
 func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
-	projectsRoot, task, base, filter, err := normalizeListOptions(ListOptions{
+	tasks, err := normalizeTaskSelection(options.Task, options.Tasks)
+	if err != nil {
+		return CleanupOptions{}, err
+	}
+	projectsRoot, _, base, filter, err := normalizeListOptions(ListOptions{
 		ProjectsRoot: options.ProjectsRoot,
-		Task:         options.Task,
 		Base:         options.Base,
 		Filter:       options.Filter,
 	})
@@ -1824,7 +1845,11 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 		return CleanupOptions{}, err
 	}
 	options.ProjectsRoot = projectsRoot
-	options.Task = task
+	options.Tasks = tasks
+	options.Task = ""
+	if len(tasks) == 1 {
+		options.Task = tasks[0]
+	}
 	options.Base = base
 	options.Filter = filter
 	options.ExactRepository = strings.TrimSpace(options.ExactRepository)
@@ -1832,7 +1857,7 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 		if _, _, err := splitRepository(options.ExactRepository); err != nil {
 			return CleanupOptions{}, err
 		}
-		if options.AllMerged {
+		if options.AllMerged || len(options.Tasks) != 1 {
 			return CleanupOptions{}, fmt.Errorf("exact repository cleanup requires one explicit task")
 		}
 		if options.Filter != "" && options.Filter != options.ExactRepository {
@@ -1842,13 +1867,13 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 		options.Filter = options.ExactRepository
 	}
 	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
-	if options.Task == "" && !options.AllMerged {
-		return CleanupOptions{}, fmt.Errorf("supply one task or use --all-merged")
+	if len(options.Tasks) == 0 && !options.AllMerged {
+		return CleanupOptions{}, fmt.Errorf("supply one or more tasks or use --all-merged")
 	}
-	if options.Task != "" && options.AllMerged {
-		return CleanupOptions{}, fmt.Errorf("task and --all-merged cannot be combined")
+	if len(options.Tasks) != 0 && options.AllMerged {
+		return CleanupOptions{}, fmt.Errorf("tasks and --all-merged cannot be combined")
 	}
-	if options.ResumeInterrupted && options.Task == "" {
+	if options.ResumeInterrupted && len(options.Tasks) != 1 {
 		return CleanupOptions{}, fmt.Errorf("resume interrupted cleanup requires one explicit task")
 	}
 	if options.OlderThan < 0 {
@@ -1872,6 +1897,68 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 		options.ReportDir = filepath.Clean(options.ReportDir)
 	}
 	return options, nil
+}
+
+func normalizeTaskSelection(task string, tasks []string) ([]string, error) {
+	if strings.TrimSpace(task) != "" && len(tasks) != 0 {
+		return nil, fmt.Errorf("task and tasks cannot be combined")
+	}
+	if len(tasks) == 0 && strings.TrimSpace(task) != "" {
+		tasks = []string{task}
+	}
+	seen := make(map[string]bool, len(tasks))
+	selected := make([]string, 0, len(tasks))
+	for _, candidate := range tasks {
+		candidate = strings.TrimSpace(candidate)
+		if !validSafeSegment(candidate) {
+			return nil, fmt.Errorf("task %q must be one safe path segment", candidate)
+		}
+		if !seen[candidate] {
+			seen[candidate] = true
+			selected = append(selected, candidate)
+		}
+	}
+	sort.Strings(selected)
+	return selected, nil
+}
+
+func taskSelectionSet(tasks []string) map[string]bool {
+	if len(tasks) == 0 {
+		return nil
+	}
+	selected := make(map[string]bool, len(tasks))
+	for _, task := range tasks {
+		selected[task] = true
+	}
+	return selected
+}
+
+func taskSelectionMatches(tasks map[string]bool, task string) bool {
+	return len(tasks) == 0 || tasks[task]
+}
+
+func cleanupTaskWasFound(task string, listed ListOutcome, backlog []lifecycleBacklogRecord) bool {
+	for _, result := range listed.Results {
+		if result.Task == task {
+			return true
+		}
+	}
+	for _, diagnostic := range listed.Diagnostics {
+		if diagnostic.Task == task {
+			return true
+		}
+	}
+	for _, artifact := range listed.Artifacts {
+		if artifact.Task == task {
+			return true
+		}
+	}
+	for _, record := range backlog {
+		if record.Task == task {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultCleanupReportDir returns the durable audit directory for one apply,
@@ -3326,6 +3413,9 @@ func writeCleanupReport(
 		Diagnostics:  diagnostics,
 		Artifacts:    artifacts,
 		Recovery:     recovery,
+	}
+	if len(options.Tasks) > 1 {
+		report.Tasks = append([]string(nil), options.Tasks...)
 	}
 	content, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
