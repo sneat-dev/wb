@@ -885,7 +885,7 @@ func normalizeCompletedWorktreeMergeReceipt(receipt *WorktreeMergeReceipt) error
 		return fmt.Errorf("complete receipt %s retains failure but has no cleanup intent", receipt.ReceiptPath)
 	}
 	expected := sortedUniqueMergeTasks(*receipt)
-	if len(expected) == 0 || len(receipt.CleanedTasks) != len(expected) || len(receipt.CleanupReports) != len(expected) {
+	if len(expected) == 0 || len(receipt.CleanedTasks) != len(expected) {
 		return fmt.Errorf("complete receipt %s retains failure but its cleanup evidence is incomplete", receipt.ReceiptPath)
 	}
 	cleaned := make(map[string]bool, len(receipt.CleanedTasks))
@@ -899,6 +899,9 @@ func normalizeCompletedWorktreeMergeReceipt(receipt *WorktreeMergeReceipt) error
 		if !cleaned[task] {
 			return fmt.Errorf("complete receipt %s retains failure but cleanup did not terminalize task %s", receipt.ReceiptPath, task)
 		}
+	}
+	if err := worktrees.ValidateTerminalCleanupReports(receipt.CleanupReports, receipt.Repository, expected); err != nil {
+		return fmt.Errorf("complete receipt %s retains failure but its cleanup reports are inconsistent: %w", receipt.ReceiptPath, err)
 	}
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()

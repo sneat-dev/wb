@@ -450,6 +450,100 @@ type cleanupReport struct {
 	Recovery     *InterruptedLockRecovery `json:"recovery,omitempty"`
 }
 
+// ValidateTerminalCleanupReports proves that the receipt's referenced cleanup
+// reports are structurally valid and that every expected task has one durable
+// successful terminal cleanup. Historical failed attempts are retained as
+// audit evidence, but each must precede that task's successful later report.
+// It is intentionally stricter than a report-path count: paths alone say
+// nothing about whether cleanup actually completed.
+func ValidateTerminalCleanupReports(paths []string, repository string, expectedTasks []string) error {
+	expected := make(map[string]bool, len(expectedTasks))
+	for _, task := range expectedTasks {
+		if task == "" || expected[task] {
+			return fmt.Errorf("terminal cleanup expected task identities are inconsistent")
+		}
+		expected[task] = true
+	}
+	if len(expected) == 0 {
+		return fmt.Errorf("terminal cleanup has no expected tasks")
+	}
+	seenPaths := make(map[string]bool, len(paths))
+	success := make(map[string]int, len(expected))
+	failures := make(map[string][]int, len(expected))
+	var previous time.Time
+	for index, path := range paths {
+		if !filepath.IsAbs(path) || seenPaths[path] {
+			return fmt.Errorf("terminal cleanup report path %q is not one unique absolute path", path)
+		}
+		seenPaths[path] = true
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("stat terminal cleanup report %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("terminal cleanup report %s is not a regular file", path)
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read terminal cleanup report %s: %w", path, err)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(contents))
+		decoder.DisallowUnknownFields()
+		var report cleanupReport
+		if err := decoder.Decode(&report); err != nil {
+			return fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+		}
+		if err := requireJSONEOF(decoder); err != nil {
+			return fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+		}
+		if report.GeneratedAt.IsZero() || (!previous.IsZero() && !report.GeneratedAt.After(previous)) {
+			return fmt.Errorf("terminal cleanup report %s has non-monotonic generated_at", path)
+		}
+		previous = report.GeneratedAt
+		if report.Phase != "applied" || !report.Apply || !expected[report.Task] || len(report.Results) != 1 {
+			return fmt.Errorf("terminal cleanup report %s has inconsistent applied schema", path)
+		}
+		result := report.Results[0]
+		if result.Task != report.Task || result.Repository != repository {
+			return fmt.Errorf("terminal cleanup report %s does not match receipt task/repository identity", path)
+		}
+		if result.Applied {
+			if !result.WorktreeGone || !result.BranchDeleted || success[result.Task] != 0 {
+				return fmt.Errorf("terminal cleanup report %s has inconsistent successful cleanup evidence", path)
+			}
+			success[result.Task] = index + 1
+			continue
+		}
+		if result.WorktreeGone || result.BranchDeleted || strings.TrimSpace(result.Reason) == "" {
+			return fmt.Errorf("terminal cleanup report %s has inconsistent failed cleanup evidence", path)
+		}
+		failures[result.Task] = append(failures[result.Task], index+1)
+	}
+	for task := range expected {
+		completed := success[task]
+		if completed == 0 {
+			return fmt.Errorf("terminal cleanup reports do not prove task %s completed", task)
+		}
+		for _, failed := range failures[task] {
+			if failed >= completed {
+				return fmt.Errorf("terminal cleanup reports leave task %s failed after its claimed completion", task)
+			}
+		}
+	}
+	return nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
 type cleanupTaskHandle struct {
 	worktreesPath string
 	taskPath      string

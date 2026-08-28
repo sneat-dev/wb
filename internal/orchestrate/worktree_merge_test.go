@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,6 +410,9 @@ func TestLandWorktreeMergeResumeCompleteCleanupClearsStaleFailure(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	historicalFirst := writeFailedCleanupReport(t, landed.Sources[0].Task, landed.Repository, time.Now().UTC().Add(-2*time.Hour))
+	historicalSecond := writeFailedCleanupReport(t, landed.Sources[0].Task, landed.Repository, time.Now().UTC().Add(-time.Hour))
+	landed.CleanupReports = append([]string{historicalFirst, historicalSecond}, landed.CleanupReports...)
 	landed.Failure = "cleanup task was previously refused"
 	if err := persistWorktreeMergeReceipt(landed); err != nil {
 		t.Fatal(err)
@@ -433,6 +437,30 @@ func TestLandWorktreeMergeResumeCompleteCleanupClearsStaleFailure(t *testing.T) 
 	}
 }
 
+func writeFailedCleanupReport(t *testing.T, task, repository string, generatedAt time.Time) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cleanup.json")
+	report := map[string]any{
+		"generated_at":  generatedAt,
+		"phase":         "applied",
+		"task":          task,
+		"apply":         true,
+		"delete_remote": true,
+		"results": []map[string]any{{
+			"task": task, "repository": repository, "applied": false,
+			"worktree_gone": false, "branch_deleted": false, "reason": "prior receipt proof was incomplete",
+		}},
+	}
+	contents, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureWithoutTerminalEvidence(t *testing.T) {
 	receipt := WorktreeMergeReceipt{
 		Status: WorktreeMergeComplete, Cleanup: true, Failure: "cleanup task remains unapplied", ReceiptPath: "receipt.json",
@@ -448,6 +476,36 @@ func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureWithoutTerminalEv
 	}
 	if receipt.Failure != "cleanup task remains unapplied" {
 		t.Fatalf("incomplete receipt failure was cleared: %+v", receipt)
+	}
+}
+
+func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureForDuplicateTask(t *testing.T) {
+	receipt := WorktreeMergeReceipt{
+		Status: WorktreeMergeComplete, Cleanup: true, Failure: "cleanup task remains unapplied", ReceiptPath: "receipt.json",
+		Candidate: WorktreeMergeCandidate{Task: "candidate"}, Sources: []WorktreeMergeSource{{Task: "source"}},
+		CleanedTasks:   []string{"candidate", "candidate"},
+		CleanupReports: []string{"candidate-cleanup.json", "source-cleanup.json"},
+	}
+	if err := normalizeCompletedWorktreeMergeReceipt(&receipt); err == nil || !strings.Contains(err.Error(), "cleaned task identities are inconsistent") {
+		t.Fatalf("duplicate cleanup identity error = %v", err)
+	}
+	if receipt.Failure != "cleanup task remains unapplied" {
+		t.Fatalf("duplicate receipt failure was cleared: %+v", receipt)
+	}
+}
+
+func TestValidateTerminalCleanupReportsRejectsMalformedSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cleanup.json")
+	contents, err := json.Marshal(map[string]any{"generated_at": time.Now().UTC(), "phase": "applied"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = worktrees.ValidateTerminalCleanupReports([]string{path}, "acme/app", []string{"source"})
+	if err == nil || !strings.Contains(err.Error(), "inconsistent applied schema") {
+		t.Fatalf("malformed cleanup report error = %v", err)
 	}
 }
 
