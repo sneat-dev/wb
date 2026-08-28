@@ -40,6 +40,21 @@ wb <required-command> --help
 Reuse the verified binary for the rest of the task. Reinstall only if the
 required revision changes.
 
+## Discover commands without guessing
+
+Start with the intent-ranked catalog when the exact command path is unknown.
+This works without loading an Agent Skill and avoids recursively opening every
+help page:
+
+```sh
+wb commands --search "finish work" --format json
+wb commands --search=finish --format json
+wb commands --format json
+```
+
+Open the returned exact path with `--help` before executing a mutating command.
+The catalog marks runnable commands even when they also own subcommands.
+
 ## Updating an already-installed wb
 
 When a `go install` binary is already present and just needs the latest

@@ -5,6 +5,7 @@
 | Skill | Scope |
 |---|---|
 | `wb-install` | Install and verify an exact WB build |
+| `wb-branches` | Inspect and safely retire local and remote branches |
 | `wb-worktrees` | Guard, create, inspect, and clean worktrees; move registered sessions |
 | `wb-hooks` | Install, inspect, repair, and measure Git hooks |
 | `wb-deps` | Graph, set, and bump dependencies |
@@ -16,7 +17,7 @@
 | `wb-dependency-campaign` | Propagate releases with minimal CI builds |
 | `wb-merge` | Integrate completed work and retire its lifecycle debt |
 
-The first eight are compact command skills. The final two compose them for
+The command-specific skills are compact references. The workflow skills compose them for
 workflows where orchestration saves time or avoids duplicate builds. Detailed
 flags live in references and load only when needed.
 

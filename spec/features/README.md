@@ -31,6 +31,7 @@ format: https://specscore.md/features-index-specification
 | [Go directive fleet policy](go-directive-policy/README.md) | Approved | Assess and, per repository, land the go 1.26.x directive / toolchain go1.27.0 pairing across the fleet, refusing where a dependency's own go directive forces a higher floor. |
 | [Mechanical Worktree Merge](mechanical-worktree-merge/README.md) | Stable | Prepare a WB-managed integration candidate and mechanically land it through a verified direct or pull-request route, with resumable receipts, safe recovery, and optional cleanup. |
 | [Pre-Push Tiering and Remote Checkpoints](pre-push-tiering-and-remote-checkpoints/README.md) | Implementing | Tier the managed pre-push hook by push target and give wb worktree checkpoint a fast, tier-0-only remote ref, so agents can persist work often without paying the full test-suite tax on every push. |
+| [Modern CLI help and command discovery](modern-cli-help-discovery/README.md) | Stable | Make WB commands fast to discover for people and cold AI agents through an agent-first help journey, structured search, terminal styling, and deterministic automation output. |
 
 ## Open Questions
 

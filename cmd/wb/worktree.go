@@ -36,27 +36,43 @@ func newWorktreeCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:     "worktree",
 		Aliases: []string{"worktrees", "wt"},
-		Short:   "Create and enforce isolated development worktrees",
+		Short:   "Create, inspect, merge, and safely retire isolated agent work",
 	}
-	command.AddCommand(newWorktreeCreateCmd())
-	command.AddCommand(newWorktreeMergeCmd())
-	command.AddCommand(newWorktreeGuardCmd())
-	command.AddCommand(newWorktreeMarkerCmd())
-	command.AddCommand(newWorktreeRescueCmd())
-	command.AddCommand(newWorktreeListCmd())
-	command.AddCommand(newWorktreeSummaryCmd())
-	command.AddCommand(newWorktreeCleanupCmd())
-	command.AddCommand(newWorktreeRenameCmd())
-	command.AddCommand(newWorktreeAbortCmd())
-	command.AddCommand(newWorktreeCorrectIdentityCmd())
-	command.AddCommand(newWorktreeSetCmd())
-	command.AddCommand(newWorktreeOwnCmd())
-	command.AddCommand(newWorktreeInfoCmd())
-	command.AddCommand(newWorktreeWorkLogCmd())
-	command.AddCommand(newWorktreeOrphansCmd())
-	command.AddCommand(newWorktreeBackfillCmd())
-	command.AddCommand(newWorktreeAdoptCmd())
-	command.AddCommand(newWorktreeCheckpointFetchCmd())
+	command.AddGroup(
+		&cobra.Group{ID: "start", Title: "Start work"},
+		&cobra.Group{ID: "finish", Title: "Finish work"},
+		&cobra.Group{ID: "inspect", Title: "Inspect progress"},
+		&cobra.Group{ID: "recover", Title: "Recover and coordinate"},
+		&cobra.Group{ID: "admin", Title: "Administration"},
+	)
+	children := []struct {
+		command *cobra.Command
+		group   string
+	}{
+		{newWorktreeCreateCmd(), "start"},
+		{newWorktreeAdoptCmd(), "start"},
+		{newWorktreeMergeCmd(), "finish"},
+		{newWorktreeCleanupCmd(), "finish"},
+		{newWorktreeAbortCmd(), "finish"},
+		{newWorktreeSummaryCmd(), "inspect"},
+		{newWorktreeInfoCmd(), "inspect"},
+		{newWorktreeListCmd(), "inspect"},
+		{newWorktreeGuardCmd(), "recover"},
+		{newWorktreeRescueCmd(), "recover"},
+		{newWorktreeWorkLogCmd(), "recover"},
+		{newWorktreeCheckpointFetchCmd(), "recover"},
+		{newWorktreeOwnCmd(), "recover"},
+		{newWorktreeMarkerCmd(), "admin"},
+		{newWorktreeRenameCmd(), "admin"},
+		{newWorktreeCorrectIdentityCmd(), "admin"},
+		{newWorktreeSetCmd(), "admin"},
+		{newWorktreeOrphansCmd(), "admin"},
+		{newWorktreeBackfillCmd(), "admin"},
+	}
+	for _, child := range children {
+		child.command.GroupID = child.group
+		command.AddCommand(child.command)
+	}
 	return command
 }
 
@@ -829,6 +845,15 @@ needed, use 'wb worktree merge <worktree...> --route auto --cleanup'. It is the
 normal completion counterpart to create: WB selects a permitted direct or PR
 route, waits for exact checks, verifies the remote target, synchronizes an
 eligible canonical checkout, and cleans the finished branch/worktree.`,
+		Example: `# Start one isolated agent task; prompt bytes stay off argv
+printf '%s\n' 'the exact task request' | \
+  wb worktree create improve-login owner/repository \
+  --agent agent-1 --agent-runtime codex --model unknown \
+  --original-prompt-file -
+
+# Resume only the exact registered task and branch
+wb worktree create improve-login owner/repository --resume \
+  --original-prompt-file /private/path/to/original-prompt`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MinimumNArgs(1)(command, args); err != nil {
 				return err
@@ -935,6 +960,7 @@ eligible canonical checkout, and cleans the finished branch/worktree.`,
 			return nil
 		},
 	}
+	setDiscoveryTerms(command, "start begin create new work task agent isolated worktree branch implement edit code save tokens")
 	command.Flags().StringVar(&branch, "branch", "", "exact feature branch (overrides branch-prefix configuration)")
 	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
@@ -1502,6 +1528,8 @@ task and formats a brief human overview rather than a flat inventory row.
 JSON reuses the same versioned list envelope (results, diagnostics, artifacts).
 Prompt bodies are never included; use 'wb worktree info' or 'wb worktree log'
 for per-checkout journal detail.`,
+		Example: `wb worktree summary improve-login
+wb worktree summary improve-login --github --format json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -1539,6 +1567,7 @@ for per-checkout journal detail.`,
 			}
 		},
 	}
+	setDiscoveryTerms(command, "inspect progress status next action task work worktree branch pull request ready merge")
 	command.Flags().StringVar(&base, "base", "main", "base branch used to assess local merge state")
 	command.Flags().BoolVar(&github, "github", false, "include pull request state from GitHub")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

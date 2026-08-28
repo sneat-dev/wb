@@ -35,6 +35,12 @@ candidate stops without rewriting it. A landed failure retains before/after evid
 forward revert. If exact post-target CI fails and the same source advances with a clean
 forward repair, rerunning merge advances the retained candidate onto the landed target,
 records the failed landing, and opens a new repair PR without rewriting history.`,
+		Example: `# Finish one compatible worktree end to end
+wb worktree merge . --route auto --cleanup
+
+# Split preparation from landing for a resumable handoff
+wb worktree merge prepare /path/to/worktree --format json
+wb worktree merge land /path/to/landing-receipt --cleanup`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
@@ -47,6 +53,7 @@ records the failed landing, and opens a new repair PR without rewriting history.
 			return err
 		},
 	}
+	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
 	return command
