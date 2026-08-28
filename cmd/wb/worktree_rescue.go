@@ -43,6 +43,11 @@ branch must be on the remote unless --allow-unpushed accepts that risk. The
 clean it then runs omits -x, so ignored paths — including WB's own generated
 ` + ".worktree.md" + ` — survive.
 
+--push traverses managed pre-push hooks through a rescue-only attestation. The
+hook accepts only the exact single rescue ref whose commit is parented on the
+canonical HEAD and whose tree equals a fresh complete capture; it never grants
+a general hook bypass. WB then rereads the exact remote ref before --restore.
+
 --fleet reports every dirty canonical clone under --projects-root. It never
 applies anything.`,
 		Args: cobra.MaximumNArgs(1),

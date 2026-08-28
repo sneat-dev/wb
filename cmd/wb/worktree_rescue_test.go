@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/canonicalrescue"
 )
 
 // dirtyCanonicalClone reproduces the shape that nearly lost a finished lesson:
@@ -140,6 +142,52 @@ func TestWorktreeRescueFullJourney(t *testing.T) {
 	code, stdout, _ = runCheckoutCommand(t, "--projects-root", checkouts.ProjectsRoot, "worktree", "rescue", "--fleet")
 	if code != exitOK || !strings.Contains(stdout, "is clean") {
 		t.Fatalf("the fleet sweep still reports work: exit %d\n%s", code, stdout)
+	}
+}
+
+// TestWorktreeRescueFullJourneyPassesManagedPrePushGuard proves the published
+// journey through the same hook installed on real canonical clones. A bare
+// fixture with no hook cannot catch rescue trying to push from the deliberately
+// dirty checkout and being rejected by its own worktree guard.
+func TestWorktreeRescueFullJourneyPassesManagedPrePushGuard(t *testing.T) {
+	binary := buildWB(t)
+	checkouts := newCheckoutFixture(t)
+	environment := append(wbUpgradeEnv(t.TempDir()), "WB_EXECUTABLE="+binary)
+	installed := runWBUpgrade(t, binary, environment,
+		"--projects-root", checkouts.ProjectsRoot, "hooks", "install", checkouts.Canonical)
+	if installed.exitCode != exitOK {
+		t.Fatalf("install managed hooks: exit=%d stdout=%s stderr=%s", installed.exitCode, installed.stdout, installed.stderr)
+	}
+	dirtyCanonicalClone(t, checkouts)
+	captured := runWBUpgrade(t, binary, environment,
+		"--projects-root", checkouts.ProjectsRoot, "worktree", "rescue", checkouts.Canonical,
+		"--apply", "--branch", "rescue/managed-hook-journey")
+	if captured.exitCode != exitOK {
+		t.Fatalf("capture before managed-hook push: exit=%d stdout=%s stderr=%s", captured.exitCode, captured.stdout, captured.stderr)
+	}
+	rescueCommit := runCommand(t, checkouts.Canonical, "git", "rev-parse", "refs/heads/rescue/managed-hook-journey")
+	runCommand(t, checkouts.Canonical, "git", "branch", "feature/not-a-rescue-push", rescueCommit)
+	t.Setenv(canonicalrescue.PushBranchEnv, "rescue/managed-hook-journey")
+	t.Setenv(canonicalrescue.PushCommitEnv, rescueCommit)
+	output, pushErr := runUpgradeGit(checkouts.Canonical, environment,
+		"push", "origin", "refs/heads/feature/not-a-rescue-push:refs/heads/feature/not-a-rescue-push")
+	if pushErr == nil || !strings.Contains(output, "must publish only refs/heads/rescue/managed-hook-journey") {
+		t.Fatalf("rescue attestation authorized a different ref: err=%v\n%s", pushErr, output)
+	}
+
+	result := runWBUpgrade(t, binary, environment,
+		"--projects-root", checkouts.ProjectsRoot, "worktree", "rescue", checkouts.Canonical,
+		"--apply", "--push", "--restore", "--branch", "rescue/managed-hook-journey")
+	if result.exitCode != exitOK {
+		t.Fatalf("managed-hook rescue: exit=%d stdout=%s stderr=%s", result.exitCode, result.stdout, result.stderr)
+	}
+	if status := runCommand(t, checkouts.Canonical, "git", "status", "--porcelain=v1"); status != "" {
+		t.Fatalf("managed-hook rescue left canonical dirty:\n%s", status)
+	}
+	remote := runCommand(t, checkouts.Origin, "git", "rev-parse", "refs/heads/rescue/managed-hook-journey")
+	local := runCommand(t, checkouts.Canonical, "git", "rev-parse", "refs/heads/rescue/managed-hook-journey")
+	if remote != local {
+		t.Fatalf("managed-hook rescue remote=%s local=%s", remote, local)
 	}
 }
 

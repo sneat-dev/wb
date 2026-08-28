@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/canonicalrescue"
 	"github.com/sneat-dev/wb/internal/console"
 )
 
@@ -66,6 +68,28 @@ func Run(options RunOptions) (RunResult, error) {
 	}
 	if options.Now == nil {
 		options.Now = time.Now
+	}
+	if options.Hook == "pre-push" {
+		branch, commit, present, attestationErr := canonicalrescue.PushAttestationFromEnvironment()
+		if attestationErr != nil {
+			return RunResult{ExitCode: 1}, attestationErr
+		}
+		if present {
+			started := options.Now()
+			verifyErr := canonicalrescue.VerifyAttestedPush(
+				context.Background(), policy.RepoRoot, options.ProjectsRoot, branch, commit, options.Stdin,
+			)
+			result := RunResult{
+				ExitCode: 0, Duration: options.Now().Sub(started),
+				Blocks: []BlockRunResult{{ID: "worktree/rescue-pre-push", Profile: "worktree", ExitCode: 0}},
+			}
+			if verifyErr != nil {
+				result.ExitCode = 1
+				result.Blocks[0].ExitCode = 1
+				return result, fmt.Errorf("verify canonical rescue push: %w", verifyErr)
+			}
+			return result, nil
+		}
 	}
 
 	blocks := hookBlocks(policy, options.Hook)

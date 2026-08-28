@@ -109,6 +109,18 @@ as the binary produced by `go run`. A managed shim MUST point only to a durable
 candidate or installed WB executable; otherwise a successful repair can leave
 the next Git operation unable to run its guard.
 
+#### REQ: attested-canonical-rescue-push
+
+`wb worktree rescue --push` MUST remain usable through WB's installed managed
+pre-push hook while the canonical clone is deliberately still dirty. This is
+an explicit rescue route, not a generic hook bypass: the hook MUST accept only
+one `refs/heads/rescue/*` update whose exact local commit has the canonical
+`HEAD` as its sole parent and whose tree equals a fresh complete capture of the
+canonical index and working tree. A missing or partial attestation, another
+ref, another commit, a tree mismatch, or an occupied remote rescue ref MUST
+refuse. Success MUST be followed by a fresh exact remote-ref receipt before
+restore can remove local work.
+
 ### Conservative cleanup plan
 
 #### REQ: dry-run-default
@@ -339,7 +351,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -349,7 +361,9 @@ authoritative home even when legacy state exists; legacy and current worktrees
 remain guardable, listable, and safely cleanable; direct legacy repository
 roots do not recurse into source directories; arbitrary detached work is
 rejected while a live rebase is accepted only transiently; prior-release hooks
-remain compatible without persisting an ephemeral executable; dry runs preserve state; exact merged heads can be cleaned;
+remain compatible without persisting an ephemeral executable; an exact rescue
+branch passes the real managed pre-push hook while any differently named ref
+using the same attestation refuses; dry runs preserve state; exact merged heads can be cleaned;
 dirty or advanced branches survive; a fleet sweep writes incremental per-repository progress to stderr before its report and leaves stdout parseable as JSON; local and optional remote refs are removed
 with comparison guards; interruption after worktree removal is resumed from a
 durable exact-ref backlog; a removal Git unregisters but cannot finish deleting
