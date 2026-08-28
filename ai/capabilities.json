@@ -7922,7 +7922,7 @@
     {
       "id": "wb.worktree.rescue",
       "feature_refs": [
-        "worktree-lifecycle"
+        "spec/features/worktree-lifecycle/README.md"
       ],
       "since": "existing",
       "surfaces": {
