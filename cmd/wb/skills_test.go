@@ -458,6 +458,18 @@ func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkflowFallsBackForCLIChangingNonConventionalMerge(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
+	contents, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "default_bump: patch") {
+		t.Fatalf("%s must publish at least a patch release when a CLI-changing main push has no conventional title", workflowPath)
+	}
+}
+
 // TestCapabilityManifestKeepsImplementationHelpAndSkillsInOne Checked-in
 // contract. It deliberately validates command/flag parsing without executing
 // examples, so a documentation regression cannot mutate a repository.

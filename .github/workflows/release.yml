@@ -60,5 +60,10 @@ jobs:
     with:
       go_version: '1.27'
       allow_major_version_bump: false
+      # WB merger batches can contain several conventional commits. GitHub's
+      # terminal squash title is the release parser's only surviving subject;
+      # if that title is unexpectedly non-conventional, a CLI-changing push
+      # must still publish rather than report a successful no-op.
+      default_bump: patch
     secrets:
       GORELEASER_GITHUB_TOKEN: ${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}

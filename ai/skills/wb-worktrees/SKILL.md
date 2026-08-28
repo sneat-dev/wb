@@ -115,7 +115,7 @@ wb worktree info <printed-worktree-path>
 wb worktree log <printed-worktree-path>
 wb worktree guard <printed-worktree-path>
 wb worktree list <task>
-wb worktree merge <source-worktree...> --route auto --cleanup --format json
+wb worktree merge <source-worktree...> --route auto --cleanup --progress --format json
 ```
 
 With no prefix, WB uses the task slug itself as the branch name. Use

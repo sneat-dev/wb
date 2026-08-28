@@ -70,7 +70,7 @@ For conflict-free ready work, prefer the complete landing journey instead of
 manually opening a PR and returning here later:
 
 ```sh
-wb worktree merge <source-worktree...> --route auto --cleanup --format json
+wb worktree merge <source-worktree...> --route auto --cleanup --progress --format json
 ```
 
 Use `merge prepare` when dependent agents need the candidate SHA before remote
