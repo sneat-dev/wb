@@ -495,6 +495,38 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, err
 		}
 	}
+	if receipt.LandingSHA != "" && receipt.Status == WorktreeMergePostTargetCIFailed {
+		remoteTarget, fetchErr := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+		if fetchErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fetchErr)
+		}
+		if remoteTarget != receipt.LandingSHA {
+			containsLanding, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.LandingSHA, remoteTarget)
+			if ancestorErr != nil || !containsLanding {
+				if ancestorErr != nil {
+					return receipt, fmt.Errorf("exact remote target %s does not contain prior landing %s: %w", remoteTarget, receipt.LandingSHA, ancestorErr)
+				}
+				return receipt, fmt.Errorf("exact remote target %s does not contain prior landing %s", remoteTarget, receipt.LandingSHA)
+			}
+			absorbed, _, absorptionErr := worktreeMergeCandidateAbsorbed(ctx, receipt.Candidate.Worktree, receipt, remoteTarget)
+			if absorptionErr != nil || !absorbed {
+				if absorptionErr != nil {
+					return receipt, fmt.Errorf("exact remote target %s no longer contains landed candidate %s: %w", remoteTarget, receipt.Candidate.SHA, absorptionErr)
+				}
+				return receipt, fmt.Errorf("exact remote target %s no longer contains landed candidate %s", remoteTarget, receipt.Candidate.SHA)
+			}
+			receipt.ForwardRepairs = append(receipt.ForwardRepairs, worktreeMergeForwardRepairHistory(receipt))
+			receipt.LandingSHA = remoteTarget
+			receipt.CanonicalSync = ""
+			receipt.Checks = PullRequestWaitResult{}
+			receipt.Failure = ""
+			receipt.Status = WorktreeMergeLanded
+			receipt.UpdatedAt = time.Now().UTC()
+			if persistErr := persistWorktreeMergeReceipt(receipt); persistErr != nil {
+				return receipt, persistErr
+			}
+		}
+	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
 		if observeErr != nil {
@@ -791,7 +823,11 @@ func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) 
 			}
 			sources = append(sources, source.Worktree)
 		}
-		if len(sources) != 0 {
+		advanced, advanceErr := worktreeMergeReceiptSourcesAdvanced(ctx, options.ProjectsRoot, receipt)
+		if advanceErr != nil {
+			return receipt, advanceErr
+		}
+		if advanced && len(sources) != 0 {
 			candidateLog, logErr := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{
 				ProjectsRoot: options.ProjectsRoot, Worktree: receipt.Candidate.Worktree,
 			})
@@ -815,6 +851,24 @@ func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) 
 		}
 	}
 	return LandWorktreeMerge(ctx, options)
+}
+
+func worktreeMergeReceiptSourcesAdvanced(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (bool, error) {
+	paths := make([]string, 0, len(receipt.Sources))
+	for _, source := range receipt.Sources {
+		if strings.TrimSpace(source.Worktree) == "" {
+			return false, fmt.Errorf("receipt %s has no source worktree", receipt.ReceiptPath)
+		}
+		paths = append(paths, source.Worktree)
+	}
+	current, repository, _, err := inspectWorktreeMergeSources(ctx, projectsRoot, paths, receipt.Target)
+	if err != nil {
+		return false, fmt.Errorf("inspect receipt source heads before resume: %w", err)
+	}
+	if repository != receipt.Repository || len(current) != len(receipt.Sources) {
+		return false, fmt.Errorf("receipt source identity changed: repository=%s sources=%d, want %s sources=%d", repository, len(current), receipt.Repository, len(receipt.Sources))
+	}
+	return !sameWorktreeMergeSources(receipt.Sources, current), nil
 }
 
 func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remoteRef string, timeout time.Duration, retry int) (*WorktreeMergePushGateReceipt, error) {

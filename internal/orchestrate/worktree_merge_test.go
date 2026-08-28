@@ -817,6 +817,76 @@ func TestResumeWorktreeMergeAdvancesLandedCleanupPendingSource(t *testing.T) {
 	}
 }
 
+func TestResumeWorktreeMergeReobservesDescendantTargetAfterPostTargetCIDrift(t *testing.T) {
+	fixture, source, first := prepareLandedCleanupPendingMerge(t, "resume-release-drift", "feature/resume-release-drift")
+	first.Status = WorktreeMergePostTargetCIFailed
+	first.Checks = PullRequestWaitResult{
+		Status: PullRequestWaitFailed, Repository: "acme/app", Target: "main", Head: first.LandingSHA,
+		ObservedHead: first.LandingSHA, ObservedTargetHead: first.LandingSHA, Reason: "target advanced while checks were observed",
+	}
+	first.Failure = "exact remote target advanced during post-target CI observation"
+	first.Cleanup = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(fixture.canonical, "release.txt"), "0.27.5\n")
+	runEngineGit(t, fixture.canonical, "add", "release.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "chore(release): publish packages")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	releaseTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_REMOTE", strings.TrimSpace(runEngineGit(t, fixture.canonical, "remote", "get-url", "origin")))
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: first.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Cleanup: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("resume did not re-observe the exact descendant release target: receipt=%+v err=%v", resumed, err)
+	}
+	if resumed.Status != WorktreeMergeComplete || resumed.LandingSHA != releaseTarget || resumed.Checks.Status != PullRequestWaitPassed {
+		t.Fatalf("release-target re-observation did not terminalize the receipt: %+v", resumed)
+	}
+	if len(resumed.ForwardRepairs) != 1 || resumed.ForwardRepairs[0].Status != WorktreeMergePostTargetCIFailed ||
+		resumed.ForwardRepairs[0].LandingSHA != first.LandingSHA || resumed.ForwardRepairs[0].Failure != first.Failure {
+		t.Fatalf("release-target re-observation lost the prior exact observation: %+v", resumed.ForwardRepairs)
+	}
+	if _, statErr := os.Stat(source.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("terminal receipt retained source worktree: %v", statErr)
+	}
+}
+
+func TestResumeWorktreeMergeRefusesUnrelatedTargetAfterPostTargetCIDrift(t *testing.T) {
+	fixture, _, first := prepareLandedCleanupPendingMerge(t, "resume-unrelated-drift", "feature/resume-unrelated-drift")
+	first.Status = WorktreeMergePostTargetCIFailed
+	first.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: first.LandingSHA, Reason: "target drift"}
+	first.Failure = "exact remote target advanced during post-target CI observation"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	runEngineGit(t, fixture.canonical, "checkout", "--orphan", "unrelated-release")
+	runEngineGit(t, fixture.canonical, "rm", "-rf", ".")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "unrelated.txt"), "unrelated\n")
+	runEngineGit(t, fixture.canonical, "add", "unrelated.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "chore(release): unrelated history")
+	runEngineGit(t, fixture.canonical, "push", "--force", "origin", "HEAD:main")
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_REMOTE", strings.TrimSpace(runEngineGit(t, fixture.canonical, "remote", "get-url", "origin")))
+
+	blocked, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: first.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Cleanup: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not contain prior landing") {
+		t.Fatalf("unrelated target drift was not refused: receipt=%+v err=%v", blocked, err)
+	}
+	if blocked.LandingSHA != first.LandingSHA || len(blocked.ForwardRepairs) != 0 || blocked.Status != WorktreeMergePostTargetCIFailed {
+		t.Fatalf("unrelated target refusal mutated prior evidence: first=%+v blocked=%+v", first, blocked)
+	}
+}
+
 func TestPrepareWorktreeMergeRefusesLandedForwardRepairAfterTargetDrift(t *testing.T) {
 	fixture, source, first := prepareLandedCleanupPendingMerge(t, "landed-target-drift", "feature/landed-target-drift")
 	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")

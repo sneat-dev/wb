@@ -75,7 +75,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 func newWorktreeMergeLandCmd(name string) *cobra.Command {
 	var flags worktreeMergeFlags
 	command := &cobra.Command{
-		Use: name + " <candidate-worktree-or-receipt>", Short: "Resume a receipt, including an eligible same-source forward repair",
+		Use: name + " <candidate-worktree-or-receipt>", Short: "Resume a receipt to land an exact integration candidate or eligible same-source forward repair",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
