@@ -26,7 +26,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 		}
 	}
-	for _, phrase := range []string{"prepared locally, not landed", "never force-push", "exact remote target", "forward revert"} {
+	for _, phrase := range []string{"prepared locally, not landed", "never force-push", "exact remote target", "forward revert", "forward repair"} {
 		if !strings.Contains(command.Long, phrase) {
 			t.Errorf("merge help is missing %q", phrase)
 		}

@@ -33,3 +33,12 @@ post-target checks, and required canonical synchronization. On interruption,
 run the receipt's exact `resume_args`. A landed failure retains before/after
 target identities; `revert` creates and lands a forward inverse candidate and
 never resets or force-pushes shared history.
+
+When post-target CI fails but a forward fix is preferable to a revert, commit
+the fix on the same preserved source and rerun `merge prepare`. WB accepts only
+an additive source advance, proves the fetched target still contains the failed
+landing, and proves the prior candidate either by graph ancestry or by exact
+tree equality with its receipted squash landing. It then advances the retained
+candidate without rewriting published history, records the failed attempt in
+`forward_repairs`, and opens a fresh PR.
+Do not edit or terminalize the failed receipt by hand.

@@ -48,7 +48,9 @@ when other agents need the immutable candidate SHA before remote checks finish,
 then use the receipt's exact ` + "`merge land`" + ` or ` + "`merge resume`" + ` command. Auto
 landing rebases an unpublished candidate over clean target drift and stops on a
 conflict. A landed failure can use ` + "`merge revert`" + ` to create a forward inverse
-candidate; never reset or force-push shared history.
+candidate; never reset or force-push shared history. For a forward fix after
+post-target CI fails, commit the additive repair on this preserved source and
+rerun ` + "`merge prepare`" + `; WB records the failed landing and retains the lane.
 `
 
 var errWorkLogProjectionNotFound = errors.New("work-log projection not found")

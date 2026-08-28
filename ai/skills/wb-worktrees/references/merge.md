@@ -46,7 +46,10 @@ wb worktree merge revert <landing-receipt> --route auto --cleanup --format json
 
 Use the receipt's exact `resume_args`; do not reconstruct state from branch
 names. Conflicts stop for judgment. A landed failure can create a forward
-inverse candidate, never a reset or force-push.
+inverse candidate, never a reset or force-push. If post-target CI instead needs
+a forward fix, keep the same source and receipt, commit the repair, and rerun
+`merge prepare`; WB records the failed landing and advances the retained
+candidate onto the current target before opening a new PR.
 
 For the dedicated merger role and policy detail, read the `wb-merge` skill and
 its `references/worktree-merge.md` contract.

@@ -79,13 +79,15 @@ and safe canonical fast-forward.
 ### Task 4: Compose, resume, clean, and revert
 
 **Id:** task-4
-**Verifies:** mechanical-worktree-merge#ac:combined-command-walks-the-whole-journey, mechanical-worktree-merge#ac:unpublished-candidate-rebases-over-target-drift, mechanical-worktree-merge#ac:retry-resumes-without-duplicate-effects, mechanical-worktree-merge#ac:landed-failure-has-a-forward-revert-path, mechanical-worktree-merge#ac:cleanup-is-explicit-and-receipt-gated
+**Verifies:** mechanical-worktree-merge#ac:combined-command-walks-the-whole-journey, mechanical-worktree-merge#ac:unpublished-candidate-rebases-over-target-drift, mechanical-worktree-merge#ac:retry-resumes-without-duplicate-effects, mechanical-worktree-merge#ac:landed-failure-has-a-forward-revert-path, mechanical-worktree-merge#ac:landed-target-ci-failure-accepts-an-audited-forward-repair, mechanical-worktree-merge#ac:cleanup-is-explicit-and-receipt-gated
 **Depends-On:** 3
 **Status:** complete
 
 Compose both phases in the default command, resume every durable boundary,
 delegate exact absorbed-asset retirement to lifecycle cleanup, and prepare a
-forward revert from landing receipts while refusing conflicts.
+forward revert from landing receipts while refusing conflicts. A preserved
+post-target-CI failure also accepts an additive same-source forward repair,
+retains every failed landing in the receipt, and reuses the exclusive lane.
 
 ### Task 5: Prove isolation and the full journey
 
