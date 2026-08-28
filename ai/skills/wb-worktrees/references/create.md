@@ -93,7 +93,7 @@ created worktrees are clean, validated, and compatible without a judgment call,
 use the paired landing command:
 
 ```sh
-wb worktree merge <printed-worktree-path...> --route auto --cleanup --format json
+wb worktree merge <printed-worktree-path...> --route auto --cleanup --progress --format json
 ```
 
 This may be used many times against the same target. For a two-phase handoff,

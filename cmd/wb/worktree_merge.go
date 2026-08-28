@@ -5,17 +5,21 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/progress"
 )
 
 type worktreeMergeFlags struct {
 	target, route, onFailure, format       string
 	model, runtime, agentID, cli, provider string
 	cleanup                                bool
+	progress                               bool
 	timeout                                time.Duration
 	retry                                  int
 	interval                               time.Duration
@@ -46,7 +50,9 @@ wb worktree merge land /path/to/landing-receipt --cleanup`,
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
-			receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(flags, args), landMergeOptions(flags, ""))
+			campaign := newWorktreeMergeProgress(command, flags)
+			receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter()), landMergeOptions(flags, "", campaign.reporter()))
+			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -68,7 +74,9 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
-			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args))
+			campaign := newWorktreeMergeProgress(command, flags)
+			receipt, err := orchestrate.PrepareWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter()))
+			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -88,7 +96,9 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
-			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0]))
+			campaign := newWorktreeMergeProgress(command, flags)
+			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter()))
+			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -108,10 +118,13 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
+			campaign := newWorktreeMergeProgress(command, flags)
+			progress.Report(campaign.reporter(), progress.Event{Operation: "worktree_merge", Phase: "prepare_revert", State: progress.Started, Detail: args[0]})
 			receipt, err := orchestrate.PrepareWorktreeMergeRevert(command.Context(), projectsRoot, args[0], flags.timeout, flags.retry)
 			if err == nil {
-				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath))
+				receipt, err = orchestrate.LandWorktreeMerge(command.Context(), landMergeOptions(flags, receipt.ReceiptPath, campaign.reporter()))
 			}
+			finishWorktreeMergeProgress(campaign, receipt, err)
 			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
 				return writeErr
 			}
@@ -140,6 +153,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	command.Flags().DurationVar(&flags.timeout, "timeout", 8*time.Minute, "bounded command and check wait duration")
 	command.Flags().IntVar(&flags.retry, "retry", 0, "retry transient command failures")
 	command.Flags().StringVar(&flags.format, "format", "text", "stdout format: text or json")
+	command.Flags().BoolVar(&flags.progress, "progress", false, "show progress on stderr even when it is not a terminal")
 }
 
 func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
@@ -160,16 +174,73 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	return nil
 }
 
-func prepareMergeOptions(flags worktreeMergeFlags, sources []string) orchestrate.WorktreeMergePrepareOptions {
+func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter) orchestrate.WorktreeMergePrepareOptions {
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
-		Timeout: flags.timeout, Retry: flags.retry}
+		Timeout: flags.timeout, Retry: flags.retry, Progress: reporter, ProgressRequested: flags.progress}
 }
 
-func landMergeOptions(flags worktreeMergeFlags, receipt string) orchestrate.WorktreeMergeLandOptions {
+func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
-		Timeout: flags.timeout, Retry: flags.retry, CheckPollInterval: flags.interval}
+		Timeout: flags.timeout, Retry: flags.retry, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress}
+}
+
+func newWorktreeMergeProgress(command *cobra.Command, flags worktreeMergeFlags) *campaignProgress {
+	interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+	out := command.ErrOrStderr()
+	heartbeat := time.Second
+	if flags.progress && !interactive {
+		out = &worktreeMergeLineWriter{out: out}
+		heartbeat = 30 * time.Second
+	}
+	return newCampaignProgressWithHeartbeat(out, flags.progress || interactive, "worktree merge", heartbeat)
+}
+
+// worktreeMergeLineWriter turns the live renderer's carriage-return updates
+// into newline-delimited diagnostics for non-terminal agent tools. Those tools
+// can otherwise buffer a healthy stage until the final newline and recreate
+// the silence --progress is meant to remove.
+type worktreeMergeLineWriter struct {
+	out     io.Writer
+	mu      sync.Mutex
+	started bool
+}
+
+func (writer *worktreeMergeLineWriter) Write(payload []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	text := string(payload)
+	if strings.HasPrefix(text, "\r") {
+		text = strings.TrimPrefix(text, "\r")
+		if writer.started {
+			text = "\n" + text
+		}
+		writer.started = true
+	}
+	if text == "\n" {
+		writer.started = false
+	}
+	if _, err := io.WriteString(writer.out, text); err != nil {
+		return 0, err
+	}
+	return len(payload), nil
+}
+
+func finishWorktreeMergeProgress(campaign *campaignProgress, receipt orchestrate.WorktreeMergeReceipt, err error) {
+	if err != nil {
+		status := strings.TrimSpace(string(receipt.Status))
+		if status == "" {
+			status = "failed"
+		}
+		campaign.finish(status)
+		return
+	}
+	status := strings.TrimSpace(string(receipt.Status))
+	if status == "" {
+		status = "completed"
+	}
+	campaign.finish(status)
 }
 
 func writeWorktreeMergeReceipt(writer io.Writer, format string, receipt orchestrate.WorktreeMergeReceipt) error {

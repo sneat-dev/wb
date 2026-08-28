@@ -16,7 +16,7 @@ Compose the low-level skills; do not restate their command details.
    pre-push path.
 6. Push once per meaningful revision and let the managed pre-push hook run.
 7. Hand each conflict-free completed batch to `$wb-merge` and use
-   `wb worktree merge <source-worktree...> --route auto --cleanup`; split it
+   `wb worktree merge <source-worktree...> --route auto --cleanup --progress`; split it
    into `prepare` and `land` only when dependent agents need the candidate SHA
    before remote checks finish. Escalate actual conflicts or behavioral choices.
 8. Confirm the receipt reached the exact remote target and cleanup is complete;
