@@ -5,6 +5,7 @@ package worktrees
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -84,6 +85,29 @@ func runPlatformGitWithFilesystemCapability(capability gitFilesystemCapability, 
 }
 
 func restrictWithLandlock(capability gitFilesystemCapability) error {
+	return pinOSThreadThroughLandlock(func() error {
+		return installLandlockRuleset(capability)
+	})
+}
+
+// pinOSThreadThroughLandlock keeps PR_SET_NO_NEW_PRIVS, RESTRICT_SELF, and the
+// caller's subsequent exec on one Linux task. no_new_privs and Landlock apply
+// to the calling thread; a Go goroutine may otherwise migrate between those
+// syscalls and make RESTRICT_SELF fail with EPERM, or exec Git from a thread
+// that never received the intended restriction. A successful restriction is
+// irreversible, so the helper process deliberately remains pinned until its
+// immediate exec or exit. An error leaves no usable capability and unlocks the
+// goroutine before returning the diagnostic.
+func pinOSThreadThroughLandlock(install func() error) error {
+	runtime.LockOSThread()
+	if err := install(); err != nil {
+		runtime.UnlockOSThread()
+		return err
+	}
+	return nil
+}
+
+func installLandlockRuleset(capability gitFilesystemCapability) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("set no-new-privileges before Landlock: %w", err)
 	}
