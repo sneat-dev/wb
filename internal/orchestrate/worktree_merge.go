@@ -1607,6 +1607,18 @@ func sameWorktreeMergeFailure(baseline, candidate quality.VerificationEntry) boo
 }
 
 func normalizeWorktreeMergeFailureDetail(detail string) string {
+	// A package script can run from a dependency-free target snapshot while the
+	// candidate reuses its dependency cache. pnpm then emits install progress
+	// only for the baseline before echoing the same `$ <script>` command and
+	// terminal failure. Compare from the last echoed package-script command so
+	// setup chatter cannot disguise or manufacture a behavioral regression.
+	lines := strings.Split(strings.ReplaceAll(detail, "\r\n", "\n"), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[index]), "$ ") {
+			detail = strings.Join(lines[index:], "\n")
+			break
+		}
+	}
 	// Quality command output can include the ephemeral checkout path. It is not
 	// behavior, so compare a whitespace-normalized form after erasing absolute
 	// paths. All command, check, module, and error text still has to match.

@@ -188,6 +188,17 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 	}{
 		{name: "passing target and candidate", baseline: quality.VerificationReport{Status: quality.StatusPassed}, candidate: quality.VerificationReport{Status: quality.StatusPassed}},
 		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
+		{
+			name:      "same terminal package script failure after baseline install prelude",
+			baseline:  failing("Lockfile is up to date\nPackages: +2172\nDone in 12.3s using pnpm\n$ nx test\nNX Cannot find configuration for task sneat:test\n[ELIFECYCLE] Test failed"),
+			candidate: failing("$ nx test\nNX Cannot find configuration for task sneat:test\n[ELIFECYCLE] Test failed"),
+		},
+		{
+			name:      "changed terminal package script failure after baseline install prelude",
+			baseline:  failing("Done in 12.3s using pnpm\n$ nx test\nNX Cannot find configuration for task sneat:test\n[ELIFECYCLE] Test failed"),
+			candidate: failing("$ nx test\nNX Cannot find configuration for task sneat:build\n[ELIFECYCLE] Test failed"),
+			wantError: true,
+		},
 		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
