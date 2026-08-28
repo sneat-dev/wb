@@ -32,6 +32,33 @@ checksum:
   name_template: "wb_{{ .Version }}_checksums.txt"
   algorithm: sha256
 
+# macOS signing + notarization — DORMANT unless MACOS_SIGN_P12 is set, in
+# which case the shared strongo/cicd release.yml forwards it (and the other
+# four Apple secrets) to this job. GoReleaser's notarize is pure Go (quill),
+# so this runs on the existing Linux job — no macOS runner needed. See
+# ingitdb/ingitdb-cli's .goreleaser.yaml, the reference implementation this
+# block is copied from.
+#
+# This is exactly the problem the homebrew_casks post-install xattr hook
+# below works around (issue #24): an unsigned/un-notarized binary is
+# quarantined by Homebrew and macOS refuses to run it. Once a release
+# actually ships a notarized artifact through this block, Gatekeeper accepts
+# it directly and the xattr hook becomes a no-op safety net rather than the
+# only fix — left in place unchanged since removing it is out of scope here.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [wb]
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        wait: true
+        issuer_id: "{{ .Env.NOTARIZE_ISSUER_ID }}"
+        key_id: "{{ .Env.NOTARIZE_KEY_ID }}"
+        key: "{{ .Env.NOTARIZE_KEY }}"
+        timeout: 20m
+
 changelog:
   sort: asc
   filters:
