@@ -72,6 +72,14 @@ wb worktree rescue <path>
 
 ## 3. Working in this repository
 
+### Issue ownership
+
+Before creating a GitHub issue, name the repository whose code, tests,
+documentation, packaging, or release must change. Create the issue there. Use
+`sneat-dev/wb` only for a concrete WB change; route multi-repository,
+fleet-process, and governance work to `sneat-co/backstage`. Do not use this
+public WB repository as a fleet tracker or mirror upstream issues.
+
 - Build: `go build ./...`  ·  Test: `go test ./...`  ·  Lint: `golangci-lint run`
 - Total statement coverage must stay at or above the floor enforced in
   `.github/workflows/go-ci.yml`. Do not reduce approved scope to satisfy it —
