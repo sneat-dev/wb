@@ -750,6 +750,29 @@ func TestAcquireLockWritesExactOperationMetadata(t *testing.T) {
 	}
 }
 
+func TestAcquireLockDoesNotStealEmptyLockInCreationWindow(t *testing.T) {
+	directoryPath := t.TempDir()
+	if resolved, resolveErr := filepath.EvalSymlinks(directoryPath); resolveErr == nil {
+		directoryPath = resolved
+	}
+	directory, err := openAbsoluteDirectoryNoFollow(directoryPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = directory.Close() }()
+	if err := os.WriteFile(filepath.Join(directoryPath, ".lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := acquireLockAt(directory, "creation-window"); !errors.Is(err, errOperationLockHeld) {
+		t.Fatalf("empty published lock error = %v, want live contention", err)
+	}
+	info, err := os.Stat(filepath.Join(directoryPath, ".lock"))
+	if err != nil || info.Size() != 0 {
+		t.Fatalf("contender mutated empty published lock: info=%v err=%v", info, err)
+	}
+}
+
 func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
 	operationRoot := t.TempDir()
 	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
