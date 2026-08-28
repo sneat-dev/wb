@@ -22,7 +22,7 @@ var heuristicRuleIDs = map[string]bool{
 // classifyEmbeddedRule assigns Severity to a rule parsed from the vendored
 // gitleaks ruleset (or an operator-supplied drop-in replacement using the
 // same gitleaks schema, e.g. a refreshed config/gitleaks.toml -- see
-// vendor/gitleaks/PROVENANCE.md).
+// gitleaks/PROVENANCE.md).
 func classifyEmbeddedRule(raw rawTOMLRule) Severity {
 	if heuristicRuleIDs[raw.ID] {
 		return SeverityWarn
