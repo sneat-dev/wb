@@ -509,6 +509,44 @@ func TestValidateTerminalCleanupReportsRejectsMalformedSchema(t *testing.T) {
 	}
 }
 
+func TestValidateTerminalCleanupReportsAcceptsHistoricalPartialProgress(t *testing.T) {
+	task := "source"
+	repository := "acme/app"
+	historical := writeCleanupReportFixture(t, task, repository, time.Now().UTC().Add(-time.Hour), false, true, false, "remote branch was retired before the interrupted worktree removal")
+	completed := writeCleanupReportFixture(t, task, repository, time.Now().UTC(), true, true, true, "")
+	if err := worktrees.ValidateTerminalCleanupReports([]string{historical, completed}, repository, []string{task}); err != nil {
+		t.Fatalf("historical partial cleanup report was rejected: %v", err)
+	}
+	impossible := writeCleanupReportFixture(t, task, repository, time.Now().UTC(), false, true, true, "cleanup failed after both terminal assets were removed")
+	if err := worktrees.ValidateTerminalCleanupReports([]string{impossible}, repository, []string{task}); err == nil || !strings.Contains(err.Error(), "inconsistent failed cleanup evidence") {
+		t.Fatalf("impossible failed cleanup report error = %v", err)
+	}
+}
+
+func writeCleanupReportFixture(t *testing.T, task, repository string, generatedAt time.Time, applied, worktreeGone, branchDeleted bool, reason string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "cleanup.json")
+	report := map[string]any{
+		"generated_at":  generatedAt,
+		"phase":         "applied",
+		"task":          task,
+		"apply":         true,
+		"delete_remote": true,
+		"results": []map[string]any{{
+			"task": task, "repository": repository, "applied": applied,
+			"worktree_gone": worktreeGone, "branch_deleted": branchDeleted, "reason": reason,
+		}},
+	}
+	contents, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestCleanupWorktreeMergeAssetsTerminalizesSourceWithReceiptProvenSquashLanding(t *testing.T) {
 	fixture, source, receipt, landing := squashLandedMergeReceipt(t)
 	installWorktreeMergeDirectGH(t)

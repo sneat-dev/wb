@@ -514,7 +514,7 @@ func ValidateTerminalCleanupReports(paths []string, repository string, expectedT
 			success[result.Task] = index + 1
 			continue
 		}
-		if result.WorktreeGone || result.BranchDeleted || strings.TrimSpace(result.Reason) == "" {
+		if result.WorktreeGone && result.BranchDeleted || strings.TrimSpace(result.Reason) == "" {
 			return fmt.Errorf("terminal cleanup report %s has inconsistent failed cleanup evidence", path)
 		}
 		failures[result.Task] = append(failures[result.Task], index+1)
