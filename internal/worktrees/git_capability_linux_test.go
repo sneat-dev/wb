@@ -6,8 +6,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestLandlockInstallPinsCallerThroughImmediateExecBoundary(t *testing.T) {
+	var installedOn int
+	if err := pinOSThreadThroughLandlock(func() error {
+		installedOn = unix.Gettid()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.UnlockOSThread()
+	for range 100 {
+		runtime.Gosched()
+		if got := unix.Gettid(); got != installedOn {
+			t.Fatalf("caller migrated from Linux task %d to %d before exec", installedOn, got)
+		}
+	}
+}
 
 // Landlock restriction is irreversible for a process. Run the assertion in a
 // fresh test binary so the parent suite remains unrestricted.

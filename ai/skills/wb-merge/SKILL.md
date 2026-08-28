@@ -1,6 +1,6 @@
 ---
 name: wb-merge
-description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed.
+description: Mechanically land one or many compatible completed WB branches/worktrees into the default or explicit target branch, choosing a verified direct-push or pull-request route, waiting for CI, synchronizing the canonical clone, and optionally cleaning up. Use whenever work is ready to merge, integrate, land, finish, deliver, drain, batch, push to main, open/merge a PR, resume an interrupted merge, repair failed post-target CI, or prepare a forward revert—especially for repeated conflict-free AI-agent handoffs where no judgment call is needed.
 ---
 
 # WB merge
@@ -133,6 +133,15 @@ than a fictional queue.
    The strict server policy closes the final target-movement race; if GitHub
    rejects the merge after the local rereads, keep the PR unmerged and
    reintegrate instead of reporting completion.
+   If exact post-target CI fails after the remote landing, preserve the receipt,
+   candidate, and sources. Return implementation work to its owner. Once the
+   same clean source advances additively with a forward repair, rerun
+   `wb worktree merge prepare <source>`: WB verifies the prior landing is still
+   contained by the fetched target and verifies the prior candidate by graph
+   ancestry or exact tree equality with its receipted squash landing. It then
+   advances the retained candidate without rewriting published history,
+   appends the failed landing to `forward_repairs`, and creates a new PR without
+   force-pushing or hand-editing the old receipt.
 6. Before collecting installation evidence, read the owning product's
    release/distribution contract. **Never use a distribution channel that the
    owning product marks blocked or unverified** for installation, upgrade, or
