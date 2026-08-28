@@ -1710,6 +1710,91 @@ func TestGuardAllowsOnlyRealTransientRebases(t *testing.T) {
 	}
 }
 
+func TestGuardAllowsRealTransientCherryPick(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "cherry-pick", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("picked side\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "README.md")
+	gitTest(t, worktree, "commit", "-m", "commit to cherry-pick")
+	picked := gitTestOutput(t, worktree, "rev-parse", "HEAD")
+	gitTest(t, worktree, "reset", "--hard", "HEAD~1")
+	if err := os.WriteFile(filepath.Join(worktree, "README.md"), []byte("current side\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "README.md")
+	gitTest(t, worktree, "commit", "-m", "conflicting current change")
+	gitTest(t, worktree, "checkout", "--detach", "HEAD")
+	if output, cherryPickErr := gitTestRun(worktree, "cherry-pick", picked); cherryPickErr == nil {
+		t.Fatalf("cherry-pick unexpectedly succeeded: %s", output)
+	}
+	gitDir := gitTestOutput(t, worktree, "rev-parse", "--absolute-git-dir")
+	if info, statErr := os.Stat(filepath.Join(gitDir, "CHERRY_PICK_HEAD")); statErr != nil || !info.Mode().IsRegular() {
+		t.Fatalf("expected active cherry-pick state: %v", statErr)
+	}
+	guarded, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil || !guarded.Transient || guarded.TransientOperation != "cherry-pick" || guarded.Kind != "linked" {
+		t.Fatalf("guard during cherry-pick = %#v, %v", guarded, err)
+	}
+	gitTest(t, worktree, "cherry-pick", "--abort")
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("persistent detached guard error after cherry-pick abort = %v", err)
+	}
+	for name, content := range map[string]string{
+		"CHERRY_PICK_HEAD": picked + "\n",
+		"MERGE_MSG":        "stale cherry-pick marker\n",
+	} {
+		if err := os.WriteFile(filepath.Join(gitDir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("stale cherry-pick state guard error = %v", err)
+	}
+	for _, name := range []string{"CHERRY_PICK_HEAD", "MERGE_MSG"} {
+		if err := os.Remove(filepath.Join(gitDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gitTest(t, worktree, "checkout", created[0].Branch)
+	guarded, err = Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil || guarded.Transient || guarded.Branch != created[0].Branch {
+		t.Fatalf("guard after restoring branch = %#v, %v", guarded, err)
+	}
+}
+
+func TestGuardAllowsRealTransientBisect(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "bisect", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	for index := 0; index < 4; index++ {
+		name := fmt.Sprintf("bisect-%d.txt", index)
+		if err := os.WriteFile(filepath.Join(worktree, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gitTest(t, worktree, "add", name)
+		gitTest(t, worktree, "commit", "-m", name)
+	}
+	gitTest(t, worktree, "bisect", "start", "HEAD", "HEAD~4")
+	guarded, err := Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil || !guarded.Transient || guarded.TransientOperation != "bisect" || guarded.Kind != "linked" {
+		t.Fatalf("guard during bisect = %#v, %v", guarded, err)
+	}
+	gitTest(t, worktree, "bisect", "reset")
+	guarded, err = Guard(context.Background(), worktree, GuardOptions{ProjectsRoot: fixture.projectsRoot})
+	if err != nil || guarded.Transient || guarded.Branch != created[0].Branch {
+		t.Fatalf("guard after bisect reset = %#v, %v", guarded, err)
+	}
+}
+
 func TestGuardAllowsLongRealRebaseHistory(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "long-rebase", WorkLog: WorkLogOptions{Model: "unknown"}})
