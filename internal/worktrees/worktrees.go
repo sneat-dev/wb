@@ -3246,6 +3246,23 @@ func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool
 		_ = file.Close()
 		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
 	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf("inspect existing worktree operation lock: %w", err)
+	}
+	// O_EXCL publishes the new directory entry immediately before its creator
+	// can take flock and write ownership metadata. A contender that flocks that
+	// still-empty inode can beat the creator, causing the creator to lose and
+	// then classifying its own briefly held lock as an interrupted remnant. In a
+	// create stampede every contender can do that in turn, leaving no winner.
+	// Empty metadata is never safe to reclaim (resume cannot prove an owner), so
+	// treat this creation window as live contention and leave the exact inode
+	// untouched for its creator.
+	if info.Size() == 0 {
+		_ = file.Close()
+		return operationLock{}, errOperationLockHeld
+	}
 	if err := holdOperationLock(file); err != nil {
 		_ = file.Close()
 		return operationLock{}, err
