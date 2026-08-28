@@ -188,6 +188,7 @@ wb worktree abort <task> --disposition not_landed --successor <agent-or-session>
 wb worktree abort <task> --disposition discarded --apply --remote
 wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown
 wb worktree abort fair-split --disposition discarded --apply --remote
+wb worktree abort fair-split --disposition discarded --all --apply --remote
 ```
 
 Applied `handoff` and `not_landed` require exactly one successor and its exact
@@ -201,6 +202,9 @@ authorization to seal first, retire an exact unchanged remote source branch,
 then remove a clean unlocked worktree and its exact local branch. WB repeats
 the clean/head/registration checks at the removal boundary; a concurrent write
 makes it refuse.
+For a coordinated task with more than one repository, choose one member with
+`--filter <owner/repository>` or explicitly acknowledge every member with
+`--all`; an unscoped multi-repository abort refuses before sealing or removal.
 If discard is interrupted after the worktree disappears, rerun the same
 `abort ... --disposition discarded --apply --remote` command; WB resumes only
 the exact journaled local ref. Run `wb worktree list` and a final cleanup/abort

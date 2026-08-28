@@ -38,6 +38,7 @@ type workflowFile struct {
 
 var (
 	positiveGoThreshold         = regexp.MustCompile(`(?mi)min_test_coverage_percent\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
+	positiveGoFallbackThreshold = regexp.MustCompile(`(?mi)\b(?:minimum_?(?:test_)?coverage|coverage_?threshold|threshold)\b\s*(?::|=)\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
 	positiveJSWorkflow          = regexp.MustCompile(`(?mi)(?:minimum-coverage|coverage-threshold)\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
 	jsConfigThreshold           = regexp.MustCompile(`(?mi)(?:coverageThreshold|thresholds)\s*[:=]`)
 	positiveC8Threshold         = regexp.MustCompile(`(?mi)\bc8\b[^\n]*--check-coverage[^\n]*--(?:lines|statements|functions|branches)(?:=|\s+)(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
@@ -46,7 +47,8 @@ var (
 	playwrightV8Start           = regexp.MustCompile(`(?mi)\.\s*coverage\s*\.\s*startjscoverage\s*\(`)
 	playwrightV8Stop            = regexp.MustCompile(`(?mi)\.\s*coverage\s*\.\s*stopjscoverage\s*\(`)
 	positiveCoverageExpectFloor = regexp.MustCompile(`(?mis)\bexpect\s*\(\s*\b[a-z0-9_$]*(?:coverage|percentage|percent)[a-z0-9_$]*\b(?:\s*,.{0,500}?)?\)\s*\.\s*tobegreaterthanorequal\s*\(\s*(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])\s*\)`)
-	deployCommand               = regexp.MustCompile(`(?mi)(firebase(?:-tools[^\n]*)?\s+deploy|wrangler(?:-action|[^\n]*)?\s+deploy|gcloud\s+(?:run|app)\s+deploy|kubectl\s+apply|helm\s+(?:install|upgrade))`)
+	deployCommand               = regexp.MustCompile(`(?mi)(firebase(?:-tools[^\n]*)?\s+deploy|gcloud\s+(?:run|app)\s+deploy|kubectl\s+apply|helm\s+(?:install|upgrade))`)
+	wranglerDeployCommand       = regexp.MustCompile(`(?mi)\bwrangler(?:-action|[^\n]*)?\s+deploy\b`)
 	sourceBuildCommand          = regexp.MustCompile(`(?mi)(pnpm\s+(?:exec\s+nx\s+|run\s+)?build|npm\s+(?:run\s+)?build|yarn\s+build|\bnx\s+build|\bgo\s+build|\bcargo\s+build)`)
 )
 
@@ -222,7 +224,7 @@ func scan(root string, report *Report) ([]workflowFile, string, string, bool, er
 				return err
 			}
 			content := strings.ToLower(string(data))
-			deploy := strings.Contains(lower, "deploy") || deployCommand.MatchString(content)
+			deploy := hasDeployCommand(content)
 			workflows = append(workflows, workflowFile{path: filepath.ToSlash(rel), content: content, deploy: deploy})
 		}
 		return nil
@@ -279,7 +281,22 @@ func ignoredDirectory(name string) bool {
 
 func hasGoCoverageComparison(content string) bool {
 	return strings.Contains(content, "go tool cover") &&
-		(strings.Contains(content, "total_coverage") || strings.Contains(content, "minimum") || strings.Contains(content, "threshold"))
+		positiveGoFallbackThreshold.MatchString(content)
+}
+
+func hasDeployCommand(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if wranglerDeployCommand.MatchString(line) {
+			if !strings.Contains(line, "--dry-run") {
+				return true
+			}
+			continue
+		}
+		if deployCommand.MatchString(line) {
+			return true
+		}
+	}
+	return strings.Contains(content, "firebase-deploy.yml")
 }
 
 func hasArtifactFinding(findings []Finding) bool {
