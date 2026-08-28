@@ -62,6 +62,10 @@ and the result is `complete`. If anything fails before landing, every source is
 preserved and rerunning resumes from the journaled phase. If target or
 post-target CI fails after landing, WB preserves the before/after target receipt
 and can prepare a forward revert candidate; it never rewrites remote history.
+If the same source instead advances additively with a forward repair, prepare
+proves the target still contains the failed landing, fast-forwards the retained
+candidate to that target, appends the failed attempt to the receipt, and lands
+the repair through a fresh route and pull request.
 
 ### Command surface
 
@@ -171,6 +175,16 @@ remediation command.
 Given an exact landing receipt whose post-target checks fail, `merge revert`
 creates a new candidate that reverses the before/after target tree without
 resetting or force-pushing. A conflict refuses with all evidence preserved.
+
+### AC: landed-target-ci-failure-accepts-an-audited-forward-repair
+
+Given a post-target CI failure and the same clean source advanced by descendant
+repair commits, rerunning `merge prepare` retains the exclusive lane, proves
+the fetched target contains the prior landing and candidate, advances the
+candidate without rewriting published history, records every failed landing,
+and prepares a fresh repair PR. A changed source identity, non-descendant
+advance, moved candidate, or missing target containment refuses without state
+mutation.
 
 ### AC: cleanup-is-explicit-and-receipt-gated
 

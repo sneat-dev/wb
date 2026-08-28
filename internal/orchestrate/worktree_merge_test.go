@@ -517,6 +517,67 @@ func TestPrepareWorktreeMergeRefreshesPublishedCandidateAfterChecksFail(t *testi
 	}
 }
 
+func TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "post-target-repair-source", "feature/post-target-repair", "first.txt", "first\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", first.Candidate.SHA+":refs/heads/"+first.Candidate.Branch)
+	runEngineGit(t, fixture.canonical, "merge", "--no-ff", "-m", "merge first candidate", first.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	landing := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergePostTargetCIFailed
+	first.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRoutePullRequest}
+	first.PullRequest = "https://example.test/acme/app/pull/29"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.PreviousTargetSHA = first.TargetSHA
+	first.LandingSHA = landing
+	first.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Repository: "acme/app", Target: "main", Head: landing, Reason: "target test failed"}
+	first.Failure = "required target check failed"
+	first.Cleanup = true
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")
+	runEngineGit(t, source.WorktreeDir, "add", "repair.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: repair target CI")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+
+	repaired, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.ID != first.ID || repaired.ReceiptPath != first.ReceiptPath || repaired.Candidate.Worktree != first.Candidate.Worktree {
+		t.Fatalf("forward repair abandoned its retained lane: first=%+v repaired=%+v", first, repaired)
+	}
+	if len(repaired.ForwardRepairs) != 1 || repaired.ForwardRepairs[0].Status != WorktreeMergePostTargetCIFailed ||
+		repaired.ForwardRepairs[0].LandingSHA != landing || repaired.ForwardRepairs[0].CandidateSHA != first.Candidate.SHA ||
+		repaired.ForwardRepairs[0].PullRequest != first.PullRequest || repaired.ForwardRepairs[0].Failure != first.Failure {
+		t.Fatalf("forward repair audit = %+v, want exact failed landing %+v", repaired.ForwardRepairs, first)
+	}
+	if repaired.PullRequest != "" || repaired.PublishedCandidateSHA != "" || repaired.LandingSHA != "" || repaired.PreviousTargetSHA != "" {
+		t.Fatalf("forward repair inherited completed landing identity: %+v", repaired)
+	}
+	if repaired.TargetSHA != landing || repaired.Sources[0].SHA != advancedSource || !repaired.Cleanup {
+		t.Fatalf("forward repair exact target/source/intent = %+v", repaired)
+	}
+	for _, ancestor := range []string{landing, advancedSource} {
+		contains, ancestorErr := isMergeAncestor(context.Background(), repaired.Candidate.Worktree, ancestor, repaired.Candidate.SHA)
+		if ancestorErr != nil || !contains {
+			t.Fatalf("repair candidate %s does not contain %s: %v", repaired.Candidate.SHA, ancestor, ancestorErr)
+		}
+	}
+}
+
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
 	for _, test := range []struct {
 		name       string
