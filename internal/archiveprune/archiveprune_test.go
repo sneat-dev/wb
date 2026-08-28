@@ -322,6 +322,7 @@ func TestClean_RefusesNonTerminalWorkLogClaim(t *testing.T) {
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	mustMkdirAll(t, claimDir)
 	claim := map[string]any{
+		"claim_id":   "claim",
 		"repository": f.slug(),
 		"task":       "some-task",
 		"worktree":   "/wherever/it/was",
@@ -352,6 +353,7 @@ func TestClean_TerminalClaimDoesNotBlock(t *testing.T) {
 	claimDir := filepath.Join(home, "worklogs", "some-task", "runs", "run-1", "claims")
 	mustMkdirAll(t, claimDir)
 	claim := map[string]any{
+		"claim_id":   "claim",
 		"repository": f.slug(),
 		"task":       "some-task",
 		"worktree":   "/wherever/it/was",

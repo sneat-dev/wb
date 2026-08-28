@@ -165,7 +165,7 @@ func TestAbortDiscardedUnusedWorktreesIsAudited(t *testing.T) {
 	}
 	results, err := Abort(context.Background(), AbortOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "unused-storage", Disposition: AbortDiscarded,
-		DeleteRemote: true, Apply: true,
+		DeleteRemote: true, Apply: true, All: true,
 	})
 	if err != nil {
 		t.Fatal(err)
