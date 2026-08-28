@@ -62,3 +62,13 @@ jobs:
       allow_major_version_bump: false
     secrets:
       GORELEASER_GITHUB_TOKEN: ${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}
+      # macOS signing + notarization. These activate the `notarize:` block in
+      # .goreleaser.yml, which is gated on MACOS_SIGN_P12 being set. Unsigned
+      # darwin binaries are quarantined by the Homebrew cask install path and
+      # blocked by Gatekeeper (sneat-dev/wb#24) — see ingitdb/ingitdb-cli's
+      # release.yml, the reference implementation this block is copied from.
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+      NOTARIZE_ISSUER_ID: ${{ secrets.NOTARIZE_ISSUER_ID }}
+      NOTARIZE_KEY_ID: ${{ secrets.NOTARIZE_KEY_ID }}
+      NOTARIZE_KEY: ${{ secrets.NOTARIZE_KEY }}
