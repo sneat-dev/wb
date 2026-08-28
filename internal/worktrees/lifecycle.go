@@ -289,6 +289,12 @@ type CleanupOptions struct {
 	ProjectsRoot string
 	Task         string
 	Base         string
+	// ExactRepository limits a named-task cleanup transaction to one exact
+	// owner/repository slug. It is intended for repository-scoped orchestrators
+	// such as worktree merge, where another repository may share the same task.
+	// Filter remains the user-facing substring selector; this additional gate is
+	// applied to the already inspected plan before any mutation.
+	ExactRepository string
 	// Filter narrows both which candidates are validated and which are acted
 	// on to those whose owner/repository slug contains this substring — see
 	// ListOptions.Filter. An empty Filter matches everything, preserving
@@ -1158,6 +1164,15 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	if normalized.ExactRepository != "" {
+		selected := listed.Results[:0]
+		for _, result := range listed.Results {
+			if result.Repository == normalized.ExactRepository {
+				selected = append(selected, result)
+			}
+		}
+		listed.Results = selected
+	}
 	if recovery != nil {
 		for index := range listed.Results {
 			if listed.Results[index].Task == recovery.Task && listed.Results[index].WorktreesRoot == recovery.WorktreesRoot {
@@ -1172,6 +1187,18 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	backlog, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, normalized.Task, normalized.Filter, "removed")
 	if err != nil {
 		return CleanupOutcome{}, err
+	}
+	if normalized.ExactRepository != "" {
+		selected := backlog[:0]
+		for _, record := range backlog {
+			if record.Repository == normalized.ExactRepository {
+				selected = append(selected, record)
+			}
+		}
+		backlog = selected
+	}
+	if normalized.ExactRepository != "" && len(listed.Results) == 0 && len(backlog) == 0 {
+		return CleanupOutcome{}, fmt.Errorf("WB worktree task %q has no repository %q", normalized.Task, normalized.ExactRepository)
 	}
 	// A task directory with no repositories under it yields no candidate and no
 	// diagnostic, so it is invisible to inventory. Discover it here, before any
@@ -1789,6 +1816,20 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 	options.Task = task
 	options.Base = base
 	options.Filter = filter
+	options.ExactRepository = strings.TrimSpace(options.ExactRepository)
+	if options.ExactRepository != "" {
+		if _, _, err := splitRepository(options.ExactRepository); err != nil {
+			return CleanupOptions{}, err
+		}
+		if options.AllMerged {
+			return CleanupOptions{}, fmt.Errorf("exact repository cleanup requires one explicit task")
+		}
+		if options.Filter != "" && options.Filter != options.ExactRepository {
+			return CleanupOptions{}, fmt.Errorf("exact repository cleanup cannot be combined with a different substring filter")
+		}
+		// Narrow the filesystem walk before the exact post-inspection gate.
+		options.Filter = options.ExactRepository
+	}
 	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
 	if options.Task == "" && !options.AllMerged {
 		return CleanupOptions{}, fmt.Errorf("supply one task or use --all-merged")

@@ -3126,7 +3126,7 @@ func acquireLockAtReclaimingInterrupted(operationDirectory *os.File, reclaimInte
 		return operationLock{}, err
 	}
 	if !reused {
-		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW, 0o600)
+		fd, openErr := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 		if openErr != nil {
 			if errors.Is(openErr, unix.EEXIST) {
 				return reclaimInterruptedLock(operationDirectory, reclaimInterrupted)
@@ -3231,7 +3231,7 @@ func holdOperationLock(file *os.File) error {
 // refuses, so an operator can tell "another WB is running" from "a previous WB
 // died here" instead of reading one message that means either.
 func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool) (operationLock, error) {
-	fd, err := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDWR|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(int(operationDirectory.Fd()), ".lock", unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		// The entry vanished or is not a plain file WB may hold; stay closed.
 		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
@@ -3245,6 +3245,23 @@ func reclaimInterruptedLock(operationDirectory *os.File, reclaimInterrupted bool
 	if err != nil {
 		_ = file.Close()
 		return operationLock{}, fmt.Errorf("worktree operation is already active or was interrupted")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return operationLock{}, fmt.Errorf("inspect existing worktree operation lock: %w", err)
+	}
+	// O_EXCL publishes the new directory entry immediately before its creator
+	// can take flock and write ownership metadata. A contender that flocks that
+	// still-empty inode can beat the creator, causing the creator to lose and
+	// then classifying its own briefly held lock as an interrupted remnant. In a
+	// create stampede every contender can do that in turn, leaving no winner.
+	// Empty metadata is never safe to reclaim (resume cannot prove an owner), so
+	// treat this creation window as live contention and leave the exact inode
+	// untouched for its creator.
+	if info.Size() == 0 {
+		_ = file.Close()
+		return operationLock{}, errOperationLockHeld
 	}
 	if err := holdOperationLock(file); err != nil {
 		_ = file.Close()
@@ -3279,7 +3296,7 @@ func claimRetiredLock(directory *os.File) (*os.File, bool, error) {
 		if !strings.HasPrefix(entry.Name(), ".wb-retired-lock-") {
 			continue
 		}
-		fd, openErr := unix.Openat(int(directory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+		fd, openErr := unix.Openat(int(directory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		if openErr != nil {
 			continue
 		}
@@ -3380,7 +3397,7 @@ func moveExpectedLockNoReplace(directory *os.File, fromName, toName string, expe
 	if err := renameNoReplace(int(directory.Fd()), fromName, int(directory.Fd()), toName); err != nil {
 		return nil, err
 	}
-	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDWR|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(int(directory.Fd()), toName, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open moved operation lock %s: %w", toName, err)
 	}

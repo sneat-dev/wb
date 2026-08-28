@@ -39,6 +39,7 @@ func newWorktreeCmd() *cobra.Command {
 		Short:   "Create and enforce isolated development worktrees",
 	}
 	command.AddCommand(newWorktreeCreateCmd())
+	command.AddCommand(newWorktreeMergeCmd())
 	command.AddCommand(newWorktreeGuardCmd())
 	command.AddCommand(newWorktreeMarkerCmd())
 	command.AddCommand(newWorktreeRescueCmd())
@@ -821,7 +822,13 @@ WB reads stdin once, in memory, and writes the private 0600 archive itself
 under WB_HOME; no caller-owned staging file ever exists, so two concurrent
 invocations cannot archive each other's prompt by racing on a shared path.
 Empty or whitespace-only stdin is refused, and the bytes are never echoed
-back to stdout, stderr, or argv.`,
+back to stdout, stderr, or argv.
+
+When the worktree is ready to merge and no conflict or behavioral judgment is
+needed, use 'wb worktree merge <worktree...> --route auto --cleanup'. It is the
+normal completion counterpart to create: WB selects a permitted direct or PR
+route, waits for exact checks, verifies the remote target, synchronizes an
+eligible canonical checkout, and cleans the finished branch/worktree.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.MinimumNArgs(1)(command, args); err != nil {
 				return err

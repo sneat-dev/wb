@@ -167,6 +167,24 @@ func TestParseChecks(t *testing.T) {
 	}
 }
 
+func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
+	prefix := "setup context\n"
+	middle := strings.Repeat("passing package output\n", 100)
+	failure := "--- FAIL: TestImportantJourney (15.14s)\n    journey_test.go:42: exact failure\nFAIL"
+
+	detail := commandError("go test ./...", prefix+middle+failure, context.DeadlineExceeded)
+
+	if !strings.Contains(detail, prefix) {
+		t.Fatalf("detail lost initial command context: %q", detail)
+	}
+	if !strings.Contains(detail, failure) {
+		t.Fatalf("detail lost terminal failure: %q", detail)
+	}
+	if !strings.Contains(detail, "truncated") {
+		t.Fatalf("detail does not disclose truncation: %q", detail)
+	}
+}
+
 func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test shell helper is POSIX-only")

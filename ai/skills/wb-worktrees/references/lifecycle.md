@@ -66,9 +66,19 @@ after it is merged to `main` **and** every related worktree/branch has an
 applied removal or audited recycle. A task has the same rule after integration
 to its feature branch. A validated or pushed branch is never done.
 
+For conflict-free ready work, prefer the complete landing journey instead of
+manually opening a PR and returning here later:
+
+```sh
+wb worktree merge <source-worktree...> --route auto --cleanup --format json
+```
+
+Use `merge prepare` when dependent agents need the candidate SHA before remote
+checks finish, then `merge land` or `merge resume` with the durable receipt.
+
 ## Plan cleanup
 
-After all coordinated PRs merge, always inspect the dry run:
+For work landed outside `wb worktree merge --cleanup`, always inspect the dry run:
 
 ```sh
 wb worktree cleanup <task>

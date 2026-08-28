@@ -29,6 +29,7 @@ format: https://specscore.md/features-index-specification
 | [Park and Resume Agent Sessions](park-and-resume-agent-sessions/README.md) | Approved | Park and resume lets a coordinator suspend one active WB session while |
 | [Archived Clone Cleanup](archived-clone-cleanup/README.md) | Implementing | wb archive clean safely removes local clones of repositories confirmed archived on GitHub, but only when the clone holds nothing that would be lost. |
 | [Go directive fleet policy](go-directive-policy/README.md) | Approved | Assess and, per repository, land the go 1.26.x directive / toolchain go1.27.0 pairing across the fleet, refusing where a dependency's own go directive forces a higher floor. |
+| [Mechanical Worktree Merge](mechanical-worktree-merge/README.md) | Stable | Prepare a WB-managed integration candidate and mechanically land it through a verified direct or pull-request route, with resumable receipts, safe recovery, and optional cleanup. |
 | [Pre-Push Tiering and Remote Checkpoints](pre-push-tiering-and-remote-checkpoints/README.md) | Implementing | Tier the managed pre-push hook by push target and give wb worktree checkpoint a fast, tier-0-only remote ref, so agents can persist work often without paying the full test-suite tax on every push. |
 
 ## Open Questions

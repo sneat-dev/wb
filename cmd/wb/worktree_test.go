@@ -34,6 +34,7 @@ func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
 		"<wb-home>/worktrees/<task>/<owner>/<repository>",
 		"WB_HOME",
 		"--resume",
+		"wb worktree merge <worktree...> --route auto --cleanup",
 	} {
 		if !strings.Contains(command.Long, wanted) {
 			t.Errorf("worktree create help does not mention %q", wanted)
