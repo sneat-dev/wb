@@ -93,37 +93,47 @@ type WorktreeMergeSourceRefresh struct {
 	Sources    []WorktreeMergeSource `json:"sources"`
 }
 
+type WorktreeMergePushGateReceipt struct {
+	Remote            string    `json:"remote"`
+	RemoteRef         string    `json:"remote_ref"`
+	PreviousRemoteSHA string    `json:"previous_remote_sha"`
+	LocalSHA          string    `json:"local_sha"`
+	Status            string    `json:"status"`
+	ObservedAt        time.Time `json:"observed_at"`
+}
+
 type WorktreeMergeReceipt struct {
-	SchemaVersion         int                          `json:"schema_version"`
-	ID                    string                       `json:"id"`
-	Lane                  string                       `json:"lane"`
-	Phase                 WorktreeMergePhase           `json:"phase"`
-	Status                WorktreeMergeStatus          `json:"status"`
-	Repository            string                       `json:"repository"`
-	Target                string                       `json:"target"`
-	TargetSHA             string                       `json:"target_sha"`
-	Sources               []WorktreeMergeSource        `json:"sources"`
-	Candidate             WorktreeMergeCandidate       `json:"candidate"`
-	Rebase                *WorktreeMergeRebaseReceipt  `json:"rebase,omitempty"`
-	RevertOf              *WorktreeMergeRevertReceipt  `json:"revert_of,omitempty"`
-	Route                 WorktreeMergeRouteDecision   `json:"route,omitempty"`
-	PullRequest           string                       `json:"pull_request,omitempty"`
-	PublishedCandidateSHA string                       `json:"published_candidate_sha,omitempty"`
-	PreviousTargetSHA     string                       `json:"previous_target_sha,omitempty"`
-	LandingSHA            string                       `json:"landing_sha,omitempty"`
-	CanonicalSync         string                       `json:"canonical_sync,omitempty"`
-	Validation            quality.VerificationReport   `json:"validation,omitempty"`
-	Checks                PullRequestWaitResult        `json:"checks,omitempty"`
-	Cleanup               bool                         `json:"cleanup_requested"`
-	OnFailure             string                       `json:"on_failure,omitempty"`
-	CleanupReports        []string                     `json:"cleanup_reports,omitempty"`
-	CleanedTasks          []string                     `json:"cleaned_tasks,omitempty"`
-	SourceRefreshes       []WorktreeMergeSourceRefresh `json:"source_refreshes,omitempty"`
-	Failure               string                       `json:"failure,omitempty"`
-	ResumeArgs            []string                     `json:"resume_args,omitempty"`
-	ReceiptPath           string                       `json:"receipt_path"`
-	CreatedAt             time.Time                    `json:"created_at"`
-	UpdatedAt             time.Time                    `json:"updated_at"`
+	SchemaVersion         int                           `json:"schema_version"`
+	ID                    string                        `json:"id"`
+	Lane                  string                        `json:"lane"`
+	Phase                 WorktreeMergePhase            `json:"phase"`
+	Status                WorktreeMergeStatus           `json:"status"`
+	Repository            string                        `json:"repository"`
+	Target                string                        `json:"target"`
+	TargetSHA             string                        `json:"target_sha"`
+	Sources               []WorktreeMergeSource         `json:"sources"`
+	Candidate             WorktreeMergeCandidate        `json:"candidate"`
+	Rebase                *WorktreeMergeRebaseReceipt   `json:"rebase,omitempty"`
+	RevertOf              *WorktreeMergeRevertReceipt   `json:"revert_of,omitempty"`
+	Route                 WorktreeMergeRouteDecision    `json:"route,omitempty"`
+	PullRequest           string                        `json:"pull_request,omitempty"`
+	PublishedCandidateSHA string                        `json:"published_candidate_sha,omitempty"`
+	PreviousTargetSHA     string                        `json:"previous_target_sha,omitempty"`
+	LandingSHA            string                        `json:"landing_sha,omitempty"`
+	CanonicalSync         string                        `json:"canonical_sync,omitempty"`
+	Validation            quality.VerificationReport    `json:"validation,omitempty"`
+	Checks                PullRequestWaitResult         `json:"checks,omitempty"`
+	PushGate              *WorktreeMergePushGateReceipt `json:"push_gate,omitempty"`
+	Cleanup               bool                          `json:"cleanup_requested"`
+	OnFailure             string                        `json:"on_failure,omitempty"`
+	CleanupReports        []string                      `json:"cleanup_reports,omitempty"`
+	CleanedTasks          []string                      `json:"cleaned_tasks,omitempty"`
+	SourceRefreshes       []WorktreeMergeSourceRefresh  `json:"source_refreshes,omitempty"`
+	Failure               string                        `json:"failure,omitempty"`
+	ResumeArgs            []string                      `json:"resume_args,omitempty"`
+	ReceiptPath           string                        `json:"receipt_path"`
+	CreatedAt             time.Time                     `json:"created_at"`
+	UpdatedAt             time.Time                     `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -568,13 +578,27 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 
 	serverLanding := receipt.Candidate.SHA
 	if decision.Route == WorktreeMergeRouteDirect {
-		refspec := receipt.Candidate.SHA + ":refs/heads/" + receipt.Target
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree, "git", "push", "origin", refspec); err != nil {
+		remoteRef := "refs/heads/" + receipt.Target
+		receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
+		if err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+		}
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, false, options.Timeout, options.Retry); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("direct target push failed without force: %w", err))
 		}
 	} else {
-		refspec := "HEAD:refs/heads/" + receipt.Candidate.Branch
-		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree, "git", "push", "-u", "origin", refspec); err != nil {
+		remoteRef := "refs/heads/" + receipt.Candidate.Branch
+		receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
+		if err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+		}
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, options.Timeout, options.Retry); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("candidate push failed without force: %w", err))
 		}
 		title, body, err := worktreeMergePRText(ctx, receipt)
@@ -683,6 +707,60 @@ func canonicalForMergeSource(ctx context.Context, source string) (string, error)
 
 func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, error) {
 	return LandWorktreeMerge(ctx, options)
+}
+
+func runWorktreeMergePrePushGate(ctx context.Context, worktree, localSHA, remoteRef string, timeout time.Duration, retry int) (*WorktreeMergePushGateReceipt, error) {
+	remoteOutput, _, err := runCommand(ctx, timeout, retry, worktree, "git", "ls-remote", "--heads", "origin", remoteRef)
+	if err != nil {
+		return nil, fmt.Errorf("inspect exact remote ref before pre-push gate: %w", err)
+	}
+	previousRemoteSHA := strings.Repeat("0", 40)
+	if fields := strings.Fields(remoteOutput); len(fields) > 0 {
+		previousRemoteSHA = fields[0]
+	}
+	remoteURL, _, err := runCommand(ctx, timeout, retry, worktree, "git", "remote", "get-url", "--push", "origin")
+	if err != nil {
+		return nil, fmt.Errorf("resolve push remote for pre-push gate: %w", err)
+	}
+	localRef, _, err := runCommand(ctx, timeout, retry, worktree, "git", "symbolic-ref", "-q", "HEAD")
+	if err != nil {
+		return nil, fmt.Errorf("resolve local branch for pre-push gate: %w", err)
+	}
+	input, err := os.CreateTemp("", "wb-worktree-merge-pre-push-*.txt")
+	if err != nil {
+		return nil, err
+	}
+	inputPath := input.Name()
+	defer func() { _ = os.Remove(inputPath) }()
+	if err := input.Chmod(0o600); err != nil {
+		_ = input.Close()
+		return nil, err
+	}
+	if _, err := fmt.Fprintf(input, "%s %s %s %s\n", strings.TrimSpace(localRef), localSHA, remoteRef, previousRemoteSHA); err != nil {
+		_ = input.Close()
+		return nil, err
+	}
+	if err := input.Close(); err != nil {
+		return nil, err
+	}
+	if _, _, err := runCommand(ctx, timeout, retry, worktree, "git", "hook", "run", "--ignore-missing", "--to-stdin", inputPath,
+		"pre-push", "--", "origin", strings.TrimSpace(remoteURL)); err != nil {
+		return nil, fmt.Errorf("managed pre-push gate failed before opening the push connection: %w", err)
+	}
+	return &WorktreeMergePushGateReceipt{
+		Remote: "origin", RemoteRef: remoteRef, PreviousRemoteSHA: previousRemoteSHA,
+		LocalSHA: localSHA, Status: "passed", ObservedAt: time.Now().UTC(),
+	}, nil
+}
+
+func pushWorktreeMergeRef(ctx context.Context, worktree, localSHA, remoteRef string, setUpstream bool, timeout time.Duration, retry int) error {
+	args := []string{"push", "--no-verify"}
+	if setUpstream {
+		args = append(args, "-u")
+	}
+	args = append(args, "origin", localSHA+":"+remoteRef)
+	_, _, err := runCommand(ctx, timeout, retry, worktree, "git", args...)
+	return err
 }
 
 // retainWorktreeMergeLandIntent makes a combined command's requested landing

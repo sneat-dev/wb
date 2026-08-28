@@ -81,6 +81,9 @@ func TestLandWorktreeMergeDirectWalksExactRemoteJourney(t *testing.T) {
 	if landed.Status != WorktreeMergeLanded || landed.Route.Route != WorktreeMergeRouteDirect || landed.LandingSHA != receipt.Candidate.SHA {
 		t.Fatalf("landing receipt = %+v", landed)
 	}
+	if landed.PushGate == nil || landed.PushGate.Status != "passed" || landed.PushGate.RemoteRef != "refs/heads/main" || landed.PushGate.LocalSHA != receipt.Candidate.SHA {
+		t.Fatalf("direct landing omitted exact pre-push gate evidence: %+v", landed.PushGate)
+	}
 	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != landed.LandingSHA {
 		t.Fatalf("canonical target = %s, want exact remote landing %s", got, landed.LandingSHA)
 	}
@@ -110,6 +113,42 @@ func TestLandWorktreeMergeDirectWalksExactRemoteJourney(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fixture.canonical, "direct.txt")); !os.IsNotExist(err) {
 		t.Fatalf("forward revert did not remove landed file from canonical target: %v", err)
+	}
+}
+
+func TestWorktreeMergePushRunsExactHookOnceBeforeOpeningPushConnection(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "push-gate-source", "feature/push-gate", "push.txt", "push\n")
+	head := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+	hooksDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "pre-push.log")
+	hook := filepath.Join(hooksDir, "pre-push")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nset -eu\nprintf 'call %s %s\\n' \"$1\" \"$2\" >>\"$WB_TEST_PUSH_LOG\"\ncat >>\"$WB_TEST_PUSH_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_PUSH_LOG", logPath)
+	runEngineGit(t, source.WorktreeDir, "config", "core.hooksPath", hooksDir)
+	remoteRef := "refs/heads/gated-candidate"
+	gate, err := runWorktreeMergePrePushGate(context.Background(), source.WorktreeDir, head, remoteRef, 5*time.Second, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pushWorktreeMergeRef(context.Background(), source.WorktreeDir, head, remoteRef, false, 5*time.Second, 0); err != nil {
+		t.Fatal(err)
+	}
+	logContents, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logText := string(logContents)
+	if strings.Count(logText, "call origin ") != 1 || !strings.Contains(logText, "refs/heads/feature/push-gate "+head+" "+remoteRef+" "+strings.Repeat("0", 40)) {
+		t.Fatalf("pre-push hook did not receive one exact update: %q", logText)
+	}
+	if gate.Status != "passed" || gate.LocalSHA != head || gate.RemoteRef != remoteRef || gate.PreviousRemoteSHA != strings.Repeat("0", 40) {
+		t.Fatalf("push gate receipt = %+v", gate)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "ls-remote", "origin", remoteRef)); !strings.HasPrefix(got, head+"\t") {
+		t.Fatalf("no-verify transport did not publish exact gated head: %q", got)
 	}
 }
 
