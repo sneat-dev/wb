@@ -22,7 +22,13 @@ func newRunCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run [recipe]",
 		Short: "Run a fleet-wide recipe defined in config (dry-run by default; --apply lands it)",
-		Args:  cobra.MaximumNArgs(1),
+		Example: `# Discover configured recipes
+wb run --list
+
+# Preview, then apply one reusable fleet recipe
+wb run refresh-ci
+wb run refresh-ci --apply`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var name string
 			if len(args) == 1 {
@@ -37,6 +43,7 @@ func newRunCmd() *cobra.Command {
 			return nil
 		},
 	}
+	setDiscoveryTerms(cmd, "run recipe reusable fleet change apply dry run automation repeat command")
 	cmd.Flags().BoolVar(&apply, "apply", false, "commit & push changes (default: dry-run report)")
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	cmd.Flags().BoolVar(&list, "list", false, "list configured recipes and exit")
