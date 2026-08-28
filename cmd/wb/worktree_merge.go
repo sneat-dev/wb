@@ -35,7 +35,8 @@ authoritatively permitted direct push or pull request. Phase 1 is prepared local
 and its immutable SHA can unblock dependent agents. WB will never force-push. Landing is
 proved against the exact remote target before optional receipt-gated cleanup. Clean target
 drift rebases an unpublished candidate and reruns validation; a conflict or already-published
-candidate stops without rewriting it. A landed failure retains before/after evidence for a
+candidate stops without rewriting it. Candidate validation consumes tracked .wb/quality.yaml
+policy; an exact target baseline runs only when candidate failure needs comparison. A landed failure retains before/after evidence for a
 forward revert. If exact post-target CI fails and the same source advances with a clean
 forward repair, rerunning merge advances the retained candidate onto the landed target,
 records the failed landing, and opens a new repair PR without rewriting history.`,

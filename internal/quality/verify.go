@@ -27,6 +27,18 @@ const (
 type RunOptions struct {
 	Timeout time.Duration
 	Retry   int
+	// GoTestShards runs each explicitly named Go package in this many
+	// process-isolated shards. It is opt-in because TestMain and process-global
+	// fixtures run once per shard; callers must name packages whose contract
+	// permits that isolation. Discovery invokes TestMain once before each shard
+	// process invokes it again.
+	GoTestShards int
+	// GoShardPackages are module-relative package patterns such as
+	// ./internal/worktrees. Packages not named here still run exactly once.
+	GoShardPackages []string
+	// CoverageProfile retains the exact merged Go profile for one module.
+	// Fleet and multi-module adapters reject it rather than inventing names.
+	CoverageProfile string
 	// Progress receives lifecycle events for external checks. Callers may use it
 	// for terminal diagnostics; reports remain the authoritative output.
 	Progress func(Progress)
@@ -187,10 +199,21 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 		entry.Detail = "unsupported check"
 		return entry
 	}
+	shardedGoTest := language == "go" && check == CheckTest && options.GoTestShards > 1
+	if shardedGoTest {
+		entry.Command = coverageCommandDescription(options)
+	}
 	reportQualityProgress(options, Progress{
 		Language: language, Module: module, Check: check, Command: entry.Command, State: ProgressStarted,
 	})
-	output, attempts, err := runWithOptions(ctx, options, dir, command[0], command[1:]...)
+	var output string
+	var attempts int
+	var err error
+	if shardedGoTest {
+		output, attempts, err = runShardedVerification(ctx, options, dir)
+	} else {
+		output, attempts, err = runWithOptions(ctx, options, dir, command[0], command[1:]...)
+	}
 	entry.Attempts = attempts
 	if err != nil {
 		entry.Status = StatusFailed
@@ -207,6 +230,20 @@ func runVerification(ctx context.Context, options RunOptions, language, module s
 		State: ProgressCompleted, Status: entry.Status, Attempts: attempts,
 	})
 	return entry
+}
+
+func runShardedVerification(ctx context.Context, options RunOptions, module string) (string, int, error) {
+	profile, err := os.CreateTemp("", "wb-verify-coverage-*.out")
+	if err != nil {
+		return "", 0, err
+	}
+	profilePath := profile.Name()
+	if err := profile.Close(); err != nil {
+		_ = os.Remove(profilePath)
+		return "", 0, err
+	}
+	defer func() { _ = os.Remove(profilePath) }()
+	return runCoverageWithOptions(ctx, options, module, profilePath)
 }
 
 func reportQualityProgress(options RunOptions, progress Progress) {

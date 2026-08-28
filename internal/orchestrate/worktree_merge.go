@@ -485,6 +485,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	}
 	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Completed, string(receipt.Status)+" at "+receiptPath)
 	if receipt.Status == WorktreeMergeComplete {
+		if err := normalizeCompletedWorktreeMergeReceipt(&receipt); err != nil {
+			return receipt, err
+		}
 		return receipt, nil
 	}
 	if receipt.Candidate.Worktree == "" || receipt.Candidate.SHA == "" {
@@ -869,6 +872,42 @@ func pushWorktreeMergeRef(ctx context.Context, worktree, localSHA, remoteRef str
 	return err
 }
 
+// normalizeCompletedWorktreeMergeReceipt permits an exact resume to remove a
+// stale prior failure only after the durable receipt independently proves every
+// task it owns was cleaned. It never makes an incomplete/error receipt look
+// successful: callers reach it only for complete, receipt-gated cleanup and
+// any identity mismatch remains an error with Failure preserved.
+func normalizeCompletedWorktreeMergeReceipt(receipt *WorktreeMergeReceipt) error {
+	if receipt.Failure == "" {
+		return nil
+	}
+	if !receipt.Cleanup {
+		return fmt.Errorf("complete receipt %s retains failure but has no cleanup intent", receipt.ReceiptPath)
+	}
+	expected := sortedUniqueMergeTasks(*receipt)
+	if len(expected) == 0 || len(receipt.CleanedTasks) != len(expected) {
+		return fmt.Errorf("complete receipt %s retains failure but its cleanup evidence is incomplete", receipt.ReceiptPath)
+	}
+	cleaned := make(map[string]bool, len(receipt.CleanedTasks))
+	for _, task := range receipt.CleanedTasks {
+		if task == "" || cleaned[task] {
+			return fmt.Errorf("complete receipt %s retains failure but its cleaned task identities are inconsistent", receipt.ReceiptPath)
+		}
+		cleaned[task] = true
+	}
+	for _, task := range expected {
+		if !cleaned[task] {
+			return fmt.Errorf("complete receipt %s retains failure but cleanup did not terminalize task %s", receipt.ReceiptPath, task)
+		}
+	}
+	if err := worktrees.ValidateTerminalCleanupReports(receipt.CleanupReports, receipt.Repository, expected); err != nil {
+		return fmt.Errorf("complete receipt %s retains failure but its cleanup reports are inconsistent: %w", receipt.ReceiptPath, err)
+	}
+	receipt.Failure = ""
+	receipt.UpdatedAt = time.Now().UTC()
+	return persistWorktreeMergeReceipt(*receipt)
+}
+
 // retainWorktreeMergeLandIntent makes a combined command's requested landing
 // semantics part of the durable receipt before any target-drift, policy, push,
 // or check boundary can interrupt it. A bare resume therefore cannot silently
@@ -953,7 +992,10 @@ func inspectWorktreeMergeSources(ctx context.Context, projectsRoot string, paths
 			return nil, "", "", fmt.Errorf("source %s: %w", input, err)
 		}
 		view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
-		if err != nil || view.Claim == nil {
+		if err != nil {
+			return nil, "", "", fmt.Errorf("load Work Log for source %s: %w", input, err)
+		}
+		if view.Claim == nil {
 			return nil, "", "", fmt.Errorf("source %s has no authoritative active Work Log claim", input)
 		}
 		if repository == "" {
@@ -1399,7 +1441,8 @@ func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receip
 		// transition twice and strand otherwise safe landed assets.
 		outcome, err := worktrees.Cleanup(ctx, worktrees.CleanupOptions{
 			ProjectsRoot: projectsRoot, Task: task, Base: receipt.Target, ExactRepository: receipt.Repository,
-			AbsorbedBy: receipt.LandingSHA, Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
+			AbsorbedBy: receipt.LandingSHA, MergeReceiptProofs: worktreeMergeCleanupProofs(*receipt, task),
+			Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
 		})
 		if err != nil {
 			return fmt.Errorf("cleanup task %s: %w", task, err)
@@ -1416,6 +1459,21 @@ func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receip
 		}
 	}
 	return nil
+}
+
+func worktreeMergeCleanupProofs(receipt WorktreeMergeReceipt, task string) []worktrees.MergeReceiptCleanupProof {
+	proofs := make([]worktrees.MergeReceiptCleanupProof, 0, len(receipt.Sources))
+	for _, source := range receipt.Sources {
+		if source.Task != task || !source.Merged {
+			continue
+		}
+		proofs = append(proofs, worktrees.MergeReceiptCleanupProof{
+			Repository: receipt.Repository, Target: receipt.Target,
+			SourceTask: source.Task, SourceWorktree: source.Worktree, SourceBranch: source.Branch, SourceSHA: source.SHA,
+			CandidateSHA: receipt.Candidate.SHA, LandingSHA: receipt.LandingSHA,
+		})
+	}
+	return proofs
 }
 
 // PrepareWorktreeMergeRevert creates a fresh forward candidate which applies
@@ -1517,21 +1575,36 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	return receipt, nil
 }
 
-// validateWorktreeMergeCandidate records validation for both the exact target
-// tree and the integration candidate. A red target is diagnostic-only: it
-// must not stop a candidate that leaves every existing failure unchanged.
+// validateWorktreeMergeCandidate validates the candidate first. A passing
+// candidate cannot regress a red target, so the expensive target snapshot is
+// evaluated lazily only when candidate failure evidence needs comparison.
 // Any new or changed candidate failure remains a hard gate.
 func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
-	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
+	runOptions, err := quality.RepositoryRunOptions(receipt.Candidate.Worktree, quality.RunOptions{
+		Timeout: timeout, Retry: retry, Progress: reportWorktreeMergeQualityProgress(reporter),
+	})
 	if err != nil {
-		return fmt.Errorf("capture exact target validation baseline: %w", err)
+		return fmt.Errorf("load candidate quality policy: %w", err)
 	}
-	receipt.BaselineValidation = baseline
 	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
 		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		quality.RunOptions{Timeout: timeout, Retry: retry, Progress: reportWorktreeMergeQualityProgress(reporter)})
+		runOptions)
 	receipt.Validation.Revision = receipt.Candidate.SHA
 	receipt.Validation.WorkspaceClean = true
+	if receipt.Validation.Status == quality.StatusPassed {
+		receipt.BaselineValidation = quality.VerificationReport{
+			Repository: receipt.Repository, Path: "git:" + receipt.TargetSHA, Revision: receipt.TargetSHA,
+			WorkspaceClean: true, Status: quality.StatusSkipped,
+			Results: []quality.VerificationEntry{{Status: quality.StatusSkipped,
+				Detail: "candidate passed every configured local check; target baseline was not needed"}},
+		}
+		return nil
+	}
+	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
+	if err != nil {
+		return fmt.Errorf("capture exact target validation baseline after candidate failure: %w", err)
+	}
+	receipt.BaselineValidation = baseline
 	if err := worktreeMergeValidationRegression(baseline, receipt.Validation); err != nil {
 		return err
 	}
@@ -1560,9 +1633,13 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err := extractWorktreeMergeArchive(archivePath, snapshot); err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("materialize target %s: %w", targetSHA, err)
 	}
+	runOptions, err := quality.RepositoryRunOptions(snapshot, quality.RunOptions{Timeout: timeout, Retry: retry})
+	if err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
+	}
 	report := quality.VerifyWithOptions(ctx, repository, snapshot,
 		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		quality.RunOptions{Timeout: timeout, Retry: retry})
+		runOptions)
 	// The transient snapshot is intentionally removed before this durable
 	// receipt is written. The exact revision remains the useful evidence.
 	report.Path = "git:" + targetSHA

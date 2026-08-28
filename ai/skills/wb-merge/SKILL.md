@@ -21,8 +21,10 @@ skill, not a branch-prefix convention and not a model profile. Read
 For conflict-free receipt-backed automation, read
 [worktree-merge.md](references/worktree-merge.md).
 
-The dedicated merger agent captures current `main` and selected-target failures
-as baseline diagnostics but never waits for current target CI to turn green;
+The dedicated merger agent validates the candidate first. A passing candidate
+records that a target baseline was not needed; a failing candidate triggers an
+exact target-snapshot validation so unchanged target failures remain diagnostic
+rather than blocking a fix. It never waits for current target CI to turn green;
 the candidate may fix a red target. The merger owns fetching and
 fast-forwarding, integration validation, exact-head CI, the merge and immediate
 push, post-merge target CI, release/install evidence, and cleanup. Main and
@@ -77,7 +79,10 @@ than a fictional queue.
    `wb worktree create` with its required private prompt when a merger checkout
    is needed. Never create, repair, or substitute a checkout with raw Git
    worktree commands.
-4. Capture current target failures as a diagnostic baseline, not a green gate.
+4. Treat current target failures as a diagnostic baseline, not a green gate.
+   WB runs the exact target snapshot only when the candidate itself fails and
+   failure-equivalence evidence is needed; a fully passing candidate cannot
+   regress an already-red target and records the skipped baseline explicitly.
    Fetch and fast-forward the target from `origin` before preparing the batch.
    The dedicated merger checkout must be clean before every integration and
    push; unrelated dirty state is a blocker, not an exception.

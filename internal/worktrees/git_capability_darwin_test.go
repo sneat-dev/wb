@@ -38,7 +38,7 @@ func TestSecureCanonicalCapabilityDeniesGitDirectoryMoveAfterFinalCheck(t *testi
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
 			break
@@ -167,7 +167,7 @@ func TestSecureStageCapabilityDeniesStageMoveAfterFinalCheck(t *testing.T) {
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
 			break

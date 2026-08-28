@@ -23,6 +23,12 @@ only stdout payload, while stage transitions, check observations, elapsed time,
 and the next bounded poll stay visible on stderr. `--non-interactive` alone
 keeps terminal-only progress disabled.
 
+Prepare validates the candidate first. When every configured candidate check
+passes, the receipt says the target baseline was not needed. When a candidate
+check fails, WB validates the exact target snapshot and permits only equivalent
+pre-existing failures. Repositories may declare safe process-isolated Go test
+packages in `.wb/quality.yaml`; merge validation consumes that tracked policy.
+
 If `origin/<target>` advances before an unpublished candidate lands, WB rebases
 the isolated candidate onto the exact new target, records both before/after SHA
 pairs, and reruns validation. A conflict aborts the rebase without touching any

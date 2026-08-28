@@ -314,6 +314,14 @@ type CleanupOptions struct {
 	// AbsorbedBy is the optional landing receipt pointer described on
 	// ListOptions.AbsorbedBy. It is verified, never trusted.
 	AbsorbedBy string
+	// MergeReceiptProofs are exact, orchestrator-produced cleanup proofs for
+	// sources whose content was landed by an integration candidate and then
+	// represented by a distinct commit with the same tree (for example, a
+	// squash merge). They are deliberately unavailable to the user-facing
+	// cleanup command: every proof is still rechecked against the source,
+	// candidate, landing, and freshly fetched target before it can affect one
+	// matching source worktree.
+	MergeReceiptProofs []MergeReceiptCleanupProof
 	// Progress is passed straight through to the inventory walk; see
 	// ListOptions. A fleet-wide run is unobservable without it.
 	Progress func(ListProgress)
@@ -372,6 +380,20 @@ type CleanupOptions struct {
 	// recovered lock's descriptor-anchored no-replace retirement. It proves a
 	// failed retirement never claims terminal recovery in JSON or reports.
 	beforeRecoveredLockQuarantine func(lockPath string)
+}
+
+// MergeReceiptCleanupProof binds one source worktree to the exact candidate
+// and landing identities recorded by worktree merge. It is an internal
+// orchestration receipt, not a general replacement for --absorbed-by.
+type MergeReceiptCleanupProof struct {
+	Repository     string
+	Target         string
+	SourceTask     string
+	SourceWorktree string
+	SourceBranch   string
+	SourceSHA      string
+	CandidateSHA   string
+	LandingSHA     string
 }
 
 // CleanupResult records one repository's cleanup decision and outcome.
@@ -433,6 +455,100 @@ type cleanupReport struct {
 	Diagnostics  []ListDiagnostic         `json:"diagnostics,omitempty"`
 	Artifacts    []LifecycleArtifact      `json:"artifacts,omitempty"`
 	Recovery     *InterruptedLockRecovery `json:"recovery,omitempty"`
+}
+
+// ValidateTerminalCleanupReports proves that the receipt's referenced cleanup
+// reports are structurally valid and that every expected task has one durable
+// successful terminal cleanup. Historical failed attempts are retained as
+// audit evidence, but each must precede that task's successful later report.
+// It is intentionally stricter than a report-path count: paths alone say
+// nothing about whether cleanup actually completed.
+func ValidateTerminalCleanupReports(paths []string, repository string, expectedTasks []string) error {
+	expected := make(map[string]bool, len(expectedTasks))
+	for _, task := range expectedTasks {
+		if task == "" || expected[task] {
+			return fmt.Errorf("terminal cleanup expected task identities are inconsistent")
+		}
+		expected[task] = true
+	}
+	if len(expected) == 0 {
+		return fmt.Errorf("terminal cleanup has no expected tasks")
+	}
+	seenPaths := make(map[string]bool, len(paths))
+	success := make(map[string]int, len(expected))
+	failures := make(map[string][]int, len(expected))
+	var previous time.Time
+	for index, path := range paths {
+		if !filepath.IsAbs(path) || seenPaths[path] {
+			return fmt.Errorf("terminal cleanup report path %q is not one unique absolute path", path)
+		}
+		seenPaths[path] = true
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("stat terminal cleanup report %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("terminal cleanup report %s is not a regular file", path)
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read terminal cleanup report %s: %w", path, err)
+		}
+		decoder := json.NewDecoder(bytes.NewReader(contents))
+		decoder.DisallowUnknownFields()
+		var report cleanupReport
+		if err := decoder.Decode(&report); err != nil {
+			return fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+		}
+		if err := requireJSONEOF(decoder); err != nil {
+			return fmt.Errorf("decode terminal cleanup report %s: %w", path, err)
+		}
+		if report.GeneratedAt.IsZero() || (!previous.IsZero() && !report.GeneratedAt.After(previous)) {
+			return fmt.Errorf("terminal cleanup report %s has non-monotonic generated_at", path)
+		}
+		previous = report.GeneratedAt
+		if report.Phase != "applied" || !report.Apply || !expected[report.Task] || len(report.Results) != 1 {
+			return fmt.Errorf("terminal cleanup report %s has inconsistent applied schema", path)
+		}
+		result := report.Results[0]
+		if result.Task != report.Task || result.Repository != repository {
+			return fmt.Errorf("terminal cleanup report %s does not match receipt task/repository identity", path)
+		}
+		if result.Applied {
+			if !result.WorktreeGone || !result.BranchDeleted || success[result.Task] != 0 {
+				return fmt.Errorf("terminal cleanup report %s has inconsistent successful cleanup evidence", path)
+			}
+			success[result.Task] = index + 1
+			continue
+		}
+		if result.WorktreeGone && result.BranchDeleted || strings.TrimSpace(result.Reason) == "" {
+			return fmt.Errorf("terminal cleanup report %s has inconsistent failed cleanup evidence", path)
+		}
+		failures[result.Task] = append(failures[result.Task], index+1)
+	}
+	for task := range expected {
+		completed := success[task]
+		if completed == 0 {
+			return fmt.Errorf("terminal cleanup reports do not prove task %s completed", task)
+		}
+		for _, failed := range failures[task] {
+			if failed >= completed {
+				return fmt.Errorf("terminal cleanup reports leave task %s failed after its claimed completion", task)
+			}
+		}
+	}
+	return nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 type cleanupTaskHandle struct {
@@ -1200,6 +1316,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		}
 		listed.Results = selected
 	}
+	for index := range listed.Results {
+		if err := applyMergeReceiptCleanupProof(ctx, normalized.MergeReceiptProofs, &listed.Results[index]); err != nil {
+			return CleanupOutcome{}, err
+		}
+	}
 	if recovery != nil {
 		for index := range listed.Results {
 			if listed.Results[index].Task == recovery.Task && listed.Results[index].WorktreesRoot == recovery.WorktreesRoot {
@@ -1441,6 +1562,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			if err != nil {
 				worktree.close()
 				return err
+			}
+			if err := applyMergeReceiptCleanupProof(ctx, normalized.MergeReceiptProofs, &refreshed); err != nil {
+				worktree.close()
+				return fmt.Errorf("cleanup receipt proof for %s: %w", refreshed.Repository, err)
 			}
 			if err := worktree.validate(); err != nil {
 				worktree.close()
@@ -2630,6 +2755,80 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 	}
 }
 
+// applyMergeReceiptCleanupProof grants no general absorption shortcut. It only
+// recognizes a source which exactly matches a worktree-merge receipt and then
+// repeats every identity-bearing Git observation needed for the special
+// squash-landing shape. Ordinary cleanup continues to use its generic
+// containment and --absorbed-by checks unchanged.
+func applyMergeReceiptCleanupProof(ctx context.Context, proofs []MergeReceiptCleanupProof, entry *ListResult) error {
+	for _, proof := range proofs {
+		if filepath.Clean(proof.SourceWorktree) != filepath.Clean(entry.WorktreeDir) {
+			continue
+		}
+		if rejection := mergeReceiptCleanupProofRejection(ctx, proof, *entry); rejection != "" {
+			entry.AbsorbedByRejection = "worktree-merge receipt cleanup proof: " + rejection
+			return nil
+		}
+		entry.IntegratedAtOrigin = true
+		entry.AbsorbedAtOrigin = true
+		entry.AbsorbedBySHA = proof.LandingSHA
+		entry.AbsorbedByRejection = ""
+		return nil
+	}
+	return nil
+}
+
+func mergeReceiptCleanupProofRejection(ctx context.Context, proof MergeReceiptCleanupProof, entry ListResult) string {
+	for label, value := range map[string]string{
+		"repository": proof.Repository, "target": proof.Target, "source task": proof.SourceTask,
+		"source worktree": proof.SourceWorktree, "source branch": proof.SourceBranch,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return "receipt has no " + label
+		}
+	}
+	for label, value := range map[string]string{
+		"source SHA": proof.SourceSHA, "candidate SHA": proof.CandidateSHA, "landing SHA": proof.LandingSHA,
+	} {
+		if !isGitObjectID(value) {
+			return "receipt has invalid " + label
+		}
+	}
+	if entry.Repository != proof.Repository || entry.Base != proof.Target || entry.Task != proof.SourceTask ||
+		filepath.Clean(entry.WorktreeDir) != filepath.Clean(proof.SourceWorktree) || entry.Branch != proof.SourceBranch || entry.HeadSHA != proof.SourceSHA {
+		return "source identity no longer matches the receipt"
+	}
+	if !isGitObjectID(entry.RemoteTargetSHA) {
+		return "exact fetched target identity is unavailable"
+	}
+	ancestor, err := isAncestor(ctx, entry.CanonicalDir, proof.SourceSHA, proof.CandidateSHA)
+	if err != nil {
+		return fmt.Sprintf("verify source %s is an ancestor of candidate %s: %v", proof.SourceSHA, proof.CandidateSHA, err)
+	}
+	if !ancestor {
+		return fmt.Sprintf("source %s is not an ancestor of candidate %s", proof.SourceSHA, proof.CandidateSHA)
+	}
+	candidateTree, err := git(ctx, entry.CanonicalDir, "rev-parse", "--verify", proof.CandidateSHA+"^{tree}")
+	if err != nil {
+		return fmt.Sprintf("resolve candidate tree %s: %v", proof.CandidateSHA, err)
+	}
+	landingTree, err := git(ctx, entry.CanonicalDir, "rev-parse", "--verify", proof.LandingSHA+"^{tree}")
+	if err != nil {
+		return fmt.Sprintf("resolve landing tree %s: %v", proof.LandingSHA, err)
+	}
+	if candidateTree != landingTree {
+		return fmt.Sprintf("candidate tree %s does not equal landing tree %s", candidateTree, landingTree)
+	}
+	landed, err := isAncestor(ctx, entry.CanonicalDir, proof.LandingSHA, entry.RemoteTargetSHA)
+	if err != nil {
+		return fmt.Sprintf("verify landing %s is contained in fetched target %s: %v", proof.LandingSHA, entry.RemoteTargetSHA, err)
+	}
+	if !landed {
+		return fmt.Sprintf("landing %s is not contained in the exact fetched target %s", proof.LandingSHA, entry.RemoteTargetSHA)
+	}
+	return ""
+}
+
 // blockDiagnosedTasks blocks eligibility only for the coordinated task a
 // malformed candidate belongs to — the same all-or-nothing unit
 // blockUnsafeTasks already applies to an unclean, locked, or unmerged
@@ -2783,6 +2982,9 @@ func preflightCleanupRepository(
 	)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s: %w", entry.Repository, err)
+	}
+	if err := applyMergeReceiptCleanupProof(ctx, options.MergeReceiptProofs, &refreshed); err != nil {
+		return ListResult{}, fmt.Errorf("preflight cleanup %s receipt proof: %w", entry.Repository, err)
 	}
 	if err := worktree.validate(); err != nil {
 		return ListResult{}, err

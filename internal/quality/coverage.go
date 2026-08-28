@@ -75,29 +75,29 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 		report.Status = StatusSkipped
 		return report
 	}
+	if options.CoverageProfile != "" && len(modules) != 1 {
+		report.Status = StatusFailed
+		report.Error = "--coverage-profile requires exactly one Go module"
+		return report
+	}
 	report.Status = StatusPassed
 	for _, module := range modules {
-		profile, err := os.CreateTemp("", "wb-coverage-*.out")
+		profilePath, removeProfile, err := coverageProfilePath(options.CoverageProfile)
 		if err != nil {
 			report.Status = StatusFailed
 			report.Error = err.Error()
 			return report
 		}
-		profilePath := profile.Name()
-		if err := profile.Close(); err != nil {
-			_ = os.Remove(profilePath)
-			report.Status = StatusFailed
-			report.Error = err.Error()
-			return report
-		}
-		command := "go test -coverprofile … ./..."
+		command := coverageCommandDescription(options)
 		reportQualityProgress(options, Progress{
 			Language: "go", Module: relativePath(path, module), Check: CheckTest,
 			Command: command, State: ProgressStarted,
 		})
-		output, attempts, err := runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
+		output, attempts, err := runCoverageWithOptions(ctx, options, module, profilePath)
 		if err != nil {
-			_ = os.Remove(profilePath)
+			if removeProfile {
+				_ = os.Remove(profilePath)
+			}
 			report.Status = StatusFailed
 			report.Error = commandError(command, output, err)
 			reportQualityProgress(options, Progress{
@@ -107,7 +107,9 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			return report
 		}
 		statements, covered, err := profileTotals(profilePath)
-		_ = os.Remove(profilePath)
+		if removeProfile {
+			_ = os.Remove(profilePath)
+		}
 		if err != nil {
 			report.Status = StatusFailed
 			report.Error = err.Error()
@@ -130,6 +132,33 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 	}
 	report.Percentage = percent(report.Covered, report.Statements)
 	return report
+}
+
+func coverageProfilePath(retain string) (path string, remove bool, err error) {
+	if retain != "" {
+		absolute, err := filepath.Abs(retain)
+		if err != nil {
+			return "", false, err
+		}
+		return absolute, false, nil
+	}
+	profile, err := os.CreateTemp("", "wb-coverage-*.out")
+	if err != nil {
+		return "", false, err
+	}
+	path = profile.Name()
+	if err := profile.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", false, err
+	}
+	return path, true, nil
+}
+
+func coverageCommandDescription(options RunOptions) string {
+	if options.GoTestShards > 1 {
+		return fmt.Sprintf("go test -coverprofile … ./... (%d process-isolated shards for %s)", options.GoTestShards, strings.Join(options.GoShardPackages, ","))
+	}
+	return "go test -coverprofile … ./..."
 }
 
 // NewCoverageReport aggregates reports in deterministic repository order.
