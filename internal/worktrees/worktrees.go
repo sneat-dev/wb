@@ -207,13 +207,16 @@ type GuardOptions struct {
 
 // GuardResult describes a checkout that satisfies the worktree policy.
 type GuardResult struct {
-	Path          string     `json:"path"`
-	CanonicalDir  string     `json:"canonical_dir"`
-	WorktreesRoot string     `json:"worktrees_root"`
-	Branch        string     `json:"branch"`
-	Kind          string     `json:"kind"`
-	Transient     bool       `json:"transient,omitempty"`
-	Admission     *Admission `json:"admission,omitempty"`
+	Path          string `json:"path"`
+	CanonicalDir  string `json:"canonical_dir"`
+	WorktreesRoot string `json:"worktrees_root"`
+	Branch        string `json:"branch"`
+	Kind          string `json:"kind"`
+	Transient     bool   `json:"transient,omitempty"`
+	// TransientOperation names the Git history operation that temporarily
+	// detached HEAD. It is empty whenever Transient is false.
+	TransientOperation string     `json:"transient_operation,omitempty"`
+	Admission          *Admission `json:"admission,omitempty"`
 	// External marks a worktree `wb worktree adopt` registered without
 	// relocating it under a WB worktrees root — see ListResult.External. Its
 	// task was resolved from its own Work Log claim, not from its path.
@@ -850,10 +853,12 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		)
 	}
 	if branch == "" {
-		if !rebaseInProgress(ctx, root, gitDir) {
+		operation := transientHistoryOperation(ctx, root, gitDir)
+		if operation == "" {
 			return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
 		}
 		result.Transient = true
+		result.TransientOperation = operation
 		return result, nil
 	}
 	if branch == base {
@@ -1012,12 +1017,105 @@ func (mismatch *RepositoryRenameMismatchError) Error() string {
 	)
 }
 
+func transientHistoryOperation(ctx context.Context, root, gitDir string) string {
+	if rebaseInProgress(ctx, root, gitDir) {
+		return "rebase"
+	}
+	if cherryPickInProgress(ctx, root, gitDir) {
+		return "cherry-pick"
+	}
+	if bisectInProgress(ctx, root, gitDir) {
+		return "bisect"
+	}
+	return ""
+}
+
 func rebaseInProgress(ctx context.Context, root, gitDir string) bool {
 	return coherentRebaseState(ctx, root, filepath.Join(gitDir, "rebase-merge"), []string{
 		"head-name", "orig-head", "onto", "git-rebase-todo", "git-rebase-todo.backup", "end", "msgnum",
 	}, true) || coherentRebaseState(ctx, root, filepath.Join(gitDir, "rebase-apply"), []string{
 		"head-name", "orig-head", "onto", "next", "last", "rebasing", "original-commit", "patch",
 	}, false)
+}
+
+// cherryPickInProgress accepts only the conflict-paused state Git itself
+// creates. CHERRY_PICK_HEAD alone is insufficient: stale or fabricated marker
+// files must not turn ordinary detached development into an allowed checkout.
+func cherryPickInProgress(ctx context.Context, root, gitDir string) bool {
+	picked, ok := regularStateFile(filepath.Join(gitDir, "CHERRY_PICK_HEAD"), true)
+	if !ok || !isGitObjectID(picked) || !gitCommitExists(ctx, root, picked) {
+		return false
+	}
+	if _, ok := regularStateFile(filepath.Join(gitDir, "MERGE_MSG"), true); !ok {
+		return false
+	}
+	unmerged, err := git(ctx, root, "ls-files", "--unmerged")
+	return err == nil && strings.TrimSpace(unmerged) != ""
+}
+
+// bisectInProgress corroborates the per-worktree BISECT_* files against live
+// refs, the checked-out commit, Git's own log command, and the HEAD reflog.
+// That keeps a leftover or hand-created BISECT_START file from weakening the
+// persistent-detached policy.
+func bisectInProgress(ctx context.Context, root, gitDir string) bool {
+	start, ok := regularStateFile(filepath.Join(gitDir, "BISECT_START"), true)
+	if !ok || strings.HasPrefix(start, "refs/") || !gitReferenceExists(ctx, root, "refs/heads/"+start) {
+		return false
+	}
+	expected, ok := regularStateFile(filepath.Join(gitDir, "BISECT_EXPECTED_REV"), true)
+	if !ok || !isGitObjectID(expected) || !gitCommitExists(ctx, root, expected) {
+		return false
+	}
+	for _, name := range []string{"BISECT_LOG", "BISECT_NAMES", "BISECT_TERMS"} {
+		if _, exists := regularStateFile(filepath.Join(gitDir, name), name != "BISECT_NAMES"); !exists {
+			return false
+		}
+	}
+	head, err := git(ctx, root, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil || head != expected || !gitReferenceExists(ctx, root, "refs/bisect/bad") {
+		return false
+	}
+	goodRefs, err := git(ctx, root, "for-each-ref", "--format=%(objectname)", "refs/bisect/good-*")
+	if err != nil || strings.TrimSpace(goodRefs) == "" {
+		return false
+	}
+	for _, commit := range strings.Fields(goodRefs) {
+		if !isGitObjectID(commit) || !gitCommitExists(ctx, root, commit) {
+			return false
+		}
+	}
+	log, err := git(ctx, root, "bisect", "log")
+	return err == nil && strings.TrimSpace(log) != "" && reflogShowsCheckoutTo(ctx, root, expected)
+}
+
+func regularStateFile(path string, requireContent bool) (string, bool) {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", false
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	value := strings.TrimSpace(string(content))
+	return value, !requireContent || value != ""
+}
+
+func reflogShowsCheckoutTo(ctx context.Context, root, expected string) bool {
+	output, err := git(ctx, root, "reflog", "show", "-1", "--format=%H%x00%gs", "HEAD")
+	if err != nil {
+		return false
+	}
+	commit, subject, found := strings.Cut(output, "\x00")
+	if !found || commit != expected || !strings.HasPrefix(subject, "checkout: moving from ") {
+		return false
+	}
+	_, destination, found := strings.Cut(subject, " to ")
+	if !found {
+		return false
+	}
+	resolved, err := git(ctx, root, "rev-parse", "--verify", strings.TrimSpace(destination)+"^{commit}")
+	return err == nil && resolved == expected
 }
 
 // coherentRebaseState accepts only the non-symlinked state Git leaves while a

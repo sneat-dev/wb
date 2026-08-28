@@ -1051,7 +1051,7 @@ journal and enforce once it has.`,
 			case "text":
 				checkout := result.Branch
 				if result.Transient {
-					checkout = "detached HEAD (active rebase)"
+					checkout = "detached HEAD (active " + result.TransientOperation + ")"
 				}
 				kind := result.Kind
 				if result.External {
