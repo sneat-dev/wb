@@ -12,7 +12,7 @@ canonical clone, clean the worktree, resume a merge, or revert a bad landing.
 ## One-command default
 
 ```sh
-wb worktree merge <source-worktree...> --route auto --cleanup --format json
+wb worktree merge <source-worktree...> --route auto --cleanup --progress --format json
 ```
 
 The default target is the repository's remote default branch. Pass
@@ -21,6 +21,8 @@ direct target push only when authoritative GitHub policy supports it; otherwise
 it uses a PR, or refuses an unsupported merge queue. WB derives PR text from
 commit messages, waits for exact-head checks, verifies the remote landing, and
 fast-forwards a clean canonical checkout already on the target.
+Use `--progress` from non-terminal agent tools so stderr reports the current
+stage and exact-check poll without contaminating the terminal JSON on stdout.
 
 `--cleanup` is deliberately explicit. Include it for terminal work; omit it
 when another agent still needs the source/candidate assets, then later run the
@@ -29,8 +31,8 @@ receipt with `merge resume ... --cleanup`.
 ## Two phases
 
 ```sh
-wb worktree merge prepare <source-worktree...> --target <branch> --format json
-wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --format json
+wb worktree merge prepare <source-worktree...> --target <branch> --progress --format json
+wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --progress --format json
 ```
 
 Prepare creates an isolated integration worktree and immutable candidate SHA,
@@ -40,8 +42,8 @@ can rebase onto that SHA while Phase 2 waits for GitHub.
 ## Recovery
 
 ```sh
-wb worktree merge resume <candidate-worktree-or-receipt> --format json
-wb worktree merge revert <landing-receipt> --route auto --cleanup --format json
+wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
+wb worktree merge revert <landing-receipt> --route auto --cleanup --progress --format json
 ```
 
 Use the receipt's exact `resume_args`; do not reconstruct state from branch

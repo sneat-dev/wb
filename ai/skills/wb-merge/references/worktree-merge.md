@@ -5,16 +5,22 @@ compatible enough that no behavioral judgment or conflict resolution is
 expected.
 
 ```sh
-wb worktree merge prepare <source-worktree...> --target main --format json
-wb worktree merge land <candidate-worktree-or-receipt> --route auto --format json
-wb worktree merge resume <candidate-worktree-or-receipt> --format json
-wb worktree merge revert <landing-receipt> --route auto --format json
+wb worktree merge prepare <source-worktree...> --target main --progress --format json
+wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress --format json
+wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
+wb worktree merge revert <landing-receipt> --route auto --progress --format json
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
 creates a dedicated integration worktree and receipt without changing the
 canonical target or source worktrees. Other agents may rebase onto the exact
 candidate SHA while landing waits.
+
+Progress is rendered on stderr when attached to a terminal. AI agents running
+through a non-terminal tool should pass `--progress`; terminal JSON remains the
+only stdout payload, while stage transitions, check observations, elapsed time,
+and the next bounded poll stay visible on stderr. `--non-interactive` alone
+keeps terminal-only progress disabled.
 
 If `origin/<target>` advances before an unpublished candidate lands, WB rebases
 the isolated candidate onto the exact new target, records both before/after SHA

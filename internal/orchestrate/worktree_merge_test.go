@@ -8,8 +8,56 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+func TestWorktreeMergePRTitlePreservesConventionalReleaseIntent(t *testing.T) {
+	tests := []struct {
+		name     string
+		subjects []string
+		want     string
+	}{
+		{name: "single commit", subjects: []string{"fix(worktree): retain exact receipt"}, want: "fix(worktree): retain exact receipt"},
+		{name: "feature wins over fixes", subjects: []string{"fix: repair cleanup", "feat(worktree): add mechanical merge", "Merge branch 'main'"}, want: "feat: merge 2 worktree candidates into main"},
+		{name: "breaking marker is retained", subjects: []string{"feat!: replace merge receipt schema", "fix: repair cleanup"}, want: "feat!: merge 2 worktree candidates into main"},
+		{name: "fix wins over metadata", subjects: []string{"docs: explain merge", "fix(ci): retain release signal"}, want: "fix: merge 2 worktree candidates into main"},
+		{name: "untyped fallback remains releasable", subjects: []string{"Merge branch 'one'", "Update generated files"}, want: "fix: merge 2 worktree candidates into main"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := worktreeMergePRTitle(test.subjects, 2, "main"); got != test.want {
+				t.Fatalf("title = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWorktreeMergeCheckProgressReportsObservableWait(t *testing.T) {
+	var events []progress.Event
+	reporter := func(event progress.Event) { events = append(events, event) }
+	reportWorktreeMergeCheckProgress(reporter, "candidate_checks")(PullRequestWaitProgress{
+		Observation: 3,
+		Result: PullRequestWaitResult{
+			Status: PullRequestWaitPending,
+			Reason: "observed GitHub checks are still pending",
+			Checks: []RemoteCheck{{Name: "build", Bucket: "pass"}, {Name: "test", Bucket: "pending"}},
+		},
+		NextPoll: 30 * time.Second,
+	})
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	event := events[0]
+	if event.Operation != "worktree_merge" || event.Phase != "candidate_checks" || event.State != progress.Waiting {
+		t.Fatalf("event = %+v", event)
+	}
+	for _, want := range []string{"poll 3", "1 passed", "1 pending", "next poll in 30s"} {
+		if !strings.Contains(event.Detail, want) {
+			t.Errorf("detail %q is missing %q", event.Detail, want)
+		}
+	}
+}
 
 func TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate(t *testing.T) {
 	fixture := newEngineFixture(t)
@@ -244,7 +292,7 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 
 	failed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteDirect,
-		Cleanup: true, OnFailure: "revert", Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		Cleanup: true, OnFailure: "revert", Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond, ProgressRequested: true,
 	})
 	if err == nil || !strings.Contains(err.Error(), "conflicts while rebasing") || failed.Status != WorktreeMergeConflict {
 		t.Fatalf("rebase conflict receipt=%+v err=%v", failed, err)
@@ -269,7 +317,7 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 		t.Fatalf("landing intent was not durable across interruption: returned=%+v persisted=%+v", failed, persisted)
 	}
 	resume := strings.Join(persisted.ResumeArgs, " ")
-	for _, required := range []string{"--route direct", "--cleanup", "--on-failure revert"} {
+	for _, required := range []string{"--route direct", "--cleanup", "--progress", "--on-failure revert"} {
 		if !strings.Contains(resume, required) {
 			t.Fatalf("resume args %q lost %q", resume, required)
 		}
@@ -278,7 +326,7 @@ func TestLandWorktreeMergeRebaseConflictAbortsWithoutChangingSources(t *testing.
 	if retainWorktreeMergeLandIntent(&persisted, &bareResume) {
 		t.Fatal("bare resume unexpectedly changed already-durable landing intent")
 	}
-	if bareResume.Route != WorktreeMergeRouteDirect || !bareResume.Cleanup || bareResume.OnFailure != "revert" {
+	if bareResume.Route != WorktreeMergeRouteDirect || !bareResume.Cleanup || bareResume.OnFailure != "revert" || !bareResume.ProgressRequested {
 		t.Fatalf("bare resume did not restore durable landing intent: %+v", bareResume)
 	}
 }
