@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -57,6 +58,144 @@ func TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate(t *testing.T) {
 	}
 	if _, err := os.Stat(receipt.ReceiptPath); err != nil {
 		t.Fatalf("durable receipt missing: %v", err)
+	}
+}
+
+// The target can already be red. A source which does not change that failure
+// must still prepare: target failures are diagnostics, not candidate blockers.
+func TestPrepareWorktreeMergeAllowsUnchangedFailingTargetValidation(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Broken() { missingBaseline }\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed failing target validation")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+
+	source := createMergeSource(t, fixture, "unchanged-baseline-source", "feature/unchanged-baseline", "note.txt", "source is unrelated\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatalf("unchanged failing target validation blocked prepare: receipt=%+v err=%v", receipt, err)
+	}
+	if receipt.Status != WorktreeMergePrepared {
+		t.Fatalf("receipt = %+v, want prepared", receipt)
+	}
+	if receipt.BaselineValidation.Status != quality.StatusFailed || receipt.Validation.Status != quality.StatusFailed {
+		t.Fatalf("baseline/candidate validation = %+v / %+v, want matching failures", receipt.BaselineValidation, receipt.Validation)
+	}
+	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if persisted.BaselineValidation.Revision != receipt.TargetSHA || persisted.Validation.Revision != receipt.Candidate.SHA {
+		t.Fatalf("durable validation revisions = baseline %+v candidate %+v", persisted.BaselineValidation, persisted.Validation)
+	}
+}
+
+func TestPrepareWorktreeMergeRecordsPassingTargetAndCandidateValidation(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed passing target validation")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "passing-baseline-source", "feature/passing-baseline", "note.txt", "source is unrelated\n")
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt.BaselineValidation.Status != quality.StatusPassed || receipt.Validation.Status != quality.StatusPassed ||
+		receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.Validation.Revision != receipt.Candidate.SHA {
+		t.Fatalf("validation receipt = %+v", receipt)
+	}
+}
+
+func TestPrepareWorktreeMergeRejectsChangedCandidateFailureBeyondTargetBaseline(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Broken() { missingBaseline }\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed failing target validation")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "changed-baseline-source", "feature/changed-baseline", "candidate.go", "package app\n\nfunc Candidate() { missingCandidate }\n")
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "introduced or changed failure") || receipt.Status != WorktreeMergeValidationFailed {
+		t.Fatalf("changed candidate failure = receipt %+v err %v", receipt, err)
+	}
+	if receipt.BaselineValidation.Status != quality.StatusFailed || receipt.Validation.Status != quality.StatusFailed ||
+		!strings.Contains(receipt.Failure, "introduced or changed failure") {
+		t.Fatalf("failed validation receipt = %+v", receipt)
+	}
+}
+
+func TestLandWorktreeMergeAllowsUnchangedFailingAdvancedTargetValidation(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: seed passing target validation")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "drift-baseline-source", "feature/drift-baseline", "note.txt", "source is unrelated\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, filepath.Join(fixture.canonical, "bad.go"), "package app\n\nfunc Broken() { missingAdvancedTarget }\n")
+	runEngineGit(t, fixture.canonical, "add", "bad.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance failing target validation")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	advancedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("unchanged failing advanced target validation blocked landing: receipt=%+v err=%v", landed, err)
+	}
+	if landed.Status != WorktreeMergeLanded || landed.Rebase == nil || landed.TargetSHA != advancedTarget ||
+		landed.BaselineValidation.Status != quality.StatusFailed || landed.Validation.Status != quality.StatusFailed ||
+		landed.BaselineValidation.Revision != advancedTarget || landed.Validation.Revision != landed.Candidate.SHA {
+		t.Fatalf("landed validation receipt = %+v", landed)
+	}
+	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if persisted.BaselineValidation.Revision != advancedTarget || persisted.Validation.Revision != landed.Candidate.SHA {
+		t.Fatalf("durable land validation receipt = %+v", persisted)
+	}
+}
+
+func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(t *testing.T) {
+	failing := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test ./...", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	for _, test := range []struct {
+		name      string
+		baseline  quality.VerificationReport
+		candidate quality.VerificationReport
+		wantError bool
+	}{
+		{name: "passing target and candidate", baseline: quality.VerificationReport{Status: quality.StatusPassed}, candidate: quality.VerificationReport{Status: quality.StatusPassed}},
+		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
+		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := worktreeMergeValidationRegression(test.baseline, test.candidate)
+			if (err != nil) != test.wantError {
+				t.Fatalf("regression error = %v, want error=%t", err, test.wantError)
+			}
+		})
 	}
 }
 
@@ -618,6 +757,12 @@ func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotecte
 
 func createMergeSource(t *testing.T, fixture engineFixture, task, branch, name, contents string) worktrees.CreateResult {
 	return createMergeSourceOnBase(t, fixture, task, branch, "main", name, contents)
+}
+
+func writeEngineGoModule(t *testing.T, root, source string) {
+	t.Helper()
+	writeEngineFile(t, filepath.Join(root, "go.mod"), "module example.com/mergefixture\n\ngo 1.22\n")
+	writeEngineFile(t, filepath.Join(root, "app.go"), source)
 }
 
 func createMergeSourceOnBase(t *testing.T, fixture engineFixture, task, branch, base, name, contents string) worktrees.CreateResult {
