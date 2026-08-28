@@ -130,6 +130,15 @@ func Normalize(options Options) (Options, error) {
 	if options.Verify && len(options.Checks) == 0 {
 		options.Checks = []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild}
 	}
+	if strings.TrimSpace(options.Model) == "" {
+		options.Model = "unknown"
+	}
+	if strings.TrimSpace(options.Prompt) == "" {
+		options.Prompt = fmt.Sprintf(
+			"wb operation %q created and committed into this worktree on branch %q; the caller supplied no more specific instruction text.",
+			options.Operation, options.Branch,
+		)
+	}
 	return options, nil
 }
 
@@ -188,6 +197,9 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	result.Branch = options.Branch
 	phase("prepare_worktree")
 	if err := prepareWorktree(ctx, canonical, worktree, options.Branch, base, options); err != nil {
+		return failResult(result, err)
+	}
+	if err := recordWorktreeManifest(ctx, canonical, worktree, repository, resolvedBase, options); err != nil {
 		return failResult(result, err)
 	}
 	phase("apply")
@@ -419,6 +431,90 @@ func prepareWorktree(ctx context.Context, canonical, worktree, branch, base stri
 	}
 	_, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "worktree", "add", "--quiet", "-b", branch, worktree, base)
 	return err
+}
+
+// recordWorktreeManifest gives every worktree this engine creates the WB
+// manifest and originating-instruction record wb's own commit-admission
+// hook requires (see internal/worktrees.CheckAdmission). Before this, a
+// `wb deps bump`/`wb deps set` wave worktree had neither: wb created the
+// worktree itself, applied a real change, and then its own pre-commit hook
+// rejected the commit with "this worktree has no WB manifest, so nothing
+// records what it is or who asked for it" — even though wb, not an
+// unattended agent working around it, created the worktree. It is
+// idempotent, so a --resume'd worktree that already carries a manifest and
+// prompt from an earlier run is left untouched (a manifest is immutable by
+// design; see worktrees.WriteManifest).
+func recordWorktreeManifest(ctx context.Context, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, options Options) error {
+	baseSHA, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
+	if err != nil {
+		return err
+	}
+	owner, name, err := splitRepository(repository.Slug)
+	if err != nil {
+		return err
+	}
+	effortID := worktreeEffortID(options.Operation, owner, name)
+	createdAt := time.Now().UTC()
+	manifest := worktrees.Manifest{
+		Version: 1, EffortID: effortID, ParentEffort: worktrees.ParentEffort(effortID),
+		EffortKind: worktrees.EffortKindFor(effortID), Repository: repository.Slug, Worktree: worktree,
+		Branch: options.Branch, Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
+		CreatedAt: createdAt, Initiator: options.Initiator, AgentRuntime: options.AgentRuntime,
+		Model: options.Model, CLI: options.CLI, Provider: options.Provider,
+		Provenance: worktrees.ProvenanceCreated,
+	}
+	if err := worktrees.EnsureManifest(worktree, manifest); err != nil {
+		return fmt.Errorf("record worktree manifest: %w", err)
+	}
+	header := worktrees.PromptHeader{
+		At: createdAt, Source: worktrees.PromptSourceAgent, Runtime: options.AgentRuntime,
+		Model: options.Model, CLI: options.CLI, Provider: options.Provider, Slug: "operation",
+	}
+	if err := worktrees.EnsurePrompt(worktree, header, []byte(options.Prompt)); err != nil {
+		return fmt.Errorf("record worktree originating instruction: %w", err)
+	}
+	return nil
+}
+
+// worktreeEffortID derives a valid worktrees.ValidEffortPath from an
+// operation identity and a repository's owner/name, e.g.
+// "deps-bump-go-c787f43a90d5-wave-01.sneat-co-ext-competios". The operation
+// is the parent (feature-like) effort; each repository's worktree is a task
+// effort beneath it.
+func worktreeEffortID(operation, owner, name string) string {
+	segment := worktreeEffortSegment(owner + "-" + name)
+	if segment == "" {
+		segment = "repository"
+	}
+	return operation + "." + segment
+}
+
+// worktreeEffortSegment sanitizes a value into a single
+// worktrees.ValidEffortPath segment: alphanumeric, '.', '_', and '-' only,
+// starting with an alphanumeric character.
+func worktreeEffortSegment(value string) string {
+	var output strings.Builder
+	for _, character := range value {
+		switch {
+		case character >= 'a' && character <= 'z', character >= 'A' && character <= 'Z', character >= '0' && character <= '9',
+			character == '.', character == '_', character == '-':
+			output.WriteRune(character)
+		default:
+			output.WriteRune('-')
+		}
+	}
+	segment := strings.Trim(output.String(), ".-_")
+	if segment == "" {
+		return ""
+	}
+	if !isASCIIAlphanumeric(segment[0]) {
+		segment = "r" + segment
+	}
+	return segment
+}
+
+func isASCIIAlphanumeric(character byte) bool {
+	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9'
 }
 
 func changedFiles(ctx context.Context, worktree string, options Options) ([]string, error) {

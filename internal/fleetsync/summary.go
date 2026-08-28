@@ -39,7 +39,12 @@ func Summary(results []Result) []SummaryGroup {
 		return func(result Result) bool { return result.Status == want }
 	}
 	return []SummaryGroup{
-		group("Not owned/fork", SummaryFinalOutcomes, status(NoOp)),
+		group("Not owned", SummaryFinalOutcomes, func(result Result) bool {
+			return result.Status == NoOp && !result.Repo.Remote
+		}),
+		group("Fork", SummaryFinalOutcomes, func(result Result) bool {
+			return result.Status == NoOp && result.Repo.Remote && result.Repo.IsFork
+		}),
 		group("Cloned", SummaryFinalOutcomes, status(Cloned)),
 		group("Pulled", SummaryFinalOutcomes, status(Pulled)),
 		group("Skipped (dirty)", SummaryFinalOutcomes, status(SkippedDirty)),
@@ -63,7 +68,11 @@ func needsAttention(result Result) bool {
 	case Diverged, NoUpstream, Unpushed, ArchivedUnlandable:
 		return true
 	default:
-		return false
+		// An archived repository that was pulled or left alone because
+		// pruning was not requested still deserves a visible line: otherwise
+		// turning pruning off would also make archived repositories
+		// disappear from the report entirely.
+		return result.ArchivedNotPruned
 	}
 }
 

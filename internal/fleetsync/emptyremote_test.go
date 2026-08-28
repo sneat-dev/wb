@@ -1,6 +1,7 @@
 package fleetsync
 
 import (
+	"context"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/discover"
@@ -26,7 +27,7 @@ func cloneOfEmptyRemote(t *testing.T) discover.Repo {
 func TestSyncReportsEmptyRemoteRatherThanFailing(t *testing.T) {
 	repo := cloneOfEmptyRemote(t)
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != EmptyRemote {
 		t.Fatalf("Status = %v (err=%v), want EmptyRemote", res.Status, res.Err)
@@ -46,7 +47,7 @@ func TestSyncPullsOnceRemoteHasBranches(t *testing.T) {
 	git(t, repo.Path, "commit", "-q", "--allow-empty", "-m", "first")
 	git(t, repo.Path, "push", "-q", "origin", "main")
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != Pulled {
 		t.Fatalf("Status = %v (err=%v), want Pulled once the remote has a branch", res.Status, res.Err)
@@ -73,7 +74,7 @@ func TestSyncStillFailsWhenTrackedBranchIsMissing(t *testing.T) {
 	git(t, local, "config", "branch.master.merge", "refs/heads/master")
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != Failed {
 		t.Fatalf("Status = %v, want Failed; a missing tracked branch on a populated remote is a real problem", res.Status)

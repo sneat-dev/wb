@@ -1,13 +1,16 @@
 // Package fleetsync decides and performs the sync action for a single repo:
-// clone or pull an active repo, or remove/keep an archived one's local
-// clone. It has no TUI or terminal output of its own — callers (e.g. the
-// wb sync worker pool) drive it and render results.
+// clone or pull an active repo, or — only when the caller explicitly opts
+// in — remove an archived one's local clone. It has no TUI or terminal
+// output of its own — callers (e.g. the wb sync worker pool) drive it and
+// render results.
 package fleetsync
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
+	"github.com/sneat-dev/wb/internal/archiveprune"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
 )
@@ -99,6 +102,23 @@ type Result struct {
 	// are meaningless without the branch names and ahead/behind counts.
 	Tracking gitops.TrackingState
 	Err      error
+
+	// Archived mirrors repo.Archived, for callers that render results without
+	// keeping the original discover.Repo alongside them.
+	Archived bool
+	// ArchivedNotPruned is true when Archived is true but the caller did not
+	// request pruning (Sync's pruneArchived parameter was false): this
+	// repository was pulled or left alone exactly like any other clone,
+	// never evaluated for deletion. It exists so an archived repository is
+	// never silently indistinguishable from an ordinary one in a report —
+	// the whole point of making pruning opt-in is defeated if turning it off
+	// also makes archived repositories invisible.
+	ArchivedNotPruned bool
+	// Reason explains, in prose, exactly why an archived repository was or
+	// was not eligible for removal when pruning was requested. It is the
+	// verbatim explanation from internal/archiveprune.Evaluate — the same
+	// safety predicate wb archive clean uses — never a re-derived summary.
+	Reason string
 }
 
 // PullSummary renders the pull action independently of the final repository
@@ -120,14 +140,32 @@ func (r Result) PullSummary() string {
 
 // Sync reconciles a single repo's local clone with its GitHub state: clone
 // if missing, pull if present and clean, skip if the working tree is dirty.
-// For archived repos: remove the local clone if it is safe to (clean, no
-// stash, nothing unpushed), otherwise keep it and report why. Forks and
-// repos not owned by the authenticated user or their orgs (repo.Remote ==
-// false) are left untouched (NoOp). Repos marked with `wb repo ignore` are
-// left untouched too (SkippedIgnored), including archived ones. In dryRun
-// mode no mutation happens; Status still reports what would be done.
-func Sync(repo discover.Repo, projectsRoot string, dryRun bool) Result {
-	res := Result{Repo: repo}
+// Forks and repos not owned by the authenticated user or their orgs
+// (repo.Remote == false) are left untouched (NoOp). Repos marked with
+// `wb repo ignore` are left untouched too (SkippedIgnored), including
+// archived ones. In dryRun mode no mutation happens; Status still reports
+// what would be done.
+//
+// An archived repository is never deleted unless pruneArchived is true. With
+// pruneArchived false — the default for `wb sync` — an archived repository
+// with a local clone is pulled exactly like any other clone (its Status may
+// be Pulled, SkippedDirty, Unpushed, and so on); one with no local clone yet
+// is reported AbsentArchived, since cloning it here would be an unrequested
+// behavior change and it carries no risk either way. Every archived result
+// still carries Archived and, when not pruning, ArchivedNotPruned, so a
+// report can never make an archived repository indistinguishable from an
+// ordinary one just because pruning was left off.
+//
+// With pruneArchived true, an archived repository's local clone is removed
+// only when it passes internal/archiveprune.Evaluate — the exact safety
+// predicate `wb archive clean` uses (live-confirmed archived status, no
+// uncommitted/untracked changes, no stash, no unpushed commits on any
+// branch, no local-only branch, no unpushed tag, no linked worktree, no
+// non-terminal WB Work Log claim, not marked wb.skip-sync). That predicate is
+// called verbatim, not re-derived, so this path and `wb archive clean` can
+// never drift into different definitions of "safe to delete".
+func Sync(ctx context.Context, repo discover.Repo, projectsRoot string, dryRun, pruneArchived bool) Result {
+	res := Result{Repo: repo, Archived: repo.Archived}
 
 	if !repo.Remote || repo.IsFork {
 		res.Status = NoOp
@@ -153,39 +191,53 @@ func Sync(repo discover.Repo, projectsRoot string, dryRun bool) Result {
 	}
 
 	if repo.Archived {
-		return syncArchived(repo, res, dryRun)
+		if !pruneArchived {
+			return syncArchivedWithoutPruning(repo, projectsRoot, res, dryRun)
+		}
+		return syncArchived(ctx, repo, projectsRoot, res, dryRun)
 	}
 	return syncActive(repo, projectsRoot, res, dryRun)
 }
 
-func syncArchived(repo discover.Repo, res Result, dryRun bool) Result {
+// syncArchivedWithoutPruning is the default path for an archived repository:
+// wb sync treats it exactly like an ordinary clone, pulling it if it exists
+// and is clean and never deleting it, so an archived repository's local
+// clone is retired only on the explicit request pruneArchived represents.
+func syncArchivedWithoutPruning(repo discover.Repo, projectsRoot string, res Result, dryRun bool) Result {
 	if repo.Path == "" {
 		res.Status = AbsentArchived
 		return res
 	}
-	status, err := gitops.Status(repo.Path)
-	if err != nil {
-		res.Status = Failed
-		res.Err = err
+	result := syncActive(repo, projectsRoot, res, dryRun)
+	result.ArchivedNotPruned = true
+	return result
+}
+
+// syncArchived is reached only when the caller passed pruneArchived. The
+// deletion decision comes entirely from archiveprune.Evaluate; everything
+// below it is cosmetic classification of an ineligible result and never
+// changes whether the clone is removed.
+func syncArchived(ctx context.Context, repo discover.Repo, projectsRoot string, res Result, dryRun bool) Result {
+	if repo.Path == "" {
+		res.Status = AbsentArchived
 		return res
 	}
-	unpushed, unpushedBranches, unpushedErr := gitops.UnpushedWork(repo.Path)
-	if unpushedErr == nil && len(unpushed) > 0 {
-		// The remote is read-only, so these commits can never be pushed. That
-		// makes this the one "kept" reason that will never clear on its own:
-		// every future sync reports it again, unchanged, until someone either
-		// discards the commits or unarchives the repo. Naming it separately is
-		// the difference between a standing reminder and a decision nobody
-		// knows is outstanding.
-		res.Status = ArchivedUnlandable
-		res.Detail = status
-		res.Detail.Unpushed = unpushed
-		res.Detail.UnpushedBranches = unpushedBranches
-		return res
-	}
-	if status.Dirty() {
+	evaluation := archiveprune.Evaluate(ctx, projectsRoot, repo)
+	res.Reason = evaluation.Reason
+	if !evaluation.Eligible {
+		// This classification is cosmetic only: it distinguishes "commits
+		// that can never be pushed because the remote is read-only"
+		// (ArchivedUnlandable, a standing reminder that never clears on its
+		// own) from every other refusal reason, without affecting the
+		// safety decision above in any way.
+		if status, err := gitops.Status(repo.Path); err == nil {
+			res.Detail = status
+			if len(status.Unpushed) > 0 {
+				res.Status = ArchivedUnlandable
+				return res
+			}
+		}
 		res.Status = KeptArchived
-		res.Detail = status
 		return res
 	}
 	if dryRun {

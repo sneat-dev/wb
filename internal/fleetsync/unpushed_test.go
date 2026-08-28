@@ -1,6 +1,7 @@
 package fleetsync
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 
@@ -35,7 +36,7 @@ func cloneInto(t *testing.T, origin, dest string) {
 func TestSyncReportsAheadOnlyCloneAsUnpushed(t *testing.T) {
 	repo := aheadOnlyClone(t)
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != Unpushed {
 		t.Fatalf("Status = %v (err=%v), want Unpushed; a clean pull must not hide unlanded work",
@@ -63,7 +64,7 @@ func TestSyncReportsUnpushedOnANonCheckedOutBranch(t *testing.T) {
 	git(t, local, "switch", "-q", "main")
 
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, false)
 
 	if res.Status != Unpushed {
 		t.Fatalf("Status = %v (err=%v), want Unpushed for a side branch nobody pushed",
@@ -82,7 +83,7 @@ func TestSyncStillReportsPulledWhenNothingIsOwed(t *testing.T) {
 	git(t, local, "push", "-q", "origin", "main")
 
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
-	if res := Sync(repo, "", false); res.Status != Pulled || !res.PullAttempted || !res.PullSucceeded || res.Updated || res.PullSummary() != "already current" {
+	if res := Sync(context.Background(), repo, "", false, false); res.Status != Pulled || !res.PullAttempted || !res.PullSucceeded || res.Updated || res.PullSummary() != "already current" {
 		t.Fatalf("result = %+v, want successful pull without a remote update", res)
 	}
 }
@@ -93,7 +94,7 @@ func TestSyncDryRunPlansPullWithoutClaimingItRan(t *testing.T) {
 	local := t.TempDir()
 	cloneInto(t, origin, local)
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
-	res := Sync(repo, "", true)
+	res := Sync(context.Background(), repo, "", true, false)
 	if res.Status != Pulled || !res.PullPlanned || res.PullAttempted || res.PullSucceeded || res.Updated || res.PullSummary() != "planned (dry-run)" {
 		t.Fatalf("dry-run result = %+v, want a planned-only pull", res)
 	}
@@ -101,11 +102,14 @@ func TestSyncDryRunPlansPullWithoutClaimingItRan(t *testing.T) {
 
 // An archived remote is read-only, so unpushed commits in its clone can never
 // be pushed. That is a decision someone has to make, not a keep-and-forget.
+// This classification only fires with --prune-archived: it exists to explain
+// an ineligible archiveprune.Evaluate result, never to gate deletion itself.
 func TestSyncReportsArchivedCloneHoldingUnpushedWorkAsUnlandable(t *testing.T) {
+	installArchivedFakeGh(t)
 	repo := aheadOnlyClone(t)
 	repo.Archived = true
 
-	res := Sync(repo, "", false)
+	res := Sync(context.Background(), repo, "", false, true)
 
 	if res.Status != ArchivedUnlandable {
 		t.Fatalf("Status = %v, want ArchivedUnlandable", res.Status)
@@ -116,8 +120,10 @@ func TestSyncReportsArchivedCloneHoldingUnpushedWorkAsUnlandable(t *testing.T) {
 }
 
 // An archived clone dirty for any other reason is an ordinary keep: a stash or
-// an edit can still be resolved locally, so it does not need a decision.
+// an edit can still be resolved locally, so it does not need a decision. Also
+// only reachable with --prune-archived.
 func TestSyncStillKeepsArchivedCloneDirtyForOtherReasons(t *testing.T) {
+	installArchivedFakeGh(t)
 	origin := t.TempDir()
 	git(t, origin, "init", "-q", "--bare", "-b", "main")
 	local := t.TempDir()
@@ -127,7 +133,7 @@ func TestSyncStillKeepsArchivedCloneDirtyForOtherReasons(t *testing.T) {
 	write(t, local, "scratch.txt", "untracked\n")
 
 	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true, Archived: true}
-	if res := Sync(repo, "", false); res.Status != KeptArchived {
+	if res := Sync(context.Background(), repo, "", false, true); res.Status != KeptArchived {
 		t.Fatalf("Status = %v, want KeptArchived", res.Status)
 	}
 }

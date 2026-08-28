@@ -469,7 +469,7 @@ func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) e
 		claim.Branch != record.Branch || claim.Base != record.Base || claim.Lifecycle != "active" {
 		return fmt.Errorf("failed-create Work Log claim does not match durable cleanup receipt")
 	}
-	if _, err := writeWorkLogTerminal(home, runDir, claim, record.HeadSHA, "create_failed", "", ""); err != nil {
+	if _, err := writeWorkLogTerminal(home, runDir, claim, record.HeadSHA, "create_failed", "", "", nil); err != nil {
 		return fmt.Errorf("seal failed-create Work Log claim: %w", err)
 	}
 	return nil

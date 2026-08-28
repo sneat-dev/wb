@@ -11,6 +11,7 @@
 package session
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +31,19 @@ const DirName = "sessions"
 
 // Record is one agent session's self-declaration.
 type Record struct {
-	PID     int    `json:"pid"`
-	Runtime string `json:"runtime,omitempty"`
-	Model   string `json:"model,omitempty"`
+	PID                    int    `json:"pid"`
+	WBSessionID            string `json:"wb_session_id,omitempty"`
+	Machine                string `json:"machine,omitempty"`
+	Runtime                string `json:"runtime,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	NativeHarnessID        string `json:"native_harness_id,omitempty"`
+	TmuxName               string `json:"tmux_name,omitempty"`
+	PredecessorWBSessionID string `json:"predecessor_wb_session_id,omitempty"`
+	HandoffID              string `json:"handoff_id,omitempty"`
+
+	// AgentID is the legacy spelling for a harness-native session ID. It stays
+	// readable and writable so existing hooks and PID records continue to
+	// work; new integrations should use NativeHarnessID.
 	AgentID string `json:"agent_id,omitempty"`
 
 	// WBVersion and WBPath describe the binary that took the registration.
@@ -43,6 +54,10 @@ type Record struct {
 	WBPath    string `json:"wb_path,omitempty"`
 
 	StartedAt time.Time `json:"started_at"`
+	// Lifecycle is the local registry projection. Parked sessions remain
+	// addressable but are never considered live/claimable.
+	Lifecycle       string `json:"lifecycle,omitempty"`
+	ParkedSessionID string `json:"parked_session_id,omitempty"`
 }
 
 // View is a record plus its liveness, evaluated when WB reads it. Liveness is
@@ -54,12 +69,39 @@ type View struct {
 
 // Liveness states, matching the vocabulary used for worktree owners.
 const (
-	StateLive = "live"
-	StateGone = "gone"
+	StateLive    = "live"
+	StateGone    = "gone"
+	StateParked  = "parked"
+	StateResumed = "resumed"
 )
+
+type parkedLifecycleMarker struct {
+	SchemaVersion   int       `json:"schema_version"`
+	WBSessionID     string    `json:"wb_session_id"`
+	ParkedSessionID string    `json:"parked_session_id"`
+	At              time.Time `json:"at"`
+}
+
+type resumedLifecycleMarker struct {
+	SchemaVersion        int       `json:"schema_version"`
+	WBSessionID          string    `json:"wb_session_id"`
+	ParkedSessionID      string    `json:"parked_session_id"`
+	SuccessorWBSessionID string    `json:"successor_wb_session_id"`
+	At                   time.Time `json:"at"`
+}
 
 func recordPath(dir string, pid int) string {
 	return filepath.Join(dir, strconv.Itoa(pid)+".json")
+}
+
+// NewID returns an opaque WB session identity. It is independent of every
+// runtime-specific identifier and safe to carry in file and tmux names.
+func NewID() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate WB session ID: %w", err)
+	}
+	return fmt.Sprintf("wbs-%x", random[:]), nil
 }
 
 // Register writes a session record, replacing any record for the same PID.
@@ -69,9 +111,76 @@ func Register(dir string, record Record) (Record, error) {
 	if record.PID <= 0 {
 		return Record{}, fmt.Errorf("a session must declare a positive PID")
 	}
+	record.WBSessionID = strings.TrimSpace(record.WBSessionID)
+	record.Machine = strings.TrimSpace(record.Machine)
 	record.Runtime = strings.TrimSpace(record.Runtime)
 	record.Model = strings.TrimSpace(record.Model)
+	record.NativeHarnessID = strings.TrimSpace(record.NativeHarnessID)
+	record.TmuxName = strings.TrimSpace(record.TmuxName)
+	record.PredecessorWBSessionID = strings.TrimSpace(record.PredecessorWBSessionID)
+	record.HandoffID = strings.TrimSpace(record.HandoffID)
+	record.Lifecycle = strings.TrimSpace(record.Lifecycle)
+	record.ParkedSessionID = strings.TrimSpace(record.ParkedSessionID)
 	record.AgentID = strings.TrimSpace(record.AgentID)
+	if record.NativeHarnessID != "" && record.AgentID != "" && record.NativeHarnessID != record.AgentID {
+		return Record{}, fmt.Errorf("native harness ID %q conflicts with legacy agent ID %q", record.NativeHarnessID, record.AgentID)
+	}
+	if record.NativeHarnessID == "" {
+		record.NativeHarnessID = record.AgentID
+	}
+
+	// Re-registering a PID is an update to the same declared session unless a
+	// caller supplies a preallocated identity explicitly. Preserve the stable
+	// fields that cannot be rediscovered from the process itself.
+	if previous, ok := readRecord(recordPath(dir, record.PID)); ok {
+		sameSession := record.WBSessionID == "" || record.WBSessionID == previous.WBSessionID
+		if record.WBSessionID == "" {
+			record.WBSessionID = previous.WBSessionID
+		}
+		if sameSession {
+			if record.Lifecycle == "" {
+				record.Lifecycle = previous.Lifecycle
+			}
+			if record.ParkedSessionID == "" {
+				record.ParkedSessionID = previous.ParkedSessionID
+			}
+			if record.Machine == "" {
+				record.Machine = previous.Machine
+			}
+			if record.NativeHarnessID == "" {
+				record.NativeHarnessID = previous.NativeHarnessID
+			}
+			if record.TmuxName == "" {
+				record.TmuxName = previous.TmuxName
+			}
+			if record.PredecessorWBSessionID == "" {
+				record.PredecessorWBSessionID = previous.PredecessorWBSessionID
+			}
+			if record.HandoffID == "" {
+				record.HandoffID = previous.HandoffID
+			}
+			if record.StartedAt.IsZero() {
+				record.StartedAt = previous.StartedAt
+			}
+		}
+	}
+	if record.WBSessionID == "" {
+		id, err := NewID()
+		if err != nil {
+			return Record{}, err
+		}
+		record.WBSessionID = id
+	}
+	if record.Machine == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return Record{}, fmt.Errorf("resolve session machine: %w", err)
+		}
+		record.Machine = strings.TrimSpace(hostname)
+		if record.Machine == "" {
+			return Record{}, fmt.Errorf("resolve session machine: hostname is empty")
+		}
+	}
 	record.WBVersion = buildinfo.Version()
 	if executable, err := os.Executable(); err == nil {
 		record.WBPath = executable
@@ -93,6 +202,202 @@ func Register(dir string, record Record) (Record, error) {
 	return record, nil
 }
 
+// MarkParked records the non-live registry projection for a session. The
+// original declaration remains untouched in the PID index. A no-replace
+// lifecycle marker changes the live projection while keeping the source
+// auditable and ensuring session resolution cannot treat a parked owner as active.
+func MarkParked(dir string, pid int, parkedID string) (Record, error) {
+	record, ok := readRecord(recordPath(dir, pid))
+	if !ok {
+		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
+	}
+	if record.Lifecycle == "parked" {
+		if record.ParkedSessionID == parkedID {
+			return record, nil
+		}
+		return Record{}, fmt.Errorf("session with pid %d is already parked as %s", pid, record.ParkedSessionID)
+	}
+	if _, resumed := readResumedMarker(dir, record.WBSessionID); resumed {
+		return Record{}, fmt.Errorf("session with pid %d has already resumed", pid)
+	}
+	if existing, err := os.ReadFile(parkedMarkerPath(dir, record.WBSessionID)); err == nil {
+		var marker parkedLifecycleMarker
+		if json.Unmarshal(existing, &marker) == nil && marker.ParkedSessionID == parkedID {
+			record.Lifecycle, record.ParkedSessionID = "parked", parkedID
+			return record, nil
+		}
+		return Record{}, fmt.Errorf("session with pid %d is already parked", pid)
+	}
+	if record.Lifecycle == "resumed" {
+		return Record{}, fmt.Errorf("session with pid %d has already resumed", pid)
+	}
+	if strings.TrimSpace(parkedID) == "" {
+		return Record{}, fmt.Errorf("parked session ID is required")
+	}
+	// The PID registration is immutable history. A separate no-replace marker
+	// changes the live projection without rewriting the declaration itself.
+	markerDir := filepath.Join(dir, "lifecycle")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return Record{}, err
+	}
+	marker := parkedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID, At: time.Now().UTC()}
+	raw, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return Record{}, err
+	}
+	path := filepath.Join(markerDir, record.WBSessionID+".parked.json")
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		return Record{}, fmt.Errorf("session with pid %d is already parked", pid)
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("record parked session lifecycle: %w", err)
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		_ = file.Close()
+		return Record{}, err
+	}
+	if err := file.Close(); err != nil {
+		return Record{}, err
+	}
+	record.Lifecycle = "parked"
+	record.ParkedSessionID = parkedID
+	return record, nil
+}
+
+// MarkResumed appends the terminal local registry projection without
+// rewriting either the immutable PID registration or the parked history.
+// An identical retry repairs a crash after the parked-session store finalized.
+func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Record, error) {
+	record, ok := readRecord(recordPath(dir, pid))
+	if !ok {
+		return Record{}, fmt.Errorf("session with pid %d is not registered", pid)
+	}
+	parkedMarker, parked := readParkedMarker(dir, record.WBSessionID)
+	if !parked || parkedMarker.ParkedSessionID != parkedID {
+		return Record{}, fmt.Errorf("session with pid %d is not parked as %s", pid, parkedID)
+	}
+	successorWBSessionID = strings.TrimSpace(successorWBSessionID)
+	if successorWBSessionID == "" || successorWBSessionID == record.WBSessionID {
+		return Record{}, fmt.Errorf("resumed session requires a distinct successor WB session ID")
+	}
+	if existing, found := readResumedMarker(dir, record.WBSessionID); found {
+		if existing.ParkedSessionID != parkedID || existing.SuccessorWBSessionID != successorWBSessionID {
+			return Record{}, fmt.Errorf("session with pid %d already has a different resumed projection", pid)
+		}
+		record.Lifecycle, record.ParkedSessionID = "resumed", parkedID
+		return record, nil
+	}
+	markerDir := filepath.Join(dir, "lifecycle")
+	if err := os.MkdirAll(markerDir, 0o755); err != nil {
+		return Record{}, err
+	}
+	marker := resumedLifecycleMarker{SchemaVersion: 1, WBSessionID: record.WBSessionID, ParkedSessionID: parkedID,
+		SuccessorWBSessionID: successorWBSessionID, At: time.Now().UTC()}
+	raw, err := json.MarshalIndent(marker, "", "  ")
+	if err != nil {
+		return Record{}, err
+	}
+	path := resumedMarkerPath(dir, record.WBSessionID)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		if existing, found := readResumedMarker(dir, record.WBSessionID); found && existing.ParkedSessionID == parkedID && existing.SuccessorWBSessionID == successorWBSessionID {
+			record.Lifecycle, record.ParkedSessionID = "resumed", parkedID
+			return record, nil
+		}
+		return Record{}, fmt.Errorf("session with pid %d already has a different resumed projection", pid)
+	}
+	if err != nil {
+		return Record{}, fmt.Errorf("record resumed session lifecycle: %w", err)
+	}
+	if _, err := file.Write(append(raw, '\n')); err != nil {
+		_ = file.Close()
+		return Record{}, err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return Record{}, err
+	}
+	if err := file.Close(); err != nil {
+		return Record{}, err
+	}
+	directory, err := os.Open(markerDir)
+	if err != nil {
+		return Record{}, err
+	}
+	err = directory.Sync()
+	_ = directory.Close()
+	if err != nil {
+		return Record{}, err
+	}
+	record.Lifecycle, record.ParkedSessionID = "resumed", parkedID
+	return record, nil
+}
+
+func parkedMarkerPath(dir, wbSessionID string) string {
+	return filepath.Join(dir, "lifecycle", wbSessionID+".parked.json")
+}
+
+func resumedMarkerPath(dir, wbSessionID string) string {
+	return filepath.Join(dir, "lifecycle", wbSessionID+".resumed.json")
+}
+
+func readParkedMarker(dir, wbSessionID string) (parkedLifecycleMarker, bool) {
+	raw, err := os.ReadFile(parkedMarkerPath(dir, wbSessionID))
+	if err != nil {
+		return parkedLifecycleMarker{}, false
+	}
+	var marker parkedLifecycleMarker
+	if json.Unmarshal(raw, &marker) != nil || marker.SchemaVersion != 1 || marker.WBSessionID != wbSessionID || marker.ParkedSessionID == "" || marker.At.IsZero() {
+		return parkedLifecycleMarker{}, false
+	}
+	return marker, true
+}
+
+func readResumedMarker(dir, wbSessionID string) (resumedLifecycleMarker, bool) {
+	raw, err := os.ReadFile(resumedMarkerPath(dir, wbSessionID))
+	if err != nil {
+		return resumedLifecycleMarker{}, false
+	}
+	var marker resumedLifecycleMarker
+	if json.Unmarshal(raw, &marker) != nil || marker.SchemaVersion != 1 || marker.WBSessionID != wbSessionID ||
+		marker.ParkedSessionID == "" || marker.SuccessorWBSessionID == "" || marker.At.IsZero() {
+		return resumedLifecycleMarker{}, false
+	}
+	return marker, true
+}
+
+func parked(dir, wbSessionID string) bool {
+	if wbSessionID == "" {
+		return false
+	}
+	_, err := os.Stat(parkedMarkerPath(dir, wbSessionID))
+	return err == nil
+}
+
+func resumed(dir, wbSessionID string) bool {
+	if wbSessionID == "" {
+		return false
+	}
+	_, ok := readResumedMarker(dir, wbSessionID)
+	return ok
+}
+
+func readRecord(path string) (Record, bool) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return Record{}, false
+	}
+	var record Record
+	if err := json.Unmarshal(content, &record); err != nil || record.PID <= 0 {
+		return Record{}, false
+	}
+	if record.NativeHarnessID == "" {
+		record.NativeHarnessID = record.AgentID
+	}
+	return record, true
+}
+
 // List returns every recorded session with its liveness, newest first. A
 // missing directory is not an error: no session has registered yet.
 func List(dir string) ([]View, error) {
@@ -108,17 +413,21 @@ func List(dir string) ([]View, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		content, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-		if err != nil {
-			continue
-		}
-		var record Record
 		// A malformed record is skipped rather than failing the listing: one
 		// bad file must not hide every other session.
-		if err := json.Unmarshal(content, &record); err != nil || record.PID <= 0 {
+		record, ok := readRecord(filepath.Join(dir, entry.Name()))
+		if !ok {
 			continue
 		}
-		views = append(views, View{Record: record, State: state(record.PID)})
+		viewState := state(record.PID)
+		if marker, ok := readResumedMarker(dir, record.WBSessionID); ok {
+			record.Lifecycle, record.ParkedSessionID = "resumed", marker.ParkedSessionID
+			viewState = StateResumed
+		} else if record.Lifecycle == "parked" || parked(dir, record.WBSessionID) {
+			record.Lifecycle = "parked"
+			viewState = StateParked
+		}
+		views = append(views, View{Record: record, State: viewState})
 	}
 	sort.SliceStable(views, func(i, j int) bool {
 		return views[i].StartedAt.After(views[j].StartedAt)
@@ -149,15 +458,11 @@ func Lookup(dir string, pid int) (Record, bool) {
 	if pid <= 0 {
 		return Record{}, false
 	}
-	content, err := os.ReadFile(recordPath(dir, pid))
-	if err != nil {
+	record, ok := readRecord(recordPath(dir, pid))
+	if !ok {
 		return Record{}, false
 	}
-	var record Record
-	if err := json.Unmarshal(content, &record); err != nil {
-		return Record{}, false
-	}
-	return record, state(record.PID) == StateLive
+	return record, record.Lifecycle != "parked" && record.Lifecycle != "resumed" && !resumed(dir, record.WBSessionID) && !parked(dir, record.WBSessionID) && state(record.PID) == StateLive
 }
 
 func state(pid int) string {

@@ -19,8 +19,8 @@ func TestNewResultsModelMakesSummaryCategoriesNavigable(t *testing.T) {
 		{Repo: discover.Repo{Org: "a", Name: "broken"}, Status: fleetsync.Failed},
 	}
 	m := NewResultsModel(results)
-	if got := len(m.summary.Items()); got != 16 {
-		t.Fatalf("list items = %d, want all 16 summary categories", got)
+	if got := len(m.summary.Items()); got != 17 {
+		t.Fatalf("list items = %d, want all 17 summary categories", got)
 	}
 	assertResultGroupCount(t, m, "Pulled", 1)
 	assertResultGroupCount(t, m, "Pull succeeded", 1)
@@ -32,7 +32,7 @@ func TestNewResultsModelMakesSummaryCategoriesNavigable(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
 	m = updated.(ResultsModel)
 	view := m.View().Content
-	if !strings.Contains(view, "Not owned/fork") || !strings.Contains(view, "Errors") {
+	if !strings.Contains(view, "Not owned") || !strings.Contains(view, "Fork") || !strings.Contains(view, "Errors") {
 		t.Fatalf("compact summary does not expose first and last categories together: %q", view)
 	}
 }

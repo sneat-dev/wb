@@ -6,6 +6,57 @@ import (
 	"testing"
 )
 
+// installFakeGhRepoView writes a fake `gh` on PATH that answers `gh repo view
+// <slug> --json isArchived --jq .isArchived` with the given stdout, or fails
+// the invocation entirely when ok is false — simulating GitHub being
+// unreachable, unauthenticated, or rate-limited.
+func installFakeGhRepoView(t *testing.T, wantSlug, stdout string, ok bool) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	exit := "0"
+	if !ok {
+		exit = "1"
+	}
+	content := "#!/bin/sh\nset -eu\n" +
+		"if [ \"$1 $2 $3 $4 $5 $6 $7\" != \"repo view " + wantSlug + " --json isArchived --jq .isArchived\" ]; then\n" +
+		"  echo \"unexpected gh command: $*\" >&2\n  exit 2\nfi\n" +
+		"printf '%s\\n' '" + stdout + "'\nexit " + exit + "\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestIsArchivedTrue(t *testing.T) {
+	installFakeGhRepoView(t, "acme/widgets", "true", true)
+	archived, err := IsArchived("acme/widgets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived {
+		t.Error("IsArchived() = false, want true")
+	}
+}
+
+func TestIsArchivedFalse(t *testing.T) {
+	installFakeGhRepoView(t, "acme/widgets", "false", true)
+	archived, err := IsArchived("acme/widgets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived {
+		t.Error("IsArchived() = true, want false")
+	}
+}
+
+func TestIsArchivedFailsClosedOnGhError(t *testing.T) {
+	installFakeGhRepoView(t, "acme/widgets", "", false)
+	if _, err := IsArchived("acme/widgets"); err == nil {
+		t.Fatal("IsArchived() with a failing gh returned no error")
+	}
+}
+
 func TestReconcile(t *testing.T) {
 	local := []Repo{
 		{Org: "sneat-dev", Name: "wb", Path: "/p/sneat-dev/wb"},

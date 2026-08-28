@@ -98,7 +98,7 @@ func runSessionList(directory, projectsRoot string, onlyLive, jsonOut bool, out,
 
 func renderSessions(out io.Writer, rows []sessionRow) error {
 	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(writer, "PID\tRUNTIME\tMODEL\tWB\tSTARTED\tEFFORTS\tWORKTREES\tBRANCHES\tSTATE"); err != nil {
+	if _, err := fmt.Fprintln(writer, "SESSION\tMACHINE\tPID\tRUNTIME\tMODEL\tWB\tSTARTED\tEFFORTS\tWORKTREES\tBRANCHES\tSTATE"); err != nil {
 		return err
 	}
 	for _, row := range rows {
@@ -106,8 +106,8 @@ func renderSessions(out io.Writer, rows []sessionRow) error {
 		if len(row.Worktrees) > 0 {
 			worktreeCount = strconv.Itoa(len(row.Worktrees))
 		}
-		if _, err := fmt.Fprintf(writer, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			row.PID, orDash(row.Runtime), orDash(row.Model), orDash(row.WBVersion),
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			orDash(row.WBSessionID), orDash(row.Machine), row.PID, orDash(row.Runtime), orDash(row.Model), orDash(row.WBVersion),
 			row.StartedAt.Local().Format("2006-01-02 15:04"),
 			condense(row.Efforts, 24), worktreeCount, condense(row.Branches, 24), row.State); err != nil {
 			return err

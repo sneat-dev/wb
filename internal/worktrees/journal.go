@@ -362,7 +362,43 @@ func WriteManifest(worktree string, manifest Manifest) error {
 	if err != nil {
 		return fmt.Errorf("encode worktree manifest: %w", err)
 	}
-	return writeBytesAtomicAt(directory, manifestName, encoded, 0o600)
+	// Immutable publication must be no-replace at the filesystem boundary.
+	// A check followed by replace-capable rename lets two first writers both
+	// succeed and silently destroys one creation authority.
+	return writeBytesImmutableAt(directory, manifestName, encoded, 0o600, false)
+}
+
+// EnsureManifest writes the creation manifest for a worktree that some
+// caller other than `wb worktree create` assembled directly — most notably
+// an internal orchestration engine (deps bump/set wave processing) that
+// creates a worktree with `git worktree add` rather than through wb's own
+// CLI. It is idempotent: a worktree that already carries a manifest (most
+// commonly a --resume'd operation) is left untouched, since a manifest is
+// immutable by design — this only ever fills in a genuinely missing record,
+// it never second-guesses one already written.
+func EnsureManifest(worktree string, manifest Manifest) error {
+	if err := WriteManifest(worktree, manifest); err != nil {
+		if strings.Contains(err.Error(), "immutable") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// EnsurePrompt records header/body as the worktree's originating instruction
+// unless one is already recorded. See EnsureManifest for why this must be
+// idempotent rather than erroring on a second call.
+func EnsurePrompt(worktree string, header PromptHeader, body []byte) error {
+	existing, err := ListPrompts(worktree)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+	_, err = AppendPrompt(worktree, header, body)
+	return err
 }
 
 // ReadManifest loads the creation record from the worktree alone.
@@ -693,6 +729,11 @@ func AppendPrompt(worktree string, header PromptHeader, body []byte) (string, er
 		return "", err
 	}
 	defer func() { _ = directory.Close() }()
+	unlock, err := lockJournalSequence(directory, ".prompts.lock")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 
 	existing, err := listPromptsIn(directory)
 	if err != nil {
@@ -720,10 +761,37 @@ func AppendPrompt(worktree string, header PromptHeader, body []byte) (string, er
 	if content[len(content)-1] != '\n' {
 		content = append(content, '\n')
 	}
-	if err := writeBytesAtomicAt(directory, name, content, 0o600); err != nil {
+	if err := writeBytesImmutableAt(directory, name, content, 0o600, false); err != nil {
 		return "", err
 	}
 	return name, nil
+}
+
+func lockJournalSequence(directory *os.File, name string) (func(), error) {
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if errors.Is(err, unix.EEXIST) {
+		fd, err = unix.Openat(int(directory.Fd()), name, unix.O_RDWR|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open journal sequence lock: %w", err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil || stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("journal sequence lock is not one regular file")
+	}
+	if err := unix.Fchmod(fd, 0o600); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		_ = unix.Close(fd)
+		return nil, err
+	}
+	return func() {
+		_ = unix.Flock(fd, unix.LOCK_UN)
+		_ = unix.Close(fd)
+	}, nil
 }
 
 // ListPrompts returns the recorded instruction headers in ordinal order. Bodies

@@ -60,6 +60,14 @@ func (report BumpReport) Markdown() string {
 			fmt.Fprintf(&output, "- `%s` (`%s`) — %s\n", warning.Repository, warning.Manifest, warning.Reason)
 		}
 	}
+	if len(report.AmbiguousModules) > 0 {
+		output.WriteString("\n## Ambiguous module resolutions\n\n")
+		output.WriteString("Each module below is declared by more than one repository but was resolved deterministically instead of aborting the fleet:\n\n")
+		for _, warning := range report.AmbiguousModules {
+			fmt.Fprintf(&output, "- `%s` — kept `%s` (`%s`); duplicate(s): `%s` — %s\n",
+				warning.Module, warning.Repository, warning.Manifest, strings.Join(warning.Duplicates, "`, `"), warning.Reason)
+		}
+	}
 	for _, wave := range report.Waves {
 		fmt.Fprintf(&output, "\n## Wave %d — `%s`\n\n", wave.Index, wave.Status)
 		output.WriteString("Events:\n\n")
