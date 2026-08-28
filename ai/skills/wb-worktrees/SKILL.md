@@ -228,4 +228,7 @@ Reporting is the default. `--apply` captures the content — modified, staged an
 untracked alike — onto a branch through a temporary index, leaving the clone's
 HEAD, branch, index, and working tree untouched. The clone stays dirty until an
 explicit `--restore`, which refuses unless every reported path is verifiably in
-the rescue commit and the branch is on the remote.
+the rescue commit and the branch is on the remote. `--push` traverses managed
+hooks only through an attested rescue route that proves the exact single
+rescue ref, canonical parent, and complete captured tree; never replace it
+with `--no-verify` or a hand-written push.

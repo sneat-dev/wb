@@ -30,6 +30,7 @@ package canonicalrescue
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,14 @@ import (
 
 	"github.com/sneat-dev/wb/internal/agentguard"
 	"github.com/sneat-dev/wb/internal/console"
+)
+
+const (
+	// PushBranchEnv and PushCommitEnv attest that a pre-push invocation was
+	// opened by WB's rescue transport. The hook still proves the exact ref,
+	// commit parent, and full captured tree before accepting this route.
+	PushBranchEnv = "WB_CANONICAL_RESCUE_BRANCH"
+	PushCommitEnv = "WB_CANONICAL_RESCUE_COMMIT"
 )
 
 // Change is one path the clone holds that HEAD does not.
@@ -158,30 +167,9 @@ func Capture(ctx context.Context, report Report) (Report, error) {
 		return report, err
 	}
 
-	scratch, err := os.MkdirTemp("", "wb-rescue-*")
+	tree, err := capturedTree(ctx, report)
 	if err != nil {
-		return report, fmt.Errorf("stage a temporary index: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(scratch) }()
-	indexPath := filepath.Join(scratch, "index")
-
-	// Start from the clone's real index rather than from HEAD, so a path that
-	// was staged but since changed in the working tree is still captured with
-	// everything else. Copying it, rather than using it, is what keeps the
-	// clone's own index untouched.
-	if err := copyFile(filepath.Join(report.Path, ".git", "index"), indexPath); err != nil {
-		// A clone with no index yet is unusual but not an error: read-tree
-		// below rebuilds one from HEAD.
-		if _, readTreeErr := gitWithIndex(ctx, report.Path, indexPath, "read-tree", "HEAD"); readTreeErr != nil {
-			return report, fmt.Errorf("build a temporary index for %s: %w", report.Path, readTreeErr)
-		}
-	}
-	if _, err := gitWithIndex(ctx, report.Path, indexPath, "add", "--all", "--", "."); err != nil {
-		return report, fmt.Errorf("stage %s into the temporary index: %w", report.Path, err)
-	}
-	tree, err := gitWithIndex(ctx, report.Path, indexPath, "write-tree")
-	if err != nil {
-		return report, fmt.Errorf("write a tree for %s: %w", report.Path, err)
+		return report, err
 	}
 	// A named branch that already holds exactly this tree is the second run of
 	// the two-step flow — capture, review, then restore — so it is reused
@@ -204,7 +192,7 @@ func Capture(ctx context.Context, report Report) (Report, error) {
 	}
 
 	message := rescueMessage(report)
-	commit, err := gitWithIndex(ctx, report.Path, indexPath, "commit-tree", tree, "-p", report.Head, "-m", message)
+	commit, err := git(ctx, report.Path, "commit-tree", tree, "-p", report.Head, "-m", message)
 	if err != nil {
 		return report, fmt.Errorf("record the rescue commit for %s: %w", report.Path, err)
 	}
@@ -256,11 +244,149 @@ func Push(ctx context.Context, report Report, remote string) (Report, error) {
 	if report.RescueCommit == "" {
 		return report, fmt.Errorf("nothing has been captured yet")
 	}
-	if _, err := git(ctx, report.Path, "push", remote, report.RescueBranch); err != nil {
+	remoteRef := "refs/heads/" + report.RescueBranch
+	remoteCommit, err := remoteBranchCommit(ctx, report.Path, remote, remoteRef)
+	if err != nil {
+		return report, err
+	}
+	if remoteCommit == report.RescueCommit {
+		report.Pushed = true
+		return report, nil
+	}
+	if remoteCommit != "" {
+		return report, fmt.Errorf("refusing to replace %s on %s: remote holds %s, rescue commit is %s", remoteRef, remote, remoteCommit, report.RescueCommit)
+	}
+	pushEnvironment := []string{
+		PushBranchEnv + "=" + report.RescueBranch,
+		PushCommitEnv + "=" + report.RescueCommit,
+	}
+	lease := "--force-with-lease=" + remoteRef + ":"
+	refspec := remoteRef + ":" + remoteRef
+	if _, err := gitWithEnvironment(ctx, report.Path, pushEnvironment, "push", lease, remote, refspec); err != nil {
 		return report, fmt.Errorf("push %s to %s: %w", report.RescueBranch, remote, err)
+	}
+	remoteCommit, err = remoteBranchCommit(ctx, report.Path, remote, remoteRef)
+	if err != nil {
+		return report, err
+	}
+	if remoteCommit != report.RescueCommit {
+		return report, fmt.Errorf("push %s to %s returned without exact remote receipt: observed %q, want %s", report.RescueBranch, remote, remoteCommit, report.RescueCommit)
 	}
 	report.Pushed = true
 	return report, nil
+}
+
+// VerifyAttestedPush proves that a pre-push operation is publishing only the
+// exact rescue commit which captures the canonical clone's complete dirty
+// state. It is the rescue route through managed hooks, not a hook bypass.
+func VerifyAttestedPush(ctx context.Context, root, projectsRoot, branch, commit string, input io.Reader) error {
+	branch, commit = strings.TrimSpace(branch), strings.TrimSpace(commit)
+	if !strings.HasPrefix(branch, "rescue/") || commit == "" {
+		return fmt.Errorf("invalid canonical rescue push attestation")
+	}
+	if _, err := git(ctx, root, "check-ref-format", "--branch", branch); err != nil {
+		return fmt.Errorf("invalid canonical rescue branch %q: %w", branch, err)
+	}
+	report, err := Inspect(ctx, root, Options{ProjectsRoot: projectsRoot, Branch: branch})
+	if err != nil {
+		return err
+	}
+	if !report.Dirty() {
+		return fmt.Errorf("canonical rescue push attestation requires the dirty clone it preserves")
+	}
+	localCommit, err := branchCommit(ctx, root, branch)
+	if err != nil {
+		return err
+	}
+	if localCommit != commit {
+		return fmt.Errorf("canonical rescue branch %s points to %s, attestation names %s", branch, localCommit, commit)
+	}
+	parents, err := git(ctx, root, "rev-list", "--parents", "-n", "1", commit)
+	if err != nil {
+		return err
+	}
+	parentFields := strings.Fields(parents)
+	if len(parentFields) != 2 || parentFields[0] != commit || parentFields[1] != report.Head {
+		return fmt.Errorf("canonical rescue commit %s is not a single-parent capture of canonical HEAD %s", commit, report.Head)
+	}
+	captured, err := capturedTree(ctx, report)
+	if err != nil {
+		return err
+	}
+	commitTree, err := git(ctx, root, "rev-parse", commit+"^{tree}")
+	if err != nil {
+		return err
+	}
+	if captured != commitTree {
+		return fmt.Errorf("canonical rescue commit %s tree %s does not equal the clone's complete captured tree %s", commit, commitTree, captured)
+	}
+	contents, err := io.ReadAll(input)
+	if err != nil {
+		return fmt.Errorf("read canonical rescue pre-push refs: %w", err)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(contents)), "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) != 1 {
+		return fmt.Errorf("canonical rescue push must update exactly one ref, observed %d", len(lines))
+	}
+	fields := strings.Fields(lines[0])
+	wantRef := "refs/heads/" + branch
+	if len(fields) != 4 || fields[0] != wantRef || fields[1] != commit || fields[2] != wantRef {
+		return fmt.Errorf("canonical rescue push must publish only %s at %s", wantRef, commit)
+	}
+	return nil
+}
+
+func PushAttestationFromEnvironment() (branch, commit string, present bool, err error) {
+	branch, commit = os.Getenv(PushBranchEnv), os.Getenv(PushCommitEnv)
+	if branch == "" && commit == "" {
+		return "", "", false, nil
+	}
+	if branch == "" || commit == "" {
+		return "", "", true, fmt.Errorf("incomplete canonical rescue push attestation")
+	}
+	return branch, commit, true, nil
+}
+
+func capturedTree(ctx context.Context, report Report) (string, error) {
+	scratch, err := os.MkdirTemp("", "wb-rescue-*")
+	if err != nil {
+		return "", fmt.Errorf("stage a temporary index: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	indexPath := filepath.Join(scratch, "index")
+	if err := copyFile(filepath.Join(report.Path, ".git", "index"), indexPath); err != nil {
+		if _, readTreeErr := gitWithIndex(ctx, report.Path, indexPath, "read-tree", "HEAD"); readTreeErr != nil {
+			return "", fmt.Errorf("build a temporary index for %s: %w", report.Path, readTreeErr)
+		}
+	}
+	if _, err := gitWithIndex(ctx, report.Path, indexPath, "add", "--all", "--", "."); err != nil {
+		return "", fmt.Errorf("stage %s into the temporary index: %w", report.Path, err)
+	}
+	tree, err := gitWithIndex(ctx, report.Path, indexPath, "write-tree")
+	if err != nil {
+		return "", fmt.Errorf("write a tree for %s: %w", report.Path, err)
+	}
+	return tree, nil
+}
+
+func remoteBranchCommit(ctx context.Context, root, remote, remoteRef string) (string, error) {
+	output, err := git(ctx, root, "ls-remote", "--heads", "--", remote, remoteRef)
+	if err != nil {
+		return "", fmt.Errorf("read %s from %s: %w", remoteRef, remote, err)
+	}
+	fields := strings.Fields(output)
+	if len(fields) == 0 {
+		return "", nil
+	}
+	if len(fields) != 2 || fields[1] != remoteRef {
+		return "", fmt.Errorf("unexpected ls-remote receipt for %s on %s: %q", remoteRef, remote, output)
+	}
+	return fields[0], nil
 }
 
 // Restore returns the clone to a clean checkout of its own HEAD, and refuses to
@@ -369,11 +495,16 @@ func gitRaw(ctx context.Context, root string, arguments ...string) (string, erro
 }
 
 func gitWithIndex(ctx context.Context, root, indexPath string, arguments ...string) (string, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", root}, arguments...)...)
-	command.Env = console.Env()
+	extraEnvironment := []string(nil)
 	if indexPath != "" {
-		command.Env = append(command.Env, "GIT_INDEX_FILE="+indexPath)
+		extraEnvironment = append(extraEnvironment, "GIT_INDEX_FILE="+indexPath)
 	}
+	return gitWithEnvironment(ctx, root, extraEnvironment, arguments...)
+}
+
+func gitWithEnvironment(ctx context.Context, root string, extraEnvironment []string, arguments ...string) (string, error) {
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", root}, arguments...)...)
+	command.Env = append(console.Env(), extraEnvironment...)
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	output, err := command.Output()

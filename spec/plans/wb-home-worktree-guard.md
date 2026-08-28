@@ -67,7 +67,9 @@ Allow detached HEAD only when an actual `rebase-merge` or `rebase-apply` state
 is active in a correctly located linked worktree, while retaining all
 canonical/common-directory checks. Persist the resolved WB home in new managed
 hook shims, reject transient `go run` executables, and prove old shims remain
-compatible after upgrade; addresses #33.
+compatible after upgrade. Prove canonical rescue publishes only an attested
+single rescue ref whose exact commit captures the complete dirty clone through
+the real installed pre-push hook; addresses #33.
 
 ### Task 4: Verify prior-release migration end to end
 

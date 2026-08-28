@@ -7921,7 +7921,9 @@
     },
     {
       "id": "wb.worktree.rescue",
-      "feature_refs": [],
+      "feature_refs": [
+        "spec/features/worktree-lifecycle/README.md"
+      ],
       "since": "existing",
       "surfaces": {
         "runtime": {
@@ -7942,6 +7944,7 @@
               "modes": [
                 "Reports what a canonical clone holds without changing anything, and finds every dirty clone with --fleet.",
                 "--apply captures modified, staged, and untracked content onto a branch through a temporary index, leaving the clone's HEAD, branch, index, and working tree untouched.",
+                "--push traverses managed hooks only after proving an exact single rescue ref whose commit parent and complete captured tree match the dirty canonical clone, then records a fresh exact remote receipt.",
                 "--restore is the only destructive step and refuses unless every reported path is verifiably inside the rescue commit and the branch is on the remote."
               ]
             }
@@ -7992,6 +7995,11 @@
             {
               "path": "cmd/wb/worktree_rescue_test.go",
               "name": "TestWorktreeRescueFullJourney",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_rescue_test.go",
+              "name": "TestWorktreeRescueFullJourneyPassesManagedPrePushGuard",
               "kind": "integration"
             }
           ],

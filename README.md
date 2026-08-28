@@ -1750,6 +1750,12 @@ inside the rescue commit *and* the branch is on the remote (or
 `--allow-unpushed` accepts that risk). The `git clean` it then runs omits `-x`,
 so ignored paths — the generated marker among them — survive.
 
+`--push` uses an attested rescue-only route through WB's managed pre-push
+hook. The hook proves the push contains exactly one rescue ref, that its commit
+is parented on the canonical `HEAD`, and that its tree equals a fresh complete
+capture. It does not disable hooks for an ordinary branch, and WB requires a
+fresh exact remote-ref receipt before `--restore` proceeds.
+
 The capture never disturbs the clone. WB copies the clone's index to a scratch
 file, stages the working tree into the copy, writes a tree from it, and commits
 that tree with `git commit-tree` parented on HEAD. The branch ends up holding
