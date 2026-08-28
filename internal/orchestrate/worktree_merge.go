@@ -953,7 +953,10 @@ func inspectWorktreeMergeSources(ctx context.Context, projectsRoot string, paths
 			return nil, "", "", fmt.Errorf("source %s: %w", input, err)
 		}
 		view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
-		if err != nil || view.Claim == nil {
+		if err != nil {
+			return nil, "", "", fmt.Errorf("load Work Log for source %s: %w", input, err)
+		}
+		if view.Claim == nil {
 			return nil, "", "", fmt.Errorf("source %s has no authoritative active Work Log claim", input)
 		}
 		if repository == "" {
@@ -1399,7 +1402,8 @@ func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receip
 		// transition twice and strand otherwise safe landed assets.
 		outcome, err := worktrees.Cleanup(ctx, worktrees.CleanupOptions{
 			ProjectsRoot: projectsRoot, Task: task, Base: receipt.Target, ExactRepository: receipt.Repository,
-			AbsorbedBy: receipt.LandingSHA, Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
+			AbsorbedBy: receipt.LandingSHA, MergeReceiptProofs: worktreeMergeCleanupProofs(*receipt, task),
+			Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
 		})
 		if err != nil {
 			return fmt.Errorf("cleanup task %s: %w", task, err)
@@ -1416,6 +1420,21 @@ func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receip
 		}
 	}
 	return nil
+}
+
+func worktreeMergeCleanupProofs(receipt WorktreeMergeReceipt, task string) []worktrees.MergeReceiptCleanupProof {
+	proofs := make([]worktrees.MergeReceiptCleanupProof, 0, len(receipt.Sources))
+	for _, source := range receipt.Sources {
+		if source.Task != task || !source.Merged {
+			continue
+		}
+		proofs = append(proofs, worktrees.MergeReceiptCleanupProof{
+			Repository: receipt.Repository, Target: receipt.Target,
+			SourceTask: source.Task, SourceWorktree: source.Worktree, SourceBranch: source.Branch, SourceSHA: source.SHA,
+			CandidateSHA: receipt.Candidate.SHA, LandingSHA: receipt.LandingSHA,
+		})
+	}
+	return proofs
 }
 
 // PrepareWorktreeMergeRevert creates a fresh forward candidate which applies
