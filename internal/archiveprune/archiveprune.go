@@ -356,6 +356,15 @@ func linkedWorktreePaths(ctx context.Context, repoPath string) ([]string, error)
 // whether it still references a repository. See internal/worktrees/worklog.go
 // for the authoritative writer of this file.
 type worklogClaim struct {
+	ClaimID    string `json:"claim_id"`
+	Repository string `json:"repository"`
+	Task       string `json:"task"`
+	Worktree   string `json:"worktree"`
+	Lifecycle  string `json:"lifecycle"`
+}
+
+type worklogTerminal struct {
+	ClaimID    string `json:"claim_id"`
 	Repository string `json:"repository"`
 	Task       string `json:"task"`
 	Worktree   string `json:"worktree"`
@@ -397,6 +406,24 @@ func nonTerminalClaims(projectsRoot, slug string) ([]string, error) {
 			}
 			if claim.Repository != slug {
 				continue
+			}
+			terminalPath := filepath.Join(filepath.Dir(filepath.Dir(path)), "terminals", claim.ClaimID+".json")
+			if claim.ClaimID == "" {
+				return nil, fmt.Errorf("claim %s has no claim_id", path)
+			}
+			terminalRaw, terminalErr := os.ReadFile(terminalPath)
+			if terminalErr == nil {
+				var terminal worklogTerminal
+				if err := json.Unmarshal(terminalRaw, &terminal); err != nil {
+					return nil, fmt.Errorf("parse terminal seal %s: %w", terminalPath, err)
+				}
+				if terminal.ClaimID != claim.ClaimID || terminal.Repository != claim.Repository || terminal.Task != claim.Task || terminal.Worktree != claim.Worktree || terminal.Lifecycle != "terminal" {
+					return nil, fmt.Errorf("terminal seal %s does not match claim %s", terminalPath, path)
+				}
+				continue
+			}
+			if !os.IsNotExist(terminalErr) {
+				return nil, fmt.Errorf("read terminal seal %s: %w", terminalPath, terminalErr)
 			}
 			if claim.Lifecycle == "terminal" {
 				continue

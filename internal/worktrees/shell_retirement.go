@@ -160,8 +160,14 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 				return false, fmt.Sprintf("unexpected retired-lock entry %s", name)
 			}
 			continue // expected residue from a prior terminal cleanup; retired alongside the shell.
-		case isWorktreeStagingDirectory(name) || isRetiredWorktreeStagingDirectory(name):
+		case isWorktreeStagingDirectory(name):
 			return false, fmt.Sprintf("reserved stage entry %s is explicit cleanup backlog, not a shell", name)
+		case isRetiredWorktreeStagingDirectory(name):
+			artifact, _ := inspectLifecycleArtifact("", "", filepath.Join(taskPath, name), entry)
+			if !artifact.Eligible || artifact.State != "quarantined" {
+				return false, fmt.Sprintf("reserved stage entry %s is explicit cleanup backlog: %s", name, artifact.Reason)
+			}
+			continue // an exact empty retired stage is terminal residue.
 		default:
 			info, infoErr := entry.Info()
 			if infoErr != nil {
@@ -281,6 +287,14 @@ func applyTaskShellRetirement(result *RetiredShell) {
 		name := entry.Name()
 		if name == ".lock" || strings.HasPrefix(name, ".wb-retired-lock-") {
 			continue // the lock this transaction holds, purged (as a fresh retirement) below.
+		}
+		if isRetiredWorktreeStagingDirectory(name) {
+			mutationStarted = true
+			if rmErr := os.Remove(filepath.Join(result.Path, name)); rmErr != nil {
+				result.Error = fmt.Sprintf("remove empty retired stage: %v", rmErr)
+				return
+			}
+			continue
 		}
 		mutationStarted = true
 		ownerPath := filepath.Join(result.Path, name)

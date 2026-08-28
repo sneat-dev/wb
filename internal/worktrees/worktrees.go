@@ -2269,10 +2269,20 @@ func verifyPublishedWorktree(
 	if err != nil {
 		return err
 	}
-	if len(registered) != len(registrationsBefore)+1 {
-		return fmt.Errorf("worktree registrations changed unexpectedly during repair")
-	}
+	// A different task may be creating another worktree for this same
+	// canonical repository concurrently. Both repairs legitimately add an
+	// independent registration; require preservation of the baseline and this
+	// exact publication, rather than a global cardinality that races siblings.
 	for path := range registrationsBefore {
+		// Another task may be between `git worktree add` and its
+		// descriptor-safe publish. Its temporary stage is deliberately not a
+		// durable registration: Git repair is allowed to replace that pathname
+		// with the task's final checkout. The other task validates its own final
+		// path before it succeeds, while established registrations below remain
+		// mandatory here.
+		if isWorktreeStagingDirectory(filepath.Base(filepath.Dir(path))) {
+			continue
+		}
 		if !registered[path] {
 			return fmt.Errorf("existing worktree registration disappeared during repair: %s", path)
 		}

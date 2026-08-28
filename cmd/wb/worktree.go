@@ -693,7 +693,7 @@ never a token, credential, or secret.`,
 func newWorktreeAbortCmd() *cobra.Command {
 	var base, disposition, successor, format string
 	var model, cli, provider string
-	var apply, deleteRemote bool
+	var apply, deleteRemote, all bool
 	command := &cobra.Command{
 		Use:   "abort <task>",
 		Short: "Seal an interrupted task so it can be resumed or explicitly discarded",
@@ -726,7 +726,7 @@ The default is a dry-run plan.`,
 			}
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
-				Disposition: worktrees.AbortDisposition(disposition), Successor: successor,
+				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -794,6 +794,7 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
 	command.Flags().BoolVar(&apply, "apply", false, "seal Work Logs and apply the selected disposition")
+	command.Flags().BoolVar(&all, "all", false, "acknowledge every repository in a coordinated task")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "retire an exact unchanged remote source branch when applying discarded")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
