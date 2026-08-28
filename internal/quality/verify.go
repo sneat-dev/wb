@@ -302,9 +302,13 @@ func commandError(command, output string, err error) string {
 	if detail == "" {
 		detail = err.Error()
 	}
-	const max = 1000
+	const (
+		max       = 1000
+		headBytes = 250
+	)
 	if len(detail) > max {
-		detail = detail[:max] + "…"
+		tailBytes := max - headBytes
+		detail = detail[:headBytes] + fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes) + detail[len(detail)-tailBytes:]
 	}
 	return detail
 }
