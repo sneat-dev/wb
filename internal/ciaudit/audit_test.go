@@ -285,6 +285,90 @@ test("coverage diagnostic", async ({ page }) => {
 	})
 }
 
+func TestAuditRequiresPositiveConfiguredGoCoverageThreshold(t *testing.T) {
+	t.Run("zero diagnostic", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "main.go", "package main\n")
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  test:
+    steps:
+      - run: go test ./... -coverprofile=coverage.out
+      - run: |
+          total_coverage=0
+          go tool cover -func=coverage.out
+          echo "minimum coverage threshold diagnostic: ${total_coverage}%"
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.GoCoverageThreshold || !hasFinding(report, "go-coverage-threshold") {
+			t.Fatalf("zero or diagnostic Go coverage threshold accepted as a gate: %+v", report)
+		}
+	})
+
+	t.Run("positive configuration", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "main.go", "package main\n")
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  test:
+    env:
+      MINIMUM_COVERAGE: "58.0"
+    steps:
+      - run: go tool cover -func=coverage.out
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.GoCoverageThreshold || hasFinding(report, "go-coverage-threshold") {
+			t.Fatalf("positive configured Go coverage threshold was not recognized: %+v", report)
+		}
+	})
+}
+
+func TestAuditDoesNotClassifyWranglerDryRunAsDeployment(t *testing.T) {
+	t.Run("dry run", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, ".github/workflows/deploy.yml", `
+jobs:
+  validate:
+    steps:
+      - run: npx wrangler deploy --dry-run
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.HasDeploy || report.ArtifactPromotion || len(report.Findings) != 0 {
+			t.Fatalf("Wrangler dry-run classified as deployment: %+v", report)
+		}
+	})
+
+	t.Run("real deploy", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  deploy:
+    steps:
+      - run: npx wrangler deploy
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.HasDeploy {
+			t.Fatalf("real Wrangler deploy was not classified as deployment: %+v", report)
+		}
+	})
+}
+
 func hasFinding(report Report, code string) bool {
 	for _, finding := range report.Findings {
 		if finding.Code == code {
