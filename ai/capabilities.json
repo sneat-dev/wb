@@ -758,6 +758,92 @@
       "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
     },
     {
+      "id": "wb.commands",
+      "feature_refs": [
+        "spec/features/modern-cli-help-discovery/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb commands",
+              "flags": [
+                "--format",
+                "--search"
+              ],
+              "modes": [
+                "Lists every public command as compact text or a versioned JSON catalog with exact paths, aliases, examples, discovery terms, grouping, and runnable-parent metadata.",
+                "Intent search requires every query word to match and ranks explicit discovery terms ahead of incidental prose matches."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb commands --help",
+              "contains": [
+                "cold AI agents",
+                "--search",
+                "--format"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-install/SKILL.md",
+              "marker": "## Discover commands without guessing",
+              "examples": [
+                "wb commands --search=finish --format json",
+                "wb commands --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/help_discovery_test.go",
+              "name": "TestCommandSearchFindsTheFinishWorkCommand",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/help_discovery_test.go",
+              "name": "TestRootHelpPromotesTheAgentWorktreeJourney",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/help_discovery_test.go",
+              "name": "TestFangHelpSupportsAdaptiveColor",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/help_discovery_test.go",
+              "name": "TestFangAdapterDoesNotDuplicateWBErrors",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/help_discovery_test.go",
+              "name": "TestAgentNonInteractiveModeStripsFangStylingEvenWhenColorIsForced",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This catalog is part of the CLI itself so a cold agent can discover WB efficiently before any harness-specific skill is installed or loaded."
+    },
+    {
       "id": "wb.coordination.git-fallback",
       "feature_refs": [
         "spec/features/work-log/README.md"
@@ -922,9 +1008,30 @@
                 "--parallel bounds the apply phase as well as inspection: tasks are applied concurrently across canonical repositories and serially within one, a coordinated task takes every repository it spans in one global order, and concurrent remote branch deletions stay bounded",
                 "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted"
               ]
+            },
+            {
+              "path": "wb worktree merge",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--check-interval",
+                "--cleanup",
+                "--cli",
+                "--format",
+                "--model",
+                "--on-failure",
+                "--provider",
+                "--retry",
+                "--route",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Builds and validates one isolated integration candidate, lands it by an authoritative direct or pull-request route, and optionally performs receipt-gated cleanup."
+              ]
             }
           ],
-          "limitation": "WB exposes inventory and exact remote-backed cleanup primitives plus a manual-handoff skill, but no generic integration-batch command or durable merger-lane queue/fence."
+          "limitation": "WB exposes inventory, combined and two-phase integration, exact remote-backed cleanup, and a manual-handoff skill, but no durable multi-session merger queue or distributed lane fence."
         },
         "help": {
           "status": "Partial",
@@ -944,9 +1051,16 @@
                 "--resume-interrupted",
                 "conclusively dead"
               ]
+            },
+            {
+              "command": "wb worktree merge --help",
+              "contains": [
+                "wb worktree merge . --route auto --cleanup",
+                "resumable handoff"
+              ]
             }
           ],
-          "limitation": "The CLI deliberately has no fictional generic merger command."
+          "limitation": "Help documents the shipped combined and resumable two-phase merger; no durable queue or distributed fence is advertised."
         },
         "ai_skill": {
           "status": "Partial",
@@ -956,7 +1070,8 @@
               "marker": "# WB merge",
               "examples": [
                 "wb worktree list --github --format json",
-                "wb worktree cleanup <task> --apply --remote --older-than 0"
+                "wb worktree cleanup <task> --apply --remote --older-than 0",
+                "wb worktree merge <source-worktree...> --route auto --cleanup --format json"
               ]
             }
           ],
@@ -973,6 +1088,11 @@
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
               "name": "TestCleanupAcceptsExactDirectPushIntegrationWithoutPullRequest",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
               "kind": "integration"
             }
           ],
@@ -2355,6 +2475,77 @@
         }
       },
       "notes": "Without publication flags, verified changes remain in isolated operation worktrees for review."
+    },
+    {
+      "id": "wb.fleet",
+      "feature_refs": [
+        "spec/features/fleet-status/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb fleet",
+              "flags": [
+                "--all",
+                "--details",
+                "--format",
+                "--hooks",
+                "--match",
+                "--parallel",
+                "--regex",
+                "--remote",
+                "--report-dir"
+              ],
+              "modes": [
+                "Runs the same local inventory, attention, layout, worktree, optional remote, and optional hook overview as wb fleet overview while retaining explicit child commands for narrower reports."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb fleet --help",
+              "contains": [
+                "same as wb fleet",
+                "--remote",
+                "--hooks"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/SKILL.md",
+              "marker": "# WB fleet",
+              "examples": [
+                "wb fleet"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/fleet_cmd_test.go",
+              "name": "TestFleetOverviewIncludesStatsAndAttention",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This row records that the runnable parent is a real public command, not only a namespace for overview, stats, and status."
     },
     {
       "id": "wb.fleet.overview",
@@ -7564,6 +7755,95 @@
         }
       },
       "notes": "Every checkout gets a marker, not only the ones that must stay clean: a warning present only where writing is wrong makes a MISSING file read as permission. The file stays untracked and is paired with an anchored rule in the common directory's info/exclude, because a committed marker WB rewrites would show as a modification and dirty the very clone this protects."
+    },
+    {
+      "id": "wb.worktree.merge",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/modern-cli-help-discovery/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--check-interval",
+                "--cleanup",
+                "--cli",
+                "--format",
+                "--model",
+                "--on-failure",
+                "--provider",
+                "--retry",
+                "--route",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Runs the prepare and land phases as one normal completion command while preserving the same resumable receipt boundaries.",
+                "Selects an authoritatively permitted direct or pull-request route, waits for exact checks, proves the remote target receipt, and cleans only with --cleanup."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge --help",
+              "contains": [
+                "wb worktree merge . --route auto --cleanup",
+                "--route",
+                "--cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge <source-worktree...> --route auto --cleanup --format json"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree merge <source-worktree...> --route auto --cleanup --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/help_discovery_test.go",
+              "name": "TestPrimaryWorktreeHelpContainsCopyableExamples",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This runnable parent is the promoted default journey; prepare, land, resume, and revert remain explicit recovery and control surfaces."
     },
     {
       "id": "wb.worktree.merge.land",

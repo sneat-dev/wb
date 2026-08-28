@@ -1,8 +1,9 @@
 # WB root-flag support matrix
 
-Generated from the persistent flags shown by `wb --help` on 2026-08-10 and
+Generated from the persistent flags shown by `wb --help` on 2026-08-28 and
 enforced by `cmd/wb/main.go`. A persistent flag is never accepted and ignored:
 an unsupported combination exits with usage code `2` before the command starts.
+Leaf help hides inherited selectors that the selected command would reject.
 This matrix covers inherited/root flags; command-specific flags are listed by
 their own `wb <command> --help` and remain scoped to that command.
 
@@ -42,12 +43,14 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
+| `worktree merge`, `merge prepare`, `merge land`, `merge resume`, `merge revert` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `cleanup` | yes | yes | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
+| `commands` | rejected | rejected | rejected | yes |
 
 ## Precedence and non-interactive contract
 

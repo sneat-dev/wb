@@ -39,6 +39,11 @@ Without --prune-archived, an archived repository is never deleted: sync pulls
 its local clone exactly like any other repository's, and the report still
 names it as archived so it is never silently indistinguishable from an
 ordinary clone.`,
+		Example: `# Preview fleet reconciliation without changing repositories
+wb sync --dry-run
+
+# Sync selected owners with bounded concurrency
+wb sync --org owner-a --org owner-b --parallel 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			owners := requestedSyncOwners(cmd, only)
 			if code := runSync(cmd.Context(), projectsRoot, filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps()); code != 0 {
@@ -50,6 +55,7 @@ ordinary clone.`,
 			return nil
 		},
 	}
+	setDiscoveryTerms(cmd, "sync update pull clone fleet repositories reconcile refresh prune archived")
 	cmd.Flags().BoolVarP(&dryRun, "dry-run", "n", false, "print the plan; change nothing")
 	cmd.Flags().BoolVar(&pruneArchived, "prune-archived", false, "delete a local clone whose repository is confirmed archived on GitHub, but only when it passes the same safety predicate as 'wb archive clean' (default: pull archived repos like any other, never delete)")
 	// --parallel is the fleet-wide name for this ceiling: six other commands

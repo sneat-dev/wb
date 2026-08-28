@@ -176,9 +176,8 @@ func leafCommandIDs(root *cobra.Command) []string {
 	var visit func(*cobra.Command)
 	visit = func(command *cobra.Command) {
 		children := command.Commands()
-		if len(children) == 0 {
+		if command != root && (command.Runnable() || len(children) == 0) {
 			result = append(result, persistentCommandID(command))
-			return
 		}
 		for _, child := range children {
 			if child.Name() == "help" || child.Name() == "completion" {

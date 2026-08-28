@@ -10,6 +10,10 @@ default AI-agent landing path and is expected to be used at least once for most
 created worktrees, often multiple times for a long-lived target. Use the manual
 steps below only for unsupported policy, conflicts, or behavioral judgment.
 
+```sh
+wb worktree merge <source-worktree...> --route auto --cleanup --format json
+```
+
 This is the canonical, harness-neutral merger contract. It is an operational
 skill, not a branch-prefix convention and not a model profile. Read
 [ci-polling.md](references/ci-polling.md) when CI must be observed and
