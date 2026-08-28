@@ -1,12 +1,14 @@
 package orchestrate
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -136,6 +138,7 @@ type WorktreeMergeReceipt struct {
 	LandingSHA            string                              `json:"landing_sha,omitempty"`
 	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
 	Validation            quality.VerificationReport          `json:"validation,omitempty"`
+	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
 	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
 	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
 	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
@@ -435,11 +438,8 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
-	receipt.Validation = quality.VerifyWithOptions(ctx, repository, candidate.WorktreeDir,
-		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		quality.RunOptions{Timeout: options.Timeout, Retry: options.Retry})
-	if receipt.Validation.Status == quality.StatusFailed {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed"))
+	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry); validationErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, validationErr)
 	}
 	receipt.Status = WorktreeMergePrepared
 	receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
@@ -620,11 +620,8 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if err := requireCleanMergeWorktree(ctx, receipt.Candidate.Worktree); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
-		receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
-			[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-			quality.RunOptions{Timeout: options.Timeout, Retry: options.Retry})
-		if receipt.Validation.Status == quality.StatusFailed {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift"))
+		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry); validationErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift: %w", validationErr))
 		}
 	}
 
@@ -1339,16 +1336,184 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	if err != nil {
 		return receipt, err
 	}
-	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, created[0].WorktreeDir,
-		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		quality.RunOptions{Timeout: timeout, Retry: retry})
-	if receipt.Validation.Status == quality.StatusFailed {
-		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("forward revert candidate validation failed"))
+	if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, timeout, retry); validationErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("forward revert candidate validation failed: %w", validationErr))
 	}
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
 	}
 	return receipt, nil
+}
+
+// validateWorktreeMergeCandidate records validation for both the exact target
+// tree and the integration candidate. A red target is diagnostic-only: it
+// must not stop a candidate that leaves every existing failure unchanged.
+// Any new or changed candidate failure remains a hard gate.
+func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) error {
+	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
+	if err != nil {
+		return fmt.Errorf("capture exact target validation baseline: %w", err)
+	}
+	receipt.BaselineValidation = baseline
+	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
+		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
+		quality.RunOptions{Timeout: timeout, Retry: retry})
+	receipt.Validation.Revision = receipt.Candidate.SHA
+	receipt.Validation.WorkspaceClean = true
+	if err := worktreeMergeValidationRegression(baseline, receipt.Validation); err != nil {
+		return err
+	}
+	return nil
+}
+
+// verifyWorktreeMergeTarget materializes the exact fetched target revision in
+// a temporary archive rather than trusting a mutable canonical checkout. This
+// keeps the baseline tied to receipt.TargetSHA even while a candidate is being
+// rebased for target drift.
+func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, targetSHA string, timeout time.Duration, retry int) (quality.VerificationReport, error) {
+	targetSHA = strings.TrimSpace(targetSHA)
+	if targetSHA == "" {
+		return quality.VerificationReport{}, errors.New("target SHA is required for validation baseline")
+	}
+	temporary, err := os.MkdirTemp("", "wb-worktree-merge-target-*")
+	if err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("create target validation snapshot: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(temporary) }()
+	archivePath := filepath.Join(temporary, "target.tar")
+	if _, _, err := runCommand(ctx, timeout, retry, repositoryDir, "git", "archive", "--format=tar", "--output="+archivePath, targetSHA); err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("archive target %s: %w", targetSHA, err)
+	}
+	snapshot := filepath.Join(temporary, "tree")
+	if err := extractWorktreeMergeArchive(archivePath, snapshot); err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("materialize target %s: %w", targetSHA, err)
+	}
+	report := quality.VerifyWithOptions(ctx, repository, snapshot,
+		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
+		quality.RunOptions{Timeout: timeout, Retry: retry})
+	// The transient snapshot is intentionally removed before this durable
+	// receipt is written. The exact revision remains the useful evidence.
+	report.Path = "git:" + targetSHA
+	report.Revision = targetSHA
+	report.WorkspaceClean = true
+	return report, nil
+}
+
+func extractWorktreeMergeArchive(archivePath, destination string) error {
+	archive, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = archive.Close() }()
+	reader := tar.NewReader(archive)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		name := filepath.Clean(header.Name)
+		if name == "." || filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("unsafe archived path %q", header.Name)
+		}
+		path := filepath.Join(destination, name)
+		switch header.Typeflag {
+		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+			// git archive emits PAX metadata before regular entries on some
+			// platforms. The tar reader applies it to the following header.
+			continue
+		case tar.TypeDir:
+			if err := os.MkdirAll(path, os.FileMode(header.Mode)); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(file, reader)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		case tar.TypeSymlink:
+			if filepath.IsAbs(header.Linkname) {
+				return fmt.Errorf("unsafe archived symlink %q -> %q", header.Name, header.Linkname)
+			}
+			linkTarget := filepath.Clean(filepath.Join(filepath.Dir(path), header.Linkname))
+			relativeTarget, err := filepath.Rel(destination, linkTarget)
+			if err != nil || relativeTarget == ".." || strings.HasPrefix(relativeTarget, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("unsafe archived symlink %q -> %q", header.Name, header.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink(header.Linkname, path); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported archived entry %q", header.Name)
+		}
+	}
+}
+
+func worktreeMergeValidationRegression(baseline, candidate quality.VerificationReport) error {
+	baselineFailures := failedWorktreeMergeVerificationEntries(baseline)
+	candidateFailures := failedWorktreeMergeVerificationEntries(candidate)
+	if candidate.Status == quality.StatusFailed && len(candidateFailures) == 0 {
+		return errors.New("candidate validation reported failure without failed check evidence")
+	}
+	matched := make([]bool, len(baselineFailures))
+	for _, candidateFailure := range candidateFailures {
+		found := false
+		for index, baselineFailure := range baselineFailures {
+			if !matched[index] && sameWorktreeMergeFailure(baselineFailure, candidateFailure) {
+				matched[index] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("candidate validation introduced or changed failure: %s %s %s", candidateFailure.Language, candidateFailure.Check, candidateFailure.Command)
+		}
+	}
+	return nil
+}
+
+func failedWorktreeMergeVerificationEntries(report quality.VerificationReport) []quality.VerificationEntry {
+	entries := make([]quality.VerificationEntry, 0, len(report.Results))
+	for _, entry := range report.Results {
+		if entry.Status == quality.StatusFailed {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func sameWorktreeMergeFailure(baseline, candidate quality.VerificationEntry) bool {
+	return baseline.Language == candidate.Language && baseline.Module == candidate.Module && baseline.Check == candidate.Check &&
+		baseline.Command == candidate.Command && normalizeWorktreeMergeFailureDetail(baseline.Detail) == normalizeWorktreeMergeFailureDetail(candidate.Detail)
+}
+
+func normalizeWorktreeMergeFailureDetail(detail string) string {
+	// Quality command output can include the ephemeral checkout path. It is not
+	// behavior, so compare a whitespace-normalized form after erasing absolute
+	// paths. All command, check, module, and error text still has to match.
+	fields := strings.Fields(detail)
+	for index, field := range fields {
+		if filepath.IsAbs(field) {
+			fields[index] = "<workspace>"
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 func activeRuleCount(pages [][]githubActiveBranchRule) int {
