@@ -1,0 +1,80 @@
+name: WB issue ownership guard
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    paths:
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/scripts/validate-issue-ownership.cjs"
+      - ".github/scripts/validate-issue-ownership.test.cjs"
+      - ".github/workflows/issue-ownership-guard.yml"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/scripts/validate-issue-ownership.cjs"
+      - ".github/scripts/validate-issue-ownership.test.cjs"
+      - ".github/workflows/issue-ownership-guard.yml"
+      - "AGENTS.md"
+      - "CONTRIBUTING.md"
+
+permissions:
+  contents: read
+
+jobs:
+  test-validator:
+    if: github.event_name != 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # actions/setup-node v6
+        with:
+          node-version: 22
+      - run: node --test .github/scripts/validate-issue-ownership.test.cjs
+
+  enforce:
+    if: github.event_name == 'issues'
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # actions/checkout v6
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # actions/github-script v8
+        with:
+          script: |
+            const { validateWBIssue } = require(
+              `${process.env.GITHUB_WORKSPACE}/.github/scripts/validate-issue-ownership.cjs`,
+            );
+            const result = validateWBIssue(context.payload.issue.body || "");
+            if (result.valid) {
+              core.info("WB issue ownership attestation is valid.");
+              return;
+            }
+
+            const routingGuidance = [
+              "Thanks for opening this. `sneat-dev/wb` accepts only issues that attest a concrete WB code, test, documentation, packaging, or release change.",
+              "",
+              "- If one repository must change, file the issue in that repository.",
+              "- For multi-repository, fleet-process, or governance work, file it in [sneat-co/backstage](https://github.com/sneat-co/backstage/issues/new/choose).",
+              "- Do not mirror upstream work in WB as a fleet tracker.",
+              "",
+              "Closing this issue as not planned in WB. Please reopen it in the owning repository if the work belongs there.",
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: routingGuidance,
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: "closed",
+              state_reason: "not_planned",
+            });
