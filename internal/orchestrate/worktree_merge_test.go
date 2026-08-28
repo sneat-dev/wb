@@ -391,6 +391,66 @@ func TestLandWorktreeMergeCleanupTerminalizesExactRepositoryAssets(t *testing.T)
 	}
 }
 
+func TestLandWorktreeMergeResumeCompleteCleanupClearsStaleFailure(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "resume-complete-source", "feature/resume-complete", "cleanup.txt", "cleanup\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto, Cleanup: true,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	landed.Failure = "cleanup task was previously refused"
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+
+	resumed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto, Cleanup: true,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != WorktreeMergeComplete || resumed.Failure != "" {
+		t.Fatalf("resumed terminal receipt = %+v", resumed)
+	}
+	persisted, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Failure != "" {
+		t.Fatalf("stale terminal failure was persisted: %+v", persisted)
+	}
+}
+
+func TestNormalizeCompletedWorktreeMergeReceiptPreservesFailureWithoutTerminalEvidence(t *testing.T) {
+	receipt := WorktreeMergeReceipt{
+		Status: WorktreeMergeComplete, Cleanup: true, Failure: "cleanup task remains unapplied", ReceiptPath: "receipt.json",
+		Candidate: WorktreeMergeCandidate{Task: "candidate"},
+		Sources:   []WorktreeMergeSource{{Task: "source"}},
+		CleanedTasks: []string{
+			"candidate",
+		},
+		CleanupReports: []string{"candidate-cleanup.json"},
+	}
+	if err := normalizeCompletedWorktreeMergeReceipt(&receipt); err == nil || !strings.Contains(err.Error(), "cleanup evidence is incomplete") {
+		t.Fatalf("incomplete terminal receipt error = %v", err)
+	}
+	if receipt.Failure != "cleanup task remains unapplied" {
+		t.Fatalf("incomplete receipt failure was cleared: %+v", receipt)
+	}
+}
+
 func TestCleanupWorktreeMergeAssetsTerminalizesSourceWithReceiptProvenSquashLanding(t *testing.T) {
 	fixture, source, receipt, landing := squashLandedMergeReceipt(t)
 	installWorktreeMergeDirectGH(t)

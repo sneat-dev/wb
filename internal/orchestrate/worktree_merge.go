@@ -485,6 +485,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	}
 	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Completed, string(receipt.Status)+" at "+receiptPath)
 	if receipt.Status == WorktreeMergeComplete {
+		if err := normalizeCompletedWorktreeMergeReceipt(&receipt); err != nil {
+			return receipt, err
+		}
 		return receipt, nil
 	}
 	if receipt.Candidate.Worktree == "" || receipt.Candidate.SHA == "" {
@@ -867,6 +870,39 @@ func pushWorktreeMergeRef(ctx context.Context, worktree, localSHA, remoteRef str
 	args = append(args, "origin", localSHA+":"+remoteRef)
 	_, _, err := runCommand(ctx, timeout, retry, worktree, "git", args...)
 	return err
+}
+
+// normalizeCompletedWorktreeMergeReceipt permits an exact resume to remove a
+// stale prior failure only after the durable receipt independently proves every
+// task it owns was cleaned. It never makes an incomplete/error receipt look
+// successful: callers reach it only for complete, receipt-gated cleanup and
+// any identity mismatch remains an error with Failure preserved.
+func normalizeCompletedWorktreeMergeReceipt(receipt *WorktreeMergeReceipt) error {
+	if receipt.Failure == "" {
+		return nil
+	}
+	if !receipt.Cleanup {
+		return fmt.Errorf("complete receipt %s retains failure but has no cleanup intent", receipt.ReceiptPath)
+	}
+	expected := sortedUniqueMergeTasks(*receipt)
+	if len(expected) == 0 || len(receipt.CleanedTasks) != len(expected) || len(receipt.CleanupReports) != len(expected) {
+		return fmt.Errorf("complete receipt %s retains failure but its cleanup evidence is incomplete", receipt.ReceiptPath)
+	}
+	cleaned := make(map[string]bool, len(receipt.CleanedTasks))
+	for _, task := range receipt.CleanedTasks {
+		if task == "" || cleaned[task] {
+			return fmt.Errorf("complete receipt %s retains failure but its cleaned task identities are inconsistent", receipt.ReceiptPath)
+		}
+		cleaned[task] = true
+	}
+	for _, task := range expected {
+		if !cleaned[task] {
+			return fmt.Errorf("complete receipt %s retains failure but cleanup did not terminalize task %s", receipt.ReceiptPath, task)
+		}
+	}
+	receipt.Failure = ""
+	receipt.UpdatedAt = time.Now().UTC()
+	return persistWorktreeMergeReceipt(*receipt)
 }
 
 // retainWorktreeMergeLandIntent makes a combined command's requested landing
