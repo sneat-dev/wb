@@ -109,13 +109,16 @@ type WorktreeMergePushGateReceipt struct {
 // candidate and receipt instead of abandoning either or pretending the prior
 // remote landing never happened.
 type WorktreeMergeForwardRepairReceipt struct {
-	Status       WorktreeMergeStatus   `json:"status"`
-	TargetSHA    string                `json:"target_sha"`
-	CandidateSHA string                `json:"candidate_sha"`
-	LandingSHA   string                `json:"landing_sha"`
-	PullRequest  string                `json:"pull_request,omitempty"`
-	Checks       PullRequestWaitResult `json:"checks"`
-	Failure      string                `json:"failure"`
+	Status             WorktreeMergeStatus        `json:"status"`
+	TargetSHA          string                     `json:"target_sha"`
+	Sources            []WorktreeMergeSource      `json:"sources"`
+	CandidateSHA       string                     `json:"candidate_sha"`
+	LandingSHA         string                     `json:"landing_sha"`
+	PullRequest        string                     `json:"pull_request,omitempty"`
+	Validation         quality.VerificationReport `json:"validation,omitempty"`
+	BaselineValidation quality.VerificationReport `json:"baseline_validation,omitempty"`
+	Checks             PullRequestWaitResult      `json:"checks"`
+	Failure            string                     `json:"failure"`
 }
 
 type WorktreeMergeReceipt struct {
@@ -337,6 +340,9 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if fetchErr != nil {
 			return *prior, fetchErr
 		}
+		if remoteTarget != prior.LandingSHA {
+			return *prior, fmt.Errorf("target %s drifted from landed target %s to %s; refusing to prepare a forward repair against a different target", target, prior.LandingSHA, remoteTarget)
+		}
 		containsLanding, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, prior.LandingSHA, remoteTarget)
 		if ancestorErr != nil || !containsLanding {
 			if ancestorErr == nil {
@@ -389,10 +395,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		receipt.ResumeArgs = append([]string(nil), prior.ResumeArgs...)
 		if forwardRepair {
 			receipt.ForwardRepairs = append([]WorktreeMergeForwardRepairReceipt(nil), prior.ForwardRepairs...)
-			receipt.ForwardRepairs = append(receipt.ForwardRepairs, WorktreeMergeForwardRepairReceipt{
-				Status: prior.Status, TargetSHA: prior.TargetSHA, CandidateSHA: prior.Candidate.SHA,
-				LandingSHA: prior.LandingSHA, PullRequest: prior.PullRequest, Checks: prior.Checks, Failure: prior.Failure,
-			})
+			receipt.ForwardRepairs = append(receipt.ForwardRepairs, worktreeMergeForwardRepairHistory(*prior))
 		} else {
 			receipt.PullRequest = prior.PullRequest
 			receipt.PublishedCandidateSHA = prior.PublishedCandidateSHA
@@ -772,6 +775,45 @@ func canonicalForMergeSource(ctx context.Context, source string) (string, error)
 }
 
 func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (WorktreeMergeReceipt, error) {
+	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
+	if err != nil {
+		return WorktreeMergeReceipt{}, err
+	}
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeReceipt{}, err
+	}
+	if receipt.Status == WorktreeMergeLanded || receipt.Status == WorktreeMergePostTargetCIFailed {
+		sources := make([]string, 0, len(receipt.Sources))
+		for _, source := range receipt.Sources {
+			if strings.TrimSpace(source.Worktree) == "" {
+				return receipt, fmt.Errorf("receipt %s has no source worktree for forward repair", receiptPath)
+			}
+			sources = append(sources, source.Worktree)
+		}
+		if len(sources) != 0 {
+			candidateLog, logErr := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{
+				ProjectsRoot: options.ProjectsRoot, Worktree: receipt.Candidate.Worktree,
+			})
+			if logErr != nil || candidateLog.Claim == nil {
+				if logErr == nil {
+					logErr = fmt.Errorf("candidate has no active Work Log claim")
+				}
+				return receipt, fmt.Errorf("read candidate Work Log before forward repair: %w", logErr)
+			}
+			prepared, prepareErr := PrepareWorktreeMerge(ctx, WorktreeMergePrepareOptions{
+				ProjectsRoot: options.ProjectsRoot, Sources: sources, Target: receipt.Target,
+				Model: candidateLog.Claim.Model, AgentRuntime: candidateLog.Claim.AgentRuntime,
+				AgentID: candidateLog.Claim.AgentID, Initiator: candidateLog.Claim.Initiator,
+				CLI: candidateLog.Claim.CLI, Provider: candidateLog.Claim.Provider,
+				Timeout: options.Timeout, Retry: options.Retry,
+			})
+			if prepareErr != nil {
+				return prepared, prepareErr
+			}
+			options.Receipt = prepared.ReceiptPath
+		}
+	}
 	return LandWorktreeMerge(ctx, options)
 }
 
@@ -1636,12 +1678,13 @@ func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeRece
 }
 
 // canPreparePostTargetRepair recognizes the one safe continuation after a
-// remote landing: exact target CI failed, the same source worktrees advanced
-// additively, and the retained candidate has not moved. Prepare then advances
-// that candidate to the fetched landed target before integrating the repair.
-// Other landed states still own the lane and fail closed.
+// remote landing: either exact target CI failed or cleanup remains pending,
+// the same source worktrees advanced additively, and the retained candidate
+// has not moved. Prepare then advances that candidate to the exact landed
+// target before integrating the repair. Other landed states still own the lane
+// and fail closed.
 func canPreparePostTargetRepair(ctx context.Context, prior WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
-	if prior.Status != WorktreeMergePostTargetCIFailed || prior.LandingSHA == "" ||
+	if (prior.Status != WorktreeMergePostTargetCIFailed && prior.Status != WorktreeMergeLanded) || prior.LandingSHA == "" ||
 		prior.Candidate.Worktree == "" || prior.Candidate.Branch == "" || prior.Candidate.SHA == "" ||
 		len(prior.Sources) != len(sources) {
 		return false, nil
@@ -1681,6 +1724,21 @@ func canPreparePostTargetRepair(ctx context.Context, prior WorktreeMergeReceipt,
 		published = prior.Candidate.SHA
 	}
 	return remote == "" || strings.HasPrefix(remote, published+"\t"), nil
+}
+
+func worktreeMergeForwardRepairHistory(prior WorktreeMergeReceipt) WorktreeMergeForwardRepairReceipt {
+	return WorktreeMergeForwardRepairReceipt{
+		Status:             prior.Status,
+		TargetSHA:          prior.TargetSHA,
+		Sources:            append([]WorktreeMergeSource(nil), prior.Sources...),
+		CandidateSHA:       prior.Candidate.SHA,
+		LandingSHA:         prior.LandingSHA,
+		PullRequest:        prior.PullRequest,
+		Validation:         prior.Validation,
+		BaselineValidation: prior.BaselineValidation,
+		Checks:             prior.Checks,
+		Failure:            prior.Failure,
+	}
 }
 
 func writeWorktreeMergePrompt(repository, target string, sources []WorktreeMergeSource) (string, error) {

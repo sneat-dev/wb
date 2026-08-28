@@ -32,9 +32,9 @@ and its immutable SHA can unblock dependent agents. WB will never force-push. La
 proved against the exact remote target before optional receipt-gated cleanup. Clean target
 drift rebases an unpublished candidate and reruns validation; a conflict or already-published
 candidate stops without rewriting it. A landed failure retains before/after evidence for a
-forward revert. If exact post-target CI fails and the same source advances with a clean
-forward repair, rerunning merge advances the retained candidate onto the landed target,
-records the failed landing, and opens a new repair PR without rewriting history.`,
+forward revert. If a landed receipt retains its source worktree and that same source advances
+cleanly, an eligible same-source forward repair through rerunning merge or resume advances the retained candidate onto the exact landed target,
+records the prior landing, and opens a new repair PR without rewriting history.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
@@ -75,7 +75,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 func newWorktreeMergeLandCmd(name string) *cobra.Command {
 	var flags worktreeMergeFlags
 	command := &cobra.Command{
-		Use: name + " <candidate-worktree-or-receipt>", Short: "Resume a receipt and land its exact integration candidate",
+		Use: name + " <candidate-worktree-or-receipt>", Short: "Resume a receipt, including an eligible same-source forward repair",
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {

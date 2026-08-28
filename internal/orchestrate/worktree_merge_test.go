@@ -728,6 +728,160 @@ func TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *testing
 	}
 }
 
+func TestPrepareWorktreeMergeCarriesForwardRepairAfterLandedCleanupPending(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "landed-forward-repair-source", "feature/landed-forward-repair", "first.txt", "first\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reproduce the original receipt faithfully: the isolated candidate did not
+	// have node_modules and therefore recorded local validation failure, but its
+	// direct landing later passed exact target CI and was synchronized.
+	runEngineGit(t, fixture.canonical, "merge", "--ff-only", first.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	landing := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeLanded
+	first.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRouteDirect}
+	first.PreviousTargetSHA = first.TargetSHA
+	first.LandingSHA = landing
+	first.CanonicalSync = "fast_forwarded"
+	first.Validation = quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+		Language: "node", Module: ".", Check: "lint", Command: "pnpm run lint", Status: quality.StatusFailed,
+		Detail: "sh: nx: command not found; node_modules missing",
+	}}}
+	first.Checks = PullRequestWaitResult{Status: PullRequestWaitPassed, Repository: "acme/app", Target: "main", Head: landing, ObservedHead: landing, ObservedTargetHead: landing}
+	first.Failure = "candidate validation failed"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "release-plan.txt"), "0.27.5\n")
+	runEngineGit(t, source.WorktreeDir, "add", "release-plan.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "chore(release): plan provider repair")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+
+	repaired, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatalf("landed receipt did not prepare its additive forward repair: receipt=%+v err=%v", repaired, err)
+	}
+	if repaired.ID != first.ID || repaired.ReceiptPath != first.ReceiptPath || repaired.Candidate.Worktree != first.Candidate.Worktree {
+		t.Fatalf("forward repair abandoned its audited lane: first=%+v repaired=%+v", first, repaired)
+	}
+	if repaired.Status != WorktreeMergePrepared || repaired.TargetSHA != landing || repaired.Sources[0].SHA != advancedSource {
+		t.Fatalf("forward repair exact target/source/status = %+v", repaired)
+	}
+	if len(repaired.ForwardRepairs) != 1 || repaired.ForwardRepairs[0].Status != WorktreeMergeLanded ||
+		repaired.ForwardRepairs[0].LandingSHA != landing || repaired.ForwardRepairs[0].CandidateSHA != first.Candidate.SHA {
+		t.Fatalf("forward repair did not retain the landed receipt history: %+v", repaired.ForwardRepairs)
+	}
+	history := repaired.ForwardRepairs[0]
+	if history.Validation.Status != quality.StatusFailed || history.Checks.Status != PullRequestWaitPassed ||
+		len(history.Sources) != 1 || history.Sources[0].SHA != first.Sources[0].SHA {
+		t.Fatalf("forward repair lost prior local-validation or exact-target-CI history: %+v", history)
+	}
+	for _, ancestor := range []string{landing, advancedSource} {
+		contains, ancestorErr := isMergeAncestor(context.Background(), repaired.Candidate.Worktree, ancestor, repaired.Candidate.SHA)
+		if ancestorErr != nil || !contains {
+			t.Fatalf("repair candidate %s does not contain %s: %v", repaired.Candidate.SHA, ancestor, ancestorErr)
+		}
+	}
+}
+
+func TestResumeWorktreeMergeAdvancesLandedCleanupPendingSource(t *testing.T) {
+	fixture, source, first := prepareLandedCleanupPendingMerge(t, "resume-landed-forward-repair", "feature/resume-landed-forward-repair")
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "release-plan.txt"), "0.27.5\n")
+	runEngineGit(t, source.WorktreeDir, "add", "release-plan.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "chore(release): plan provider repair")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_REMOTE", strings.TrimSpace(runEngineGit(t, fixture.canonical, "remote", "get-url", "origin")))
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: first.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("resume did not prepare and land the additive forward repair: receipt=%+v err=%v", resumed, err)
+	}
+	if resumed.Status != WorktreeMergeLanded || resumed.Candidate.SHA == first.Candidate.SHA || resumed.Sources[0].SHA != advancedSource {
+		t.Fatalf("resume re-reported the old candidate instead of landing the source advance: first=%+v resumed=%+v", first, resumed)
+	}
+	if len(resumed.ForwardRepairs) != 1 || resumed.ForwardRepairs[0].LandingSHA != first.LandingSHA {
+		t.Fatalf("resume did not retain the previous landing history: %+v", resumed.ForwardRepairs)
+	}
+}
+
+func TestPrepareWorktreeMergeRefusesLandedForwardRepairAfterTargetDrift(t *testing.T) {
+	fixture, source, first := prepareLandedCleanupPendingMerge(t, "landed-target-drift", "feature/landed-target-drift")
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "repair.txt"), "repair\n")
+	runEngineGit(t, source.WorktreeDir, "add", "repair.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: additive repair")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "new target work\n")
+	runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: target drift")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+
+	blocked, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "drifted from landed target") {
+		t.Fatalf("target-drift repair = receipt %+v err %v", blocked, err)
+	}
+	if blocked.Candidate.SHA != first.Candidate.SHA || blocked.Sources[0].SHA != first.Sources[0].SHA {
+		t.Fatalf("target-drift refusal mutated the prior receipt: first=%+v blocked=%+v", first, blocked)
+	}
+}
+
+func TestPrepareWorktreeMergeRefusesNonDescendantLandedForwardRepair(t *testing.T) {
+	fixture, source, first := prepareLandedCleanupPendingMerge(t, "landed-non-descendant", "feature/landed-non-descendant")
+	runEngineGit(t, source.WorktreeDir, "reset", "--hard", first.TargetSHA)
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "replacement.txt"), "different history\n")
+	runEngineGit(t, source.WorktreeDir, "add", "replacement.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: non-descendant replacement")
+
+	blocked, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "still owned by non-terminal receipt") {
+		t.Fatalf("non-descendant repair = receipt %+v err %v", blocked, err)
+	}
+	if blocked.Candidate.SHA != first.Candidate.SHA || blocked.Sources[0].SHA != first.Sources[0].SHA {
+		t.Fatalf("non-descendant refusal mutated the prior receipt: first=%+v blocked=%+v", first, blocked)
+	}
+}
+
+func prepareLandedCleanupPendingMerge(t *testing.T, task, branch string) (engineFixture, worktrees.CreateResult, WorktreeMergeReceipt) {
+	t.Helper()
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, task, branch, "first.txt", "first\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "merge", "--ff-only", first.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	landing := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeLanded
+	first.Route = WorktreeMergeRouteDecision{Requested: WorktreeMergeRouteAuto, Route: WorktreeMergeRouteDirect}
+	first.PreviousTargetSHA = first.TargetSHA
+	first.LandingSHA = landing
+	first.CanonicalSync = "fast_forwarded"
+	first.Checks = PullRequestWaitResult{Status: PullRequestWaitPassed, Repository: "acme/app", Target: "main", Head: landing, ObservedHead: landing, ObservedTargetHead: landing}
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	return fixture, source, first
+}
+
 func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotectedTarget(t *testing.T) {
 	for _, test := range []struct {
 		name       string
