@@ -341,14 +341,21 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			}
 			return *prior, ancestorErr
 		}
-		containsCandidate, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, prior.Candidate.SHA, remoteTarget)
-		if ancestorErr != nil || !containsCandidate {
-			if ancestorErr == nil {
-				ancestorErr = fmt.Errorf("remote target %s does not contain prior candidate %s", remoteTarget, prior.Candidate.SHA)
+		absorbedCandidate, targetContainsCandidate, absorptionErr := worktreeMergeCandidateAbsorbed(ctx, candidate.WorktreeDir, *prior, remoteTarget)
+		if absorptionErr != nil || !absorbedCandidate {
+			if absorptionErr == nil {
+				absorptionErr = fmt.Errorf("remote target %s neither contains prior candidate %s nor proves its exact receipted squash landing", remoteTarget, prior.Candidate.SHA)
 			}
-			return *prior, ancestorErr
+			return *prior, absorptionErr
 		}
-		if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--ff-only", remoteTarget); mergeErr != nil {
+		mergeArgs := []string{"merge", "--ff-only", remoteTarget}
+		if !targetContainsCandidate {
+			mergeArgs = []string{"merge", "--no-ff", "--no-edit", remoteTarget}
+		}
+		if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", mergeArgs...); mergeErr != nil {
+			if !targetContainsCandidate {
+				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+			}
 			return *prior, fmt.Errorf("advance repair candidate to landed target %s: %w", remoteTarget, mergeErr)
 		}
 		candidate.BaseSHA = remoteTarget
@@ -1633,6 +1640,37 @@ func mergeRevision(ctx context.Context, path, revision string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(output), nil
+}
+
+func mergeTreeRevision(ctx context.Context, path, revision string) (string, error) {
+	output, _, err := runCommand(ctx, 0, 0, path, "git", "rev-parse", "--verify", revision+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func worktreeMergeCandidateAbsorbed(ctx context.Context, path string, prior WorktreeMergeReceipt, remoteTarget string) (absorbed, graphContained bool, err error) {
+	containsCandidate, err := isMergeAncestor(ctx, path, prior.Candidate.SHA, remoteTarget)
+	if err != nil || containsCandidate {
+		return containsCandidate, containsCandidate, err
+	}
+	if prior.PullRequest == "" || prior.PublishedCandidateSHA == "" || prior.PublishedCandidateSHA != prior.Candidate.SHA || prior.LandingSHA == "" {
+		return false, false, nil
+	}
+	containsLanding, err := isMergeAncestor(ctx, path, prior.LandingSHA, remoteTarget)
+	if err != nil || !containsLanding {
+		return false, false, err
+	}
+	candidateTree, err := mergeTreeRevision(ctx, path, prior.Candidate.SHA)
+	if err != nil {
+		return false, false, fmt.Errorf("resolve prior candidate tree %s: %w", prior.Candidate.SHA, err)
+	}
+	landingTree, err := mergeTreeRevision(ctx, path, prior.LandingSHA)
+	if err != nil {
+		return false, false, fmt.Errorf("resolve prior landing tree %s: %w", prior.LandingSHA, err)
+	}
+	return candidateTree == landingTree, false, nil
 }
 
 func isMergeAncestor(ctx context.Context, path, ancestor, descendant string) (bool, error) {

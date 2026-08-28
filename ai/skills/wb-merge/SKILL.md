@@ -137,7 +137,9 @@ than a fictional queue.
    candidate, and sources. Return implementation work to its owner. Once the
    same clean source advances additively with a forward repair, rerun
    `wb worktree merge prepare <source>`: WB verifies the prior landing is still
-   contained by the fetched target, fast-forwards the retained candidate to it,
+   contained by the fetched target and verifies the prior candidate by graph
+   ancestry or exact tree equality with its receipted squash landing. It then
+   advances the retained candidate without rewriting published history,
    appends the failed landing to `forward_repairs`, and creates a new PR without
    force-pushing or hand-editing the old receipt.
 6. Before collecting installation evidence, read the owning product's

@@ -180,11 +180,12 @@ resetting or force-pushing. A conflict refuses with all evidence preserved.
 
 Given a post-target CI failure and the same clean source advanced by descendant
 repair commits, rerunning `merge prepare` retains the exclusive lane, proves
-the fetched target contains the prior landing and candidate, advances the
-candidate without rewriting published history, records every failed landing,
-and prepares a fresh repair PR. A changed source identity, non-descendant
-advance, moved candidate, or missing target containment refuses without state
-mutation.
+the fetched target contains the prior landing, and proves the prior candidate
+by graph ancestry or exact tree equality with its receipted squash landing. It
+advances the candidate without rewriting published history, records every
+failed landing, and prepares a fresh repair PR. A changed source identity,
+non-descendant advance, moved candidate, tree mismatch, or missing target
+containment refuses without state mutation.
 
 ### AC: cleanup-is-explicit-and-receipt-gated
 

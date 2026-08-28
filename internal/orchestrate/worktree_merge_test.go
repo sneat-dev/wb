@@ -527,9 +527,14 @@ func TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *testing
 		t.Fatal(err)
 	}
 	runEngineGit(t, first.Candidate.Worktree, "push", "origin", first.Candidate.SHA+":refs/heads/"+first.Candidate.Branch)
-	runEngineGit(t, fixture.canonical, "merge", "--no-ff", "-m", "merge first candidate", first.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "merge", "--squash", first.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "commit", "-m", "squash first candidate")
 	runEngineGit(t, fixture.canonical, "push", "origin", "main")
 	landing := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	containsCandidate, ancestorErr := isMergeAncestor(context.Background(), fixture.canonical, first.Candidate.SHA, landing)
+	if ancestorErr != nil || containsCandidate {
+		t.Fatalf("squash fixture unexpectedly contains candidate %s: contains=%t err=%v", first.Candidate.SHA, containsCandidate, ancestorErr)
+	}
 
 	first.Phase = WorktreeMergePhaseLand
 	first.Status = WorktreeMergePostTargetCIFailed
@@ -541,6 +546,12 @@ func TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure(t *testing
 	first.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Repository: "acme/app", Target: "main", Head: landing, Reason: "target test failed"}
 	first.Failure = "required target check failed"
 	first.Cleanup = true
+	mismatchedLanding := first
+	mismatchedLanding.LandingSHA = first.TargetSHA
+	absorbed, graphContained, absorptionErr := worktreeMergeCandidateAbsorbed(context.Background(), first.Candidate.Worktree, mismatchedLanding, landing)
+	if absorptionErr != nil || absorbed || graphContained {
+		t.Fatalf("tree-mismatched PR receipt accepted candidate absorption: absorbed=%t graph=%t err=%v", absorbed, graphContained, absorptionErr)
+	}
 	if err := persistWorktreeMergeReceipt(first); err != nil {
 		t.Fatal(err)
 	}
