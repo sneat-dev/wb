@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/fang/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -38,20 +42,30 @@ var (
 
 const rootLongHelp = `Workbench CLI — fleet-wide operations across your GitHub repositories.
 
-wb is meant to be driven by scripts and AI agents as well as by people. Every
-command terminates, writes results to stdout and diagnostics to stderr, and
-never waits for input that was not explicitly piped in. Reporting commands
-accept a machine-readable output format.
+The fastest agent workflow is:
+
+  Start isolated work   wb worktree create <task> <owner/repository>
+  Inspect progress      wb worktree summary <task>
+  Land and clean up     wb worktree merge <worktree> --route auto --cleanup
+
+Not sure which command matches an intent? Search the structured catalog:
+
+  wb commands --search "finish work" --format json
+
+wb is designed for scripts and AI agents as well as people. Every command
+terminates, writes results to stdout and diagnostics to stderr, and never waits
+for input that was not explicitly piped in. Reporting commands accept a
+machine-readable output format.
 
 Exit codes:
   0  success  — the command ran and reported nothing that needs attention
   1  findings — the command ran and reported failures, drift, or policy findings
   2  usage    — the invocation was rejected before any work started
 
-Terminal-only behaviour, such as live progress reporting, activates only when
-its output stream is a terminal. Pass --non-interactive, or set
-WB_NON_INTERACTIVE=1, to suppress terminal UIs and progress lines even when a
-terminal is attached.`
+Terminal-only behaviour, including styled help and live progress reporting,
+activates only when its output stream is a terminal. Pass --non-interactive, or
+set WB_NON_INTERACTIVE=1, to suppress terminal styling, UIs, and progress lines
+even when a terminal is attached.`
 
 func newRootCmd() *cobra.Command {
 	home, _ := os.UserHomeDir()
@@ -94,26 +108,30 @@ func newRootCmd() *cobra.Command {
 	// the same information and adds --json for programmatic use.
 	root.Flags().BoolP("version", "v", false, "print the wb version and exit")
 
-	root.AddCommand(newVersionCmd())
-	root.AddCommand(newSyncCmd())
-	root.AddCommand(newRunCmd())
-	root.AddCommand(newMigrateCmd())
-	root.AddCommand(newDepsCmd())
-	root.AddCommand(newCICmd())
-	root.AddCommand(newHooksCmd())
-	root.AddCommand(newCoverageCmd())
-	root.AddCommand(newVerifyCmd())
-	root.AddCommand(newCheckCmd())
-	root.AddCommand(newStatusCmd())
-	root.AddCommand(newFleetCmd())
-	root.AddCommand(newLayoutCmd())
-	root.AddCommand(newArchiveCmd())
-	root.AddCommand(newRepoCmd())
-	root.AddCommand(newWorktreeCmd())
-	root.AddCommand(newBranchCmd())
-	root.AddCommand(newSelfUpdateCmd())
-	root.AddCommand(newSessionCmd())
-	root.AddCommand(newRemoteCmd())
+	configureRootHelp(root)
+	root.AddCommand(
+		groupedRootCommand(newWorktreeCmd(), rootGroupAgent),
+		groupedRootCommand(newBranchCmd(), rootGroupAgent),
+		groupedRootCommand(newSessionCmd(), rootGroupAgent),
+		groupedRootCommand(newStatusCmd(), rootGroupFleet),
+		groupedRootCommand(newFleetCmd(), rootGroupFleet),
+		groupedRootCommand(newSyncCmd(), rootGroupFleet),
+		groupedRootCommand(newRepoCmd(), rootGroupFleet),
+		groupedRootCommand(newCoverageCmd(), rootGroupQuality),
+		groupedRootCommand(newVerifyCmd(), rootGroupQuality),
+		groupedRootCommand(newCheckCmd(), rootGroupQuality),
+		groupedRootCommand(newCICmd(), rootGroupQuality),
+		groupedRootCommand(newHooksCmd(), rootGroupQuality),
+		groupedRootCommand(newDepsCmd(), rootGroupChange),
+		groupedRootCommand(newMigrateCmd(), rootGroupChange),
+		groupedRootCommand(newRunCmd(), rootGroupChange),
+		groupedRootCommand(newRemoteCmd(), rootGroupMaintain),
+		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
+		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
+		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
+		groupedRootCommand(newVersionCmd(), rootGroupLearn),
+		groupedRootCommand(newCommandsCmd(), rootGroupLearn),
+	)
 
 	return root
 }
@@ -324,8 +342,12 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	root.SetIn(stdin)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
+	if terminalPresentationDisabled(args) {
+		root.SetOut(ansiStrippingWriter{Writer: stdout})
+	}
 
-	err := root.Execute()
+	prepareHelpPresentation(root, args)
+	err := executeWithFang(root)
 	// Always on stderr, and always after the command's own output, so a
 	// --format json or yaml document on stdout stays machine-parseable.
 	reportUndeclaredOwners(stderr)
@@ -335,9 +357,42 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	_, _ = fmt.Fprintln(stderr, "error:", err)
 	code := exitCodeFor(err, commandStarted)
 	if code == exitUsage {
-		_, _ = fmt.Fprintln(stderr, "run `wb --help` to see the available commands and flags.")
+		_, _ = fmt.Fprintln(stderr, usageRecoveryHint(root, args))
 	}
 	return code
+}
+
+type ansiStrippingWriter struct {
+	io.Writer
+}
+
+func (writer ansiStrippingWriter) Write(data []byte) (int, error) {
+	if _, err := io.WriteString(writer.Writer, ansi.Strip(string(data))); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+func terminalPresentationDisabled(args []string) bool {
+	if console.Disabled() {
+		return true
+	}
+	for _, arg := range args {
+		if arg == "--non-interactive" || arg == "--non-interactive=true" || arg == "--non-interactive=1" {
+			return true
+		}
+	}
+	return false
+}
+
+func executeWithFang(root *cobra.Command) error {
+	return fang.Execute(
+		context.Background(),
+		root,
+		fang.WithoutVersion(),
+		fang.WithoutManpage(),
+		fang.WithErrorHandler(func(io.Writer, fang.Styles, error) {}),
+	)
 }
 
 // exitCodeFor maps the outcome of cobra's Execute onto a documented exit code.

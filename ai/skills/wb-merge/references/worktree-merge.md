@@ -5,6 +5,7 @@ compatible enough that no behavioral judgment or conflict resolution is
 expected.
 
 ```sh
+wb worktree merge <source-worktree...> --route auto --cleanup --format json
 wb worktree merge prepare <source-worktree...> --target main --format json
 wb worktree merge land <candidate-worktree-or-receipt> --route auto --format json
 wb worktree merge resume <candidate-worktree-or-receipt> --format json

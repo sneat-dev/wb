@@ -610,8 +610,10 @@ func publicLeafCommandPaths(root *cobra.Command) []string {
 					visibleChildren++
 				}
 			}
-			if visibleChildren == 0 {
+			if command.Runnable() || visibleChildren == 0 {
 				paths = append(paths, command.CommandPath())
+			}
+			if visibleChildren == 0 {
 				continue
 			}
 			visit(command)
