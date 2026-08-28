@@ -126,6 +126,7 @@ Apply only after reading the plan:
 wb worktree cleanup <task> --apply --remote --older-than 0
 wb worktree cleanup fair-split --apply --remote --older-than 0
 wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
+wb worktree cleanup task-a task-b --apply --remote --parallel 2
 ```
 
 For a named terminal task or batch, `--apply` refuses without `--remote`. WB removes the
