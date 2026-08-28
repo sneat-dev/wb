@@ -286,6 +286,49 @@ test("coverage diagnostic", async ({ page }) => {
 }
 
 func TestAuditRequiresPositiveConfiguredGoCoverageThreshold(t *testing.T) {
+	t.Run("wb sharded coverage gate", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "main.go", "package main\n")
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  coverage:
+    steps:
+      - run: >-
+          go run ./cmd/wb coverage .
+          --test-shards 8
+          --shard-package ./internal/worktrees
+          --coverage-profile profile.cov
+          --minimum=58
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.GoCoverageThreshold || hasFinding(report, "go-coverage-threshold") {
+			t.Fatalf("positive WB coverage gate was not recognized: %+v", report)
+		}
+	})
+
+	t.Run("zero wb sharded coverage gate", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "main.go", "package main\n")
+		write(t, root, ".github/workflows/ci.yml", `
+jobs:
+  coverage:
+    steps:
+      - run: wb coverage . --coverage-profile profile.cov --minimum=0
+`)
+
+		report, err := Audit(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.GoCoverageThreshold || !hasFinding(report, "go-coverage-threshold") {
+			t.Fatalf("zero WB coverage floor was accepted: %+v", report)
+		}
+	})
+
 	t.Run("zero diagnostic", func(t *testing.T) {
 		root := t.TempDir()
 		write(t, root, "main.go", "package main\n")

@@ -1,0 +1,220 @@
+package quality
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+)
+
+type goCoverageJob struct {
+	label       string
+	arguments   []string
+	profilePath string
+}
+
+type goCoverageJobResult struct {
+	output string
+	err    error
+}
+
+type plannedGoCoveragePackage struct {
+	packagePath string
+	shards      [][]string
+}
+
+func runCoverageWithOptions(ctx context.Context, options RunOptions, module, profilePath string) (string, int, error) {
+	if options.GoTestShards <= 1 && len(options.GoShardPackages) == 0 {
+		return runWithOptions(ctx, options, module, "go", "test", "-coverprofile="+profilePath, "./...")
+	}
+	if options.GoTestShards < 2 {
+		return "", 0, fmt.Errorf("go test sharding requires at least 2 shards")
+	}
+	if len(options.GoShardPackages) == 0 {
+		return "", 0, fmt.Errorf("go test sharding requires at least one explicit shard package")
+	}
+
+	attempts := 0
+	for {
+		attempts++
+		attemptCtx := ctx
+		cancel := func() {}
+		if options.Timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
+		}
+		output, err := runShardedCoverage(attemptCtx, module, profilePath, options.GoShardPackages, options.GoTestShards)
+		timedOut := attemptCtx.Err() == context.DeadlineExceeded
+		cancel()
+		if timedOut {
+			err = fmt.Errorf("timed out after %s", options.Timeout)
+		}
+		if err == nil || attempts > options.Retry {
+			return output, attempts, err
+		}
+	}
+}
+
+func runShardedCoverage(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int) (string, error) {
+	allPackages, err := goListPackages(ctx, module, "./...")
+	if err != nil {
+		return "", err
+	}
+	shardedPackages := make([]string, 0, len(requestedPackages))
+	shardedSet := map[string]bool{}
+	for _, requested := range requestedPackages {
+		packages, err := goListPackages(ctx, module, requested)
+		if err != nil {
+			return "", err
+		}
+		if len(packages) != 1 {
+			return "", fmt.Errorf("shard package %q resolved to %d packages; name exactly one package", requested, len(packages))
+		}
+		if shardedSet[packages[0]] {
+			return "", fmt.Errorf("duplicate shard package %q", requested)
+		}
+		shardedSet[packages[0]] = true
+		shardedPackages = append(shardedPackages, packages[0])
+	}
+	sort.Strings(shardedPackages)
+
+	temporaryDirectory, err := os.MkdirTemp("", "wb-go-test-shards-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(temporaryDirectory) }()
+
+	jobs := make([]goCoverageJob, 0, 1+len(shardedPackages)*shardCount)
+	unsharded := make([]string, 0, len(allPackages))
+	for _, packagePath := range allPackages {
+		if !shardedSet[packagePath] {
+			unsharded = append(unsharded, packagePath)
+		}
+	}
+	if len(unsharded) > 0 {
+		profile := filepath.Join(temporaryDirectory, "unsharded.cov")
+		arguments := []string{"test", "-count=1", "-coverprofile=" + profile}
+		arguments = append(arguments, unsharded...)
+		jobs = append(jobs, goCoverageJob{label: "unsharded packages", arguments: arguments, profilePath: profile})
+	}
+	plannedPackages := make([]plannedGoCoveragePackage, 0, len(shardedPackages))
+	for _, packagePath := range shardedPackages {
+		tests, err := discoverGoTests(ctx, module, packagePath)
+		if err != nil {
+			return "", err
+		}
+		shards, err := planGoTestShards(tests, shardCount)
+		if err != nil {
+			return "", fmt.Errorf("plan %s: %w", packagePath, err)
+		}
+		plannedPackages = append(plannedPackages, plannedGoCoveragePackage{packagePath: packagePath, shards: shards})
+	}
+	// Interleave packages by shard number. Appending every shard from one slow
+	// package first leaves the next package queued behind it and creates a long
+	// tail even when both plans are individually balanced.
+	for shardIndex := 0; shardIndex < shardCount; shardIndex++ {
+		for packageIndex, planned := range plannedPackages {
+			if shardIndex >= len(planned.shards) {
+				continue
+			}
+			shard := planned.shards[shardIndex]
+			profile := filepath.Join(temporaryDirectory, fmt.Sprintf("package-%d-shard-%d.cov", packageIndex+1, shardIndex+1))
+			pattern := "^(" + strings.Join(shard, "|") + ")$"
+			jobs = append(jobs, goCoverageJob{
+				label:       fmt.Sprintf("%s shard %d/%d", planned.packagePath, shardIndex+1, len(planned.shards)),
+				arguments:   []string{"test", planned.packagePath, "-run", pattern, "-count=1", "-coverprofile=" + profile},
+				profilePath: profile,
+			})
+		}
+	}
+
+	results := runGoCoverageJobs(ctx, module, jobs, shardCount)
+	var output strings.Builder
+	var failedOutput strings.Builder
+	profiles := make([]string, 0, len(jobs))
+	var runErr error
+	for index, result := range results {
+		if result.err != nil {
+			fmt.Fprintf(&failedOutput, "[%s]\n%s", jobs[index].label, result.output)
+			if !strings.HasSuffix(result.output, "\n") {
+				failedOutput.WriteByte('\n')
+			}
+			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", jobs[index].label, result.err))
+		} else {
+			if strings.TrimSpace(result.output) != "" {
+				fmt.Fprintf(&output, "[%s]\n%s", jobs[index].label, result.output)
+				if !strings.HasSuffix(result.output, "\n") {
+					output.WriteByte('\n')
+				}
+			}
+			profiles = append(profiles, jobs[index].profilePath)
+		}
+	}
+	if runErr != nil {
+		return failedOutput.String(), runErr
+	}
+	if err := mergeCoverageProfiles(profiles, outputProfile); err != nil {
+		return output.String(), err
+	}
+	return output.String(), nil
+}
+
+func goListPackages(ctx context.Context, module, pattern string) ([]string, error) {
+	output, err := run(ctx, module, "go", "list", "-f", "{{.ImportPath}}", pattern)
+	if err != nil {
+		return nil, fmt.Errorf("go list %s: %w\n%s", pattern, err, strings.TrimSpace(output))
+	}
+	var packages []string
+	for _, line := range strings.Split(output, "\n") {
+		if packagePath := strings.TrimSpace(line); packagePath != "" {
+			packages = append(packages, packagePath)
+		}
+	}
+	if len(packages) == 0 {
+		return nil, fmt.Errorf("go list %s returned no packages", pattern)
+	}
+	return packages, nil
+}
+
+func discoverGoTests(ctx context.Context, module, packagePath string) ([]string, error) {
+	output, err := run(ctx, module, "go", "test", packagePath, "-list", "^(Test|Example|Fuzz)")
+	if err != nil {
+		return nil, fmt.Errorf("discover tests in %s: %w\n%s", packagePath, err, strings.TrimSpace(output))
+	}
+	var tests []string
+	for _, line := range strings.Split(output, "\n") {
+		name := strings.TrimSpace(line)
+		if supportedGoTestName.MatchString(name) {
+			tests = append(tests, name)
+		}
+	}
+	return tests, nil
+}
+
+func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob, parallel int) []goCoverageJobResult {
+	if parallel > len(jobs) {
+		parallel = len(jobs)
+	}
+	results := make([]goCoverageJobResult, len(jobs))
+	indices := make(chan int)
+	var wait sync.WaitGroup
+	for worker := 0; worker < parallel; worker++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range indices {
+				output, err := run(ctx, module, "go", jobs[index].arguments...)
+				results[index] = goCoverageJobResult{output: output, err: err}
+			}
+		}()
+	}
+	for index := range jobs {
+		indices <- index
+	}
+	close(indices)
+	wait.Wait()
+	return results
+}

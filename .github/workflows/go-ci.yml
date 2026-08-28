@@ -14,22 +14,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Build, vet, test
+  static:
+    name: Tidy, format, vet, build
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-
       - name: go mod tidy check
         run: go mod tidy -diff
-
       - name: gofmt
         run: |
           set -eu
@@ -39,10 +37,23 @@ jobs:
             echo "$OUT"
             exit 1
           fi
-
       - name: go vet
         run: go vet ./...
+      - name: go build
+        run: go build ./...
 
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -52,24 +63,28 @@ jobs:
           version: 1b907273167eec8b3d84cae636b7798ced4433d5
           install-mode: goinstall
 
-      - name: go build
-        run: go build ./...
-
-      - name: go test with coverage threshold
-        env:
-          # Measured after adding detected hook profiles and composition: 58.4%.
-          MINIMUM_COVERAGE: "58.0"
-        run: |
-          go test ./... -coverprofile=profile.cov -count=1
-          total_coverage="$(go tool cover -func=profile.cov | awk '/^total:/ { gsub(/%/, "", $3); print $3 }')"
-          echo "Total coverage: ${total_coverage}% (required: ${MINIMUM_COVERAGE}%)"
-          awk -v actual="$total_coverage" -v required="$MINIMUM_COVERAGE" 'BEGIN {
-            if (actual < required) {
-              printf "Coverage %.2f%% is below required %.2f%%\n", actual, required
-              exit 1
-            }
-          }'
-
+  coverage:
+    name: Sharded coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with merged coverage threshold
+        run: >-
+          go run ./cmd/wb coverage .
+          --test-shards 8
+          --shard-package ./internal/worktrees
+          --coverage-profile profile.cov
+          --minimum=58
+          --format json
+          --non-interactive
+          --timeout 4m30s
       - name: Upload coverage profile
         uses: actions/upload-artifact@v7
         with:
@@ -77,3 +92,24 @@ jobs:
           path: profile.cov
           if-no-files-found: error
           retention-days: 14
+
+  test:
+    name: Build, vet, test
+    if: ${{ always() }}
+    needs: [static, lint, coverage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require every parallel Go gate
+        env:
+          STATIC_RESULT: ${{ needs.static.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        run: |
+          set -eu
+          for result in "$STATIC_RESULT" "$LINT_RESULT" "$COVERAGE_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "A required parallel Go gate concluded: $result" >&2
+              exit 1
+            fi
+          done

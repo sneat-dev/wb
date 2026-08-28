@@ -23,16 +23,20 @@ import (
 )
 
 type qualityOptions struct {
-	fleet     bool
-	match     string
-	regex     string
-	parallel  int
-	format    string
-	reportDir string
-	checks    string
-	timeout   time.Duration
-	retry     int
-	resume    bool
+	fleet           bool
+	match           string
+	regex           string
+	parallel        int
+	format          string
+	reportDir       string
+	checks          string
+	timeout         time.Duration
+	retry           int
+	resume          bool
+	testShards      int
+	shardPackages   []string
+	coverageProfile string
+	minimumCoverage float64
 	// allowEmpty lets fleet mode return zero targets instead of erroring.
 	// an empty fleet with no filter publishes an empty-but-valid snapshot;
 	// an unmatched filter is still an error. Quality commands (coverage/verify/check/fleet)
@@ -46,7 +50,7 @@ type qualityTarget struct {
 }
 
 func newCoverageCmd() *cobra.Command {
-	options := qualityOptions{}
+	options := qualityOptions{testShards: 1, minimumCoverage: -1}
 	command := &cobra.Command{
 		Use:   "coverage [repository-path]",
 		Short: "Measure Go test coverage for one repository or the local fleet",
@@ -58,6 +62,9 @@ func newCoverageCmd() *cobra.Command {
 			}
 			if options.fleet && len(args) > 0 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
+			}
+			if err := validateCoverageExecutionOptions(options); err != nil {
+				return err
 			}
 			targets, err := qualityTargets(path, projectsRoot, filterFlag, options)
 			if err != nil {
@@ -77,6 +84,9 @@ func newCoverageCmd() *cobra.Command {
 			progress := newQualityProgress(cmd.ErrOrStderr(), console.Interactive(cmd.ErrOrStderr(), nonInteractive), "coverage", len(targets))
 			progress.start()
 			runOptions := runOptions(options)
+			runOptions.GoTestShards = options.testShards
+			runOptions.GoShardPackages = append([]string(nil), options.shardPackages...)
+			runOptions.CoverageProfile = options.coverageProfile
 			runOptions.Progress = progress.report
 			reports := runCoverageTargets(targets, options.parallel, runOptions)
 			progress.finish()
@@ -93,13 +103,45 @@ func newCoverageCmd() *cobra.Command {
 					message: "coverage could not be measured in one or more repositories; see the `error` column above, then rerun just those with --resume --report-dir",
 				}
 			}
+			if options.minimumCoverage >= 0 && report.Percentage < options.minimumCoverage {
+				return &exitError{
+					code:    exitFindings,
+					message: fmt.Sprintf("coverage %.2f%% is below required %.2f%%", report.Percentage, options.minimumCoverage),
+				}
+			}
 			return nil
 		},
 	}
 	bindQualityScopeFlags(command, &options)
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write coverage.md and coverage.yaml to this directory")
+	command.Flags().IntVar(&options.testShards, "test-shards", 1, "process-isolated shards for every explicit --shard-package")
+	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package safe to shard by top-level test name (repeatable)")
+	command.Flags().StringVar(&options.coverageProfile, "coverage-profile", "", "retain the exact merged profile (single repository and Go module only)")
+	command.Flags().Float64Var(&options.minimumCoverage, "minimum", -1, "minimum aggregate statement coverage percentage; disabled when omitted")
 	return command
+}
+
+func validateCoverageExecutionOptions(options qualityOptions) error {
+	if options.testShards < 1 {
+		return fmt.Errorf("--test-shards must be at least 1")
+	}
+	if options.testShards > 1 && len(options.shardPackages) == 0 {
+		return fmt.Errorf("--test-shards greater than 1 requires at least one --shard-package")
+	}
+	if options.testShards == 1 && len(options.shardPackages) > 0 {
+		return fmt.Errorf("--shard-package requires --test-shards greater than 1")
+	}
+	if options.minimumCoverage < -1 || options.minimumCoverage > 100 {
+		return fmt.Errorf("--minimum must be between 0 and 100 when provided")
+	}
+	if options.coverageProfile != "" && (options.fleet || options.resume) {
+		return fmt.Errorf("--coverage-profile requires one fresh repository run; it cannot be combined with --fleet or --resume")
+	}
+	if len(options.shardPackages) > 0 && options.fleet {
+		return fmt.Errorf("--shard-package is repository-specific and cannot be combined with --fleet")
+	}
+	return nil
 }
 
 func newVerifyCmd() *cobra.Command {

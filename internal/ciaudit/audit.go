@@ -39,6 +39,8 @@ type workflowFile struct {
 var (
 	positiveGoThreshold         = regexp.MustCompile(`(?mi)min_test_coverage_percent\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
 	positiveGoFallbackThreshold = regexp.MustCompile(`(?mi)\b(?:minimum_?(?:test_)?coverage|coverage_?threshold|threshold)\b\s*(?::|=)\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
+	positiveWBMinimumFlag       = regexp.MustCompile(`(?mi)--minimum(?:=|\s+)["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])\b`)
+	workflowStepBoundary        = regexp.MustCompile(`(?m)^\s*-\s+(?:name|uses|run):`)
 	positiveJSWorkflow          = regexp.MustCompile(`(?mi)(?:minimum-coverage|coverage-threshold)\s*:\s*["']?(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
 	jsConfigThreshold           = regexp.MustCompile(`(?mi)(?:coverageThreshold|thresholds)\s*[:=]`)
 	positiveC8Threshold         = regexp.MustCompile(`(?mi)\bc8\b[^\n]*--check-coverage[^\n]*--(?:lines|statements|functions|branches)(?:=|\s+)(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9])`)
@@ -65,7 +67,7 @@ func Audit(root string) (Report, error) {
 		allWorkflowText.WriteByte('\n')
 	}
 	workflowText := allWorkflowText.String()
-	report.GoCoverageThreshold = positiveGoThreshold.MatchString(workflowText) || hasGoCoverageComparison(workflowText)
+	report.GoCoverageThreshold = positiveGoThreshold.MatchString(workflowText) || hasGoCoverageComparison(workflowText) || hasPositiveWBCoverageGate(workflowText)
 	report.FrontendCoverageThreshold = report.HasFrontend && (positiveJSWorkflow.MatchString(workflowText) ||
 		jsConfigThreshold.MatchString(configText) ||
 		hasPositiveC8Coverage(workflowText, packageCoverageScripts) ||
@@ -282,6 +284,29 @@ func ignoredDirectory(name string) bool {
 func hasGoCoverageComparison(content string) bool {
 	return strings.Contains(content, "go tool cover") &&
 		positiveGoFallbackThreshold.MatchString(content)
+}
+
+func hasPositiveWBCoverageGate(content string) bool {
+	for _, marker := range []string{"go run ./cmd/wb coverage", "wb coverage"} {
+		remaining := content
+		for {
+			index := strings.Index(remaining, marker)
+			if index < 0 {
+				break
+			}
+			window := remaining[index:]
+			if boundary := workflowStepBoundary.FindStringIndex(window[len(marker):]); boundary != nil {
+				window = window[:len(marker)+boundary[0]]
+			} else if len(window) > 4096 {
+				window = window[:4096]
+			}
+			if positiveWBMinimumFlag.MatchString(window) {
+				return true
+			}
+			remaining = remaining[index+len(marker):]
+		}
+	}
+	return false
 }
 
 func hasDeployCommand(content string) bool {

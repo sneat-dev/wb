@@ -1150,6 +1150,56 @@ profiles:
 	}
 }
 
+func TestRepositoryPolicyUsesShardedCoverageForGoPrePush(t *testing.T) {
+	repository, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolateConfig(t)
+	policy, err := LoadPolicy(repository, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var goProfile *ActiveProfile
+	for index := range policy.ActiveProfiles {
+		if policy.ActiveProfiles[index].Name == "go" {
+			goProfile = &policy.ActiveProfiles[index]
+			break
+		}
+	}
+	if goProfile == nil || goProfile.Reason != "included by policy" {
+		t.Fatalf("repository Go profile = %#v", goProfile)
+	}
+	blocks := hookBlocks(policy, "pre-push")
+	var template string
+	for _, block := range blocks {
+		if block.ID == "go/pre-push" {
+			template = block.Hook.Template
+			break
+		}
+	}
+	wantTemplate := filepath.Join(repository, ".wb", "templates", "go-sharded-pre-push.sh")
+	if template != wantTemplate {
+		t.Fatalf("Go pre-push template = %q, want %q", template, wantTemplate)
+	}
+	contents, err := os.ReadFile(template)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		"hooks push-tier",
+		"go vet ./...",
+		"go run ./cmd/wb coverage .",
+		"--test-shards 8",
+		"--shard-package ./internal/worktrees",
+		"--minimum 58",
+	} {
+		if !strings.Contains(string(contents), marker) {
+			t.Fatalf("repository Go pre-push template is missing %q:\n%s", marker, contents)
+		}
+	}
+}
+
 func TestProfileSelectionCanOverrideEarlierLayerAndDisableWholeHook(t *testing.T) {
 	repo := initRepo(t)
 	configHome := t.TempDir()

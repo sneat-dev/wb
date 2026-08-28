@@ -8,6 +8,31 @@ wb verify . --checks lint,test,build
 wb check . --profile ci
 ```
 
+When one Go package has many process-global fixtures and therefore cannot use
+`t.Parallel`, opt it into isolated process shards instead of weakening or
+skipping the suite:
+
+```sh
+wb coverage . --test-shards 8 --shard-package ./internal/worktrees
+
+# Preserve a merged profile and enforce a floor.
+wb coverage . --test-shards 8 \
+  --shard-package ./internal/worktrees \
+  --coverage-profile profile.cov --minimum 58
+```
+
+WB discovers top-level tests, examples, and fuzz targets, sorts them, assigns
+each exactly once by deterministic round-robin, runs all unnamed packages once,
+and losslessly merges the coverage profiles. `--shard-package` is deliberately
+opt-in because discovery invokes that package's `TestMain` once before every
+process shard invokes it again. Use it only when process isolation is safe; WB
+rejects fleet scope and ambiguous package patterns rather than guessing.
+
+For repeatable repository-owned validation, commit the approved shard plan as
+`.wb/quality.yaml` with `version: 1` and `go_test.shards` plus
+`go_test.packages`. `wb worktree merge` consumes that policy for candidate
+validation; ad hoc fleet runs continue to require explicit command flags.
+
 Choose one verification surface:
 
 - `coverage` measures statement-weighted Go coverage.

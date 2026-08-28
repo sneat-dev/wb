@@ -1,0 +1,6 @@
+version: 1
+
+go_test:
+  shards: 8
+  packages:
+    - ./internal/worktrees
