@@ -1173,18 +1173,24 @@
             {
               "path": "wb coverage",
               "flags": [
+                "--coverage-profile",
                 "--fleet",
                 "--format",
                 "--match",
+                "--minimum",
                 "--parallel",
                 "--regex",
                 "--report-dir",
                 "--resume",
                 "--retry",
+                "--shard-package",
+                "--test-shards",
                 "--timeout"
               ],
               "modes": [
-                "Measures statement-weighted Go coverage for one repository or a selected local fleet."
+                "Measures statement-weighted Go coverage for one repository or a selected local fleet.",
+                "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
+                "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline."
               ]
             }
           ],
@@ -1196,9 +1202,13 @@
             {
               "command": "wb coverage --help",
               "contains": [
+                "--coverage-profile",
                 "--fleet",
                 "--format",
-                "--report-dir"
+                "--minimum",
+                "--report-dir",
+                "--shard-package",
+                "--test-shards"
               ]
             }
           ],
@@ -1211,7 +1221,15 @@
               "path": "ai/skills/wb-fleet/references/quality.md",
               "marker": "# Coverage and verification",
               "examples": [
-                "wb coverage ."
+                "wb coverage .",
+                "wb coverage . --test-shards 8 --shard-package ./internal/worktrees"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": ".wb/quality.yaml",
+              "examples": [
+                "wb worktree merge <source-worktree...> --route auto --cleanup --format json"
               ]
             }
           ],
@@ -1223,6 +1241,26 @@
             {
               "path": "internal/quality/quality_test.go",
               "name": "TestCoverAggregatesGoStatements",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/quality/go_test_shards_test.go",
+              "name": "TestRunShardedCoverageRunsEveryTestOnceAndMergesProfile",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/quality/go_test_shards_test.go",
+              "name": "TestPlanGoTestShardsIsDeterministicCompleteAndUnique",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/quality/config_test.go",
+              "name": "TestRepositoryRunOptionsLoadsExplicitShardingPolicy",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation",
               "kind": "integration"
             }
           ],

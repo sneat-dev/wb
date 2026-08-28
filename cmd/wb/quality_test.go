@@ -40,6 +40,28 @@ func TestQualityTargetsSupportsGlobAndRegex(t *testing.T) {
 	}
 }
 
+func TestCoverageShardingFlagsFailClosedOnAmbiguousScope(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		options qualityOptions
+		want    string
+	}{
+		{name: "zero shards", options: qualityOptions{testShards: 0}, want: "at least 1"},
+		{name: "shards without package", options: qualityOptions{testShards: 2}, want: "requires at least one"},
+		{name: "package without shards", options: qualityOptions{testShards: 1, shardPackages: []string{"./internal/worktrees"}}, want: "greater than 1"},
+		{name: "fleet package", options: qualityOptions{testShards: 2, shardPackages: []string{"./internal/worktrees"}, fleet: true}, want: "repository-specific"},
+		{name: "fleet profile", options: qualityOptions{testShards: 1, fleet: true, coverageProfile: "profile.cov"}, want: "one fresh repository"},
+		{name: "invalid minimum", options: qualityOptions{testShards: 1, minimumCoverage: 101}, want: "between 0 and 100"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateCoverageExecutionOptions(test.options)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestQualityTargetsRejectsOwnerRepositorySelectorsForDirectPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

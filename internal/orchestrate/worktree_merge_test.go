@@ -140,7 +140,7 @@ func TestPrepareWorktreeMergeAllowsUnchangedFailingTargetValidation(t *testing.T
 	}
 }
 
-func TestPrepareWorktreeMergeRecordsPassingTargetAndCandidateValidation(t *testing.T) {
+func TestPrepareWorktreeMergeSkipsUnneededPassingTargetValidation(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
 	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
@@ -154,9 +154,12 @@ func TestPrepareWorktreeMergeRecordsPassingTargetAndCandidateValidation(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if receipt.BaselineValidation.Status != quality.StatusPassed || receipt.Validation.Status != quality.StatusPassed ||
+	if receipt.BaselineValidation.Status != quality.StatusSkipped || receipt.Validation.Status != quality.StatusPassed ||
 		receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.Validation.Revision != receipt.Candidate.SHA {
 		t.Fatalf("validation receipt = %+v", receipt)
+	}
+	if len(receipt.BaselineValidation.Results) != 1 || !strings.Contains(receipt.BaselineValidation.Results[0].Detail, "not needed") {
+		t.Fatalf("lazy baseline reason missing: %+v", receipt.BaselineValidation)
 	}
 }
 

@@ -1517,21 +1517,36 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 	return receipt, nil
 }
 
-// validateWorktreeMergeCandidate records validation for both the exact target
-// tree and the integration candidate. A red target is diagnostic-only: it
-// must not stop a candidate that leaves every existing failure unchanged.
+// validateWorktreeMergeCandidate validates the candidate first. A passing
+// candidate cannot regress a red target, so the expensive target snapshot is
+// evaluated lazily only when candidate failure evidence needs comparison.
 // Any new or changed candidate failure remains a hard gate.
 func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
-	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
+	runOptions, err := quality.RepositoryRunOptions(receipt.Candidate.Worktree, quality.RunOptions{
+		Timeout: timeout, Retry: retry, Progress: reportWorktreeMergeQualityProgress(reporter),
+	})
 	if err != nil {
-		return fmt.Errorf("capture exact target validation baseline: %w", err)
+		return fmt.Errorf("load candidate quality policy: %w", err)
 	}
-	receipt.BaselineValidation = baseline
 	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
 		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		quality.RunOptions{Timeout: timeout, Retry: retry, Progress: reportWorktreeMergeQualityProgress(reporter)})
+		runOptions)
 	receipt.Validation.Revision = receipt.Candidate.SHA
 	receipt.Validation.WorkspaceClean = true
+	if receipt.Validation.Status == quality.StatusPassed {
+		receipt.BaselineValidation = quality.VerificationReport{
+			Repository: receipt.Repository, Path: "git:" + receipt.TargetSHA, Revision: receipt.TargetSHA,
+			WorkspaceClean: true, Status: quality.StatusSkipped,
+			Results: []quality.VerificationEntry{{Status: quality.StatusSkipped,
+				Detail: "candidate passed every configured local check; target baseline was not needed"}},
+		}
+		return nil
+	}
+	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
+	if err != nil {
+		return fmt.Errorf("capture exact target validation baseline after candidate failure: %w", err)
+	}
+	receipt.BaselineValidation = baseline
 	if err := worktreeMergeValidationRegression(baseline, receipt.Validation); err != nil {
 		return err
 	}
@@ -1560,9 +1575,13 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err := extractWorktreeMergeArchive(archivePath, snapshot); err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("materialize target %s: %w", targetSHA, err)
 	}
+	runOptions, err := quality.RepositoryRunOptions(snapshot, quality.RunOptions{Timeout: timeout, Retry: retry})
+	if err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
+	}
 	report := quality.VerifyWithOptions(ctx, repository, snapshot,
 		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		quality.RunOptions{Timeout: timeout, Retry: retry})
+		runOptions)
 	// The transient snapshot is intentionally removed before this durable
 	// receipt is written. The exact revision remains the useful evidence.
 	report.Path = "git:" + targetSHA

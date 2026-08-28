@@ -569,6 +569,12 @@ wb coverage --fleet --match 'sneat-co/*' --parallel=2
 wb coverage --fleet --regex '^sneat-co/(sneat|bots)' \
   --report-dir /tmp/wb-coverage --format yaml
 
+# Isolate large serial packages into eight deterministic processes, preserve
+# the merged profile, and enforce the same threshold as CI.
+wb coverage . --test-shards 8 \
+  --shard-package ./internal/worktrees \
+  --coverage-profile profile.cov --minimum 58
+
 # Run Go vet/test/build and defined Node lint/test/build scripts.
 wb verify --fleet --filter sneat-co/ --parallel=2
 
@@ -594,7 +600,27 @@ YAML files with `--report-dir`.
 Coverage discovers every `go.mod` below a selected repository (excluding
 `.git`, `vendor`, and `node_modules`) and uses temporary profiles outside the
 repository. Its fleet percentage is statement-weighted, rather than an average
-of repository percentages. Verification runs `go vet ./...`, `go test ./...`,
+of repository percentages. An explicitly named `--shard-package` can be split
+across `--test-shards` isolated Go processes: WB deterministically runs every
+top-level test, example, and fuzz target exactly once, runs all other packages
+once, and losslessly merges their coverage blocks. Sharding is repository-only
+and opt-in because discovery invokes `TestMain` once before every shard invokes
+it again. `--coverage-profile` retains the exact merged artifact and
+`--minimum` enforces its aggregate floor.
+Repository-owned merge validation can opt into the same mechanism with a
+tracked `.wb/quality.yaml`:
+
+```yaml
+version: 1
+go_test:
+  shards: 8
+  packages: [./internal/worktrees]
+```
+
+`wb worktree merge` validates the candidate first using this policy. It runs
+the exact target snapshot only if the candidate fails and inherited-failure
+comparison is needed, avoiding a redundant full baseline on green candidates.
+Verification runs `go vet ./...`, `go test ./...`,
 and `go build ./...` for each Go module; for a root Node project it runs only
 defined `lint`, `test`, and `build` scripts with the detected package manager.
 Other stacks remain explicit, reusable `wb run` recipes.

@@ -1,0 +1,9 @@
+version: 1
+
+profiles:
+  include: [go]
+  definitions:
+    go:
+      hooks:
+        pre-push:
+          template: templates/go-sharded-pre-push.sh
