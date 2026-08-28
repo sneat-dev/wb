@@ -8,8 +8,8 @@
 //
 // WB does not maintain its own secret-shape corpus. It parses gitleaks'
 // maintained TOML rule format (https://github.com/gitleaks/gitleaks) --
-// vendored at vendor/gitleaks/gitleaks.toml, see
-// vendor/gitleaks/PROVENANCE.md for the exact pinned tag and how to refresh
+// vendored at gitleaks/gitleaks.toml, see gitleaks/PROVENANCE.md for the
+// exact pinned tag and how to refresh
 // it without a WB release -- and applies its own fail-closed/warn-only
 // policy on top. WB owns the integration and the blocking decision, never
 // the regex corpus.
@@ -24,7 +24,7 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-//go:embed vendor/gitleaks/gitleaks.toml
+//go:embed gitleaks/gitleaks.toml
 var embeddedGitleaksRuleset []byte
 
 // Severity is WB's own policy classification for a rule, not anything
@@ -139,7 +139,7 @@ func parseTOMLRuleset(data []byte, source string, classify func(rawTOMLRule) Sev
 // EmbeddedRuleset returns the byte-for-byte vendored gitleaks ruleset WB
 // ships inside its own binary, so the gate always works even with no
 // network access and no external config file. See
-// vendor/gitleaks/PROVENANCE.md for exact provenance.
+// gitleaks/PROVENANCE.md for exact provenance.
 func EmbeddedRuleset() []byte {
 	return embeddedGitleaksRuleset
 }

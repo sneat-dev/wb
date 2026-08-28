@@ -8,7 +8,7 @@ import (
 
 // ExtraRulesEnvVar names an additional gitleaks-schema rules file to load on
 // top of the embedded baseline. Set it to point at a refreshed
-// config/gitleaks.toml (see vendor/gitleaks/PROVENANCE.md) to pick up new
+// config/gitleaks.toml (see gitleaks/PROVENANCE.md) to pick up new
 // upstream patterns without a WB release, or at a small file of
 // internal-only token shapes.
 const ExtraRulesEnvVar = "WB_SECRETSCAN_RULES"
