@@ -102,7 +102,11 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 	for range 2 {
 		select {
 		case <-ready:
-		case <-time.After(20 * time.Second):
+		// A cold GitHub runner took 20.56 seconds to bring both independent
+		// Git worktree registrations to this barrier. Keep the deadlock bound,
+		// but leave enough room for cold filesystem and process startup: the
+		// test is about serialization correctness, not a 20-second latency SLO.
+		case <-time.After(time.Minute):
 			t.Fatal("concurrent creations did not both reach registration repair")
 		}
 	}
