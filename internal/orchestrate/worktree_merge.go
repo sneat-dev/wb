@@ -815,7 +815,14 @@ func ResumeWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) 
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
-	if receipt.Status == WorktreeMergeLanded || receipt.Status == WorktreeMergePostTargetCIFailed {
+	refreshable := false
+	switch receipt.Status {
+	case WorktreeMergePreparing, WorktreeMergePrepared, WorktreeMergeConflict,
+		WorktreeMergeValidationFailed, WorktreeMergeChecksFailed, WorktreeMergeChecksPending,
+		WorktreeMergeLanded, WorktreeMergePostTargetCIFailed:
+		refreshable = true
+	}
+	if refreshable {
 		sources := make([]string, 0, len(receipt.Sources))
 		for _, source := range receipt.Sources {
 			if strings.TrimSpace(source.Worktree) == "" {

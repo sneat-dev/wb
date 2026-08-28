@@ -817,6 +817,99 @@ func TestResumeWorktreeMergeAdvancesLandedCleanupPendingSource(t *testing.T) {
 	}
 }
 
+func TestResumeWorktreeMergeRefreshesOneAdvancedSourceInMultiSourceCandidate(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "multi-source-first", "feature/multi-source-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "multi-source-second", "feature/multi-source-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir,
+		Sources:      []string{firstSource.WorktreeDir, secondSource.WorktreeDir},
+		Target:       "main",
+		Model:        "test-model",
+		AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Status = WorktreeMergeValidationFailed
+	first.Failure = "optimized browser journey failed"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(secondSource.WorktreeDir, "provider-fix.txt"), "lazy provider\n")
+	runEngineGit(t, secondSource.WorktreeDir, "add", "provider-fix.txt")
+	runEngineGit(t, secondSource.WorktreeDir, "commit", "-m", "fix: add lazy provider")
+	advancedSecond := strings.TrimSpace(runEngineGit(t, secondSource.WorktreeDir, "rev-parse", "HEAD"))
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_REMOTE", strings.TrimSpace(runEngineGit(t, fixture.canonical, "remote", "get-url", "origin")))
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot:      fixture.githubDir,
+		Receipt:           first.ReceiptPath,
+		Route:             WorktreeMergeRouteAuto,
+		Timeout:           5 * time.Second,
+		CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("resume did not rebuild the multi-source candidate from the advanced exact head: receipt=%+v err=%v", resumed, err)
+	}
+	if resumed.Status != WorktreeMergeLanded || resumed.Candidate.SHA == first.Candidate.SHA {
+		t.Fatalf("resume did not land a refreshed candidate: first=%+v resumed=%+v", first, resumed)
+	}
+	if len(resumed.Sources) != 2 || resumed.Sources[0].SHA != first.Sources[0].SHA || resumed.Sources[1].SHA != advancedSecond {
+		t.Fatalf("resume lost exact multi-source heads: %+v", resumed.Sources)
+	}
+	if len(resumed.SourceRefreshes) != 1 || len(resumed.SourceRefreshes[0].Sources) != 2 ||
+		resumed.SourceRefreshes[0].Sources[1].SHA != first.Sources[1].SHA {
+		t.Fatalf("resume lost the prior multi-source candidate evidence: %+v", resumed.SourceRefreshes)
+	}
+}
+
+func TestResumeWorktreeMergeRefusesReplacedSourceInMultiSourceCandidate(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "multi-source-refusal-first", "feature/multi-source-refusal-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "multi-source-refusal-second", "feature/multi-source-refusal-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir,
+		Sources:      []string{firstSource.WorktreeDir, secondSource.WorktreeDir},
+		Target:       "main",
+		Model:        "test-model",
+		AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Status = WorktreeMergeValidationFailed
+	first.Failure = "candidate validation failed"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+
+	runEngineGit(t, secondSource.WorktreeDir, "reset", "--hard", first.TargetSHA)
+	writeEngineFile(t, filepath.Join(secondSource.WorktreeDir, "replacement.txt"), "replacement history\n")
+	runEngineGit(t, secondSource.WorktreeDir, "add", "replacement.txt")
+	runEngineGit(t, secondSource.WorktreeDir, "commit", "-m", "fix: replace source history")
+
+	blocked, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir,
+		Receipt:      first.ReceiptPath,
+		Route:        WorktreeMergeRouteAuto,
+		Timeout:      5 * time.Second,
+	})
+	if err == nil || !strings.Contains(err.Error(), "still owned by non-terminal receipt") {
+		t.Fatalf("resume did not refuse a non-descendant source replacement: receipt=%+v err=%v", blocked, err)
+	}
+	recorded, readErr := readWorktreeMergeReceipt(first.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if recorded.Status != first.Status || recorded.Candidate.SHA != first.Candidate.SHA ||
+		len(recorded.SourceRefreshes) != 0 || recorded.Sources[1].SHA != first.Sources[1].SHA {
+		t.Fatalf("source replacement refusal mutated prior evidence: first=%+v recorded=%+v", first, recorded)
+	}
+}
+
 func TestResumeWorktreeMergeReobservesDescendantTargetAfterPostTargetCIDrift(t *testing.T) {
 	fixture, source, first := prepareLandedCleanupPendingMerge(t, "resume-release-drift", "feature/resume-release-drift")
 	first.Status = WorktreeMergePostTargetCIFailed
