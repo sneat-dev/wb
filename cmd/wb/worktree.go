@@ -1041,7 +1041,14 @@ the checkout, so that one case is resolved from its claim instead of its path.
 manifest and at least one recorded instruction. It binds on the worktree's
 location and never tries to tell an agent from a human by environment markers,
 which can be absent exactly when they matter. Use warn while a fleet adopts the
-journal and enforce once it has.`,
+journal and enforce once it has.
+
+When the guarded checkout is canonical, this command also fetches the selected
+origin target and includes an exact freshness receipt. A stale, ahead, or
+diverged clone is reported as a warning with left/right commit counts. If the
+remote cannot be reached, or the target moves while it is being checked, the
+warning says so explicitly; the checkout is never fast-forwarded or otherwise
+changed by guard.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -1055,9 +1062,10 @@ journal and enforce once it has.`,
 				path = args[0]
 			}
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
-				ProjectsRoot: projectsRoot,
-				Base:         base,
-				Admission:    worktrees.AdmissionMode(admission),
+				ProjectsRoot:   projectsRoot,
+				Base:           base,
+				Admission:      worktrees.AdmissionMode(admission),
+				CheckFreshness: true,
 			})
 			if err != nil {
 				return err
@@ -1066,6 +1074,9 @@ journal and enforce once it has.`,
 			// to be seen before enforcement starts refusing the same commit.
 			if result.Admission != nil && result.Admission.Reason != "" {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: %s\n  %s\n", result.Admission.Reason, result.Admission.Remedy)
+			}
+			if result.Freshness != nil && result.Freshness.Status != worktrees.CanonicalFreshnessCurrent {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: canonical freshness for %s: %s\n", result.Path, formatCanonicalFreshness(result.Freshness))
 			}
 			if quiet {
 				return nil
@@ -1080,7 +1091,11 @@ journal and enforce once it has.`,
 				if result.External {
 					kind += " (adopted)"
 				}
-				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s\n", kind, result.Path, checkout)
+				suffix := ""
+				if result.Freshness != nil && result.Freshness.Status == worktrees.CanonicalFreshnessCurrent {
+					suffix = fmt.Sprintf(" (fresh against %s at %s)", result.Freshness.RemoteRef, result.Freshness.RemoteSHA)
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s%s\n", kind, result.Path, checkout, suffix)
 				return err
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -1096,6 +1111,16 @@ journal and enforce once it has.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")
 	return command
+}
+
+func formatCanonicalFreshness(freshness *worktrees.CanonicalFreshness) string {
+	if freshness == nil {
+		return "not checked"
+	}
+	if freshness.Error != "" {
+		return fmt.Sprintf("status=%s target=%s: %s", freshness.Status, freshness.RemoteRef, freshness.Error)
+	}
+	return fmt.Sprintf("status=%s target=%s local=%s remote=%s (%d ahead, %d behind)", freshness.Status, freshness.RemoteRef, freshness.LocalSHA, freshness.RemoteSHA, freshness.Ahead, freshness.Behind)
 }
 
 // newWorktreeSetCmd is the human-facing remedy the admission gate names. It

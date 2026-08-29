@@ -6725,7 +6725,8 @@
               "modes": [
                 "Rejects feature work in canonical clones and rejects unsafe or unrecognized linked-checkout state.",
                 "A worktree outside the resolver-recognized hierarchy is still admitted when it carries an active Work Log claim from wb worktree adopt --apply, resolved from the claim rather than the path, with every other check (including admission) applied unchanged.",
-                "--admission warn reports, and --admission enforce refuses, a commit in a managed worktree with no manifest or no recorded instruction."
+                "--admission warn reports, and --admission enforce refuses, a commit in a managed worktree with no manifest or no recorded instruction.",
+                "When guarding a canonical clone, fetches the selected origin target and returns a point-of-read freshness receipt with exact local/remote SHAs and left/right counts; stale, offline, fetch-failed, missing-target, and target-drift states are explicit warnings and never mutate the checkout."
               ]
             }
           ],
@@ -6780,6 +6781,16 @@
             {
               "path": "internal/worktrees/worktrees_test.go",
               "name": "TestGuardStillRefusesUnadoptedExternalWorktree",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/worktrees_test.go",
+              "name": "TestGuardCanonicalFreshnessReportsFreshlyFetchedRemoteState",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/worktrees_test.go",
+              "name": "TestGuardCanonicalFreshnessReportsOfflineExplicitly",
               "kind": "integration"
             }
           ],
