@@ -61,10 +61,12 @@ only.
 
 Determining whether a branch has an open pull request MUST work fully
 offline and MUST never hang the hook on a network round trip. The mechanism
-MUST prefer a signal WB already owns (a local cache it wrote itself) over
-asking GitHub; an opportunistic `gh` lookup is permitted only as a
-bounded-timeout, TTL-cached enrichment on a cache miss or expiry, never as
-the only path, and its result MUST NOT be cached when it fails or times out.
+MUST prefer a positive signal WB already owns (a local cache it wrote itself)
+over asking GitHub. A negative answer is mutable as soon as a pull request is
+created, so it MUST be revalidated rather than trusted from that cache. An
+opportunistic `gh` lookup is permitted only with a bounded timeout; successful
+positive results may be TTL-cached, while negative, failed, and timed-out
+results MUST NOT be cached.
 When PR status cannot be established within that bounded budget, the hook
 MUST treat it as unknown and run Tier 1, never silently escalate to Tier 2:
 CI remains the real gate for a publication push.

@@ -191,6 +191,32 @@ func TestCachedGHPRLookupPrefersFreshCacheOverAskingGH(t *testing.T) {
 	}
 }
 
+// TestCachedGHPRLookupRevalidatesFreshNegative proves a mutable negative
+// answer cannot hide a pull request created after the previous push. Positive
+// answers are monotonic enough to cache, but "no PR" must ask GitHub again.
+func TestCachedGHPRLookupRevalidatesFreshNegative(t *testing.T) {
+	calls := 0
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	lookup := &CachedGHPRLookup{
+		RepoRoot: t.TempDir(), RepoSlug: "acme/app",
+		CachePath: t.TempDir() + "/cache.json",
+		TTL:       time.Hour, Timeout: time.Second,
+		Now: func() time.Time { return now },
+		RunGH: func(ctx context.Context, dir string, args ...string) ([]byte, error) {
+			calls++
+			return []byte(`[{"number":42}]`), nil
+		},
+	}
+	savePRStatusCache(lookup.CachePath, map[string]prStatusCacheEntry{
+		"acme/app#feature": {Open: false, CheckedAt: now.Add(-time.Minute)},
+	})
+
+	open, known := lookup.OpenPullRequest("feature")
+	if !known || !open || calls != 1 {
+		t.Fatalf("open=%v known=%v calls=%d, want a revalidated open PR after exactly one gh call", open, known, calls)
+	}
+}
+
 // TestCachedGHPRLookupFallsBackToGHOnCacheMiss proves the bounded enrichment
 // path: a cache miss triggers exactly one gh call, whose result is then
 // cached for next time.
