@@ -118,6 +118,10 @@ func TestWorktreeCleanupDefaultsToSafeDryRun(t *testing.T) {
 	if retireShells == nil || retireShells.DefValue != "false" {
 		t.Fatalf("--retire-shells = %#v, want default false", retireShells)
 	}
+	recoverStages := command.Flags().Lookup("recover-stages")
+	if recoverStages == nil || recoverStages.DefValue != "false" {
+		t.Fatalf("--recover-stages = %#v, want default false", recoverStages)
+	}
 }
 
 func TestWorktreeCleanupAcceptsSeveralExplicitTaskNames(t *testing.T) {

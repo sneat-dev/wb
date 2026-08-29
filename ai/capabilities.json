@@ -1006,6 +1006,7 @@
                 "--older-than",
                 "--remote",
                 "--report-dir",
+                "--recover-stages",
                 "--resume-interrupted",
                 "--retire-shells",
                 "--superseded-by",
@@ -6314,6 +6315,7 @@
                 "--older-than",
                 "--remote",
                 "--report-dir",
+                "--recover-stages",
                 "--resume-interrupted",
                 "--retire-shells",
                 "--superseded-by",
@@ -6331,6 +6333,7 @@
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
+                "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
                 "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
                 "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
               ]

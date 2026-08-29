@@ -163,7 +163,7 @@ func taskShellIsEmpty(taskPath, task string, lockHeldByThisCall bool) (bool, str
 		case isWorktreeStagingDirectory(name):
 			return false, fmt.Sprintf("reserved stage entry %s is explicit cleanup backlog, not a shell", name)
 		case isRetiredWorktreeStagingDirectory(name):
-			artifact, _ := inspectLifecycleArtifact("", "", filepath.Join(taskPath, name), entry)
+			artifact, _ := inspectLifecycleArtifact(context.Background(), "", "", filepath.Join(taskPath, name), entry)
 			if !artifact.Eligible || artifact.State != "quarantined" {
 				return false, fmt.Sprintf("reserved stage entry %s is explicit cleanup backlog: %s", name, artifact.Reason)
 			}
