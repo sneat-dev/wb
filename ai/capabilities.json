@@ -999,6 +999,7 @@
                 "--report-dir",
                 "--resume-interrupted",
                 "--retire-shells",
+                "--superseded-by",
                 "--verbose",
                 "--parallel"
               ],
@@ -1007,7 +1008,8 @@
                 "Accepts one or more exact named tasks, so a merger can retire its completed batch without widening to --all-merged",
                 "Streams per-candidate inventory progress and bounds concurrent inspections so a fleet-wide sweep is observable and not serial on the network",
                 "--parallel bounds the apply phase as well as inspection: selected independent tasks are applied concurrently across canonical repositories and serially within one, a coordinated task takes every repository it spans in one global order, one failure is isolated, and concurrent remote branch deletions stay bounded",
-                "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted"
+                "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted",
+                "--superseded-by accepts only a trusted-reviewer receipt with exact source/target refs, replacement evidence, and complete reviewed residual classification"
               ]
             },
             {
@@ -6305,6 +6307,7 @@
                 "--report-dir",
                 "--resume-interrupted",
                 "--retire-shells",
+                "--superseded-by",
                 "--verbose",
                 "--parallel"
               ],
@@ -6319,7 +6322,8 @@
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
-                "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default"
+                "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
+                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
               ]
             }
           ],
@@ -6335,6 +6339,7 @@
                 "--older-than",
                 "--remote",
                 "--absorbed-by",
+                "--superseded-by",
                 "--resume-interrupted",
                 "conclusively dead",
                 "named [task...]",
@@ -6373,6 +6378,31 @@
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
               "name": "TestCleanupMergedTaskWithRealGitData",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesAnUnclassifiedResidual",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionDryRunAndApplyShareReviewedEvidence",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesTargetDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesChangedSourceRef",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesUnreviewedResidual",
               "kind": "integration"
             },
             {

@@ -134,6 +134,24 @@ That flag only selects which receipt to verify. Every proof still runs, and the
 named commit must be exactly where the work entered the target, so it can never
 make unlanded work eligible.
 
+For a reviewed split branch whose original head intentionally cannot land as a
+single unit, use the separate supersession receipt path:
+
+```sh
+wb worktree cleanup <task> --superseded-by supersession.json
+wb worktree cleanup <task> --superseded-by supersession.json --apply --remote --older-than 0
+```
+
+The JSON receipt is the only authority for this disposition. It must bind the
+exact original source head and freshly fetched target head, list landed
+replacement PRs or commits, enumerate every source commit outside the target,
+classify each residual as replaced, obsolete, regressive, or cosmetic, mark
+each residual reviewed, and carry a trusted approving actor and receipt ID.
+This path never participates in `--all-merged`; missing or unclassified
+residuals, an untrusted approval, changed source/target refs, or a replacement
+not contained in the target refuse without deleting state. The terminal Work
+Log embeds the verified receipt before remote or local deletion.
+
 ## A branch with no worktree at all: hand off to wb branch
 
 Every command above is scoped to worktrees. A local or remote branch that has
@@ -198,7 +216,7 @@ wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
 ```
 
 Full flag surface: `--base`, `--all-merged`, `--apply`, `--remote`,
-`--older-than`, `--report-dir`, `--absorbed-by`, `--resume-interrupted`,
+`--older-than`, `--report-dir`, `--absorbed-by`, `--superseded-by`, `--resume-interrupted`,
 `--format`, plus the root `--filter` and `--projects-root`.
 
 `--report-dir` overrides the audit directory, which defaults to

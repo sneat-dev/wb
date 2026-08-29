@@ -198,7 +198,7 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 		}
 	}
 	cleanup := newWorktreeCleanupCmd()
-	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero", "--resume-interrupted", "conclusively dead"} {
+	for _, wanted := range []string{"default is a dry-run", "freshly fetched exact", "awaiting_push", "force-with-lease", "before any remote or local deletion", "requires --remote", "implicit age window is zero", "--resume-interrupted", "conclusively dead", "--superseded-by", "trusted-reviewer receipt"} {
 		if !strings.Contains(cleanup.Long, wanted) {
 			t.Errorf("worktree cleanup help does not mention %q", wanted)
 		}
