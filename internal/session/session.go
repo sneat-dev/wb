@@ -423,8 +423,11 @@ func List(dir string) ([]View, error) {
 		if marker, ok := readResumedMarker(dir, record.WBSessionID); ok {
 			record.Lifecycle, record.ParkedSessionID = "resumed", marker.ParkedSessionID
 			viewState = StateResumed
-		} else if record.Lifecycle == "parked" || parked(dir, record.WBSessionID) {
+		} else if marker, ok := readParkedMarker(dir, record.WBSessionID); record.Lifecycle == "parked" || ok {
 			record.Lifecycle = "parked"
+			if ok {
+				record.ParkedSessionID = marker.ParkedSessionID
+			}
 			viewState = StateParked
 		}
 		views = append(views, View{Record: record, State: viewState})

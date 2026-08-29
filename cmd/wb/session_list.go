@@ -33,7 +33,10 @@ registered does not appear: WB reports what it was told, not what it guessed.
 
 EFFORTS, WORKTREES, and BRANCHES are derived by matching worktree owner
 registrations to the session's declared PID, so they show what the session
-actually worked on without it having to declare that separately.`,
+actually worked on without it having to declare that separately.
+
+For a parked row, --format json includes parked_session_id. Pass that value,
+not wb_session_id, to wb session resume.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {

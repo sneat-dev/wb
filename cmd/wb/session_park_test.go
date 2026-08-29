@@ -492,6 +492,41 @@ func TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute(t *testing.T) {
 	}
 }
 
+func TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody(t *testing.T) {
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv("WB_HOME", home)
+	parkedID := "park-local-preflight"
+	source := session.Record{PID: 41, WBSessionID: "wbs-local-preflight-source", Machine: "source", Runtime: "codex", StartedAt: time.Unix(10, 0).UTC()}
+	store := sessionpark.NewStore(filepath.Join(home, sessionpark.SourceDirName))
+	if _, err := store.Create(sessionpark.Bundle{SchemaVersion: sessionpark.SchemaVersion, ParkedSessionID: parkedID,
+		Source: source, Continuation: "private continuation", ParkedAt: time.Unix(11, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	want := errors.New("fixed tmux executable is unavailable")
+	deps := defaultSessionResumeDependencies()
+	deps.preflightLocal = func(session.Record) error { return want }
+	deps.withLocalCustody = func(context.Context, string, sessionpark.Bundle, string, func(*worktrees.ParkedLocalCustody) error) error {
+		t.Fatal("custody reached after preflight failure")
+		return nil
+	}
+	command := newSessionResumeCmdWithDependencies(deps)
+	command.SetArgs([]string{parkedID})
+	command.SetOut(new(bytes.Buffer))
+	if err := command.Execute(); !errors.Is(err, want) {
+		t.Fatalf("resume error = %v, want %v", err, want)
+	}
+	state, err := store.Load(parkedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != sessionpark.StatusParked || state.ResumeRoute != nil || len(state.Events) != 0 {
+		t.Fatalf("preflight failure mutated parked state: %#v", state)
+	}
+}
+
 func TestSessionParkRemoteReconstructabilityRefusesDirtyEvidence(t *testing.T) {
 	bundle := sessionpark.Bundle{ParkedSessionID: "park-dirty", Worktrees: []sessionpark.Worktree{{WorktreeDir: "/tmp/dirty", Head: "a", RemoteHead: "a", Dirty: true}}}
 	err := validateParkedRemoteBundle(bundle, "hetzner-vm1")

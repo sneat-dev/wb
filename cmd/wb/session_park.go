@@ -171,7 +171,9 @@ func newSessionParkCmd() *cobra.Command {
 }
 
 func newSessionResumeCmd() *cobra.Command {
-	return newSessionResumeCmdWithDependencies(defaultSessionResumeDependencies())
+	deps := defaultSessionResumeDependencies()
+	deps.preflightLocal = func(source session.Record) error { return sessionlaunch.PreflightLocal(source.Runtime) }
+	return newSessionResumeCmdWithDependencies(deps)
 }
 
 type sessionResumeOutput struct {
@@ -195,6 +197,7 @@ type sessionResumeDependencies struct {
 	inspectPrepared   func(context.Context, sessionlaunch.Options) (string, error)
 	afterLocalLaunch  func(sessionlaunch.Result) error
 	markResumed       func(string, int, string, string) (session.Record, error)
+	preflightLocal    func(session.Record) error
 }
 
 func defaultSessionResumeDependencies() sessionResumeDependencies {
@@ -231,7 +234,19 @@ func defaultSessionResumeDependencies() sessionResumeDependencies {
 func newSessionResumeCmdWithDependencies(deps sessionResumeDependencies) *cobra.Command {
 	var target, via, configPath, format string
 	command := &cobra.Command{
-		Use: "resume <parked-session-id>", Short: "Resume a parked session as one fresh successor session", Args: cobra.ExactArgs(1),
+		Use:   "resume <parked-session-id>",
+		Short: "Resume a parked session as one fresh successor session",
+		Long: `Resume a parked session as one fresh successor session.
+
+Use the parked_session_id returned by wb session park or shown for the parked
+row by wb session list --format json. wb_session_id identifies the source
+agent session and is not a resume argument.
+
+Before a fresh local resume claims a route or changes custody, WB verifies the
+fixed tmux, harness, and WB executables. If the released harness exits during
+startup, WB retains its exit status and bounded terminal diagnostic for the
+exact retryable attempt.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
@@ -416,6 +431,11 @@ func resumeParkedLocal(ctx context.Context, deps sessionResumeDependencies, stor
 		return sessionResumeOutput{ParkedSessionID: state.Bundle.ParkedSessionID, Status: string(state.Status),
 			TargetMachine: state.Successor.Machine, SuccessorWBSessionID: state.Successor.WBSessionID,
 			MemberCount: len(state.Bundle.Worktrees), Replay: true}, nil
+	}
+	if state.ResumeRoute == nil && deps.preflightLocal != nil {
+		if err := deps.preflightLocal(state.Bundle.Source); err != nil {
+			return sessionResumeOutput{}, err
+		}
 	}
 	if deps.withLocalCustody == nil || deps.attachLocal == nil || deps.startLocal == nil || deps.inspectLocal == nil || deps.inspectPrepared == nil {
 		return sessionResumeOutput{}, fmt.Errorf("local parked-session resume dependencies are unavailable")

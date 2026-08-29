@@ -32,7 +32,7 @@ if [ "$1" != "list-panes" ] || [ "$2" != "-s" ] || [ "$3" != "-t" ] || [ "$4" !=
   printf 'unexpected argv: %s\n' "$*" >&2
   exit 2
 fi
-printf '4242\n'
+printf '4242\t0\n'
 `
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -40,5 +40,23 @@ printf '4242\n'
 	pid, exists, err := (osTmux{executable: path}).PanePID(context.Background(), "wb-session-x")
 	if err != nil || !exists || pid != 4242 {
 		t.Fatalf("PanePID = pid %d exists %t error %v", pid, exists, err)
+	}
+}
+
+func TestTmuxPaneFailureRetainsExitStatusAndBoundedDiagnostic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tmux")
+	body := `#!/bin/sh
+case "$1" in
+  list-panes) printf '1\t17\n' ;;
+  capture-pane) printf 'fatal startup configuration\n' ;;
+  *) printf 'unexpected argv: %s\n' "$*" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failure, found, err := (osTmux{executable: path}).PaneFailure(context.Background(), "wb-session-x")
+	if err != nil || !found || failure.ExitStatus != 17 || failure.Diagnostic != "fatal startup configuration" {
+		t.Fatalf("PaneFailure = %#v found %t error %v", failure, found, err)
 	}
 }
