@@ -188,7 +188,7 @@ func readDirtyFileNoFollow(path string, size int64) ([]byte, error) {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("wrap dirty file")
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	content, err := io.ReadAll(io.LimitReader(file, maxDirtyCaptureFileBytes+1))
 	if err != nil {
 		return nil, err
@@ -202,7 +202,7 @@ func readDirtyFileNoFollow(path string, size int64) ([]byte, error) {
 func dirtyCaptureDigest(entries []dirtyCaptureEntry) string {
 	hash := sha256.New()
 	for _, entry := range entries {
-		fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%d\x00%s\x00", entry.Path, entry.Kind, entry.Mode, entry.Bytes, entry.SHA256)
+		_, _ = fmt.Fprintf(hash, "%s\x00%s\x00%d\x00%d\x00%s\x00", entry.Path, entry.Kind, entry.Mode, entry.Bytes, entry.SHA256)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -222,12 +222,12 @@ func materializeDirtyCapture(runDir *os.File, claimID string, material dirtyCapt
 	if err != nil {
 		return DirtyWorktreeEvidence{}, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	directory, err := openPrivateChild(root, claimID, true)
 	if err != nil {
 		return DirtyWorktreeEvidence{}, err
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	for name, content := range material.Blobs {
 		if err := writeBytesImmutableAt(directory, name, content, 0o600, true); err != nil {
 			return DirtyWorktreeEvidence{}, fmt.Errorf("write dirty capture blob: %w", err)
@@ -263,7 +263,7 @@ func captureAndPersistDirtyWorktree(ctx context.Context, home, worktree string, 
 	if err != nil {
 		return nil, fmt.Errorf("open private Work Log run for dirty capture: %w", err)
 	}
-	defer runDir.Close()
+	defer func() { _ = runDir.Close() }()
 	receipt, err := materializeDirtyCapture(runDir, projection.ClaimID, material)
 	if err != nil {
 		return nil, err
