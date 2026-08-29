@@ -328,6 +328,87 @@ func TestLandWorktreeMergeDirectWalksExactRemoteJourney(t *testing.T) {
 	}
 }
 
+func TestResumeWorktreeMergeAcceptsPostLandingTargetDescendant(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "post-land-descendant-source", "feature/post-land-descendant", "candidate.txt", "candidate\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, filepath.Join(fixture.canonical, "release.txt"), "automatic release\n")
+	runEngineGit(t, fixture.canonical, "add", "release.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "chore: automatic release")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	descendant := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	landed.Status = WorktreeMergePostTargetCIFailed
+	landed.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: landed.LandingSHA}
+	landed.CanonicalSync = ""
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != WorktreeMergeLanded || resumed.LandingSHA != landed.LandingSHA || resumed.Checks.ObservedTargetHead != descendant || !resumed.Checks.TargetContainsHead {
+		t.Fatalf("descendant post-land resume = %+v, want landing %s and target %s", resumed, landed.LandingSHA, descendant)
+	}
+}
+
+func TestResumeWorktreeMergeRefusesPostLandingTargetWithoutLanding(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "post-land-diverged-source", "feature/post-land-diverged", "candidate.txt", "candidate\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", receipt.TargetSHA+"^{tree}", "-p", receipt.TargetSHA, "-m", "rewrite target without landing"))
+	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", unrelated, landed.LandingSHA)
+	runEngineGit(t, fixture.canonical, "push", "--force", "origin", "main")
+	landed.Status = WorktreeMergePostTargetCIFailed
+	landed.Checks = PullRequestWaitResult{Status: PullRequestWaitFailed, Head: landed.LandingSHA}
+	landed.CanonicalSync = ""
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+
+	failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not contain exact landed head") || failed.Status != WorktreeMergePostTargetCIFailed {
+		t.Fatalf("non-descendant post-land resume = %+v err=%v", failed, err)
+	}
+}
+
 func TestWorktreeMergePushRunsExactHookOnceBeforeOpeningPushConnection(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "push-gate-source", "feature/push-gate", "push.txt", "push\n")
@@ -1224,6 +1305,20 @@ case "$*" in
     target_sha="${WB_TEST_TARGET_SHA:-}"
     if [ -n "${WB_TEST_REMOTE:-}" ]; then target_sha="$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)"; fi
     printf '{"object":{"sha":"%s"}}\n' "$target_sha" ;;
+  'api repos/acme/app/compare/'*'...'*)
+    pair="${2#*compare/}"
+    base="${pair%%...*}"
+    candidate="${pair#*...}"
+    merge_base="$(git --git-dir="$WB_TEST_REMOTE" merge-base "$base" "$candidate")"
+    if git --git-dir="$WB_TEST_REMOTE" merge-base --is-ancestor "$base" "$candidate"; then
+      status="ahead"
+      if [ "$base" = "$candidate" ]; then status="identical"; fi
+    elif git --git-dir="$WB_TEST_REMOTE" merge-base --is-ancestor "$candidate" "$base"; then
+      status="behind"
+    else
+      status="diverged"
+    fi
+    printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
   'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
   *'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;

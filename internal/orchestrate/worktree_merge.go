@@ -570,7 +570,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if receipt.LandingSHA != "" {
 		if receipt.Checks.Status != PullRequestWaitPassed {
 			reportWorktreeMergeProgress(options.Progress, "target_checks", progress.Waiting, shortMergeRevision(receipt.LandingSHA))
-			postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", receipt.LandingSHA)
+			postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", receipt.LandingSHA, true)
 			receipt.Checks = postChecks
 			if postErr != nil {
 				status := WorktreeMergePostTargetCIFailed
@@ -741,7 +741,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return receipt, err
 		}
 		reportWorktreeMergeProgress(options.Progress, "candidate_checks", progress.Waiting, receipt.PullRequest)
-		checks, err := waitForWorktreeMergeChecks(ctx, receipt, options, receipt.PullRequest, receipt.Candidate.SHA)
+		checks, err := waitForWorktreeMergeChecks(ctx, receipt, options, receipt.PullRequest, receipt.Candidate.SHA, false)
 		receipt.Checks = checks
 		if err != nil {
 			status := WorktreeMergeChecksFailed
@@ -777,7 +777,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	}
 
 	reportWorktreeMergeProgress(options.Progress, "target_checks", progress.Waiting, shortMergeRevision(landing))
-	postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", landing)
+	postChecks, postErr := waitForWorktreeMergeChecks(ctx, receipt, options, "", landing, true)
 	receipt.Checks = postChecks
 	if postErr != nil {
 		status := WorktreeMergePostTargetCIFailed
@@ -1326,7 +1326,7 @@ func worktreeMergePRTitle(subjects []string, sourceCount int, target string) str
 	return fmt.Sprintf("%s merge %d worktree candidates into %s", selected.prefix, sourceCount, target)
 }
 
-func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string) (PullRequestWaitResult, error) {
+func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions, pullRequest, head string, allowTargetDescendant bool) (PullRequestWaitResult, error) {
 	slice := options.Timeout
 	if slice <= 0 || slice > 8*time.Minute {
 		slice = 8 * time.Minute
@@ -1339,7 +1339,7 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 		return PullRequestWaitResult{}, fmt.Errorf("CI poll interval %s must be shorter than wait slice %s", interval, slice)
 	}
 	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
-		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head,
+		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
 		Slice: slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
 	})
 	if err != nil {
@@ -1529,9 +1529,13 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 		return "blocked_diverged", fmt.Errorf("remote landed, but canonical target cannot fast-forward: %w", err)
 	}
 	head, err := mergeRevision(ctx, canonical, "HEAD")
-	if err != nil || head != landing {
+	containsLanding, ancestorErr := isMergeAncestor(ctx, canonical, landing, head)
+	if err != nil || ancestorErr != nil || !containsLanding {
 		if err == nil {
-			err = fmt.Errorf("canonical target is %s, exact remote target is %s", head, landing)
+			err = ancestorErr
+		}
+		if err == nil {
+			err = fmt.Errorf("canonical target %s does not contain exact landed head %s", head, landing)
 		}
 		return "blocked_mismatch", err
 	}

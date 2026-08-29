@@ -105,7 +105,19 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 				return failedCommitWaitResult(result, reason), nil
 			}
 			if observedHead != options.Head {
-				return failedCommitWaitResult(result, fmt.Sprintf("target %s advanced from exact head %s to %s; start a new exact wait", options.Target, options.Head, observedHead)), nil
+				if !options.AllowTargetDescendant {
+					return failedCommitWaitResult(result, fmt.Sprintf("target %s advanced from exact head %s to %s; start a new exact wait", options.Target, options.Head, observedHead)), nil
+				}
+				containsHead, ancestryReason := candidateContainsTarget(sliceCtx, options.Repository, options.Head, observedHead)
+				if ancestryReason != "" {
+					return failedCommitWaitResult(result, ancestryReason), nil
+				}
+				result.TargetContainsHead = containsHead
+				if !containsHead {
+					return failedCommitWaitResult(result, fmt.Sprintf("current target %s at %s does not contain exact landed head %s", options.Target, observedHead, options.Head)), nil
+				}
+			} else {
+				result.TargetContainsHead = true
 			}
 			observedTargetHead = observedHead
 			result.ObservedTargetHead = observedHead
@@ -242,8 +254,21 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 					return failedCommitWaitResult(result, reason), nil
 				}
 				if observedHead != options.Head {
-					return failedCommitWaitResult(result, "target advanced after checks passed; start a new exact wait"), nil
+					if !options.AllowTargetDescendant {
+						return failedCommitWaitResult(result, "target advanced after checks passed; start a new exact wait"), nil
+					}
+					containsHead, ancestryReason := candidateContainsTarget(sliceCtx, options.Repository, options.Head, observedHead)
+					if ancestryReason != "" {
+						return failedCommitWaitResult(result, ancestryReason), nil
+					}
+					result.TargetContainsHead = containsHead
+					if !containsHead {
+						return failedCommitWaitResult(result, fmt.Sprintf("current target %s at %s does not contain exact landed head %s", options.Target, observedHead, options.Head)), nil
+					}
+				} else {
+					result.TargetContainsHead = true
 				}
+				result.ObservedTargetHead = observedHead
 			}
 			result.Status = PullRequestWaitPassed
 			if options.PullRequest != "" {
