@@ -16,6 +16,7 @@ const (
 	EnvAgentRuntime = "WB_AGENT_RUNTIME"
 	EnvAgentModel   = "WB_AGENT_MODEL"
 	EnvAgentID      = "WB_AGENT_ID"
+	EnvSessionID    = "WB_SESSION_ID"
 )
 
 // AgentIdentity is who WB was told is driving it. Every field is declared by
@@ -28,6 +29,13 @@ type AgentIdentity struct {
 	AgentID string
 	Model   string
 	PID     int
+	// WBSessionID links a new Work Log claim to the registered session that
+	// created it. A PID is only a liveness coordinate, never the identity.
+	WBSessionID string
+	// Registered distinguishes a resolver-backed identity from ambient
+	// WB_AGENT_* declarations. Environment declarations are provenance, not
+	// proof that a live session registered.
+	Registered bool
 }
 
 // Declared reports whether anything at all was declared. An undeclared
@@ -91,15 +99,34 @@ func CurrentIdentity() AgentIdentity {
 	return AgentIdentity{}
 }
 
+// RegisteredIdentity resolves only the live session registry, bypassing the
+// per-command WB_AGENT_* override. This is the authoritative admission query:
+// an ambient environment declaration can describe provenance, but cannot
+// prove that a live harness registered before the mutation.
+func RegisteredIdentity() (AgentIdentity, bool) {
+	resolverMu.RLock()
+	resolve := sessionResolver
+	resolverMu.RUnlock()
+	if resolve == nil {
+		return AgentIdentity{}, false
+	}
+	identity, ok := resolve()
+	if !ok || !identity.Registered || strings.TrimSpace(identity.WBSessionID) == "" {
+		return AgentIdentity{}, false
+	}
+	return identity, true
+}
+
 // IdentityFromEnv reads a declaration from the process environment. A PID
 // that is absent, non-numeric, or non-positive is treated as undeclared
 // rather than as an error: a malformed declaration must not block the work,
 // only leave liveness unknown.
 func IdentityFromEnv() AgentIdentity {
 	identity := AgentIdentity{
-		Runtime: strings.TrimSpace(os.Getenv(EnvAgentRuntime)),
-		AgentID: strings.TrimSpace(os.Getenv(EnvAgentID)),
-		Model:   strings.TrimSpace(os.Getenv(EnvAgentModel)),
+		Runtime:     strings.TrimSpace(os.Getenv(EnvAgentRuntime)),
+		AgentID:     strings.TrimSpace(os.Getenv(EnvAgentID)),
+		Model:       strings.TrimSpace(os.Getenv(EnvAgentModel)),
+		WBSessionID: strings.TrimSpace(os.Getenv(EnvSessionID)),
 	}
 	if pid, err := strconv.Atoi(strings.TrimSpace(os.Getenv(EnvAgentPID))); err == nil && pid > 0 {
 		identity.PID = pid

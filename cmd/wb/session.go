@@ -82,10 +82,12 @@ func installSessionResolver() {
 			nativeID = record.AgentID
 		}
 		return worktrees.AgentIdentity{
-			Runtime: record.Runtime,
-			AgentID: nativeID,
-			Model:   record.Model,
-			PID:     record.PID,
+			Runtime:     record.Runtime,
+			AgentID:     nativeID,
+			Model:       record.Model,
+			PID:         record.PID,
+			WBSessionID: record.WBSessionID,
+			Registered:  true,
 		}, true
 	})
 }

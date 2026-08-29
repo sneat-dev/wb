@@ -238,13 +238,17 @@ type ListResult struct {
 	// LockOwner and LockOwnerPID describe who holds Locked, so a refusal
 	// can distinguish a peer operation still running from a recoverable
 	// remnant of one that was interrupted. See diagnoseTaskLock.
-	LockOwner         LockOwnerState `json:"lock_owner,omitempty"`
-	LockOwnerPID      int            `json:"lock_owner_pid,omitempty"`
-	LastCommit        time.Time      `json:"last_commit"`
-	Owners            []OwnerView    `json:"owners,omitempty"`
-	OwnerState        string         `json:"owner_state"`
-	OpenPullRequest   *PullRequest   `json:"open_pull_request,omitempty"`
-	MergedPullRequest *PullRequest   `json:"merged_pull_request,omitempty"`
+	LockOwner    LockOwnerState `json:"lock_owner,omitempty"`
+	LockOwnerPID int            `json:"lock_owner_pid,omitempty"`
+	LastCommit   time.Time      `json:"last_commit"`
+	Owners       []OwnerView    `json:"owners,omitempty"`
+	// WorkLogSessionID is the immutable session link from the active private
+	// claim. It lets session park recover a claim even when the owner event was
+	// not projected, while remaining absent for legacy claims.
+	WorkLogSessionID  string       `json:"work_log_session_id,omitempty"`
+	OwnerState        string       `json:"owner_state"`
+	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
+	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
 	// External marks a worktree adopted by `wb worktree adopt` from outside
 	// every WB worktrees root. Its WorktreeDir is the real, never-relocated
 	// checkout path; only a small registration entry — never the checkout
@@ -2245,6 +2249,15 @@ func inspectLifecycleWorktree(
 		return ListResult{}, fmt.Errorf("read owner metadata for %s: %w", worktree, ownerErr)
 	}
 	result.Owners, result.OwnerState = owners, worktreeOwnerState(owners)
+	// The owner event is an append-only projection and may be absent after an
+	// interrupted creation. Prefer the immutable claim's session link when it
+	// exists so park can identify the intended member before attempting custody
+	// capture; legacy claims simply leave this field empty.
+	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
+		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
+			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+		}
+	}
 	if withGitHub {
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, base)
 		if err != nil {

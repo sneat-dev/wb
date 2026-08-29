@@ -818,6 +818,7 @@ The default is a dry-run plan.`,
 
 func newWorktreeCreateCmd() *cobra.Command {
 	var branch, branchPrefix, base, format string
+	var mode string
 	var resume, noClaim bool
 	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
@@ -881,6 +882,18 @@ wb worktree create improve-login owner/repository --resume \
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			if mode != "" && mode != "auto" && mode != "agent" && mode != "manual" {
+				return fmt.Errorf("unsupported execution mode %q; use auto, agent, or manual", mode)
+			}
+			agentMode := mode == "agent" || (mode == "auto" && (strings.TrimSpace(agentID) != "" || strings.TrimSpace(agentRuntime) != ""))
+			if mode == "manual" && strings.TrimSpace(initiator) == "" {
+				return fmt.Errorf("manual execution mode requires --initiator so the non-agent mutation is auditable")
+			}
+			if agentMode {
+				if _, ok := worktrees.RegisteredIdentity(); !ok {
+					return fmt.Errorf("agent-mode worktree creation requires a live registered session; register before the first mutation with `wb session register --pid $PPID --runtime <harness> --model <model>`, or select --mode manual --initiator <human>")
+				}
+			}
 			workLog := worktrees.WorkLogOptions{
 				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
 				AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
@@ -943,6 +956,7 @@ wb worktree create improve-login owner/repository --resume \
 				BranchPrefixChosen: command.Flags().Changed("branch-prefix"),
 				Base:               base,
 				Resume:             resume,
+				SessionRequired:    agentMode,
 				WorkLog:            workLog,
 			})
 			if err != nil {
@@ -981,6 +995,7 @@ wb worktree create improve-login owner/repository --resume \
 	command.Flags().StringVar(&branch, "branch", "", "exact feature branch (overrides branch-prefix configuration)")
 	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
+	command.Flags().StringVar(&mode, "mode", "auto", "execution mode: auto, agent (requires a live registered session), or manual (requires --initiator)")
 	command.Flags().BoolVar(&resume, "resume", false, "reuse only the exact expected branch and worktree")
 	command.Flags().BoolVar(&noClaim, "no-claim", false, "skip the best-effort fleet-wide remote claim for this task")
 	command.Flags().StringVar(&effortID, "effort", "", "stable Synchestra/WB effort id (default task)")

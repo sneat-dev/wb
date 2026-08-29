@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/session"
@@ -43,5 +44,13 @@ func TestSessionRegisterAcceptsPreallocatedSuccessorIdentity(t *testing.T) {
 		record.NativeHarnessID != "native-123" || record.TmuxName != "wb-session-wbs-successor" ||
 		record.PredecessorWBSessionID != "wbs-source" || record.HandoffID != "handoff-123" {
 		t.Fatalf("record = %+v", record)
+	}
+}
+
+func TestSessionRegisterRejectsImmediateShellPID(t *testing.T) {
+	command := newSessionRegisterCmd()
+	command.SetArgs([]string{"--pid", strconv.Itoa(os.Getppid()), "--runtime", "codex"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "intermediate shell") {
+		t.Fatalf("register immediate parent error = %v, want intermediate-shell rejection", err)
 	}
 }

@@ -47,6 +47,11 @@ const SecureStageCanonicalGitHelperArgument = "--wb-internal-stage-canonical-git
 type CreateOptions struct {
 	ProjectsRoot string
 	Operation    string
+	// SessionRequired makes creation an agent-mode mutation: the caller must
+	// belong to a live registered WB session before any WB_HOME or Git state is
+	// touched. Manual callers leave this false and must record human intent in
+	// WorkLog.Initiator when using the CLI's explicit manual mode.
+	SessionRequired bool
 	// Branch is an exact branch name. It has highest precedence and is never
 	// derived from agent or harness identity.
 	Branch string
@@ -383,6 +388,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	normalized, err := normalizeCreateOptions(options)
 	if err != nil {
 		return nil, err
+	}
+	if normalized.SessionRequired {
+		if _, ok := RegisteredIdentity(); !ok {
+			return nil, fmt.Errorf("agent-mode worktree creation requires a live registered session; register before the first mutation with `wb session register --pid $PPID --runtime <harness> --model <model>`, or select explicit manual mode")
+		}
 	}
 	repositories, err = ValidateRepositories(repositories)
 	if err != nil {

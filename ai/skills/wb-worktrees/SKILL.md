@@ -118,6 +118,19 @@ wb worktree list <task>
 wb worktree merge <source-worktree...> --route auto --cleanup --progress --format json
 ```
 
+Before an agent-mode mutation, register the live harness first. The
+registration command must be issued by the agent before `worktree create`:
+
+```sh
+wb session register --pid $PPID --runtime codex --model <exact-model>
+wb worktree create <task> --mode agent --model <exact-model> \
+  --original-prompt-file <private-prompt-file>
+```
+
+`$PPID` from the harness tool-call shell identifies the live agent; `$$` is an
+intermediate shell and is rejected. For intentional human CLI work, use
+`--mode manual --initiator <human>` so the exception is explicit and audited.
+
 With no prefix, WB uses the task slug itself as the branch name. Use
 `--branch-prefix <team-or-workflow>/` for one invocation, or configure a user
 or repository policy; use `--branch` only for an exact pre-agreed branch.
