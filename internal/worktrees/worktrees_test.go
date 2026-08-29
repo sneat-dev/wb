@@ -34,6 +34,32 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestCreateAgentModeRequiresLiveRegisteredSessionBeforeMutation(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "")
+	t.Setenv(EnvAgentRuntime, "")
+	t.Setenv(EnvAgentModel, "")
+	t.Setenv(EnvAgentID, "")
+	t.Setenv(EnvSessionID, "")
+	SetSessionResolver(func() (AgentIdentity, bool) { return AgentIdentity{}, false })
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv(wbhome.EnvOverride, home)
+
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot:    projectsRoot,
+		Operation:       "agent-admission",
+		SessionRequired: true,
+		WorkLog:         WorkLogOptions{Model: "unknown"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "live registered session") {
+		t.Fatalf("agent-mode create error = %v, want live-session admission failure", err)
+	}
+	if _, statErr := os.Stat(home); !os.IsNotExist(statErr) {
+		t.Fatalf("WB home was touched before admission: stat err=%v", statErr)
+	}
+}
+
 func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")

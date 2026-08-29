@@ -19,6 +19,22 @@
 
 ## Create
 
+An agent must register its live harness before the first mutating WB command:
+
+```sh
+wb session register --pid $PPID --runtime codex --model <exact-model>
+```
+
+Use the harness PID from `$PPID`, never the intermediate shell PID from `$$`.
+Agent-mode creation then makes the admission requirement explicit:
+
+```sh
+wb worktree create <task> --mode agent --agent-runtime codex --model <exact-model> \
+  --original-prompt-file <private-prompt-file>
+```
+
+For a deliberate human operation, use `--mode manual --initiator <human>`.
+
 From any checkout whose `origin` identifies the repository:
 
 ```sh

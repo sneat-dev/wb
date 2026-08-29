@@ -79,6 +79,87 @@ func TestWorkLogRecordsOneImmutableClaimPerRepositoryInSharedRun(t *testing.T) {
 	}
 }
 
+func TestWorkLogClaimLinksCreatingWBSession(t *testing.T) {
+	homeRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(homeRoot, ".wb")
+	worktreeRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(worktreeRoot, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	result := CreateResult{Repository: "acme/app", WorktreeDir: worktree, Branch: "feature/session", Base: "main", BaseSHA: strings.Repeat("a", 40)}
+	if _, err := recordWorkLog(home, "session", result, WorkLogOptions{
+		RunID: "session-run", Model: "unknown", WBSessionID: "wbs-creator",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(home, "worklogs", "session", "runs", "session-run", "claims")
+	entries, err := os.ReadDir(claimPath)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("claims = %v err=%v", entries, err)
+	}
+	claimBytes, err := os.ReadFile(filepath.Join(claimPath, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.WBSessionID != "wbs-creator" {
+		t.Fatalf("claim WBSessionID = %q, want wbs-creator", claim.WBSessionID)
+	}
+}
+
+func TestWorkLogClaimPrefersLiveCreatingSessionOverCallerValue(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{PID: 2222, WBSessionID: "wbs-live", Registered: true}, true
+	})
+	homeRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktreeRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(worktreeRoot, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "init")
+	result := CreateResult{Repository: "acme/app", WorktreeDir: worktree, Branch: "feature/session", Base: "main", BaseSHA: strings.Repeat("a", 40)}
+	if _, err := recordWorkLog(filepath.Join(homeRoot, ".wb"), "session", result, WorkLogOptions{
+		RunID: "session-run", Model: "unknown", WBSessionID: "wbs-forged",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimPath := filepath.Join(homeRoot, ".wb", "worklogs", "session", "runs", "session-run", "claims")
+	entries, err := os.ReadDir(claimPath)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("claims = %v err=%v", entries, err)
+	}
+	claimBytes, err := os.ReadFile(filepath.Join(claimPath, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.WBSessionID != "wbs-live" {
+		t.Fatalf("claim WBSessionID = %q, want live resolver session", claim.WBSessionID)
+	}
+}
+
 func TestManagedWorktreeInstructionsPreserveRepositoryOwnedFile(t *testing.T) {
 	worktree := t.TempDir()
 	worktree, err := filepath.EvalSymlinks(worktree)

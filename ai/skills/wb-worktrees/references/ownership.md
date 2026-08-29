@@ -28,6 +28,20 @@ wb session register --pid $PPID --runtime claude-code --model <model>
 wb session register --pid 12345 --runtime claude-code --model claude-sonnet-5
 ```
 
+For a Codex or other live harness, registration must be the first WB command,
+before a mutating command such as `worktree create`:
+
+```sh
+wb session register --pid $PPID --runtime codex --model <exact-model>
+wb worktree create <task> --mode agent --model <exact-model> \
+  --original-prompt-file <private-prompt-file>
+```
+
+Use `$PPID` from the harness tool-call shell. Never use `$$`: that is the
+intermediate shell and would leave claims attached to a process that exits
+immediately. A deliberate human operation must opt into `--mode manual` and
+provide `--initiator <human>`.
+
 `$PPID` from a harness tool call is the agent process itself. WB then resolves
 later writes by matching its own ancestors against registered sessions — which
 confirms a declaration rather than guessing an owner, since an unregistered

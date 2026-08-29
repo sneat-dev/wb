@@ -337,6 +337,10 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	}
 
 	commandStarted = false
+	// Keep the in-process test/embedding runner on the same admission and
+	// attribution path as the production main entrypoint. The resolver is
+	// read-only until a command explicitly mutates state.
+	installSessionResolver()
 	root := newRootCmd()
 	root.SetArgs(args)
 	root.SetIn(stdin)

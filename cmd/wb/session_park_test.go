@@ -46,6 +46,22 @@ func TestSessionParkDoesNotTreatDifferentPIDAsOwned(t *testing.T) {
 	}
 }
 
+func TestSessionParkUsesImmutableClaimSessionLink(t *testing.T) {
+	source := session.Record{PID: 41, WBSessionID: "wbs-source", StartedAt: time.Unix(10, 0)}
+	result := worktrees.ListResult{WorktreeDir: "/tmp/unowned-projection", WorkLogSessionID: "wbs-source"}
+	if !ownedBySession(result, source) {
+		t.Fatal("claim linked to live source session was not selected for park")
+	}
+}
+
+func TestSessionParkDoesNotUseDifferentClaimSessionLink(t *testing.T) {
+	source := session.Record{PID: 41, WBSessionID: "wbs-source", StartedAt: time.Unix(10, 0)}
+	result := worktrees.ListResult{WorktreeDir: "/tmp/other-session", WorkLogSessionID: "wbs-other"}
+	if ownedBySession(result, source) {
+		t.Fatal("claim linked to another session was attributed to source")
+	}
+}
+
 func TestSessionParkPublicOutputDoesNotContainContinuation(t *testing.T) {
 	secret := "private continuation must never be printed"
 	raw, err := json.Marshal(sessionParkOutput{
