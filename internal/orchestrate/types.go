@@ -101,12 +101,16 @@ type RequiredRemoteCheck struct {
 // caller resumes a pending result with the same repository, target, PR (when
 // supplied), and head; any later head is a distinct integration candidate.
 type PullRequestWaitOptions struct {
-	Repository        string
-	PullRequest       string
-	Target            string
-	Head              string
-	Slice             time.Duration
-	CheckPollInterval time.Duration
+	Repository  string
+	PullRequest string
+	Target      string
+	Head        string
+	// AllowTargetDescendant is only for post-landing target CI: the exact
+	// landed Head must remain an ancestor of the observed target. Pre-landing
+	// candidate and pull-request waits retain exact target-head freshness.
+	AllowTargetDescendant bool
+	Slice                 time.Duration
+	CheckPollInterval     time.Duration
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
 	Progress func(PullRequestWaitProgress)
@@ -140,6 +144,7 @@ type PullRequestWaitResult struct {
 	ObservedHead             string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
 	ObservedTargetHead       string                `json:"observed_target_head,omitempty" yaml:"observed_target_head,omitempty"`
 	CandidateContainsTarget  bool                  `json:"candidate_contains_target,omitempty" yaml:"candidate_contains_target,omitempty"`
+	TargetContainsHead       bool                  `json:"target_contains_head,omitempty" yaml:"target_contains_head,omitempty"`
 	TargetFreshnessAuthority string                `json:"target_freshness_authority,omitempty" yaml:"target_freshness_authority,omitempty"`
 	Checks                   []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
 	RequiredChecks           []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
