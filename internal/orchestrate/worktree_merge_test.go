@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -830,6 +831,95 @@ func TestPrepareWorktreeMergeConflictPreservesEverySource(t *testing.T) {
 	status := runEngineGit(t, receipt.Candidate.Worktree, "status", "--porcelain")
 	if strings.TrimSpace(status) != "" {
 		t.Fatalf("candidate retained conflict state: %q", status)
+	}
+}
+
+func TestResumeWorktreeMergeRecoversResolvedConflictWithEmptyCandidateSHA(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "empty-candidate-source", "feature/empty-candidate", "TECH-STACK.md", "source\n")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "TECH-STACK.md"), "target\n")
+	runEngineGit(t, fixture.canonical, "add", "TECH-STACK.md")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "advance target into add/add conflict")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || receipt.Status != WorktreeMergeConflict || receipt.Candidate.SHA != "" {
+		t.Fatalf("conflicting prepare receipt=%+v err=%v", receipt, err)
+	}
+
+	merge := exec.Command("git", "merge", "--no-commit", receipt.Sources[0].SHA)
+	merge.Dir = receipt.Candidate.Worktree
+	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
+		t.Fatalf("manual conflict reproduction unexpectedly merged: %s", output)
+	}
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "TECH-STACK.md"), "resolved\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "TECH-STACK.md")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "resolve receipted add/add conflict")
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "recovery_failure.go"), "package app\n\nfunc RecoveryFailure() { missingRecoverySymbol }\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "recovery_failure.go")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: make recovered candidate fail validation")
+	if _, validationErr := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath}); validationErr == nil {
+		t.Fatal("recovered candidate validation unexpectedly passed")
+	}
+	failed, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA != "" {
+		t.Fatalf("failed recovered receipt = %+v", failed)
+	}
+	runEngineGit(t, receipt.Candidate.Worktree, "rm", "recovery_failure.go")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: repair recovered candidate validation")
+	resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", resolved)
+	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved || landed.LandingSHA != resolved {
+		t.Fatalf("resumed receipt = %+v, want recovered candidate %s", landed, resolved)
+	}
+	persisted, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Candidate.SHA != resolved || persisted.Failure != "" {
+		t.Fatalf("persisted recovered receipt = %+v", persisted)
+	}
+}
+
+func TestResumeWorktreeMergeRefusesEmptyCandidateFromUnrelatedWorktree(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "unrelated-candidate-source", "feature/unrelated-candidate", "TECH-STACK.md", "source\n")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "TECH-STACK.md"), "target\n")
+	runEngineGit(t, fixture.canonical, "add", "TECH-STACK.md")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "advance target into add/add conflict")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || receipt.Candidate.SHA != "" {
+		t.Fatalf("conflicting prepare receipt=%+v err=%v", receipt, err)
+	}
+	receipt.Candidate.Worktree = source.WorktreeDir
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath})
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("unrelated candidate recovery error = %v", err)
 	}
 }
 

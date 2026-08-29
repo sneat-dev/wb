@@ -490,7 +490,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 		return receipt, nil
 	}
-	if receipt.Candidate.Worktree == "" || receipt.Candidate.SHA == "" {
+	if receipt.Candidate.Worktree == "" {
 		return receipt, fmt.Errorf("receipt %s has no prepared candidate", receiptPath)
 	}
 	lockID := receipt.Lane
@@ -507,6 +507,30 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			_ = lock.Release()
 		}
 	}()
+	if receipt.Candidate.SHA == "" {
+		recovered, recoverErr := recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
+		if recoverErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, recoverErr)
+		}
+		if recovered {
+			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+				// Keep retry truthful: the resolved head is present in the
+				// validation report, but it is not a prepared candidate until
+				// that validation succeeds. A later resume must recover and
+				// validate the exact head again.
+				receipt.Candidate.SHA = ""
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("recovered candidate validation failed: %w", validationErr))
+			}
+			receipt.Status = WorktreeMergePrepared
+			receipt.Failure = ""
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
+		}
+	}
 	if retainWorktreeMergeLandIntent(&receipt, &options) {
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
@@ -795,6 +819,93 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, err
 	}
 	return receipt, nil
+}
+
+// recoverResolvedWorktreeMergeCandidate repairs the one durable prepare gap
+// where a conflict receipt necessarily predates the human resolution commit.
+// It accepts only the exact receipted WB candidate and proves its Work Log,
+// branch, target, sources, unpublished state, cleanliness, and validation
+// before recording the resolved commit. Every other empty-SHA receipt remains
+// a hard refusal.
+func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
+	if receipt == nil || receipt.Candidate.SHA != "" {
+		return false, nil
+	}
+	if receipt.Phase != WorktreeMergePhasePrepare ||
+		(receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed) ||
+		receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
+		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
+		return false, fmt.Errorf("receipt %s has no recoverable prepared candidate", receipt.ReceiptPath)
+	}
+
+	guard, err := worktrees.Guard(ctx, receipt.Candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
+	if err != nil {
+		return false, fmt.Errorf("guard receipted candidate: %w", err)
+	}
+	if guard.Kind != "linked" || guard.Transient || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) || guard.Branch != receipt.Candidate.Branch {
+		return false, fmt.Errorf("receipted candidate worktree or branch does not match WB Guard")
+	}
+	expectedCanonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	guardCanonical := guard.CanonicalDir
+	if resolved, resolveErr := filepath.EvalSymlinks(expectedCanonical); resolveErr == nil {
+		expectedCanonical = resolved
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(guardCanonical); resolveErr == nil {
+		guardCanonical = resolved
+	}
+	if filepath.Clean(guardCanonical) != filepath.Clean(expectedCanonical) {
+		return false, fmt.Errorf("receipted candidate canonical repository does not match %s", expectedCanonical)
+	}
+	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
+	if err != nil {
+		return false, fmt.Errorf("load Work Log for receipted candidate: %w", err)
+	}
+	if view.Claim == nil || view.Claim.Task != receipt.Candidate.Task || view.Claim.Repository != receipt.Repository ||
+		filepath.Clean(view.Claim.Worktree) != filepath.Clean(guard.Path) || view.Claim.Branch != receipt.Candidate.Branch ||
+		view.Claim.Base != receipt.Target || view.Claim.BaseSHA != receipt.TargetSHA || view.Claim.Lifecycle != "active" {
+		return false, fmt.Errorf("receipted candidate Work Log claim does not match task, repository, worktree, branch, or base")
+	}
+	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
+		return false, fmt.Errorf("receipted candidate: %w", err)
+	}
+	remote, _, err := runCommand(ctx, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return false, fmt.Errorf("inspect receipted candidate publication state: %w", err)
+	}
+	if strings.TrimSpace(remote) != "" {
+		return false, fmt.Errorf("receipted candidate branch %s is already published without a recorded candidate SHA", receipt.Candidate.Branch)
+	}
+	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
+		return false, err
+	}
+
+	head, err := mergeRevision(ctx, guard.Path, "HEAD")
+	if err != nil {
+		return false, err
+	}
+	containsTarget, err := isMergeAncestor(ctx, guard.Path, receipt.TargetSHA, head)
+	if err != nil || !containsTarget {
+		if err == nil {
+			err = fmt.Errorf("resolved candidate %s does not contain recorded target %s", head, receipt.TargetSHA)
+		}
+		return false, err
+	}
+	for _, source := range receipt.Sources {
+		containsSource, ancestorErr := isMergeAncestor(ctx, guard.Path, source.SHA, head)
+		if ancestorErr != nil || !containsSource {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("resolved candidate %s does not contain receipted source %s", head, source.SHA)
+			}
+			return false, ancestorErr
+		}
+	}
+
+	receipt.Candidate.SHA = head
+	receipt.Status = WorktreeMergePreparing
+	receipt.Failure = ""
+	receipt.UpdatedAt = time.Now().UTC()
+	return true, nil
 }
 
 func canonicalForMergeSource(ctx context.Context, source string) (string, error) {
