@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -206,13 +207,9 @@ func TestAbortDiscardedUnusedWorktreesIsAudited(t *testing.T) {
 	}
 }
 
-// TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact is the
-// regression for #170: one repository blocked on something abort cannot fix
-// (here, uncommitted local changes on a discard) used to make the entire
-// coordinated task un-abortable. --filter must let the operator resolve the
-// ready repository while leaving the blocked one completely untouched and
-// precisely reported, and the task must stay non-terminal until it too is
-// resolved.
+// TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact keeps the
+// coordinated member-filter contract while dirty discard is now protected by
+// a private byte capture.
 func TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact(t *testing.T) {
 	fixture := newGitFixture(t)
 	otherCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
@@ -232,21 +229,9 @@ func TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact(t *testing.
 	if storage.WorktreeDir == "" {
 		t.Fatalf("created = %#v, missing acme/storage", created)
 	}
-	// Simulate the blocked repository: local changes abort cannot discard.
+	// Simulate a dirty repository whose bytes must be sealed before discard.
 	if err := os.WriteFile(filepath.Join(storage.WorktreeDir, "WIP.md"), []byte("dead wip\n"), 0o644); err != nil {
 		t.Fatal(err)
-	}
-
-	// Baseline: without --filter, the one blocked repository still refuses
-	// the whole task exactly as before this fix.
-	if _, err := Abort(context.Background(), AbortOptions{
-		ProjectsRoot: fixture.projectsRoot, Task: "filtered-abort", Disposition: AbortDiscarded,
-		DeleteRemote: true, Apply: true,
-	}); err == nil {
-		t.Fatal("unfiltered abort with one blocked repo unexpectedly succeeded")
-	}
-	if _, err := os.Stat(storage.WorktreeDir); err != nil {
-		t.Fatalf("refused unfiltered abort changed the blocked worktree: %v", err)
 	}
 
 	results, err := Abort(context.Background(), AbortOptions{
@@ -274,8 +259,8 @@ func TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact(t *testing.
 	if !blocked.Excluded || blocked.Applied || blocked.WorktreeGone || blocked.BranchDeleted {
 		t.Fatalf("filtered-out repository was touched: %#v", blocked)
 	}
-	if !strings.Contains(blocked.Reason, "local changes") {
-		t.Fatalf("filtered-out repository did not report its precise block reason: %#v", blocked)
+	if blocked.Reason != "" {
+		t.Fatalf("filtered-out repository unexpectedly reported a block: %#v", blocked)
 	}
 	if _, err := os.Stat(storage.WorktreeDir); err != nil {
 		t.Fatalf("filtered-out worktree was removed: %v", err)
@@ -287,11 +272,8 @@ func TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact(t *testing.
 		t.Fatalf("filtered-out branch exists=%t err=%v", exists, branchErr)
 	}
 
-	// The now-unblocked storage repository resolves on a later, unfiltered
-	// abort: the task was left genuinely non-terminal, not silently forgotten.
-	if err := os.Remove(filepath.Join(storage.WorktreeDir, "WIP.md")); err != nil {
-		t.Fatal(err)
-	}
+	// The remaining dirty repository resolves on a later, unfiltered abort;
+	// its exact bytes are represented in the durable private Work Log receipt.
 	finished, err := Abort(context.Background(), AbortOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "filtered-abort", Disposition: AbortDiscarded,
 		DeleteRemote: true, Apply: true,
@@ -299,7 +281,7 @@ func TestAbortFilterProcessesUnblockedRepoAndLeavesBlockedRepoIntact(t *testing.
 	if err != nil {
 		t.Fatalf("follow-up abort of the remaining repository failed: %v", err)
 	}
-	if len(finished) != 1 || finished[0].Excluded || !finished[0].Applied || !finished[0].WorktreeGone || !finished[0].BranchDeleted {
+	if len(finished) != 1 || finished[0].Excluded || !finished[0].Applied || !finished[0].WorktreeGone || !finished[0].BranchDeleted || finished[0].DirtyCapture == nil {
 		t.Fatalf("follow-up abort = %#v", finished)
 	}
 }
@@ -409,13 +391,13 @@ func TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary(t *testing.T) {
 		DeleteRemote: true,
 		Apply:        true,
 		beforeAbortRemoval: func(worktree string) {
-			writeErr = os.WriteFile(filepath.Join(worktree, "README.md"), []byte("concurrent writer\n"), 0o644)
+			writeErr = os.WriteFile(filepath.Join(worktree, "raced.md"), []byte("concurrent writer\n"), 0o644)
 		},
 	})
 	if writeErr != nil {
 		t.Fatal(writeErr)
 	}
-	if err == nil || !strings.Contains(err.Error(), "immediately before removal") {
+	if err == nil || !strings.Contains(err.Error(), "dirty worktree bytes changed") {
 		t.Fatalf("raced discard error = %v, results=%#v", err, results)
 	}
 	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
@@ -430,6 +412,93 @@ func TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary(t *testing.T) {
 	}
 	if after != before || after.Lifecycle != "active" {
 		t.Fatalf("raced discard changed active projection: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestAbortDiscardedSealsTrackedAndUntrackedBytes(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "dirty-capture", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracked := []byte("tracked dirty bytes\n")
+	untracked := []byte("untracked dirty bytes\n")
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "README.md"), tracked, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "WIP.md"), untracked, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dry, err := Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "dirty-capture", Disposition: AbortDiscarded})
+	if err != nil || len(dry) != 1 || dry[0].DirtyCapture == nil || !dry[0].Eligible {
+		t.Fatalf("dirty dry-run = %#v, err=%v", dry, err)
+	}
+	apply, err := Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "dirty-capture", Disposition: AbortDiscarded, DeleteRemote: true, Apply: true})
+	if err != nil || len(apply) != 1 || apply[0].DirtyCapture == nil || *apply[0].DirtyCapture != *dry[0].DirtyCapture {
+		t.Fatalf("dirty apply = %#v, err=%v", apply, err)
+	}
+	var manifest dirtyCaptureManifest
+	var manifestPath string
+	worklogs := filepath.Join(fixture.home, "worklogs")
+	if err := filepath.WalkDir(worklogs, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Name() == "manifest.json" {
+			manifestPath = path
+			return nil
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if manifestPath == "" {
+		t.Fatal("dirty capture manifest was not retained in private Work Log")
+	}
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil || json.Unmarshal(raw, &manifest) != nil {
+		t.Fatalf("dirty capture manifest = %s, err=%v", raw, err)
+	}
+	if manifest.Receipt != *apply[0].DirtyCapture || len(manifest.Entries) != 2 {
+		t.Fatalf("dirty capture receipt = %#v, result=%#v", manifest.Receipt, apply[0].DirtyCapture)
+	}
+	for _, entry := range manifest.Entries {
+		if entry.Kind != "file" || entry.Blob == "" {
+			t.Fatalf("dirty capture entry = %#v", entry)
+		}
+		content, err := os.ReadFile(filepath.Join(filepath.Dir(manifestPath), entry.Blob))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := tracked
+		if entry.Path == "WIP.md" {
+			want = untracked
+		}
+		if !bytes.Equal(content, want) {
+			t.Fatalf("captured %s = %q, want %q", entry.Path, content, want)
+		}
+	}
+}
+
+func TestAbortDiscardedRefusesOversizeDirtyCapture(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "oversize-dirty-capture", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "oversize.bin"), make([]byte, maxDirtyCaptureFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	results, err := Abort(context.Background(), AbortOptions{ProjectsRoot: fixture.projectsRoot, Task: "oversize-dirty-capture", Disposition: AbortDiscarded, DeleteRemote: true, Apply: true})
+	if err == nil || !strings.Contains(err.Error(), "bounded") {
+		t.Fatalf("oversize discard = %#v, err=%v", results, err)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("oversize refusal removed worktree: %v", statErr)
 	}
 }
 

@@ -294,9 +294,10 @@ active successor while retaining even dirty resumable state. Pass `--cli` and
 `--provider` independently when known—for example `--cli opencode --provider
 opencode-go`; the provider is a commercial routing/subscription identifier,
 never a credential. Only explicit `discarded --apply --remote` retires an exact
-unchanged remote source branch and removes a clean, unlocked worktree/local
-branch after the archive is durable and the live checkout is revalidated at
-the deletion boundary. The same discarded command resumes an exact durable
+unchanged remote source branch and removes an unlocked worktree/local branch
+after a bounded private capture of dirty bytes (when present) and the
+archive are durable, with the live checkout revalidated at the deletion
+boundary. The same discarded command resumes an exact durable
 post-removal branch backlog after interruption; it never relies on live
 worktree inventory alone. The persistent `--filter` flag scopes which
 repositories in the task abort touches: a repository it excludes is reported,

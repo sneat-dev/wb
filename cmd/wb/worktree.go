@@ -704,8 +704,9 @@ with handoff or not_landed transfers one active claim to the required
 declare the successor's exact --model or explicit unknown; --cli and
 --provider independently record the invoking client and commercial route when
 known, never credentials. --apply with
-discarded removes only clean, unlocked worktrees and their exact local branch
-refs after their archive has been sealed. A discarded apply requires --remote;
+discarded removes only unlocked worktrees, retaining a bounded private capture
+of tracked and untracked bytes before deleting dirty ones, and removes their
+exact local branch refs only after that archive has been sealed. A discarded apply requires --remote;
 an exact matching remote source branch is then retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.

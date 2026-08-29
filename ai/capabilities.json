@@ -5936,6 +5936,7 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
                 "handoff/not_landed require a creator-declared successor model and preserve independent optional CLI/provider route identity",
                 "a durable post-removal backlog resumes exact local-ref retirement after interruption"
@@ -5993,6 +5994,16 @@
             {
               "path": "internal/worktrees/abort_test.go",
               "name": "TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedSealsTrackedAndUntrackedBytes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedRefusesOversizeDirtyCapture",
               "kind": "integration"
             },
             {
