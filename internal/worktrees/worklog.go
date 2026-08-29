@@ -207,6 +207,7 @@ type workLogTerminalRecord struct {
 	SuccessorAgentID string                          `json:"successor_agent_id,omitempty"`
 	ExternalHandoff  *workLogExternalHandoffEvidence `json:"external_handoff_completion,omitempty"`
 	Orphaned         *workLogOrphanedEvidence        `json:"orphaned_evidence,omitempty"`
+	DirtyCapture     *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
 }
 
 type workLogPublicEvent struct {
@@ -225,6 +226,7 @@ type workLogPublicEvent struct {
 	Disposition     string                          `json:"disposition,omitempty"`
 	CorrectionID    string                          `json:"correction_id,omitempty"`
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
+	DirtyCapture    *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
 }
 
 // WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
@@ -1306,6 +1308,10 @@ func validateProjection(projection workLogProjection) error {
 // immutable terminal and outbox entry per claim before making the projection
 // terminal. Retrying the exact transition is idempotent.
 func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) error {
+	return sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposition, nil)
+}
+
+func sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil // legacy pre-work-log checkout
@@ -1339,7 +1345,7 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
-	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, "", "", nil)
+	sealedAt, err := writeWorkLogTerminalWithDirtyCapture(home, runDir, claim, finalCommit, disposition, "", "", nil, dirty)
 	if err != nil {
 		return err
 	}
@@ -1512,7 +1518,7 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil)
 }
 
 func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, evidence *workLogOrphanedEvidence) (time.Time, error) {
@@ -1521,15 +1527,19 @@ func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogCla
 		!evidence.RemoteBranchAbsent || !evidence.TerminalAbsent {
 		return time.Time{}, fmt.Errorf("orphaned terminal requires complete negative authority evidence")
 	}
-	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence)
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence, nil)
 }
 
-func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence) (time.Time, error) {
+func writeWorkLogTerminalWithDirtyCapture(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, dirty *DirtyWorktreeEvidence) (time.Time, error) {
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, dirty)
+}
+
+func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence, dirty *DirtyWorktreeEvidence) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
 		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
-		ExternalHandoff: external, Orphaned: orphaned}
+		ExternalHandoff: external, Orphaned: orphaned, DirtyCapture: dirty}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -1539,7 +1549,7 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
-			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) {
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
 		sealedAt = existing.SealedAt
@@ -1556,7 +1566,7 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 	event := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition,
-		ExternalHandoff: external}
+		ExternalHandoff: external, DirtyCapture: dirty}
 	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}
@@ -1564,6 +1574,13 @@ func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLo
 }
 
 func sameOrphanedEvidence(left, right *workLogOrphanedEvidence) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func sameDirtyWorktreeEvidence(left, right *DirtyWorktreeEvidence) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}

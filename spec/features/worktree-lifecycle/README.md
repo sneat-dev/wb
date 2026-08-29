@@ -330,6 +330,20 @@ explicit `unknown`, plus independently known optional CLI/provider route
 identifiers; WB MUST NOT copy the predecessor's route. Automatic recycle
 rollback recovery MUST use explicit unknown model/provenance and no route.
 
+#### REQ: dirty-discard-sealing
+
+When a discarded abort finds tracked or non-ignored untracked working-tree
+bytes, it MUST capture those exact bytes in the private Work Log recovery
+archive before deleting any remote ref, worktree, or local branch. The capture
+MUST be independent of Git hooks, use the existing private Work Log file
+protections and SHA-256 content-digest primitive, and enforce a conservative
+bounded total and per-file size before allocating or writing. A dry-run MUST
+compute and report the same digest, byte count, and file count that apply will
+recheck; apply MUST refuse if any of those values changed. Failed or oversized
+captures MUST leave the worktree and every Git ref untouched. The public
+receipt MAY expose only bounded capture metadata (digest, size, and count),
+never source bytes or local paths.
+
 #### REQ: recycle-transaction
 
 `wb worktree rename --apply` MUST require `--remote`, fetch and pin the fresh
@@ -375,6 +389,16 @@ refuses instead of writing where nothing can reach; and apply writes durable evi
 MAY be supplied by a deterministic test double.
 
 ## Open Questions
+
+### Decision record: issue #173 dirty discard
+
+Approved: a discarded abort may remove dirty tracked and untracked bytes only
+after a bounded, hook-independent private Work Log capture is durably written
+and represented by an immutable terminal/outbox receipt. The existing local
+mode-0700/0600 Work Log protections and SHA-256 digest are the applicable
+privacy and integrity primitives; WB must not invent or expose encryption or
+signing secrets. A changed capture, oversize capture, or failed retention
+write remains fail-closed and leaves Git state in place.
 
 - Should a future cleanup mode archive reports after a retention period?
 - **Should there be an explicit, evidence-recording "retired as superseded"
