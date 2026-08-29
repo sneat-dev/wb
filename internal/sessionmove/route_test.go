@@ -115,6 +115,9 @@ func TestSuccessorAddressIndexRefusesLinksUnsafeModesAndMismatches(t *testing.T)
 			if err := os.WriteFile(path, raw, 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
 		}},
 		{"oversized", func(t *testing.T, path string, _ []byte) {
 			if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxSuccessorAddressBytes+1), 0o600); err != nil {
