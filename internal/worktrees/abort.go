@@ -17,6 +17,7 @@ const (
 	AbortHandoff   AbortDisposition = "handoff"
 	AbortNotLanded AbortDisposition = "not_landed"
 	AbortDiscarded AbortDisposition = "discarded"
+	AbortOrphaned  AbortDisposition = "orphaned"
 )
 
 type AbortOptions struct {
@@ -40,6 +41,13 @@ type AbortOptions struct {
 	All         bool
 	Disposition AbortDisposition
 	Successor   string
+	// ClaimID, Actor, and Reason form the explicit authority boundary for an
+	// orphaned terminal record. Orphaned claims have no live checkout from
+	// which task/repository identity can be reconstructed, so apply always
+	// binds one exact immutable claim rather than guessing from a task name.
+	ClaimID string
+	Actor   string
+	Reason  string
 	// SuccessorIdentity is the caller's explicit execution identity declaration
 	// for the claim created by an applied handoff/not_landed transition.
 	SuccessorIdentity ClaimExecutionIdentity
@@ -52,6 +60,9 @@ type AbortOptions struct {
 	// afterAbortWorktreeRemoval simulates interruption after the linked
 	// checkout is gone but before its exact local branch is retired.
 	afterAbortWorktreeRemoval func(worktree string) error
+	// beforeOrphanSeal is a test-only race seam after the read-only plan and
+	// claim lock acquisition but before every absence predicate is reread.
+	beforeOrphanSeal func()
 }
 
 type AbortResult struct {
@@ -91,26 +102,33 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	if task == "" {
 		return nil, fmt.Errorf("task is required")
 	}
-	if options.Disposition != AbortHandoff && options.Disposition != AbortNotLanded && options.Disposition != AbortDiscarded {
-		return nil, fmt.Errorf("disposition must be handoff, not_landed, or discarded")
+	if options.Disposition != AbortHandoff && options.Disposition != AbortNotLanded && options.Disposition != AbortDiscarded && options.Disposition != AbortOrphaned {
+		return nil, fmt.Errorf("disposition must be handoff, not_landed, discarded, or orphaned")
 	}
 	options.Successor = strings.TrimSpace(options.Successor)
-	if options.Disposition != AbortDiscarded && (options.Successor == "" || len(options.Successor) > 200 || strings.ContainsAny(options.Successor, "\x00\r\n")) {
+	terminalWithoutSuccessor := options.Disposition == AbortDiscarded || options.Disposition == AbortOrphaned
+	if !terminalWithoutSuccessor && (options.Successor == "" || len(options.Successor) > 200 || strings.ContainsAny(options.Successor, "\x00\r\n")) {
 		return nil, fmt.Errorf("--successor is required exactly once for %s", options.Disposition)
 	}
-	if options.Disposition == AbortDiscarded && options.Successor != "" {
-		return nil, fmt.Errorf("--successor cannot be used with discarded")
+	if terminalWithoutSuccessor && options.Successor != "" {
+		return nil, fmt.Errorf("--successor cannot be used with %s", options.Disposition)
 	}
 	identitySupplied := strings.TrimSpace(options.SuccessorIdentity.Model) != "" || strings.TrimSpace(options.SuccessorIdentity.CLI) != "" || strings.TrimSpace(options.SuccessorIdentity.Provider) != ""
-	if options.Disposition != AbortDiscarded && (options.Apply || identitySupplied) {
+	if !terminalWithoutSuccessor && (options.Apply || identitySupplied) {
 		if err := validateNewExecutionIdentity(options.SuccessorIdentity); err != nil {
 			return nil, err
 		}
-	} else if options.Disposition == AbortDiscarded && identitySupplied {
-		return nil, fmt.Errorf("--model, --cli, and --provider cannot be used with discarded")
+	} else if terminalWithoutSuccessor && identitySupplied {
+		return nil, fmt.Errorf("--model, --cli, and --provider cannot be used with %s", options.Disposition)
 	}
 	if options.Apply && options.Disposition == AbortDiscarded && !options.DeleteRemote {
 		return nil, fmt.Errorf("discarded abort requires remote branch retirement; rerun with --remote")
+	}
+	if options.Disposition == AbortOrphaned {
+		return abortOrphanedClaim(ctx, options)
+	}
+	if strings.TrimSpace(options.ClaimID) != "" || strings.TrimSpace(options.Actor) != "" || strings.TrimSpace(options.Reason) != "" {
+		return nil, fmt.Errorf("--claim, --actor, and --reason are valid only with the orphaned disposition")
 	}
 	resolution, err := wbhome.Resolve(projectsRoot)
 	if err != nil {

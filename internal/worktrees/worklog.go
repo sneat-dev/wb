@@ -206,6 +206,7 @@ type workLogTerminalRecord struct {
 	SuccessorClaimID string                          `json:"successor_claim_id,omitempty"`
 	SuccessorAgentID string                          `json:"successor_agent_id,omitempty"`
 	ExternalHandoff  *workLogExternalHandoffEvidence `json:"external_handoff_completion,omitempty"`
+	Orphaned         *workLogOrphanedEvidence        `json:"orphaned_evidence,omitempty"`
 }
 
 type workLogPublicEvent struct {
@@ -1511,11 +1512,24 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil)
+}
+
+func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, evidence *workLogOrphanedEvidence) (time.Time, error) {
+	if evidence == nil || evidence.Version != 1 || evidence.Actor == "" || evidence.Reason == "" ||
+		!evidence.WorktreeAbsent || !evidence.RegistrationAbsent || !evidence.LocalBranchAbsent ||
+		!evidence.RemoteBranchAbsent || !evidence.TerminalAbsent {
+		return time.Time{}, fmt.Errorf("orphaned terminal requires complete negative authority evidence")
+	}
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence)
+}
+
+func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
 		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
-		ExternalHandoff: external}
+		ExternalHandoff: external, Orphaned: orphaned}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -1525,7 +1539,7 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
-			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) {
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
 		sealedAt = existing.SealedAt
@@ -1547,6 +1561,13 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}
 	return sealedAt, nil
+}
+
+func sameOrphanedEvidence(left, right *workLogOrphanedEvidence) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // preflightWorkLogSeal resolves and corroborates the projection/claim/live-Git

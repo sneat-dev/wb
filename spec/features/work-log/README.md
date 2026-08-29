@@ -475,6 +475,25 @@ cleanup while the journal is active or unfinished, and archives the finalized
 journal only through an explicit, atomic archive operation with its recovery
 evidence intact.
 
+### AC: orphaned-claim-terminalization-is-negative-evidence-not-inspection
+
+**Given** one exact immutable active claim survives but its claimed worktree
+path, Git registration, local branch, remote branch, and terminal record are
+all absent
+**When** an explicitly identified actor supplies an audit reason, reviews the
+dry run, and applies the `orphaned` disposition
+**Then** WB locks that exact claim, rereads every absence predicate, refuses if
+anything reappears or cannot be proved, and otherwise appends a terminal receipt
+that records the negative evidence while carrying no invented final commit or
+claim that vanished content was inspected.
+
+## Decisions
+
+1. Founder decision 2026-08-29: an operator may terminalize an orphaned claim
+   from negative evidence only through an exact claim ID, explicit actor and
+   reason, read-only plan, and apply-time recheck under the claim lock. This is
+   append-only authority to record absence; it grants no deletion authority.
+
 ## Open Questions
 
 1. Which Synchestra authentication and transport contract should carry the
