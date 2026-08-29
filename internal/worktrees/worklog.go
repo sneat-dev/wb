@@ -206,6 +206,7 @@ type workLogTerminalRecord struct {
 	SuccessorClaimID string                          `json:"successor_claim_id,omitempty"`
 	SuccessorAgentID string                          `json:"successor_agent_id,omitempty"`
 	ExternalHandoff  *workLogExternalHandoffEvidence `json:"external_handoff_completion,omitempty"`
+	Supersession     *SupersessionReceipt            `json:"supersession,omitempty"`
 }
 
 type workLogPublicEvent struct {
@@ -224,6 +225,7 @@ type workLogPublicEvent struct {
 	Disposition     string                          `json:"disposition,omitempty"`
 	CorrectionID    string                          `json:"correction_id,omitempty"`
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
+	Supersession    *SupersessionReceipt            `json:"supersession,omitempty"`
 }
 
 // WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
@@ -1305,6 +1307,14 @@ func validateProjection(projection workLogProjection) error {
 // immutable terminal and outbox entry per claim before making the projection
 // terminal. Retrying the exact transition is idempotent.
 func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) error {
+	return sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition, nil)
+}
+
+func sealWorkLogForSupersession(home, worktree, finalCommit string, receipt *SupersessionReceipt) error {
+	return sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, "superseded", receipt)
+}
+
+func sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition string, supersession *SupersessionReceipt) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil // legacy pre-work-log checkout
@@ -1338,7 +1348,7 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
-	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, "", "", nil)
+	sealedAt, err := writeWorkLogTerminalWithSupersession(home, runDir, claim, finalCommit, disposition, "", "", nil, supersession)
 	if err != nil {
 		return err
 	}
@@ -1511,11 +1521,15 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
+	return writeWorkLogTerminalWithSupersession(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil)
+}
+
+func writeWorkLogTerminalWithSupersession(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, supersession *SupersessionReceipt) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
 		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
-		ExternalHandoff: external}
+		ExternalHandoff: external, Supersession: supersession}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -1525,7 +1539,7 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
-			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) {
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameSupersessionReceipt(existing.Supersession, supersession) {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
 		sealedAt = existing.SealedAt
@@ -1542,7 +1556,7 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	event := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition,
-		ExternalHandoff: external}
+		ExternalHandoff: external, Supersession: supersession}
 	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}
