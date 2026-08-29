@@ -397,7 +397,7 @@ leaves the 8 currently dirty worktrees unmodified.
 **Verifies:** work-log#ac:orphaned-claim-terminalization-is-negative-evidence-not-inspection, work-log#ac:safe-terminal-retention
 **Depends-On:** task-8, task-16
 **Status:** complete
-**Implemented-by:** 4e79218 (codex/issue-216-orphaned-claim)
+**Implemented-by:** 859d940 (codex/issue-216-orphaned-claim)
 
 Extend `wb worktree abort` with an `orphaned` disposition selected by one exact
 immutable claim ID. Require an explicit approving actor and audit reason, keep
