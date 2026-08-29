@@ -112,6 +112,7 @@ func TestDarwinCapabilityParentLockWaitIsBounded(t *testing.T) {
 	if err := os.MkdirAll(rootPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	originalMode := modeOfDirectory(t, owner)
 	root, err := openAbsoluteDirectoryNoFollow(rootPath, false)
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +151,7 @@ func TestDarwinCapabilityParentLockWaitIsBounded(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the wait for a held capability parent never ended; a hook that reaches WB would hang here")
 	}
-	if got := modeOfDirectory(t, owner); got != 0o755 {
-		t.Fatalf("a refused freeze changed the owner directory to %v", got)
+	if got := modeOfDirectory(t, owner); got != originalMode {
+		t.Fatalf("a refused freeze changed the owner directory to %v, want its original %v", got, originalMode)
 	}
 }
