@@ -244,14 +244,14 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 		return finishBranchReconciliation(recordDir, record, root, event, updated)
 	}
 	if record.Stage == reconciliationStageEvent {
-		event, updated, appendErr := appendLocalEvent(root, LocalWorkLogEvent{ID: record.EventID, Type: LocalEventBranchReconciled, Message: record.Reason})
+		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
 		}
 		return finishBranchReconciliation(recordDir, record, root, event, updated)
 	}
 	if record.Stage == reconciliationStageComplete {
-		event, updated, appendErr := appendLocalEvent(root, LocalWorkLogEvent{ID: record.EventID, Type: LocalEventBranchReconciled, Message: record.Reason})
+		event, updated, appendErr := appendLocalEvent(root, reconciliationEvent(ctx, root, record))
 		if appendErr != nil {
 			return LogVerbResult{}, appendErr
 		}
@@ -259,6 +259,14 @@ func reconcileClaimBranch(ctx context.Context, options LogRecoverOptions) (LogVe
 			Notes: []string{"immutable Work Log claim re-corroborated; ready for normal cleanup"}}, nil
 	}
 	return LogVerbResult{}, fmt.Errorf("unknown branch reconciliation stage %q", record.Stage)
+}
+
+func reconciliationEvent(ctx context.Context, root string, record branchReconciliationRecord) LocalWorkLogEvent {
+	return LocalWorkLogEvent{ID: record.EventID, Type: LocalEventBranchReconciled,
+		Message: record.Reason, Git: ptrLocalGit(observeLocalGit(ctx, root)),
+		Extra: map[string]any{"actor": record.Actor, "live_branch": record.LiveBranch,
+			"claim_branch": record.ClaimBranch, "local_head": record.LocalHead,
+			"remote_head": record.RemoteHead}}
 }
 
 func finishBranchReconciliation(directory *os.File, record branchReconciliationRecord, root string, event LocalWorkLogEvent, projection LocalWorkLogProjection) (LogVerbResult, error) {

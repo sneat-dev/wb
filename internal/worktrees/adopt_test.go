@@ -36,6 +36,41 @@ func (fixture *gitFixture) externalWorktree(t *testing.T, branch string) string 
 	return path
 }
 
+func TestAdoptRecordsLiveBranchWhenFolderNameDiffers(t *testing.T) {
+	fixture := newGitFixture(t)
+	path := filepath.Join(filepath.Dir(fixture.projectsRoot), "external", "infallible-herschel-414857", "acme", "app")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const liveBranch = "claude/recursing-pare-f391aa"
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", liveBranch, path, "main")
+	configureGitUser(t, path)
+
+	results, err := Adopt(context.Background(), AdoptOptions{
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Path: path, Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Action != AdoptAdopted {
+		t.Fatalf("adopt result = %#v", results)
+	}
+	manifest, err := ReadManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Branch != liveBranch {
+		t.Fatalf("manifest branch = %q, want live branch %q", manifest.Branch, liveBranch)
+	}
+	claim, _, _, err := activeWorkLogClaim(fixture.home, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim.Branch != liveBranch {
+		t.Fatalf("claim branch = %q, want live branch %q", claim.Branch, liveBranch)
+	}
+}
+
 // TestAdoptDryRunDoesNotMutate proves adopt is dry-run by default and, like
 // backfill, additive even for a worktree holding uncommitted changes: no
 // manifest, no Work Log claim, and no change to the working tree.
