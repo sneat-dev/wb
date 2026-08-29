@@ -692,6 +692,7 @@ never a token, credential, or secret.`,
 
 func newWorktreeAbortCmd() *cobra.Command {
 	var base, disposition, successor, format string
+	var claimID, actor, reason string
 	var model, cli, provider string
 	var apply, deleteRemote, all bool
 	command := &cobra.Command{
@@ -704,11 +705,20 @@ with handoff or not_landed transfers one active claim to the required
 declare the successor's exact --model or explicit unknown; --cli and
 --provider independently record the invoking client and commercial route when
 known, never credentials. --apply with
-discarded removes only clean, unlocked worktrees and their exact local branch
-refs after their archive has been sealed. A discarded apply requires --remote;
+discarded removes only unlocked worktrees, retaining a bounded private capture
+of tracked and untracked bytes before deleting dirty ones, and removes their
+exact local branch refs only after that archive has been sealed. A discarded apply requires --remote;
 an exact matching remote source branch is then retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
+
+An orphaned disposition is narrower: the worktree and its local/remote branch
+are already gone, so WB deletes nothing. It requires one exact --claim plus an
+explicit --actor and --reason. Dry run and apply both prove the worktree path,
+Git registration, local branch, remote branch, and prior terminal record are
+absent; apply repeats every predicate under the claim lock before writing an
+append-only orphaned terminal receipt. It never pretends the vanished content
+or a final commit was inspected, and --remote is rejected.
 
 --filter (see the root flag) narrows which repositories in the task are
 touched, the same "owner/repository slug contains this substring" semantics
@@ -727,6 +737,7 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
+				ClaimID: claimID, Actor: actor, Reason: reason,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -770,7 +781,9 @@ The default is a dry-run plan.`,
 					continue
 				}
 				state := "would seal"
-				if result.Applied && result.WorktreeGone {
+				if result.Applied && result.Disposition == worktrees.AbortOrphaned {
+					state = "sealed absent claim"
+				} else if result.Applied && result.WorktreeGone {
 					state = "sealed and removed"
 				} else if result.Applied {
 					state = "sealed and resumable"
@@ -788,8 +801,11 @@ The default is a dry-run plan.`,
 		},
 	}
 	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
-	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, or discarded")
+	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, discarded, or orphaned")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
+	command.Flags().StringVar(&claimID, "claim", "", "exact immutable Work Log claim ID (required for orphaned)")
+	command.Flags().StringVar(&actor, "actor", "", "approving person or agent identity (required for orphaned)")
+	command.Flags().StringVar(&reason, "reason", "", "audit reason for sealing an absent orphaned claim")
 	command.Flags().StringVar(&model, "model", "", "required with applied handoff/not_landed: exact successor model or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")
@@ -1576,7 +1592,7 @@ wb worktree summary improve-login --github --format json`,
 }
 
 func newWorktreeCleanupCmd() *cobra.Command {
-	var base, format, reportDir, absorbedBy string
+	var base, format, reportDir, absorbedBy, supersededBy string
 	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, verbose bool
 	var olderThan time.Duration
 	var workers int
@@ -1610,6 +1626,15 @@ content cherry-picked rather than merged into the integration branch. It only
 selects which receipt to verify; every proof above still runs, and the named
 commit must additionally be exactly where the work entered the target, so the
 flag can never make unlanded work eligible.
+
+--superseded-by <receipt.json> is the explicit trusted-reviewer receipt
+authority for an intentionally split branch whose original head did not land
+as one unit.
+The receipt must bind the exact source and fetched target heads, replacement
+PRs or commits, every source residual with a machine-readable classification,
+and a trusted approving actor. Missing or unclassified residuals, changed refs,
+or missing approval refuse without deleting anything. This option is named-task
+only and never participates in --all-merged fleet sweeps.
 
 Reserved .wb-stage-* and .wb-retired-stage-* entries are first-class cleanup
 backlog. Apply descriptor-safely archives an exact recognized empty stage
@@ -1713,6 +1738,7 @@ required to remove anything.`,
 				Base:              base,
 				Filter:            filterFlag,
 				AbsorbedBy:        absorbedBy,
+				SupersededBy:      supersededBy,
 				AllMerged:         allMerged,
 				Apply:             apply,
 				ResumeInterrupted: resumeInterrupted,
@@ -1788,6 +1814,7 @@ required to remove anything.`,
 	command.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour, "minimum age of a merged pull request (0 disables)")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "cleanup audit directory (default <wb-home>/reports/worktree-cleanup/<timestamp>)")
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "verify work landed inside this merged pull request number or exact landing commit")
+	command.Flags().StringVar(&supersededBy, "superseded-by", "", "use an explicit trusted-reviewer receipt to retire an intentionally superseded split branch")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&retireShells, "retire-shells", false, "sweep every task for an empty pre-existing shell (owner directory and/or retired lock, no live checkout) and retire it")
 	// --parallel is the fleet-wide name for this ceiling: six other commands

@@ -191,6 +191,24 @@ If any repository in a task is ineligible, cleanup MUST mark every repository
 in that task ineligible. It MUST preserve skipped work and explain the
 blocking evidence.
 
+#### REQ: trusted-supersession-terminalization
+
+An intentionally superseded split branch MAY be terminalized only through an
+explicit named-task supersession receipt. The receipt MUST bind the exact
+original source head, exact freshly fetched target head, replacement PRs or
+commits, and a machine-readable inventory that classifies every source commit
+outside the target as replaced, obsolete, regressive, or cosmetic. Every
+residual MUST carry a reviewer reason and an explicit reviewed marker. The
+receipt MUST also carry a trusted approving actor, approval decision, approval
+time, and unique receipt ID. WB MUST NOT infer this disposition from green CI,
+a closed PR, branch names, patch identity, or prose. Dry-run and apply MUST
+evaluate the same receipt; missing or unclassified residuals, untrusted or
+incomplete approval, a changed source ref, a changed target ref, or a
+replacement commit not contained in the exact target MUST refuse without
+deleting local, remote, worktree, or Work Log state. Before deletion, WB MUST
+embed the verified receipt in the archived terminal Work Log, with a distinct
+`superseded` disposition that does not claim the original head landed intact.
+
 ### Long sweep feedback
 
 #### REQ: incremental-sweep-progress
@@ -330,6 +348,20 @@ explicit `unknown`, plus independently known optional CLI/provider route
 identifiers; WB MUST NOT copy the predecessor's route. Automatic recycle
 rollback recovery MUST use explicit unknown model/provenance and no route.
 
+#### REQ: dirty-discard-sealing
+
+When a discarded abort finds tracked or non-ignored untracked working-tree
+bytes, it MUST capture those exact bytes in the private Work Log recovery
+archive before deleting any remote ref, worktree, or local branch. The capture
+MUST be independent of Git hooks, use the existing private Work Log file
+protections and SHA-256 content-digest primitive, and enforce a conservative
+bounded total and per-file size before allocating or writing. A dry-run MUST
+compute and report the same digest, byte count, and file count that apply will
+recheck; apply MUST refuse if any of those values changed. Failed or oversized
+captures MUST leave the worktree and every Git ref untouched. The public
+receipt MAY expose only bounded capture metadata (digest, size, and count),
+never source bytes or local paths.
+
 #### REQ: recycle-transaction
 
 `wb worktree rename --apply` MUST require `--remote`, fetch and pin the fresh
@@ -351,7 +383,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -376,33 +408,25 @@ MAY be supplied by a deterministic test double.
 
 ## Open Questions
 
+### Decision record: issue #173 dirty discard
+
+Approved: a discarded abort may remove dirty tracked and untracked bytes only
+after a bounded, hook-independent private Work Log capture is durably written
+and represented by an immutable terminal/outbox receipt. The existing local
+mode-0700/0600 Work Log protections and SHA-256 digest are the applicable
+privacy and integrity primitives; WB must not invent or expose encryption or
+signing secrets. A changed capture, oversize capture, or failed retention
+write remains fail-closed and leaves Git state in place.
+
 - Should a future cleanup mode archive reports after a retention period?
-- **Should there be an explicit, evidence-recording "retired as superseded"
-  disposition for a branch whose intent landed but whose commits never can?**
-  Worked example: `specscore/specscore-cli`, branch
-  `codex/specscore-task-annotation-amend`
-  (`/Users/alex/.wb/worktrees/specscore-task-annotation-amend/specscore/specscore-cli`),
-  two commits. One commit's valuable half (the `pkg/lifecycle` primitives) was
-  ported by hand into `origin/main` at `7c71397` via PR #152 — not
-  patch-equivalent and not an ancestor, so no existing evidence class proves
-  it. The other commit (1029 lines across `internal/cli/exclusive_publish.go`
-  and `task.go`) is superseded by a different design `main` evolved
-  independently (`ownedMarkerOps`, absent from the branch); the branch is 71
-  commits behind and unrebasable against the design that replaced it.
-  `wb worktree cleanup` correctly refuses today — "current branch head is not
-  integrated into the exact origin target (awaiting push)" — and that refusal
-  must not weaken. `--absorbed-by` does not cover this case either: it still
-  requires the named commit to be exactly where the work entered the target,
-  and here nothing entered the target from this branch at all. The gap is
-  real and currently unaddressed: the only exits today are a raw
-  `git branch -D` behind WB's back, or leaving the branch to rot. A candidate
-  shape, informed by manually archiving this exact branch (a patch file plus
-  local tag `archive/superseded/specscore-task-annotation-amend`): an
-  explicit, opt-in-per-branch `retire-as-superseded` disposition that never
-  claims the work landed, requires a human-supplied reason and a durable
-  archive receipt (patch + tag) written *before* deletion, reports visibly
-  distinct from a merged retirement, and must never be reachable from a
-  fleet-wide `--all-merged`-style sweep. Not implemented; a follow-up.
+- **Resolved 2026-08-29 in issue #97:** supersession is an explicit,
+  named-task-only `wb worktree cleanup --superseded-by <receipt.json>` path.
+  WB accepts only a trusted-reviewer receipt binding exact source and target
+  heads, replacement PRs or commits, a complete reviewed residual inventory,
+  and the approving actor/receipt ID. It rechecks the receipt at dry-run and
+  apply boundaries, refuses any missing or unreviewed classification or ref
+  drift, embeds the receipt in the terminal Work Log, and never exposes the
+  disposition to `--all-merged` sweeps.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

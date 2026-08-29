@@ -219,6 +219,14 @@ type ListResult struct {
 	RebaseMergedAtOrigin bool   `json:"rebase_merged_at_origin,omitempty"`
 	AbsorbedAtOrigin     bool   `json:"absorbed_at_origin,omitempty"`
 	AbsorbedBySHA        string `json:"absorbed_by_sha,omitempty"`
+	// SupersededAtOrigin records an explicitly reviewed split-branch
+	// terminalization. It deliberately does not set IntegratedAtOrigin: the
+	// original head did not land as a whole.
+	SupersededAtOrigin    bool   `json:"superseded_at_origin,omitempty"`
+	SupersessionReceipt   string `json:"supersession_receipt,omitempty"`
+	SupersessionReviewer  string `json:"supersession_reviewer,omitempty"`
+	SupersessionReceiptID string `json:"supersession_receipt_id,omitempty"`
+	SupersessionRejection string `json:"supersession_rejection,omitempty"`
 	// AbsorbedByRejection explains why an explicitly supplied --absorbed-by
 	// receipt did not hold. An operator pointer that fails verification is a
 	// precise, reportable refusal of that candidate, never a malformed
@@ -243,6 +251,11 @@ type ListResult struct {
 	// itself — lives under the WB task directory. See openAdoptedCleanupWorktree
 	// and locateAdoptedWorktree.
 	External bool `json:"external,omitempty"`
+	// supersessionReceipt is retained only for the current process so the
+	// terminal Work Log can embed the exact reviewed evidence. The public JSON
+	// carries the receipt path and reviewer identity; the private archive gets
+	// the complete receipt before any Git deletion.
+	supersessionReceipt *SupersessionReceipt
 }
 
 // ListDiagnostic describes a malformed task-layout candidate that was skipped
@@ -314,6 +327,10 @@ type CleanupOptions struct {
 	// AbsorbedBy is the optional landing receipt pointer described on
 	// ListOptions.AbsorbedBy. It is verified, never trusted.
 	AbsorbedBy string
+	// SupersededBy is a path to an explicit trusted-reviewer supersession
+	// receipt. It is only valid for a named cleanup task and is never inferred
+	// from CI, PR state, or content similarity.
+	SupersededBy string
 	// MergeReceiptProofs are exact, orchestrator-produced cleanup proofs for
 	// sources whose content was landed by an integration candidate and then
 	// represented by a distinct commit with the same tree (for example, a
@@ -1320,6 +1337,9 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		if err := applyMergeReceiptCleanupProof(ctx, normalized.MergeReceiptProofs, &listed.Results[index]); err != nil {
 			return CleanupOutcome{}, err
 		}
+		if err := applySupersessionReceipt(ctx, normalized.SupersededBy, &listed.Results[index]); err != nil {
+			return CleanupOutcome{}, err
+		}
 	}
 	if recovery != nil {
 		for index := range listed.Results {
@@ -1567,6 +1587,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				worktree.close()
 				return fmt.Errorf("cleanup receipt proof for %s: %w", refreshed.Repository, err)
 			}
+			if err := applySupersessionReceipt(ctx, normalized.SupersededBy, &refreshed); err != nil {
+				worktree.close()
+				return fmt.Errorf("supersession receipt for %s: %w", refreshed.Repository, err)
+			}
 			if err := worktree.validate(); err != nil {
 				worktree.close()
 				return err
@@ -1615,10 +1639,16 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			// Archive the recoverable run record while every Git asset still
 			// exists. Remote branch deletion is destructive too, so it must never
 			// precede the durable terminal/outbox record.
-			if err := sealWorkLogForRecycle(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, "removed"); err != nil {
+			var sealErr error
+			if refreshed.SupersededAtOrigin && refreshed.supersessionReceipt != nil {
+				sealErr = sealWorkLogForSupersession(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, refreshed.supersessionReceipt)
+			} else {
+				sealErr = sealWorkLogForRecycle(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, "removed")
+			}
+			if sealErr != nil {
 				closeCanonical()
 				worktree.close()
-				return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, err)
+				return fmt.Errorf("seal work log before removing %s: %w", refreshed.WorktreeDir, sealErr)
 			}
 			backlogRecord := newLifecycleBacklogRecord(normalized.ProjectsRoot, refreshed, "removed")
 			if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageSealed); err != nil {
@@ -1992,6 +2022,16 @@ func normalizeCleanupOptions(options CleanupOptions) (CleanupOptions, error) {
 		options.Filter = options.ExactRepository
 	}
 	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
+	options.SupersededBy = strings.TrimSpace(options.SupersededBy)
+	if options.SupersededBy != "" {
+		if options.AllMerged || len(options.Tasks) != 1 {
+			return CleanupOptions{}, fmt.Errorf("supersession cleanup requires one explicit task")
+		}
+		options.SupersededBy, err = filepath.Abs(options.SupersededBy)
+		if err != nil {
+			return CleanupOptions{}, fmt.Errorf("resolve supersession receipt: %w", err)
+		}
+	}
 	if len(options.Tasks) == 0 && !options.AllMerged {
 		return CleanupOptions{}, fmt.Errorf("supply one or more tasks or use --all-merged")
 	}
@@ -2741,6 +2781,14 @@ func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time
 		return false, "worktree has local changes"
 	case entry.OpenPullRequest != nil:
 		return false, "branch still has an open pull request: " + entry.OpenPullRequest.URL
+	case entry.SupersessionRejection != "":
+		return false, "trusted supersession receipt refused: " + entry.SupersessionRejection
+	case entry.SupersededAtOrigin && entry.RemoteHeadSHA != "" && entry.RemoteHeadSHA != entry.HeadSHA:
+		return false, "remote branch advanced after the supersession receipt"
+	case entry.SupersededAtOrigin:
+		// A superseded branch is intentionally not integrated as one commit;
+		// its eligibility comes only from the independently reviewed receipt.
+		return true, ""
 	case !entry.IntegratedAtOrigin && entry.AbsorbedByRejection != "":
 		return false, "current branch head is not integrated into the exact origin target (awaiting push): " +
 			entry.AbsorbedByRejection
@@ -2985,6 +3033,12 @@ func preflightCleanupRepository(
 	}
 	if err := applyMergeReceiptCleanupProof(ctx, options.MergeReceiptProofs, &refreshed); err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s receipt proof: %w", entry.Repository, err)
+	}
+	if err := applySupersessionReceipt(ctx, options.SupersededBy, &refreshed); err != nil {
+		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt: %w", entry.Repository, err)
+	}
+	if refreshed.SupersessionRejection != "" {
+		return ListResult{}, fmt.Errorf("preflight cleanup %s supersession receipt refused: %s", entry.Repository, refreshed.SupersessionRejection)
 	}
 	if err := worktree.validate(); err != nil {
 		return ListResult{}, err

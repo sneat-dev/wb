@@ -52,8 +52,13 @@ A clone is eligible for deletion only when **every** one of these holds:
 1. The repository is confirmed **archived on GitHub right now** (a live
    `isArchived` check for that exact repository, not an inference from name or
    from a cached inventory).
-2. The working tree has **no uncommitted changes and no untracked files**
-   (untracked files are invisible to `git diff` and have caused real near-losses).
+2. The working tree has **no uncommitted changes**. Untracked paths are a
+hard blocker by default (they are invisible to `git diff` and have caused real
+near-losses). The sole exception is the narrow, separately authorized
+`--apply --delete-untracked` flow in
+[Decision 0001](../../decisions/0001-archive-clean-untracked-deletion.md): it
+itemizes every path, rereads the exact manifest, rejects drift/links/traversal,
+records a durable receipt, then reevaluates before pruning.
 3. **No stashes.** The stash stack is repo-global across worktrees; a blind
    drop is unrecoverable.
 4. **No unpushed commits on any local branch** — every branch is checked, not
@@ -115,8 +120,15 @@ exactly like `wb archive clean`'s own report.
   archive clean [--apply]` runs, **then** the clone is refused, naming the
   branch and the unpushed commit.
 - AC-004: **Given** an otherwise-clean archived clone with one or more
-  untracked files and no other issue, **when** `wb archive clean [--apply]`
-  runs, **then** the clone is refused, naming the untracked file(s).
+untracked files and no other issue, **when** `wb archive clean [--apply]`
+runs without `--delete-untracked`, **then** the clone is refused and the plan
+itemizes every untracked path and size.
+- AC-013: **Given** the AC-004 clone, **when** an operator first reviews its
+dry-run plan and then runs `wb archive clean --apply --delete-untracked`,
+**then** WB rereads the exact path descriptors, refuses changed/additional
+paths, symlinks, and traversal, writes a durable itemized receipt, deletes
+only the unchanged authorized paths, reevaluates the archive predicate, and
+prunes the clone only if it remains eligible.
 - AC-005: **Given** an otherwise-clean archived clone holding a stash entry,
   **when** `wb archive clean [--apply]` runs, **then** the clone is refused,
   naming the stash.

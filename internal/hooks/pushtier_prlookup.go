@@ -12,11 +12,10 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 )
 
-// defaultPRStatusCacheTTL bounds how long a cached open-PR answer is trusted
+// defaultPRStatusCacheTTL bounds how long a cached positive open-PR answer is trusted
 // before push-tier will pay for one more bounded gh lookup. It is a
-// durability/latency trade-off, not a correctness one: a stale "no open PR"
-// only ever under-runs to the fast lane, and CI remains the real gate for
-// anything a stale cache got wrong.
+// durability/latency trade-off. Negative answers are never trusted from the
+// cache because a pull request can be created immediately after a push.
 const defaultPRStatusCacheTTL = 10 * time.Minute
 
 // defaultPRStatusLookupTimeout is the hard ceiling on the one optional
@@ -33,9 +32,9 @@ type runGHFunc func(ctx context.Context, dir string, args ...string) ([]byte, er
 
 // CachedGHPRLookup is the enrichment path in push-tier's PR-status decision.
 // It is deliberately the SECOND thing consulted, never the first: a fresh
-// cache entry (a signal WB itself already wrote) always wins over asking
-// GitHub again. gh is invoked at most once per branch per TTL window, with a
-// hard timeout, and only when the cache has nothing fresh to offer.
+// positive cache entry (a signal WB itself already wrote) wins over asking
+// GitHub again. Negative answers are revalidated because PR creation makes
+// them stale immediately. Every gh call has a hard timeout.
 type CachedGHPRLookup struct {
 	RepoRoot  string
 	RepoSlug  string
@@ -94,7 +93,7 @@ func (l *CachedGHPRLookup) OpenPullRequest(branch string) (open bool, known bool
 	}
 	cache := loadPRStatusCache(l.CachePath)
 	key := l.RepoSlug + "#" + branch
-	if entry, found := cache[key]; found && now().Sub(entry.CheckedAt) < l.ttl() {
+	if entry, found := cache[key]; found && entry.Open && now().Sub(entry.CheckedAt) < l.ttl() {
 		return entry.Open, true
 	}
 
@@ -120,8 +119,10 @@ func (l *CachedGHPRLookup) OpenPullRequest(branch string) (open bool, known bool
 		return false, false
 	}
 	open = len(pulls) > 0
-	cache[key] = prStatusCacheEntry{Open: open, CheckedAt: now()}
-	savePRStatusCache(l.CachePath, cache)
+	if open {
+		cache[key] = prStatusCacheEntry{Open: true, CheckedAt: now()}
+		savePRStatusCache(l.CachePath, cache)
+	}
 	return open, true
 }
 

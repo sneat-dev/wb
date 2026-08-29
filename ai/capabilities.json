@@ -17,11 +17,13 @@
               "path": "wb archive clean",
               "flags": [
                 "--apply",
+                "--delete-untracked",
                 "--format"
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required to delete anything",
-                "A clone is eligible only when its repository is confirmed archived on GitHub via a live per-repository check, the working tree has no uncommitted or untracked changes, there is no stash, every local branch and tag exists on origin, no linked worktree is registered against it, no non-terminal WB Work Log claim references it, and it is not marked wb.skip-sync",
+                "Every dry run itemizes each untracked path and size. --apply preserves an otherwise-safe clone with untracked paths unless --delete-untracked is also present; that narrow authority rereads the exact manifest, rejects drift, refuses links and traversal, records a durable receipt, and only then prunes the clone",
+                "A clone is eligible only when its repository is confirmed archived on GitHub via a live per-repository check, the working tree has no uncommitted changes, there is no stash, every local branch and tag exists on origin, no linked worktree is registered against it, no non-terminal WB Work Log claim references it, and it is not marked wb.skip-sync",
                 "Any check that cannot be completed (GitHub unreachable, a ref that will not resolve, a claim that cannot be read) makes that clone not deletable; wb never guesses",
                 "One repository's evaluation failure never aborts the sweep over the rest of the fleet",
                 "Every clone is reported, deletable or not, with the exact reason; skips are reported as prominently as deletions"
@@ -37,6 +39,7 @@
               "command": "wb archive clean --help",
               "contains": [
                 "--apply",
+                "--delete-untracked",
                 "confirmed archived on GitHub",
                 "no linked worktrees",
                 "wb.skip-sync"
@@ -53,7 +56,8 @@
               "marker": "# Archived clone cleanup",
               "examples": [
                 "wb archive clean --filter acme",
-                "wb archive clean --apply"
+                "wb archive clean --apply",
+                "wb archive clean --apply --delete-untracked"
               ]
             }
           ],
@@ -75,6 +79,11 @@
             {
               "path": "internal/archiveprune/archiveprune_test.go",
               "name": "TestClean_RefusesUntrackedFiles",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes",
               "kind": "integration"
             },
             {
@@ -999,6 +1008,7 @@
                 "--report-dir",
                 "--resume-interrupted",
                 "--retire-shells",
+                "--superseded-by",
                 "--verbose",
                 "--parallel"
               ],
@@ -1007,7 +1017,8 @@
                 "Accepts one or more exact named tasks, so a merger can retire its completed batch without widening to --all-merged",
                 "Streams per-candidate inventory progress and bounds concurrent inspections so a fleet-wide sweep is observable and not serial on the network",
                 "--parallel bounds the apply phase as well as inspection: selected independent tasks are applied concurrently across canonical repositories and serially within one, a coordinated task takes every repository it spans in one global order, one failure is isolated, and concurrent remote branch deletions stay bounded",
-                "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted"
+                "Recovers only one explicitly named task lock when exact metadata and a conclusively dead PID prove it is interrupted",
+                "--superseded-by accepts only a trusted-reviewer receipt with exact source/target refs, replacement evidence, and complete reviewed residual classification"
               ]
             },
             {
@@ -5925,18 +5936,23 @@
               "flags": [
                 "--all",
                 "--apply",
+                "--actor",
                 "--base",
+                "--claim",
                 "--cli",
                 "--disposition",
                 "--format",
                 "--model",
                 "--provider",
+                "--reason",
                 "--remote",
                 "--successor"
               ],
-              "modes": [
-                "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
-                "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
+                "modes": [
+                  "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                  "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
+                  "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
+                  "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
                 "handoff/not_landed require a creator-declared successor model and preserve independent optional CLI/provider route identity",
                 "a durable post-removal backlog resumes exact local-ref retirement after interruption"
               ]
@@ -5951,13 +5967,17 @@
               "command": "wb worktree abort --help",
               "contains": [
                 "--successor",
+                "--claim",
+                "--actor",
+                "--reason",
                 "--model",
                 "--cli",
                 "--provider",
                 "--remote",
                 "--all",
                 "resumable",
-                "discarded"
+                "discarded",
+                "orphaned"
               ]
             }
           ],
@@ -5971,7 +5991,8 @@
               "marker": "## Abort instead of abandoning",
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
-                "wb worktree abort fair-split --disposition discarded --apply --remote"
+                "wb worktree abort fair-split --disposition discarded --apply --remote",
+                "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }
           ],
@@ -5986,6 +6007,16 @@
               "kind": "integration"
             },
             {
+              "path": "internal/worktrees/orphaned_claim_test.go",
+              "name": "TestAbortOrphanedClaimRequiresExactNegativeEvidenceAndSealsIt",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/orphaned_claim_test.go",
+              "name": "TestAbortOrphanedClaimRechecksAbsenceUnderClaimLock",
+              "kind": "integration"
+            },
+            {
               "path": "internal/worktrees/abort_test.go",
               "name": "TestAbortDiscardedRetiresExactRemoteBranchOnlyWithExplicitAuthorization",
               "kind": "integration"
@@ -5993,6 +6024,16 @@
             {
               "path": "internal/worktrees/abort_test.go",
               "name": "TestAbortDiscardedRechecksDirtyStateAtRemovalBoundary",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedSealsTrackedAndUntrackedBytes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedRefusesOversizeDirtyCapture",
               "kind": "integration"
             },
             {
@@ -6275,6 +6316,7 @@
                 "--report-dir",
                 "--resume-interrupted",
                 "--retire-shells",
+                "--superseded-by",
                 "--verbose",
                 "--parallel"
               ],
@@ -6289,7 +6331,8 @@
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
-                "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default"
+                "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
+                "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
               ]
             }
           ],
@@ -6305,6 +6348,7 @@
                 "--older-than",
                 "--remote",
                 "--absorbed-by",
+                "--superseded-by",
                 "--resume-interrupted",
                 "conclusively dead",
                 "named [task...]",
@@ -6343,6 +6387,31 @@
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
               "name": "TestCleanupMergedTaskWithRealGitData",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesAnUnclassifiedResidual",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionDryRunAndApplyShareReviewedEvidence",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesTargetDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesChangedSourceRef",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/supersession_test.go",
+              "name": "TestCleanupSupersessionRefusesUnreviewedResidual",
               "kind": "integration"
             },
             {

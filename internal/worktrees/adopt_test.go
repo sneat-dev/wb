@@ -250,8 +250,8 @@ func TestAdoptedWorktreeCleanupAppliesExistingSafetyChecks(t *testing.T) {
 }
 
 // TestAdoptedWorktreeAbortAppliesExistingSafetyChecks proves wb worktree
-// abort also applies its full existing safety machinery, unchanged, to an
-// adopted external worktree: dirty is refused, and a clean, unlanded
+// abort also applies its full existing safety machinery to an adopted external
+// worktree: dirty bytes are captured before discard, and a clean, unlanded
 // discarded abort removes the checkout and its branch exactly as it does for
 // a worktree wb worktree create made directly.
 func TestAdoptedWorktreeAbortAppliesExistingSafetyChecks(t *testing.T) {
@@ -261,15 +261,15 @@ func TestAdoptedWorktreeAbortAppliesExistingSafetyChecks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dirtyPath, "wip.txt"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Abort(context.Background(), AbortOptions{
+	discardedDirty, err := Abort(context.Background(), AbortOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: dirtyTask, Base: "main",
 		Disposition: AbortDiscarded, DeleteRemote: true, Apply: true,
 	})
-	if err == nil || !strings.Contains(err.Error(), "local changes") {
-		t.Fatalf("dirty adopted abort = %v, want a refusal naming local changes", err)
+	if err != nil || len(discardedDirty) != 1 || !discardedDirty[0].Applied || discardedDirty[0].DirtyCapture == nil {
+		t.Fatalf("dirty adopted abort = %#v, err=%v, want a sealed capture", discardedDirty, err)
 	}
-	if _, err := os.Stat(dirtyPath); err != nil {
-		t.Fatalf("dirty adopted worktree was removed by a refused abort: %v", err)
+	if _, err := os.Stat(dirtyPath); !os.IsNotExist(err) {
+		t.Fatalf("dirty adopted worktree remains after discard: %v", err)
 	}
 
 	cleanTask, cleanPath := adoptAndCommit(t, fixture, "feature/adopt-abort-clean", "feature.txt")

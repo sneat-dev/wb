@@ -206,6 +206,9 @@ type workLogTerminalRecord struct {
 	SuccessorClaimID string                          `json:"successor_claim_id,omitempty"`
 	SuccessorAgentID string                          `json:"successor_agent_id,omitempty"`
 	ExternalHandoff  *workLogExternalHandoffEvidence `json:"external_handoff_completion,omitempty"`
+	Orphaned         *workLogOrphanedEvidence        `json:"orphaned_evidence,omitempty"`
+	DirtyCapture     *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
+	Supersession     *SupersessionReceipt            `json:"supersession,omitempty"`
 }
 
 type workLogPublicEvent struct {
@@ -224,6 +227,8 @@ type workLogPublicEvent struct {
 	Disposition     string                          `json:"disposition,omitempty"`
 	CorrectionID    string                          `json:"correction_id,omitempty"`
 	ExternalHandoff *workLogExternalHandoffEvidence `json:"external_handoff,omitempty"`
+	DirtyCapture    *DirtyWorktreeEvidence          `json:"dirty_capture,omitempty"`
+	Supersession    *SupersessionReceipt            `json:"supersession,omitempty"`
 }
 
 // WorkLogPublicationOutcome is the typed receipt for the monotonic Work Log
@@ -1305,6 +1310,22 @@ func validateProjection(projection workLogProjection) error {
 // immutable terminal and outbox entry per claim before making the projection
 // terminal. Retrying the exact transition is idempotent.
 func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) error {
+	return sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition, nil)
+}
+
+func sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence) error {
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, dirty, nil)
+}
+
+func sealWorkLogForSupersession(home, worktree, finalCommit string, receipt *SupersessionReceipt) error {
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, "superseded", nil, receipt)
+}
+
+func sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition string, supersession *SupersessionReceipt) error {
+	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, supersession)
+}
+
+func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
 		return nil // legacy pre-work-log checkout
@@ -1338,7 +1359,14 @@ func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) erro
 	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
-	sealedAt, err := writeWorkLogTerminal(home, runDir, claim, finalCommit, disposition, "", "", nil)
+	var sealedAt time.Time
+	if dirty != nil && supersession == nil {
+		sealedAt, err = writeWorkLogTerminalWithDirtyCapture(home, runDir, claim, finalCommit, disposition, "", "", nil, dirty)
+	} else if dirty == nil && supersession != nil {
+		sealedAt, err = writeWorkLogTerminalWithSupersession(home, runDir, claim, finalCommit, disposition, "", "", nil, supersession)
+	} else {
+		sealedAt, err = writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession)
+	}
 	if err != nil {
 		return err
 	}
@@ -1511,11 +1539,32 @@ func recoverFailedRecycleClaim(home, worktree, finalCommit string, prior workLog
 }
 
 func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence) (time.Time, error) {
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, nil)
+}
+
+func writeOrphanedWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, evidence *workLogOrphanedEvidence) (time.Time, error) {
+	if evidence == nil || evidence.Version != 1 || evidence.Actor == "" || evidence.Reason == "" ||
+		!evidence.WorktreeAbsent || !evidence.RegistrationAbsent || !evidence.LocalBranchAbsent ||
+		!evidence.RemoteBranchAbsent || !evidence.TerminalAbsent {
+		return time.Time{}, fmt.Errorf("orphaned terminal requires complete negative authority evidence")
+	}
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, "", string(AbortOrphaned), "", "", nil, evidence, nil, nil)
+}
+
+func writeWorkLogTerminalWithDirtyCapture(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, dirty *DirtyWorktreeEvidence) (time.Time, error) {
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, dirty, nil)
+}
+
+func writeWorkLogTerminalWithSupersession(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, supersession *SupersessionReceipt) (time.Time, error) {
+	return writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, successorClaimID, successorAgentID, external, nil, nil, supersession)
+}
+
+func writeWorkLogTerminalWithEvidence(home string, runDir *os.File, claim workLogClaim, finalCommit, disposition, successorClaimID, successorAgentID string, external *workLogExternalHandoffEvidence, orphaned *workLogOrphanedEvidence, dirty *DirtyWorktreeEvidence, supersession *SupersessionReceipt) (time.Time, error) {
 	sealedAt := time.Now().UTC()
 	claim.Lifecycle = "terminal"
 	terminal := workLogTerminalRecord{workLogClaim: claim, FinalCommit: finalCommit,
 		Disposition: disposition, SealedAt: sealedAt, SuccessorClaimID: successorClaimID, SuccessorAgentID: successorAgentID,
-		ExternalHandoff: external}
+		ExternalHandoff: external, Orphaned: orphaned, DirtyCapture: dirty, Supersession: supersession}
 	terminals, err := openPrivateChild(runDir, "terminals", true)
 	if err != nil {
 		return time.Time{}, err
@@ -1525,7 +1574,7 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	var existing workLogTerminalRecord
 	if err := readJSONAt(terminals, terminalName, &existing); err == nil {
 		if existing.ClaimID != claim.ClaimID || existing.FinalCommit != finalCommit || existing.Disposition != disposition || existing.Lifecycle != "terminal" || existing.SuccessorClaimID != successorClaimID || existing.SuccessorAgentID != successorAgentID ||
-			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) {
+			!sameExternalHandoffEvidence(existing.ExternalHandoff, external) || !sameOrphanedEvidence(existing.Orphaned, orphaned) || !sameDirtyWorktreeEvidence(existing.DirtyCapture, dirty) || !sameSupersessionReceipt(existing.Supersession, supersession) {
 			return time.Time{}, fmt.Errorf("immutable terminal conflicts with requested transition")
 		}
 		sealedAt = existing.SealedAt
@@ -1542,11 +1591,25 @@ func writeWorkLogTerminal(home string, runDir *os.File, claim workLogClaim, fina
 	event := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: sealedAt, EffortID: claim.EffortID,
 		RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository, Branch: claim.Branch,
 		Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit, Lifecycle: "terminal", Disposition: disposition,
-		ExternalHandoff: external}
+		ExternalHandoff: external, DirtyCapture: dirty, Supersession: supersession}
 	if err := writeJSONImmutableAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", event, true); err != nil {
 		return time.Time{}, fmt.Errorf("write immutable terminal outbox: %w", err)
 	}
 	return sealedAt, nil
+}
+
+func sameOrphanedEvidence(left, right *workLogOrphanedEvidence) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func sameDirtyWorktreeEvidence(left, right *DirtyWorktreeEvidence) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 // preflightWorkLogSeal resolves and corroborates the projection/claim/live-Git

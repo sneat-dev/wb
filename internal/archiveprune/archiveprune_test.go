@@ -82,6 +82,7 @@ func mustMkdirAll(t *testing.T, path string) {
 
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
+	mustMkdirAll(t, filepath.Dir(path))
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +113,19 @@ func isolateWBHome(t *testing.T) string {
 func cleanOne(ctx context.Context, t *testing.T, f *fixture, apply bool) Result {
 	t.Helper()
 	outcome, err := Clean(ctx, Options{ProjectsRoot: f.projectsRoot, Apply: apply})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 {
+		t.Fatalf("Clean() returned %d results, want 1: %+v", len(outcome.Results), outcome.Results)
+	}
+	return outcome.Results[0]
+}
+
+func cleanWithOptions(ctx context.Context, t *testing.T, f *fixture, options Options) Result {
+	t.Helper()
+	options.ProjectsRoot = f.projectsRoot
+	outcome, err := Clean(ctx, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +211,133 @@ func TestClean_RefusesUntrackedFiles(t *testing.T) {
 	}
 	if !strings.Contains(result.Reason, "untracked") {
 		t.Errorf("reason does not mention untracked files: %q", result.Reason)
+	}
+}
+
+func TestClean_ItemizesUntrackedPlanWithoutMutatingClone(t *testing.T) {
+	isolateWBHome(t)
+	f := newFixture(t, "acme", "widgets")
+	f.archived()
+	mustWriteFile(t, filepath.Join(f.canonical, "cache", "nested.txt"), "cached\n")
+
+	result := cleanOne(context.Background(), t, f, false)
+	if result.Eligible || result.Applied {
+		t.Fatalf("untracked dry-run must remain a plan, got %+v", result)
+	}
+	if len(result.Untracked) != 2 {
+		t.Fatalf("itemized untracked entries = %+v, want directory and file", result.Untracked)
+	}
+	if result.Untracked[0].Path != "cache" || result.Untracked[1].Path != "cache/nested.txt" {
+		t.Fatalf("untracked paths = %+v, want cache and cache/nested.txt", result.Untracked)
+	}
+	if result.Untracked[1].Size != int64(len("cached\n")) {
+		t.Fatalf("itemized file size = %d, want %d", result.Untracked[1].Size, len("cached\n"))
+	}
+	if _, err := os.Stat(filepath.Join(f.canonical, "cache", "nested.txt")); err != nil {
+		t.Fatal("dry-run changed an untracked path")
+	}
+}
+
+func TestClean_ApplyRequiresExplicitUntrackedDeletionAuthority(t *testing.T) {
+	isolateWBHome(t)
+	f := newFixture(t, "acme", "widgets")
+	f.archived()
+	mustWriteFile(t, filepath.Join(f.canonical, "untracked.txt"), "keep unless authorised\n")
+
+	result := cleanOne(context.Background(), t, f, true)
+	if result.Applied || result.Eligible {
+		t.Fatalf("--apply without --delete-untracked deleted a clone: %+v", result)
+	}
+	if !strings.Contains(result.Reason, "--delete-untracked") {
+		t.Fatalf("refusal does not name required authority: %q", result.Reason)
+	}
+	if _, err := os.Stat(filepath.Join(f.canonical, "untracked.txt")); err != nil {
+		t.Fatal("untracked path was deleted without explicit authority")
+	}
+}
+
+func TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes(t *testing.T) {
+	home := isolateWBHome(t)
+	f := newFixture(t, "acme", "widgets")
+	f.archived()
+	mustWriteFile(t, filepath.Join(f.canonical, "cache", "nested.txt"), "delete me\n")
+
+	result := cleanWithOptions(context.Background(), t, f, Options{Apply: true, DeleteUntracked: true})
+	if !result.Applied {
+		t.Fatalf("authorised untracked deletion did not prune clone: %+v", result)
+	}
+	if result.ReceiptPath == "" {
+		t.Fatalf("authorised deletion did not record receipt: %+v", result)
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(result.ReceiptPath, filepath.Join(resolvedHome, "reports", "archive-clean")+string(filepath.Separator)) {
+		t.Fatalf("receipt path %q is not beneath the isolated WB home", result.ReceiptPath)
+	}
+	raw, err := os.ReadFile(result.ReceiptPath)
+	if err != nil {
+		t.Fatalf("read durable receipt: %v", err)
+	}
+	if !strings.Contains(string(raw), `"phase": "untracked_deleted"`) || !strings.Contains(string(raw), `"cache/nested.txt"`) {
+		t.Fatalf("receipt is not itemized completed deletion evidence: %s", raw)
+	}
+	if _, err := os.Stat(f.canonical); !os.IsNotExist(err) {
+		t.Fatal("authorised deletion did not continue to archive prune")
+	}
+}
+
+func TestClean_RefusesUntrackedPlanDriftBeforeDeletion(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(t *testing.T, clone string)
+	}{
+		{
+			name: "changed item",
+			mutate: func(t *testing.T, clone string) {
+				mustWriteFile(t, filepath.Join(clone, "untracked.txt"), "changed after plan\n")
+			},
+		},
+		{
+			name: "additional item",
+			mutate: func(t *testing.T, clone string) {
+				mustWriteFile(t, filepath.Join(clone, "additional.txt"), "new after plan\n")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			isolateWBHome(t)
+			f := newFixture(t, "acme", "widgets")
+			f.archived()
+			mustWriteFile(t, filepath.Join(f.canonical, "untracked.txt"), "planned\n")
+
+			result := cleanWithOptions(context.Background(), t, f, Options{
+				Apply:                       true,
+				DeleteUntracked:             true,
+				beforeUntrackedRevalidation: func() { test.mutate(t, f.canonical) },
+			})
+			if result.Applied || !strings.Contains(result.Reason, "untracked plan drift") {
+				t.Fatalf("drift was not refused: %+v", result)
+			}
+			if _, err := os.Stat(f.canonical); err != nil {
+				t.Fatal("clone was pruned despite untracked plan drift")
+			}
+		})
+	}
+}
+
+func TestPlanUntrackedRefusesSymlinkAndTraversal(t *testing.T) {
+	clone := t.TempDir()
+	mustWriteFile(t, filepath.Join(clone, "outside.txt"), "outside\n")
+	if err := os.Symlink("outside.txt", filepath.Join(clone, "linked.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planUntracked(clone, []string{"linked.txt"}); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink plan error = %v, want refusal", err)
+	}
+	if _, err := planUntracked(clone, []string{"../outside.txt"}); err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("traversal plan error = %v, want refusal", err)
 	}
 }
 
