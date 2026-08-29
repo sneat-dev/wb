@@ -531,8 +531,8 @@ func newWorktreeLogHandoffCmd() *cobra.Command {
 }
 
 func newWorktreeLogRecoverCmd() *cobra.Command {
-	var actor, format string
-	var apply, takeover bool
+	var actor, format, reconcileBranch, expectedHead, reason, eventID string
+	var apply, takeover, remote bool
 	command := &cobra.Command{
 		Use:   "recover [worktree-path]",
 		Short: "Diagnose and rebuild derived work-log state",
@@ -544,6 +544,8 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 			result, err := worktrees.LogRecover(command.Context(), worktrees.LogRecoverOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
 				Apply: apply, Takeover: takeover, Actor: actor,
+				ReconcileBranch: reconcileBranch, ExpectedHead: expectedHead, Remote: remote,
+				Reason: reason, EventID: eventID,
 			})
 			if err != nil {
 				return err
@@ -554,6 +556,11 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 	command.Flags().BoolVar(&apply, "apply", false, "rewrite projection.json from journal evidence")
 	command.Flags().BoolVar(&takeover, "takeover", false, "with --apply, append an explicit takeover event")
 	command.Flags().StringVar(&actor, "actor", "", "required with --takeover")
+	command.Flags().StringVar(&reconcileBranch, "reconcile-branch", "", "live branch to reconcile back to the immutable Work Log claim")
+	command.Flags().StringVar(&expectedHead, "expected-head", "", "exact live HEAD required for branch reconciliation")
+	command.Flags().BoolVar(&remote, "remote", false, "require and retire the exact remote claim branch during reconciliation")
+	command.Flags().StringVar(&reason, "reason", "", "auditable reason required for branch reconciliation")
+	command.Flags().StringVar(&eventID, "event-id", "", "stable idempotency key required for branch reconciliation")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

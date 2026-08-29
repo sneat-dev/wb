@@ -699,6 +699,25 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 	}
 }
 
+func TestWorktreeLogRecoverReconcileBranchFlagsWireAndRequireInputs(t *testing.T) {
+	command := newWorktreeLogRecoverCmd()
+	for _, flag := range []string{"reconcile-branch", "expected-head", "remote", "actor", "reason", "event-id", "apply"} {
+		if command.Flags().Lookup(flag) == nil {
+			t.Fatalf("recover is missing --%s", flag)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"worktree", "log", "recover", ".", "--reconcile-branch", "codex/live", "--expected-head", strings.Repeat("a", 40), "--remote", "--actor", "alex", "--reason", "claim collision", "--event-id", "reconcile-cli"}
+	if code := run(args, &stdout, &stderr); code == exitUsage || strings.Contains(stderr.String(), "unknown flag") {
+		t.Fatalf("reconcile flags did not reach LogRecover: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"worktree", "log", "recover", ".", "--reconcile-branch", "codex/live"}, &stdout, &stderr); code == exitOK || !strings.Contains(stderr.String(), "--expected-head") {
+		t.Fatalf("missing reconciliation inputs = code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "resume the original request")
