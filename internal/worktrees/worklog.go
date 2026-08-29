@@ -1310,7 +1310,7 @@ func validateProjection(projection workLogProjection) error {
 // immutable terminal and outbox entry per claim before making the projection
 // terminal. Retrying the exact transition is idempotent.
 func sealWorkLogForRecycle(home, worktree, finalCommit, disposition string) error {
-	return sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition, nil, nil)
+	return sealWorkLogForRecycleWithSupersession(home, worktree, finalCommit, disposition, nil)
 }
 
 func sealWorkLogForRecycleWithDirtyCapture(home, worktree, finalCommit, disposition string, dirty *DirtyWorktreeEvidence) error {
@@ -1359,7 +1359,14 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
-	sealedAt, err := writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession)
+	var sealedAt time.Time
+	if dirty != nil && supersession == nil {
+		sealedAt, err = writeWorkLogTerminalWithDirtyCapture(home, runDir, claim, finalCommit, disposition, "", "", nil, dirty)
+	} else if dirty == nil && supersession != nil {
+		sealedAt, err = writeWorkLogTerminalWithSupersession(home, runDir, claim, finalCommit, disposition, "", "", nil, supersession)
+	} else {
+		sealedAt, err = writeWorkLogTerminalWithEvidence(home, runDir, claim, finalCommit, disposition, "", "", nil, nil, dirty, supersession)
+	}
 	if err != nil {
 		return err
 	}
