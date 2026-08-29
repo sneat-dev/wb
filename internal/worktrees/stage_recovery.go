@@ -152,7 +152,7 @@ func inspectRetiredStage(ctx context.Context, root, task, path, name string) Ret
 		result.Reason = "cannot open retired stage without following links: " + err.Error()
 		return result
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	var identity unix.Stat_t
 	if err := unix.Fstat(int(directory.Fd()), &identity); err != nil {
 		result.Reason = "cannot inspect retired stage identity: " + err.Error()
@@ -292,7 +292,7 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		result.Reason = "cannot open retired stage without following links: " + err.Error()
 		return
 	}
-	defer stage.Close()
+	defer func() { _ = stage.Close() }()
 	if !directoryStillMatches(result.Path, stage) {
 		result.Eligible = false
 		result.Reason = "retired stage path changed before recovery; ambiguous evidence was left untouched"
@@ -311,7 +311,7 @@ func applyRetiredStageRecovery(home string, result *RetiredStageRecoveryResult) 
 		result.Reason = "cannot open private recovery archive: " + err.Error()
 		return
 	}
-	defer archiveParent.Close()
+	defer func() { _ = archiveParent.Close() }()
 	if _, statErr := os.Lstat(archivePath); statErr == nil {
 		result.Eligible = false
 		result.Reason = "deterministic archive already exists while source remains; refusing ambiguous duplicate"
