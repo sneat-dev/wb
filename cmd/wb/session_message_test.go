@@ -46,9 +46,14 @@ func TestSessionSendRequiresBoundedInputAndBuildsFreshDurableMessage(t *testing.
 	}
 
 	tooLarge := newSessionSendCmdWithDeps(deps)
+	var tooLargeStderr bytes.Buffer
+	tooLarge.SetErr(&tooLargeStderr)
 	tooLarge.SetArgs([]string{"wbs-successor", "--message", strings.Repeat("x", sessionmove.MaxMessageBodyBytes+1)})
 	if err := tooLarge.Execute(); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversize send error = %v", err)
+	}
+	if got := tooLargeStderr.String(); !strings.Contains(got, "session message body exceeds") || len(got) > 4096 {
+		t.Fatalf("oversize send stderr must stay bounded and diagnostic, len=%d text=%q", len(got), got)
 	}
 
 	missing := newSessionSendCmdWithDeps(deps)
