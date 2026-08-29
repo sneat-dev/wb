@@ -2161,11 +2161,10 @@ func validRepositorySegment(value string) bool {
 // main-based checkout and a checkout stacked on a feature branch report the
 // latter as "not merged" even after its feature target received it.
 //
-// The manifest is the creation record and the private Work Log claim is its
-// durable counterpart. When both exist they must agree; neither is allowed to
-// silently override the other. The caller's base is only a compatibility
-// fallback for legacy worktrees that predate both records, and ultimately
-// normalizes to main.
+// The manifest is the creation record and the private Work Log claim is the
+// fallback for legacy worktrees that have no manifest. The caller's base is
+// only a compatibility fallback for candidates that predate both records, and
+// ultimately normalizes to main.
 func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback string) (string, error) {
 	fallback = strings.TrimSpace(fallback)
 	if fallback == "" {
@@ -2188,13 +2187,19 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 	}
 
 	claimBase := ""
-	if strings.TrimSpace(home) != "" {
+	// A manifest is the immutable checkout-local creation record. Do not
+	// corroborate the active claim before lifecycle inspection has had a chance
+	// to repair a branch-name mismatch (for example `wb worktree log recover
+	// --reconcile-branch`). Cleanup's own Work Log preflight still performs the
+	// full corroboration before any destructive operation. Claims are consulted
+	// here only when a legacy checkout has no manifest.
+	if manifestBase == "" && strings.TrimSpace(home) != "" {
 		claim, _, _, claimErr := activeWorkLogClaim(home, worktree)
 		switch {
 		case claimErr == nil:
 			claimBase = strings.TrimSpace(claim.Base)
 			if claimBase == "" || !validBranch(ctx, claimBase) {
-				return "", fmt.Errorf("Work Log target record for %s has invalid base %q", worktree, claim.Base)
+				return "", fmt.Errorf("work log target record for %s has invalid base %q", worktree, claim.Base)
 			}
 		case errors.Is(claimErr, errWorkLogProjectionNotFound):
 			// Legacy or internally-created worktrees may have a manifest but no
@@ -2203,9 +2208,6 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 		default:
 			return "", fmt.Errorf("read Work Log target record for %s: %w", worktree, claimErr)
 		}
-	}
-	if manifestBase != "" && claimBase != "" && manifestBase != claimBase {
-		return "", fmt.Errorf("worktree target records disagree: manifest base %q, Work Log base %q", manifestBase, claimBase)
 	}
 	if claimBase != "" {
 		return claimBase, nil
