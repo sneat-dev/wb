@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -97,23 +99,14 @@ func newCoverageCmd() *cobra.Command {
 			if err := writeCoverageOutput(report, options.format, options.reportDir); err != nil {
 				return err
 			}
-			if coverageFailed(report) {
-				return &exitError{
-					code:    exitFindings,
-					message: "coverage could not be measured in one or more repositories; see the `error` column above, then rerun just those with --resume --report-dir",
-				}
-			}
-			if options.minimumCoverage >= 0 && report.Percentage < options.minimumCoverage {
-				return &exitError{
-					code:    exitFindings,
-					message: fmt.Sprintf("coverage %.2f%% is below required %.2f%%", report.Percentage, options.minimumCoverage),
-				}
+			if err := coverageGateError(report, options.minimumCoverage); err != nil {
+				return err
 			}
 			return nil
 		},
 	}
 	bindQualityScopeFlags(command, &options)
-	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
+	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, json, or summary (summary requires --report-dir)")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write coverage.md and coverage.yaml to this directory")
 	command.Flags().IntVar(&options.testShards, "test-shards", 1, "process-isolated shards for every explicit --shard-package")
 	command.Flags().StringArrayVar(&options.shardPackages, "shard-package", nil, "single Go package safe to shard by top-level test name (repeatable)")
@@ -456,6 +449,22 @@ func coverageFailed(report quality.CoverageReport) bool {
 	return false
 }
 
+func coverageGateError(report quality.CoverageReport, minimum float64) error {
+	if coverageFailed(report) {
+		return &exitError{
+			code:    exitFindings,
+			message: "coverage could not be measured in one or more repositories; see the `error` column above, then rerun just those with --resume --report-dir",
+		}
+	}
+	if minimum >= 0 && report.Percentage < minimum {
+		return &exitError{
+			code:    exitFindings,
+			message: fmt.Sprintf("coverage %.2f%% is below required %.2f%%", report.Percentage, minimum),
+		}
+	}
+	return nil
+}
+
 type verificationIndex struct {
 	SchemaVersion int                          `yaml:"schema_version" json:"schema_version"`
 	GeneratedAt   time.Time                    `yaml:"generated_at" json:"generated_at"`
@@ -474,6 +483,12 @@ func verificationFailed(report verificationIndex) bool {
 }
 
 func writeCoverageOutput(report quality.CoverageReport, format, reportDir string) error {
+	return writeCoverageOutputTo(os.Stdout, report, format, reportDir)
+}
+
+func writeCoverageOutputTo(out io.Writer, report quality.CoverageReport, format, reportDir string) error {
+	var durableReport []byte
+	var durableReportPath string
 	if reportDir != "" {
 		if err := os.MkdirAll(reportDir, 0o755); err != nil {
 			return err
@@ -485,27 +500,41 @@ func writeCoverageOutput(report quality.CoverageReport, format, reportDir string
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(reportDir, "coverage.yaml"), raw, 0o644); err != nil {
+		durableReport = raw
+		durableReportPath = filepath.Join(reportDir, "coverage.yaml")
+		if err := os.WriteFile(durableReportPath, durableReport, 0o644); err != nil {
 			return err
 		}
 	}
 	switch format {
 	case "markdown":
-		_, err := fmt.Print(coverageMarkdown(report))
+		_, err := io.WriteString(out, coverageMarkdown(report))
 		return err
 	case "yaml":
 		raw, err := yaml.Marshal(report)
 		if err != nil {
 			return err
 		}
-		_, err = os.Stdout.Write(raw)
+		_, err = out.Write(raw)
 		return err
 	case "json":
-		encoder := json.NewEncoder(os.Stdout)
+		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
+	case "summary":
+		if durableReportPath == "" || len(durableReport) == 0 {
+			return fmt.Errorf("--format summary requires --report-dir so the full report has a durable reference")
+		}
+		digest := sha256.Sum256(durableReport)
+		status := "passed"
+		if coverageFailed(report) {
+			status = "failed"
+		}
+		_, err := fmt.Fprintf(out, "WB coverage %s: %.2f%% (%d/%d statements); report=%s; sha256=%x\n",
+			status, report.Percentage, report.Covered, report.Statements, durableReportPath, digest)
+		return err
 	default:
-		return fmt.Errorf("unknown --format %q (want markdown, yaml, or json)", format)
+		return fmt.Errorf("unknown --format %q (want markdown, yaml, json, or summary)", format)
 	}
 }
 
