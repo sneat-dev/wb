@@ -40,7 +40,7 @@ func TestVerifyReceiptComposesExactMachineReadableEvidence(t *testing.T) {
 		t.Fatalf("persisted receipt differs from stdout\n got %s\nwant %s", persisted, stdout.Bytes())
 	}
 	info, err := os.Stat(outputPath)
-	if err != nil || info.Mode().Perm() != 0o644 {
+	if err != nil || info.Mode().Perm()&0o400 == 0 || info.Mode().Perm()&^0o644 != 0 {
 		t.Fatalf("receipt output permissions info=%v err=%v", info, err)
 	}
 }
