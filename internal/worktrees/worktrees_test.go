@@ -34,6 +34,32 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func TestCreateAgentModeRequiresLiveRegisteredSessionBeforeMutation(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "")
+	t.Setenv(EnvAgentRuntime, "")
+	t.Setenv(EnvAgentModel, "")
+	t.Setenv(EnvAgentID, "")
+	t.Setenv(EnvSessionID, "")
+	SetSessionResolver(func() (AgentIdentity, bool) { return AgentIdentity{}, false })
+	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv(wbhome.EnvOverride, home)
+
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot:    projectsRoot,
+		Operation:       "agent-admission",
+		SessionRequired: true,
+		WorkLog:         WorkLogOptions{Model: "unknown"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "live registered session") {
+		t.Fatalf("agent-mode create error = %v, want live-session admission failure", err)
+	}
+	if _, statErr := os.Stat(home); !os.IsNotExist(statErr) {
+		t.Fatalf("WB home was touched before admission: stat err=%v", statErr)
+	}
+}
+
 func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
@@ -1553,6 +1579,105 @@ func TestGuardRejectsFeatureBranchesAndChangesInCanonicalClone(t *testing.T) {
 	if _, err := Guard(context.Background(), fixture.canonical, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err == nil || !strings.Contains(err.Error(), "must remain clean") {
 		t.Fatalf("dirty guard error = %v", err)
 	}
+}
+
+func TestGuardCanonicalFreshnessReportsFreshlyFetchedRemoteState(t *testing.T) {
+	fixture := newGitFixture(t)
+	fixture.pushRemoteCommit(t, "remote freshness change")
+	localHead := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	statusBefore := gitTestOutput(t, fixture.canonical, "status", "--porcelain")
+
+	result, err := Guard(context.Background(), fixture.canonical, GuardOptions{
+		ProjectsRoot:   fixture.projectsRoot,
+		CheckFreshness: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Freshness == nil {
+		t.Fatal("canonical guard returned no freshness receipt")
+	}
+	freshness := result.Freshness
+	if freshness.Status != CanonicalFreshnessStale || freshness.Behind != 1 || freshness.Ahead != 0 {
+		t.Fatalf("freshness = %#v, want stale with local branch one commit behind fetched origin/main", freshness)
+	}
+	if freshness.Target != "main" || freshness.LocalSHA != localHead || freshness.RemoteSHA == "" || freshness.RemoteSHA == localHead {
+		t.Fatalf("freshness coordinates = %#v", freshness)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD"); got != localHead {
+		t.Fatalf("freshness check changed canonical HEAD from %s to %s", localHead, got)
+	}
+	if got := gitTestOutput(t, fixture.canonical, "status", "--porcelain"); got != statusBefore {
+		t.Fatalf("freshness check changed canonical working tree from %q to %q", statusBefore, got)
+	}
+}
+
+func TestGuardCanonicalFreshnessReportsOfflineExplicitly(t *testing.T) {
+	fixture := newGitFixture(t)
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", filepath.Join(filepath.Dir(fixture.remote), "missing.git"))
+
+	result, err := Guard(context.Background(), fixture.canonical, GuardOptions{
+		ProjectsRoot:   fixture.projectsRoot,
+		CheckFreshness: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Freshness == nil || result.Freshness.Status != CanonicalFreshnessOffline {
+		t.Fatalf("offline freshness = %#v, want explicit offline status", result.Freshness)
+	}
+	if result.Freshness.Error == "" {
+		t.Fatalf("offline freshness = %#v, want diagnostic error", result.Freshness)
+	}
+}
+
+func TestCanonicalFreshnessReportsFetchFailureAndTargetDrift(t *testing.T) {
+	const local = "1111111111111111111111111111111111111111"
+	const fetched = "2222222222222222222222222222222222222222"
+	const moved = "3333333333333333333333333333333333333333"
+
+	t.Run("fetch failure", func(t *testing.T) {
+		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "rev-parse" && args[1] == "HEAD" {
+				return local + "\n", nil
+			}
+			if args[0] == "fetch" {
+				return "", errors.New("remote rejected fetch")
+			}
+			if args[0] == "ls-remote" {
+				return fetched + "\trefs/heads/main\n", nil
+			}
+			t.Fatalf("unexpected git %q", args)
+			return "", nil
+		})
+		if result.Status != CanonicalFreshnessFetchError || result.Error == "" {
+			t.Fatalf("fetch failure receipt = %#v", result)
+		}
+	})
+
+	t.Run("target drift", func(t *testing.T) {
+		result := inspectCanonicalFreshnessWith(context.Background(), "/repo", "main", func(_ context.Context, _ string, args ...string) (string, error) {
+			switch args[0] {
+			case "rev-parse":
+				if args[1] == "HEAD" {
+					return local + "\n", nil
+				}
+				return fetched + "\n", nil
+			case "fetch":
+				return "", nil
+			case "rev-list":
+				return "0 1\n", nil
+			case "ls-remote":
+				return moved + "\trefs/heads/main\n", nil
+			default:
+				t.Fatalf("unexpected git %q", args)
+				return "", nil
+			}
+		})
+		if result.Status != CanonicalFreshnessDrifted || !result.TargetDrift || result.RemoteSHA != fetched || result.Error == "" {
+			t.Fatalf("target drift receipt = %#v", result)
+		}
+	})
 }
 
 func TestGuardRejectsLinkedWorktreeOutsideCentralHierarchy(t *testing.T) {

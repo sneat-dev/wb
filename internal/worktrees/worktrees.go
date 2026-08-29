@@ -47,6 +47,11 @@ const SecureStageCanonicalGitHelperArgument = "--wb-internal-stage-canonical-git
 type CreateOptions struct {
 	ProjectsRoot string
 	Operation    string
+	// SessionRequired makes creation an agent-mode mutation: the caller must
+	// belong to a live registered WB session before any WB_HOME or Git state is
+	// touched. Manual callers leave this false and must record human intent in
+	// WorkLog.Initiator when using the CLI's explicit manual mode.
+	SessionRequired bool
 	// Branch is an exact branch name. It has highest precedence and is never
 	// derived from agent or harness identity.
 	Branch string
@@ -199,6 +204,12 @@ type GuardOptions struct {
 	ProjectsRoot string
 	Base         string
 
+	// CheckFreshness performs a point-of-read fetch and exact comparison when
+	// guarding a canonical clone. It is opt-in for internal hook callers so a
+	// commit or push hook never depends on network availability; the
+	// user-facing `wb worktree guard` command enables it.
+	CheckFreshness bool
+
 	// Admission gates a commit on the worktree carrying its own record. It is
 	// off unless a caller opts in, so guard's existing layout checks keep their
 	// current meaning everywhere else.
@@ -221,6 +232,10 @@ type GuardResult struct {
 	// relocating it under a WB worktrees root — see ListResult.External. Its
 	// task was resolved from its own Work Log claim, not from its path.
 	External bool `json:"external,omitempty"`
+	// Freshness is populated for canonical clones when CheckFreshness is true.
+	// A failed fetch is an explicit receipt status, not a reason to weaken the
+	// existing checkout safety decision.
+	Freshness *CanonicalFreshness `json:"freshness,omitempty"`
 }
 
 // managedWorktreeLocation is the shared, boundary-aware interpretation of a
@@ -383,6 +398,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	normalized, err := normalizeCreateOptions(options)
 	if err != nil {
 		return nil, err
+	}
+	if normalized.SessionRequired {
+		if _, ok := RegisteredIdentity(); !ok {
+			return nil, fmt.Errorf("agent-mode worktree creation requires a live registered session; register before the first mutation with `wb session register --pid $PPID --runtime <harness> --model <model>`, or select explicit manual mode")
+		}
 	}
 	repositories, err = ValidateRepositories(repositories)
 	if err != nil {
@@ -810,6 +830,9 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 				"canonical clone %s has local changes; canonical clones must remain clean. `wb worktree create` can still create a fresh remote-base checkout without changing this branch, index, or working tree",
 				root,
 			)
+		}
+		if options.CheckFreshness {
+			result.Freshness = inspectCanonicalFreshness(ctx, root, base)
 		}
 		return result, nil
 	}

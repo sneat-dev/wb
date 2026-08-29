@@ -36,6 +36,15 @@ const worktreeInstructions = `<!-- wb-managed-worktree -->
 Keep this checkout on its WB feature branch. Do not switch the canonical clone
 or use raw Git worktree cleanup commands.
 
+For an agent-driven task, register the live harness before the first mutation:
+
+` + "```sh" + `
+wb session register --pid $PPID --runtime codex --model <exact-model>
+` + "```" + `
+
+Use $PPID from the harness tool-call shell, never $$ (an intermediate
+shell). Intentional human CLI work must use --mode manual --initiator <human>.
+
 When the work is clean, validated, and ready to merge without a conflict or
 behavioral judgment, use the normal completion command:
 
@@ -66,14 +75,17 @@ const (
 // WorkLogOptions is transport-neutral. The exact prompt is private local data;
 // only opaque IDs and bounded Git evidence enter the projection/outbox.
 type WorkLogOptions struct {
-	EffortID              string
-	RunID                 string
-	Initiator             string
-	AgentID               string
-	AgentRuntime          string
-	Model                 string
-	CLI                   string
-	Provider              string
+	EffortID     string
+	RunID        string
+	Initiator    string
+	AgentID      string
+	AgentRuntime string
+	Model        string
+	CLI          string
+	Provider     string
+	// WBSessionID links this claim to the live registered session that created
+	// it. Normal callers leave it empty and the current resolver supplies it.
+	WBSessionID           string
 	OriginalPrompt        string // readable local file, copied to the private archive
 	RequireOriginalPrompt bool   // public create/recycle commands require exact local recovery input
 	// AcquiredVia records how this claim came to exist when it is not an
@@ -132,6 +144,7 @@ type workLogClaim struct {
 	ModelDeclaredBy string                          `json:"model_declared_by,omitempty"`
 	CLI             string                          `json:"cli,omitempty"`
 	Provider        string                          `json:"provider,omitempty"`
+	WBSessionID     string                          `json:"wb_session_id,omitempty"`
 	PromptArchive   string                          `json:"prompt_archive,omitempty"` // run-relative
 	PromptDigest    string                          `json:"prompt_sha256,omitempty"`
 	ParentClaimID   string                          `json:"parent_claim_id,omitempty"`
@@ -647,6 +660,13 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 	if model == "unknown" {
 		provenance = modelProvenanceUnknown
 	}
+	sessionID := strings.TrimSpace(options.WBSessionID)
+	// A live resolver is authoritative whenever present; callers cannot make
+	// an admitted agent claim point at a different session by supplying a
+	// stale or forged WorkLogOptions value.
+	if identity, ok := RegisteredIdentity(); ok {
+		sessionID = strings.TrimSpace(identity.WBSessionID)
+	}
 	claim := workLogClaim{Version: 2, EffortID: effort, RunID: run, ClaimID: claimID, Task: task,
 		Repository: result.Repository, Worktree: result.WorktreeDir, Branch: result.Branch,
 		Base: result.Base, BaseSHA: result.BaseSHA, Lifecycle: "active", RecordedAt: now,
@@ -654,6 +674,7 @@ func recordWorkLogWithHooks(home, task string, result CreateResult, options Work
 		AgentRuntime: strings.TrimSpace(options.AgentRuntime), Model: model,
 		ModelProvenance: provenance, ModelDeclaredBy: declaredBy(options),
 		CLI: strings.TrimSpace(options.CLI), Provider: strings.TrimSpace(options.Provider),
+		WBSessionID:   sessionID,
 		PromptArchive: promptArchive, PromptDigest: promptDigest,
 		AcquiredVia: strings.TrimSpace(options.AcquiredVia)}
 	claims, err := openPrivateChild(runDir, "claims", true)

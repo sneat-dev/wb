@@ -2,6 +2,8 @@ package quality
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 type goCoverageJob struct {
@@ -20,6 +24,23 @@ type goCoverageJob struct {
 type goCoverageJobResult struct {
 	output string
 	err    error
+}
+
+// CoverageDiagnosticManifest is intentionally separate from CoverageReport:
+// it contains unbounded command output and therefore stays in the private
+// report root rather than crossing the bounded hook/session boundary.
+type CoverageDiagnosticManifest struct {
+	SchemaVersion int                      `yaml:"schema_version" json:"schema_version"`
+	Repository    string                   `yaml:"repository" json:"repository"`
+	Module        string                   `yaml:"module" json:"module"`
+	Files         []CoverageDiagnosticFile `yaml:"files" json:"files"`
+}
+
+type CoverageDiagnosticFile struct {
+	Label  string `yaml:"label" json:"label"`
+	Path   string `yaml:"path" json:"path"`
+	Bytes  int    `yaml:"bytes" json:"bytes"`
+	SHA256 string `yaml:"sha256" json:"sha256"`
 }
 
 type plannedGoCoveragePackage struct {
@@ -46,7 +67,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 		if options.Timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
 		}
-		output, err := runShardedCoverage(attemptCtx, module, profilePath, options.GoShardPackages, options.GoTestShards)
+		output, err := runShardedCoverageWithDiagnostics(attemptCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository)
 		timedOut := attemptCtx.Err() == context.DeadlineExceeded
 		cancel()
 		if timedOut {
@@ -59,6 +80,10 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 }
 
 func runShardedCoverage(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int) (string, error) {
+	return runShardedCoverageWithDiagnostics(ctx, module, outputProfile, requestedPackages, shardCount, "", "")
+}
+
+func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string) (string, error) {
 	allPackages, err := goListPackages(ctx, module, "./...")
 	if err != nil {
 		return "", err
@@ -142,6 +167,8 @@ func runShardedCoverage(ctx context.Context, module, outputProfile string, reque
 			if !strings.HasSuffix(result.output, "\n") {
 				failedOutput.WriteByte('\n')
 			}
+			failedOutput.WriteString(result.err.Error())
+			failedOutput.WriteByte('\n')
 			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", jobs[index].label, result.err))
 		} else {
 			if strings.TrimSpace(result.output) != "" {
@@ -154,12 +181,69 @@ func runShardedCoverage(ctx context.Context, module, outputProfile string, reque
 		}
 	}
 	if runErr != nil {
+		if diagnosticsDir != "" {
+			if err := writeCoverageDiagnostics(diagnosticsDir, repository, module, jobs, results); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("write coverage diagnostics: %w", err))
+			}
+		}
 		return failedOutput.String(), runErr
 	}
 	if err := mergeCoverageProfiles(profiles, outputProfile); err != nil {
 		return output.String(), err
 	}
 	return output.String(), nil
+}
+
+func writeCoverageDiagnostics(directory, repository, module string, jobs []goCoverageJob, results []goCoverageJobResult) error {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	stem := coverageDiagnosticStem(repository, module)
+	manifest := CoverageDiagnosticManifest{SchemaVersion: 1, Repository: repository, Module: module}
+	for index, result := range results {
+		if result.err == nil {
+			continue
+		}
+		path := filepath.Join(directory, "coverage-raw-"+stem+fmt.Sprintf("-%d.log", index+1))
+		raw := []byte(result.output)
+		if len(raw) == 0 {
+			raw = []byte(result.err.Error() + "\n")
+		}
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			return err
+		}
+		digest := sha256.Sum256(raw)
+		manifest.Files = append(manifest.Files, CoverageDiagnosticFile{
+			Label: jobs[index].label, Path: path, Bytes: len(raw), SHA256: hex.EncodeToString(digest[:]),
+		})
+	}
+	if len(manifest.Files) == 0 {
+		return nil
+	}
+	manifestRaw, err := yaml.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+stem+".yaml")
+	if err := os.WriteFile(manifestPath, manifestRaw, 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func coverageDiagnosticStem(repository, module string) string {
+	digest := sha256.Sum256([]byte(repository + "\x00" + module))
+	return hex.EncodeToString(digest[:])[:16]
+}
+
+func coverageDiagnosticFor(directory, repository, module string) *CoverageDiagnostic {
+	manifestPath := filepath.Join(directory, "coverage-diagnostics-"+coverageDiagnosticStem(repository, module)+".yaml")
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return nil
+	}
+	digest := sha256.Sum256(raw)
+	return &CoverageDiagnostic{Manifest: manifestPath, SHA256: hex.EncodeToString(digest[:])}
 }
 
 func goListPackages(ctx context.Context, module, pattern string) ([]string, error) {

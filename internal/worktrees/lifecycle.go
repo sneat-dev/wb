@@ -29,7 +29,11 @@ type ListOptions struct {
 	// Tasks is an exact set of task names. Task remains for compatibility with
 	// callers that select one task; callers must not set both.
 	Tasks []string
-	Base  string
+	// Base is the fallback target branch for candidates without an immutable
+	// recorded target. A candidate's manifest/Work Log claim wins over this
+	// fallback, so one task may safely contain worktrees stacked on different
+	// targets. An omitted Base resolves to main.
+	Base string
 	// Filter narrows the inventory to candidates whose owner/repository slug
 	// (or, for a candidate that cannot be identified that cleanly, whatever
 	// raw path-derived identity is available) contains this substring — the
@@ -238,13 +242,17 @@ type ListResult struct {
 	// LockOwner and LockOwnerPID describe who holds Locked, so a refusal
 	// can distinguish a peer operation still running from a recoverable
 	// remnant of one that was interrupted. See diagnoseTaskLock.
-	LockOwner         LockOwnerState `json:"lock_owner,omitempty"`
-	LockOwnerPID      int            `json:"lock_owner_pid,omitempty"`
-	LastCommit        time.Time      `json:"last_commit"`
-	Owners            []OwnerView    `json:"owners,omitempty"`
-	OwnerState        string         `json:"owner_state"`
-	OpenPullRequest   *PullRequest   `json:"open_pull_request,omitempty"`
-	MergedPullRequest *PullRequest   `json:"merged_pull_request,omitempty"`
+	LockOwner    LockOwnerState `json:"lock_owner,omitempty"`
+	LockOwnerPID int            `json:"lock_owner_pid,omitempty"`
+	LastCommit   time.Time      `json:"last_commit"`
+	Owners       []OwnerView    `json:"owners,omitempty"`
+	// WorkLogSessionID is the immutable session link from the active private
+	// claim. It lets session park recover a claim even when the owner event was
+	// not projected, while remaining absent for legacy claims.
+	WorkLogSessionID  string       `json:"work_log_session_id,omitempty"`
+	OwnerState        string       `json:"owner_state"`
+	OpenPullRequest   *PullRequest `json:"open_pull_request,omitempty"`
+	MergedPullRequest *PullRequest `json:"merged_pull_request,omitempty"`
 	// External marks a worktree adopted by `wb worktree adopt` from outside
 	// every WB worktrees root. Its WorktreeDir is the real, never-relocated
 	// checkout path; only a small registration entry — never the checkout
@@ -289,6 +297,8 @@ type LifecycleArtifact struct {
 	Path          string `json:"path"`
 	Kind          string `json:"kind"`
 	State         string `json:"state"`
+	Repository    string `json:"repository,omitempty"`
+	NonBlocking   bool   `json:"non_blocking,omitempty"`
 	Disposition   string `json:"disposition"`
 	Eligible      bool   `json:"eligible"`
 	Applied       bool   `json:"applied"`
@@ -312,7 +322,10 @@ type CleanupOptions struct {
 	// Tasks is an exact set of task names. Task remains for compatibility with
 	// callers that select one task; callers must not set both.
 	Tasks []string
-	Base  string
+	// Base is only the fallback for legacy candidates without a recorded
+	// manifest/Work Log target. Recorded targets are resolved per candidate;
+	// cleanup never applies one global base to a heterogeneous task.
+	Base string
 	// ExactRepository limits a named-task cleanup transaction to one exact
 	// owner/repository slug. It is intended for repository-scoped orchestrators
 	// such as worktree merge, where another repository may share the same task.
@@ -857,7 +870,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	reporter := &listProgressReporter{report: options.Progress}
 	for _, layout := range resolution.Read {
 		results, diagnostics, artifacts, listErr := listLayout(
-			ctx, projectsRoot, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter,
+			ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter,
 		)
 		if listErr != nil {
 			return ListOutcome{}, listErr
@@ -897,6 +910,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 func listLayout(
 	ctx context.Context,
 	projectsRoot string,
+	home string,
 	layout wbhome.Layout,
 	tasks map[string]bool,
 	base, filter, absorbedBy string,
@@ -955,7 +969,7 @@ func listLayout(
 		}
 		for _, entry := range entries {
 			candidate := filepath.Join(taskRoot, entry.Name())
-			if artifact, internal := inspectLifecycleArtifact(layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
+			if artifact, internal := inspectLifecycleArtifact(ctx, layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
 				artifacts = append(artifacts, artifact)
 				continue
 			}
@@ -1051,7 +1065,7 @@ func listLayout(
 		}
 	}
 	inspected, inspectDiagnostics := runInspections(
-		ctx, pending, projectsRoot, layout, base, filter, absorbedBy, withGitHub, workers, reporter,
+		ctx, pending, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter,
 	)
 	results = append(results, inspected...)
 	diagnostics = append(diagnostics, inspectDiagnostics...)
@@ -1068,6 +1082,7 @@ func runInspections(
 	ctx context.Context,
 	pending []pendingInspect,
 	projectsRoot string,
+	home string,
 	layout wbhome.Layout,
 	base, filter, absorbedBy string,
 	withGitHub bool,
@@ -1110,7 +1125,7 @@ func runInspections(
 				lock := locks.get(job.commonDir)
 				lock.Lock()
 				result, inspectErr := inspectLifecycleWorktree(
-					ctx, projectsRoot, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external,
+					ctx, projectsRoot, home, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external,
 				)
 				lock.Unlock()
 
@@ -1135,7 +1150,7 @@ func runInspections(
 	return results, diagnostics
 }
 
-func inspectLifecycleArtifact(worktreesRoot, task, path string, entry os.DirEntry) (LifecycleArtifact, bool) {
+func inspectLifecycleArtifact(ctx context.Context, worktreesRoot, task, path string, entry os.DirEntry) (LifecycleArtifact, bool) {
 	name := entry.Name()
 	kind, state, recognized := lifecycleArtifactName(name)
 	if !recognized {
@@ -1165,6 +1180,9 @@ func inspectLifecycleArtifact(worktreesRoot, task, path string, entry os.DirEntr
 	}
 	if !empty {
 		artifact.Reason = "reserved WB stage is non-empty and requires audited recovery before task cleanup"
+		if repository, err := OriginSlug(ctx, path); err == nil {
+			artifact.Repository = repository
+		}
 		return artifact, true
 	}
 	artifact.Eligible = true
@@ -1417,6 +1435,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
 	blockDiagnosedTasks(results, listed.Diagnostics, backlogPaths)
+	scopeLifecycleArtifacts(listed.Artifacts, normalized.ExactRepository, normalized.Filter)
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
@@ -1570,6 +1589,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			refreshed, err := inspectLifecycleWorktree(
 				ctx,
 				normalized.ProjectsRoot,
+				resolution.Write.Home,
 				wbhome.Layout{WorktreesRoot: outcome.Results[index].WorktreesRoot},
 				outcome.Results[index].Task,
 				outcome.Results[index].WorktreeDir,
@@ -2145,6 +2165,69 @@ func validRepositorySegment(value string) bool {
 	return safeRepositorySegment.MatchString(value) && value != "." && value != ".."
 }
 
+// resolveRecordedWorktreeBase binds lifecycle evidence to the target that was
+// selected when the checkout was created. Cleanup used to pass one global
+// --base through the whole inventory, which made a task containing both a
+// main-based checkout and a checkout stacked on a feature branch report the
+// latter as "not merged" even after its feature target received it.
+//
+// The manifest is the creation record and the private Work Log claim is the
+// fallback for legacy worktrees that have no manifest. The caller's base is
+// only a compatibility fallback for candidates that predate both records, and
+// ultimately normalizes to main.
+func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback string) (string, error) {
+	fallback = strings.TrimSpace(fallback)
+	if fallback == "" {
+		fallback = "main"
+	}
+	if !validBranch(ctx, fallback) {
+		return "", fmt.Errorf("invalid fallback target branch %q", fallback)
+	}
+
+	manifest, manifestErr := ReadManifest(worktree)
+	if manifestErr != nil && !errors.Is(manifestErr, errManifestNotFound) {
+		return "", fmt.Errorf("read worktree target record for %s: %w", worktree, manifestErr)
+	}
+	manifestBase := ""
+	if manifestErr == nil {
+		manifestBase = strings.TrimSpace(manifest.Base)
+		if manifestBase == "" || !validBranch(ctx, manifestBase) {
+			return "", fmt.Errorf("worktree target record for %s has invalid base %q", worktree, manifest.Base)
+		}
+	}
+
+	claimBase := ""
+	// A manifest is the immutable checkout-local creation record. Do not
+	// corroborate the active claim before lifecycle inspection has had a chance
+	// to repair a branch-name mismatch (for example `wb worktree log recover
+	// --reconcile-branch`). Cleanup's own Work Log preflight still performs the
+	// full corroboration before any destructive operation. Claims are consulted
+	// here only when a legacy checkout has no manifest.
+	if manifestBase == "" && strings.TrimSpace(home) != "" {
+		claim, _, _, claimErr := activeWorkLogClaim(home, worktree)
+		switch {
+		case claimErr == nil:
+			claimBase = strings.TrimSpace(claim.Base)
+			if claimBase == "" || !validBranch(ctx, claimBase) {
+				return "", fmt.Errorf("work log target record for %s has invalid base %q", worktree, claim.Base)
+			}
+		case errors.Is(claimErr, errWorkLogProjectionNotFound):
+			// Legacy or internally-created worktrees may have a manifest but no
+			// Work Log projection. The manifest remains authoritative in that
+			// case; a missing claim is not itself a target mismatch.
+		default:
+			return "", fmt.Errorf("read Work Log target record for %s: %w", worktree, claimErr)
+		}
+	}
+	if claimBase != "" {
+		return claimBase, nil
+	}
+	if manifestBase != "" {
+		return manifestBase, nil
+	}
+	return fallback, nil
+}
+
 // inspectLifecycleWorktree validates one linked checkout and, when GitHub is
 // requested, establishes whether its exact head is integrated into the freshly
 // fetched exact origin target. absorbedBy is the optional operator-supplied
@@ -2154,10 +2237,15 @@ func validRepositorySegment(value string) bool {
 func inspectLifecycleWorktree(
 	ctx context.Context,
 	projectsRoot string,
+	home string,
 	layout wbhome.Layout,
 	task, worktree, base, absorbedBy string,
 	withGitHub, locked, external bool,
 ) (ListResult, error) {
+	base, err := resolveRecordedWorktreeBase(ctx, home, worktree, base)
+	if err != nil {
+		return ListResult{}, err
+	}
 	root, err := git(ctx, worktree, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return ListResult{}, fmt.Errorf("inspect %s: %w", worktree, err)
@@ -2245,6 +2333,15 @@ func inspectLifecycleWorktree(
 		return ListResult{}, fmt.Errorf("read owner metadata for %s: %w", worktree, ownerErr)
 	}
 	result.Owners, result.OwnerState = owners, worktreeOwnerState(owners)
+	// The owner event is an append-only projection and may be absent after an
+	// interrupted creation. Prefer the immutable claim's session link when it
+	// exists so park can identify the intended member before attempting custody
+	// capture; legacy claims simply leave this field empty.
+	if home, homeErr := wbhome.Root(projectsRoot); homeErr == nil {
+		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil {
+			result.WorkLogSessionID = strings.TrimSpace(claim.WBSessionID)
+		}
+	}
 	if withGitHub {
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, base)
 		if err != nil {
@@ -2914,6 +3011,9 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 func blockArtifactTasks(results []CleanupResult, artifacts []LifecycleArtifact) {
 	reasonByTask := make(map[string]string)
 	for _, artifact := range artifacts {
+		if artifact.NonBlocking {
+			continue
+		}
 		// An empty task namespace has no repository under it to coordinate
 		// with, so its own ineligibility never blocks a task.
 		if artifact.Eligible || artifact.Kind == lifecycleArtifactKindTaskNamespace {
@@ -2929,6 +3029,24 @@ func blockArtifactTasks(results []CleanupResult, artifacts []LifecycleArtifact) 
 		if reason := reasonByTask[key]; reason != "" && results[index].Eligible {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by WB lifecycle artifact cleanup backlog " + reason
+		}
+	}
+}
+
+// scopeLifecycleArtifacts keeps an exact repository cleanup from being held
+// hostage by a non-empty retired stage that is itself a proven Git checkout
+// for a different repository. An unclassified stage has no safe identity and
+// remains blocking; that is the deliberate fail-closed boundary.
+func scopeLifecycleArtifacts(artifacts []LifecycleArtifact, exactRepository, filter string) {
+	for index := range artifacts {
+		artifact := &artifacts[index]
+		if artifact.Repository == "" {
+			continue
+		}
+		if exactRepository != "" && artifact.Repository != exactRepository ||
+			filter != "" && !filterMatches(filter, artifact.Repository) {
+			artifact.NonBlocking = true
+			artifact.Reason = fmt.Sprintf("retired stage belongs to %s, outside this repository-scoped cleanup; recover it separately", artifact.Repository)
 		}
 	}
 }
@@ -3019,6 +3137,7 @@ func preflightCleanupRepository(
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
 		options.ProjectsRoot,
+		home,
 		wbhome.Layout{WorktreesRoot: entry.WorktreesRoot},
 		entry.Task,
 		entry.WorktreeDir,

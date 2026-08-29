@@ -825,6 +825,7 @@ The default is a dry-run plan.`,
 
 func newWorktreeCreateCmd() *cobra.Command {
 	var branch, branchPrefix, base, format string
+	var mode string
 	var resume, noClaim bool
 	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
@@ -888,6 +889,18 @@ wb worktree create improve-login owner/repository --resume \
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			if mode != "" && mode != "auto" && mode != "agent" && mode != "manual" {
+				return fmt.Errorf("unsupported execution mode %q; use auto, agent, or manual", mode)
+			}
+			agentMode := mode == "agent" || (mode == "auto" && (strings.TrimSpace(agentID) != "" || strings.TrimSpace(agentRuntime) != ""))
+			if mode == "manual" && strings.TrimSpace(initiator) == "" {
+				return fmt.Errorf("manual execution mode requires --initiator so the non-agent mutation is auditable")
+			}
+			if agentMode {
+				if _, ok := worktrees.RegisteredIdentity(); !ok {
+					return fmt.Errorf("agent-mode worktree creation requires a live registered session; register before the first mutation with `wb session register --pid $PPID --runtime <harness> --model <model>`, or select --mode manual --initiator <human>")
+				}
+			}
 			workLog := worktrees.WorkLogOptions{
 				EffortID: effortID, RunID: runID, Initiator: initiator, AgentID: agentID,
 				AgentRuntime: agentRuntime, Model: model, CLI: cli, Provider: provider, OriginalPrompt: originalPrompt,
@@ -950,6 +963,7 @@ wb worktree create improve-login owner/repository --resume \
 				BranchPrefixChosen: command.Flags().Changed("branch-prefix"),
 				Base:               base,
 				Resume:             resume,
+				SessionRequired:    agentMode,
 				WorkLog:            workLog,
 			})
 			if err != nil {
@@ -988,6 +1002,7 @@ wb worktree create improve-login owner/repository --resume \
 	command.Flags().StringVar(&branch, "branch", "", "exact feature branch (overrides branch-prefix configuration)")
 	command.Flags().StringVar(&branchPrefix, "branch-prefix", "", "derive <prefix><task>; an explicit empty value disables configured prefixes")
 	command.Flags().StringVar(&base, "base", "main", "canonical and remote base branch")
+	command.Flags().StringVar(&mode, "mode", "auto", "execution mode: auto, agent (requires a live registered session), or manual (requires --initiator)")
 	command.Flags().BoolVar(&resume, "resume", false, "reuse only the exact expected branch and worktree")
 	command.Flags().BoolVar(&noClaim, "no-claim", false, "skip the best-effort fleet-wide remote claim for this task")
 	command.Flags().StringVar(&effortID, "effort", "", "stable Synchestra/WB effort id (default task)")
@@ -1041,7 +1056,14 @@ the checkout, so that one case is resolved from its claim instead of its path.
 manifest and at least one recorded instruction. It binds on the worktree's
 location and never tries to tell an agent from a human by environment markers,
 which can be absent exactly when they matter. Use warn while a fleet adopts the
-journal and enforce once it has.`,
+journal and enforce once it has.
+
+When the guarded checkout is canonical, this command also fetches the selected
+origin target and includes an exact freshness receipt. A stale, ahead, or
+diverged clone is reported as a warning with left/right commit counts. If the
+remote cannot be reached, or the target moves while it is being checked, the
+warning says so explicitly; the checkout is never fast-forwarded or otherwise
+changed by guard.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -1055,9 +1077,10 @@ journal and enforce once it has.`,
 				path = args[0]
 			}
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
-				ProjectsRoot: projectsRoot,
-				Base:         base,
-				Admission:    worktrees.AdmissionMode(admission),
+				ProjectsRoot:   projectsRoot,
+				Base:           base,
+				Admission:      worktrees.AdmissionMode(admission),
+				CheckFreshness: true,
 			})
 			if err != nil {
 				return err
@@ -1066,6 +1089,9 @@ journal and enforce once it has.`,
 			// to be seen before enforcement starts refusing the same commit.
 			if result.Admission != nil && result.Admission.Reason != "" {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: %s\n  %s\n", result.Admission.Reason, result.Admission.Remedy)
+			}
+			if result.Freshness != nil && result.Freshness.Status != worktrees.CanonicalFreshnessCurrent {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: canonical freshness for %s: %s\n", result.Path, formatCanonicalFreshness(result.Freshness))
 			}
 			if quiet {
 				return nil
@@ -1080,7 +1106,11 @@ journal and enforce once it has.`,
 				if result.External {
 					kind += " (adopted)"
 				}
-				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s\n", kind, result.Path, checkout)
+				suffix := ""
+				if result.Freshness != nil && result.Freshness.Status == worktrees.CanonicalFreshnessCurrent {
+					suffix = fmt.Sprintf(" (fresh against %s at %s)", result.Freshness.RemoteRef, result.Freshness.RemoteSHA)
+				}
+				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s%s\n", kind, result.Path, checkout, suffix)
 				return err
 			case "json":
 				encoder := json.NewEncoder(command.OutOrStdout())
@@ -1096,6 +1126,16 @@ journal and enforce once it has.`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")
 	return command
+}
+
+func formatCanonicalFreshness(freshness *worktrees.CanonicalFreshness) string {
+	if freshness == nil {
+		return "not checked"
+	}
+	if freshness.Error != "" {
+		return fmt.Sprintf("status=%s target=%s: %s", freshness.Status, freshness.RemoteRef, freshness.Error)
+	}
+	return fmt.Sprintf("status=%s target=%s local=%s remote=%s (%d ahead, %d behind)", freshness.Status, freshness.RemoteRef, freshness.LocalSHA, freshness.RemoteSHA, freshness.Ahead, freshness.Behind)
 }
 
 // newWorktreeSetCmd is the human-facing remedy the admission gate names. It
@@ -1600,7 +1640,7 @@ wb worktree summary improve-login --github --format json`,
 
 func newWorktreeCleanupCmd() *cobra.Command {
 	var base, format, reportDir, absorbedBy, supersededBy string
-	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, verbose bool
+	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, recoverStages, verbose bool
 	var olderThan time.Duration
 	var workers int
 	command := &cobra.Command{
@@ -1646,7 +1686,12 @@ only and never participates in --all-merged fleet sweeps.
 Reserved .wb-stage-* and .wb-retired-stage-* entries are first-class cleanup
 backlog. Apply descriptor-safely archives an exact recognized empty stage
 outside the active task. A non-empty, symlinked, replaced, or invalid stage
-blocks the task and is preserved for audited recovery.
+blocks the task and is preserved for audited recovery. --recover-stages is the
+explicit audited recovery flow for one or more named tasks: it inventories
+every non-empty retired stage without following links, records Git identity and
+a deterministic content digest in a private receipt, and with --apply archives
+the exact stage before it can be cleaned. Ambiguous or changed evidence stays
+in place. Run normal cleanup again after recovery has completed.
 
 For one or more specifically named tasks, the implicit age window is zero and --apply
 requires --remote: definition of done includes retirement of the source remote
@@ -1685,6 +1730,15 @@ Anything else is left untouched and reported. It cannot be combined with a
 task argument or --all-merged, and is itself dry-run by default; --apply is
 required to remove anything.`,
 		Args: func(command *cobra.Command, args []string) error {
+			if recoverStages {
+				if len(args) == 0 {
+					return fmt.Errorf("--recover-stages requires one or more named tasks")
+				}
+				if allMerged || retireShells {
+					return fmt.Errorf("--recover-stages cannot be combined with --all-merged or --retire-shells")
+				}
+				return nil
+			}
 			if retireShells {
 				if len(args) != 0 {
 					return fmt.Errorf("--retire-shells sweeps every task; it cannot be combined with a task argument")
@@ -1722,6 +1776,46 @@ required to remove anything.`,
 					encoder := json.NewEncoder(command.OutOrStdout())
 					encoder.SetIndent("", "  ")
 					return encoder.Encode(outcome)
+				default:
+					return fmt.Errorf("unsupported format %q; use text or json", format)
+				}
+			}
+			if recoverStages {
+				outcomes := make([]worktrees.RetiredStageRecoveryOutcome, 0, len(args))
+				for _, task := range args {
+					outcome, err := worktrees.RecoverRetiredStages(command.Context(), worktrees.RetiredStageRecoveryOptions{
+						ProjectsRoot: projectsRoot, Task: task, Apply: apply,
+					})
+					if err != nil {
+						return err
+					}
+					outcomes = append(outcomes, outcome)
+				}
+				switch format {
+				case "text":
+					for _, outcome := range outcomes {
+						if outcome.ReceiptPath != "" {
+							if _, err := fmt.Fprintf(command.OutOrStdout(), "receipt: %s\n", outcome.ReceiptPath); err != nil {
+								return err
+							}
+						}
+						for _, result := range outcome.Results {
+							state := "preserved"
+							if result.Applied {
+								state = "archived"
+							} else if result.Eligible {
+								state = "would archive"
+							}
+							if _, err := fmt.Fprintf(command.OutOrStdout(), "%-13s %s: %s\n", state, result.Path, result.Reason); err != nil {
+								return err
+							}
+						}
+					}
+					return nil
+				case "json":
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					return encoder.Encode(outcomes)
 				default:
 					return fmt.Errorf("unsupported format %q; use text or json", format)
 				}
@@ -1824,6 +1918,7 @@ required to remove anything.`,
 	command.Flags().StringVar(&supersededBy, "superseded-by", "", "use an explicit trusted-reviewer receipt to retire an intentionally superseded split branch")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&retireShells, "retire-shells", false, "sweep every task for an empty pre-existing shell (owner directory and/or retired lock, no live checkout) and retire it")
+	command.Flags().BoolVar(&recoverStages, "recover-stages", false, "audit and privately archive non-empty retired stages for named tasks")
 	// --parallel is the fleet-wide name for this ceiling: six other commands
 	// already spell it that way, and "workers" reads as a second noun beside
 	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so

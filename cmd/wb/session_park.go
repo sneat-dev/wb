@@ -596,6 +596,9 @@ func validateParkedRemoteBundle(bundle sessionpark.Bundle, target string) error 
 }
 
 func ownedBySession(result worktrees.ListResult, source session.Record) bool {
+	if result.WorkLogSessionID != "" && result.WorkLogSessionID == source.WBSessionID {
+		return true
+	}
 	for _, owner := range result.Owners {
 		if owner.PID == source.PID && !owner.At.Before(source.StartedAt) {
 			return true

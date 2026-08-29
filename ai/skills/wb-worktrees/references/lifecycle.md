@@ -150,7 +150,9 @@ control-plane entries instead of treating them as legacy repository
 worktrees. The dry run reports an exact disposition. Apply descriptor-safely
 archives a recognized empty stage outside the active task; a non-empty,
 symlinked, or invalid stage remains explicit blocking cleanup backlog. Never
-delete or move that evidence manually.
+delete or move that evidence manually. Use `wb worktree cleanup <task>
+--recover-stages` to inventory and privately archive it with a deterministic
+receipt; rerun normal cleanup only after the recovery receipt reports success.
 
 ## Recycle only explicit caches
 

@@ -134,3 +134,29 @@ func TestCurrentIdentityIsUndeclaredWithNoEnvAndNoSession(t *testing.T) {
 		t.Fatalf("CurrentIdentity() = %+v, want undeclared", got)
 	}
 }
+
+func TestRegisteredIdentityIgnoresAmbientOverrides(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "1111")
+	t.Setenv(EnvAgentRuntime, "shell")
+	t.Setenv(EnvSessionID, "spoofed")
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{Runtime: "codex", Model: "gpt-5", PID: 2222, WBSessionID: "wbs-real", Registered: true}, true
+	})
+
+	got, ok := RegisteredIdentity()
+	if !ok || got.WBSessionID != "wbs-real" || got.PID != 2222 {
+		t.Fatalf("RegisteredIdentity() = %+v, %v; want resolver-backed session", got, ok)
+	}
+}
+
+func TestRegisteredIdentityRejectsUnregisteredResolverResult(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{PID: 2222, WBSessionID: "wbs-untrusted"}, true
+	})
+
+	if got, ok := RegisteredIdentity(); ok {
+		t.Fatalf("RegisteredIdentity() = %+v, true; want no admission", got)
+	}
+}

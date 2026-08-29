@@ -407,6 +407,9 @@ func TestReceiptStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
 				if err := os.WriteFile(receiptPath, receiptRaw, 0o644); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.Chmod(receiptPath, 0o644); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 	} {
@@ -752,6 +755,9 @@ func TestEventStorageRejectsSymlinkHardlinkAndUnsafeMode(t *testing.T) {
 			name: "unsafe-mode",
 			install: func(t *testing.T, eventPath string) {
 				if err := os.WriteFile(eventPath, eventRaw, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(eventPath, 0o644); err != nil {
 					t.Fatal(err)
 				}
 			},

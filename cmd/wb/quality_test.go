@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,6 +128,109 @@ func TestQualityMarkdownIncludesTotalsAndCommands(t *testing.T) {
 	verification := verificationIndex{Checks: []quality.Check{quality.CheckTest}, Repositories: []quality.VerificationReport{{Repository: "acme/repo", Status: quality.StatusPassed, Results: []quality.VerificationEntry{{Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test ./...", Status: quality.StatusPassed}}}}}
 	if markdown := verificationMarkdown(verification); !strings.Contains(markdown, "go test ./...") {
 		t.Fatalf("verification markdown = %s", markdown)
+	}
+}
+
+func TestCoverageSummaryRequiresDurableReport(t *testing.T) {
+	report := quality.NewCoverageReport([]quality.RepositoryCoverage{{
+		Repository: "acme/repo", Status: quality.StatusPassed, Statements: 4, Covered: 3, Percentage: 75,
+	}})
+	var output bytes.Buffer
+	if err := writeCoverageOutputTo(&output, report, "summary", ""); err == nil {
+		t.Fatal("summary without a report directory must fail rather than lose the durable reference")
+	}
+}
+
+func TestCoverageSummaryReferencesBoundedDurableReport(t *testing.T) {
+	for _, size := range []int{64<<10 - 1, 64<<10 + 1} {
+		t.Run(fmt.Sprintf("detail-%d-bytes", size), func(t *testing.T) {
+			// The persisted report may be larger than the session-message body;
+			// the observer-facing summary must stay bounded at either side of
+			// the transport limit.
+			detail := strings.Repeat("x", size)
+			report := quality.NewCoverageReport([]quality.RepositoryCoverage{{
+				Repository: "acme/repo", Status: quality.StatusFailed, Error: detail,
+			}})
+			directory := t.TempDir()
+			var output bytes.Buffer
+			if err := writeCoverageOutputTo(&output, report, "summary", directory); err != nil {
+				t.Fatalf("write summary: %v", err)
+			}
+			if output.Len() >= 64<<10 {
+				t.Fatalf("summary length = %d, want below the session-message body limit", output.Len())
+			}
+			for _, expected := range []string{"WB coverage failed:", "report=" + filepath.Join(directory, "coverage.yaml"), "sha256="} {
+				if !strings.Contains(output.String(), expected) {
+					t.Fatalf("summary %q does not contain %q", output.String(), expected)
+				}
+			}
+			raw, err := os.ReadFile(filepath.Join(directory, "coverage.yaml"))
+			if err != nil {
+				t.Fatalf("read durable report: %v", err)
+			}
+			if !strings.Contains(string(raw), detail) {
+				t.Fatal("durable report lost the full failure detail")
+			}
+			digest := sha256.Sum256(raw)
+			if !strings.Contains(output.String(), fmt.Sprintf("sha256=%x", digest)) {
+				t.Fatalf("summary digest does not identify the durable report: %q", output.String())
+			}
+			gateErr, ok := coverageGateError(report, -1).(*exitError)
+			if !ok || gateErr.code != exitFindings {
+				t.Fatalf("coverage gate error = %v, want exitFindings", coverageGateError(report, -1))
+			}
+		})
+	}
+}
+
+func TestCoverageSummaryPreservesRealFailureVerdict(t *testing.T) {
+	report := quality.NewCoverageReport([]quality.RepositoryCoverage{{
+		Repository: "acme/repo", Status: quality.StatusFailed, Error: "go test failed", Statements: 4,
+	}})
+	var output bytes.Buffer
+	if err := writeCoverageOutputTo(&output, report, "summary", t.TempDir()); err != nil {
+		t.Fatalf("write failed summary: %v", err)
+	}
+	if gateErr, ok := coverageGateError(report, -1).(*exitError); !ok || gateErr.code != exitFindings {
+		t.Fatalf("coverage gate error = %v, want exitFindings", coverageGateError(report, -1))
+	}
+}
+
+func TestCoverageSummaryKeepsFleetDiagnosticReferenceBounded(t *testing.T) {
+	directory := t.TempDir()
+	repositories := make([]quality.RepositoryCoverage, 2000)
+	for index := range repositories {
+		repositories[index] = quality.RepositoryCoverage{
+			Repository: fmt.Sprintf("acme/repo-%04d", index),
+			Status:     quality.StatusFailed,
+			Diagnostic: &quality.CoverageDiagnostic{Manifest: filepath.Join(directory, fmt.Sprintf("manifest-%04d.yaml", index)), SHA256: fmt.Sprintf("%064d", index)},
+		}
+	}
+	report := quality.NewCoverageReport(repositories)
+	var output bytes.Buffer
+	if err := writeCoverageOutputTo(&output, report, "summary", directory); err != nil {
+		t.Fatalf("write fleet summary: %v", err)
+	}
+	if output.Len() >= 64<<10 {
+		t.Fatalf("fleet summary length = %d, want below the session-message body limit", output.Len())
+	}
+	if !strings.Contains(output.String(), "diagnostics="+filepath.Join(directory, "coverage-diagnostics.yaml")) || !strings.Contains(output.String(), "diagnostics-sha256=") {
+		t.Fatalf("fleet summary does not reference the aggregate diagnostic index: %q", output.String())
+	}
+	indexRaw, err := os.ReadFile(filepath.Join(directory, "coverage-diagnostics.yaml"))
+	if err != nil {
+		t.Fatalf("read diagnostic index: %v", err)
+	}
+	indexDigest := sha256.Sum256(indexRaw)
+	if !strings.Contains(output.String(), fmt.Sprintf("diagnostics-sha256=%x", indexDigest)) {
+		t.Fatalf("fleet summary has the wrong diagnostic index digest: %q", output.String())
+	}
+	indexInfo, err := os.Stat(filepath.Join(directory, "coverage-diagnostics.yaml"))
+	if err != nil {
+		t.Fatalf("stat diagnostic index: %v", err)
+	}
+	if indexInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("diagnostic index permissions = %o, want 600", indexInfo.Mode().Perm())
 	}
 }
 

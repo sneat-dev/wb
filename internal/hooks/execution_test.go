@@ -155,6 +155,47 @@ exit "${WB_TEST_EXIT:-0}"
 	}
 }
 
+func TestRunPlacesVerboseHookReportsBesidePrivateMetricsState(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	stateDir := filepath.Join(t.TempDir(), "wb-state")
+	metricsPath := filepath.Join(stateDir, "events.jsonl")
+	reportPath := filepath.Join(t.TempDir(), "report-root")
+	mustWrite(t, filepath.Join(configDir, "report-root.sh"), "#!/bin/sh\nprintf '%s\\n' \"$WB_HOOK_REPORT_ROOT\" > \"$WB_TEST_REPORT_ROOT\"\n")
+	if err := os.Chmod(filepath.Join(configDir, "report-root.sh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nhooks:\n  pre-commit:\n    template: report-root.sh\nmetrics:\n  path: "+metricsPath+"\n")
+	git(t, repo, "add", ".wb")
+	git(t, repo, "commit", "-m", "configure hook report test")
+	t.Setenv("WB_TEST_REPORT_ROOT", reportPath)
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("hook result = %#v, error = %v", result, err)
+	}
+	contents, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(stateDir, "reports")
+	if got := strings.TrimSpace(string(contents)); got != want {
+		t.Fatalf("hook report root = %q, want %q", got, want)
+	}
+	if strings.Contains(string(contents), repo) {
+		t.Fatalf("hook report root unexpectedly points into repository: %q", contents)
+	}
+	output, err := gitOutput(repo, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("inspect repository status: %v", err)
+	}
+	if output != "" {
+		t.Fatalf("hook report setup dirtied the repository: %q", output)
+	}
+}
+
 func prepareNodeProfileTest(t *testing.T, lockfile, scripts string, tools ...string) (repo, toolLog string) {
 	t.Helper()
 	repo = initRepo(t)

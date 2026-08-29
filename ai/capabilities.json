@@ -1006,6 +1006,7 @@
                 "--older-than",
                 "--remote",
                 "--report-dir",
+                "--recover-stages",
                 "--resume-interrupted",
                 "--retire-shells",
                 "--superseded-by",
@@ -1202,7 +1203,8 @@
               "modes": [
                 "Measures statement-weighted Go coverage for one repository or a selected local fleet.",
                 "Opt-in process isolation shards explicitly named serial Go packages, runs every other package once, merges coverage losslessly, and can enforce a minimum while retaining the exact merged profile.",
-                "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline."
+                "Tracked .wb/quality.yaml lets worktree-merge candidate validation reuse approved repository sharding; a passing candidate skips the otherwise redundant exact-target baseline.",
+                "The summary format writes the full coverage.md and coverage.yaml report, then emits only a bounded aggregate line with the durable report path and SHA-256 digest for agent/session notifications."
               ]
             }
           ],
@@ -6314,6 +6316,7 @@
                 "--older-than",
                 "--remote",
                 "--report-dir",
+                "--recover-stages",
                 "--resume-interrupted",
                 "--retire-shells",
                 "--superseded-by",
@@ -6331,6 +6334,7 @@
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
+                "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
                 "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
                 "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
               ]
@@ -6571,6 +6575,7 @@
                 "--format",
                 "--initiator",
                 "--model",
+                "--mode",
                 "--no-claim",
                 "--original-prompt-file",
                 "--provider",
@@ -6581,6 +6586,8 @@
                 "One immutable private claim per repository in one shared run",
                 "A readable non-empty exact original prompt is mandatory and its snapshotted bytes/digest are bound before worktree creation",
                 "A reused Run ID rejects different prompt bytes before Git/worktree mutation",
+                "Agent-mode creation requires a live registered WB session before the first mutation; explicit manual mode requires --initiator",
+                "Each immutable claim records the live WB session ID that created it",
                 "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes",
                 "Creation from a dirty or off-base canonical checkout preserves its branch, index, and working tree while creating from the fetched remote base",
                 "Resume recovers the registered branch and active claim before current naming policy and preserves that claim unless an audited handoff is requested",
@@ -6725,7 +6732,8 @@
               "modes": [
                 "Rejects feature work in canonical clones and rejects unsafe or unrecognized linked-checkout state.",
                 "A worktree outside the resolver-recognized hierarchy is still admitted when it carries an active Work Log claim from wb worktree adopt --apply, resolved from the claim rather than the path, with every other check (including admission) applied unchanged.",
-                "--admission warn reports, and --admission enforce refuses, a commit in a managed worktree with no manifest or no recorded instruction."
+                "--admission warn reports, and --admission enforce refuses, a commit in a managed worktree with no manifest or no recorded instruction.",
+                "When guarding a canonical clone, fetches the selected origin target and returns a point-of-read freshness receipt with exact local/remote SHAs and left/right counts; stale, offline, fetch-failed, missing-target, and target-drift states are explicit warnings and never mutate the checkout."
               ]
             }
           ],
@@ -6780,6 +6788,16 @@
             {
               "path": "internal/worktrees/worktrees_test.go",
               "name": "TestGuardStillRefusesUnadoptedExternalWorktree",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/worktrees_test.go",
+              "name": "TestGuardCanonicalFreshnessReportsFreshlyFetchedRemoteState",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/worktrees_test.go",
+              "name": "TestGuardCanonicalFreshnessReportsOfflineExplicitly",
               "kind": "integration"
             }
           ],

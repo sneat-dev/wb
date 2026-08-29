@@ -196,6 +196,7 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 		"WB_BRANCH="+context.branch,
 		"WB_HOOKS_CONFIG="+block.Hook.ConfigPath,
 		"WB_HOOK_METRICS_PATH="+policy.Metrics.Path,
+		"WB_HOOK_REPORT_ROOT="+hookReportRoot(policy.Metrics.Path),
 		"WB_EXECUTABLE="+wbExecutable,
 		"WB_PROJECTS_ROOT="+options.ProjectsRoot,
 	)
@@ -207,6 +208,17 @@ func runTemplate(policy Policy, block HookBlock, options RunOptions, context eve
 		return 2, fmt.Errorf("run %s template %s: %w", block.ID, filepath.Clean(templatePath), err)
 	}
 	return 0, nil
+}
+
+// hookReportRoot keeps verbose hook diagnostics beside the configured local
+// metrics journal, outside the repository. Templates may create a unique run
+// directory below this root and expose only a compact reference to agents.
+func hookReportRoot(metricsPath string) string {
+	absolute, err := filepath.Abs(metricsPath)
+	if err != nil {
+		absolute = metricsPath
+	}
+	return filepath.Join(filepath.Dir(absolute), "reports")
 }
 
 // gitGeneratedEnvironmentVars pins the repository git itself resolved before

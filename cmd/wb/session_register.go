@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -29,10 +30,26 @@ A start-up hook cannot supply it: hooks run in an isolated subprocess whose
 parent is an intermediate shell rather than the agent, so a hook should prompt
 the agent to register rather than guess a PID on its behalf.
 
+Codex/live-harness setup: make registration the first WB command issued by the
+agent, before any mutating command:
+
+  wb session register --pid $PPID --runtime codex --model <exact-model>
+
+Do not substitute $$ (the intermediate shell) or let a hook guess the PID. An
+agent-mode create requires this live registration; for an intentional human
+operation use --mode manual --initiator <human> instead.
+
 Registering again for the same PID replaces the record, so a session that
 corrects its model does not have to clean up after itself.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, args []string) error {
+			// A hook or wrapper commonly expands $$ to the shell that launched
+			// WB. That process is short-lived and would make every later claim
+			// look orphaned. The supported shell form is $PPID, which names the
+			// live harness above that intermediate shell.
+			if record.PID == os.Getppid() {
+				return fmt.Errorf("session PID %d is the intermediate shell; register the live harness with --pid $PPID from its tool-call shell", record.PID)
+			}
 			directory, err := sessionDir()
 			if err != nil {
 				return err

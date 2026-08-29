@@ -307,6 +307,7 @@ func preflightAbortRepository(
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
 		projectsRoot,
+		home,
 		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
 		result.Task,
 		result.WorktreeDir,
@@ -386,6 +387,7 @@ func applyDiscardedAbort(
 	refreshed, err := inspectLifecycleWorktree(
 		ctx,
 		projectsRoot,
+		home,
 		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
 		result.Task,
 		result.WorktreeDir,
