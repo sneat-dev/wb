@@ -267,7 +267,11 @@ Cleanup separately classifies WB-owned `.wb-stage-*` and
 run and descriptor-safely archived outside the active task on apply. A
 non-empty, symlinked, or invalid stage remains explicit blocking cleanup
 backlog; it is never reinterpreted as a legacy repository worktree or silently
-discarded.
+discarded. Run `wb worktree cleanup <task> --recover-stages` for explicit
+audited recovery: WB inventories content and Git identity without following
+links, emits a deterministic private receipt, and with `--apply` archives the
+exact stage before normal cleanup can retire the task. Changed or ambiguous
+evidence is left untouched.
 
 `wb worktree rename` is the explicit, audited recycle path. It seals the old
 private Work Log before that worktree's projection disappears, then binds the

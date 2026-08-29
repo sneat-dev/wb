@@ -1640,7 +1640,7 @@ wb worktree summary improve-login --github --format json`,
 
 func newWorktreeCleanupCmd() *cobra.Command {
 	var base, format, reportDir, absorbedBy, supersededBy string
-	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, verbose bool
+	var allMerged, apply, deleteRemote, resumeInterrupted, retireShells, recoverStages, verbose bool
 	var olderThan time.Duration
 	var workers int
 	command := &cobra.Command{
@@ -1686,7 +1686,12 @@ only and never participates in --all-merged fleet sweeps.
 Reserved .wb-stage-* and .wb-retired-stage-* entries are first-class cleanup
 backlog. Apply descriptor-safely archives an exact recognized empty stage
 outside the active task. A non-empty, symlinked, replaced, or invalid stage
-blocks the task and is preserved for audited recovery.
+blocks the task and is preserved for audited recovery. --recover-stages is the
+explicit audited recovery flow for one or more named tasks: it inventories
+every non-empty retired stage without following links, records Git identity and
+a deterministic content digest in a private receipt, and with --apply archives
+the exact stage before it can be cleaned. Ambiguous or changed evidence stays
+in place. Run normal cleanup again after recovery has completed.
 
 For one or more specifically named tasks, the implicit age window is zero and --apply
 requires --remote: definition of done includes retirement of the source remote
@@ -1725,6 +1730,15 @@ Anything else is left untouched and reported. It cannot be combined with a
 task argument or --all-merged, and is itself dry-run by default; --apply is
 required to remove anything.`,
 		Args: func(command *cobra.Command, args []string) error {
+			if recoverStages {
+				if len(args) == 0 {
+					return fmt.Errorf("--recover-stages requires one or more named tasks")
+				}
+				if allMerged || retireShells {
+					return fmt.Errorf("--recover-stages cannot be combined with --all-merged or --retire-shells")
+				}
+				return nil
+			}
 			if retireShells {
 				if len(args) != 0 {
 					return fmt.Errorf("--retire-shells sweeps every task; it cannot be combined with a task argument")
@@ -1762,6 +1776,46 @@ required to remove anything.`,
 					encoder := json.NewEncoder(command.OutOrStdout())
 					encoder.SetIndent("", "  ")
 					return encoder.Encode(outcome)
+				default:
+					return fmt.Errorf("unsupported format %q; use text or json", format)
+				}
+			}
+			if recoverStages {
+				outcomes := make([]worktrees.RetiredStageRecoveryOutcome, 0, len(args))
+				for _, task := range args {
+					outcome, err := worktrees.RecoverRetiredStages(command.Context(), worktrees.RetiredStageRecoveryOptions{
+						ProjectsRoot: projectsRoot, Task: task, Apply: apply,
+					})
+					if err != nil {
+						return err
+					}
+					outcomes = append(outcomes, outcome)
+				}
+				switch format {
+				case "text":
+					for _, outcome := range outcomes {
+						if outcome.ReceiptPath != "" {
+							if _, err := fmt.Fprintf(command.OutOrStdout(), "receipt: %s\n", outcome.ReceiptPath); err != nil {
+								return err
+							}
+						}
+						for _, result := range outcome.Results {
+							state := "preserved"
+							if result.Applied {
+								state = "archived"
+							} else if result.Eligible {
+								state = "would archive"
+							}
+							if _, err := fmt.Fprintf(command.OutOrStdout(), "%-13s %s: %s\n", state, result.Path, result.Reason); err != nil {
+								return err
+							}
+						}
+					}
+					return nil
+				case "json":
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					return encoder.Encode(outcomes)
 				default:
 					return fmt.Errorf("unsupported format %q; use text or json", format)
 				}
@@ -1864,6 +1918,7 @@ required to remove anything.`,
 	command.Flags().StringVar(&supersededBy, "superseded-by", "", "use an explicit trusted-reviewer receipt to retire an intentionally superseded split branch")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&retireShells, "retire-shells", false, "sweep every task for an empty pre-existing shell (owner directory and/or retired lock, no live checkout) and retire it")
+	command.Flags().BoolVar(&recoverStages, "recover-stages", false, "audit and privately archive non-empty retired stages for named tasks")
 	// --parallel is the fleet-wide name for this ceiling: six other commands
 	// already spell it that way, and "workers" reads as a second noun beside
 	// WB's own tasks. --workers/-j stays as a hidden deprecated alias so

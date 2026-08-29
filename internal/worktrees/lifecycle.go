@@ -297,6 +297,8 @@ type LifecycleArtifact struct {
 	Path          string `json:"path"`
 	Kind          string `json:"kind"`
 	State         string `json:"state"`
+	Repository    string `json:"repository,omitempty"`
+	NonBlocking   bool   `json:"non_blocking,omitempty"`
 	Disposition   string `json:"disposition"`
 	Eligible      bool   `json:"eligible"`
 	Applied       bool   `json:"applied"`
@@ -967,7 +969,7 @@ func listLayout(
 		}
 		for _, entry := range entries {
 			candidate := filepath.Join(taskRoot, entry.Name())
-			if artifact, internal := inspectLifecycleArtifact(layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
+			if artifact, internal := inspectLifecycleArtifact(ctx, layout.WorktreesRoot, taskEntry.Name(), candidate, entry); internal {
 				artifacts = append(artifacts, artifact)
 				continue
 			}
@@ -1148,7 +1150,7 @@ func runInspections(
 	return results, diagnostics
 }
 
-func inspectLifecycleArtifact(worktreesRoot, task, path string, entry os.DirEntry) (LifecycleArtifact, bool) {
+func inspectLifecycleArtifact(ctx context.Context, worktreesRoot, task, path string, entry os.DirEntry) (LifecycleArtifact, bool) {
 	name := entry.Name()
 	kind, state, recognized := lifecycleArtifactName(name)
 	if !recognized {
@@ -1178,6 +1180,9 @@ func inspectLifecycleArtifact(worktreesRoot, task, path string, entry os.DirEntr
 	}
 	if !empty {
 		artifact.Reason = "reserved WB stage is non-empty and requires audited recovery before task cleanup"
+		if repository, err := OriginSlug(ctx, path); err == nil {
+			artifact.Repository = repository
+		}
 		return artifact, true
 	}
 	artifact.Eligible = true
@@ -1430,6 +1435,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			Reason: "durable cleanup backlog awaiting exact local branch retirement"})
 	}
 	blockDiagnosedTasks(results, listed.Diagnostics, backlogPaths)
+	scopeLifecycleArtifacts(listed.Artifacts, normalized.ExactRepository, normalized.Filter)
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
@@ -3005,6 +3011,9 @@ func blockDiagnosedTasks(results []CleanupResult, diagnostics []ListDiagnostic, 
 func blockArtifactTasks(results []CleanupResult, artifacts []LifecycleArtifact) {
 	reasonByTask := make(map[string]string)
 	for _, artifact := range artifacts {
+		if artifact.NonBlocking {
+			continue
+		}
 		// An empty task namespace has no repository under it to coordinate
 		// with, so its own ineligibility never blocks a task.
 		if artifact.Eligible || artifact.Kind == lifecycleArtifactKindTaskNamespace {
@@ -3020,6 +3029,24 @@ func blockArtifactTasks(results []CleanupResult, artifacts []LifecycleArtifact) 
 		if reason := reasonByTask[key]; reason != "" && results[index].Eligible {
 			results[index].Eligible = false
 			results[index].Reason = "coordinated task blocked by WB lifecycle artifact cleanup backlog " + reason
+		}
+	}
+}
+
+// scopeLifecycleArtifacts keeps an exact repository cleanup from being held
+// hostage by a non-empty retired stage that is itself a proven Git checkout
+// for a different repository. An unclassified stage has no safe identity and
+// remains blocking; that is the deliberate fail-closed boundary.
+func scopeLifecycleArtifacts(artifacts []LifecycleArtifact, exactRepository, filter string) {
+	for index := range artifacts {
+		artifact := &artifacts[index]
+		if artifact.Repository == "" {
+			continue
+		}
+		if exactRepository != "" && artifact.Repository != exactRepository ||
+			filter != "" && !filterMatches(filter, artifact.Repository) {
+			artifact.NonBlocking = true
+			artifact.Reason = fmt.Sprintf("retired stage belongs to %s, outside this repository-scoped cleanup; recover it separately", artifact.Repository)
 		}
 	}
 }
