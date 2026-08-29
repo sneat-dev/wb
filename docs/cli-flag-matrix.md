@@ -52,6 +52,16 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `version`, `self-update` | rejected | rejected | rejected | yes |
 | `commands` | rejected | rejected | rejected | yes |
 
+## `archive clean` command flags
+
+`wb archive clean` plans by default. `--apply` deletes an archived clone only
+after its normal safety predicate passes. Untracked paths are itemized in every
+plan; `--apply` alone refuses them. `--delete-untracked` is valid only as the
+separate narrow authority alongside `--apply`: it rereads the exact manifest,
+refuses drift, symlinks, and traversal, records the durable itemized receipt,
+and then allows the normal archive prune. It is not a cache-name exception or
+a general force flag.
+
 ## Precedence and non-interactive contract
 
 - `--projects-root` overrides the default `<home>/projects` for the selected

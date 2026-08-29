@@ -9,9 +9,9 @@ import (
 
 // TestArchiveCleanCLI exercises the real built binary against two local
 // clones: one archived and clean (deletable), one archived but holding an
-// untracked file (refused). It asserts the report names both outcomes with
-// their reasons, that a dry run deletes neither, and that --apply deletes
-// only the deletable one.
+// untracked file. It asserts that a dry run itemizes the untracked path,
+// ordinary --apply preserves it, and the narrow explicit flag deletes only
+// that planned path before pruning the clone.
 func TestArchiveCleanCLI(t *testing.T) {
 	// Not t.Parallel(): this test uses t.Setenv for PATH and WB_HOME, which
 	// Go's testing package forbids combining with parallel execution.
@@ -38,6 +38,9 @@ func TestArchiveCleanCLI(t *testing.T) {
 	if !strings.Contains(plan.stdout, "skipped      acme/dirty-repo") || !strings.Contains(plan.stdout, "untracked") {
 		t.Errorf("dry-run report missing refused clone with reason: %s", plan.stdout)
 	}
+	if !strings.Contains(plan.stdout, "untracked file untracked.txt (4 bytes)") {
+		t.Errorf("dry-run did not itemize untracked path and size: %s", plan.stdout)
+	}
 	if _, err := os.Stat(clean); err != nil {
 		t.Fatal("dry-run deleted the deletable clone")
 	}
@@ -60,6 +63,17 @@ func TestArchiveCleanCLI(t *testing.T) {
 	}
 	if _, err := os.Stat(dirty); err != nil {
 		t.Fatal("apply deleted the dirty clone")
+	}
+
+	authorised := runWB(t, "archive", "clean", "--projects-root", root, "--filter", "dirty-repo", "--apply", "--delete-untracked")
+	if authorised.exitCode != exitOK {
+		t.Fatalf("authorised untracked deletion exit = %d stderr=%s stdout=%s", authorised.exitCode, authorised.stderr, authorised.stdout)
+	}
+	if !strings.Contains(authorised.stdout, "deleted      acme/dirty-repo") || !strings.Contains(authorised.stdout, "receipt ") {
+		t.Errorf("authorised deletion report lacks deletion receipt: %s", authorised.stdout)
+	}
+	if _, err := os.Stat(dirty); !os.IsNotExist(err) {
+		t.Fatal("--apply --delete-untracked did not prune the authorised archived clone")
 	}
 }
 

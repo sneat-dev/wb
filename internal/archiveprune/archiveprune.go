@@ -40,9 +40,33 @@ type Options struct {
 	// exact same evaluation and reports the exact same eligibility, but never
 	// calls os.RemoveAll.
 	Apply bool
+	// DeleteUntracked authorizes the deliberately narrow exception to the usual
+	// clean-working-tree predicate. It has no effect without Apply. Clean still
+	// plans and itemizes untracked paths by default; this flag is the separate,
+	// explicit authority required before it can delete them.
+	DeleteUntracked bool
 	// Progress, when set, receives one "[n/N] org/repo" line per repository as
 	// it is evaluated, so a long fleet sweep is distinguishable from a hang.
 	Progress io.Writer
+
+	// beforeUntrackedRevalidation is a package-private test seam. Production
+	// callers cannot set it; it lets the safety contract prove that a path
+	// changed between plan and deletion is refused rather than guessed at.
+	beforeUntrackedRevalidation func()
+}
+
+// UntrackedEntry is one exact untracked filesystem entry observed in a clone.
+// Path is always relative to the clone root; Size is bytes for a regular file
+// and the filesystem-reported size for a directory.
+type UntrackedEntry struct {
+	Path string `json:"path" yaml:"path"`
+	Kind string `json:"kind" yaml:"kind"`
+	Size int64  `json:"size" yaml:"size"`
+
+	device uint64
+	inode  uint64
+	mode   uint32
+	hash   string
 }
 
 // Result is the plan or outcome for one local clone.
@@ -59,15 +83,24 @@ type Result struct {
 	// one, every failing check, joined so the report is self-explanatory
 	// without cross-referencing anything else.
 	Reason string `json:"reason" yaml:"reason"`
+	// Untracked itemizes every untracked file and directory found during the
+	// plan. It is present for dry runs and refusals, never inferred from a count.
+	Untracked []UntrackedEntry `json:"untracked,omitempty" yaml:"untracked,omitempty"`
+	// ReceiptPath names the durable, itemized WB receipt written before an
+	// explicitly authorised untracked deletion and finalized before pruning.
+	ReceiptPath string `json:"receipt_path,omitempty" yaml:"receipt_path,omitempty"`
 	// Error is set only when the deletion itself failed after the clone was
 	// judged eligible.
 	Error string `json:"error,omitempty" yaml:"error,omitempty"`
+
+	untrackedOnly bool
 }
 
 // Outcome is a whole clean run.
 type Outcome struct {
-	Apply   bool     `json:"apply" yaml:"apply"`
-	Results []Result `json:"results" yaml:"results"`
+	Apply           bool     `json:"apply" yaml:"apply"`
+	DeleteUntracked bool     `json:"delete_untracked" yaml:"delete_untracked"`
+	Results         []Result `json:"results" yaml:"results"`
 }
 
 // Clean discovers local clones below options.ProjectsRoot, evaluates every
@@ -91,17 +124,22 @@ func Clean(ctx context.Context, options Options) (Outcome, error) {
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].Slug() < filtered[j].Slug() })
 
-	outcome := Outcome{Apply: options.Apply}
+	outcome := Outcome{Apply: options.Apply, DeleteUntracked: options.DeleteUntracked}
 	for index, repo := range filtered {
 		if options.Progress != nil {
 			_, _ = fmt.Fprintf(options.Progress, "[%d/%d] %s\n", index+1, len(filtered), repo.Slug())
 		}
 		result := Evaluate(ctx, root, repo)
-		if options.Apply && result.Eligible {
-			if err := os.RemoveAll(repo.Path); err != nil {
-				result.Error = err.Error()
-			} else {
-				result.Applied = true
+		if options.Apply {
+			switch {
+			case result.Eligible:
+				if err := os.RemoveAll(repo.Path); err != nil {
+					result.Error = err.Error()
+				} else {
+					result.Applied = true
+				}
+			case options.DeleteUntracked && result.untrackedOnly:
+				result = cleanAuthorizedUntracked(ctx, root, repo, result, options)
 			}
 		}
 		outcome.Results = append(outcome.Results, result)
@@ -141,7 +179,18 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 		result.Reason = fmt.Sprintf("could not read git status: %v", err)
 		return result
 	}
-	blockers = append(blockers, workingTreeBlockers(status)...)
+	if len(status.Untracked) > 0 {
+		entries, planErr := planUntracked(repo.Path, status.Untracked)
+		if planErr != nil {
+			result.Reason = fmt.Sprintf("could not safely itemize untracked paths: %v", planErr)
+			return result
+		}
+		result.Untracked = entries
+	}
+	blockers = append(blockers, workingTreeBlockers(status, false)...)
+	if len(result.Untracked) > 0 {
+		blockers = append(blockers, fmt.Sprintf("%s (pass --apply --delete-untracked to explicitly delete exactly the itemized paths)", plural(len(result.Untracked), "untracked path")))
+	}
 	blockers = append(blockers, unpushedBranchBlockers(status)...)
 	if len(status.Stashed) > 0 {
 		blockers = append(blockers, plural(len(status.Stashed), "stash entry"))
@@ -182,6 +231,7 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 	blockers = append(blockers, claims...)
 
 	if len(blockers) > 0 {
+		result.untrackedOnly = len(result.Untracked) > 0 && len(blockers) == 1
 		result.Reason = strings.Join(blockers, "; ")
 		return result
 	}
@@ -191,12 +241,12 @@ func Evaluate(ctx context.Context, projectsRoot string, repo discover.Repo) Resu
 	return result
 }
 
-func workingTreeBlockers(status gitops.RepoStatus) []string {
+func workingTreeBlockers(status gitops.RepoStatus, includeUntracked bool) []string {
 	var blockers []string
 	if n := len(status.Modified); n > 0 {
 		blockers = append(blockers, plural(n, "modified file"))
 	}
-	if n := len(status.Untracked); n > 0 {
+	if n := len(status.Untracked); includeUntracked && n > 0 {
 		blockers = append(blockers, plural(n, "untracked file"))
 	}
 	if n := len(status.Conflicted); n > 0 {

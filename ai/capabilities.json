@@ -17,11 +17,13 @@
               "path": "wb archive clean",
               "flags": [
                 "--apply",
+                "--delete-untracked",
                 "--format"
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required to delete anything",
-                "A clone is eligible only when its repository is confirmed archived on GitHub via a live per-repository check, the working tree has no uncommitted or untracked changes, there is no stash, every local branch and tag exists on origin, no linked worktree is registered against it, no non-terminal WB Work Log claim references it, and it is not marked wb.skip-sync",
+                "Every dry run itemizes each untracked path and size. --apply preserves an otherwise-safe clone with untracked paths unless --delete-untracked is also present; that narrow authority rereads the exact manifest, rejects drift, refuses links and traversal, records a durable receipt, and only then prunes the clone",
+                "A clone is eligible only when its repository is confirmed archived on GitHub via a live per-repository check, the working tree has no uncommitted changes, there is no stash, every local branch and tag exists on origin, no linked worktree is registered against it, no non-terminal WB Work Log claim references it, and it is not marked wb.skip-sync",
                 "Any check that cannot be completed (GitHub unreachable, a ref that will not resolve, a claim that cannot be read) makes that clone not deletable; wb never guesses",
                 "One repository's evaluation failure never aborts the sweep over the rest of the fleet",
                 "Every clone is reported, deletable or not, with the exact reason; skips are reported as prominently as deletions"
@@ -37,6 +39,7 @@
               "command": "wb archive clean --help",
               "contains": [
                 "--apply",
+                "--delete-untracked",
                 "confirmed archived on GitHub",
                 "no linked worktrees",
                 "wb.skip-sync"
@@ -53,7 +56,8 @@
               "marker": "# Archived clone cleanup",
               "examples": [
                 "wb archive clean --filter acme",
-                "wb archive clean --apply"
+                "wb archive clean --apply",
+                "wb archive clean --apply --delete-untracked"
               ]
             }
           ],
@@ -75,6 +79,11 @@
             {
               "path": "internal/archiveprune/archiveprune_test.go",
               "name": "TestClean_RefusesUntrackedFiles",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/archiveprune/archiveprune_test.go",
+              "name": "TestClean_AuthorizedUntrackedDeletionWritesReceiptThenPrunes",
               "kind": "integration"
             },
             {
