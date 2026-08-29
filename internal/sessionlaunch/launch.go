@@ -256,6 +256,33 @@ func Start(ctx context.Context, options Options) (Result, error) {
 	return startWithDependencies(ctx, options, deps)
 }
 
+// PreflightLocal verifies the fixed local launcher dependencies without
+// creating a launch plan, claiming a resume route, or changing custody.
+func PreflightLocal(sourceRuntime string) error {
+	deps, err := defaultDependencies("")
+	if err != nil {
+		return err
+	}
+	authority := sessionauthority.Launch{SourceRuntime: sourceRuntime}
+	spec, err := harnessSpecForAuthority(authority, "/")
+	if err != nil {
+		return err
+	}
+	path, err := deps.lookPath(spec.Executable)
+	if err != nil {
+		return fmt.Errorf("fixed %s harness executable %q is unavailable: %w", spec.Runtime, spec.Executable, err)
+	}
+	if _, err := cleanAbsoluteExecutable(path); err != nil {
+		return err
+	}
+	path, err = deps.wbExecutable()
+	if err != nil {
+		return fmt.Errorf("locate private WB launcher: %w", err)
+	}
+	_, err = cleanAbsoluteExecutable(path)
+	return err
+}
+
 func Inspect(ctx context.Context, options Options) (Result, error) {
 	deps, err := defaultDependencies(options.ProjectsRoot)
 	if err != nil {
@@ -1036,6 +1063,25 @@ func waitExecSuccess(ctx context.Context, deps dependencies, attempt *launchAtte
 					TargetWorkLogReference: evidence.TargetWorkLogReference, Diagnostic: evidence.Diagnostic,
 				}
 				return &AttemptFailureError{Evidence: evidence}
+			}
+			terminal, terminalFound, terminalErr := deps.tmux.PaneFailure(waitCtx, plan.TmuxName)
+			if terminalErr != nil {
+				return terminalErr
+			}
+			if terminalFound {
+				diagnostic := fmt.Sprintf("fixed %s harness exited with status %d", plan.Runtime, terminal.ExitStatus)
+				if terminal.Diagnostic != "" {
+					diagnostic += ": " + terminal.Diagnostic
+				}
+				_, releaseDigest, digestErr := attempt.loadRelease()
+				if digestErr != nil {
+					return digestErr
+				}
+				if err := attempt.saveExecFailure(plan, planDigest, release.ReadyDigest, releaseDigest, release.PID,
+					errors.New(diagnostic), deps.now()); err != nil {
+					return err
+				}
+				continue
 			}
 			pid, exists, paneErr := deps.tmux.PanePID(waitCtx, plan.TmuxName)
 			if paneErr != nil {

@@ -25,6 +25,14 @@ type fakeTmux struct {
 	startErr error
 	onStart  func()
 	onPane   func()
+	failure  *tmuxFailure
+}
+
+func (f *fakeTmux) PaneFailure(context.Context, string) (tmuxFailure, bool, error) {
+	if f.failure == nil {
+		return tmuxFailure{}, false, nil
+	}
+	return *f.failure, true, nil
 }
 
 func (f *fakeTmux) StartDetached(_ context.Context, name, cwd, command string, args []string) error {
@@ -182,6 +190,47 @@ func TestStartRegistersReadyBeforeReleaseAndReplaysWithoutRelaunch(t *testing.T)
 	if !second.Reused || tmux.starts != 1 || beforeCalls != 1 {
 		t.Fatalf("replay = %#v starts=%d before=%d", second, tmux.starts, beforeCalls)
 	}
+}
+
+func TestStartRetainsImmediateHarnessExitStatusAndDiagnostic(t *testing.T) {
+	fixture := newLauncherRetryFixture(t)
+	fence, _ := fixture.createReleasedAttempt(t, false, true)
+	fixture.tmux.pid = 919191
+	fixture.tmux.failure = &tmuxFailure{ExitStatus: 17, Diagnostic: "fatal startup configuration"}
+	if err := fence.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := startWithDependencies(context.Background(), fixture.options(nil), fixture.deps)
+	var failure *AttemptFailureError
+	if !errors.As(err, &failure) {
+		t.Fatalf("start error = %v, want AttemptFailureError", err)
+	}
+	if failure.Evidence.AttemptID == "" || !strings.Contains(failure.Evidence.Diagnostic, "status 17") ||
+		!strings.Contains(failure.Evidence.Diagnostic, "fatal startup configuration") {
+		t.Fatalf("failure evidence = %#v", failure.Evidence)
+	}
+}
+
+func TestPreflightLocalDistinguishesMissingTmuxAndHarness(t *testing.T) {
+	t.Run("missing tmux", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		err := PreflightLocal(RuntimeCodex)
+		if err == nil || !strings.Contains(err.Error(), "fixed tmux executable is unavailable") {
+			t.Fatalf("preflight error = %v", err)
+		}
+	})
+	t.Run("missing harness", func(t *testing.T) {
+		bin := t.TempDir()
+		if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte("fixture"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		err := PreflightLocal(RuntimeCodex)
+		if err == nil || !strings.Contains(err.Error(), `fixed codex harness executable "codex" is unavailable`) {
+			t.Fatalf("preflight error = %v", err)
+		}
+	})
 }
 
 func TestRunPrivateLauncherPublishesReadyThenExecsFixedArgvAfterRelease(t *testing.T) {

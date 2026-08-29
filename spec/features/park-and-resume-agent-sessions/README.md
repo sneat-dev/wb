@@ -55,6 +55,16 @@ directory. A zero-member parked session remains locally resumable using a
 deterministic private neutral directory under the retained parked aggregate;
 no caller path or arbitrary current directory is accepted.
 
+#### REQ: discoverable-resume-identity-and-launch-diagnostics
+
+`wb session list --format json` MUST expose the stable `parked_session_id` for
+every parked source and distinguish it from `wb_session_id`. Help MUST state
+which value `wb session resume` consumes and how to obtain it. A fresh local
+resume MUST preflight its fixed tmux, harness, and WB executables before it
+claims a route or changes custody. If a released harness exits during startup,
+WB MUST retain the exact exit status and a bounded terminal diagnostic against
+that immutable attempt, and an identical retry MUST remain receipt-gated.
+
 #### REQ: no-later-session-custody-theft
 
 A resumer MUST refuse before any member mutation when a worktree's branch,
@@ -149,6 +159,12 @@ registry, or custody mutation.
 **Given** a parked source session owned no worktrees
 **When** a coordinator resumes it locally
 **Then** exactly one successor launches in the deterministic private neutral directory under the retained aggregate, without using the caller's current directory.
+
+### AC: resume-is-discoverable-and-startup-failures-are-actionable (verifies REQ:discoverable-resume-identity-and-launch-diagnostics)
+
+**Given** a registered session is parked and only public CLI output is available
+**When** a coordinator lists sessions and starts local resume
+**Then** the parked row exposes the exact resume argument, missing tmux or harness refuses before route or custody mutation, and an immediately exiting harness reports and retains its exact status plus bounded startup diagnostic for a receipt-gated retry.
 
 ### AC: remote-bundle-resume-completes
 

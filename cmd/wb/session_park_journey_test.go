@@ -551,22 +551,34 @@ new-session)
   [ "$1" = "-c" ]
   cwd="$2"
   shift 2
+  executable="$1"
+  launch_flag="$2"
+  store_root="$3"
+  handoff_id="$4"
+  attempt_id="$5"
+  plan_digest="$6"
+  [ "$7" = ";" ]
   (
     cd "$cwd"
-    exec "$@"
+    exec "$executable" "$launch_flag" "$store_root" "$handoff_id" "$attempt_id" "$plan_digest"
   ) >/dev/null 2>"$WB_TEST_TMUX_DIR/$name.stderr" &
   echo "$!" >"$WB_TEST_TMUX_DIR/$name.pid"
   ;;
 list-panes)
   name=""
+  format=""
   for value in "$@"; do
     case "$value" in =*) name="${value#=}" ;; esac
+    case "$value" in *pane_dead*) format="$value" ;; esac
   done
   pid_file="$WB_TEST_TMUX_DIR/$name.pid"
   if [ -n "$name" ] && [ -f "$pid_file" ]; then
     pid="$(cat "$pid_file")"
     if kill -0 "$pid" 2>/dev/null; then
-      echo "$pid"
+      case "$format" in
+        *pane_pid*) printf '%s\t0\n' "$pid" ;;
+        *) printf '0\t0\n' ;;
+      esac
       exit 0
     fi
   fi

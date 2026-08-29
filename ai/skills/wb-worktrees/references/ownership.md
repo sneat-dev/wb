@@ -60,6 +60,10 @@ wb session list --live
 wb session prune
 ```
 
+For a parked row, `wb session list --format json` exposes both identities:
+`wb_session_id` names the source agent session, while `parked_session_id` is
+the value accepted by `wb session resume`.
+
 ## Write a safe continuation
 
 `wb session move --handover-file` and `wb session park --context-file` both
@@ -138,8 +142,12 @@ exception, never a silent bypass.
 containing every worktree owned by the active session. The context file may be
 `-` for stdin and is read as a bounded, regular, no-follow private input. It
 preserves dirty local work and does not commit, push, or remove any worktree.
-Local `wb session resume <parked-session-id>` is currently fail-closed until
-coordinator launch is wired; remote resume remains explicitly gated.
+Local `wb session resume <parked-session-id>` launches one fresh successor and
+attaches it to every retained member. Before a fresh launch claims its route or
+changes custody, it preflights the fixed tmux, harness, and WB executables. An
+early harness exit retains its exit status and a bounded terminal diagnostic;
+retry uses the same receipt-gated attempt evidence rather than allocating a
+second successor silently.
 
 ## Receive a parked session bundle
 

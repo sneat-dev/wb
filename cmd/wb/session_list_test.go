@@ -129,6 +129,29 @@ func TestSessionListJSONCarriesFullLists(t *testing.T) {
 	}
 }
 
+func TestSessionListJSONExposesParkedSessionIDForResume(t *testing.T) {
+	dir := t.TempDir()
+	record := registerTestSession(t, dir, os.Getpid())
+	if _, err := session.MarkParked(dir, record.PID, "park-discoverable"); err != nil {
+		t.Fatal(err)
+	}
+	withSessionWorktreeLister(t, func(context.Context, worktrees.ListOptions) ([]worktrees.ListResult, error) {
+		return nil, nil
+	})
+
+	var out, errOut bytes.Buffer
+	if err := runSessionList(dir, "unused", false, true, &out, &errOut); err != nil {
+		t.Fatal(err)
+	}
+	var rows []sessionRow
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].State != session.StateParked || rows[0].ParkedSessionID != "park-discoverable" {
+		t.Fatalf("rows = %#v, want one parked row with its resumable ID", rows)
+	}
+}
+
 func TestSessionListDegradesWhenWorktreesScanFails(t *testing.T) {
 	dir := t.TempDir()
 	registerTestSession(t, dir, os.Getpid())

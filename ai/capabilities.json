@@ -4475,6 +4475,7 @@
     {
       "id": "wb.session.list",
       "feature_refs": [
+        "spec/features/park-and-resume-agent-sessions/README.md",
         "spec/features/work-log/README.md"
       ],
       "since": "unreleased",
@@ -4490,7 +4491,8 @@
               ],
               "modes": [
                 "Lists agent sessions that registered on this machine, with liveness evaluated from the declared PID.",
-                "Derives per-session EFFORTS, WORKTREES, and BRANCHES columns from worktree owner registrations (PID match with a registration-time reuse guard); --format json carries the full lists."
+                "Derives per-session EFFORTS, WORKTREES, and BRANCHES columns from worktree owner registrations (PID match with a registration-time reuse guard); --format json carries the full lists.",
+                "For every parked row, --format json exposes parked_session_id as the public wb session resume argument, distinct from wb_session_id."
               ]
             }
           ],
@@ -4503,7 +4505,8 @@
               "command": "wb session list --help",
               "contains": [
                 "--live",
-                "--format"
+                "--format",
+                "parked_session_id"
               ]
             }
           ],
@@ -4529,6 +4532,11 @@
             {
               "path": "internal/session/session_test.go",
               "name": "TestListReportsLiveness",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/session_list_test.go",
+              "name": "TestSessionListJSONExposesParkedSessionIDForResume",
               "kind": "integration"
             }
           ],
@@ -5274,7 +5282,8 @@
                 "Loads and validates one parked checkpoint without exposing private continuation.",
                 "Launches exactly one local successor, attaches it to every member, and preserves dirty or unpushed member bytes without Git mutation.",
                 "Claims a durable single-winner resume route so local and remote resume cannot both proceed, and retries converge on the same successor.",
-                "Delivers remote resume over a fixed-argv SSH courier to wb session receive-park and finalizes the source only after validating the exact target receipt."
+                "Delivers remote resume over a fixed-argv SSH courier to wb session receive-park and finalizes the source only after validating the exact target receipt.",
+                "Preflights fixed local executables before route or custody mutation and retains an immediate harness exit status plus bounded terminal diagnostic against the immutable retryable attempt."
               ]
             }
           ],
@@ -5287,6 +5296,8 @@
               "command": "wb session resume --help",
               "contains": [
                 "<parked-session-id>",
+                "parked_session_id",
+                "wb session list --format json",
                 "--to",
                 "--via"
               ]
@@ -5323,6 +5334,21 @@
             {
               "path": "cmd/wb/session_park_test.go",
               "name": "TestSessionResumeLocalActualCustodyRefusalDoesNotClaimRoute",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionResumeLocalPreflightsBeforeClaimingRouteOrCustody",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/sessionlaunch/launch_test.go",
+              "name": "TestStartRetainsImmediateHarnessExitStatusAndDiagnostic",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/sessionlaunch/launch_test.go",
+              "name": "TestPreflightLocalDistinguishesMissingTmuxAndHarness",
               "kind": "unit"
             },
             {

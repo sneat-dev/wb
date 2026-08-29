@@ -12,13 +12,28 @@ import (
 type tmux interface {
 	StartDetached(context.Context, string, string, string, []string) error
 	PanePID(context.Context, string) (int, bool, error)
+	PaneFailure(context.Context, string) (tmuxFailure, bool, error)
 }
 
 type osTmux struct{ executable string }
 
+type tmuxFailure struct {
+	ExitStatus int
+	Diagnostic string
+}
+
 func (t osTmux) StartDetached(ctx context.Context, name, cwd, executable string, arguments []string) error {
+	if _, dead, err := t.PaneFailure(ctx, name); err != nil {
+		return err
+	} else if dead {
+		command := exec.CommandContext(ctx, t.executable, "kill-session", "-t", "="+name)
+		if output, err := command.CombinedOutput(); err != nil {
+			return fmt.Errorf("remove terminal tmux successor %s: %w: %s", name, err, boundedTmuxDetail(output))
+		}
+	}
 	args := []string{"new-session", "-d", "-s", name, "-c", cwd, executable}
 	args = append(args, arguments...)
+	args = append(args, ";", "set-option", "-t", "="+name, "remain-on-exit", "on")
 	command := exec.CommandContext(ctx, t.executable, args...)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -28,7 +43,7 @@ func (t osTmux) StartDetached(ctx context.Context, name, cwd, executable string,
 }
 
 func (t osTmux) PanePID(ctx context.Context, name string) (int, bool, error) {
-	command := exec.CommandContext(ctx, t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_pid}")
+	command := exec.CommandContext(ctx, t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_pid}\t#{pane_dead}")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -39,15 +54,55 @@ func (t osTmux) PanePID(ctx context.Context, name string) (int, bool, error) {
 		}
 		return 0, false, fmt.Errorf("inspect tmux successor %s: %w: %s", name, err, boundedTmuxDetail(output))
 	}
-	lines := strings.Fields(string(output))
-	if len(lines) != 1 {
-		return 0, false, fmt.Errorf("tmux successor %s has %d panes, want exactly one", name, len(lines))
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 {
+		return 0, false, fmt.Errorf("tmux successor %s returned %d pane fields, want PID and dead state", name, len(fields))
 	}
-	pid, err := strconv.Atoi(lines[0])
+	if fields[1] == "1" {
+		return 0, false, nil
+	}
+	if fields[1] != "0" {
+		return 0, false, fmt.Errorf("tmux successor %s reported invalid dead state %q", name, fields[1])
+	}
+	pid, err := strconv.Atoi(fields[0])
 	if err != nil || pid <= 0 {
-		return 0, false, fmt.Errorf("tmux successor %s reported invalid pane PID %q", name, lines[0])
+		return 0, false, fmt.Errorf("tmux successor %s reported invalid pane PID %q", name, fields[0])
 	}
 	return pid, true, nil
+}
+
+func (t osTmux) PaneFailure(ctx context.Context, name string) (tmuxFailure, bool, error) {
+	command := exec.CommandContext(ctx, t.executable, "list-panes", "-s", "-t", "="+name, "-F", "#{pane_dead}\t#{pane_dead_status}")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		detail := strings.ToLower(string(output))
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 &&
+			(strings.Contains(detail, "can't find session:") || strings.Contains(detail, "no server running on")) {
+			return tmuxFailure{}, false, nil
+		}
+		return tmuxFailure{}, false, fmt.Errorf("inspect tmux successor %s failure: %w: %s", name, err, boundedTmuxDetail(output))
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 {
+		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s returned %d failure fields, want dead state and exit status", name, len(fields))
+	}
+	if fields[0] == "0" {
+		return tmuxFailure{}, false, nil
+	}
+	if fields[0] != "1" {
+		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s reported invalid dead state %q", name, fields[0])
+	}
+	status, err := strconv.Atoi(fields[1])
+	if err != nil || status < 0 {
+		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s reported invalid exit status %q", name, fields[1])
+	}
+	capture := exec.CommandContext(ctx, t.executable, "capture-pane", "-p", "-S", "-200", "-t", "="+name)
+	diagnostic, captureErr := capture.CombinedOutput()
+	if captureErr != nil {
+		return tmuxFailure{}, false, fmt.Errorf("capture terminal tmux successor %s: %w: %s", name, captureErr, boundedTmuxDetail(diagnostic))
+	}
+	return tmuxFailure{ExitStatus: status, Diagnostic: boundedTmuxDetail(diagnostic)}, true, nil
 }
 
 func boundedTmuxDetail(raw []byte) string {

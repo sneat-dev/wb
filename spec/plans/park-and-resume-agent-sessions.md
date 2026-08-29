@@ -56,7 +56,7 @@ session-move test vectors and tracked handover policy.
 ### Task 2: Complete command journey and live release evidence
 
 **Id:** task-2
-**Verifies:** park-and-resume-agent-sessions#ac:local-resume-launches-one-successor, park-and-resume-agent-sessions#ac:zero-member-local-resume-has-private-root, park-and-resume-agent-sessions#ac:remote-bundle-resume-completes
+**Verifies:** park-and-resume-agent-sessions#ac:local-resume-launches-one-successor, park-and-resume-agent-sessions#ac:zero-member-local-resume-has-private-root, park-and-resume-agent-sessions#ac:resume-is-discoverable-and-startup-failures-are-actionable, park-and-resume-agent-sessions#ac:remote-bundle-resume-completes
 **Depends-On:** 1
 **Status:** planning
 
@@ -64,7 +64,8 @@ Wire `wb session park`, coordinator-launched local `wb session resume`, the
 fixed `wb session receive-park` target command, and a separate fixed-argv SSH
 courier. Prove one- and two-member success, zero-delivery refusal, zero-member
 local launch, dirty local preservation, exact continuation non-disclosure,
-per-stage interruption repair, concurrent winner behavior, and source
+public resume-ID discovery, zero-mutation executable preflight, retained early
+harness-exit diagnostics, per-stage interruption repair, concurrent winner behavior, and source
 parked-to-resumed finalization. Then obtain independent Sol/Terra review and run
 the live Mac-to-VM Luna journey before marking this task or plan complete.
 
