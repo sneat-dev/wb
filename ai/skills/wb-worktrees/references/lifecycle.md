@@ -189,9 +189,14 @@ wb worktree abort <task> --disposition not_landed --successor <agent-or-session>
   --model <exact-successor-model-or-unknown> --cli <invoking-cli-if-known> \
   --provider <routing-or-billing-provider-if-known> --apply
 wb worktree abort <task> --disposition discarded --apply --remote
+wb worktree abort <task> --disposition orphaned --claim <claim-id> \
+  --actor <approving-person-or-agent> --reason <audit-reason>
+wb worktree abort <task> --disposition orphaned --claim <claim-id> \
+  --actor <approving-person-or-agent> --reason <audit-reason> --apply
 wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown
 wb worktree abort fair-split --disposition discarded --apply --remote
 wb worktree abort fair-split --disposition discarded --all --apply --remote
+wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply
 ```
 
 Applied `handoff` and `not_landed` require exactly one successor and its exact
@@ -205,6 +210,13 @@ authorization to seal first, retire an exact unchanged remote source branch,
 then remove a clean unlocked worktree and its exact local branch. WB repeats
 the clean/head/registration checks at the removal boundary; a concurrent write
 makes it refuse.
+`orphaned` is an append-only terminalization for a claim whose checkout and
+refs have already vanished. It never deletes Git or filesystem state. Select
+one exact immutable claim and name the approving actor and reason; inspect the
+dry run first. Apply reacquires the claim lock and rechecks that the worktree
+path, Git registration, local branch, remote branch, and terminal record are
+all absent before recording the negative-evidence receipt. If any predicate
+cannot be proved or reappears, WB refuses without writing a terminal record.
 For a coordinated task with more than one repository, choose one member with
 `--filter <owner/repository>` or explicitly acknowledge every member with
 `--all`; an unscoped multi-repository abort refuses before sealing or removal.

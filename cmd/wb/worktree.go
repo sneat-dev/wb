@@ -692,6 +692,7 @@ never a token, credential, or secret.`,
 
 func newWorktreeAbortCmd() *cobra.Command {
 	var base, disposition, successor, format string
+	var claimID, actor, reason string
 	var model, cli, provider string
 	var apply, deleteRemote, all bool
 	command := &cobra.Command{
@@ -710,6 +711,14 @@ an exact matching remote source branch is then retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
 
+An orphaned disposition is narrower: the worktree and its local/remote branch
+are already gone, so WB deletes nothing. It requires one exact --claim plus an
+explicit --actor and --reason. Dry run and apply both prove the worktree path,
+Git registration, local branch, remote branch, and prior terminal record are
+absent; apply repeats every predicate under the claim lock before writing an
+append-only orphaned terminal receipt. It never pretends the vanished content
+or a final commit was inspected, and --remote is rejected.
+
 --filter (see the root flag) narrows which repositories in the task are
 touched, the same "owner/repository slug contains this substring" semantics
 as wb branch cleanup --filter. A repository --filter excludes is left
@@ -727,6 +736,7 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
+				ClaimID: claimID, Actor: actor, Reason: reason,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -770,7 +780,9 @@ The default is a dry-run plan.`,
 					continue
 				}
 				state := "would seal"
-				if result.Applied && result.WorktreeGone {
+				if result.Applied && result.Disposition == worktrees.AbortOrphaned {
+					state = "sealed absent claim"
+				} else if result.Applied && result.WorktreeGone {
 					state = "sealed and removed"
 				} else if result.Applied {
 					state = "sealed and resumable"
@@ -788,8 +800,11 @@ The default is a dry-run plan.`,
 		},
 	}
 	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
-	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, or discarded")
+	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, discarded, or orphaned")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
+	command.Flags().StringVar(&claimID, "claim", "", "exact immutable Work Log claim ID (required for orphaned)")
+	command.Flags().StringVar(&actor, "actor", "", "approving person or agent identity (required for orphaned)")
+	command.Flags().StringVar(&reason, "reason", "", "audit reason for sealing an absent orphaned claim")
 	command.Flags().StringVar(&model, "model", "", "required with applied handoff/not_landed: exact successor model or explicit unknown; WB never guesses")
 	command.Flags().StringVar(&cli, "cli", "", "optional invoking CLI/client identifier, supplied only when known")
 	command.Flags().StringVar(&provider, "provider", "", "optional routing/billing provider identifier, never a credential")

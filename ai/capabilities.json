@@ -5925,17 +5925,21 @@
               "flags": [
                 "--all",
                 "--apply",
+                "--actor",
                 "--base",
+                "--claim",
                 "--cli",
                 "--disposition",
                 "--format",
                 "--model",
                 "--provider",
+                "--reason",
                 "--remote",
                 "--successor"
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
                 "handoff/not_landed require a creator-declared successor model and preserve independent optional CLI/provider route identity",
                 "a durable post-removal backlog resumes exact local-ref retirement after interruption"
@@ -5951,13 +5955,17 @@
               "command": "wb worktree abort --help",
               "contains": [
                 "--successor",
+                "--claim",
+                "--actor",
+                "--reason",
                 "--model",
                 "--cli",
                 "--provider",
                 "--remote",
                 "--all",
                 "resumable",
-                "discarded"
+                "discarded",
+                "orphaned"
               ]
             }
           ],
@@ -5971,7 +5979,8 @@
               "marker": "## Abort instead of abandoning",
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
-                "wb worktree abort fair-split --disposition discarded --apply --remote"
+                "wb worktree abort fair-split --disposition discarded --apply --remote",
+                "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }
           ],
@@ -5983,6 +5992,16 @@
             {
               "path": "internal/worktrees/abort_test.go",
               "name": "TestAbortDiscardedUnusedWorktreesIsAudited",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/orphaned_claim_test.go",
+              "name": "TestAbortOrphanedClaimRequiresExactNegativeEvidenceAndSealsIt",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/orphaned_claim_test.go",
+              "name": "TestAbortOrphanedClaimRechecksAbsenceUnderClaimLock",
               "kind": "integration"
             },
             {

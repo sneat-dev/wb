@@ -391,6 +391,25 @@ recommends closing, then flip the gate to enforcing as a separate reversible
 change. Every step is idempotent and re-runnable, touches no working tree, and
 leaves the 8 currently dirty worktrees unmodified.
 
+### Task 18: Terminalize claims whose worktrees and refs are already absent
+
+**Id:** task-18
+**Verifies:** work-log#ac:orphaned-claim-terminalization-is-negative-evidence-not-inspection, work-log#ac:safe-terminal-retention
+**Depends-On:** task-8, task-16
+**Status:** complete
+**Implemented-by:** 859d940 (codex/issue-216-orphaned-claim)
+
+Extend `wb worktree abort` with an `orphaned` disposition selected by one exact
+immutable claim ID. Require an explicit approving actor and audit reason, keep
+dry run read-only, and reject remote-deletion authority because there must be
+nothing left to delete. Apply locks the exact claim and rereads the claimed
+worktree path, Git worktree registration, local branch, remote branch, and
+terminal record. Any present or unreadable predicate refuses; complete absence
+and an unchanged immutable claim append a private terminal receipt whose final
+commit is empty and whose typed evidence says that content was not inspected.
+Exercise races that recreate a branch or replace claim bytes between plan and
+apply and prove neither writes a terminal record.
+
 ## Open Questions
 
 1. The Synchestra service contract is being authored concurrently. Before Task
