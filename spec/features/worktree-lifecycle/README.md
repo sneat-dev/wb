@@ -87,6 +87,20 @@ state, last commit time, and local merge state.
 
 ### Guard and hooks
 
+#### REQ: point-of-read-canonical-freshness
+
+When `wb worktree guard` is run against a canonical clone, WB MUST fetch the
+configured `origin/<base>` target before comparing the exact local `HEAD` with
+that fetched ref using left/right commit counts. The result MUST be a
+machine-readable freshness receipt containing the target, local and remote
+commit IDs, counts, and an explicit status for current, ahead, stale, or
+diverged history. A failed fetch, unreachable remote, missing target, or target
+that moves during the check MUST be represented explicitly and MUST NOT be
+reported as current. The command MUST warn on every non-current status while
+leaving the canonical branch, index, and working tree unchanged. Internal hook
+callers MAY omit the network check; their checkout-policy result MUST retain
+its existing local-only behavior.
+
 #### REQ: guarded-transient-rebase
 
 The guard MUST reject detached development by default. It MAY allow a detached
@@ -383,7 +397,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
