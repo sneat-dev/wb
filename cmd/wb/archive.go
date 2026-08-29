@@ -31,18 +31,23 @@ func newArchiveCmd() *cobra.Command {
 func newArchiveCleanCmd() *cobra.Command {
 	var format string
 	var apply bool
+	var deleteUntracked bool
 	command := &cobra.Command{
 		Use:   "clean",
 		Short: "Plan or delete local clones of repositories confirmed archived on GitHub",
 		Long: `Inventory every local clone below --projects-root, confirm each one's
 archived status live against GitHub, and report per clone whether it is safe
 to delete and exactly why or why not. The default is a dry-run plan; --apply
-is required to delete anything.
+is required to delete anything. Untracked files are itemized in every plan and
+remain a refusal unless --apply is paired with --delete-untracked. That second
+flag authorizes only the exact itemized paths after WB rereads them unchanged;
+it is not a general force mode.
 
 A clone is eligible only when every one of these holds:
   - the repository is confirmed archived on GitHub right now (a live check,
     never a name pattern and never a cached local list)
-  - no uncommitted changes and no untracked files
+  - no uncommitted changes (untracked files require the separate, explicit
+    --apply --delete-untracked authorization described above)
   - no stashes
   - no unpushed commits on any local branch, not only the checked-out one
   - no local-only branches (every local branch exists on origin)
@@ -63,10 +68,11 @@ away as a bare count.`,
 				return err
 			}
 			outcome, err := archiveprune.Clean(cmd.Context(), archiveprune.Options{
-				ProjectsRoot: projectsRoot,
-				Filter:       filterFlag,
-				Apply:        apply,
-				Progress:     cmd.ErrOrStderr(),
+				ProjectsRoot:    projectsRoot,
+				Filter:          filterFlag,
+				Apply:           apply,
+				DeleteUntracked: deleteUntracked,
+				Progress:        cmd.ErrOrStderr(),
 			})
 			if err != nil {
 				return err
@@ -99,6 +105,7 @@ away as a bare count.`,
 		},
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "delete every eligible clone; the default is a dry-run plan")
+	command.Flags().BoolVar(&deleteUntracked, "delete-untracked", false, "with --apply, delete only unchanged itemized untracked paths from an otherwise-safe archived clone")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text, yaml, or json")
 	return command
 }
@@ -134,6 +141,12 @@ func printArchiveClean(cmd *cobra.Command, outcome archiveprune.Outcome) {
 		default:
 			refused++
 			_, _ = fmt.Fprintf(out, "  skipped      %s — %s\n", result.Repository, result.Reason)
+		}
+		for _, entry := range result.Untracked {
+			_, _ = fmt.Fprintf(out, "    untracked %s %s (%d bytes)\n", entry.Kind, entry.Path, entry.Size)
+		}
+		if result.ReceiptPath != "" {
+			_, _ = fmt.Fprintf(out, "    receipt %s\n", result.ReceiptPath)
 		}
 	}
 	_, _ = fmt.Fprintln(out)
