@@ -72,6 +72,9 @@ func Cover(ctx context.Context, repository, path string) RepositoryCoverage {
 // CoverWithOptions measures coverage with a deadline and retries for each Go
 // module's test command.
 func CoverWithOptions(ctx context.Context, repository, path string, options RunOptions) RepositoryCoverage {
+	if options.CoverageDiagnosticsRepository == "" {
+		options.CoverageDiagnosticsRepository = repository
+	}
 	report := RepositoryCoverage{Repository: repository, Path: path}
 	modules, err := goModules(path)
 	if err != nil {
