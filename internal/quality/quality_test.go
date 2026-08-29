@@ -2,12 +2,16 @@ package quality
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestCoverAggregatesGoStatements(t *testing.T) {
@@ -182,6 +186,72 @@ func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
 	}
 	if !strings.Contains(detail, "truncated") {
 		t.Fatalf("detail does not disclose truncation: %q", detail)
+	}
+}
+
+func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
+	module := t.TempDir()
+	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")
+	writeQualityFile(t, filepath.Join(module, "serial", "serial.go"), "package serial\n\nfunc Value() int { return 1 }\n")
+	writeQualityFile(t, filepath.Join(module, "serial", "serial_test.go"), `package serial
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestAlphaPasses(t *testing.T) { if Value() != 1 { t.Fatal("value") } }
+func TestBetaFails(t *testing.T) {
+	t.Log(strings.Repeat("oversized shard output ", 3000))
+	t.Fatal("exact-failing-shard-test")
+}
+`)
+	diagnosticsDir := filepath.Join(t.TempDir(), "reports")
+	report := CoverWithOptions(context.Background(), "example/durable", module, RunOptions{
+		GoTestShards:           2,
+		GoShardPackages:        []string{"./serial"},
+		CoverageDiagnosticsDir: diagnosticsDir,
+	})
+	if report.Status != StatusFailed {
+		t.Fatalf("coverage status = %s, want failed", report.Status)
+	}
+	if len(report.Error) >= 1100 {
+		t.Fatalf("bounded report error length = %d, want below the command detail cap", len(report.Error))
+	}
+	if report.Diagnostic == nil {
+		t.Fatal("failed coverage did not reference durable diagnostics")
+	}
+	manifestRaw, err := os.ReadFile(report.Diagnostic.Manifest)
+	if err != nil {
+		t.Fatalf("read diagnostic manifest: %v", err)
+	}
+	var manifest CoverageDiagnosticManifest
+	if err := yaml.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("parse diagnostic manifest: %v", err)
+	}
+	manifestDigest := sha256.Sum256(manifestRaw)
+	if report.Diagnostic.SHA256 != fmt.Sprintf("%x", manifestDigest) {
+		t.Fatalf("manifest digest = %q, want %x", report.Diagnostic.SHA256, manifestDigest)
+	}
+	if relative, err := filepath.Rel(diagnosticsDir, report.Diagnostic.Manifest); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		t.Fatalf("manifest path escapes diagnostics directory: %q (err=%v)", report.Diagnostic.Manifest, err)
+	}
+	if len(manifest.Files) != 1 {
+		t.Fatalf("diagnostic manifest files = %d, want one failed-shard artifact", len(manifest.Files))
+	}
+	artifact, err := os.ReadFile(manifest.Files[0].Path)
+	if err != nil {
+		t.Fatalf("read diagnostic artifact: %v", err)
+	}
+	if len(artifact) <= 1000 || !strings.Contains(string(artifact), "exact-failing-shard-test") || !strings.Contains(string(artifact), strings.Repeat("oversized shard output ", 3000)) {
+		t.Fatalf("diagnostic artifact lost oversized shard output (bytes=%d)", len(artifact))
+	}
+	if relative, err := filepath.Rel(diagnosticsDir, manifest.Files[0].Path); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
+		t.Fatalf("artifact path escapes diagnostics directory: %q (err=%v)", manifest.Files[0].Path, err)
+	}
+	digest := sha256.Sum256(artifact)
+	if manifest.Files[0].SHA256 != fmt.Sprintf("%x", digest) {
+		t.Fatalf("diagnostic digest = %q, want %x", manifest.Files[0].SHA256, digest)
 	}
 }
 

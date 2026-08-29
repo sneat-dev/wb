@@ -39,6 +39,13 @@ type RunOptions struct {
 	// CoverageProfile retains the exact merged Go profile for one module.
 	// Fleet and multi-module adapters reject it rather than inventing names.
 	CoverageProfile string
+	// CoverageDiagnosticsDir retains raw output from failed process-isolated
+	// coverage jobs beside the durable coverage report. The human-facing error
+	// remains bounded; this private artifact is the lossless recovery path.
+	CoverageDiagnosticsDir string
+	// CoverageDiagnosticsRepository identifies the owning repository in the
+	// private manifest when a fleet runner executes several repositories.
+	CoverageDiagnosticsRepository string
 	// Progress receives lifecycle events for external checks. Callers may use it
 	// for terminal diagnostics; reports remain the authoritative output.
 	Progress func(Progress)

@@ -398,6 +398,7 @@ func verificationGitSnapshot(repositoryPath string) verificationGitState {
 }
 
 func qualityRunOptionsForTarget(options quality.RunOptions, repository string) quality.RunOptions {
+	options.CoverageDiagnosticsRepository = repository
 	progress := options.Progress
 	if progress == nil {
 		return options
@@ -489,6 +490,7 @@ func writeCoverageOutput(report quality.CoverageReport, format, reportDir string
 func writeCoverageOutputTo(out io.Writer, report quality.CoverageReport, format, reportDir string) error {
 	var durableReport []byte
 	var durableReportPath string
+	var diagnosticsIndex *coverageDiagnosticArtifact
 	if reportDir != "" {
 		if err := os.MkdirAll(reportDir, 0o755); err != nil {
 			return err
@@ -503,6 +505,10 @@ func writeCoverageOutputTo(out io.Writer, report quality.CoverageReport, format,
 		durableReport = raw
 		durableReportPath = filepath.Join(reportDir, "coverage.yaml")
 		if err := os.WriteFile(durableReportPath, durableReport, 0o644); err != nil {
+			return err
+		}
+		diagnosticsIndex, err = writeCoverageDiagnosticsIndex(report, reportDir)
+		if err != nil {
 			return err
 		}
 	}
@@ -530,12 +536,64 @@ func writeCoverageOutputTo(out io.Writer, report quality.CoverageReport, format,
 		if coverageFailed(report) {
 			status = "failed"
 		}
-		_, err := fmt.Fprintf(out, "WB coverage %s: %.2f%% (%d/%d statements); report=%s; sha256=%x\n",
-			status, report.Percentage, report.Covered, report.Statements, durableReportPath, digest)
+		if _, err := fmt.Fprintf(out, "WB coverage %s: %.2f%% (%d/%d statements); report=%s; sha256=%x",
+			status, report.Percentage, report.Covered, report.Statements, durableReportPath, digest); err != nil {
+			return err
+		}
+		if diagnosticsIndex != nil {
+			if _, err := fmt.Fprintf(out, "; diagnostics=%s; diagnostics-sha256=%s", diagnosticsIndex.Path, diagnosticsIndex.SHA256); err != nil {
+				return err
+			}
+		}
+		_, err := io.WriteString(out, "\n")
 		return err
 	default:
 		return fmt.Errorf("unknown --format %q (want markdown, yaml, json, or summary)", format)
 	}
+}
+
+type coverageDiagnosticArtifact struct {
+	Path   string
+	SHA256 string
+}
+
+type coverageDiagnosticIndex struct {
+	SchemaVersion int                            `yaml:"schema_version" json:"schema_version"`
+	Repositories  []coverageDiagnosticIndexEntry `yaml:"repositories" json:"repositories"`
+}
+
+type coverageDiagnosticIndexEntry struct {
+	Repository string `yaml:"repository" json:"repository"`
+	Manifest   string `yaml:"manifest" json:"manifest"`
+	SHA256     string `yaml:"sha256" json:"sha256"`
+}
+
+func writeCoverageDiagnosticsIndex(report quality.CoverageReport, reportDir string) (*coverageDiagnosticArtifact, error) {
+	entries := make([]coverageDiagnosticIndexEntry, 0)
+	for _, repository := range report.Repositories {
+		if repository.Diagnostic == nil {
+			continue
+		}
+		entries = append(entries, coverageDiagnosticIndexEntry{
+			Repository: repository.Repository,
+			Manifest:   repository.Diagnostic.Manifest,
+			SHA256:     repository.Diagnostic.SHA256,
+		})
+	}
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Repository < entries[j].Repository })
+	raw, err := yaml.Marshal(coverageDiagnosticIndex{SchemaVersion: 1, Repositories: entries})
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(reportDir, "coverage-diagnostics.yaml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(raw)
+	return &coverageDiagnosticArtifact{Path: path, SHA256: fmt.Sprintf("%x", digest)}, nil
 }
 
 func writeVerificationOutput(report verificationIndex, format, reportDir, name string) error {
@@ -620,7 +678,7 @@ func checkNames(checks []quality.Check) []string {
 }
 
 func runOptions(options qualityOptions) quality.RunOptions {
-	return quality.RunOptions{Timeout: options.timeout, Retry: options.retry}
+	return quality.RunOptions{Timeout: options.timeout, Retry: options.retry, CoverageDiagnosticsDir: options.reportDir}
 }
 
 func checksForProfile(profile string) ([]quality.Check, error) {

@@ -196,6 +196,44 @@ func TestCoverageSummaryPreservesRealFailureVerdict(t *testing.T) {
 	}
 }
 
+func TestCoverageSummaryKeepsFleetDiagnosticReferenceBounded(t *testing.T) {
+	directory := t.TempDir()
+	repositories := make([]quality.RepositoryCoverage, 2000)
+	for index := range repositories {
+		repositories[index] = quality.RepositoryCoverage{
+			Repository: fmt.Sprintf("acme/repo-%04d", index),
+			Status:     quality.StatusFailed,
+			Diagnostic: &quality.CoverageDiagnostic{Manifest: filepath.Join(directory, fmt.Sprintf("manifest-%04d.yaml", index)), SHA256: fmt.Sprintf("%064d", index)},
+		}
+	}
+	report := quality.NewCoverageReport(repositories)
+	var output bytes.Buffer
+	if err := writeCoverageOutputTo(&output, report, "summary", directory); err != nil {
+		t.Fatalf("write fleet summary: %v", err)
+	}
+	if output.Len() >= 64<<10 {
+		t.Fatalf("fleet summary length = %d, want below the session-message body limit", output.Len())
+	}
+	if !strings.Contains(output.String(), "diagnostics="+filepath.Join(directory, "coverage-diagnostics.yaml")) || !strings.Contains(output.String(), "diagnostics-sha256=") {
+		t.Fatalf("fleet summary does not reference the aggregate diagnostic index: %q", output.String())
+	}
+	indexRaw, err := os.ReadFile(filepath.Join(directory, "coverage-diagnostics.yaml"))
+	if err != nil {
+		t.Fatalf("read diagnostic index: %v", err)
+	}
+	indexDigest := sha256.Sum256(indexRaw)
+	if !strings.Contains(output.String(), fmt.Sprintf("diagnostics-sha256=%x", indexDigest)) {
+		t.Fatalf("fleet summary has the wrong diagnostic index digest: %q", output.String())
+	}
+	indexInfo, err := os.Stat(filepath.Join(directory, "coverage-diagnostics.yaml"))
+	if err != nil {
+		t.Fatalf("stat diagnostic index: %v", err)
+	}
+	if indexInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("diagnostic index permissions = %o, want 600", indexInfo.Mode().Perm())
+	}
+}
+
 func TestResumeTargetsSelectsOnlyPriorFailures(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "verify.yaml"), []byte("schema_version: 1\nrepositories:\n  - repository: acme/failing\n    status: failed\n  - repository: acme/passing\n    status: passed\n"), 0o644); err != nil {

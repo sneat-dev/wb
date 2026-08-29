@@ -196,8 +196,12 @@ func Register(dir string, record Record) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	if err := os.WriteFile(recordPath(dir, record.PID), append(encoded, '\n'), 0o644); err != nil {
+	path := recordPath(dir, record.PID)
+	if err := os.WriteFile(path, append(encoded, '\n'), 0o644); err != nil {
 		return Record{}, fmt.Errorf("write session record: %w", err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		return Record{}, fmt.Errorf("set session record mode: %w", err)
 	}
 	return record, nil
 }
