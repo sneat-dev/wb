@@ -110,6 +110,49 @@ func TestAbortOrphanedClaimRechecksAbsenceUnderClaimLock(t *testing.T) {
 	}
 }
 
+func TestAbortOrphanedClaimRechecksImmutableClaimUnderLock(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "orphaned-claim-identity-race",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := readOrphanTestClaim(t, created[0].WorkLogPath)
+	gitTest(t, fixture.canonical, "worktree", "remove", created[0].WorktreeDir)
+	gitTest(t, fixture.canonical, "update-ref", "-d", "refs/heads/"+created[0].Branch)
+
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         claim.Task,
+		Disposition:  AbortOrphaned,
+		ClaimID:      claim.ClaimID,
+		Actor:        "founder",
+		Reason:       "confirmed lost",
+		Apply:        true,
+		beforeOrphanSeal: func() {
+			changed := claim
+			changed.Initiator = "replacement"
+			raw, marshalErr := json.Marshal(changed)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if writeErr := os.WriteFile(created[0].WorkLogPath, raw, 0o600); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		},
+	})
+	if err == nil {
+		t.Fatalf("orphan sealing ignored replaced immutable claim: %#v", results)
+	}
+	terminalPath := filepath.Join(filepath.Dir(filepath.Dir(created[0].WorkLogPath)), "terminals", claim.ClaimID+".json")
+	if _, statErr := os.Stat(terminalPath); !os.IsNotExist(statErr) {
+		t.Fatalf("claim-race refusal wrote terminal evidence: %v", statErr)
+	}
+}
+
 func TestAbortOrphanedClaimRefusesEveryNonAbsentPredicate(t *testing.T) {
 	tests := []struct {
 		name  string

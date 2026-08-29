@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -92,6 +93,11 @@ func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResul
 	if options.beforeOrphanSeal != nil {
 		options.beforeOrphanSeal()
 	}
+	if err := recheckOrphanedClaim(runDir, candidate.claim); err != nil {
+		result.Eligible = false
+		result.Reason = err.Error()
+		return []AbortResult{result}, fmt.Errorf("orphaned claim identity changed under lock: %w", err)
+	}
 	evidence, err := inspectOrphanedClaimAbsence(ctx, projectsRoot, candidate, actor, reason)
 	if err != nil {
 		result.Eligible = false
@@ -104,6 +110,25 @@ func abortOrphanedClaim(ctx context.Context, options AbortOptions) ([]AbortResul
 	result.Applied = true
 	result.Reason = "sealed from rechecked negative evidence; no vanished content was inspected"
 	return []AbortResult{result}, nil
+}
+
+func recheckOrphanedClaim(runDir *os.File, expected workLogClaim) error {
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return fmt.Errorf("open immutable claims: %w", err)
+	}
+	defer func() { _ = claims.Close() }()
+	var current workLogClaim
+	if err := readJSONAt(claims, expected.ClaimID+".json", &current); err != nil {
+		return fmt.Errorf("reread immutable claim: %w", err)
+	}
+	if err := validateOrphanedClaimIdentity(current); err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, expected) {
+		return fmt.Errorf("immutable claim bytes no longer describe the planned claim")
+	}
+	return nil
 }
 
 func orphanedAbortResult(projectsRoot string, candidate orphanedClaimCandidate, err error) AbortResult {

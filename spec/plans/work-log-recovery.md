@@ -405,9 +405,10 @@ dry run read-only, and reject remote-deletion authority because there must be
 nothing left to delete. Apply locks the exact claim and rereads the claimed
 worktree path, Git worktree registration, local branch, remote branch, and
 terminal record. Any present or unreadable predicate refuses; complete absence
-appends a private terminal receipt whose final commit is empty and whose typed
-evidence says that content was not inspected. Exercise a race that recreates a
-branch between plan and apply and prove it writes no terminal record.
+and an unchanged immutable claim append a private terminal receipt whose final
+commit is empty and whose typed evidence says that content was not inspected.
+Exercise races that recreate a branch or replace claim bytes between plan and
+apply and prove neither writes a terminal record.
 
 ## Open Questions
 

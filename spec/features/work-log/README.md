@@ -483,9 +483,9 @@ all absent
 **When** an explicitly identified actor supplies an audit reason, reviews the
 dry run, and applies the `orphaned` disposition
 **Then** WB locks that exact claim, rereads every absence predicate, refuses if
-anything reappears or cannot be proved, and otherwise appends a terminal receipt
-that records the negative evidence while carrying no invented final commit or
-claim that vanished content was inspected.
+the immutable claim changed or anything reappears or cannot be proved, and
+otherwise appends a terminal receipt that records the negative evidence while
+carrying no invented final commit or claim that vanished content was inspected.
 
 ## Decisions
 
