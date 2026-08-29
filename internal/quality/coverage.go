@@ -26,14 +26,22 @@ type CoverageReport struct {
 
 // RepositoryCoverage records aggregate Go coverage for one repository.
 type RepositoryCoverage struct {
-	Repository string           `yaml:"repository" json:"repository"`
-	Path       string           `yaml:"path" json:"path"`
-	Status     Status           `yaml:"status" json:"status"`
-	Modules    []ModuleCoverage `yaml:"modules,omitempty" json:"modules,omitempty"`
-	Statements int              `yaml:"statements" json:"statements"`
-	Covered    int              `yaml:"covered" json:"covered"`
-	Percentage float64          `yaml:"percentage" json:"percentage"`
-	Error      string           `yaml:"error,omitempty" json:"error,omitempty"`
+	Repository string              `yaml:"repository" json:"repository"`
+	Path       string              `yaml:"path" json:"path"`
+	Status     Status              `yaml:"status" json:"status"`
+	Modules    []ModuleCoverage    `yaml:"modules,omitempty" json:"modules,omitempty"`
+	Statements int                 `yaml:"statements" json:"statements"`
+	Covered    int                 `yaml:"covered" json:"covered"`
+	Percentage float64             `yaml:"percentage" json:"percentage"`
+	Error      string              `yaml:"error,omitempty" json:"error,omitempty"`
+	Diagnostic *CoverageDiagnostic `yaml:"diagnostic,omitempty" json:"diagnostic,omitempty"`
+}
+
+// CoverageDiagnostic points at the private manifest containing lossless raw
+// output for failed coverage jobs.
+type CoverageDiagnostic struct {
+	Manifest string `yaml:"manifest" json:"manifest"`
+	SHA256   string `yaml:"sha256" json:"sha256"`
 }
 
 // ModuleCoverage records the statement totals from one Go module's generated
@@ -100,6 +108,9 @@ func CoverWithOptions(ctx context.Context, repository, path string, options RunO
 			}
 			report.Status = StatusFailed
 			report.Error = commandError(command, output, err)
+			if options.CoverageDiagnosticsDir != "" {
+				report.Diagnostic = coverageDiagnosticFor(options.CoverageDiagnosticsDir, repository, module)
+			}
 			reportQualityProgress(options, Progress{
 				Language: "go", Module: relativePath(path, module), Check: CheckTest,
 				Command: command, State: ProgressCompleted, Status: StatusFailed, Attempts: attempts,
