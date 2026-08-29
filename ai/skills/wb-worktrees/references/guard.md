@@ -14,6 +14,15 @@ git status --short --branch
 A passing canonical clone is safe for synchronization and read-only use only.
 A passing linked checkout is safe for feature work.
 
+For a canonical clone, `wb worktree guard` also performs the point-of-read
+freshness check: it fetches the configured `origin/<base>` target, then compares
+the exact local `HEAD` with that fetched ref using
+`git rev-list --left-right --count HEAD...origin/<base>`. A stale, ahead, or
+diverged result is a warning, not an automatic fast-forward. The warning also
+distinguishes an unreachable remote, a failed fetch, a missing target, and a
+target that moved during the check. JSON output carries the same receipt under
+`freshness`. Guard never changes the canonical branch, index, or working tree.
+
 WB rejects:
 
 - feature branches or changes in canonical clones;
