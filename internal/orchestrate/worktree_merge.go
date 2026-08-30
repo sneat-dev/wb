@@ -863,7 +863,7 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 	}
 	if view.Claim == nil || view.Claim.Task != receipt.Candidate.Task || view.Claim.Repository != receipt.Repository ||
 		filepath.Clean(view.Claim.Worktree) != filepath.Clean(guard.Path) || view.Claim.Branch != receipt.Candidate.Branch ||
-		view.Claim.Base != receipt.Target || view.Claim.BaseSHA != receipt.TargetSHA || view.Claim.Lifecycle != "active" {
+		view.Claim.Base != receipt.Target || view.Claim.Lifecycle != "active" {
 		return false, fmt.Errorf("receipted candidate Work Log claim does not match task, repository, worktree, branch, or base")
 	}
 	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
@@ -883,6 +883,11 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 	head, err := mergeRevision(ctx, guard.Path, "HEAD")
 	if err != nil {
 		return false, err
+	}
+	if view.Claim.BaseSHA != receipt.TargetSHA {
+		if err := proveConflictResolvedCandidateTargetNormalization(ctx, guard.Path, receipt.Target, receipt.TargetSHA, view.Claim.BaseSHA, head, timeout, retry); err != nil {
+			return false, fmt.Errorf("receipted candidate Work Log claim base differs from receipt target: %w", err)
+		}
 	}
 	containsTarget, err := isMergeAncestor(ctx, guard.Path, receipt.TargetSHA, head)
 	if err != nil || !containsTarget {
@@ -906,6 +911,42 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
 	return true, nil
+}
+
+// proveConflictResolvedCandidateTargetNormalization permits the one explicit
+// recovery exception for a conflict-resolved candidate whose immutable Work
+// Log base predates the receipt target snapshot. It never rewrites either
+// historical record. The candidate must already contain the immutable claim
+// base, the receipt target, and the freshly fetched current remote target; the
+// caller separately proves every receipted source is also contained.
+func proveConflictResolvedCandidateTargetNormalization(ctx context.Context, worktree, target, receiptTarget, claimBase, head string, timeout time.Duration, retry int) error {
+	for _, evidence := range []struct {
+		label    string
+		revision string
+	}{
+		{label: "immutable Work Log base", revision: claimBase},
+		{label: "receipt target", revision: receiptTarget},
+	} {
+		contains, err := isMergeAncestor(ctx, worktree, evidence.revision, head)
+		if err != nil {
+			return err
+		}
+		if !contains {
+			return fmt.Errorf("resolved candidate %s does not contain %s %s", head, evidence.label, evidence.revision)
+		}
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, worktree, target)
+	if err != nil {
+		return err
+	}
+	containsCurrentTarget, err := isMergeAncestor(ctx, worktree, currentTarget, head)
+	if err != nil {
+		return err
+	}
+	if !containsCurrentTarget {
+		return fmt.Errorf("resolved candidate %s does not contain current remote target %s", head, currentTarget)
+	}
+	return nil
 }
 
 func canonicalForMergeSource(ctx context.Context, source string) (string, error) {
