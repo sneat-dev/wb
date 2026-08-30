@@ -280,8 +280,7 @@ func TestDependencyCampaignDetectionUsesMarkerAndLegacyDiffs(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := created[0]
-	marker := Manifest{}
-	marker, err = ReadManifest(result.WorktreeDir)
+	marker, err := ReadManifest(result.WorktreeDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,9 +310,10 @@ func TestDependencyCampaignDetectionUsesMarkerAndLegacyDiffs(t *testing.T) {
 			}
 			result := created[0]
 			content := "dependency change\n"
-			if file == "package.json" {
+			switch file {
+			case "package.json":
 				content = `{"dependencies":{"nx":"22.7.7"}}` + "\n"
-			} else if file == "go.mod" {
+			case "go.mod":
 				content = "module example.com/app\n\nrequire example.com/mod v1.2.3\n"
 			}
 			writeAndCommit(t, result.WorktreeDir, file, content, "legacy dependency manifest")
