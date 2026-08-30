@@ -45,11 +45,11 @@ func pushTierGit(t *testing.T, dir string, args ...string) {
 }
 
 // fakeGHOnPath builds a minimal PATH containing only git (so wb's own git
-// calls keep working) plus, when withGH is true, a fake `gh` that answers
-// `gh pr list ... --head <branch> ...` with one open PR when branch equals
-// openBranch, and an empty list otherwise. It deliberately excludes any real
-// `gh` on the machine's PATH: these scenarios must never make a real network
-// call.
+// calls keep working) plus, when withGH is true, a fake `gh` that answers the
+// production open-PR observation (`gh api --method GET repos/<slug>/pulls ...`)
+// with one open PR when branch equals openBranch, and an empty list otherwise.
+// It deliberately excludes any real `gh` on the machine's PATH: these
+// scenarios must never make a real network call.
 func fakeGHOnPath(t *testing.T, withGH bool, openBranch string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -63,10 +63,10 @@ func fakeGHOnPath(t *testing.T, withGH bool, openBranch string) string {
 	if withGH {
 		script := "#!/bin/sh\n" +
 			"branch=\"\"\n" +
-			"prev=\"\"\n" +
 			"for arg in \"$@\"; do\n" +
-			"  if [ \"$prev\" = \"--head\" ]; then branch=\"$arg\"; fi\n" +
-			"  prev=\"$arg\"\n" +
+			"  case \"$arg\" in\n" +
+			"    head=*:*) branch=${arg#head=*:} ;;\n" +
+			"  esac\n" +
 			"done\n" +
 			"if [ \"$branch\" = \"" + openBranch + "\" ]; then\n" +
 			"  echo '[{\"number\":42}]'\n" +

@@ -139,7 +139,10 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (Response, error
 
 	checkedAt := o.now()
 	freshWindow := request.FreshWindow
-	entry, _ := readCacheEntry(cachePath)
+	entry, cacheErr := readCacheEntry(cachePath)
+	if cacheErr != nil {
+		entry = nil
+	}
 	if entry != nil && len(entry.Body) > 0 {
 		reuse := false
 		if freshWindow > 0 && checkedAt.Sub(entry.ObservedAt) <= freshWindow {
@@ -331,10 +334,10 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 
 func (o *Observer) pathsForKey(key string) (cachePath, lockPath string, err error) {
 	stateDir := o.stateDir()
-	if err := os.MkdirAll(filepath.Join(stateDir, "cache"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(stateDir, "cache"), 0o700); err != nil {
 		return "", "", fmt.Errorf("create GitHub observer cache directory: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(stateDir, "locks"), 0o700); err != nil {
 		return "", "", fmt.Errorf("create GitHub observer lock directory: %w", err)
 	}
 	return filepath.Join(stateDir, "cache", key+".json"), filepath.Join(stateDir, "locks", key+".lock"), nil
@@ -485,6 +488,9 @@ func readCacheEntry(path string) (*cacheEntry, error) {
 	if entry.SchemaVersion != cacheSchemaVersion {
 		return nil, nil
 	}
+	if entry.BodySHA256 != digest(entry.Body) {
+		return nil, fmt.Errorf("GitHub observer cache %s body digest mismatch", path)
+	}
 	return &entry, nil
 }
 
@@ -493,8 +499,21 @@ func writeCacheEntry(path string, entry *cacheEntry) error {
 	if err != nil {
 		return fmt.Errorf("encode GitHub observer cache %s: %w", path, err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	tmpFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create GitHub observer cache temp file for %s: %w", path, err)
+	}
+	tmp := tmpFile.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if err := tmpFile.Chmod(0o600); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("set GitHub observer cache temp permissions for %s: %w", path, err)
+	}
+	if _, err := tmpFile.Write(raw); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("write GitHub observer cache %s: %w", path, err)
+	}
+	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("write GitHub observer cache %s: %w", path, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {

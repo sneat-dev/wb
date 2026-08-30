@@ -336,6 +336,7 @@ exit 2
 	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CHECK_STATE", state)
 	t.Setenv("WB_POLICY_STATE", policyState)
@@ -384,6 +385,7 @@ echo "unexpected gh args: $*" >&2; exit 2
 	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Ref: "main", Commit: "0123456789012345678901234567890123456789"}
 	err := waitAndMerge(context.Background(), Options{Timeout: 30 * time.Second, CheckPollInterval: time.Millisecond}, &result)

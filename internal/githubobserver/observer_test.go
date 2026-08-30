@@ -322,6 +322,13 @@ func TestGetCoalescesZeroFreshWindowAcrossProcesses(t *testing.T) {
 
 func TestWriteCacheEntryUsesPrivatePermissions(t *testing.T) {
 	stateDir := t.TempDir()
+	observer := &Observer{StateDir: stateDir}
+	cacheTarget, lockTarget, err := observer.pathsForKey("permissions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Dir(cacheTarget)
+	lockDir := filepath.Dir(lockTarget)
 	cachePath := filepath.Join(stateDir, "cache.json")
 	entry := &cacheEntry{
 		SchemaVersion: cacheSchemaVersion,
@@ -341,6 +348,121 @@ func TestWriteCacheEntryUsesPrivatePermissions(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("cache mode=%#o, want 0600", got)
+	}
+	for _, dir := range []string{cacheDir, lockDir} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("directory %s mode=%#o, want 0700", dir, got)
+		}
+	}
+}
+
+func TestGetRefetchesWhenCachedBodyDigestIsCorrupt(t *testing.T) {
+	stateDir := t.TempDir()
+	request := GetRequest{
+		Repository:  "acme/app",
+		Target:      "main",
+		Head:        strings.Repeat("f", 40),
+		Endpoint:    "repos/acme/app/branches/main",
+		FreshWindow: time.Hour,
+	}
+	key := cacheKey(request.Repository, request.Target, request.Head, request.Endpoint, nil, "")
+	cachePath := filepath.Join(stateDir, "cache", key+".json")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := &cacheEntry{
+		SchemaVersion: cacheSchemaVersion,
+		Repository:    request.Repository,
+		Target:        request.Target,
+		Head:          request.Head,
+		Endpoint:      request.Endpoint,
+		RequestHash:   requestHash(request.Endpoint, nil, ""),
+		StatusCode:    200,
+		Body:          []byte(`{"cached":true}`),
+		BodySHA256:    digest([]byte(`{"different":true}`)),
+		ObservedAt:    time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC),
+	}
+	if err := writeCacheEntry(cachePath, entry); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	observer := &Observer{
+		StateDir: stateDir,
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{Stdout: []byte("HTTP/2 200 OK\nETag: \"etag-refetch\"\n\n{\"fresh\":true}")}
+		},
+	}
+
+	response, err := observer.Get(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want 1 refetch after corrupt cache", calls)
+	}
+	if string(response.Body) != `{"fresh":true}` || response.Cached {
+		t.Fatalf("response=%+v", response)
+	}
+	updated, err := readCacheEntry(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil || updated.BodySHA256 != digest(updated.Body) {
+		t.Fatalf("updated cache digest mismatch: %+v", updated)
+	}
+}
+
+func TestGetRefetchesWhenCachedBodyDigestIsMissing(t *testing.T) {
+	stateDir := t.TempDir()
+	request := GetRequest{
+		Repository:  "acme/app",
+		Target:      "main",
+		Head:        strings.Repeat("g", 40),
+		Endpoint:    "repos/acme/app/branches/main",
+		FreshWindow: time.Hour,
+	}
+	key := cacheKey(request.Repository, request.Target, request.Head, request.Endpoint, nil, "")
+	cachePath := filepath.Join(stateDir, "cache", key+".json")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := &cacheEntry{
+		SchemaVersion: cacheSchemaVersion,
+		Repository:    request.Repository,
+		Target:        request.Target,
+		Head:          request.Head,
+		Endpoint:      request.Endpoint,
+		RequestHash:   requestHash(request.Endpoint, nil, ""),
+		StatusCode:    200,
+		Body:          []byte(`{"cached":true}`),
+		ObservedAt:    time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC),
+	}
+	if err := writeCacheEntry(cachePath, entry); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	observer := &Observer{
+		StateDir: stateDir,
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"fresh\":true}")}
+		},
+	}
+
+	response, err := observer.Get(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want 1 refetch after missing digest", calls)
+	}
+	if string(response.Body) != `{"fresh":true}` || response.Cached {
+		t.Fatalf("response=%+v", response)
 	}
 }
 

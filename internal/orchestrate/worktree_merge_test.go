@@ -1289,6 +1289,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
 	t.Setenv("WB_TEST_RULES_JSON", rulesJSON)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1328,6 +1329,7 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1351,6 +1353,7 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1369,6 +1372,7 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1387,5 +1391,6 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

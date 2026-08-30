@@ -409,5 +409,6 @@ func installOpenReconciliationPullRequestFixture(t *testing.T, head string) {
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_OPEN_PULL", string(payload))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
