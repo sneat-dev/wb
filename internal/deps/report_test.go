@@ -79,7 +79,7 @@ func TestRepositoryReportEmitsExactDependencyDeltaEvidence(t *testing.T) {
 		t.Fatalf("dependency deltas = %+v, want one direct reference", report.DependencyDeltas)
 	}
 	delta := report.DependencyDeltas[0]
-	if delta.SourcePR != result.PR || delta.SourceHead != result.Commit || delta.Package != "nx" || delta.Selector != "dependencies.nx" || delta.Lockfile != "package-lock.json" {
+	if delta.SourcePR != result.PR || delta.SourceHead != result.Commit || delta.Package != "nx" || delta.Selector != "dependencies.nx" || delta.Lockfile != "package-lock.json" || delta.LockfileSelector != "packages|node_modules/nx|version" || delta.LockfileVersion != "22.7.7" || delta.Reviewed {
 		t.Fatalf("dependency delta = %+v", delta)
 	}
 	markdown := (Report{Repositories: []RepositoryReport{report}}).Markdown()

@@ -298,6 +298,9 @@ func validateSupersessionReceipt(ctx context.Context, receipt SupersessionReceip
 // proof boundary.
 func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, entry ListResult) string {
 	if strings.TrimSpace(receipt.OriginalPR) == "" {
+		if dependencyCampaignWorktree(entry) {
+			return "dependency campaign supersession requires original_pr and exact dependency delta evidence"
+		}
 		if receipt.DependencyDeltasComplete || len(receipt.DependencyDeltas) > 0 {
 			return "dependency delta evidence requires original_pr"
 		}
@@ -401,12 +404,26 @@ func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, 
 			if delta.LockfileVersion != delta.RequestedAfter {
 				return fmt.Sprintf("%s lockfile version %q does not satisfy requested %q", prefix, delta.LockfileVersion, delta.RequestedAfter)
 			}
-			if !selectorNamesExactPackage(delta.LockfileSelector, delta.Package) || !lockfileEntryContainsVersion(lockfile, delta.LockfileSelector, delta.LockfileVersion) {
+			if path.Base(delta.Lockfile) == "yarn.lock" {
+				return fmt.Sprintf("%s lockfile format yarn.lock is unsupported; terminal supersession is refused", prefix)
+			}
+			if !selectorNamesExactPackage(delta.LockfileSelector, delta.Package) || !lockfileEntryContainsVersion(delta.Ecosystem, delta.Lockfile, lockfile, delta.LockfileSelector, delta.LockfileVersion) {
 				return fmt.Sprintf("%s lockfile does not prove exact selector %q at %q", prefix, delta.LockfileSelector, delta.LockfileVersion)
 			}
 		}
 	}
 	return ""
+}
+
+func dependencyCampaignWorktree(entry ListResult) bool {
+	if strings.HasPrefix(entry.Task, "deps-") || strings.HasPrefix(entry.Branch, "wb/deps/") {
+		return true
+	}
+	if entry.WorktreeDir == "" {
+		return false
+	}
+	manifest, err := ReadManifest(entry.WorktreeDir)
+	return err == nil && manifest.DependencyCampaign
 }
 
 func dependencyLockfile(ctx context.Context, canonical, target string, delta SupersessionDependencyDelta) (string, bool, error) {
@@ -468,7 +485,19 @@ func selectorNamesExactPackage(selector, packageName string) bool {
 	return false
 }
 
-func lockfileEntryContainsVersion(contents, selector, version string) bool {
+func lockfileEntryContainsVersion(ecosystem, lockfilePath, contents, selector, version string) bool {
+	if strings.EqualFold(ecosystem, "go") {
+		for _, line := range strings.Split(contents, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[0] == selector && fields[1] == version {
+				return true
+			}
+		}
+		return false
+	}
+	if path.Base(lockfilePath) == "yarn.lock" {
+		return false
+	}
 	var document yaml.Node
 	if err := yaml.Unmarshal([]byte(contents), &document); err != nil {
 		return false
@@ -477,7 +506,11 @@ func lockfileEntryContainsVersion(contents, selector, version string) bool {
 	if len(node.Content) == 1 {
 		node = node.Content[0]
 	}
-	for _, segment := range strings.Split(selector, ".") {
+	segments := strings.Split(selector, ".")
+	if strings.Contains(selector, "|") {
+		segments = strings.Split(selector, "|")
+	}
+	for _, segment := range segments {
 		if node.Kind != yaml.MappingNode {
 			return false
 		}
@@ -541,7 +574,7 @@ func npmRangeAlternativeSatisfies(candidate, requested string) bool {
 		if len(parts) != 3 {
 			return false
 		}
-		upper := "v" + parts[0] + "." + parts[1] + ".0"
+		var upper string
 		if operator == "^" {
 			switch {
 			case parts[0] != "0":

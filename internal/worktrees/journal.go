@@ -69,25 +69,26 @@ var promptFileName = regexp.MustCompile(`^([0-9]{4})-[A-Za-z0-9][A-Za-z0-9._-]*\
 // Manifest is written once, when the worktree is created, and never rewritten.
 // A later correction is appended to the journal rather than edited in place.
 type Manifest struct {
-	Version      int       `yaml:"version"`
-	EffortID     string    `yaml:"effort_id"`
-	ParentEffort string    `yaml:"parent_effort,omitempty"`
-	EffortKind   string    `yaml:"effort_kind"`
-	Repository   string    `yaml:"repository"`
-	Worktree     string    `yaml:"worktree"`
-	Branch       string    `yaml:"branch"`
-	Base         string    `yaml:"base"`
-	BaseSHA      string    `yaml:"base_sha"`
-	CreatedAt    time.Time `yaml:"created_at"`
-	Initiator    string    `yaml:"initiator,omitempty"`
-	AgentID      string    `yaml:"agent_id,omitempty"`
-	AgentRuntime string    `yaml:"agent_runtime,omitempty"`
-	Model        string    `yaml:"model,omitempty"`
-	CLI          string    `yaml:"cli,omitempty"`
-	Provider     string    `yaml:"provider,omitempty"`
-	RunID        string    `yaml:"run_id,omitempty"`
-	ClaimID      string    `yaml:"claim_id,omitempty"`
-	Provenance   string    `yaml:"provenance"`
+	Version            int       `yaml:"version"`
+	EffortID           string    `yaml:"effort_id"`
+	ParentEffort       string    `yaml:"parent_effort,omitempty"`
+	EffortKind         string    `yaml:"effort_kind"`
+	Repository         string    `yaml:"repository"`
+	Worktree           string    `yaml:"worktree"`
+	Branch             string    `yaml:"branch"`
+	Base               string    `yaml:"base"`
+	BaseSHA            string    `yaml:"base_sha"`
+	CreatedAt          time.Time `yaml:"created_at"`
+	Initiator          string    `yaml:"initiator,omitempty"`
+	AgentID            string    `yaml:"agent_id,omitempty"`
+	AgentRuntime       string    `yaml:"agent_runtime,omitempty"`
+	Model              string    `yaml:"model,omitempty"`
+	CLI                string    `yaml:"cli,omitempty"`
+	Provider           string    `yaml:"provider,omitempty"`
+	DependencyCampaign bool      `yaml:"dependency_campaign,omitempty"`
+	RunID              string    `yaml:"run_id,omitempty"`
+	ClaimID            string    `yaml:"claim_id,omitempty"`
+	Provenance         string    `yaml:"provenance"`
 
 	// InferredFields and Evidence are populated only for a reconstructed
 	// manifest, so a reader can see exactly which values were guessed and from

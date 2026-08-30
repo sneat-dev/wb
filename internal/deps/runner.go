@@ -99,6 +99,8 @@ func dependencyDeltasFromResult(result orchestrate.Result[[]Decision]) []Depende
 		}
 		if lockfile := lockfileForManifest(decision.File, lockfiles); lockfile != "" {
 			delta.Lockfile = lockfile
+			delta.LockfileSelector = dependencyLockfileSelector(decision.Ecosystem, lockfile, decision.Dependency, delta.CandidateAfter)
+			delta.LockfileVersion = delta.CandidateAfter
 		}
 		deltas = append(deltas, delta)
 	}
@@ -112,6 +114,23 @@ func dependencyDeltasFromResult(result orchestrate.Result[[]Decision]) []Depende
 		return left.RequestedAfter < right.RequestedAfter
 	})
 	return deltas
+}
+
+func dependencyLockfileSelector(ecosystem Ecosystem, lockfile, dependency, version string) string {
+	if ecosystem == EcosystemGo {
+		return dependency
+	}
+	switch path.Base(lockfile) {
+	case "package-lock.json":
+		return "packages|node_modules/" + dependency + "|version"
+	case "pnpm-lock.yaml":
+		return "snapshots|/" + dependency + "@" + version + "|version"
+	default:
+		// Yarn lock grammar is intentionally not guessed. The terminal
+		// verifier refuses this empty selector until a format-specific parser
+		// exists, while the campaign report keeps the unsupported format visible.
+		return ""
+	}
 }
 
 func lockfileForManifest(manifest string, lockfiles []string) string {
@@ -194,7 +213,8 @@ func normalizeOptions(options Options, operation string) (Options, orchestrate.O
 		Parallel: options.Parallel, DryRun: options.DryRun, Resume: options.Resume,
 		Verify: options.Verify, Checks: options.Checks, Timeout: options.Timeout, Retry: options.Retry,
 		Commit: options.Commit, Push: options.Push, PR: options.PR, Merge: options.Merge,
-		Progress: options.Progress,
+		DependencyCampaign: true,
+		Progress:           options.Progress,
 	})
 	if err != nil {
 		return Options{}, orchestrate.Options{}, err

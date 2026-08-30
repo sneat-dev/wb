@@ -168,18 +168,20 @@ type Decision struct {
 // a campaign PR. CandidateAfter is the value observed after the adapter's
 // apply/selection verification; it is never inferred from package families.
 type DependencyDelta struct {
-	SourcePR       string    `yaml:"source_pr,omitempty"`
-	SourceHead     string    `yaml:"source_head,omitempty"`
-	Consumer       string    `yaml:"consumer"`
-	Ecosystem      Ecosystem `yaml:"ecosystem"`
-	Package        string    `yaml:"package"`
-	Manifest       string    `yaml:"manifest"`
-	Selector       string    `yaml:"selector"`
-	Before         string    `yaml:"before"`
-	RequestedAfter string    `yaml:"requested_after"`
-	CandidateAfter string    `yaml:"candidate_after"`
-	Lockfile       string    `yaml:"lockfile,omitempty"`
-	Reviewed       bool      `yaml:"reviewed"`
+	SourcePR         string    `yaml:"source_pr,omitempty"`
+	SourceHead       string    `yaml:"source_head,omitempty"`
+	Consumer         string    `yaml:"consumer"`
+	Ecosystem        Ecosystem `yaml:"ecosystem"`
+	Package          string    `yaml:"package"`
+	Manifest         string    `yaml:"manifest"`
+	Selector         string    `yaml:"selector"`
+	Before           string    `yaml:"before"`
+	RequestedAfter   string    `yaml:"requested_after"`
+	CandidateAfter   string    `yaml:"candidate_after"`
+	Lockfile         string    `yaml:"lockfile,omitempty"`
+	LockfileSelector string    `yaml:"lockfile_selector,omitempty"`
+	LockfileVersion  string    `yaml:"lockfile_version,omitempty"`
+	Reviewed         bool      `yaml:"reviewed"`
 }
 
 // RemoteCheck is the normalized GitHub check state observed before merge.

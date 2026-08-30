@@ -226,7 +226,7 @@ func TestValidateDependencyDeltasRejectsFamilyOnlyUpgrade(t *testing.T) {
 			Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
 		}},
 	}
-	entry := ListResult{Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
+	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, `direct package "nx"`) {
 		t.Fatalf("family-only upgrade rejection = %q, want exact direct nx proof", rejection)
 	}
@@ -238,6 +238,14 @@ func TestValidateDependencyDeltasRejectsSourceHeadForceUpdate(t *testing.T) {
 	entry := ListResult{Repository: "acme/app", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "force-updated") {
 		t.Fatalf("source-head drift rejection = %q, want force-update evidence", rejection)
+	}
+}
+
+func TestDependencyCampaignReceiptCannotBypassDeltaProof(t *testing.T) {
+	receipt := SupersessionReceipt{DependencyDeltasComplete: false}
+	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Branch: "wb/deps/bump-example-wave-01"}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "requires original_pr") {
+		t.Fatalf("generic dependency campaign receipt was accepted: %q", rejection)
 	}
 }
 
@@ -284,7 +292,7 @@ func TestValidateDependencyDeltasRequiresApplicableLockfile(t *testing.T) {
 			Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
 		}},
 	}
-	entry := ListResult{Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
+	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "missing resolved lockfile proof") {
 		t.Fatalf("missing lockfile proof = %q", rejection)
 	}
@@ -315,12 +323,15 @@ func TestDependencyAuditRenderingSortsPerPREvidence(t *testing.T) {
 }
 
 func TestLockfileEntryProofIsStructuredAndPackageExact(t *testing.T) {
-	lockfile := `{"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/@nx/js":{"version":"22.7.8"}}}`
-	if !lockfileEntryContainsVersion(lockfile, "packages.node_modules/nx.version", "22.7.7") {
+	lockfile := `{"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/nxfoo":{"version":"22.7.9"},"node_modules/@nx/js":{"version":"22.7.8"}}}`
+	if !lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages.node_modules/nx.version", "22.7.7") {
 		t.Fatal("structured package-lock proof was not accepted")
 	}
-	if lockfileEntryContainsVersion(lockfile, "packages.node_modules/nx.version", "22.7.8") {
+	if lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages.node_modules/nx.version", "22.7.8") {
 		t.Fatal("nx proof incorrectly accepted @nx/js version")
+	}
+	if lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages.node_modules/nx.version", "22.7.9") {
+		t.Fatal("nx proof incorrectly accepted nxfoo version")
 	}
 }
 

@@ -63,10 +63,10 @@ func (report Report) Markdown() string {
 		}
 		if len(repository.DependencyDeltas) > 0 {
 			output.WriteString("\n### Exact dependency PR deltas\n\n")
-			output.WriteString("| Source PR | Source head | Manifest selector | Before | Requested after | Candidate after | Lockfile | Reviewed |\n")
-			output.WriteString("|---|---|---|---|---|---|---|---|\n")
+			output.WriteString("| Source PR | Source head | Manifest selector | Before | Requested after | Candidate after | Lockfile | Lockfile selector | Lockfile version | Reviewed |\n")
+			output.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
 			for _, delta := range repository.DependencyDeltas {
-				fmt.Fprintf(&output, "| %s | `%s` | `%s:%s` | `%s` | `%s` | `%s` | `%s` | %t |\n", delta.SourcePR, delta.SourceHead, delta.Manifest, delta.Selector, delta.Before, delta.RequestedAfter, delta.CandidateAfter, delta.Lockfile, delta.Reviewed)
+				fmt.Fprintf(&output, "| %s | `%s` | `%s:%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | %t |\n", delta.SourcePR, delta.SourceHead, delta.Manifest, delta.Selector, delta.Before, delta.RequestedAfter, delta.CandidateAfter, delta.Lockfile, delta.LockfileSelector, delta.LockfileVersion, delta.Reviewed)
 			}
 		}
 		if len(repository.ChangedFiles) > 0 {
