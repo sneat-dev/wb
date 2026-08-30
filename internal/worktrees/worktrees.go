@@ -1716,7 +1716,14 @@ func RunSecureCanonicalGitHelper(args []string) int {
 		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical helper: canonical repository path changed before Git operation")
 		return 1
 	}
-	capability, err := newGitFilesystemCapability(gitFilesystemCapabilityRoot{path: args[0], directory: root})
+	writeRoots := []gitFilesystemCapabilityRoot{{path: args[0], directory: root}}
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], writeRoots)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: prepare hook runtime layout: %v\n", err)
+		return 1
+	}
+	defer closeSecureHookRootHandles(hookRoots)
+	capability, err := newGitFilesystemCapability(writeRoots...)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure canonical helper: %v\n", err)
 		return 1
@@ -2344,10 +2351,17 @@ func RunSecureStageCanonicalGitHelper(args []string) int {
 	gitArgs := worktreeAddArguments(filepath.Join(filepath.Clean(stagePath), "checkout"), args[3], args[4], args[5] == "1")
 	// Git needs to write only inside the retained stage (including its scoped
 	// TMPDIR), never elsewhere in the operation root.
-	capability, err := newGitFilesystemCapability(
+	writeRoots := []gitFilesystemCapabilityRoot{
 		gitFilesystemCapabilityRoot{path: stagePath, directory: stage},
 		gitFilesystemCapabilityRoot{path: args[1], directory: canonical},
-	)
+	}
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[1], writeRoots)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: prepare hook runtime layout: %v\n", err)
+		return 1
+	}
+	defer closeSecureHookRootHandles(hookRoots)
+	capability, err := newGitFilesystemCapability(writeRoots...)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure staged canonical helper: %v\n", err)
 		return 1

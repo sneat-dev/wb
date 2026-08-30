@@ -12,12 +12,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+const secureHookRunTestHelperArgument = "--wb-hook-run-test-helper"
 
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureCleanupGitHelperArgument {
 		os.Exit(RunSecureCleanupGitHelper(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == secureHookRunTestHelperArgument {
+		os.Exit(runSecureHookTestHelper(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
 		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
@@ -32,6 +38,32 @@ func TestMain(m *testing.M) {
 		os.Exit(RunSecureRenameGitHelper(os.Args[2:]))
 	}
 	os.Exit(m.Run())
+}
+
+func runSecureHookTestHelper(args []string) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, "wb hook test helper: missing hook name")
+		return 2
+	}
+	result, err := hooks.Run(hooks.RunOptions{
+		RepoPath: ".",
+		Hook:     args[0],
+		Args:     args[1:],
+		Stdin:    os.Stdin,
+		Stdout:   os.Stdout,
+		Stderr:   os.Stderr,
+	})
+	if result.MetricsError != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: hook succeeded but local metrics could not be recorded: %v\n", result.MetricsError)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		if result.ExitCode != 0 {
+			return result.ExitCode
+		}
+		return 1
+	}
+	return result.ExitCode
 }
 
 func TestCreateAgentModeRequiresLiveRegisteredSessionBeforeMutation(t *testing.T) {
