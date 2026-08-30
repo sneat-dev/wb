@@ -127,35 +127,61 @@ type OrderLayerReport struct {
 
 // RepositoryReport records one selected repository and every external stage.
 type RepositoryReport struct {
-	Repository    string                      `yaml:"repository"`
-	CanonicalDir  string                      `yaml:"canonical_dir,omitempty"`
-	WorktreeDir   string                      `yaml:"worktree_dir,omitempty"`
-	Branch        string                      `yaml:"branch,omitempty"`
-	Ref           string                      `yaml:"ref"`
-	Status        string                      `yaml:"status"`
-	Reason        string                      `yaml:"reason"`
-	Decisions     []Decision                  `yaml:"decisions,omitempty"`
-	ChangedFiles  []string                    `yaml:"changed_files,omitempty"`
-	Verifications []quality.VerificationEntry `yaml:"verifications,omitempty"`
-	Commit        string                      `yaml:"commit,omitempty"`
-	Pushed        bool                        `yaml:"pushed,omitempty"`
-	PR            string                      `yaml:"pr,omitempty"`
-	Checks        []RemoteCheck               `yaml:"checks,omitempty"`
-	Merged        bool                        `yaml:"merged,omitempty"`
+	Repository   string     `yaml:"repository"`
+	CanonicalDir string     `yaml:"canonical_dir,omitempty"`
+	WorktreeDir  string     `yaml:"worktree_dir,omitempty"`
+	Branch       string     `yaml:"branch,omitempty"`
+	Ref          string     `yaml:"ref"`
+	Status       string     `yaml:"status"`
+	Reason       string     `yaml:"reason"`
+	Decisions    []Decision `yaml:"decisions,omitempty"`
+	// DependencyDeltas is the exact per-reference evidence emitted for each
+	// generated pull request. It is the campaign-side source for a later
+	// supersession receipt, not a family-level inference.
+	DependencyDeltas []DependencyDelta           `yaml:"dependency_deltas,omitempty"`
+	ChangedFiles     []string                    `yaml:"changed_files,omitempty"`
+	Verifications    []quality.VerificationEntry `yaml:"verifications,omitempty"`
+	Commit           string                      `yaml:"commit,omitempty"`
+	Pushed           bool                        `yaml:"pushed,omitempty"`
+	PR               string                      `yaml:"pr,omitempty"`
+	Checks           []RemoteCheck               `yaml:"checks,omitempty"`
+	Merged           bool                        `yaml:"merged,omitempty"`
 }
 
 // Decision explains one existing dependency reference before and after update.
 type Decision struct {
-	Dependency    string `yaml:"dependency,omitempty"`
-	File          string `yaml:"file"`
-	BeforeRef     string `yaml:"before_ref,omitempty"`
-	BeforeVersion string `yaml:"before_version,omitempty"`
-	TargetVersion string `yaml:"target_version"`
-	ResolvedRef   string `yaml:"resolved_ref,omitempty"`
-	AfterRef      string `yaml:"after_ref,omitempty"`
-	AfterVersion  string `yaml:"after_version,omitempty"`
-	Action        string `yaml:"action"`
-	Reason        string `yaml:"reason"`
+	Dependency    string    `yaml:"dependency,omitempty"`
+	Ecosystem     Ecosystem `yaml:"ecosystem,omitempty"`
+	File          string    `yaml:"file"`
+	Selector      string    `yaml:"selector,omitempty"`
+	BeforeRef     string    `yaml:"before_ref,omitempty"`
+	BeforeVersion string    `yaml:"before_version,omitempty"`
+	TargetVersion string    `yaml:"target_version"`
+	ResolvedRef   string    `yaml:"resolved_ref,omitempty"`
+	AfterRef      string    `yaml:"after_ref,omitempty"`
+	AfterVersion  string    `yaml:"after_version,omitempty"`
+	Action        string    `yaml:"action"`
+	Reason        string    `yaml:"reason"`
+}
+
+// DependencyDelta records one exact direct manifest/importer requirement from
+// a campaign PR. CandidateAfter is the value observed after the adapter's
+// apply/selection verification; it is never inferred from package families.
+type DependencyDelta struct {
+	SourcePR         string    `yaml:"source_pr,omitempty"`
+	SourceHead       string    `yaml:"source_head,omitempty"`
+	Consumer         string    `yaml:"consumer"`
+	Ecosystem        Ecosystem `yaml:"ecosystem"`
+	Package          string    `yaml:"package"`
+	Manifest         string    `yaml:"manifest"`
+	Selector         string    `yaml:"selector"`
+	Before           string    `yaml:"before"`
+	RequestedAfter   string    `yaml:"requested_after"`
+	CandidateAfter   string    `yaml:"candidate_after"`
+	Lockfile         string    `yaml:"lockfile,omitempty"`
+	LockfileSelector string    `yaml:"lockfile_selector,omitempty"`
+	LockfileVersion  string    `yaml:"lockfile_version,omitempty"`
+	Reviewed         bool      `yaml:"reviewed"`
 }
 
 // RemoteCheck is the normalized GitHub check state observed before merge.

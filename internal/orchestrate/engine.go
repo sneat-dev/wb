@@ -461,7 +461,8 @@ func recordWorktreeManifest(ctx context.Context, canonical, worktree string, rep
 		Branch: options.Branch, Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
 		CreatedAt: createdAt, Initiator: options.Initiator, AgentRuntime: options.AgentRuntime,
 		Model: options.Model, CLI: options.CLI, Provider: options.Provider,
-		Provenance: worktrees.ProvenanceCreated,
+		DependencyCampaign: options.DependencyCampaign,
+		Provenance:         worktrees.ProvenanceCreated,
 	}
 	if err := worktrees.EnsureManifest(worktree, manifest); err != nil {
 		return fmt.Errorf("record worktree manifest: %w", err)
