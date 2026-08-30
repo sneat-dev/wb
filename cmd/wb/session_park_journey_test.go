@@ -577,7 +577,7 @@ list-panes)
     if kill -0 "$pid" 2>/dev/null; then
       case "$format" in
         *pane_pid*) printf '%s\t0\n' "$pid" ;;
-        *) printf '0\t0\n' ;;
+        *) printf '0\t\n' ;;
       esac
       exit 0
     fi
