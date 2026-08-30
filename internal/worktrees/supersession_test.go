@@ -194,6 +194,148 @@ func TestCleanupSupersessionRefusesUnreviewedResidual(t *testing.T) {
 	}
 }
 
+func TestValidateDependencyDeltasRejectsFamilyOnlyUpgrade(t *testing.T) {
+	fixture := newGitFixture(t)
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "package.json"), []byte(`{"name":"@acme/app","dependencies":{"nx":"22.6.4","@nx/js":"22.7.8"}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "package.json")
+	gitTest(t, fixture.canonical, "commit", "-m", "seed npm dependencies")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "dependency-family-proof", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	writeAndCommit(t, result.WorktreeDir, "source.txt", "source\n", "source PR")
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "package.json"), []byte(`{"name":"@acme/app","dependencies":{"nx":"22.7.7","@nx/js":"22.7.7"}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "package.json")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "source dependency request")
+	sourceHead := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	targetHead := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	receipt := SupersessionReceipt{
+		OriginalPR: "https://github.com/acme/app/pull/17", DependencyDeltasComplete: true,
+		OriginalHead: sourceHead, TargetHead: targetHead,
+		DependencyDeltas: []SupersessionDependencyDelta{{
+			SourcePR: "https://github.com/acme/app/pull/17", SourceHead: sourceHead, Consumer: "acme/app",
+			Ecosystem: "npm", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx",
+			Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
+		}},
+	}
+	entry := ListResult{Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, `direct package "nx"`) {
+		t.Fatalf("family-only upgrade rejection = %q, want exact direct nx proof", rejection)
+	}
+}
+
+func TestValidateDependencyDeltasRejectsSourceHeadForceUpdate(t *testing.T) {
+	receipt := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17", OriginalHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DependencyDeltasComplete: true,
+		DependencyDeltas: []SupersessionDependencyDelta{{SourcePR: "https://github.com/acme/app/pull/17", SourceHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Consumer: "acme/app", Ecosystem: "npm", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx", Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true}}}
+	entry := ListResult{Repository: "acme/app", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "force-updated") {
+		t.Fatalf("source-head drift rejection = %q, want force-update evidence", rejection)
+	}
+}
+
+func TestValidateDependencyDeltasRequiresApplicableLockfile(t *testing.T) {
+	fixture := newGitFixture(t)
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "package.json"), []byte(`{"name":"@acme/app","dependencies":{"nx":"22.6.4"}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "package.json")
+	gitTest(t, fixture.canonical, "commit", "-m", "seed npm dependency")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "dependency-lockfile-proof", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	writeAndCommit(t, result.WorktreeDir, "source.txt", "source\n", "source PR")
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "package.json"), []byte(`{"name":"@acme/app","dependencies":{"nx":"22.7.7"}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "package.json")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "source dependency request")
+	sourceHead := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "package.json"), []byte(`{"name":"@acme/app","dependencies":{"nx":"22.7.7"}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "package-lock.json"), []byte(`{"lockfileVersion":3,"packages":{"node_modules/nx":{"version":"22.7.7"}}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "package.json", "package-lock.json")
+	gitTest(t, fixture.canonical, "commit", "-m", "integrate npm dependency")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	targetHead := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+	receipt := SupersessionReceipt{
+		OriginalPR: "https://github.com/acme/app/pull/17", DependencyDeltasComplete: true,
+		OriginalHead: sourceHead, TargetHead: targetHead,
+		DependencyDeltas: []SupersessionDependencyDelta{{
+			SourcePR: "https://github.com/acme/app/pull/17", SourceHead: sourceHead, Consumer: "acme/app",
+			Ecosystem: "npm", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx",
+			Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
+		}},
+	}
+	entry := ListResult{Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "missing resolved lockfile proof") {
+		t.Fatalf("missing lockfile proof = %q", rejection)
+	}
+	receipt.DependencyDeltas[0].Lockfile = "package-lock.json"
+	receipt.DependencyDeltas[0].LockfileSelector = "packages.node_modules/nx.version"
+	receipt.DependencyDeltas[0].LockfileVersion = "22.7.7"
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); rejection != "" {
+		t.Fatalf("complete lockfile proof rejected: %q", rejection)
+	}
+}
+
+func TestDependencyAuditRenderingSortsPerPREvidence(t *testing.T) {
+	receipt := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17", OriginalHead: "head", TargetHead: "target", DependencyDeltasComplete: true, DependencyDeltas: []SupersessionDependencyDelta{
+		{SourcePR: "https://github.com/acme/app/pull/17", Consumer: "acme/app", Package: "@nx/js", Manifest: "package.json", Selector: "dependencies.@nx/js", Before: "22.6.4", RequestedAfter: "22.7.8", CandidateAfter: "22.7.8", SourceHead: "head", Reviewed: true},
+		{SourcePR: "https://github.com/acme/app/pull/17", Consumer: "acme/app", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx", Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", SourceHead: "head", Reviewed: true},
+	}}
+	jsonA, err := receipt.DependencyAuditJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(jsonA), `"package": "@nx/js"`) || strings.Index(string(jsonA), `"package": "@nx/js"`) > strings.Index(string(jsonA), `"package": "nx"`) {
+		t.Fatalf("JSON evidence was not deterministic/sorted:\n%s", jsonA)
+	}
+	markdown := receipt.DependencyAuditMarkdown()
+	if !strings.Contains(markdown, "Manifest selector") || !strings.Contains(markdown, "dependencies.nx") {
+		t.Fatalf("Markdown evidence missing exact selector:\n%s", markdown)
+	}
+}
+
+func TestLockfileEntryProofIsStructuredAndPackageExact(t *testing.T) {
+	lockfile := `{"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/@nx/js":{"version":"22.7.8"}}}`
+	if !lockfileEntryContainsVersion(lockfile, "packages.node_modules/nx.version", "22.7.7") {
+		t.Fatal("structured package-lock proof was not accepted")
+	}
+	if lockfileEntryContainsVersion(lockfile, "packages.node_modules/nx.version", "22.7.8") {
+		t.Fatal("nx proof incorrectly accepted @nx/js version")
+	}
+}
+
+func TestDependencyVersionSatisfactionUsesEcosystemRanges(t *testing.T) {
+	if !dependencyVersionSatisfies("npm", "22.8.0", "^22.7.7") {
+		t.Fatal("npm caret range should accept a compatible candidate")
+	}
+	if dependencyVersionSatisfies("npm", "23.0.0", "^22.7.7") {
+		t.Fatal("npm caret range accepted an incompatible major")
+	}
+	if dependencyVersionSatisfies("go", "v1.2.4", "v1.2.3") {
+		t.Fatal("Go requirement proof must remain exact")
+	}
+}
+
 func prepareSupersessionTask(t *testing.T, task string) (*gitFixture, CreateResult, []string, string) {
 	t.Helper()
 	fixture := newGitFixture(t)

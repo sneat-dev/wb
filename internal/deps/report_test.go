@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/quality"
 )
 
@@ -62,5 +63,29 @@ func TestReportWritesLinkedMarkdownAndDeterministicYAML(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "schema_version: 1") || !strings.Contains(string(raw), "repository: acme/app") {
 		t.Fatalf("unexpected YAML:\n%s", raw)
+	}
+}
+
+func TestRepositoryReportEmitsExactDependencyDeltaEvidence(t *testing.T) {
+	result := orchestrate.Result[[]Decision]{
+		Repository: "acme/app", PR: "https://github.com/acme/app/pull/17", Commit: strings.Repeat("c", 40),
+		Metadata: []Decision{{
+			Dependency: "nx", Ecosystem: EcosystemNPM, File: "package.json", Selector: "dependencies.nx",
+			BeforeRef: "22.6.4", TargetVersion: "22.7.7", AfterRef: "22.7.7", AfterVersion: "22.7.7", Action: "updated",
+		}, {Dependency: "nx", File: "package-lock.json", TargetVersion: "22.7.7", Action: "lockfile_regenerated"}},
+	}
+	report := repositoryReportFromResult(result)
+	if len(report.DependencyDeltas) != 1 {
+		t.Fatalf("dependency deltas = %+v, want one direct reference", report.DependencyDeltas)
+	}
+	delta := report.DependencyDeltas[0]
+	if delta.SourcePR != result.PR || delta.SourceHead != result.Commit || delta.Package != "nx" || delta.Selector != "dependencies.nx" || delta.Lockfile != "package-lock.json" {
+		t.Fatalf("dependency delta = %+v", delta)
+	}
+	markdown := (Report{Repositories: []RepositoryReport{report}}).Markdown()
+	for _, expected := range []string{"Exact dependency PR deltas", "dependencies.nx", result.PR, result.Commit} {
+		if !strings.Contains(markdown, expected) {
+			t.Fatalf("report Markdown missing %q:\n%s", expected, markdown)
+		}
 	}
 }

@@ -36,7 +36,7 @@ func (goAdapter) inspect(ctx context.Context, repositoryDir, base string, target
 			continue
 		}
 		decision := Decision{
-			Dependency: target.Dependency, File: name, BeforeRef: version, BeforeVersion: version,
+			Dependency: target.Dependency, Ecosystem: EcosystemGo, File: name, Selector: "require:" + target.Dependency, BeforeRef: version, BeforeVersion: version,
 			TargetVersion: target.Version, ResolvedRef: target.Version,
 			AfterRef: target.Version, AfterVersion: target.Version,
 		}
@@ -67,7 +67,7 @@ func (goAdapter) apply(ctx context.Context, worktree string, target Target, opti
 	decisions := make([]Decision, 0, len(modules))
 	for _, module := range modules {
 		decision := Decision{
-			Dependency: target.Dependency, File: module.relative, BeforeRef: module.version, BeforeVersion: module.version,
+			Dependency: target.Dependency, Ecosystem: EcosystemGo, File: module.relative, Selector: "require:" + target.Dependency, BeforeRef: module.version, BeforeVersion: module.version,
 			TargetVersion: target.Version, ResolvedRef: target.Version,
 		}
 		if comparableDowngrade(module.version, target.Version) && !options.AllowDowngrade {

@@ -3,6 +3,7 @@ package deps
 import (
 	"context"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"unicode"
@@ -66,11 +67,72 @@ func repositoryReportFromResult(result orchestrate.Result[[]Decision]) Repositor
 		Commit: result.Commit, Pushed: result.Pushed, PR: result.PR,
 		Merged: result.Merged,
 	}
+	repository.DependencyDeltas = dependencyDeltasFromResult(result)
 	for _, check := range result.Checks {
 		repository.Checks = append(repository.Checks, RemoteCheck(check))
 	}
 	sortRepositoryReport(&repository)
 	return repository
+}
+
+func dependencyDeltasFromResult(result orchestrate.Result[[]Decision]) []DependencyDelta {
+	lockfiles := make([]string, 0)
+	for _, decision := range result.Metadata {
+		if strings.HasPrefix(decision.Action, "lockfile_") {
+			lockfiles = append(lockfiles, decision.File)
+		}
+	}
+	sort.Strings(lockfiles)
+	deltas := make([]DependencyDelta, 0, len(result.Metadata))
+	for _, decision := range result.Metadata {
+		if decision.Ecosystem == "" || decision.Selector == "" || decision.Dependency == "" || decision.File == "" {
+			continue
+		}
+		delta := DependencyDelta{
+			SourcePR: result.PR, SourceHead: result.Commit, Consumer: result.Repository,
+			Ecosystem: decision.Ecosystem, Package: decision.Dependency, Manifest: decision.File,
+			Selector: decision.Selector, Before: decision.BeforeRef, RequestedAfter: decision.TargetVersion,
+			CandidateAfter: decision.AfterRef,
+		}
+		if delta.CandidateAfter == "" {
+			delta.CandidateAfter = decision.AfterVersion
+		}
+		if lockfile := lockfileForManifest(decision.File, lockfiles); lockfile != "" {
+			delta.Lockfile = lockfile
+		}
+		deltas = append(deltas, delta)
+	}
+	sort.Slice(deltas, func(i, j int) bool {
+		left, right := deltas[i], deltas[j]
+		for _, pair := range [][2]string{{left.Consumer, right.Consumer}, {left.Manifest, right.Manifest}, {left.Selector, right.Selector}, {left.Package, right.Package}} {
+			if pair[0] != pair[1] {
+				return pair[0] < pair[1]
+			}
+		}
+		return left.RequestedAfter < right.RequestedAfter
+	})
+	return deltas
+}
+
+func lockfileForManifest(manifest string, lockfiles []string) string {
+	manifestDir := path.Dir(manifest)
+	if manifestDir == "." {
+		manifestDir = ""
+	}
+	best := ""
+	for _, lockfile := range lockfiles {
+		dir := path.Dir(lockfile)
+		if dir == "." {
+			dir = ""
+		}
+		if manifestDir != dir && !strings.HasPrefix(manifestDir, dir+"/") {
+			continue
+		}
+		if best == "" || len(dir) > len(path.Dir(best)) || (len(dir) == len(path.Dir(best)) && lockfile < best) {
+			best = lockfile
+		}
+	}
+	return best
 }
 
 type exactSetHandler struct {
