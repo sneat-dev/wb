@@ -31,21 +31,45 @@ func acquireRepositoryRegistrationLock(canonical *canonicalRepository) (*reposit
 	if canonical == nil || canonical.common == nil {
 		return nil, fmt.Errorf("repository registration lock requires canonical Git descriptor")
 	}
-	fd, err := unix.Openat(
-		int(canonical.common.Fd()), repositoryRegistrationLockName,
-		unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW,
-		0o600,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("open repository registration lock: %w", err)
-	}
-	file := os.NewFile(uintptr(fd), "wb-repository-registration-lock")
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("wrap repository registration lock")
-	}
 	deadline := time.Now().Add(repositoryRegistrationLockTimeout)
+	var file *os.File
+	var err error
 	for {
+		fd, openErr := unix.Openat(
+			int(canonical.common.Fd()), repositoryRegistrationLockName,
+			unix.O_RDWR|unix.O_CREAT|unix.O_CLOEXEC|unix.O_NOFOLLOW,
+			0o600,
+		)
+		err = openErr
+		if err == nil {
+			file = os.NewFile(uintptr(fd), "wb-repository-registration-lock")
+			if file == nil {
+				_ = unix.Close(fd)
+				return nil, fmt.Errorf("wrap repository registration lock")
+			}
+			break
+		}
+		if !errors.Is(err, unix.ENOENT) {
+			return nil, fmt.Errorf("open repository registration lock: %w", err)
+		}
+		// Darwin can report a transient ENOENT when two descriptors create this
+		// new repository-local file at the same time. Retry only while the held
+		// canonical descriptor still proves that the .git path is unchanged;
+		// a substituted or removed Git directory remains a hard failure.
+		if validateErr := canonical.validate(); validateErr != nil {
+			return nil, fmt.Errorf("open repository registration lock after canonical validation: %w", validateErr)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("open repository registration lock after %s: %w", repositoryRegistrationLockTimeout, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for {
+		if time.Now().After(deadline) {
+			_ = file.Close()
+			return nil, fmt.Errorf("another WB Git mutation held the repository registration lock for %s", repositoryRegistrationLockTimeout)
+		}
+		fd := int(file.Fd())
 		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			break
@@ -53,10 +77,6 @@ func acquireRepositoryRegistrationLock(canonical *canonicalRepository) (*reposit
 		if !errors.Is(err, unix.EWOULDBLOCK) {
 			_ = file.Close()
 			return nil, fmt.Errorf("hold repository registration lock: %w", err)
-		}
-		if time.Now().After(deadline) {
-			_ = file.Close()
-			return nil, fmt.Errorf("another WB Git mutation held the repository registration lock for %s", repositoryRegistrationLockTimeout)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
