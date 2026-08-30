@@ -54,7 +54,11 @@ concurrency:
 
 jobs:
   release:
-    uses: strongo/cicd/.github/workflows/release.yml@v1
+    # Pinned to an immutable tag rather than the floating `v1` of strongo/cicd:
+    # `@v1` currently lacks the `macos_signing_preflight` job that implements
+    # `require_notarized_macos`, so on that moving tag the flag is a silent
+    # no-op. `@v1.14.14` contains both.
+    uses: strongo/cicd/.github/workflows/release.yml@v1.14.14
     permissions:
       contents: write
     with:
@@ -65,5 +69,17 @@ jobs:
       # if that title is unexpectedly non-conventional, a CLI-changing push
       # must still publish rather than report a successful no-op.
       default_bump: patch
+      # Fail the release if the macOS artifacts aren't signed+notarized. The
+      # earlier SIGKILL (exit 137) was misdiagnosed as a Go 1.27 Mach-O issue;
+      # the real cause was a .p12 signing bundle rebuilt without the Apple
+      # Root CA, which is now fixed (see release_contract_test.go).
+      require_notarized_macos: true
     secrets:
       GORELEASER_GITHUB_TOKEN: ${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}
+      # macOS signing + notarization secrets, forwarded to activate the
+      # `notarize:` block in .goreleaser.yml.
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+      NOTARIZE_ISSUER_ID: ${{ secrets.NOTARIZE_ISSUER_ID }}
+      NOTARIZE_KEY_ID: ${{ secrets.NOTARIZE_KEY_ID }}
+      NOTARIZE_KEY: ${{ secrets.NOTARIZE_KEY }}
