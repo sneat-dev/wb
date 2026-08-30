@@ -3597,6 +3597,12 @@ func RunSecureCleanupGitHelper(args []string) int {
 		}
 		writeRoots = append(writeRoots, gitFilesystemCapabilityRoot{path: args[4], directory: remote})
 	}
+	writeRoots, hookRoots, err := appendSecureHookExecutionCapabilityRoots(args[0], writeRoots)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: prepare hook runtime layout: %v\n", err)
+		return 1
+	}
+	defer closeSecureHookRootHandles(hookRoots)
 	capability, err := newGitFilesystemCapability(writeRoots...)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "wb secure cleanup helper: %v\n", err)

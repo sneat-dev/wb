@@ -13,12 +13,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+const secureHookRunTestHelperArgument = "--wb-hook-run-test-helper"
 
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == SecureCleanupGitHelperArgument {
 		os.Exit(RunSecureCleanupGitHelper(os.Args[2:]))
+	}
+	if len(os.Args) > 1 && os.Args[1] == secureHookRunTestHelperArgument {
+		os.Exit(runSecureHookTestHelper(os.Args[2:]))
 	}
 	if len(os.Args) > 1 && os.Args[1] == SecureStageGitHelperArgument {
 		os.Exit(RunSecureStageGitHelper(os.Args[2:]))
@@ -33,6 +39,32 @@ func TestMain(m *testing.M) {
 		os.Exit(RunSecureRenameGitHelper(os.Args[2:]))
 	}
 	os.Exit(m.Run())
+}
+
+func runSecureHookTestHelper(args []string) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, "wb hook test helper: missing hook name")
+		return 2
+	}
+	result, err := hooks.Run(hooks.RunOptions{
+		RepoPath: ".",
+		Hook:     args[0],
+		Args:     args[1:],
+		Stdin:    os.Stdin,
+		Stdout:   os.Stdout,
+		Stderr:   os.Stderr,
+	})
+	if result.MetricsError != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: hook succeeded but local metrics could not be recorded: %v\n", result.MetricsError)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		if result.ExitCode != 0 {
+			return result.ExitCode
+		}
+		return 1
+	}
+	return result.ExitCode
 }
 
 func TestCreateAgentModeRequiresLiveRegisteredSessionBeforeMutation(t *testing.T) {
@@ -111,6 +143,8 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 	setupRelease := make(chan struct{})
 	registrationLockReady := make(chan struct{}, 2)
 	registrationLockRelease := make(chan struct{})
+	repairReady := make(chan struct{}, 2)
+	repairRelease := make(chan struct{})
 	var firstRegistrationLock atomic.Int32
 	type result struct {
 		created []CreateResult
@@ -125,14 +159,19 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot, Operation: task, WorkLog: WorkLogOptions{Model: "unknown"},
 				// Complete all cold filesystem/Git setup before starting the
-				// assertion window. This keeps runner startup latency separate
-				// from the repository-registration serialization/deadlock check.
-				afterPublishedWorktreeAuthorization: func() { setupReady <- struct{}{}; <-setupRelease },
-				afterRepositoryRepairLockAcquired: func() {
+				// assertion window. This callback runs before the shared
+				// repository lock, so the lock-order assertion cannot block the
+				// second creator's setup.
+				afterSecureStageValidation: func() { setupReady <- struct{}{}; <-setupRelease },
+				afterRepositoryRegistrationLockAcquired: func() {
 					registrationLockReady <- struct{}{}
 					if firstRegistrationLock.CompareAndSwap(0, 1) {
 						<-registrationLockRelease
 					}
+				},
+				afterWorktreeRepair: func() {
+					repairReady <- struct{}{}
+					<-repairRelease
 				},
 			})
 			results <- result{created: created, err: err}
@@ -142,7 +181,7 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 		select {
 		case <-setupReady:
 		case <-time.After(2 * time.Minute):
-			t.Fatal("concurrent creations did not both reach the pre-repair boundary")
+			t.Fatal("concurrent creations did not both reach the pre-lock boundary")
 		}
 	}
 	close(setupRelease)
@@ -158,8 +197,19 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 	}
 	close(registrationLockRelease)
 	select {
+	case <-repairReady:
+	case <-time.After(30 * time.Second):
+		t.Fatal("first concurrent creator did not reach repair while holding the repository registration lock")
+	}
+	select {
 	case <-registrationLockReady:
-	case <-time.After(10 * time.Second):
+		t.Fatal("second concurrent creator acquired the repository registration lock before the first completed repair")
+	default:
+	}
+	close(repairRelease)
+	select {
+	case <-registrationLockReady:
+	case <-time.After(30 * time.Second):
 		t.Fatal("second concurrent creator did not acquire the repository registration lock after release")
 	}
 	wait.Wait()
@@ -168,6 +218,55 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 		if result.err != nil || len(result.created) != 1 || result.created[0].Action != "created" {
 			t.Fatalf("concurrent different-task create = %#v, err=%v", result, result.err)
 		}
+	}
+}
+
+func TestAcquireRepositoryRegistrationLockConcurrentFirstOpen(t *testing.T) {
+	fixture := newGitFixture(t)
+	lockPath := filepath.Join(fixture.canonical, ".git", repositoryRegistrationLockName)
+	const attempts = 100
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := os.Remove(lockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("remove registration lock before attempt %d: %v", attempt, err)
+		}
+		canonical := make([]*canonicalRepository, 2)
+		for index := range canonical {
+			var err error
+			canonical[index], err = openCanonicalRepository(fixture.canonical)
+			if err != nil {
+				t.Fatalf("open canonical for attempt %d worker %d: %v", attempt, index, err)
+			}
+		}
+		start := make(chan struct{})
+		results := make(chan error, len(canonical))
+		for _, repository := range canonical {
+			go func(repository *canonicalRepository) {
+				<-start
+				lock, err := acquireRepositoryRegistrationLock(repository)
+				if err == nil {
+					err = lock.release()
+				}
+				results <- err
+			}(repository)
+		}
+		close(start)
+		var firstErr error
+		for index := range canonical {
+			if err := <-results; err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("worker %d: %w", index, err)
+				}
+			}
+		}
+		for _, repository := range canonical {
+			repository.close()
+		}
+		if firstErr != nil {
+			t.Fatalf("concurrent registration lock open attempt %d: %v", attempt, firstErr)
+		}
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("concurrent registration lock open did not leave durable lock file: %v", err)
 	}
 }
 
