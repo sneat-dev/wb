@@ -345,8 +345,8 @@ func commitChecks(ctx context.Context, options PullRequestWaitOptions) ([]Remote
 	checks := make([]RemoteCheck, 0)
 	pending := false
 	if options.PullRequest != "" {
-		output, _, commandErr := runCommand(ctx, 0, 0, "", "gh", "pr", "checks", options.PullRequest, "--repo", options.Repository, "--json", "name,bucket,link")
-		prChecks, prPending, err := decodePullRequestChecks(options.PullRequest, output, commandErr)
+		result := githubExecute(ctx, "", "pr", "checks", options.PullRequest, "--repo", options.Repository, "--json", "name,bucket,link")
+		prChecks, prPending, err := decodePullRequestChecks(options.PullRequest, string(result.Stdout), string(result.Stderr), result.Err)
 		if err != nil {
 			return nil, false, err.Error()
 		}
@@ -497,11 +497,8 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 }
 
 func pullRequestRequiredChecks(ctx context.Context, repository, pullRequest string) ([]RequiredRemoteCheck, string) {
-	output, _, commandErr := runCommand(
-		ctx, 0, 0, "", "gh", "pr", "checks", pullRequest,
-		"--repo", repository, "--required", "--json", "name,bucket,link",
-	)
-	checks, _, err := decodePullRequestChecks(pullRequest, output, commandErr)
+	result := githubExecute(ctx, "", "pr", "checks", pullRequest, "--repo", repository, "--required", "--json", "name,bucket,link")
+	checks, _, err := decodePullRequestChecks(pullRequest, string(result.Stdout), string(result.Stderr), result.Err)
 	if err != nil {
 		return nil, fmt.Sprintf("read effective required checks for pull request %s: %v", pullRequest, err)
 	}
@@ -559,12 +556,12 @@ type githubActiveBranchRule struct {
 
 func targetBranchRequiredChecks(ctx context.Context, repository, target string, requireServerFreshness bool) ([]RequiredRemoteCheck, string, string) {
 	branchEndpoint := "repos/" + repository + "/branches/" + url.PathEscape(target)
-	branchOutput, _, branchErr := runCommand(ctx, 0, 0, "", "gh", "api", branchEndpoint)
+	branchOutputRaw, branchErr := githubGet(ctx, "", repository, target, "", branchEndpoint)
 	if branchErr != nil {
 		return nil, "", fmt.Sprintf("read target branch protection for %s: %v", target, branchErr)
 	}
 	var branch githubBranchPolicyView
-	if err := json.Unmarshal([]byte(branchOutput), &branch); err != nil {
+	if err := json.Unmarshal(branchOutputRaw, &branch); err != nil {
 		return nil, "", fmt.Sprintf("decode target branch protection for %s: %v", target, err)
 	}
 	if branch.Protected == nil {
@@ -577,14 +574,14 @@ func targetBranchRequiredChecks(ctx context.Context, repository, target string, 
 		checks := branch.Protection.RequiredStatusChecks.Checks
 		classicStrict := false
 		if requireServerFreshness {
-			detailOutput, _, detailErr := runCommand(ctx, 0, 0, "", "gh", "api", branchEndpoint+"/protection/required_status_checks")
+			detailOutputRaw, detailErr := githubGet(ctx, "", repository, target, "", branchEndpoint+"/protection/required_status_checks")
 			if detailErr != nil {
 				if len(contexts) != 0 || len(checks) != 0 || !strings.Contains(strings.ToLower(detailErr.Error()), "http 404") {
 					return nil, "", fmt.Sprintf("read authoritative required-status-check policy for %s: %v", target, detailErr)
 				}
 			} else {
 				var detail githubRequiredStatusChecksPolicy
-				if err := json.Unmarshal([]byte(detailOutput), &detail); err != nil {
+				if err := json.Unmarshal(detailOutputRaw, &detail); err != nil {
 					return nil, "", fmt.Sprintf("decode authoritative required-status-check policy for %s: %v", target, err)
 				}
 				if detail.Strict == nil {
@@ -611,7 +608,7 @@ func targetBranchRequiredChecks(ctx context.Context, repository, target string, 
 	}
 
 	rulesEndpoint := "repos/" + repository + "/rules/branches/" + url.PathEscape(target) + "?per_page=100"
-	rulesOutput, _, rulesErr := runCommand(ctx, 0, 0, "", "gh", "api", "--paginate", "--slurp", rulesEndpoint)
+	rulesOutput, rulesErr := githubRead(ctx, "", "api", "--paginate", "--slurp", rulesEndpoint)
 	if rulesErr != nil {
 		return nil, "", fmt.Sprintf("read active branch rules for target %s: %v", target, rulesErr)
 	}
@@ -694,12 +691,12 @@ func sortRequiredChecks(checks []RequiredRemoteCheck) {
 }
 
 func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
-	output, _, err := runCommand(ctx, 0, 0, "", "gh", "api", "repos/"+options.Repository+"/commits/"+options.Head+"/check-runs?per_page=100")
+	output, err := githubGet(ctx, "", options.Repository, options.Target, options.Head, "repos/"+options.Repository+"/commits/"+options.Head+"/check-runs?per_page=100")
 	if err != nil {
 		return nil, false, err.Error()
 	}
 	var response githubCheckRunsResponse
-	if err := json.Unmarshal([]byte(output), &response); err != nil {
+	if err := json.Unmarshal(output, &response); err != nil {
 		return nil, false, fmt.Sprintf("decode GitHub check runs for %s: %v", options.Head, err)
 	}
 	if response.TotalCount > len(response.CheckRuns) {
@@ -718,12 +715,12 @@ func commitCheckRuns(ctx context.Context, options PullRequestWaitOptions) ([]Rem
 }
 
 func commitStatuses(ctx context.Context, options PullRequestWaitOptions) ([]RemoteCheck, bool, string) {
-	output, _, err := runCommand(ctx, 0, 0, "", "gh", "api", "repos/"+options.Repository+"/commits/"+options.Head+"/status?per_page=100")
+	output, err := githubGet(ctx, "", options.Repository, options.Target, options.Head, "repos/"+options.Repository+"/commits/"+options.Head+"/status?per_page=100")
 	if err != nil {
 		return nil, false, err.Error()
 	}
 	var response githubCommitStatusResponse
-	if err := json.Unmarshal([]byte(output), &response); err != nil {
+	if err := json.Unmarshal(output, &response); err != nil {
 		return nil, false, fmt.Sprintf("decode GitHub commit statuses for %s: %v", options.Head, err)
 	}
 	if response.TotalCount > len(response.Statuses) {
@@ -758,7 +755,7 @@ type pullRequestIdentityView struct {
 }
 
 func pullRequestIdentity(ctx context.Context, repository, pullRequest string) (string, string, string) {
-	output, _, err := runCommand(ctx, 0, 0, "", "gh", "pr", "view", pullRequest, "--repo", repository, "--json", "headRefOid,baseRefName")
+	output, err := githubRead(ctx, "", "pr", "view", pullRequest, "--repo", repository, "--json", "headRefOid,baseRefName")
 	if err != nil {
 		return "", "", err.Error()
 	}
@@ -779,12 +776,12 @@ type githubReference struct {
 }
 
 func targetHead(ctx context.Context, repository, target string) (string, string) {
-	output, _, err := runCommand(ctx, 0, 0, "", "gh", "api", "repos/"+repository+"/git/ref/heads/"+target)
+	output, err := githubGet(ctx, "", repository, target, "", "repos/"+repository+"/git/ref/heads/"+target)
 	if err != nil {
 		return "", err.Error()
 	}
 	var reference githubReference
-	if err := json.Unmarshal([]byte(output), &reference); err != nil || strings.TrimSpace(reference.Object.SHA) == "" {
+	if err := json.Unmarshal(output, &reference); err != nil || strings.TrimSpace(reference.Object.SHA) == "" {
 		if err != nil {
 			return "", fmt.Sprintf("decode target ref %s: %v", target, err)
 		}
@@ -805,12 +802,12 @@ type githubCompareView struct {
 
 func candidateContainsTarget(ctx context.Context, repository, target, candidate string) (bool, string) {
 	endpoint := "repos/" + repository + "/compare/" + target + "..." + candidate
-	output, _, err := runCommand(ctx, 0, 0, "", "gh", "api", endpoint)
+	output, err := githubGet(ctx, "", repository, target, candidate, endpoint)
 	if err != nil {
 		return false, fmt.Sprintf("prove candidate ancestry against target %s: %v", target, err)
 	}
 	var comparison githubCompareView
-	if err := json.Unmarshal([]byte(output), &comparison); err != nil {
+	if err := json.Unmarshal(output, &comparison); err != nil {
 		return false, fmt.Sprintf("decode candidate ancestry against target %s: %v", target, err)
 	}
 	status := strings.TrimSpace(comparison.Status)

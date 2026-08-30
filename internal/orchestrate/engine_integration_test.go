@@ -284,6 +284,9 @@ if [ "$1" = pr ] && [ "$2" = checks ]; then
   count=0
   if [ -f "$WB_CHECK_STATE" ]; then count=$(cat "$WB_CHECK_STATE"); fi
   count=$((count + 1)); printf '%s' "$count" > "$WB_CHECK_STATE"
+  case " $* " in
+    *" --required "*) echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'; exit 0;;
+  esac
   if [ "$count" -eq 1 ]; then
     echo "no checks reported on the branch" >&2
     exit 1
@@ -366,7 +369,7 @@ func TestWaitAndMergeLeavesPullRequestUnmergedWhenProtectedMergeRejectsLateTarge
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
-if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then case " $* " in *" --required "*) echo '[{"name":"CI","bucket":"pass"}]';; *) echo '[{"name":"CI","bucket":"pass"}]';; esac; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi

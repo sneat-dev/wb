@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/encode"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -2027,13 +2029,13 @@ func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
 	// A retry after a transient failure should reuse an open PR rather than
 	// opening a duplicate one. A merged PR for the same branch must not be
 	// reused: the branch may contain a later release-chain update.
-	if output, err := runIn(repo.worktree, "gh", "pr", "list",
+	if output, err := githubobserver.Read(context.Background(), repo.worktree, "pr", "list",
 		"--head", repo.branch,
 		"--base", repo.ref,
 		"--state", "open",
 		"--json", "url",
 		"--jq", ".[0].url"); err == nil {
-		if url := strings.TrimSpace(output); url != "" {
+		if url := strings.TrimSpace(string(output)); url != "" {
 			return url, nil
 		}
 	}
@@ -2053,17 +2055,17 @@ func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
 }
 
 func requiredChecksGreen(worktree, prURL string) ([]RemoteCheck, bool, error) {
-	output, err := runIn(worktree, "gh", "pr", "checks", prURL, "--required", "--json", "name,bucket")
+	result := githubobserver.Execute(context.Background(), worktree, "pr", "checks", prURL, "--required", "--json", "name,bucket")
 	var checks []RemoteCheck
-	if decodeErr := json.Unmarshal([]byte(output), &checks); decodeErr != nil {
-		if err != nil {
-			return nil, false, err
+	if decodeErr := json.Unmarshal(result.Stdout, &checks); decodeErr != nil {
+		if result.Err != nil {
+			return nil, false, result.Err
 		}
 		return nil, false, fmt.Errorf("decode required checks for %s: %w", prURL, decodeErr)
 	}
 	// gh exits non-zero while checks are pending or failing, but still returns
 	// the requested JSON. Treat that as a blocked merge, not a transport error.
-	if err != nil {
+	if result.Err != nil {
 		return checks, false, nil
 	}
 	for _, check := range checks {

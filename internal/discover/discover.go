@@ -4,15 +4,15 @@
 package discover
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // Repo identifies a single repository and where it lives.
@@ -106,11 +106,9 @@ type ghRepo struct {
 // ListRemote returns all repos for owner via gh. The archived flag is
 // preserved so callers can report and skip archived repos explicitly.
 func ListRemote(owner string) ([]Repo, error) {
-	cmd := exec.Command("gh", "repo", "list", owner,
+	out, err := githubobserver.Read(context.Background(), "", "repo", "list", owner,
 		"--limit", "1000",
 		"--json", "name,isArchived,isFork,sshUrl")
-	cmd.Env = console.Env()
-	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
@@ -143,9 +141,7 @@ func ListRemote(owner string) ([]Repo, error) {
 // must treat any error (network, auth, rate limit, unknown repository) as
 // "could not confirm" rather than guessing either way.
 func IsArchived(slug string) (bool, error) {
-	command := exec.Command("gh", "repo", "view", slug, "--json", "isArchived", "--jq", ".isArchived")
-	command.Env = console.Env()
-	out, err := command.Output()
+	out, err := githubobserver.Read(context.Background(), "", "repo", "view", slug, "--json", "isArchived", "--jq", ".isArchived")
 	if err != nil {
 		return false, fmt.Errorf("confirm archived status of %s: %w", slug, err)
 	}
@@ -162,12 +158,17 @@ func IsArchived(slug string) (bool, error) {
 
 // AuthUser returns the authenticated GitHub login via gh.
 func AuthUser() (string, error) {
-	command := exec.Command("gh", "api", "user", "--jq", ".login")
-	command.Env = console.Env()
-	out, err := command.Output()
+	response, err := githubobserver.Get(context.Background(), githubobserver.GetRequest{Endpoint: "user"})
 	if err != nil {
 		return "", err
 	}
+	var payload struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(response.Body, &payload); err != nil {
+		return "", err
+	}
+	out := []byte(payload.Login)
 	return strings.TrimSpace(string(out)), nil
 }
 
@@ -175,12 +176,22 @@ func AuthUser() (string, error) {
 // the authoritative source of "owners I control" — local directory names are
 // not, since they include third-party clones.
 func MemberOrgs() ([]string, error) {
-	command := exec.Command("gh", "api", "user/orgs", "--jq", ".[].login")
-	command.Env = console.Env()
-	out, err := command.Output()
+	response, err := githubobserver.Get(context.Background(), githubobserver.GetRequest{Endpoint: "user/orgs"})
 	if err != nil {
 		return nil, err
 	}
+	var values []struct {
+		Login string `json:"login"`
+	}
+	if err := json.Unmarshal(response.Body, &values); err != nil {
+		return nil, err
+	}
+	var output strings.Builder
+	for _, value := range values {
+		output.WriteString(value.Login)
+		output.WriteByte('\n')
+	}
+	out := []byte(output.String())
 	var orgs []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line = strings.TrimSpace(line); line != "" {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/deps"
 	"github.com/sneat-dev/wb/internal/encode"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/mod/semver"
 	"gopkg.in/yaml.v3"
@@ -675,6 +676,30 @@ func workflowRunID(run workflowRun) string {
 }
 
 func resolveHead(ctx context.Context, receipt Receipt, options Options) (string, error) {
+	if useSharedGitHubObserver(options.Runner) {
+		response, err := githubobserver.Get(ctx, githubobserver.GetRequest{
+			Repository:  receipt.Repository,
+			Target:      receipt.Ref,
+			Endpoint:    "repos/" + receipt.Repository + "/git/ref/heads/" + url.PathEscape(receipt.Ref),
+			FreshWindow: 0,
+		})
+		if err != nil {
+			return "", fmt.Errorf("resolve workflow head: %w", err)
+		}
+		var reference struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := json.Unmarshal(response.Body, &reference); err != nil {
+			return "", fmt.Errorf("decode workflow head: %w", err)
+		}
+		sha := strings.TrimSpace(reference.Object.SHA)
+		if !isSHA(sha) {
+			return "", fmt.Errorf("GitHub returned invalid head SHA %q", sha)
+		}
+		return strings.ToLower(sha), nil
+	}
 	result := runExternal(ctx, options, "gh", "api", "repos/"+receipt.Repository+"/git/ref/heads/"+url.PathEscape(receipt.Ref), "--jq", ".object.sha")
 	if result.Err != nil || result.Code != 0 {
 		return "", commandError("resolve workflow head", result)
@@ -708,12 +733,22 @@ func dispatchWorkflow(ctx context.Context, receipt Receipt, options Options) err
 // ID set as a pre-dispatch baseline; missing identity metadata is rejected by
 // omission rather than being treated as a candidate.
 func listExactWorkflowRuns(ctx context.Context, receipt Receipt, options Options) ([]workflowRun, error) {
-	result := runExternal(ctx, options, "gh", "run", "list", "--repo", receipt.Repository, "--workflow", receipt.Workflow, "--commit", receipt.HeadSHA, "--event", "workflow_dispatch", "--limit", fmt.Sprintf("%d", exactWorkflowRunListLimit), "--json", "databaseId,headSha,status,conclusion,url,workflowName,event,createdAt,updatedAt")
-	if result.Err != nil || result.Code != 0 {
-		return nil, commandError("list exact workflow runs", result)
+	output := ""
+	if useSharedGitHubObserver(options.Runner) {
+		read, err := githubobserver.Read(ctx, "", "run", "list", "--repo", receipt.Repository, "--workflow", receipt.Workflow, "--commit", receipt.HeadSHA, "--event", "workflow_dispatch", "--limit", fmt.Sprintf("%d", exactWorkflowRunListLimit), "--json", "databaseId,headSha,status,conclusion,url,workflowName,event,createdAt,updatedAt")
+		if err != nil {
+			return nil, fmt.Errorf("list exact workflow runs: %w", err)
+		}
+		output = string(read)
+	} else {
+		result := runExternal(ctx, options, "gh", "run", "list", "--repo", receipt.Repository, "--workflow", receipt.Workflow, "--commit", receipt.HeadSHA, "--event", "workflow_dispatch", "--limit", fmt.Sprintf("%d", exactWorkflowRunListLimit), "--json", "databaseId,headSha,status,conclusion,url,workflowName,event,createdAt,updatedAt")
+		if result.Err != nil || result.Code != 0 {
+			return nil, commandError("list exact workflow runs", result)
+		}
+		output = result.Output
 	}
 	var listed []workflowRun
-	if err := json.Unmarshal([]byte(result.Output), &listed); err != nil {
+	if err := json.Unmarshal([]byte(output), &listed); err != nil {
 		return nil, fmt.Errorf("decode GitHub workflow run list: %w", err)
 	}
 	if len(listed) >= exactWorkflowRunListLimit {
@@ -812,12 +847,22 @@ func waitRun(ctx context.Context, receipt *Receipt, options Options, persistRece
 		deadline = time.Now().Add(options.Timeout)
 	}
 	for {
-		result := runExternal(ctx, options, "gh", "run", "view", receipt.RunID, "--repo", receipt.Repository, "--json", "databaseId,headSha,status,conclusion,url,workflowName,event,createdAt,updatedAt")
-		if result.Err != nil || result.Code != 0 {
-			return commandError("observe workflow run "+receipt.RunID, result)
+		output := ""
+		if useSharedGitHubObserver(options.Runner) {
+			read, err := githubobserver.Read(ctx, "", "run", "view", receipt.RunID, "--repo", receipt.Repository, "--json", "databaseId,headSha,status,conclusion,url,workflowName,event,createdAt,updatedAt")
+			if err != nil {
+				return fmt.Errorf("observe workflow run %s: %w", receipt.RunID, err)
+			}
+			output = string(read)
+		} else {
+			result := runExternal(ctx, options, "gh", "run", "view", receipt.RunID, "--repo", receipt.Repository, "--json", "databaseId,headSha,status,conclusion,url,workflowName,event,createdAt,updatedAt")
+			if result.Err != nil || result.Code != 0 {
+				return commandError("observe workflow run "+receipt.RunID, result)
+			}
+			output = result.Output
 		}
 		var run workflowRun
-		if err := json.Unmarshal([]byte(result.Output), &run); err != nil {
+		if err := json.Unmarshal([]byte(output), &run); err != nil {
 			return fmt.Errorf("decode workflow run %s: %w", receipt.RunID, err)
 		}
 		if run.ID <= 0 || workflowRunID(run) != receipt.RunID || !strings.EqualFold(run.Event, "workflow_dispatch") {
@@ -881,6 +926,22 @@ func waitRun(ctx context.Context, receipt *Receipt, options Options, persistRece
 			return ctx.Err()
 		case <-time.After(interval):
 		}
+	}
+}
+
+// Production GitHub observations go through githubobserver. A custom runner
+// bypasses it only for hermetic tests that need exact stubbed stdout/exit
+// control from `gh` subcommands such as `gh run list` and `gh run view`; the
+// live release transport still uses the shared observer path.
+func useSharedGitHubObserver(runner CommandRunner) bool {
+	if runner == nil {
+		return true
+	}
+	switch runner.(type) {
+	case OSCommandRunner, *OSCommandRunner:
+		return true
+	default:
+		return false
 	}
 }
 

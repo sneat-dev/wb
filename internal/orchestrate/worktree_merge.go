@@ -1136,7 +1136,7 @@ func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, r
 	}
 	escapedTarget := url.PathEscape(target)
 	branchEndpoint := "repos/" + repository + "/branches/" + escapedTarget
-	branchOutput, _, err := runCommand(ctx, 0, 0, "", "gh", "api", branchEndpoint)
+	branchOutput, err := githubGet(ctx, "", repository, target, "", branchEndpoint)
 	if err != nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("target branch policy is unavailable: %v", err))
 	}
@@ -1146,11 +1146,11 @@ func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, r
 			RequiredPullRequestReviews json.RawMessage `json:"required_pull_request_reviews"`
 		} `json:"protection"`
 	}
-	if err := json.Unmarshal([]byte(branchOutput), &branch); err != nil || branch.Protected == nil {
+	if err := json.Unmarshal(branchOutput, &branch); err != nil || branch.Protected == nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("authoritative target branch policy for %s is incomplete", target))
 	}
 	rulesEndpoint := "repos/" + repository + "/rules/branches/" + escapedTarget + "?per_page=100"
-	rulesOutput, _, err := runCommand(ctx, 0, 0, "", "gh", "api", "--paginate", "--slurp", rulesEndpoint)
+	rulesOutput, err := githubRead(ctx, "", "api", "--paginate", "--slurp", rulesEndpoint)
 	if err != nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("active target rules are unavailable: %v", err))
 	}
@@ -1435,7 +1435,7 @@ func shortMergeRevision(revision string) string {
 }
 
 func mergeExactPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (string, error) {
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree, "gh", "api", "repos/"+receipt.Repository)
+	output, err := githubGet(ctx, receipt.Candidate.Worktree, receipt.Repository, receipt.Target, receipt.Candidate.SHA, "repos/"+receipt.Repository)
 	if err != nil {
 		return "", fmt.Errorf("read repository merge methods: %w", err)
 	}
@@ -1444,7 +1444,7 @@ func mergeExactPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, op
 		AllowSquash bool `json:"allow_squash_merge"`
 		AllowRebase bool `json:"allow_rebase_merge"`
 	}
-	if err := json.Unmarshal([]byte(output), &settings); err != nil {
+	if err := json.Unmarshal(output, &settings); err != nil {
 		return "", fmt.Errorf("decode repository merge methods: %w", err)
 	}
 	method := ""
@@ -1473,7 +1473,7 @@ func mergeExactPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, op
 }
 
 func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (string, bool, error) {
-	viewOutput, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree, "gh", "pr", "view", receipt.PullRequest,
+	viewOutput, err := githubRead(ctx, receipt.Candidate.Worktree, "pr", "view", receipt.PullRequest,
 		"--repo", receipt.Repository, "--json", "state,mergedAt,mergeCommit,headRefOid,baseRefName")
 	if err != nil {
 		return "", false, fmt.Errorf("read pull-request landing receipt: %w", err)
