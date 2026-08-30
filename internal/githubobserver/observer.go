@@ -294,10 +294,14 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		result := o.runner()(commandCtx, dir, args...)
 		cancel()
 		response, parseErr := parseIncludedResponse(result.Stdout)
-		if parseErr != nil && result.Err == nil {
+		commandOK := result.Err == nil && result.ExitCode == 0
+		if parseErr != nil && commandOK {
 			return httpResponse{StatusCode: 200, Headers: map[string]string{}, Body: append([]byte(nil), result.Stdout...)}, nil
 		}
-		if parseErr == nil && result.Err == nil {
+		// gh returns a non-zero exit status for conditional requests whose
+		// response is HTTP 304. The included response is authoritative in this
+		// case; retain command failures for every other parsed status.
+		if parseErr == nil && (commandOK || response.StatusCode == 304) {
 			return response, nil
 		}
 		if parseErr == nil && isThrottleStatus(response.StatusCode) {
@@ -312,7 +316,7 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 			continue
 		}
 		if parseErr == nil {
-			if result.Err == nil {
+			if commandOK {
 				return response, nil
 			}
 			message := strings.TrimSpace(string(result.Stderr))
