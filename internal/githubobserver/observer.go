@@ -120,7 +120,7 @@ func Execute(ctx context.Context, dir string, args ...string) CommandResponse {
 	return Default().Execute(ctx, dir, args...)
 }
 
-func (o *Observer) Get(ctx context.Context, request GetRequest) (Response, error) {
+func (o *Observer) Get(ctx context.Context, request GetRequest) (response Response, err error) {
 	request.Endpoint = strings.TrimSpace(request.Endpoint)
 	if request.Endpoint == "" {
 		return Response{}, errors.New("GitHub endpoint is required")
@@ -135,7 +135,11 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (Response, error
 	if err != nil {
 		return Response{}, err
 	}
-	defer unlock()
+	defer func() {
+		if unlockErr := unlock(); unlockErr != nil {
+			err = errors.Join(err, fmt.Errorf("release GitHub observer lock %s: %w", lockPath, unlockErr))
+		}
+	}()
 
 	checkedAt := o.now()
 	freshWindow := request.FreshWindow
