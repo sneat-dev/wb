@@ -53,7 +53,12 @@ func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
 			if !strings.Contains(joined, `If-None-Match: "etag-1"`) {
 				t.Fatalf("conditional request missing ETag header: %v", args)
 			}
-			return commandResult{Stdout: []byte("HTTP/2 304 Not Modified\nETag: \"etag-1\"\nLast-Modified: Sun, 30 Aug 2026 09:59:00 GMT\n\n")}
+			return commandResult{
+				Stdout:   []byte("HTTP/2 304 Not Modified\nETag: \"etag-1\"\nLast-Modified: Sun, 30 Aug 2026 09:59:00 GMT\n\n"),
+				Stderr:   []byte("gh: HTTP 304"),
+				ExitCode: 1,
+				Err:      errors.New("exit status 1"),
+			}
 		},
 	}
 
@@ -70,6 +75,54 @@ func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
 	}
 	if updated.ObservedAt != now {
 		t.Fatalf("ObservedAt = %s, want %s", updated.ObservedAt, now)
+	}
+}
+
+func TestGetDoesNotAcceptFailedCommandForFreshResponse(t *testing.T) {
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			return commandResult{
+				Stdout:   []byte("HTTP/2 200 OK\n\n{\"ok\":true}"),
+				Stderr:   []byte("gh: transport failure"),
+				ExitCode: 1,
+				Err:      errors.New("exit status 1"),
+			}
+		},
+	}
+
+	_, err := observer.Get(context.Background(), GetRequest{
+		Repository:  "acme/app",
+		Target:      "main",
+		Head:        strings.Repeat("h", 40),
+		Endpoint:    "user",
+		FreshWindow: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 200") {
+		t.Fatalf("err=%v, want failed command for parsed HTTP 200", err)
+	}
+}
+
+func TestGetDoesNotAcceptNonzeroExitCodeWithoutCommandError(t *testing.T) {
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			return commandResult{
+				Stdout:   []byte("HTTP/2 200 OK\n\n{\"ok\":true}"),
+				ExitCode: 1,
+			}
+		},
+	}
+
+	_, err := observer.Get(context.Background(), GetRequest{
+		Repository:  "acme/app",
+		Target:      "main",
+		Head:        strings.Repeat("i", 40),
+		Endpoint:    "user",
+		FreshWindow: time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 200") {
+		t.Fatalf("err=%v, want failed command for nonzero exit code", err)
 	}
 }
 
