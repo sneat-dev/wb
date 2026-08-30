@@ -86,11 +86,11 @@ type CreateOptions struct {
 	// between validating the staging pathname and handing its held descriptor
 	// to Git. It proves a later pathname substitution cannot redirect Git.
 	afterSecureStageValidation func()
-	// afterRepositoryRepairLockAcquired is a test-only seam immediately after
-	// the shared-repository registration lock is acquired and before Git repairs
-	// the canonical repository. It proves Create participates in cross-task
-	// registration serialization without timing assumptions.
-	afterRepositoryRepairLockAcquired func()
+	// afterRepositoryRegistrationLockAcquired is a test-only seam immediately
+	// after the shared-repository registration lock is acquired and before Git
+	// mutates the canonical repository. It proves Create participates in
+	// cross-task registration serialization without timing assumptions.
+	afterRepositoryRegistrationLockAcquired func()
 	// afterSecureStageVerification is a test-only seam immediately before the
 	// descriptor-relative publish. It exercises the final unavoidable rename
 	// window without exposing the seam to production callers.
@@ -689,7 +689,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.afterSecureCheckoutAuthorization,
 				normalized.afterSecureCheckoutMove,
 				normalized.afterPublishedWorktreeAuthorization,
-				normalized.afterRepositoryRepairLockAcquired,
+				normalized.afterRepositoryRegistrationLockAcquired,
 				normalized.afterWorktreeRepair,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
@@ -1901,7 +1901,7 @@ func addWorktreeAtSecureDestination(
 	afterCheckoutAuthorization func(),
 	afterCheckoutMove func(),
 	afterPublishedAuthorization func(),
-	afterRepairLockAcquired func(),
+	afterRegistrationLockAcquired func(),
 	afterRepair func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
@@ -1978,9 +1978,15 @@ func addWorktreeAtSecureDestination(
 			_ = quarantineMatchingStageDirectoryAt(operationDirectory, stageDirectory)
 		}
 	}()
+	var releaseRegistrationLock func() error
 	rollback := func(creationErr error, finalPath string, checkoutDirectory *os.File) error {
 		if checkoutDirectory != nil && !directoryEntryStillMatches(stageDirectory, "checkout", checkoutDirectory) {
 			preserveStageReplacement = true
+		}
+		if releaseRegistrationLock != nil {
+			if releaseErr := releaseRegistrationLock(); releaseErr != nil {
+				creationErr = fmt.Errorf("%w; release repository registration lock before rollback: %v", creationErr, releaseErr)
+			}
 		}
 		cleanupCtx, cancel := rollbackContext(ctx)
 		defer cancel()
@@ -1998,19 +2004,31 @@ func addWorktreeAtSecureDestination(
 	if afterStageValidation != nil {
 		afterStageValidation()
 	}
-	// Git updates the shared .git/worktrees registry during `worktree add`.
-	// Per-task locks do not cover different task slugs, so serialize this
-	// repository-wide mutation explicitly. The lock is released before the
-	// test-only post-repair seam below; holding it across that seam would turn
-	// the seam's rendezvous into a false deadlock detector.
+	// Git updates the shared .git/worktrees registry during both `worktree add`
+	// and `worktree repair`. Per-task locks do not cover different task slugs,
+	// so serialize the complete add -> publish -> repair -> verify transaction
+	// repository-wide. Releasing between add and repair would expose Git's
+	// temporary stage registration to a sibling creator.
 	registrationLock, err := acquireRepositoryRegistrationLock(canonical)
 	if err != nil {
 		return rollback(fmt.Errorf("acquire repository registration lock: %w", err), "", nil)
 	}
-	addErr := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists)
-	if releaseErr := registrationLock.release(); releaseErr != nil && addErr == nil {
-		addErr = fmt.Errorf("release repository registration lock: %w", releaseErr)
+	releaseRegistrationLock = func() error {
+		if registrationLock == nil {
+			return nil
+		}
+		releaseErr := registrationLock.release()
+		registrationLock = nil
+		return releaseErr
 	}
+	rollbackRegistrationLock := func() {
+		_ = releaseRegistrationLock()
+	}
+	defer rollbackRegistrationLock()
+	if afterRegistrationLockAcquired != nil {
+		afterRegistrationLockAcquired()
+	}
+	addErr := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists)
 	if addErr != nil {
 		return rollback(fmt.Errorf("create staged worktree: %w", addErr), "", nil)
 	}
@@ -2083,18 +2101,7 @@ func addWorktreeAtSecureDestination(
 		if afterPublishedAuthorization != nil {
 			afterPublishedAuthorization()
 		}
-		registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical)
-		if lockErr != nil {
-			repairErr = lockErr
-		} else {
-			if afterRepairLockAcquired != nil {
-				afterRepairLockAcquired()
-			}
-			repairErr = runSecureCleanupGitHelper(ctx, canonical, ownerDirectory, finalDirectory, ownerPath, finalPath, "worktree", "repair", finalPath)
-			if releaseErr := registrationLock.release(); releaseErr != nil && repairErr == nil {
-				repairErr = fmt.Errorf("release repository registration lock: %w", releaseErr)
-			}
-		}
+		repairErr = runSecureCleanupGitHelper(ctx, canonical, ownerDirectory, finalDirectory, ownerPath, finalPath, "worktree", "repair", finalPath)
 	}
 	if repairErr != nil {
 		return rollbackPublished(fmt.Errorf("repair published worktree metadata: %w", repairErr))
@@ -2104,6 +2111,9 @@ func addWorktreeAtSecureDestination(
 	}
 	if err := verifyPublishedWorktree(ctx, canonical, registrationsBefore, ownerPath, ownerDirectory, finalPath, finalDirectory, branch); err != nil {
 		return rollbackPublished(fmt.Errorf("verify published worktree after repair: %w", err))
+	}
+	if releaseErr := releaseRegistrationLock(); releaseErr != nil {
+		return rollbackPublished(fmt.Errorf("release repository registration lock: %w", releaseErr))
 	}
 	retainedOwner, err := duplicateDirectoryDescriptor(ownerDirectory, "wb-created-owner")
 	if err != nil {

@@ -437,7 +437,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 		nil, // afterCheckoutAuthorization
 		nil, // afterCheckoutMove
 		nil, // afterPublishedAuthorization
-		nil, // afterRepairLockAcquired
+		nil, // afterRegistrationLockAcquired
 		nil, // afterRepair
 		nil, // afterStagedAdd
 		nil, // beforeRepair
