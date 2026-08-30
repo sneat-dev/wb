@@ -116,6 +116,44 @@ func TestReceiveTwoMemberBundleUsesRealGitAndWorkLogBarrier(t *testing.T) {
 			t.Fatalf("member %d branch = %s, want %s", index, got, receiptMember.Pin)
 		}
 	}
+	// Model the post-resume landing receipt: each accepted member commit is
+	// now contained in the target branch, while the receiver still owns the
+	// isolated pin branch and worktree. Cleanup must discover the physical
+	// session namespaces from the logical effort and retire both safely.
+	for _, member := range request.Members {
+		runGit(t, member.RepositoryRemote, "update-ref", "refs/heads/main", member.Commit)
+	}
+	installNoPullRequestsGitHubFixture(t)
+	cleaned, err := worktrees.Cleanup(context.Background(), worktrees.CleanupOptions{
+		ProjectsRoot: projectsRoot, Task: "parked-two", Base: "main", Apply: true, Workers: 2,
+	})
+	if err != nil {
+		t.Fatalf("cleanup resumed parked members: %v", err)
+	}
+	if len(cleaned.Results) != len(request.Members) {
+		t.Fatalf("cleanup results = %#v, want %d members", cleaned.Results, len(request.Members))
+	}
+	for _, member := range request.Members {
+		var targetPath string
+		for _, cleanedMember := range cleaned.Results {
+			if cleanedMember.Repository == member.Repository {
+				targetPath = cleanedMember.WorktreeDir
+				if !cleanedMember.Applied || !cleanedMember.WorktreeGone || !cleanedMember.BranchDeleted {
+					t.Fatalf("cleanup result for %s = %#v, want terminal removal", member.Repository, cleanedMember)
+				}
+			}
+		}
+		if targetPath == "" {
+			t.Fatalf("cleanup did not report member %s", member.Repository)
+		}
+		if _, statErr := os.Stat(targetPath); !os.IsNotExist(statErr) {
+			t.Fatalf("resumed worktree %s remains after cleanup: %v", targetPath, statErr)
+		}
+		canonical := filepath.Join(projectsRoot, strings.Replace(member.Repository, "/", string(filepath.Separator), 1))
+		if gitRefExists(canonical, "refs/heads/"+sessionpark.MemberPin(request.ResumeID, member.MemberID)) {
+			t.Fatalf("pin branch for %s remains after cleanup", member.Repository)
+		}
+	}
 	assertTreeDoesNotContain(t, filepath.Join(home, "worklogs"), secret)
 	assertTreeDoesNotContain(t, filepath.Join(home, "worktrees"), secret)
 }
@@ -163,6 +201,11 @@ func gitOutput(t *testing.T, directory string, arguments ...string) string {
 		t.Fatalf("git %s: %v", strings.Join(arguments, " "), err)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func gitRefExists(directory, reference string) bool {
+	command := exec.Command("git", "-C", directory, "show-ref", "--verify", "--quiet", reference)
+	return command.Run() == nil
 }
 
 func sessionMemberPath(t *testing.T, home, resumeID, repository string) string {
@@ -233,4 +276,15 @@ func decodeJSONLines(raw []byte, target any) error {
 	}
 	encoded = append(encoded, ']')
 	return json.Unmarshal(encoded, target)
+}
+
+func installNoPullRequestsGitHubFixture(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := filepath.Join(binDir, "gh")
+	content := "#!/bin/sh\nif [ \"$1\" = api ]; then printf '%s\\n' '[]'; exit 0; fi\necho \"unexpected gh command: $*\" >&2\nexit 2\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
