@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
@@ -180,7 +182,11 @@ func TestRunPlacesVerboseHookReportsBesidePrivateMetricsState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(stateDir, "reports")
+	layout, err := ResolveExecutionLayout(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := layout.ReportRoot
 	if got := strings.TrimSpace(string(contents)); got != want {
 		t.Fatalf("hook report root = %q, want %q", got, want)
 	}
@@ -193,6 +199,65 @@ func TestRunPlacesVerboseHookReportsBesidePrivateMetricsState(t *testing.T) {
 	}
 	if output != "" {
 		t.Fatalf("hook report setup dirtied the repository: %q", output)
+	}
+}
+
+func TestRunProvidesPrivateRuntimeAndGoCachesOutsideRepository(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	home := filepath.Join(t.TempDir(), "wb-home")
+	t.Setenv(wbhome.EnvOverride, home)
+	configDir := filepath.Join(repo, ".wb")
+	mustMkdirAll(t, configDir)
+	envPath := filepath.Join(t.TempDir(), "hook-env.txt")
+	mustWrite(t, filepath.Join(configDir, "runtime-env.sh"), `#!/bin/sh
+set -eu
+printf '%s\n' "$WB_HOOK_RUNTIME_ROOT" > "$WB_TEST_ENV_PATH"
+printf '%s\n' "$WB_HOOK_CACHE_ROOT" >> "$WB_TEST_ENV_PATH"
+printf '%s\n' "$WB_HOOK_REPORT_ROOT" >> "$WB_TEST_ENV_PATH"
+printf '%s\n' "$GOPATH" >> "$WB_TEST_ENV_PATH"
+printf '%s\n' "$GOCACHE" >> "$WB_TEST_ENV_PATH"
+printf '%s\n' "$GOMODCACHE" >> "$WB_TEST_ENV_PATH"
+printf '%s\n' "$GOTMPDIR" >> "$WB_TEST_ENV_PATH"
+printf '%s\n' "$XDG_CACHE_HOME" >> "$WB_TEST_ENV_PATH"
+`)
+	mustWrite(t, filepath.Join(configDir, "hooks.yaml"), "version: 1\nhooks:\n  pre-commit:\n    template: runtime-env.sh\nmetrics:\n  enabled: false\n")
+	git(t, repo, "add", ".wb")
+	git(t, repo, "commit", "-m", "configure runtime env hook")
+	t.Setenv("WB_TEST_ENV_PATH", envPath)
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("hook result = %#v, error = %v", result, err)
+	}
+	layout, err := ResolveExecutionLayout(repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := readLogLines(t, envPath)
+	want := []string{
+		layout.Root,
+		layout.CacheRoot,
+		layout.ReportRoot,
+		layout.GoPath,
+		layout.GoCache,
+		layout.GoModCache,
+		layout.GoTmpDir,
+		layout.XDGCacheHome,
+	}
+	if !reflect.DeepEqual(lines, want) {
+		t.Fatalf("hook runtime environment = %v, want %v", lines, want)
+	}
+	for _, path := range want {
+		if strings.HasPrefix(path, repo+string(filepath.Separator)) || path == repo {
+			t.Fatalf("hook runtime path points into repository: %s", path)
+		}
+		if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
+			t.Fatalf("hook runtime directory %s stat=%v err=%v", path, info, statErr)
+		}
+	}
+	if output, statusErr := gitOutput(repo, "status", "--porcelain"); statusErr != nil || output != "" {
+		t.Fatalf("runtime hook dirtied repository: status=%q err=%v", output, statusErr)
 	}
 }
 
