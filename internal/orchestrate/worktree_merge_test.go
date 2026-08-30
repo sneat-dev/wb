@@ -980,6 +980,97 @@ func TestResumeWorktreeMergeRecoversResolvedConflictWithEmptyCandidateSHA(t *tes
 	}
 }
 
+// A candidate may be created from one immutable base, then have a target-drift
+// conflict resolved manually. The receipt records the newer target snapshot,
+// but the Work Log must retain its original claim base. Resume may normalize
+// that proven state without replaying the already-integrated source.
+func TestResumeWorktreeMergeRecoversResolvedTargetDriftConflictWithHistoricalClaimBase(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "historical-claim-base-source", "feature/historical-claim-base", "TECH-STACK.md", "source\n")
+
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil || receipt.Status != WorktreeMergePrepared {
+		t.Fatalf("initial candidate = %+v err=%v", receipt, err)
+	}
+	claimBefore, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
+		ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree,
+	})
+	if err != nil || claimBefore.Claim == nil {
+		t.Fatalf("candidate Work Log = %+v err=%v", claimBefore, err)
+	}
+	originalClaimBase := claimBefore.Claim.BaseSHA
+	if originalClaimBase != receipt.TargetSHA {
+		t.Fatalf("initial Work Log base = %s, receipt target = %s", originalClaimBase, receipt.TargetSHA)
+	}
+
+	writeEngineFile(t, filepath.Join(fixture.canonical, "TECH-STACK.md"), "target\n")
+	runEngineGit(t, fixture.canonical, "add", "TECH-STACK.md")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance target into target-drift conflict")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	currentTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+
+	merge := exec.Command("git", "merge", "--no-edit", currentTarget)
+	merge.Dir = receipt.Candidate.Worktree
+	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
+		t.Fatalf("target-drift reproduction unexpectedly merged cleanly: %s", output)
+	}
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "TECH-STACK.md"), "resolved\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "TECH-STACK.md")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "resolve target-drift conflict")
+	resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	if status := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "status", "--porcelain")); status != "" {
+		t.Fatalf("resolved candidate remains dirty: %q", status)
+	}
+
+	// This models the durable historical receipt state: the target snapshot has
+	// advanced, the human resolution is clean, but the immutable Work Log claim
+	// remains bound to the candidate's original base.
+	receipt.TargetSHA = currentTarget
+	receipt.Candidate.SHA = ""
+	receipt.Status = WorktreeMergeConflict
+	receipt.Failure = "target drift conflict required resolution"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", resolved)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved || landed.LandingSHA != resolved {
+		t.Fatalf("normalized target-drift recovery = %+v, want exact resolved head %s", landed, resolved)
+	}
+	claimAfter, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
+		ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree,
+	})
+	if err != nil || claimAfter.Claim == nil || claimAfter.Claim.BaseSHA != originalClaimBase {
+		t.Fatalf("recovery rewrote immutable Work Log claim: %+v err=%v", claimAfter.Claim, err)
+	}
+	persisted, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.TargetSHA != currentTarget || persisted.Candidate.SHA != resolved {
+		t.Fatalf("recovery did not retain the historical target snapshot and resolved candidate: %+v", persisted)
+	}
+	containsSource, sourceErr := isMergeAncestor(context.Background(), receipt.Candidate.Worktree, receipt.Sources[0].SHA, resolved)
+	if sourceErr != nil || !containsSource {
+		t.Fatalf("resolved candidate lost receipted source: contains=%t err=%v", containsSource, sourceErr)
+	}
+}
+
 func TestResumeWorktreeMergeRefusesEmptyCandidateFromUnrelatedWorktree(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "unrelated-candidate-source", "feature/unrelated-candidate", "TECH-STACK.md", "source\n")
