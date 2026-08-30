@@ -179,7 +179,12 @@ Mutating verbs live under this command:
 Prompt bodies are private local data. The bare dump includes the exact original prompt
 and later steering bodies deliberately for agent bootstrap; 'log show' stays
 redacted. Do not pipe private dumps into source Git, public reports, or
-Synchestra envelopes.`,
+Synchestra envelopes.
+
+Mutation verbs require no extra flag in auto mode for compatibility. Select
+--mode agent only with a live registered session; select --mode manual with
+--initiator <human> for an explicit audited operator action. Recover and
+archive remain read-only until --apply.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -207,6 +212,8 @@ Synchestra envelopes.`,
 		},
 	}
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	command.PersistentFlags().String("mode", "auto", "execution mode for mutation verbs: auto, agent (requires a live registered session), or manual (requires --initiator)")
+	command.PersistentFlags().String("initiator", "", "human or agent that authorized a manual Work Log mutation")
 	command.AddCommand(
 		newWorktreeLogInitCmd(),
 		newWorktreeLogSteerCmd(),
@@ -281,6 +288,11 @@ func newWorktreeLogInitCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			var body []byte
 			if prompt != "" || promptFile != "" {
 				var err error
@@ -326,6 +338,11 @@ which records human_declared.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			body, err := readPromptBody(prompt, promptFile)
 			if err != nil {
 				return err
@@ -407,6 +424,11 @@ target branch on origin. Retrieve a checkpoint from another machine with
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			var inPtr, outPtr *int64
 			var costPtr *float64
 			if haveInput {
@@ -458,6 +480,11 @@ func newWorktreeLogRefreshCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogRefresh(command.Context(), worktrees.LogRefreshOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Base: base,
 			})
@@ -482,6 +509,11 @@ func newWorktreeLogIntegrateCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogIntegrate(command.Context(), worktrees.LogIntegrateOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Base: base, Strategy: strategy,
 			})
@@ -508,6 +540,11 @@ func newWorktreeLogHandoffCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogHandoff(command.Context(), worktrees.LogHandoffOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
 				Summary: summary, NextAction: nextAction, Successor: successor,
@@ -541,6 +578,11 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogRecover(command.Context(), worktrees.LogRecoverOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
 				Apply: apply, Takeover: takeover, Actor: actor,
@@ -576,6 +618,11 @@ func newWorktreeLogFinalizeCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogFinalize(command.Context(), worktrees.LogFinalizeOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
 				Result: resultValue, Message: message, Apply: apply,
@@ -606,6 +653,11 @@ command stays offline, retains the local outbox, and records a sync_attempt.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogSync(command.Context(), worktrees.LogSyncOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Apply: apply,
 			})
@@ -631,6 +683,11 @@ func newWorktreeLogArchiveCmd() *cobra.Command {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			result, err := worktrees.LogArchive(command.Context(), worktrees.LogArchiveOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args), Apply: apply, Force: force,
 			})
@@ -657,12 +714,18 @@ also works after terminal cleanup. Pass a stable --event-id so retries are
 idempotent. Select each field to replace: --model accepts an exact model or
 explicit unknown; --cli= and --provider= clear their optional values. WB never
 guesses model, CLI, or provider. Provider is a routing/billing identifier only,
-never a token, credential, or secret.`,
+never a token, credential, or secret. This Work Log mutation requires a live
+registered session in --mode agent, or --mode manual with --initiator <human>.`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			var modelValue, cliValue, providerValue *string
 			if command.Flags().Changed("model") {
 				modelValue = &model
@@ -675,7 +738,7 @@ never a token, credential, or secret.`,
 			}
 			result, err := worktrees.CorrectExecutionIdentity(worktrees.CorrectExecutionIdentityOptions{
 				ProjectsRoot: projectsRoot, EffortID: args[0], RunID: args[1], ClaimID: args[2], EventID: eventID,
-				Actor: actor, Reason: reason, Model: modelValue, CLI: cliValue, Provider: providerValue,
+				Actor: actor, Reason: reason, Initiator: mutationInitiator(command), Model: modelValue, CLI: cliValue, Provider: providerValue,
 			})
 			if err != nil {
 				return err
@@ -694,6 +757,7 @@ never a token, credential, or secret.`,
 	command.Flags().StringVar(&reason, "reason", "", "required audit reason")
 	command.Flags().StringVar(&eventID, "event-id", "", "required stable correction event ID for idempotent retry")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 
@@ -1298,7 +1362,9 @@ request, a held lock, and awaiting_push are all still refused exactly as they
 are for a worktree wb created directly.
 
 Pass a worktree path to adopt exactly one, or --all-external to sweep every
-external worktree (narrow it with --filter). The default is a dry run.`,
+external worktree (narrow it with --filter). The default is a dry run. Applying
+adoption is a mutation: --mode agent requires a live registered session, while
+--mode manual requires --initiator for an explicit audit record.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -1311,8 +1377,14 @@ external worktree (narrow it with --filter). The default is a dry run.`,
 			if (path == "") == !allExternal {
 				return fmt.Errorf("supply exactly one of a worktree path or --all-external")
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			initiator, _ := command.Flags().GetString("initiator")
 			results, err := worktrees.Adopt(command.Context(), worktrees.AdoptOptions{
-				ProjectsRoot: projectsRoot, Base: base, Path: path,
+				ProjectsRoot: projectsRoot, Base: base, Path: path, Initiator: initiator,
 				AllExternal: allExternal, Filter: filterFlag, Apply: apply,
 			})
 			if err != nil {
@@ -1330,6 +1402,7 @@ external worktree (narrow it with --filter). The default is a dry run.`,
 	command.Flags().BoolVar(&allExternal, "all-external", false, "adopt every worktree wb worktree orphans classifies as external")
 	command.Flags().BoolVar(&apply, "apply", false, "write the task directory, manifest, and Work Log claim")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 
@@ -1998,7 +2071,9 @@ old work, locally and remotely, after its Work Log is sealed.
 renamed. A malformed candidate, a dirty or locked worktree, or an already
 existing <new-task> blocks the whole (coordinated) rename. The default is a
 dry-run plan; --apply performs the move and requires --original-prompt-file
-for the new private Work Log.`,
+for the new private Work Log. Applying recycle is a mutation: --mode agent
+requires a live registered session, while --mode manual requires --initiator
+for an explicit audit record.`,
 		Args: func(command *cobra.Command, args []string) error {
 			if err := cobra.ExactArgs(2)(command, args); err != nil {
 				return err
@@ -2009,6 +2084,11 @@ for the new private Work Log.`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			outcome, err := worktrees.Rename(command.Context(), worktrees.RenameOptions{
 				ProjectsRoot:       projectsRoot,
 				OldTask:            args[0],
@@ -2092,6 +2172,7 @@ for the new private Work Log.`,
 	command.Flags().BoolVar(&apply, "apply", false, "perform the rename; the default is a dry-run plan")
 	command.Flags().StringVar(&reportDir, "report-dir", "", "rename audit directory (default <wb-home>/reports/worktree-rename/<timestamp>)")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 

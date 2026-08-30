@@ -32,16 +32,23 @@ every later WB command picks up:
   export WB_AGENT_PID=$$ WB_AGENT_RUNTIME=claude-code
   export WB_AGENT_MODEL=<model> WB_AGENT_ID=<session-id>
 
-Flags override the environment. Defaults to the current directory.`,
+Flags override the environment. Defaults to the current directory. Agent mode
+is fail-closed on the live registry; manual mode requires --initiator for an
+auditable non-agent ownership declaration.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			admitted, releaseAdmission, err := requireMutationAdmission(command, true)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
 			path := "."
 			if len(args) == 1 {
 				path = args[0]
 			}
 			// The local work log refuses a relative path, so resolve before
 			// recording; "." is the documented default and must work.
-			path, err := filepath.Abs(path)
+			path, err = filepath.Abs(path)
 			if err != nil {
 				return err
 			}
@@ -49,17 +56,24 @@ Flags override the environment. Defaults to the current directory.`,
 			// single command can still correct one field without restating
 			// the rest.
 			declared := worktrees.IdentityFromEnv()
-			if identity.Runtime != "" {
-				declared.Runtime = identity.Runtime
-			}
-			if identity.AgentID != "" {
-				declared.AgentID = identity.AgentID
-			}
-			if identity.Model != "" {
-				declared.Model = identity.Model
-			}
-			if identity.PID > 0 {
-				declared.PID = identity.PID
+			if admitted.Registered {
+				// Agent admission is authoritative: ambient flags/environment may
+				// describe a different actor, but cannot spoof the live session
+				// that is recorded in the custody chain.
+				declared = admitted
+			} else {
+				if identity.Runtime != "" {
+					declared.Runtime = identity.Runtime
+				}
+				if identity.AgentID != "" {
+					declared.AgentID = identity.AgentID
+				}
+				if identity.Model != "" {
+					declared.Model = identity.Model
+				}
+				if identity.PID > 0 {
+					declared.PID = identity.PID
+				}
 			}
 			if !declared.Declared() {
 				return fmt.Errorf("nothing to declare: pass --pid/--runtime/--model or set %s/%s/%s",
@@ -78,5 +92,6 @@ Flags override the environment. Defaults to the current directory.`,
 	command.Flags().StringVar(&identity.Runtime, "runtime", "", "harness running the agent, e.g. claude-code, copilot-cli, codex")
 	command.Flags().StringVar(&identity.Model, "model", "", "model identifier driving the session")
 	command.Flags().StringVar(&identity.AgentID, "agent-id", "", "session id, when the harness exposes one")
+	addMutationAdmissionFlags(command)
 	return command
 }

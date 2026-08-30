@@ -6081,7 +6081,9 @@
                 "--all-external",
                 "--apply",
                 "--base",
-                "--format"
+                "--format",
+                "--initiator",
+                "--mode"
               ],
               "modes": [
                 "Writes a task directory, reconstructed manifest, and Work Log claim for an external (pre-WB) worktree, reusing backfill's ReconstructManifest rather than duplicating it",
@@ -6103,7 +6105,9 @@
                 "--all-external",
                 "task ... was not found",
                 "never moved, modified, or otherwise touched",
-                "already belongs to a WB task"
+                "already belongs to a WB task",
+                "--mode agent",
+                "--mode manual"
               ]
             }
           ],
@@ -6492,13 +6496,17 @@
                 "--cli",
                 "--event-id",
                 "--format",
+                "--initiator",
                 "--model",
+                "--mode",
                 "--provider",
                 "--reason"
               ],
               "modes": [
                 "Appends an idempotent claim-addressable correction and offline outbox receipt",
-                "Uses predecessor/sequence chain validation and remains usable after cleanup"
+                "Uses predecessor/sequence chain validation and remains usable after cleanup",
+                "--mode agent requires a live registered session before mutation",
+                "--mode manual requires --initiator"
               ]
             }
           ],
@@ -6513,7 +6521,9 @@
                 "append-only",
                 "stable --event-id",
                 "after terminal cleanup",
-                "never a token"
+                "never a token",
+                "--mode agent",
+                "--mode manual"
               ]
             }
           ],
@@ -6964,11 +6974,15 @@
             {
               "path": "wb worktree log",
               "flags": [
-                "--format"
+                "--format",
+                "--initiator",
+                "--mode"
               ],
               "modes": [
                 "Read-only agent bootstrap dump of manifest, claim identity, exact original prompt, ordered prompt bodies, and live Git evidence for one worktree.",
-                "Mutating verbs are registered as subcommands under this parent."
+                "Mutating verbs are registered as subcommands under this parent.",
+                "Mutation verbs accept --mode agent only with a live registered session, or --mode manual with --initiator.",
+                "recover and archive remain read-only until --apply; show is always read-only."
               ]
             }
           ],
@@ -6982,7 +6996,9 @@
               "contains": [
                 "original prompt",
                 "private local",
-                "--format"
+                "--format",
+                "--mode agent",
+                "--mode manual"
               ]
             }
           ],
@@ -7012,6 +7028,11 @@
             {
               "path": "cmd/wb/worktree_test.go",
               "name": "TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/admission_test.go",
+              "name": "TestAgentAdmissionRejectsRemainingMutationsBeforeWBHome",
               "kind": "integration"
             }
           ],
@@ -8164,6 +8185,8 @@
               "flags": [
                 "--agent-id",
                 "--model",
+                "--mode",
+                "--initiator",
                 "--pid",
                 "--runtime"
               ],
@@ -8182,7 +8205,9 @@
               "contains": [
                 "--pid",
                 "--runtime",
-                "--model"
+                "--model",
+                "execution mode: auto, agent",
+                "--initiator"
               ]
             }
           ],
@@ -8222,6 +8247,11 @@
             {
               "path": "internal/worktrees/identity_test.go",
               "name": "TestIdentityFromEnvReadsADeclaration",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/identity_test.go",
+              "name": "TestCurrentIdentityPrefersLiveRegisteredSessionOverAmbientSpoof",
               "kind": "integration"
             }
           ],
@@ -8287,6 +8317,7 @@
                 "--format",
                 "--initiator",
                 "--model",
+                "--mode",
                 "--original-prompt-file",
                 "--preserve-cache",
                 "--provider",
@@ -8302,7 +8333,9 @@
                 "Old local and exact remote source branches are mandatory-retired",
                 "Only explicit cache allow-list may survive",
                 "New effort/run/agent metadata binds the reset projection",
-                "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes"
+                "Exact --branch overrides layered branch-prefix policy; an explicit empty CLI prefix disables configured prefixes",
+                "--mode agent requires a live registered session before --apply mutation",
+                "--mode manual requires --initiator; dry-run planning remains available without admission"
               ]
             }
           ],
@@ -8320,7 +8353,9 @@
                 "--branch-prefix",
                 "--preserve-cache",
                 "--remote",
-                "--apply"
+                "--apply",
+                "--mode agent",
+                "--mode manual"
               ]
             }
           ],
