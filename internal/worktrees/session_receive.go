@@ -429,7 +429,19 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	if err := addWorktreeAtSecureDestination(
 		ctx, canonical, operation.Path, operation.Directory, owner, name,
 		branch, spec.Branch, spec.Commit, branchExists,
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &publication,
+		nil, // beforeAdd
+		nil, // afterStageDirectoryCreated
+		nil, // afterStageValidation
+		nil, // afterStageVerification
+		nil, // afterDestinationValidation
+		nil, // afterCheckoutAuthorization
+		nil, // afterCheckoutMove
+		nil, // afterPublishedAuthorization
+		nil, // afterRepairLockAcquired
+		nil, // afterRepair
+		nil, // afterStagedAdd
+		nil, // beforeRepair
+		&publication,
 	); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("create pinned target worktree: %w", err)
 	}

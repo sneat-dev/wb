@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,8 +107,11 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 
 func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *testing.T) {
 	fixture := newGitFixture(t)
-	ready := make(chan struct{}, 2)
-	release := make(chan struct{})
+	setupReady := make(chan struct{}, 2)
+	setupRelease := make(chan struct{})
+	registrationLockReady := make(chan struct{}, 2)
+	registrationLockRelease := make(chan struct{})
+	var firstRegistrationLock atomic.Int32
 	type result struct {
 		created []CreateResult
 		err     error
@@ -120,23 +124,44 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 			defer wait.Done()
 			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 				ProjectsRoot: fixture.projectsRoot, Operation: task, WorkLog: WorkLogOptions{Model: "unknown"},
-				afterWorktreeRepair: func() { ready <- struct{}{}; <-release },
+				// Complete all cold filesystem/Git setup before starting the
+				// assertion window. This keeps runner startup latency separate
+				// from the repository-registration serialization/deadlock check.
+				afterPublishedWorktreeAuthorization: func() { setupReady <- struct{}{}; <-setupRelease },
+				afterRepositoryRepairLockAcquired: func() {
+					registrationLockReady <- struct{}{}
+					if firstRegistrationLock.CompareAndSwap(0, 1) {
+						<-registrationLockRelease
+					}
+				},
 			})
 			results <- result{created: created, err: err}
 		}(task)
 	}
 	for range 2 {
 		select {
-		case <-ready:
-		// A cold GitHub runner took 20.56 seconds to bring both independent
-		// Git worktree registrations to this barrier. Keep the deadlock bound,
-		// but leave enough room for cold filesystem and process startup: the
-		// test is about serialization correctness, not a 20-second latency SLO.
-		case <-time.After(time.Minute):
-			t.Fatal("concurrent creations did not both reach registration repair")
+		case <-setupReady:
+		case <-time.After(2 * time.Minute):
+			t.Fatal("concurrent creations did not both reach the pre-repair boundary")
 		}
 	}
-	close(release)
+	close(setupRelease)
+	select {
+	case <-registrationLockReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first concurrent creator did not acquire the repository registration lock")
+	}
+	select {
+	case <-registrationLockReady:
+		t.Fatal("second concurrent creator acquired the repository registration lock before the first released it")
+	default:
+	}
+	close(registrationLockRelease)
+	select {
+	case <-registrationLockReady:
+	case <-time.After(10 * time.Second):
+		t.Fatal("second concurrent creator did not acquire the repository registration lock after release")
+	}
 	wait.Wait()
 	close(results)
 	for result := range results {

@@ -86,6 +86,11 @@ type CreateOptions struct {
 	// between validating the staging pathname and handing its held descriptor
 	// to Git. It proves a later pathname substitution cannot redirect Git.
 	afterSecureStageValidation func()
+	// afterRepositoryRepairLockAcquired is a test-only seam immediately after
+	// the shared-repository registration lock is acquired and before Git repairs
+	// the canonical repository. It proves Create participates in cross-task
+	// registration serialization without timing assumptions.
+	afterRepositoryRepairLockAcquired func()
 	// afterSecureStageVerification is a test-only seam immediately before the
 	// descriptor-relative publish. It exercises the final unavoidable rename
 	// window without exposing the seam to production callers.
@@ -684,6 +689,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				normalized.afterSecureCheckoutAuthorization,
 				normalized.afterSecureCheckoutMove,
 				normalized.afterPublishedWorktreeAuthorization,
+				normalized.afterRepositoryRepairLockAcquired,
 				normalized.afterWorktreeRepair,
 				normalized.afterStagedWorktreeAdd,
 				normalized.beforeWorktreeRepair,
@@ -1888,6 +1894,7 @@ func addWorktreeAtSecureDestination(
 	afterCheckoutAuthorization func(),
 	afterCheckoutMove func(),
 	afterPublishedAuthorization func(),
+	afterRepairLockAcquired func(),
 	afterRepair func(),
 	afterStagedAdd func() error,
 	beforeRepair func() error,
@@ -1984,8 +1991,21 @@ func addWorktreeAtSecureDestination(
 	if afterStageValidation != nil {
 		afterStageValidation()
 	}
-	if err := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists); err != nil {
-		return rollback(fmt.Errorf("create staged worktree: %w", err), "", nil)
+	// Git updates the shared .git/worktrees registry during `worktree add`.
+	// Per-task locks do not cover different task slugs, so serialize this
+	// repository-wide mutation explicitly. The lock is released before the
+	// test-only post-repair seam below; holding it across that seam would turn
+	// the seam's rendezvous into a false deadlock detector.
+	registrationLock, err := acquireRepositoryRegistrationLock(canonical)
+	if err != nil {
+		return rollback(fmt.Errorf("acquire repository registration lock: %w", err), "", nil)
+	}
+	addErr := gitWorktreeAddFromStageDirectory(ctx, canonical, trustedOperationRoot, stageDirectory, branch, baseRevision, branchExists)
+	if releaseErr := registrationLock.release(); releaseErr != nil && addErr == nil {
+		addErr = fmt.Errorf("release repository registration lock: %w", releaseErr)
+	}
+	if addErr != nil {
+		return rollback(fmt.Errorf("create staged worktree: %w", addErr), "", nil)
 	}
 	checkoutFD, err := unix.Openat(stageFD, "checkout", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -2056,7 +2076,18 @@ func addWorktreeAtSecureDestination(
 		if afterPublishedAuthorization != nil {
 			afterPublishedAuthorization()
 		}
-		repairErr = runSecureCleanupGitHelper(ctx, canonical, ownerDirectory, finalDirectory, ownerPath, finalPath, "worktree", "repair", finalPath)
+		registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical)
+		if lockErr != nil {
+			repairErr = lockErr
+		} else {
+			if afterRepairLockAcquired != nil {
+				afterRepairLockAcquired()
+			}
+			repairErr = runSecureCleanupGitHelper(ctx, canonical, ownerDirectory, finalDirectory, ownerPath, finalPath, "worktree", "repair", finalPath)
+			if releaseErr := registrationLock.release(); releaseErr != nil && repairErr == nil {
+				repairErr = fmt.Errorf("release repository registration lock: %w", releaseErr)
+			}
+		}
 	}
 	if repairErr != nil {
 		return rollbackPublished(fmt.Errorf("repair published worktree metadata: %w", repairErr))
@@ -2897,6 +2928,10 @@ func rollbackCreatedWorktree(
 			}
 		}
 	}
+	registrationLock, lockErr := acquireRepositoryRegistrationLock(canonical)
+	if lockErr != nil {
+		return errors.Join(append(failures, fmt.Errorf("acquire repository registration lock for rollback: %w", lockErr))...)
+	}
 	if _, err := gitCanonical(ctx, canonical, "worktree", "prune", "--expire", "now"); err != nil {
 		failures = append(failures, fmt.Errorf("prune incomplete worktree registration: %w", err))
 	}
@@ -2917,6 +2952,9 @@ func rollbackCreatedWorktree(
 		if err := deleteCreatedBranchCanonical(ctx, canonical, branch, expectedBranchTip); err != nil {
 			failures = append(failures, err)
 		}
+	}
+	if releaseErr := registrationLock.release(); releaseErr != nil {
+		failures = append(failures, fmt.Errorf("release repository registration lock after rollback: %w", releaseErr))
 	}
 	return errors.Join(failures...)
 }
