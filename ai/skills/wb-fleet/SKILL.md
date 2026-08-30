@@ -14,6 +14,7 @@ Choose one command that answers the question:
 | One glance at fleet size and attention | `wb fleet` / `wb fleet overview` | [status.md](references/status.md) |
 | Fleet inventory and attention counts | `wb fleet stats` | [status.md](references/status.md) |
 | Find local changes, stashes, conflicts, or unpushed commits | `wb fleet status` | [status.md](references/status.md) |
+| Inventory every visible open remote pull request | `wb fleet prs` | [status.md](references/status.md) |
 | Audit or clean non-canonical clone placement | `wb layout audit` / `wb layout clean` | [layout.md](references/layout.md) |
 | Delete a local clone whose repository is archived on GitHub, only when nothing would be lost | `wb archive clean` | [archive.md](references/archive.md) |
 | Inspect one repository checkout | `wb repo status` | [status.md](references/status.md) |
@@ -32,6 +33,12 @@ only when fleet evidence is required.
 
 Reporting commands are non-mutating and support structured output. `sync`
 changes canonical clones, so preview it first.
+
+For a machine-readable remote PR snapshot:
+
+```sh
+wb fleet prs --format json
+```
 
 For automation, add `--non-interactive` and use YAML or JSON where supported.
 Exit codes are `0` clean, `1` findings/runtime failure, and `2` usage.
