@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 func TestMain(m *testing.M) {
@@ -1920,6 +1922,53 @@ func TestRunMetricsFailureNeverBlocksSuccessfulHook(t *testing.T) {
 	}
 }
 
+func TestRunMetricsFailurePersistsReplayablePendingReceipt(t *testing.T) {
+	repo := initRepo(t)
+	isolateConfig(t)
+	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
+	blockedParent := filepath.Join(repo, "blocked")
+	mustWrite(t, blockedParent, "not a directory\n")
+	config := filepath.Join(repo, ".wb", "hooks.yaml")
+	mustMkdirAll(t, filepath.Dir(config))
+	mustWrite(t, config, "version: 1\nmetrics:\n  enabled: true\n  path: ../blocked/events.jsonl\n")
+
+	result, err := Run(RunOptions{RepoPath: repo, Hook: "pre-commit", Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("successful hook was blocked: result = %#v, error = %v", result, err)
+	}
+	if result.MetricsError == nil || !strings.Contains(result.MetricsError.Error(), "replayable pending hook metrics receipt") {
+		t.Fatalf("metrics error = %v, want replayable pending receipt warning", result.MetricsError)
+	}
+	layout, layoutErr := ResolveExecutionLayout(repo, "")
+	if layoutErr != nil {
+		t.Fatal(layoutErr)
+	}
+	entries, err := os.ReadDir(layout.PendingMetricsRoot)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("pending metrics receipts = %v err=%v", entries, err)
+	}
+	if err := os.Remove(blockedParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(blockedParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := ReplayPendingMetrics(repo, "", "")
+	if err != nil || replayed != 1 {
+		t.Fatalf("replayed=%d err=%v, want 1 successful replay", replayed, err)
+	}
+	if entries, readErr := os.ReadDir(layout.PendingMetricsRoot); readErr != nil || len(entries) != 0 {
+		t.Fatalf("pending metrics remained after replay: %v err=%v", entries, readErr)
+	}
+	events, err := ReadEvents(filepath.Join(blockedParent, "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Action != "hook-block" || events[1].Action != "commit-check" {
+		t.Fatalf("replayed events = %#v", events)
+	}
+}
+
 func TestRunFailurePreservesExitCodeAndRecordsFailure(t *testing.T) {
 	repo := initRepo(t)
 	isolateConfig(t)
@@ -2022,6 +2071,7 @@ func isolateEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
 }
 
 // isolateConfig keeps legacy unit fixtures focused on the profile or hook they

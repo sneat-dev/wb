@@ -424,6 +424,11 @@ func newHooksMetricsCmd() *cobra.Command {
 				return err
 			}
 			if metricsFile == "" {
+				if _, err := hooks.ReplayPendingMetrics(argumentOrCurrent(args), configPath, projectsRoot); err != nil {
+					return err
+				}
+			}
+			if metricsFile == "" {
 				metricsFile = policy.Metrics.Path
 			}
 			events, err := hooks.ReadEvents(metricsFile)
