@@ -650,7 +650,7 @@ func assertRuntimeCommand(t *testing.T, capabilityID string, runtime runtimeComm
 	}
 	for _, name := range runtime.Flags {
 		name = strings.TrimPrefix(name, "--")
-		if found.Flags().Lookup(name) == nil && found.InheritedFlags().Lookup(name) == nil {
+		if found.Flags().Lookup(name) == nil && found.InheritedFlags().Lookup(name) == nil && found.PersistentFlags().Lookup(name) == nil {
 			t.Fatalf("%s advertises unavailable flag --%s on %s", capabilityID, name, runtime.Path)
 		}
 	}

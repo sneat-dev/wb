@@ -164,6 +164,7 @@ type workLogIdentityCorrection struct {
 	At            time.Time `json:"at"`
 	Actor         string    `json:"actor"`
 	Reason        string    `json:"reason"`
+	Initiator     string    `json:"initiator,omitempty"`
 	Model         *string   `json:"model,omitempty"`
 	CLI           *string   `json:"cli,omitempty"`
 	Provider      *string   `json:"provider,omitempty"`
@@ -192,6 +193,7 @@ type CorrectExecutionIdentityOptions struct {
 	EventID      string
 	Actor        string
 	Reason       string
+	Initiator    string
 	Model        *string
 	CLI          *string
 	Provider     *string
@@ -810,7 +812,7 @@ func CorrectExecutionIdentity(options CorrectExecutionIdentityOptions) (Executio
 	}
 	event := workLogIdentityCorrection{Version: 1, Type: "worktree.execution_identity_corrected", CorrectionID: options.EventID,
 		ClaimID: claim.ClaimID, Sequence: len(corrections) + 1, PredecessorID: previous, At: time.Now().UTC(),
-		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), Model: normalizedPointer(options.Model), CLI: normalizedPointer(options.CLI), Provider: normalizedPointer(options.Provider)}
+		Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), Initiator: strings.TrimSpace(options.Initiator), Model: normalizedPointer(options.Model), CLI: normalizedPointer(options.CLI), Provider: normalizedPointer(options.Provider)}
 	correctionsDir, err := openWorkLogCorrections(runDir, claim.ClaimID, true)
 	if err != nil {
 		return result, fmt.Errorf("open correction history: %w", err)
@@ -858,7 +860,7 @@ func normalizedPointer(value *string) *string {
 }
 
 func sameCorrectionRequest(correction workLogIdentityCorrection, options CorrectExecutionIdentityOptions) bool {
-	return correction.Actor == strings.TrimSpace(options.Actor) && correction.Reason == strings.TrimSpace(options.Reason) &&
+	return correction.Actor == strings.TrimSpace(options.Actor) && correction.Reason == strings.TrimSpace(options.Reason) && correction.Initiator == strings.TrimSpace(options.Initiator) &&
 		sameStringPointer(correction.Model, normalizedPointer(options.Model)) && sameStringPointer(correction.CLI, normalizedPointer(options.CLI)) && sameStringPointer(correction.Provider, normalizedPointer(options.Provider))
 }
 func sameStringPointer(left, right *string) bool {

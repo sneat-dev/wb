@@ -223,6 +223,17 @@ deleting local, remote, worktree, or Work Log state. Before deletion, WB MUST
 embed the verified receipt in the archived terminal Work Log, with a distinct
 `superseded` disposition that does not claim the original head landed intact.
 
+When the receipt supersedes a dependency pull request, it MUST additionally
+record each source PR's exact consumer, ecosystem, manifest/importer selector,
+before range, and requested-after range. The integrated candidate MUST be
+re-read at the exact target head and prove the same direct package or module,
+including its applicable resolved lockfile entry. Family names are not
+equivalent (`nx` does not prove `@nx/*` and vice versa). A missing, indirect,
+family-only, or source-head-drifted delta MUST refuse terminalization. WB MUST
+provide deterministic per-source-PR JSON and Markdown renderings of this
+evidence so the independent merger verifier and campaign report consume the
+same receipt.
+
 ### Long sweep feedback
 
 #### REQ: incremental-sweep-progress

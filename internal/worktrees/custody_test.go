@@ -197,6 +197,20 @@ func TestRecordCustodyInheritsEffortWhenUnspecified(t *testing.T) {
 	}
 }
 
+func TestRecordCustodyPersistsManualMutationInitiator(t *testing.T) {
+	clearIdentity(t)
+	worktree := custodyWorktree(t)
+	restore := SetMutationInitiator("human-operator")
+	defer restore()
+	if err := RecordCustody(worktree, "effort", "worktree own", AgentIdentity{Runtime: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	owners := ownerEvents(t, worktree)
+	if len(owners) != 1 || owners[0].Initiator != "human-operator" {
+		t.Fatalf("owners = %+v, want durable manual initiator", owners)
+	}
+}
+
 // Any worktree write should carry the chain forward without each call site
 // having to remember to do it.
 func TestWorktreeWritesRecordCustodyAutomatically(t *testing.T) {

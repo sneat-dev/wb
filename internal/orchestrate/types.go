@@ -60,6 +60,9 @@ type Options struct {
 	Initiator    string
 	CLI          string
 	Provider     string
+	// DependencyCampaign marks worktrees created by dependency set/bump
+	// campaigns. Their supersession receipts require exact dependency proof.
+	DependencyCampaign bool
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.

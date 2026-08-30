@@ -762,6 +762,6 @@ func classifyRemotePullRequestGate(ctx context.Context, repository discover.Repo
 			cache[ref.SHA] = pullRequests
 		}
 	}
-	open, _ := matchingPullRequests(pullRequests, entry.Base, ref.SHA)
+	open, _ := matchingPullRequests(pullRequests, repository.Slug(), entry.Base, ref.SHA)
 	entry.OpenPullRequest = open
 }

@@ -109,7 +109,9 @@ func (report BumpReport) Markdown() string {
 		}
 		for _, repository := range wave.Repositories {
 			if len(repository.Decisions) == 0 {
-				continue
+				if len(repository.DependencyDeltas) == 0 {
+					continue
+				}
 			}
 			fmt.Fprintf(&output, "\n### %s decisions\n\n", repository.Repository)
 			if repository.WorktreeDir != "" {
@@ -122,6 +124,14 @@ func (report BumpReport) Markdown() string {
 				}
 				fmt.Fprintf(&output, "- `%s` in `%s`: `%s` → `%s` (`%s`) — %s\n",
 					decision.Dependency, decision.File, observed, decision.AfterVersion, decision.Action, decision.Reason)
+			}
+			if len(repository.DependencyDeltas) > 0 {
+				fmt.Fprintf(&output, "\n#### %s exact dependency PR deltas\n\n", repository.Repository)
+				output.WriteString("| Source PR | Source head | Manifest selector | Before | Requested after | Candidate after | Lockfile | Lockfile selector | Lockfile version | Reviewed |\n")
+				output.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
+				for _, delta := range repository.DependencyDeltas {
+					fmt.Fprintf(&output, "| %s | `%s` | `%s:%s` | `%s` | `%s` | `%s` | `%s` | `%s` | `%s` | %t |\n", delta.SourcePR, delta.SourceHead, delta.Manifest, delta.Selector, delta.Before, delta.RequestedAfter, delta.CandidateAfter, delta.Lockfile, delta.LockfileSelector, delta.LockfileVersion, delta.Reviewed)
+				}
 			}
 		}
 	}

@@ -268,12 +268,21 @@ func TestExecutionIdentityCorrectionIsAppendOnlyIdempotentAndProjectsChain(t *te
 		t.Fatalf("new claim execution identity = %#v", claim)
 	}
 	modelUnknown := "unknown"
-	first, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-1", Actor: "reviewer", Reason: "observed route differs", Model: &modelUnknown})
+	first, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-1", Actor: "reviewer", Reason: "observed route differs", Initiator: "human-operator", Model: &modelUnknown})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Identity.Model != "unknown" || first.Identity.ModelProvenance != modelProvenanceUnknown || first.Identity.CLI != "codex" || first.Identity.Provider != "openai-codex" {
 		t.Fatalf("first projection = %#v", first.Identity)
+	}
+	correctionPath := filepath.Join(fixture.home, "worklogs", claim.EffortID, "runs", claim.RunID, "corrections", claim.ClaimID, "identity-fix-1.json")
+	correctionBytes, err := os.ReadFile(correctionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var correction workLogIdentityCorrection
+	if err := json.Unmarshal(correctionBytes, &correction); err != nil || correction.Initiator != "human-operator" {
+		t.Fatalf("manual correction audit evidence = %#v err=%v", correction, err)
 	}
 	clearCLI, newProvider := "", "opencode-go"
 	second, err := CorrectExecutionIdentity(CorrectExecutionIdentityOptions{ProjectsRoot: fixture.projectsRoot, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, EventID: "identity-fix-2", Actor: "reviewer", Reason: "correct independent route", CLI: &clearCLI, Provider: &newProvider})

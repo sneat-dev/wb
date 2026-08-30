@@ -98,10 +98,16 @@ to that worktree unchanged — dirty, unlanded, an open pull request, a held
 lock, and `awaiting_push` are all still refused exactly as for a worktree WB
 created directly.
 
+Applying adoption is a mutation: `--mode agent` requires a live registered
+session, while `--mode manual --initiator <human>` is the explicit audited
+operator path. The default dry run does not require session admission. Task
+recycling through `wb worktree rename <old-task> <new-task>` follows the same
+contract when `--apply` is selected.
+
 Flags: `wb worktree backfill` — `--base` (default `main`), `--apply`, `--format
 text|json`. `wb worktree adopt` — `--base` (default `main`), `--all-external`,
-`--apply`, `--format text|json`, plus root `--filter`. Both are dry runs by
-default.
+`--apply`, `--mode`, `--initiator`, `--format text|json`, plus root `--filter`.
+Both are dry runs by default.
 
 ## Trap 2: cleanup requires a merge receipt, not merged-looking content
 

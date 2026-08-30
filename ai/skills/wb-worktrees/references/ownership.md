@@ -66,6 +66,17 @@ isolated subprocess whose parent is an intermediate shell, not the agent, and
 they cannot export variables into the session either. A hook should prompt the
 agent to register rather than invent a PID.
 
+The same admission applies to `wb worktree own`, task recycling through
+`wb worktree rename --apply`, `wb worktree adopt --apply`, and every Work Log
+mutation verb (`init`, `steer`, `checkpoint`, `refresh`, `integrate`,
+`handoff`, `recover --apply`, `finalize`, `sync`, and `archive --apply`). Use
+`--mode agent` only with a live registered session; use
+`--mode manual --initiator <human>` for an explicit audited operator action.
+Read-only plans and diagnostics do not require admission. When agent mode is
+admitted, the resolver-backed identity wins over conflicting ambient flags or
+environment values, so the recorded custody and claim session ID cannot be
+spoofed by a command-line override.
+
 Inspect what registered:
 
 ```sh
