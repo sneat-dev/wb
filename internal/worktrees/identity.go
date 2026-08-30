@@ -65,9 +65,33 @@ func (a AgentIdentity) Agent() string {
 // session that owns this process. It is injected rather than imported so the
 // worktree layer keeps no dependency on how sessions are stored.
 var (
-	resolverMu      sync.RWMutex
-	sessionResolver func() (AgentIdentity, bool)
+	resolverMu        sync.RWMutex
+	sessionResolver   func() (AgentIdentity, bool)
+	initiatorMu       sync.RWMutex
+	mutationInitiator string
 )
+
+// SetMutationInitiator records the explicit operator behind one mutation and
+// returns a restore function for command runners that execute in-process
+// tests. The value is local process state only; the durable owner event is the
+// audit record.
+func SetMutationInitiator(value string) func() {
+	initiatorMu.Lock()
+	previous := mutationInitiator
+	mutationInitiator = strings.TrimSpace(value)
+	initiatorMu.Unlock()
+	return func() {
+		initiatorMu.Lock()
+		mutationInitiator = previous
+		initiatorMu.Unlock()
+	}
+}
+
+func MutationInitiator() string {
+	initiatorMu.RLock()
+	defer initiatorMu.RUnlock()
+	return mutationInitiator
+}
 
 // SetSessionResolver installs the lookup used when the environment carries no
 // declaration.
@@ -79,22 +103,27 @@ func SetSessionResolver(resolve func() (AgentIdentity, bool)) {
 
 // CurrentIdentity is who WB should attribute this invocation to.
 //
-// An explicit environment declaration wins: it is the most specific thing the
-// caller said, and a session that overrides it for one command means it. Only
-// when nothing is declared does WB consult the registered sessions, which is
-// still a declaration — made once at session start rather than per command.
+// A live resolver-backed session wins over ambient environment declarations:
+// once an agent mutation is admitted, a caller cannot spoof its custody by
+// overriding WB_AGENT_* for that command. When the resolver has no registered
+// live identity, an explicit environment declaration remains the most
+// specific compatibility path for intentional non-agent usage.
 func CurrentIdentity() AgentIdentity {
-	if identity := IdentityFromEnv(); identity.Declared() {
-		return identity
-	}
+	environment := IdentityFromEnv()
 	resolverMu.RLock()
 	resolve := sessionResolver
 	resolverMu.RUnlock()
-	if resolve == nil {
-		return AgentIdentity{}
+	if resolve != nil {
+		identity, ok := resolve()
+		if ok && identity.Registered && strings.TrimSpace(identity.WBSessionID) != "" {
+			return identity
+		}
+		if ok && !environment.Declared() {
+			return identity
+		}
 	}
-	if identity, ok := resolve(); ok {
-		return identity
+	if environment.Declared() {
+		return environment
 	}
 	return AgentIdentity{}
 }

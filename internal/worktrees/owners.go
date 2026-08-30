@@ -17,9 +17,10 @@ const LocalEventOwner = "owner_attached"
 // attached itself to a worktree. It is intentionally append-only: a later
 // session never overwrites the creator or a previous owner.
 type OwnerRegistration struct {
-	Agent  string `json:"agent,omitempty"`
-	Model  string `json:"model,omitempty"`
-	Effort string `json:"effort,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Effort    string `json:"effort,omitempty"`
+	Initiator string `json:"initiator,omitempty"`
 	// PID is the declared agent session's process, never WB's own. WB is a
 	// short-lived CLI: its PID is dead moments after it would be written, and
 	// once recycled it would report an abandoned worktree as active. An
@@ -41,6 +42,7 @@ func (o OwnerRegistration) sameCustody(other OwnerRegistration) bool {
 	return o.Agent == other.Agent &&
 		o.PID == other.PID &&
 		o.Model == other.Model &&
+		o.Initiator == other.Initiator &&
 		o.WBVersion == other.WBVersion
 }
 
@@ -53,7 +55,7 @@ type OwnerView struct {
 
 func recordOwner(worktree, effort, agent, model string, pid int) (OwnerRegistration, error) {
 	owner := OwnerRegistration{
-		Agent: agent, Model: model, Effort: effort, PID: pid,
+		Agent: agent, Model: model, Effort: effort, PID: pid, Initiator: MutationInitiator(),
 		WBVersion: buildinfo.Version(), At: time.Now().UTC(),
 	}
 	_, _, err := appendLocalEvent(worktree, LocalWorkLogEvent{
@@ -93,7 +95,7 @@ func RecordCustody(worktree, effort, command string, identity AgentIdentity) err
 
 	candidate := OwnerRegistration{
 		Agent: identity.Agent(), Model: strings.TrimSpace(identity.Model),
-		Effort: effort, PID: identity.PID,
+		Effort: effort, PID: identity.PID, Initiator: MutationInitiator(),
 		WBVersion: buildinfo.Version(), Command: command,
 	}
 	if found && previous.sameCustody(candidate) {

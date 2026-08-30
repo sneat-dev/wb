@@ -104,6 +104,23 @@ func TestCurrentIdentityPrefersTheEnvironment(t *testing.T) {
 	}
 }
 
+func TestCurrentIdentityPrefersLiveRegisteredSessionOverAmbientSpoof(t *testing.T) {
+	t.Cleanup(func() { SetSessionResolver(nil) })
+	t.Setenv(EnvAgentPID, "1111")
+	t.Setenv(EnvAgentRuntime, "forged-shell")
+	t.Setenv(EnvAgentModel, "forged-model")
+	t.Setenv(EnvAgentID, "forged-agent")
+	t.Setenv(EnvSessionID, "wbs-forged")
+	SetSessionResolver(func() (AgentIdentity, bool) {
+		return AgentIdentity{Runtime: "codex", AgentID: "real-agent", Model: "gpt-5", PID: 2222, WBSessionID: "wbs-real", Registered: true}, true
+	})
+
+	got := CurrentIdentity()
+	if got.WBSessionID != "wbs-real" || got.AgentID != "real-agent" || got.PID != 2222 {
+		t.Fatalf("CurrentIdentity() = %+v, want live registered identity", got)
+	}
+}
+
 // With nothing in the environment, a session registered once at start-up
 // attributes the write — which is the point of registering.
 func TestCurrentIdentityFallsBackToTheRegisteredSession(t *testing.T) {

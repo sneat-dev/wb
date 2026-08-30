@@ -140,6 +140,8 @@ type AdoptOptions struct {
 	// the root --filter flag.
 	Filter string
 	Apply  bool
+	// Initiator is the explicit human/operator identity for manual apply.
+	Initiator string
 	// Now is injectable so the recorded adoption time is deterministic under
 	// test.
 	Now func() time.Time
@@ -230,12 +232,12 @@ func Adopt(ctx context.Context, options AdoptOptions) ([]AdoptResult, error) {
 	}
 	results := make([]AdoptResult, 0, len(candidates))
 	for _, candidate := range candidates {
-		results = append(results, adoptOne(ctx, projectsRoot, home, candidate, options.Apply, now()))
+		results = append(results, adoptOne(ctx, projectsRoot, home, candidate, options.Apply, options.Initiator, now()))
 	}
 	return results, nil
 }
 
-func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWorktree, apply bool, now time.Time) AdoptResult {
+func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWorktree, apply bool, initiator string, now time.Time) AdoptResult {
 	result := AdoptResult{Path: candidate.Path}
 	if candidate.Layout != LayoutExternal {
 		result.Action = AdoptSkipped
@@ -291,7 +293,7 @@ func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWo
 		result.Action = AdoptWouldAdopt
 		return result
 	}
-	if err := adoptApply(home, owner, repository, manifest, candidate.Path, now); err != nil {
+	if err := adoptApply(home, owner, repository, manifest, candidate.Path, initiator, now); err != nil {
 		result.Action = AdoptSkipped
 		result.Reason = err.Error()
 		return result
@@ -300,7 +302,7 @@ func adoptOne(ctx context.Context, projectsRoot, home string, candidate OrphanWo
 	return result
 }
 
-func adoptApply(home, owner, repository string, manifest Manifest, worktree string, now time.Time) error {
+func adoptApply(home, owner, repository string, manifest Manifest, worktree, initiator string, now time.Time) error {
 	operation, err := prepareOperationRoot(home, manifest.EffortID, nil)
 	if err != nil {
 		return err
@@ -325,7 +327,7 @@ func adoptApply(home, owner, repository string, manifest Manifest, worktree stri
 		Repository: owner + "/" + repository, WorktreeDir: worktree, Branch: manifest.Branch,
 		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
 	}
-	workLogOptions := WorkLogOptions{EffortID: manifest.EffortID, Model: "unknown", AcquiredVia: "adopted"}
+	workLogOptions := WorkLogOptions{EffortID: manifest.EffortID, Model: "unknown", Initiator: strings.TrimSpace(initiator), AcquiredVia: "adopted"}
 	if _, err := recordWorkLogWithHooks(home, manifest.EffortID, result, workLogOptions, workLogPublicationHooks{}); err != nil {
 		return fmt.Errorf("record adoption Work Log claim: %w", err)
 	}
