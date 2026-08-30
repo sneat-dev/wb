@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
+	"github.com/sneat-dev/wb/internal/sessionmove"
 )
 
 const LocalEventOwner = "owner_attached"
@@ -173,6 +174,56 @@ func ownerViews(worktree string) ([]OwnerView, error) {
 	}
 	sort.SliceStable(owners, func(i, j int) bool { return owners[i].At.Before(owners[j].At) })
 	return owners, nil
+}
+
+// lifecycleOwnerViews keeps the authoritative owner reader strict, while
+// allowing cleanup/list/info to inspect the one historical parked completion
+// record emitted with version 0. The compatibility path is admitted only when
+// the immutable active target claim supplies the exact handoff digest, member,
+// repository, lineage, and deterministic completion event ID.
+func lifecycleOwnerViews(home, worktree string) ([]OwnerView, error) {
+	owners, err := ownerViews(worktree)
+	if err == nil {
+		return owners, nil
+	}
+	claim, _, _, claimErr := activeWorkLogClaim(home, worktree)
+	if claimErr != nil || claim.AcquiredVia != "parked_session_resume" || claim.ExternalHandoff == nil {
+		return nil, err
+	}
+	evidence := claim.ExternalHandoff
+	digest := sessionmove.Digest(evidence.RequestDigest)
+	expectedID := externalLocalEventID("park-target-completed-"+evidence.MemberID, digest, "")
+	events, compatible, inspectionErr := readLocalEventsForInspection(worktree, func(event LocalWorkLogEvent) bool {
+		if event.ID != expectedID {
+			return false
+		}
+		extra := event.Extra
+		return extraString(extra, "resume_id") == evidence.HandoffID &&
+			extraString(extra, "member_id") == evidence.MemberID &&
+			extraString(extra, "repository") == claim.Repository &&
+			extraString(extra, "predecessor_wb_session_id") == evidence.PredecessorWBSessionID &&
+			extraString(extra, "successor_wb_session_id") == claim.AgentID &&
+			extraString(extra, "source_work_log_reference") == evidence.SourceWorkLogReference &&
+			extraString(extra, "target_work_log_reference") == evidence.TargetWorkLogReference
+	})
+	if inspectionErr != nil || !compatible {
+		return nil, err
+	}
+	owners = make([]OwnerView, 0)
+	for _, event := range events {
+		if event.Owner == nil {
+			continue
+		}
+		owner := *event.Owner
+		owners = append(owners, OwnerView{OwnerRegistration: owner, PIDStatus: ownerPIDStatus(owner.PID)})
+	}
+	sort.SliceStable(owners, func(i, j int) bool { return owners[i].At.Before(owners[j].At) })
+	return owners, nil
+}
+
+func extraString(extra map[string]any, key string) string {
+	value, _ := extra[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func ownerPIDStatus(pid int) string {

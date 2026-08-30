@@ -1297,6 +1297,19 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	// Remote parked-session receivers use a resume/member-derived physical
+	// task directory so concurrent resumes cannot collide. Their immutable
+	// manifest retains the logical effort, which is what an operator naturally
+	// supplies to cleanup. Resolve that alias before inventory so the existing
+	// descriptor-anchored cleanup transaction remains the only removal path.
+	normalized.Tasks, err = resolveLogicalCleanupTasks(resolution.Read, normalized.Tasks)
+	if err != nil {
+		return CleanupOutcome{}, err
+	}
+	normalized.Task = ""
+	if len(normalized.Tasks) == 1 {
+		normalized.Task = normalized.Tasks[0]
+	}
 	// The report is a mutation too. Probe the platform capability before
 	// creating its default directory or making any other apply-time change.
 	if normalized.Apply {
@@ -2124,6 +2137,97 @@ func taskSelectionMatches(tasks map[string]bool, task string) bool {
 	return len(tasks) == 0 || tasks[task]
 }
 
+// resolveLogicalCleanupTasks expands an explicit logical effort to the
+// physical task namespaces that contain manifests for it. Normal WB tasks
+// already use the effort as their directory name, so they need no special
+// handling. A remote parked-session target is the one supported exception:
+// its namespace is session-resume-<resume>-<member> while the target manifest
+// names the source effort. A single resume can have several member namespaces,
+// so all exact manifest matches are returned for one audited cleanup pass.
+func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]string, error) {
+	if len(tasks) == 0 {
+		return tasks, nil
+	}
+	resolved := make([]string, 0, len(tasks))
+	seen := make(map[string]bool, len(tasks))
+	for _, logical := range tasks {
+		matches := make([]string, 0)
+		for _, layout := range layouts {
+			entries, err := os.ReadDir(layout.WorktreesRoot)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
+			}
+			for _, taskEntry := range entries {
+				if !taskEntry.IsDir() || strings.HasPrefix(taskEntry.Name(), ".") || !validSafeSegment(taskEntry.Name()) {
+					continue
+				}
+				if taskEntry.Name() == logical {
+					matches = append(matches, taskEntry.Name())
+					continue
+				}
+				// Only session-resume namespaces are eligible for this alias. This
+				// prevents a stale or hand-written manifest from unexpectedly
+				// changing the meaning of an ordinary task selector.
+				if !strings.HasPrefix(taskEntry.Name(), "session-resume-") {
+					continue
+				}
+				taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
+				owners, readErr := os.ReadDir(taskRoot)
+				if readErr != nil {
+					if errors.Is(readErr, os.ErrNotExist) {
+						continue
+					}
+					return nil, fmt.Errorf("read session-resume task %s: %w", taskEntry.Name(), readErr)
+				}
+				aliasFound := false
+				for _, owner := range owners {
+					if !owner.IsDir() || strings.HasPrefix(owner.Name(), ".") {
+						continue
+					}
+					repositories, readErr := os.ReadDir(filepath.Join(taskRoot, owner.Name()))
+					if readErr != nil {
+						if errors.Is(readErr, os.ErrNotExist) {
+							continue
+						}
+						return nil, fmt.Errorf("read session-resume task %s owner: %w", taskEntry.Name(), readErr)
+					}
+					for _, repository := range repositories {
+						if !repository.IsDir() || strings.HasPrefix(repository.Name(), ".") {
+							continue
+						}
+						manifest, manifestErr := ReadManifest(filepath.Join(taskRoot, owner.Name(), repository.Name()))
+						if manifestErr == nil && manifest.EffortID == logical {
+							aliasFound = true
+							break
+						}
+					}
+					if aliasFound {
+						break
+					}
+				}
+				if aliasFound {
+					matches = append(matches, taskEntry.Name())
+				}
+			}
+		}
+		sort.Strings(matches)
+		if len(matches) == 0 {
+			matches = []string{logical}
+		}
+		for _, match := range matches {
+			if !seen[match] {
+				seen[match] = true
+				resolved = append(resolved, match)
+			}
+		}
+	}
+	sort.Strings(resolved)
+	return resolved, nil
+}
+
 func cleanupTaskWasFound(task string, listed ListOutcome, backlog []lifecycleBacklogRecord) bool {
 	for _, result := range listed.Results {
 		if result.Task == task {
@@ -2195,6 +2299,17 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 		manifestBase = strings.TrimSpace(manifest.Base)
 		if manifestBase == "" || !validBranch(ctx, manifestBase) {
 			return "", fmt.Errorf("worktree target record for %s has invalid base %q", worktree, manifest.Base)
+		}
+	}
+	// A parked-session target is checked out from the source feature branch,
+	// but that branch is commonly deleted as soon as its work lands. The
+	// target's immutable BaseSHA still pins the exact admitted commit; for
+	// lifecycle containment use the operator's validated target fallback. This
+	// compatibility branch is intentionally limited to the parked-session claim
+	// and does not override ordinary manifests or an explicit --base choice.
+	if manifestBase != "" && strings.TrimSpace(home) != "" {
+		if claim, _, _, claimErr := activeWorkLogClaim(home, worktree); claimErr == nil && claim.AcquiredVia == "parked_session_resume" {
+			return fallback, nil
 		}
 	}
 
@@ -2330,7 +2445,7 @@ func inspectLifecycleWorktree(
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
 		External: external,
 	}
-	owners, ownerErr := ownerViews(worktree)
+	owners, ownerErr := lifecycleOwnerViews(home, worktree)
 	if ownerErr != nil {
 		return ListResult{}, fmt.Errorf("read owner metadata for %s: %w", worktree, ownerErr)
 	}

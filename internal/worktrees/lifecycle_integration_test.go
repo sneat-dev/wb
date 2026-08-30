@@ -8,11 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,6 +45,57 @@ func TestListDefaultsToOfflineRealGitData(t *testing.T) {
 		listed[0].RemoteHeadSHA != "" || listed[0].OpenPullRequest != nil ||
 		listed[0].MergedPullRequest != nil {
 		t.Fatalf("offline list = %#v", listed)
+	}
+}
+
+func TestLogicalCleanupTaskResolvesSessionResumeNamespace(t *testing.T) {
+	fixture := newGitFixture(t)
+	physical := "session-resume-resume-abc-m-001-abcdef01"
+	worktree := filepath.Join(fixture.home, "worktrees", physical, "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "wb-session/resume-abc-m-001-abcdef01", worktree, "main")
+	manifest := newCreatedManifest("logical-session-effort")
+	manifest.Worktree = worktree
+	manifest.Repository = "acme/app"
+	manifest.Branch = "wb-session/resume-abc-m-001-abcdef01"
+	if err := WriteManifest(worktree, manifest); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveLogicalCleanupTasks([]wbhome.Layout{{WorktreesRoot: filepath.Join(fixture.home, "worktrees")}}, []string{"logical-session-effort"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0] != physical {
+		t.Fatalf("resolved logical cleanup task = %#v, want %q", resolved, physical)
+	}
+}
+
+func TestLogicalCleanupTaskResolvesAllSessionResumeMembers(t *testing.T) {
+	fixture := newGitFixture(t)
+	physicalTasks := []string{
+		"session-resume-resume-multi-m-002-bbbbbbbb",
+		"session-resume-resume-multi-m-001-aaaaaaaa",
+	}
+	for index, physical := range physicalTasks {
+		worktree := filepath.Join(fixture.home, "worktrees", physical, "acme", "app")
+		branch := fmt.Sprintf("wb-session/resume-multi-m-%03d", index+1)
+		gitTest(t, fixture.canonical, "worktree", "add", "-b", branch, worktree, "main")
+		manifest := newCreatedManifest("logical-multi-member-effort")
+		manifest.Worktree = worktree
+		manifest.Repository = "acme/app"
+		manifest.Branch = branch
+		if err := WriteManifest(worktree, manifest); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resolved, err := resolveLogicalCleanupTasks([]wbhome.Layout{{WorktreesRoot: filepath.Join(fixture.home, "worktrees")}}, []string{"logical-multi-member-effort"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]string(nil), physicalTasks...)
+	sort.Strings(want)
+	if !reflect.DeepEqual(resolved, want) {
+		t.Fatalf("resolved logical cleanup tasks = %#v, want %#v", resolved, want)
 	}
 }
 

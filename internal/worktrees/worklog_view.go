@@ -110,11 +110,20 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		return WorkLogView{}, err
 	}
 	view := WorkLogView{Worktree: root, Prompts: []PromptRecord{}}
-	owners, ownersErr := ownerViews(root)
-	if ownersErr != nil {
-		return WorkLogView{}, ownersErr
+	home, homeErr := wbhome.Root(options.ProjectsRoot)
+	if homeErr == nil {
+		owners, ownersErr := lifecycleOwnerViews(home, root)
+		if ownersErr != nil {
+			return WorkLogView{}, ownersErr
+		}
+		view.Owners = owners
+	} else {
+		owners, ownersErr := ownerViews(root)
+		if ownersErr != nil {
+			return WorkLogView{}, ownersErr
+		}
+		view.Owners = owners
 	}
-	view.Owners = owners
 
 	if manifest, manifestErr := ReadManifest(root); manifestErr == nil {
 		copy := manifest
@@ -134,7 +143,6 @@ func LoadWorkLogView(ctx context.Context, options LoadWorkLogOptions) (WorkLogVi
 		view.Notes = append(view.Notes, "no recorded prompts under .wb/local/prompts/; supply one with wb worktree set --prompt")
 	}
 
-	home, homeErr := wbhome.Root(options.ProjectsRoot)
 	if homeErr != nil {
 		view.Notes = append(view.Notes, fmt.Sprintf("could not resolve WB home: %v", homeErr))
 	} else if claim, _, claimPath, claimErr := activeWorkLogClaim(home, root); claimErr == nil {

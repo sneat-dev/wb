@@ -310,8 +310,9 @@ func RecordParkedTargetCompleted(options ParkedTargetCompletionOptions) (LocalWo
 	extra := parkedLocalEventExtra(options.Request, options.Member, targetValue)
 	extra["attempt_id"], extra["attempt_index"], extra["pid"] = options.Successor.AttemptID, options.Successor.AttemptIndex, options.Successor.PID
 	event := LocalWorkLogEvent{
-		ID:   externalLocalEventID("park-target-completed-"+options.Member.MemberID, options.RequestDigest, ""),
-		Type: LocalEventHandoff, At: options.Successor.StartedAt.UTC(), Message: "parked successor proved live; target member custody completed",
+		Version: 1,
+		ID:      externalLocalEventID("park-target-completed-"+options.Member.MemberID, options.RequestDigest, ""),
+		Type:    LocalEventHandoff, At: options.Successor.StartedAt.UTC(), Message: "parked successor proved live; target member custody completed",
 		Result: "completed", Extra: extra,
 	}
 	event, _, err = appendLocalEventUnderLock(options.WorktreeDir, journal, event)
