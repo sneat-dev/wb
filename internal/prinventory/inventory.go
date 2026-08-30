@@ -184,9 +184,7 @@ func Inventory(ctx context.Context, options Options) Report {
 				result, prs, diagnostics := inventoryOwner(ctx, options, owners[i])
 				mu.Lock()
 				report.OwnerResults[i], report.OwnerResults[i].Diagnostics = result, diagnostics
-				for _, pr := range prs {
-					report.PullRequests = append(report.PullRequests, pr)
-				}
+				report.PullRequests = append(report.PullRequests, prs...)
 				mu.Unlock()
 			}
 		}()
@@ -221,9 +219,7 @@ func Inventory(ctx context.Context, options Options) Report {
 			report.Counts.OwnersFailed++
 			report.Complete = false
 		}
-		for _, diagnostic := range result.Diagnostics {
-			report.Diagnostics = append(report.Diagnostics, diagnostic)
-		}
+		report.Diagnostics = append(report.Diagnostics, result.Diagnostics...)
 	}
 	report.Counts.PullRequests = len(report.PullRequests)
 	sort.Slice(report.Diagnostics, func(i, j int) bool {
