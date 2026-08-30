@@ -373,7 +373,7 @@ func applyRemoteBranchDeletion(ctx context.Context, repositoryPath string, resul
 		result.Outcome, result.Error = "failed", fmt.Sprintf("recheck pull-request evidence: %v", err)
 		return
 	}
-	if open, _ := matchingPullRequests(pullRequests, result.Base, observedSHA); open != nil {
+	if open, _ := matchingPullRequests(pullRequests, result.Repository, result.Base, observedSHA); open != nil {
 		result.Outcome, result.Error = "failed", fmt.Sprintf("branch became the head of open pull request %s", open.URL)
 		return
 	}

@@ -198,13 +198,14 @@ func (r *listProgressReporter) finish(token progressToken, task, repository, pat
 // PullRequest is the GitHub evidence used to decide whether a branch is safe
 // to clean up. HeadSHA must match the current branch tip.
 type PullRequest struct {
-	Number   int        `json:"number"`
-	URL      string     `json:"url"`
-	State    string     `json:"state"`
-	Base     string     `json:"base"`
-	HeadSHA  string     `json:"head_sha"`
-	MergeSHA string     `json:"merge_sha,omitempty"`
-	Merged   *time.Time `json:"merged_at,omitempty"`
+	Number     int        `json:"number"`
+	URL        string     `json:"url"`
+	Repository string     `json:"repository,omitempty"`
+	State      string     `json:"state"`
+	Base       string     `json:"base"`
+	HeadSHA    string     `json:"head_sha"`
+	MergeSHA   string     `json:"merge_sha,omitempty"`
+	Merged     *time.Time `json:"merged_at,omitempty"`
 }
 
 // ListResult describes one linked checkout below the WB task hierarchy.
@@ -2362,7 +2363,7 @@ func inspectLifecycleWorktree(
 		if err != nil {
 			return ListResult{}, err
 		}
-		result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, base, head)
+		result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
 		if !result.IntegratedAtOrigin {
 			result.RebaseMergedAtOrigin, err = rebaseMergedPullRequestIntegrated(ctx, canonical, head, result.RemoteTargetSHA, result.MergedPullRequest)
 			if err != nil {
@@ -2517,11 +2518,11 @@ func unknownGitHubCommit(body []byte) bool {
 	return failure.Status == "422" && strings.HasPrefix(failure.Message, "No commit found for SHA")
 }
 
-func matchingPullRequests(pullRequests []githubPullRequest, base, head string) (open, merged *PullRequest) {
+func matchingPullRequests(pullRequests []githubPullRequest, repository, base, head string) (open, merged *PullRequest) {
 	for _, candidate := range pullRequests {
 		pullRequest := &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
-			Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
+			Repository: repository, Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
 		}
 		if candidate.MergedAt != nil {
 			pullRequest.State = "MERGED"

@@ -45,7 +45,7 @@ func (npmAdapter) inspect(ctx context.Context, repositoryDir, base string, targe
 				if ref.Key != target.Dependency {
 					continue
 				}
-				decision, blocked := npmDecisionFor(name, ref.Value, target, options.AllowDowngrade, "planned", "existing npm reference will be set to the exact target version")
+				decision, blocked := npmDecisionFor(name, ref.Field+"."+ref.Key, ref.Value, target, options.AllowDowngrade, "planned", "existing npm reference will be set to the exact target version")
 				decisions = append(decisions, decision)
 				if blocked {
 					sortDecisions(decisions)
@@ -61,7 +61,7 @@ func (npmAdapter) inspect(ctx context.Context, repositoryDir, base string, targe
 				if ref.Key != target.Dependency {
 					continue
 				}
-				decision, blocked := npmDecisionFor(name, ref.Value, target, options.AllowDowngrade, "planned", "existing pnpm workspace override will be set to the exact target version")
+				decision, blocked := npmDecisionFor(name, workspaceSelector(ref), ref.Value, target, options.AllowDowngrade, "planned", "existing pnpm workspace override will be set to the exact target version")
 				decisions = append(decisions, decision)
 				if blocked {
 					sortDecisions(decisions)
@@ -105,7 +105,7 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 			if ref.Key != target.Dependency {
 				continue
 			}
-			decision, blocked := npmDecisionFor(relative, ref.Value, target, options.AllowDowngrade, "updated", "npm tooling was not needed; the exact target version is a literal manifest edit")
+			decision, blocked := npmDecisionFor(relative, ref.Field+"."+ref.Key, ref.Value, target, options.AllowDowngrade, "updated", "npm tooling was not needed; the exact target version is a literal manifest edit")
 			decisions = append(decisions, decision)
 			if blocked {
 				sortDecisions(decisions)
@@ -127,7 +127,7 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 			if ref.Key != target.Dependency {
 				continue
 			}
-			decision, blocked := npmDecisionFor(relative, ref.Value, target, options.AllowDowngrade, "updated", "pnpm workspace override set to the exact target version")
+			decision, blocked := npmDecisionFor(relative, workspaceSelector(ref), ref.Value, target, options.AllowDowngrade, "updated", "pnpm workspace override set to the exact target version")
 			decisions = append(decisions, decision)
 			if blocked {
 				sortDecisions(decisions)
@@ -185,9 +185,9 @@ func (npmAdapter) apply(ctx context.Context, worktree string, target Target, opt
 // changedReason describe the outcome when the reference has to move, and
 // differ between inspect (a plan, not yet written) and apply (already
 // written by the time this decision is returned).
-func npmDecisionFor(file, before string, target Target, allowDowngrade bool, changedAction, changedReason string) (Decision, bool) {
+func npmDecisionFor(file, selector, before string, target Target, allowDowngrade bool, changedAction, changedReason string) (Decision, bool) {
 	decision := Decision{
-		Dependency: target.Dependency, File: file, BeforeRef: before, BeforeVersion: before,
+		Dependency: target.Dependency, Ecosystem: EcosystemNPM, File: file, Selector: selector, BeforeRef: before, BeforeVersion: before,
 		TargetVersion: target.Version, ResolvedRef: target.Version, AfterRef: target.Version, AfterVersion: target.Version,
 	}
 	if comparableNpmDowngrade(before, target.Version) && !allowDowngrade {
@@ -203,6 +203,13 @@ func npmDecisionFor(file, before string, target Target, allowDowngrade bool, cha
 	decision.Action = changedAction
 	decision.Reason = changedReason
 	return decision, false
+}
+
+func workspaceSelector(ref pnpmWorkspaceRef) string {
+	if ref.Section == "catalogs" {
+		return "catalogs." + ref.CatalogName + "." + ref.Key
+	}
+	return ref.Section + "." + ref.Key
 }
 
 // npmManifestFiles walks a working tree and returns every package.json and

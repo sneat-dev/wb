@@ -47,7 +47,7 @@ func TestAdoptRecordsLiveBranchWhenFolderNameDiffers(t *testing.T) {
 	configureGitUser(t, path)
 
 	results, err := Adopt(context.Background(), AdoptOptions{
-		ProjectsRoot: fixture.projectsRoot, Base: "main", Path: path, Apply: true,
+		ProjectsRoot: fixture.projectsRoot, Base: "main", Path: path, Apply: true, Initiator: "human-operator",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +68,9 @@ func TestAdoptRecordsLiveBranchWhenFolderNameDiffers(t *testing.T) {
 	}
 	if claim.Branch != liveBranch {
 		t.Fatalf("claim branch = %q, want live branch %q", claim.Branch, liveBranch)
+	}
+	if claim.Initiator != "human-operator" {
+		t.Fatalf("manual adoption initiator = %q, want durable audit identity", claim.Initiator)
 	}
 }
 

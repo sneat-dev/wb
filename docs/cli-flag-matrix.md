@@ -7,6 +7,14 @@ Leaf help hides inherited selectors that the selected command would reject.
 This matrix covers inherited/root flags; command-specific flags are listed by
 their own `wb <command> --help` and remain scoped to that command.
 
+Mutation admission flags are command-specific: `worktree adopt` and
+`worktree rename` expose `--mode` and `--initiator` (only `--apply` requires
+admission); `worktree own` and `worktree correct-identity` always mutate and
+therefore use the same flags. Work Log mutation leaves inherit these flags
+from `worktree log`; `show`, and `recover`/`archive` without `--apply`, remain
+read-only. `--mode agent` requires a live registered session, while
+`--mode manual` requires `--initiator`.
+
 The machine-readable, checked-in capability × help × AI-skill × tests view is
 [`ai/capabilities.json`](../ai/capabilities.json). It conforms to the exact
 checked-in SpecScore schema at
@@ -33,6 +41,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `coverage`, `verify`, `check` | `--fleet` only | `--fleet` only | rejected | yes |
 | `status` | no-path default fleet only | no-path default fleet only | rejected | yes |
 | `fleet`, `fleet overview`, `fleet stats`, `fleet status` | yes | yes | rejected | yes |
+| `fleet prs` | rejected | rejected | yes | yes |
 | `remote publish`, `remote status`, `remote machines` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
