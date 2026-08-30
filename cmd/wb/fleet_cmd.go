@@ -50,6 +50,7 @@ worklist and wb sync --dry-run for a full sync plan.`,
 	command.AddCommand(overviewCmd)
 	command.AddCommand(newFleetStatsCmd())
 	command.AddCommand(newFleetStatusCmd())
+	command.AddCommand(newFleetPRsCmd())
 	return command
 }
 

@@ -2676,6 +2676,81 @@
       "notes": "Default overview stays local. --remote contacts GitHub; --hooks inspects managed hooks."
     },
     {
+      "id": "wb.fleet.prs",
+      "feature_refs": [
+        "spec/features/fleet-status/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb fleet prs",
+              "flags": [
+                "--created-before",
+                "--exclude-archived",
+                "--format",
+                "--parallel",
+                "--report-dir"
+              ],
+              "modes": [
+                "Queries each authenticated user or organization owner independently, paginates and reconciles each result, deduplicates repository/PR identities, and reports partial owners visibly.",
+                "Archived repositories are included by default; --exclude-archived is the explicit opt-out.",
+                "--created-before records an immutable RFC3339 cutoff and applies the exact cutoff after provider pagination."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb fleet prs --help",
+              "contains": [
+                "Archived repositories are included",
+                "--created-before",
+                "--exclude-archived",
+                "Partial owner/API results"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-fleet/SKILL.md",
+              "marker": "# WB fleet",
+              "examples": [
+                "wb fleet prs --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/prinventory/inventory_test.go",
+              "name": "TestSearchQueryDoesNotImplicitlyExcludeArchivedRepositories",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/prinventory/inventory_test.go",
+              "name": "TestInventoryFullyInventoriesMoreThanFifteenOwners",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Remote pull-request inventory is intentionally separate from wb worktree list, which reports only managed local work."
+    },
+    {
       "id": "wb.fleet.stats",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
