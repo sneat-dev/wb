@@ -108,11 +108,15 @@ go env GOCACHE > "$report_dir/gocache.txt"
 go env GOMODCACHE > "$report_dir/gomodcache.txt"
 go env GOTMPDIR > "$report_dir/gotmpdir.txt"
 go vet ./...
-go test ./...
+	go test ./...
 `)
 	hooksDir := filepath.Join(repo, ".git", "hooks")
 	mustMkdirAllHookCapability(t, hooksDir)
-	mustWriteHookCapabilityExecutable(t, filepath.Join(hooksDir, "pre-push"), "#!/bin/sh\nexec "+shellQuote(os.Args[0])+" "+secureHookRunTestHelperArgument+" pre-push \"$@\"\n")
+	mustWriteHookCapabilityExecutable(t, filepath.Join(hooksDir, "pre-push"), "#!/bin/sh\nexec "+shellQuoteHookCapability(os.Args[0])+" "+secureHookRunTestHelperArgument+" pre-push \"$@\"\n")
+}
+
+func shellQuoteHookCapability(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func mustMkdirAllHookCapability(t *testing.T, path string) {
