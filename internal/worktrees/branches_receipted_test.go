@@ -33,6 +33,7 @@ func installReceiptFixture(t *testing.T, head, landingSHA string) {
 		landingSHA, head)
 	t.Setenv("WB_TEST_RECEIPT_HEAD", head)
 	t.Setenv("WB_TEST_RECEIPT_PULLS", payload)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -45,6 +46,7 @@ func installPoisonedGitHubFixture(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'poisoned gh was invoked' >&2\nexit 7\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

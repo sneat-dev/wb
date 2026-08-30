@@ -1551,6 +1551,7 @@ printf '%s\n' "$WB_TEST_MERGED_PULLS"
 		t.Fatal(err)
 	}
 	t.Setenv("WB_TEST_MERGED_PULLS", string(payload))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1561,6 +1562,7 @@ func installFailingGitHubFixture(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'gh must not run' >&2\nexit 99\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1677,6 +1679,7 @@ exit 2
 	}
 	t.Setenv("WB_TEST_MERGED_PULLS", string(list))
 	t.Setenv("WB_TEST_SINGLE_PULL", string(single))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -2479,6 +2482,7 @@ exit 1
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -2512,6 +2516,7 @@ func TestCleanupStillReportsAnUnrelatedPullRequestQueryFailure(t *testing.T) {
 		[]byte("#!/bin/sh\necho 'gh: server error' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	planned, err := Cleanup(context.Background(), CleanupOptions{

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"golang.org/x/sys/unix"
 )
@@ -2471,18 +2472,9 @@ func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch strin
 // renamed, deleted, or (as in a rebase merge) differ from the managed
 // worktree's branch while the exact head SHA remains the durable receipt.
 func githubPullRequests(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, error) {
-	command := exec.CommandContext(
-		ctx,
-		"gh", "api", "--paginate",
-		"repos/"+repository+"/commits/"+head+"/pulls",
-	)
-	command.Dir = worktree
-	command.Env = console.Env()
-	var stdout, stderr bytes.Buffer
-	command.Stdout = &stdout
-	command.Stderr = &stderr
-	if err := command.Run(); err != nil {
-		if unknownGitHubCommit(stdout.Bytes()) {
+	result := githubobserver.Execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/commits/"+head+"/pulls")
+	if result.Err != nil {
+		if unknownGitHubCommit(result.Stdout) {
 			// A commit GitHub has never seen has no pull request associated
 			// with it, which is an answer rather than a failure. Local commits
 			// on an unpushed branch are ordinary, and treating them as fatal
@@ -2493,11 +2485,11 @@ func githubPullRequests(ctx context.Context, worktree, repository, head string) 
 		}
 		return nil, fmt.Errorf(
 			"query pull requests for %s source commit %s: %w: %s",
-			repository, head, err, strings.TrimSpace(stderr.String()+stdout.String()),
+			repository, head, result.Err, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)),
 		)
 	}
 	var pullRequests []githubPullRequest
-	if err := json.Unmarshal(stdout.Bytes(), &pullRequests); err != nil {
+	if err := json.Unmarshal(result.Stdout, &pullRequests); err != nil {
 		return nil, fmt.Errorf("decode pull requests for %s source commit %s: %w", repository, head, err)
 	}
 	return pullRequests, nil
@@ -2727,15 +2719,18 @@ func resolveAbsorbedByPullRequest(
 	worktree, slug, base string,
 	number int,
 ) (string, *PullRequest, string, error) {
-	command := exec.CommandContext(ctx, "gh", "api", "repos/"+slug+"/pulls/"+strconv.Itoa(number))
-	command.Dir = worktree
-	command.Env = console.Env()
-	output, err := command.CombinedOutput()
+	response, err := githubobserver.Get(ctx, githubobserver.GetRequest{
+		Dir:         worktree,
+		Repository:  slug,
+		Target:      base,
+		Endpoint:    "repos/" + slug + "/pulls/" + strconv.Itoa(number),
+		FreshWindow: 0,
+	})
 	if err != nil {
-		return "", nil, "", fmt.Errorf("read %s pull request %d: %w: %s", slug, number, err, strings.TrimSpace(string(output)))
+		return "", nil, "", fmt.Errorf("read %s pull request %d: %w", slug, number, err)
 	}
 	var candidate githubPullRequest
-	if err := json.Unmarshal(output, &candidate); err != nil {
+	if err := json.Unmarshal(response.Body, &candidate); err != nil {
 		return "", nil, "", fmt.Errorf("decode %s pull request %d: %w", slug, number, err)
 	}
 	if candidate.MergedAt == nil {

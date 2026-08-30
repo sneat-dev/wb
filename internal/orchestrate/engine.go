@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -543,18 +544,18 @@ func branchAhead(ctx context.Context, worktree, base string, options Options) (b
 }
 
 func openPullRequest(ctx context.Context, worktree, branch, base, title, body string, options Options) (string, error) {
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "list", "--head", branch, "--base", base,
+	output, err := githubobserver.Read(ctx, worktree, "pr", "list", "--head", branch, "--base", base,
 		"--state", "open", "--json", "url", "--jq", ".[0].url")
 	if err == nil {
-		if existing := strings.TrimSpace(output); existing != "" {
+		if existing := strings.TrimSpace(string(output)); existing != "" {
 			return existing, nil
 		}
 	}
-	output, _, err = runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
+	created, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "gh", "pr", "create", "--base", base, "--head", branch, "--title", title, "--body", body)
 	if err != nil {
 		return "", err
 	}
-	if url := lastNonEmptyLine(output); url != "" {
+	if url := lastNonEmptyLine(created); url != "" {
 		return url, nil
 	}
 	return "", fmt.Errorf("gh pr create returned no pull request URL")
@@ -598,7 +599,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	return nil
 }
 
-func decodePullRequestChecks(pr, output string, commandErr error) ([]RemoteCheck, bool, error) {
+func decodePullRequestChecks(pr, output, stderr string, commandErr error) ([]RemoteCheck, bool, error) {
 	var checks []RemoteCheck
 	if err := json.Unmarshal([]byte(output), &checks); err == nil {
 		// `gh pr checks` uses non-zero exit statuses for both pending (8) and
@@ -610,7 +611,9 @@ func decodePullRequestChecks(pr, output string, commandErr error) ([]RemoteCheck
 		return nil, false, fmt.Errorf("decode checks for %s: %w", pr, err)
 	}
 	lowerOutput := strings.ToLower(output)
-	if strings.Contains(lowerOutput, "no checks reported") || strings.Contains(lowerOutput, "no required checks reported") {
+	lowerStderr := strings.ToLower(stderr)
+	if strings.Contains(lowerOutput, "no checks reported") || strings.Contains(lowerOutput, "no required checks reported") ||
+		strings.Contains(lowerStderr, "no checks reported") || strings.Contains(lowerStderr, "no required checks reported") {
 		return nil, true, nil
 	}
 	return nil, false, commandErr

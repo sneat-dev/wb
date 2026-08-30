@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // defaultPRStatusCacheTTL bounds how long a cached positive open-PR answer is trusted
@@ -101,14 +100,13 @@ func (l *CachedGHPRLookup) OpenPullRequest(branch string) (open bool, known bool
 	if runner == nil {
 		runner = runGH
 	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		return false, false
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), l.timeout())
 	defer cancel()
-	output, err := runner(ctx, l.RepoRoot, "pr", "list",
-		"--repo", l.RepoSlug, "--head", branch, "--state", "open",
-		"--json", "number", "--limit", "1")
+	output, err := runner(ctx, l.RepoRoot, "api", "--method", "GET",
+		"repos/"+l.RepoSlug+"/pulls",
+		"-f", "head="+prHeadQualifier(l.RepoSlug, branch),
+		"-f", "state=open",
+		"-f", "per_page=1")
 	if err != nil {
 		return false, false
 	}
@@ -141,10 +139,15 @@ func (l *CachedGHPRLookup) timeout() time.Duration {
 }
 
 func runGH(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Dir = dir
-	cmd.Env = console.Env()
-	return cmd.Output()
+	return githubobserver.Read(ctx, dir, args...)
+}
+
+func prHeadQualifier(repository, branch string) string {
+	owner := repository
+	if slash := strings.IndexByte(repository, '/'); slash > 0 {
+		owner = repository[:slash]
+	}
+	return owner + ":" + branch
 }
 
 func loadPRStatusCache(path string) map[string]prStatusCacheEntry {

@@ -129,6 +129,7 @@ echo "unexpected gh args: $*" >&2; exit 30
 			if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 			t.Setenv("WB_BRANCH_SUMMARY", test.branchSummary)
 			t.Setenv("WB_CLASSIC_DETAIL", test.classicDetail)

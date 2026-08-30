@@ -248,6 +248,30 @@ fleet this was measured against, 86 removals over 34 repositories with 14 in
 the biggest, worth roughly 3x. Remote branch deletions are bounded more tightly
 still, against GitHub's per-account secondary rate limit.
 
+WB now routes its repeated exact-head GitHub GET observations through a shared
+observer keyed by repository, target branch, exact head SHA, and request shape.
+It writes private `0600` freshness receipts containing the body plus `ETag` and
+`Last-Modified`, revalidates stale entries with conditional requests, honours
+`Retry-After` and `X-RateLimit-Reset`, and coalesces concurrent identical reads
+across processes by letting a waiter reuse an observation completed after that
+waiter started.
+
+Not every GitHub read can use the full conditional-cache transport. Commands
+such as `gh pr checks`, `gh pr list`, `gh run list`, and `gh run view` still go
+through the shared observer boundary for call-site consistency, but GitHub CLI
+does not expose stable HTTP validators for those higher-level subcommands, so
+they do not get the GET-specific cache and retry layer. WB therefore keeps the
+exact-head and final-fresh guarantees on the `gh api` routes that decide merge
+safety, and treats the higher-level CLI reads as supporting observations that
+may still require a later exact-head API reread before landing.
+
+GitHub webhooks were assessed as an additive wake-up signal only, not the
+authority for merge or cleanup decisions: deliveries are best-effort, ordering
+is not guaranteed, and a webhook cannot by itself prove the current exact head
+or the current required-check policy. WB therefore still finishes every
+terminal decision with a fresh exact-head GitHub read rather than replacing
+that step with webhook state.
+
 Two properties make the concurrency safe rather than merely fast. The exact
 target is resolved once per `(repository, base)` for the whole walk — and that
 single-flight is per repository, so N worktrees in one repository cost one

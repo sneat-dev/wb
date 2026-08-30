@@ -1280,7 +1280,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 	script := filepath.Join(bin, "gh")
 	body := "#!/bin/sh\nset -eu\n" +
 		"case \"$*\" in\n" +
-		"  'api repos/acme/app/branches/main') printf '%s\\n' \"$WB_TEST_BRANCH_JSON\" ;;\n" +
+		"  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\\n' \"$WB_TEST_BRANCH_JSON\" ;;\n" +
 		"  'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
@@ -1289,6 +1289,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 	}
 	t.Setenv("WB_TEST_BRANCH_JSON", branchJSON)
 	t.Setenv("WB_TEST_RULES_JSON", rulesJSON)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1299,9 +1300,9 @@ func installWorktreeMergeDirectGH(t *testing.T) {
 	body := `#!/bin/sh
 set -eu
 case "$*" in
-  'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
+  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
   'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[[]]' ;;
-  'api repos/acme/app/git/ref/heads/main')
+  'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     target_sha="${WB_TEST_TARGET_SHA:-}"
     if [ -n "${WB_TEST_REMOTE:-}" ]; then target_sha="$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)"; fi
     printf '{"object":{"sha":"%s"}}\n' "$target_sha" ;;
@@ -1320,14 +1321,15 @@ case "$*" in
     fi
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
   'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
-  *'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
-  *'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
+  *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
+  *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1340,17 +1342,18 @@ set -eu
 case "$*" in
   'pr view https://example.test/acme/app/pull/17 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
     printf '{"state":"MERGED","mergedAt":"2026-08-27T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$WB_TEST_CANDIDATE_SHA" "$WB_TEST_TARGET_SHA" ;;
-  'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
+  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
   'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[[]]' ;;
-  'api repos/acme/app/git/ref/heads/main') printf '{"object":{"sha":"%s"}}\n' "$WB_TEST_TARGET_SHA" ;;
-  *'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
-  *'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
+  'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main') printf '{"object":{"sha":"%s"}}\n' "$WB_TEST_TARGET_SHA" ;;
+  *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
+  *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1369,6 +1372,7 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -1387,5 +1391,6 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

@@ -8,13 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // Runner is the narrow GitHub command boundary. Tests can inject a deterministic
@@ -27,9 +26,7 @@ type Runner interface {
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "gh", args...)
-	command.Env = console.Env()
-	return command.Output()
+	return githubobserver.Read(ctx, "", args...)
 }
 
 // Owner identifies one GitHub search qualifier.
