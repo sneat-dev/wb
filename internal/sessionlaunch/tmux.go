@@ -83,19 +83,12 @@ func (t osTmux) PaneFailure(ctx context.Context, name string) (tmuxFailure, bool
 		}
 		return tmuxFailure{}, false, fmt.Errorf("inspect tmux successor %s failure: %w: %s", name, err, boundedTmuxDetail(output))
 	}
-	fields := strings.Fields(string(output))
-	if len(fields) != 2 {
-		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s returned %d failure fields, want dead state and exit status", name, len(fields))
+	dead, status, parseErr := parseTmuxPaneFailureOutput(output)
+	if parseErr != nil {
+		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s %w", name, parseErr)
 	}
-	if fields[0] == "0" {
+	if dead == 0 {
 		return tmuxFailure{}, false, nil
-	}
-	if fields[0] != "1" {
-		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s reported invalid dead state %q", name, fields[0])
-	}
-	status, err := strconv.Atoi(fields[1])
-	if err != nil || status < 0 {
-		return tmuxFailure{}, false, fmt.Errorf("tmux successor %s reported invalid exit status %q", name, fields[1])
 	}
 	capture := exec.CommandContext(ctx, t.executable, "capture-pane", "-p", "-S", "-200", "-t", "="+name)
 	diagnostic, captureErr := capture.CombinedOutput()
@@ -103,6 +96,35 @@ func (t osTmux) PaneFailure(ctx context.Context, name string) (tmuxFailure, bool
 		return tmuxFailure{}, false, fmt.Errorf("capture terminal tmux successor %s: %w: %s", name, captureErr, boundedTmuxDetail(diagnostic))
 	}
 	return tmuxFailure{ExitStatus: status, Diagnostic: boundedTmuxDetail(diagnostic)}, true, nil
+}
+
+func parseTmuxPaneFailureOutput(output []byte) (int, int, error) {
+	line := string(output)
+	if !strings.HasSuffix(line, "\n") {
+		return 0, 0, fmt.Errorf("returned malformed failure fields, want dead state and exit status")
+	}
+	line = strings.TrimSuffix(line, "\n")
+	if strings.Contains(line, "\n") {
+		return 0, 0, fmt.Errorf("returned malformed failure fields, want one pane")
+	}
+	fields := strings.Split(line, "\t")
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("returned %d failure fields, want dead state and exit status", len(fields))
+	}
+	if fields[0] == "0" {
+		if fields[1] != "" {
+			return 0, 0, fmt.Errorf("reported exit status %q for live pane", fields[1])
+		}
+		return 0, 0, nil
+	}
+	if fields[0] != "1" {
+		return 0, 0, fmt.Errorf("reported invalid dead state %q", fields[0])
+	}
+	status, err := strconv.Atoi(fields[1])
+	if err != nil || status < 0 {
+		return 0, 0, fmt.Errorf("reported invalid exit status %q", fields[1])
+	}
+	return 1, status, nil
 }
 
 func boundedTmuxDetail(raw []byte) string {
