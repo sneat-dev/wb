@@ -218,7 +218,7 @@ func TestValidateDependencyDeltasRejectsFamilyOnlyUpgrade(t *testing.T) {
 	sourceHead := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
 	targetHead := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
 	receipt := SupersessionReceipt{
-		OriginalPR: "https://github.com/acme/app/pull/17", DependencyDeltasComplete: true,
+		OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17, OriginalPRRepository: "acme/app", OriginalPRHead: sourceHead, DependencyDeltasComplete: true,
 		OriginalHead: sourceHead, TargetHead: targetHead,
 		DependencyDeltas: []SupersessionDependencyDelta{{
 			SourcePR: "https://github.com/acme/app/pull/17", SourceHead: sourceHead, Consumer: "acme/app",
@@ -226,18 +226,18 @@ func TestValidateDependencyDeltasRejectsFamilyOnlyUpgrade(t *testing.T) {
 			Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
 		}},
 	}
-	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
+	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead, OpenPullRequest: dependencyTestPullRequest(sourceHead)}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, `direct package "nx"`) {
 		t.Fatalf("family-only upgrade rejection = %q, want exact direct nx proof", rejection)
 	}
 }
 
 func TestValidateDependencyDeltasRejectsSourceHeadForceUpdate(t *testing.T) {
-	receipt := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17", OriginalHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DependencyDeltasComplete: true,
+	receipt := SupersessionReceipt{OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17, OriginalPRRepository: "acme/app", OriginalPRHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", OriginalHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", DependencyDeltasComplete: true,
 		DependencyDeltas: []SupersessionDependencyDelta{{SourcePR: "https://github.com/acme/app/pull/17", SourceHead: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Consumer: "acme/app", Ecosystem: "npm", Package: "nx", Manifest: "package.json", Selector: "dependencies.nx", Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true}}}
-	entry := ListResult{Repository: "acme/app", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
-	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "force-updated") {
-		t.Fatalf("source-head drift rejection = %q, want force-update evidence", rejection)
+	entry := ListResult{Repository: "acme/app", HeadSHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", OpenPullRequest: dependencyTestPullRequest("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "original PR head") {
+		t.Fatalf("source-head drift rejection = %q, want authoritative force-update evidence", rejection)
 	}
 }
 
@@ -246,6 +246,84 @@ func TestDependencyCampaignReceiptCannotBypassDeltaProof(t *testing.T) {
 	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Branch: "wb/deps/bump-example-wave-01"}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "requires original_pr") {
 		t.Fatalf("generic dependency campaign receipt was accepted: %q", rejection)
+	}
+}
+
+func TestDependencyReceiptRequiresAuthoritativeSourcePullRequest(t *testing.T) {
+	receipt := SupersessionReceipt{
+		OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17,
+		OriginalPRRepository: "acme/app", OriginalPRHead: "head", OriginalHead: "head",
+		DependencyDeltasComplete: true,
+		DependencyDeltas: []SupersessionDependencyDelta{{
+			SourcePR: "https://github.com/acme/app/pull/17", SourceHead: "head", Consumer: "acme/app",
+		}},
+	}
+	entry := ListResult{Repository: "acme/app", HeadSHA: "head"}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "authoritative source pull request") {
+		t.Fatalf("missing live source PR was accepted: %q", rejection)
+	}
+	entry.OpenPullRequest = &PullRequest{Number: 18, URL: receipt.OriginalPR, Repository: "acme/app", HeadSHA: "head"}
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "number") {
+		t.Fatalf("mismatched live source PR number was accepted: %q", rejection)
+	}
+	entry.OpenPullRequest.Number = 17
+	entry.OpenPullRequest.HeadSHA = "force-updated"
+	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "head") {
+		t.Fatalf("mismatched live source PR head was accepted: %q", rejection)
+	}
+}
+
+func TestDependencyCampaignDetectionUsesMarkerAndLegacyDiffs(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "custom-campaign", WorkLog: WorkLogOptions{Model: "unknown"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	marker := Manifest{}
+	marker, err = ReadManifest(result.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker.DependencyCampaign = true
+	markerPath := filepath.Join(t.TempDir(), "marker-worktree")
+	if err := os.MkdirAll(markerPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	markerPath, err = filepath.EvalSymlinks(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, markerPath, "init")
+	if err := WriteManifest(markerPath, marker); err != nil {
+		t.Fatal(err)
+	}
+	if !dependencyCampaignWorktree(context.Background(), ListResult{WorktreeDir: markerPath}) {
+		t.Fatal("immutable dependency campaign marker was not detected")
+	}
+
+	for _, file := range []string{"package.json", "go.mod", "pnpm-workspace.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{ProjectsRoot: fixture.projectsRoot, Operation: "custom-campaign-" + strings.ReplaceAll(file, ".", "-"), WorkLog: WorkLogOptions{Model: "unknown"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := created[0]
+			content := "dependency change\n"
+			if file == "package.json" {
+				content = `{"dependencies":{"nx":"22.7.7"}}` + "\n"
+			} else if file == "go.mod" {
+				content = "module example.com/app\n\nrequire example.com/mod v1.2.3\n"
+			}
+			writeAndCommit(t, result.WorktreeDir, file, content, "legacy dependency manifest")
+			head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+			target := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
+			entry := ListResult{Task: "custom-campaign", Branch: "feature/custom", Repository: "acme/app", CanonicalDir: fixture.canonical, WorktreeDir: result.WorktreeDir, HeadSHA: head, RemoteTargetSHA: target}
+			if !dependencyCampaignWorktree(context.Background(), entry) {
+				t.Fatalf("legacy dependency path %s was not detected", file)
+			}
+		})
 	}
 }
 
@@ -275,7 +353,7 @@ func TestValidateDependencyDeltasRequiresApplicableLockfile(t *testing.T) {
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(fixture.canonical, "package-lock.json"), []byte(`{"lockfileVersion":3,"packages":{"node_modules/nx":{"version":"22.7.7"}}}
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "package-lock.json"), []byte(`{"lockfileVersion":3,"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/nxfoo":{"version":"22.7.7"},"node_modules/@nx/js":{"version":"22.7.7"}}}
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +362,7 @@ func TestValidateDependencyDeltasRequiresApplicableLockfile(t *testing.T) {
 	gitTest(t, fixture.canonical, "push", "origin", "main")
 	targetHead := gitTestOutput(t, fixture.canonical, "rev-parse", "origin/main")
 	receipt := SupersessionReceipt{
-		OriginalPR: "https://github.com/acme/app/pull/17", DependencyDeltasComplete: true,
+		OriginalPR: "https://github.com/acme/app/pull/17", OriginalPRNumber: 17, OriginalPRRepository: "acme/app", OriginalPRHead: sourceHead, DependencyDeltasComplete: true,
 		OriginalHead: sourceHead, TargetHead: targetHead,
 		DependencyDeltas: []SupersessionDependencyDelta{{
 			SourcePR: "https://github.com/acme/app/pull/17", SourceHead: sourceHead, Consumer: "acme/app",
@@ -292,15 +370,21 @@ func TestValidateDependencyDeltasRequiresApplicableLockfile(t *testing.T) {
 			Before: "22.6.4", RequestedAfter: "22.7.7", CandidateAfter: "22.7.7", Reviewed: true,
 		}},
 	}
-	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead}
+	entry := ListResult{Task: "deps-bump-npm-example-wave-01", Repository: "acme/app", CanonicalDir: fixture.canonical, HeadSHA: sourceHead, RemoteTargetSHA: targetHead, OpenPullRequest: dependencyTestPullRequest(sourceHead)}
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "missing resolved lockfile proof") {
 		t.Fatalf("missing lockfile proof = %q", rejection)
 	}
 	receipt.DependencyDeltas[0].Lockfile = "package-lock.json"
-	receipt.DependencyDeltas[0].LockfileSelector = "packages.node_modules/nx.version"
+	receipt.DependencyDeltas[0].LockfileSelector = "packages|node_modules/nx|version"
 	receipt.DependencyDeltas[0].LockfileVersion = "22.7.7"
 	if rejection := validateDependencyDeltas(context.Background(), receipt, entry); rejection != "" {
 		t.Fatalf("complete lockfile proof rejected: %q", rejection)
+	}
+	for _, selector := range []string{"packages|node_modules/nxfoo|version", "packages|node_modules/@nx/js|version"} {
+		receipt.DependencyDeltas[0].LockfileSelector = selector
+		if rejection := validateDependencyDeltas(context.Background(), receipt, entry); !strings.Contains(rejection, "does not prove exact selector") {
+			t.Fatalf("malicious lockfile selector %q was accepted: %q", selector, rejection)
+		}
 	}
 }
 
@@ -323,15 +407,24 @@ func TestDependencyAuditRenderingSortsPerPREvidence(t *testing.T) {
 }
 
 func TestLockfileEntryProofIsStructuredAndPackageExact(t *testing.T) {
-	lockfile := `{"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/nxfoo":{"version":"22.7.9"},"node_modules/@nx/js":{"version":"22.7.8"}}}`
-	if !lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages.node_modules/nx.version", "22.7.7") {
+	lockfile := `{"packages":{"node_modules/nx":{"version":"22.7.7"},"node_modules/nxfoo":{"version":"22.7.7"},"node_modules/@nx/js":{"version":"22.7.7"}}}`
+	if !lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages|node_modules/nx|version", "22.7.7") {
 		t.Fatal("structured package-lock proof was not accepted")
 	}
-	if lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages.node_modules/nx.version", "22.7.8") {
+	if lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages|node_modules/nx|version", "22.7.8") {
 		t.Fatal("nx proof incorrectly accepted @nx/js version")
 	}
-	if lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages.node_modules/nx.version", "22.7.9") {
+	if lockfileEntryContainsVersion("npm", "package-lock.json", lockfile, "packages|node_modules/nx|version", "22.7.9") {
 		t.Fatal("nx proof incorrectly accepted nxfoo version")
+	}
+}
+
+func TestValidateDependencyDeltasRejectsMaliciousLockfileSelectors(t *testing.T) {
+	if selectorNamesExactPackage("packages|node_modules/nxfoo|version", "nx") {
+		t.Fatal("nxfoo selector was treated as exact nx")
+	}
+	if selectorNamesExactPackage("packages|node_modules/@nx/js|version", "nx") {
+		t.Fatal("@nx selector was treated as exact nx")
 	}
 }
 
@@ -391,4 +484,8 @@ func completeSupersessionReceipt(result CreateResult, task string, sourceCommits
 		ResidualsComplete: true,
 		Approval:          SupersessionApproval{Actor: "reviewer@example.test", Trusted: true, Decision: "approved", ReceiptID: receiptID, ApprovedAt: time.Now().UTC()},
 	}
+}
+
+func dependencyTestPullRequest(head string) *PullRequest {
+	return &PullRequest{Number: 17, URL: "https://github.com/acme/app/pull/17", Repository: "acme/app", HeadSHA: head}
 }

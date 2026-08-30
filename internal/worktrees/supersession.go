@@ -37,6 +37,9 @@ type SupersessionReceipt struct {
 	// consolidation. A PR-scoped receipt opts into exact dependency proof;
 	// generic worktree supersessions leave it empty.
 	OriginalPR               string                        `json:"original_pr,omitempty"`
+	OriginalPRNumber         int                           `json:"original_pr_number,omitempty"`
+	OriginalPRRepository     string                        `json:"original_pr_repository,omitempty"`
+	OriginalPRHead           string                        `json:"original_pr_head,omitempty"`
 	DependencyDeltasComplete bool                          `json:"dependency_deltas_complete,omitempty"`
 	DependencyDeltas         []SupersessionDependencyDelta `json:"dependency_deltas,omitempty"`
 }
@@ -67,11 +70,14 @@ func (receipt SupersessionReceipt) DependencyAuditJSON() ([]byte, error) {
 	deltas := sortedDependencyDeltas(receipt.DependencyDeltas)
 	payload := struct {
 		OriginalPR       string                        `json:"original_pr"`
+		OriginalPRNumber int                           `json:"original_pr_number"`
+		OriginalPRRepo   string                        `json:"original_pr_repository"`
+		OriginalPRHead   string                        `json:"original_pr_head"`
 		OriginalHead     string                        `json:"original_head"`
 		TargetHead       string                        `json:"target_head"`
 		Complete         bool                          `json:"dependency_deltas_complete"`
 		DependencyDeltas []SupersessionDependencyDelta `json:"dependency_deltas"`
-	}{receipt.OriginalPR, receipt.OriginalHead, receipt.TargetHead, receipt.DependencyDeltasComplete, deltas}
+	}{receipt.OriginalPR, receipt.OriginalPRNumber, receipt.OriginalPRRepository, receipt.OriginalPRHead, receipt.OriginalHead, receipt.TargetHead, receipt.DependencyDeltasComplete, deltas}
 	return json.MarshalIndent(payload, "", "  ")
 }
 
@@ -79,7 +85,7 @@ func (receipt SupersessionReceipt) DependencyAuditMarkdown() string {
 	deltas := sortedDependencyDeltas(receipt.DependencyDeltas)
 	var output strings.Builder
 	fmt.Fprintf(&output, "# Dependency supersession audit: %s\n\n", receipt.OriginalPR)
-	fmt.Fprintf(&output, "- Source head: `%s`\n- Candidate target: `%s`\n- Complete: `%t`\n\n", receipt.OriginalHead, receipt.TargetHead, receipt.DependencyDeltasComplete)
+	fmt.Fprintf(&output, "- Source PR: `%s` (#%d, `%s`)\n- Source head: `%s`\n- Candidate target: `%s`\n- Complete: `%t`\n\n", receipt.OriginalPR, receipt.OriginalPRNumber, receipt.OriginalPRRepository, receipt.OriginalHead, receipt.TargetHead, receipt.DependencyDeltasComplete)
 	output.WriteString("| Consumer | Package | Manifest selector | Before | Requested after | Candidate after | Lockfile | Lockfile version | Source head | Reviewed |\n")
 	output.WriteString("|---|---|---|---|---|---|---|---|---|---|\n")
 	for _, delta := range deltas {
@@ -298,13 +304,16 @@ func validateSupersessionReceipt(ctx context.Context, receipt SupersessionReceip
 // proof boundary.
 func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, entry ListResult) string {
 	if strings.TrimSpace(receipt.OriginalPR) == "" {
-		if dependencyCampaignWorktree(entry) {
+		if dependencyCampaignWorktree(ctx, entry) {
 			return "dependency campaign supersession requires original_pr and exact dependency delta evidence"
 		}
 		if receipt.DependencyDeltasComplete || len(receipt.DependencyDeltas) > 0 {
 			return "dependency delta evidence requires original_pr"
 		}
 		return ""
+	}
+	if rejection := validateAuthoritativeSourcePullRequest(receipt, entry); rejection != "" {
+		return rejection
 	}
 	if !receipt.DependencyDeltasComplete {
 		return "dependency delta evidence is incomplete; terminal supersession is refused"
@@ -415,7 +424,40 @@ func validateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, 
 	return ""
 }
 
-func dependencyCampaignWorktree(entry ListResult) bool {
+// ValidateDependencyDeltas exposes the same fail-closed dependency proof used
+// by supersession cleanup to campaign/report integrations and their tests.
+// Callers must provide the live ListResult, including authoritative PR data.
+func ValidateDependencyDeltas(ctx context.Context, receipt SupersessionReceipt, entry ListResult) error {
+	if rejection := validateDependencyDeltas(ctx, receipt, entry); rejection != "" {
+		return fmt.Errorf("%s", rejection)
+	}
+	return nil
+}
+
+func validateAuthoritativeSourcePullRequest(receipt SupersessionReceipt, entry ListResult) string {
+	pr := entry.OpenPullRequest
+	if pr == nil {
+		return "dependency receipt has no authoritative source pull request in the live inventory"
+	}
+	if pr.Number <= 0 || strings.TrimSpace(pr.URL) == "" || strings.TrimSpace(pr.Repository) == "" || strings.TrimSpace(pr.HeadSHA) == "" {
+		return "dependency receipt authoritative source pull request is missing URL, number, repository, or head"
+	}
+	if receipt.OriginalPR != pr.URL {
+		return fmt.Sprintf("dependency receipt original_pr %q does not match authoritative source pull request URL %q", receipt.OriginalPR, pr.URL)
+	}
+	if receipt.OriginalPRNumber <= 0 || receipt.OriginalPRNumber != pr.Number {
+		return fmt.Sprintf("dependency receipt original PR number %d does not match authoritative source pull request number %d", receipt.OriginalPRNumber, pr.Number)
+	}
+	if receipt.OriginalPRRepository == "" || receipt.OriginalPRRepository != pr.Repository || pr.Repository != entry.Repository {
+		return fmt.Sprintf("dependency receipt original PR repository %q does not match authoritative source repository %q", receipt.OriginalPRRepository, pr.Repository)
+	}
+	if receipt.OriginalPRHead == "" || receipt.OriginalPRHead != pr.HeadSHA || pr.HeadSHA != receipt.OriginalHead || pr.HeadSHA != entry.HeadSHA {
+		return fmt.Sprintf("dependency receipt original PR head %q does not match authoritative source head %q", receipt.OriginalPRHead, pr.HeadSHA)
+	}
+	return ""
+}
+
+func dependencyCampaignWorktree(ctx context.Context, entry ListResult) bool {
 	if strings.HasPrefix(entry.Task, "deps-") || strings.HasPrefix(entry.Branch, "wb/deps/") {
 		return true
 	}
@@ -423,7 +465,34 @@ func dependencyCampaignWorktree(entry ListResult) bool {
 		return false
 	}
 	manifest, err := ReadManifest(entry.WorktreeDir)
-	return err == nil && manifest.DependencyCampaign
+	if err == nil && manifest.DependencyCampaign {
+		return true
+	}
+	if entry.CanonicalDir == "" || entry.HeadSHA == "" || entry.RemoteTargetSHA == "" {
+		return false
+	}
+	changed, err := git(ctx, entry.CanonicalDir, "diff", "--name-only", "--diff-filter=ACMR", entry.RemoteTargetSHA, entry.HeadSHA)
+	if err != nil {
+		// With exact source and target identities present, an unreadable diff
+		// must fail closed instead of allowing a generic terminalization.
+		return true
+	}
+	for _, file := range strings.Fields(changed) {
+		if isDependencyManifestOrImporter(file) {
+			return true
+		}
+	}
+	return false
+}
+
+func isDependencyManifestOrImporter(file string) bool {
+	file = path.Clean(strings.TrimSpace(file))
+	base := path.Base(file)
+	switch base {
+	case "package.json", "package-lock.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "pnpm-workspace.yml", "yarn.lock", "go.mod", "go.sum":
+		return true
+	}
+	return strings.HasPrefix(file, ".github/workflows/") && (strings.HasSuffix(file, ".yml") || strings.HasSuffix(file, ".yaml"))
 }
 
 func dependencyLockfile(ctx context.Context, canonical, target string, delta SupersessionDependencyDelta) (string, bool, error) {
@@ -475,10 +544,10 @@ func containsString(values []string, want string) bool {
 
 func selectorNamesExactPackage(selector, packageName string) bool {
 	if selector == packageName {
-		return true
+		return packageName != ""
 	}
-	for _, marker := range []string{"/", `"`, `'`, "[", "]", ":"} {
-		if strings.Contains(selector, marker+packageName) || strings.Contains(selector, packageName+marker) {
+	for _, lockfile := range []string{"package-lock.json", "pnpm-lock.yaml"} {
+		if _, ok := parseLockfileSelector("npm", lockfile, selector, packageName); ok {
 			return true
 		}
 	}
@@ -506,9 +575,10 @@ func lockfileEntryContainsVersion(ecosystem, lockfilePath, contents, selector, v
 	if len(node.Content) == 1 {
 		node = node.Content[0]
 	}
-	segments := strings.Split(selector, ".")
-	if strings.Contains(selector, "|") {
-		segments = strings.Split(selector, "|")
+	packageName := selectorPackageFromLockfileSelector(selector)
+	segments, ok := parseLockfileSelector(ecosystem, lockfilePath, selector, packageName)
+	if !ok {
+		return false
 	}
 	for _, segment := range segments {
 		if node.Kind != yaml.MappingNode {
@@ -527,6 +597,54 @@ func lockfileEntryContainsVersion(ecosystem, lockfilePath, contents, selector, v
 		node = next
 	}
 	return node.Kind == yaml.ScalarNode && node.Value == version
+}
+
+func selectorPackageFromLockfileSelector(selector string) string {
+	segments := strings.Split(selector, "|")
+	if len(segments) != 3 {
+		return ""
+	}
+	switch segments[0] {
+	case "packages":
+		return strings.TrimPrefix(segments[1], "node_modules/")
+	case "snapshots":
+		key := strings.TrimPrefix(segments[1], "/")
+		if at := strings.LastIndex(key, "@"); at > 0 {
+			return key[:at]
+		}
+	}
+	return ""
+}
+
+// parseLockfileSelector accepts only the selectors emitted by the dependency
+// campaign report. Package identity is parsed as a token, never searched as a
+// substring, so nx cannot be proven by nxfoo or @nx/js.
+func parseLockfileSelector(ecosystem, lockfilePath, selector, packageName string) ([]string, bool) {
+	if !strings.EqualFold(ecosystem, "npm") || packageName == "" {
+		return nil, false
+	}
+	segments := strings.Split(selector, "|")
+	if len(segments) != 3 || segments[2] != "version" {
+		return nil, false
+	}
+	switch path.Base(lockfilePath) {
+	case "package-lock.json":
+		if segments[0] != "packages" || segments[1] != "node_modules/"+packageName {
+			return nil, false
+		}
+	case "pnpm-lock.yaml":
+		if segments[0] != "snapshots" || !strings.HasPrefix(segments[1], "/"+packageName+"@") {
+			return nil, false
+		}
+		// Reject a package token that only matches a prefix of a scoped or
+		// unscoped package key. The required @ delimiter is the grammar bound.
+		if strings.TrimPrefix(segments[1], "/"+packageName+"@") == "" {
+			return nil, false
+		}
+	default:
+		return nil, false
+	}
+	return segments, true
 }
 
 // dependencyVersionSatisfies applies the version semantics of the supported

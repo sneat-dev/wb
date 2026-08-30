@@ -75,6 +75,13 @@ func repositoryReportFromResult(result orchestrate.Result[[]Decision]) Repositor
 	return repository
 }
 
+// RepositoryReportFromResult preserves the production report projection for
+// integrations that need to carry exact dependency evidence into a later
+// supersession review.
+func RepositoryReportFromResult(result orchestrate.Result[[]Decision]) RepositoryReport {
+	return repositoryReportFromResult(result)
+}
+
 func dependencyDeltasFromResult(result orchestrate.Result[[]Decision]) []DependencyDelta {
 	lockfiles := make([]string, 0)
 	for _, decision := range result.Metadata {
