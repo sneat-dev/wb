@@ -32,6 +32,35 @@ checksum:
   name_template: "wb_{{ .Version }}_checksums.txt"
   algorithm: sha256
 
+# macOS signing + notarization. Restored after being pulled during a
+# containment period that (wrongly) diagnosed exit-137 SIGKILLs as a Go 1.27
+# Mach-O problem. The real cause: the .p12 signing bundle was rebuilt without
+# the Apple Root CA, so quill's root-first cert-chain sort put the G2
+# intermediate at index 0 and emitted an unsatisfiable designated requirement
+# (`certificate root[field.1.2.840.113635.100.6.2.6]`), which macOS resolves
+# against the actual Apple Root CA — hence the kill. The .p12 has been
+# rebuilt with the full leaf + intermediate + root chain and pushed to all
+# org secret stores. Proven on a real published Go 1.27 artifact:
+# ingitdb/ingitdb-cli v0.65.11 (2026-08-30) signs, notarizes, passes
+# `spctl --assess`, and executes (rc=0).
+#
+# `enabled` is gated on the MACOS_SIGN_P12 env var, forwarded by
+# .github/workflows/release.yml (pinned to strongo/cicd@v1.14.14 with
+# require_notarized_macos: true).
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [wb]
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        wait: true
+        issuer_id: "{{ .Env.NOTARIZE_ISSUER_ID }}"
+        key_id: "{{ .Env.NOTARIZE_KEY_ID }}"
+        key: "{{ .Env.NOTARIZE_KEY }}"
+        timeout: 20m
+
 changelog:
   sort: asc
   filters:
