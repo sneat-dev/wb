@@ -195,6 +195,17 @@ func assertPreparedParkedMember(t *testing.T, projectsRoot, path string, request
 		!strings.Contains(string(eventsRaw), request.ResumeID) || !strings.Contains(string(eventsRaw), member.MemberID) {
 		t.Fatalf("member %s lacks target owner barrier: %v\n%s", member.MemberID, err, eventsRaw)
 	}
+	var events []struct {
+		Version int `json:"version"`
+	}
+	if err := decodeJSONLines(eventsRaw, &events); err != nil {
+		t.Fatalf("member %s has malformed local Work Log events: %v", member.MemberID, err)
+	}
+	for index, event := range events {
+		if event.Version != 1 {
+			t.Fatalf("member %s event %d version = %d, want 1", member.MemberID, index, event.Version)
+		}
+	}
 }
 
 func assertTreeDoesNotContain(t *testing.T, root, secret string) {
@@ -209,4 +220,17 @@ func assertTreeDoesNotContain(t *testing.T, root, secret string) {
 		}
 		return nil
 	})
+}
+
+func decodeJSONLines(raw []byte, target any) error {
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	encoded := []byte("[")
+	for index, line := range lines {
+		if index > 0 {
+			encoded = append(encoded, ',')
+		}
+		encoded = append(encoded, line...)
+	}
+	encoded = append(encoded, ']')
+	return json.Unmarshal(encoded, target)
 }

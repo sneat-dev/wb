@@ -63,6 +63,47 @@ func TestAppendLocalEventRefusesCompleteInvalidUnterminatedJournalRecord(t *test
 	}
 }
 
+func TestInspectionKeepsStrictValidationButReadsHistoricalParkedCompletion(t *testing.T) {
+	clearIdentity(t)
+	worktree := custodyWorktree(t)
+	if err := RecordCustody(worktree, "effort", "create", declared()); err != nil {
+		t.Fatal(err)
+	}
+	eventsPath := filepath.Join(worktree, journalRootDirectory, journalLocalDirectory, worklogDirectory, localWorkLogEventsName)
+	historical := LocalWorkLogEvent{
+		Version: 0, Seq: 1, ID: "historical-parked-completion", Type: LocalEventHandoff,
+		At:      time.Date(2026, time.August, 30, 7, 0, 0, 0, time.UTC),
+		Message: "parked successor proved live; target member custody completed", Result: "completed",
+		Extra: map[string]any{
+			"resume_id": "resume-historical", "parked_session_id": "park-historical", "member_id": "m-001-abcdef01",
+			"repository": "acme/app", "predecessor_wb_session_id": "wbs-source", "successor_wb_session_id": "wbs-target",
+			"source_work_log_reference": "worklog:effort/run/" + strings.Repeat("a", 64),
+			"target_work_log_reference": "worklog:effort/run/" + strings.Repeat("b", 64),
+			"attempt_id":                "000001-abcdef0123456789abcdef0123456789",
+		},
+	}
+	raw, err := json.Marshal(historical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendTestBytes(t, eventsPath, append(raw, '\n'))
+	events, compatible, err := readLocalEventsForInspection(worktree, func(event LocalWorkLogEvent) bool {
+		return event.ID == historical.ID
+	})
+	if err != nil {
+		t.Fatalf("read-only lifecycle inspection rejected historical completion: %v", err)
+	}
+	if !compatible || len(events) != 1 || events[0].Owner == nil || events[0].Owner.Agent != declared().Agent() {
+		t.Fatalf("inspection events = %#v, compatible=%v, want valid prefix only", events, compatible)
+	}
+	if _, err := readLocalEvents(worktree); err == nil {
+		t.Fatal("strict local event reader accepted historical version-0 evidence")
+	}
+	if _, compatible, err := readLocalEventsForInspection(worktree, func(LocalWorkLogEvent) bool { return false }); err == nil || compatible {
+		t.Fatalf("unbound historical event was admitted: err=%v compatible=%v", err, compatible)
+	}
+}
+
 func TestAppendLocalEventRepairsTornFinalOutboxRecord(t *testing.T) {
 	clearIdentity(t)
 	worktree := custodyWorktree(t)

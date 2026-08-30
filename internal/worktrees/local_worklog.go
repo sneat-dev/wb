@@ -130,6 +130,65 @@ func readLocalEvents(worktree string) ([]LocalWorkLogEvent, error) {
 	return parseLocalEvents(content)
 }
 
+// readLocalEventsForInspection preserves the strict append/validation path
+// while allowing read-only lifecycle inspection to explain one historical
+// parked-session receipt emitted with event version 0. The malformed record is
+// never returned as valid evidence and is never rewritten; callers receive the
+// valid prefix so owner/cleanup inspection can continue, plus a compatibility
+// marker for diagnostics.
+func readLocalEventsForInspection(worktree string, acceptHistorical func(LocalWorkLogEvent) bool) ([]LocalWorkLogEvent, bool, error) {
+	events, err := readLocalEvents(worktree)
+	if err == nil {
+		return events, false, nil
+	}
+	directory, openErr := openLocalWorkLogDir(worktree, false)
+	if openErr != nil {
+		return nil, false, err
+	}
+	defer func() { _ = directory.Close() }()
+	content, readErr := readBytesAt(directory, localWorkLogEventsName)
+	if readErr != nil {
+		return nil, false, err
+	}
+	parts := bytes.Split(content, []byte{'\n'})
+	if len(parts) < 2 || len(content) == 0 || content[len(content)-1] != '\n' {
+		return nil, false, err
+	}
+	last := bytes.TrimSpace(parts[len(parts)-2])
+	var historical LocalWorkLogEvent
+	if json.Unmarshal(last, &historical) != nil || !historicalParkedCompletionShape(historical) ||
+		acceptHistorical == nil || !acceptHistorical(historical) {
+		return nil, false, err
+	}
+	validPrefix, prefixErr := parseLocalEvents(bytes.Join(parts[:len(parts)-2], []byte{'\n'}))
+	if prefixErr != nil {
+		return nil, false, err
+	}
+	return validPrefix, true, nil
+}
+
+// historicalParkedCompletionShape identifies only the immutable event shape
+// produced by the affected receiver release. It is intentionally separate
+// from validateLocalEventForSequence: version 0 remains invalid evidence for
+// every append, repair, and authoritative Work Log operation.
+func historicalParkedCompletionShape(event LocalWorkLogEvent) bool {
+	if event.Version != 0 || event.Type != LocalEventHandoff || event.Result != "completed" ||
+		event.Message != "parked successor proved live; target member custody completed" || len(event.Extra) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"resume_id", "parked_session_id", "member_id", "repository",
+		"predecessor_wb_session_id", "successor_wb_session_id",
+		"source_work_log_reference", "target_work_log_reference", "attempt_id",
+	} {
+		value, ok := event.Extra[key].(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 func parseLocalEvents(content []byte) ([]LocalWorkLogEvent, error) {
 	events := make([]LocalWorkLogEvent, 0)
 	for _, raw := range bytes.Split(content, []byte{'\n'}) {
