@@ -11,6 +11,13 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 )
 
+// commandPipeDrainWaitDelay bounds the period exec.Cmd waits after its direct
+// child exits but a descendant still holds one of CombinedOutput's pipes open.
+// Package-manager launchers may hand work to another process and exit first;
+// without this bound the dependency planner can remain in planning_wave forever
+// despite having no child process left to observe or cancel.
+var commandPipeDrainWaitDelay = 5 * time.Second
+
 func runCommand(ctx context.Context, timeout time.Duration, retry int, dir, name string, args ...string) (string, int, error) {
 	return runCommandWithEnv(ctx, timeout, retry, dir, nil, name, args...)
 }
@@ -30,6 +37,7 @@ func runCommandWithEnv(ctx context.Context, timeout time.Duration, retry int, di
 		}
 		command := exec.CommandContext(attemptCtx, name, args...)
 		command.Dir = dir
+		command.WaitDelay = commandPipeDrainWaitDelay
 		if environment == nil {
 			environment = os.Environ()
 		}
