@@ -11,6 +11,7 @@ wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress -
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -68,3 +69,13 @@ repair without changing the historical receipt or Work Log. A candidate or
 landing that is not an ancestor of the current target, a missing active claim,
 or any dirty/drifted receipt/source identity refuses closed; branch names,
 patch similarity, and PR state are never substitutes for the ancestry proof.
+
+When an old prepare `validation_failed` candidate did not land and diverges
+from its replacement, use `supersede-validation-failed`. It admits only the
+prepare failure state and only when the old immutable candidate claim base,
+receipt target, freshly fetched current target, and every exact clean receipted
+source are ancestors of one exact clean replacement worktree with an active
+claim. The old failed candidate itself is deliberately not required to be an
+ancestor. WB writes a receipt-hash-bound append-only supersession artifact;
+it never rewrites the failed receipt or either Work Log. Missing ancestry,
+claim identity, clean worktree, or receipt integrity refuses closed.

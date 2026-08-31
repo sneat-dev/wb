@@ -52,7 +52,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
-| `worktree merge`, `merge prepare`, `merge land`, `merge resume`, `merge revert`, `merge acknowledge-landed-failed` | yes | rejected | rejected | yes |
+| `worktree merge`, `merge prepare`, `merge land`, `merge resume`, `merge revert`, `merge acknowledge-landed-failed`, `merge supersede-validation-failed` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |

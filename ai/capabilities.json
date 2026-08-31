@@ -8211,6 +8211,60 @@
       "notes": "The acknowledgement is not a landing receipt and never rewrites the historical merge receipt or Work Log; exact source and candidate claims/cleanliness, ancestry, and freshly fetched current-target evidence are mandatory."
     },
     {
+      "id": "wb.worktree.merge.supersede-validation-failed",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge supersede-validation-failed",
+              "flags": ["--actor", "--apply", "--format", "--reason"],
+              "modes": [
+                "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",
+                "Accepts only prepare validation_failed receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge supersede-validation-failed --help",
+              "contains": ["separate append-only supersession acknowledgement", "--apply", "--actor", "--reason"]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": ["wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>"]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingReceipt",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The separate transition is for an unlanded prepare failure only; its acknowledgement binds the exact receipt hash, current remote target, replacement identity, and immutable source roots without modifying a receipt or Work Log."
+    },
+    {
       "id": "wb.worktree.merge.land",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",

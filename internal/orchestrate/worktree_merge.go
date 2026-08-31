@@ -235,6 +235,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		} else if acknowledged {
 			return existing, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; prepare a new source candidate", receiptPath)
 		}
+		if superseded, supersessionErr := hasValidationFailureSupersession(existing); supersessionErr != nil {
+			return existing, supersessionErr
+		} else if superseded {
+			return existing, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; prepare a new source candidate", receiptPath)
+		}
 		if existing.Status != WorktreeMergePreparing && existing.Status != WorktreeMergeConflict && existing.Status != WorktreeMergeValidationFailed {
 			return existing, nil
 		}
@@ -492,6 +497,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, ackErr
 	} else if acknowledged {
 		return receipt, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; it cannot be replayed", receiptPath)
+	}
+	if superseded, supersessionErr := hasValidationFailureSupersession(receipt); supersessionErr != nil {
+		return receipt, supersessionErr
+	} else if superseded {
+		return receipt, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; it cannot be replayed", receiptPath)
 	}
 	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Completed, string(receipt.Status)+" at "+receiptPath)
 	if receipt.Status == WorktreeMergeComplete {
@@ -1285,7 +1295,7 @@ func resolveWorktreeMergeReceiptPath(projectsRoot, input string) (string, error)
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) {
+		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) {
 			continue
 		}
 		path := filepath.Join(reports, entry.Name())
@@ -2090,6 +2100,13 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 				return nil, ackErr
 			}
 			if acknowledged {
+				continue
+			}
+			superseded, supersessionErr := hasValidationFailureSupersession(receipt)
+			if supersessionErr != nil {
+				return nil, supersessionErr
+			}
+			if superseded {
 				continue
 			}
 			return &receipt, nil
