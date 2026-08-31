@@ -73,18 +73,18 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 	report := VerifyWithOptions(context.Background(), "example/node", repository, []Check{CheckLint, CheckTest, CheckBuild}, RunOptions{Progress: func(event Progress) {
 		progress = append(progress, event)
 	}})
-	if report.Status != StatusPassed || len(report.Results) != 3 {
+	if report.Status != StatusPassed || len(report.Results) != 4 {
 		t.Fatalf("report = %+v", report)
 	}
 	contents, err := os.ReadFile(log)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.TrimSpace(string(contents)), "run lint\nrun test\nrun build"; got != want {
+	if got, want := strings.TrimSpace(string(contents)), "install --frozen-lockfile\nrun lint\nrun test\nrun build"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
-	if len(progress) != 6 {
-		t.Fatalf("verification progress events = %d, want 6: %+v", len(progress), progress)
+	if len(progress) != 8 {
+		t.Fatalf("verification progress events = %d, want 8: %+v", len(progress), progress)
 	}
 	for index, event := range progress {
 		want := ProgressStarted
@@ -93,6 +93,151 @@ func TestVerifyRunsNodeScriptsWithDetectedPackageManager(t *testing.T) {
 		}
 		if event.State != want {
 			t.Fatalf("verification progress event %d state = %s, want %s", index, event.State, want)
+		}
+	}
+}
+
+// TestVerifyPreparesEveryIndependentNodeScopeBeforeScripts exercises the same
+// verifier used by deps set and deps bump after they create an empty linked
+// worktree. The shim refuses to run a script until its frozen install has
+// created a project-local nx executable, so a passing result proves both
+// preparation and local executable resolution rather than just command order.
+func TestVerifyPreparesEveryIndependentNodeScopeBeforeScripts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	repository := t.TempDir()
+	for _, scope := range []string{"", "landings"} {
+		writeQualityFile(t, filepath.Join(repository, scope, "package.json"), `{"scripts":{"lint":"nx lint","test":"nx test","build":"nx build"}}`)
+		writeQualityFile(t, filepath.Join(repository, scope, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+	}
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(repository, "commands.log")
+	writeQualityFile(t, filepath.Join(bin, "pnpm"), `#!/bin/sh
+scope=$(pwd)
+case "$1" in
+  install)
+    if [ -e node_modules ]; then echo "install found existing node_modules: $scope" >&2; exit 1; fi
+    if [ "$2" != "--frozen-lockfile" ]; then echo "install was not frozen: $*" >&2; exit 1; fi
+    mkdir -p node_modules/.bin
+    printf '%s\n' '#!/bin/sh' 'printf "local nx %s %s\n" "$(pwd)" "$*" >> "`+log+`"' > node_modules/.bin/nx
+    chmod +x node_modules/.bin/nx
+    printf 'install %s\n' "$scope" >> "`+log+`"
+    ;;
+  run)
+    if [ ! -x node_modules/.bin/nx ]; then echo "missing local nx: $scope" >&2; exit 1; fi
+    node_modules/.bin/nx "$2"
+    ;;
+  *) echo "unexpected pnpm command: $*" >&2; exit 1 ;;
+esac
+`)
+	if err := os.Chmod(filepath.Join(bin, "pnpm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report := Verify(context.Background(), "example/node-scopes", repository, []Check{CheckLint, CheckTest, CheckBuild})
+	if report.Status != StatusPassed {
+		t.Fatalf("report = %+v", report)
+	}
+	contents, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{repository, filepath.Join(repository, "landings")} {
+		if !strings.Contains(string(contents), "install "+scope) {
+			t.Fatalf("scope %s was not prepared from absent node_modules:\n%s", scope, contents)
+		}
+		for _, script := range []string{"lint", "test", "build"} {
+			if !strings.Contains(string(contents), "local nx "+scope+" "+script) {
+				t.Fatalf("scope %s did not run local nx %s:\n%s", scope, script, contents)
+			}
+		}
+	}
+}
+
+// TestVerifyUsesGoWorkspaceModules verifies the verifier's production
+// discovery and execution path. A template go.mod is deliberately valid but
+// absent from go.work, whereas backend is an admitted workspace module.
+func TestVerifyUsesGoWorkspaceModules(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	repository := t.TempDir()
+	writeQualityFile(t, filepath.Join(repository, "go.work"), "go 1.26\n\nuse ./backend\n")
+	writeQualityFile(t, filepath.Join(repository, "backend", "go.mod"), "module example.test/backend\n\ngo 1.26\n")
+	writeQualityFile(t, filepath.Join(repository, "tools", "contract-generator", "src", "generators", "contract", "files-go", "go.mod"), "module example.test/template\n\ngo 1.26\n")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(repository, "go-commands.log")
+	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nprintf '%s %s\\n' \"$(pwd)\" \"$*\" >> \""+log+"\"\n")
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report := Verify(context.Background(), "example/go-workspace", repository, []Check{CheckLint, CheckTest, CheckBuild})
+	if report.Status != StatusPassed || len(report.Results) != 3 {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, result := range report.Results {
+		if result.Module != "backend" || result.Status != StatusPassed {
+			t.Fatalf("workspace verifier result = %+v, want admitted backend only", result)
+		}
+	}
+	contents, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), "files-go") || strings.Count(strings.TrimSpace(string(contents)), "\n") != 2 {
+		t.Fatalf("template fixture entered Go verification:\n%s", contents)
+	}
+}
+
+// TestVerifyDiscoversStandaloneGoModulesWithoutWorkspace preserves verification
+// for repositories that deliberately have no go.work. In that case every real
+// standalone module remains an execution target.
+func TestVerifyDiscoversStandaloneGoModulesWithoutWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test shell helper is POSIX-only")
+	}
+	repository := t.TempDir()
+	writeQualityFile(t, filepath.Join(repository, "tool", "go.mod"), "module example.test/tool\n\ngo 1.26\n")
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeQualityFile(t, filepath.Join(bin, "go"), "#!/bin/sh\nexit 0\n")
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report := Verify(context.Background(), "example/standalone", repository, []Check{CheckLint, CheckTest, CheckBuild})
+	if report.Status != StatusPassed || len(report.Results) != 3 {
+		t.Fatalf("report = %+v", report)
+	}
+	for _, result := range report.Results {
+		if result.Module != "tool" || result.Status != StatusPassed {
+			t.Fatalf("standalone module was not verified: %+v", result)
+		}
+	}
+}
+
+func TestNodeInstallCommandUsesLockedPackageManagerSemantics(t *testing.T) {
+	for manager, want := range map[string]string{
+		"npm":  "npm ci",
+		"pnpm": "pnpm install --frozen-lockfile",
+		"yarn": "yarn install --frozen-lockfile",
+		"bun":  "bun install --frozen-lockfile",
+	} {
+		if got := strings.Join(nodeInstallCommand(manager), " "); got != want {
+			t.Errorf("nodeInstallCommand(%q) = %q, want %q", manager, got, want)
 		}
 	}
 }

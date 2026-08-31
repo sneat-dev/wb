@@ -6,17 +6,26 @@ import (
 	"strings"
 )
 
-// npmDependencyFields lists the package.json fields that hold a version
-// reference to another package: normal, dev-only, peer, and optional
-// dependencies. `overrides`/`resolutions`-style npm/yarn fields are
-// intentionally out of scope here; this fleet's cross-package pins live in
-// pnpm-workspace.yaml (see npm_pnpm_workspace.go).
-var npmDependencyFields = map[string]bool{
-	"dependencies":         true,
-	"devDependencies":      true,
-	"peerDependencies":     true,
-	"optionalDependencies": true,
+// npmDependencyFieldNames is the canonical package.json dependency-field set
+// for both fleet discovery and published-release verification. Normal, dev,
+// peer, and optional dependencies all express a version selection in this
+// fleet. `overrides`/`resolutions`-style npm/yarn fields are intentionally out
+// of scope here; this fleet's cross-package pins live in pnpm-workspace.yaml
+// (see npm_pnpm_workspace.go).
+var npmDependencyFieldNames = []string{
+	"dependencies",
+	"devDependencies",
+	"peerDependencies",
+	"optionalDependencies",
 }
+
+var npmDependencyFields = func() map[string]bool {
+	fields := make(map[string]bool, len(npmDependencyFieldNames))
+	for _, field := range npmDependencyFieldNames {
+		fields[field] = true
+	}
+	return fields
+}()
 
 // npmPackageJSONRef is one dependency-version reference found inside one of
 // the four dependency fields of a package.json manifest.

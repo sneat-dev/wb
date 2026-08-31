@@ -312,6 +312,32 @@ type npmPackageJSONManifest struct {
 	OptionalDependencies map[string]string `json:"optionalDependencies"`
 }
 
+type npmPackageJSONDependencySection struct {
+	Name         string
+	Dependencies map[string]string
+}
+
+func (manifest npmPackageJSONManifest) dependencySections() []npmPackageJSONDependencySection {
+	sections := make([]npmPackageJSONDependencySection, 0, len(npmDependencyFieldNames))
+	for _, name := range npmDependencyFieldNames {
+		var dependencies map[string]string
+		switch name {
+		case "dependencies":
+			dependencies = manifest.Dependencies
+		case "devDependencies":
+			dependencies = manifest.DevDependencies
+		case "peerDependencies":
+			dependencies = manifest.PeerDependencies
+		case "optionalDependencies":
+			dependencies = manifest.OptionalDependencies
+		default:
+			panic("unknown canonical npm dependency field: " + name)
+		}
+		sections = append(sections, npmPackageJSONDependencySection{Name: name, Dependencies: dependencies})
+	}
+	return sections
+}
+
 // parseNpmPackageJSONManifest decodes one package.json blob into its publish
 // identity (nil when private or unnamed — "publishes nothing") and every
 // dependency-field requirement it declares.
@@ -324,24 +350,17 @@ func parseNpmPackageJSONManifest(repository, manifest string, contents []byte) (
 	if shape.Name != "" && !shape.Private {
 		pkg = &npmFleetPackage{Name: shape.Name, Repository: repository, Manifest: manifest, Version: shape.Version}
 	}
-	fields := []struct {
-		name string
-		deps map[string]string
-	}{
-		{"dependencies", shape.Dependencies}, {"devDependencies", shape.DevDependencies},
-		{"peerDependencies", shape.PeerDependencies}, {"optionalDependencies", shape.OptionalDependencies},
-	}
 	var requirements []npmFleetRequirement
-	for _, field := range fields {
-		names := make([]string, 0, len(field.deps))
-		for name := range field.deps {
+	for _, field := range shape.dependencySections() {
+		names := make([]string, 0, len(field.Dependencies))
+		for name := range field.Dependencies {
 			names = append(names, name)
 		}
 		sort.Strings(names)
 		for _, name := range names {
 			requirements = append(requirements, npmFleetRequirement{
-				Dependency: name, Version: field.deps[name], ConsumerPackage: shape.Name,
-				Repository: repository, Manifest: manifest, Field: field.name,
+				Dependency: name, Version: field.Dependencies[name], ConsumerPackage: shape.Name,
+				Repository: repository, Manifest: manifest, Field: field.Name,
 			})
 		}
 	}
