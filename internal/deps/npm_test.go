@@ -2,10 +2,12 @@ package deps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -409,6 +411,125 @@ func TestNpmAdapterApplyReturnsNothingWhenDependencyAbsentFromRepository(t *test
 	}
 	if len(decisions) != 0 {
 		t.Fatalf("decisions = %+v, want none", decisions)
+	}
+}
+
+func TestWaveHandlerNpmGeneratesOneVersionPlanForChangedPublishableNxProjects(t *testing.T) {
+	worktree := t.TempDir()
+	writeTestFile(t, filepath.Join(worktree, "nx.json"), `{"release":{"versionPlans":true}}`+"\n")
+	writeTestFile(t, filepath.Join(worktree, "package.json"), `{
+  "name": "contracts-root",
+  "private": true,
+  "dependencies": {"@sneat/core": "1.2.3"}
+}
+`)
+	writeTestFile(t, filepath.Join(worktree, "tools", "contract-generator", "package.json"), `{
+  "name": "contract-generator",
+  "private": true,
+  "dependencies": {"@sneat/core": "1.2.3"}
+}
+`)
+	writeTestFile(t, filepath.Join(worktree, "tools", "contract-generator", "project.json"), `{"name":"contract-generator"}`+"\n")
+	for _, project := range []struct {
+		directory string
+		name      string
+		version   string
+	}{
+		{directory: "libs/alpha", name: "alpha-contract", version: "1.2.3"},
+		{directory: "libs/bravo", name: "bravo-contract", version: "1.2.3"},
+		{directory: "libs/unchanged", name: "unchanged-contract", version: "1.3.0"},
+	} {
+		writeTestFile(t, filepath.Join(worktree, project.directory, "package.json"), npmPackageJSONWithDependency("@sneat/"+project.name, "@sneat/core", project.version))
+		writeTestFile(t, filepath.Join(worktree, project.directory, "project.json"), `{"name":`+strconv.Quote(project.name)+"}\n")
+	}
+	userPlan := []byte("---\n\"manual-contract\": patch\n---\n\nUser-authored plan.\n")
+	writeTestFile(t, filepath.Join(worktree, ".nx", "version-plans", "manual.md"), string(userPlan))
+	runTestGit(t, worktree, "init", "-b", "main")
+	runTestGit(t, worktree, "config", "user.name", "WB Test")
+	runTestGit(t, worktree, "config", "user.email", "wb@example.test")
+	runTestGit(t, worktree, "add", "-A")
+	runTestGit(t, worktree, "commit", "-m", "initial")
+
+	handler := waveHandler{
+		ecosystem: EcosystemNPM,
+		targetsByRepository: map[string][]Target{"acme/contracts": {{
+			Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0",
+		}}},
+		options: Options{Timeout: time.Minute}, versionPlanID: "deps-bump-npm-fixture-wave-01",
+	}
+	if _, err := handler.Apply(context.Background(), worktree, Repository{Slug: "acme/contracts"}); err != nil {
+		t.Fatal(err)
+	}
+
+	planPath := filepath.Join(worktree, ".nx", "version-plans", "wb-deps-bump-npm-fixture-wave-01.md")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{`"alpha-contract": patch`, `"bravo-contract": patch`} {
+		if !strings.Contains(string(plan), wanted) {
+			t.Fatalf("version plan missing %s:\n%s", wanted, plan)
+		}
+	}
+	for _, unwanted := range []string{"contracts-root", "contract-generator", "unchanged-contract", "@sneat/"} {
+		if strings.Contains(string(plan), unwanted) {
+			t.Fatalf("version plan unexpectedly includes %s:\n%s", unwanted, plan)
+		}
+	}
+	if got, err := os.ReadFile(filepath.Join(worktree, ".nx", "version-plans", "manual.md")); err != nil || string(got) != string(userPlan) {
+		t.Fatalf("user plan changed: %q (err=%v)", got, err)
+	}
+
+	// If a process stops after the package manifests change but before it
+	// writes the plan, resume uses the candidate diff and restores that same
+	// deterministic file. A second resume must not duplicate it.
+	if err := os.Remove(planPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handler.Apply(context.Background(), worktree, Repository{Slug: "acme/contracts"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(planPath); err != nil {
+		t.Fatalf("resume did not restore version plan: %v", err)
+	}
+	if _, err := handler.Apply(context.Background(), worktree, Repository{Slug: "acme/contracts"}); err != nil {
+		t.Fatal(err)
+	}
+	plans, err := os.ReadDir(filepath.Join(worktree, ".nx", "version-plans"))
+	if err != nil || len(plans) != 2 {
+		t.Fatalf("version plans after resume = %v (err=%v), want generated + user plan", plans, err)
+	}
+}
+
+func TestWaveHandlerNpmSkipsVersionPlansOutsideEnabledNxWorkspaces(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		nxJSON string
+	}{
+		{name: "non-nx"},
+		{name: "disabled", nxJSON: `{"release":{"versionPlans":false}}` + "\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			worktree := t.TempDir()
+			if test.nxJSON != "" {
+				writeTestFile(t, filepath.Join(worktree, "nx.json"), test.nxJSON)
+			}
+			writeTestFile(t, filepath.Join(worktree, "libs", "alpha", "package.json"), npmPackageJSONWithDependency("@sneat/alpha-contract", "@sneat/core", "1.2.3"))
+			writeTestFile(t, filepath.Join(worktree, "libs", "alpha", "project.json"), `{"name":"alpha-contract"}`+"\n")
+			handler := waveHandler{
+				ecosystem: EcosystemNPM,
+				targetsByRepository: map[string][]Target{"acme/contracts": {{
+					Ecosystem: EcosystemNPM, Dependency: "@sneat/core", Version: "1.3.0",
+				}}},
+				options: Options{Timeout: time.Minute}, versionPlanID: "deps-bump-npm-fixture-wave-01",
+			}
+			if _, err := handler.Apply(context.Background(), worktree, Repository{Slug: "acme/contracts"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(worktree, ".nx", "version-plans")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("version plans directory exists outside enabled Nx workspace: %v", err)
+			}
+		})
 	}
 }
 
