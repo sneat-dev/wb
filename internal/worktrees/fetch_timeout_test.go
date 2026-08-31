@@ -68,6 +68,27 @@ func TestInventoryReportsAnUnreachableRemoteInsteadOfHanging(t *testing.T) {
 	}
 }
 
+func TestFetchRemoteTargetHeadDoesNotUseSharedFetchHead(t *testing.T) {
+	fixture := newGitFixture(t)
+	want := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
+	fetchHeadSentinel := []byte("caller-owned lifecycle FETCH_HEAD sentinel\n")
+	if err := os.WriteFile(fetchHeadPath, fetchHeadSentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := fetchRemoteTargetHead(context.Background(), fixture.canonical, "main")
+	if err != nil || got != want {
+		t.Fatalf("fetched origin/main target = %q, err=%v; want %q", got, err, want)
+	}
+	if got, err := os.ReadFile(fetchHeadPath); err != nil || string(got) != string(fetchHeadSentinel) {
+		t.Fatalf("shared FETCH_HEAD changed to %q, err=%v", got, err)
+	}
+	if refs := gitTestOutput(t, fixture.canonical, "for-each-ref", "--format=%(refname)", "refs/wb/fetch-base"); refs != "" {
+		t.Fatalf("private target fetch refs were not cleaned up: %q", refs)
+	}
+}
+
 func hasDiagnosticContaining(outcome ListOutcome, needle string) bool {
 	for _, diagnostic := range outcome.Diagnostics {
 		if strings.Contains(diagnostic.Message, needle) {

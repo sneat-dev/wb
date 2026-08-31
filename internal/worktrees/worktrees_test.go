@@ -227,6 +227,73 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 	}
 }
 
+func TestSynchronizeCanonicalPinsConcurrentFetchesWithoutSharedFetchHead(t *testing.T) {
+	fixture := newGitFixture(t)
+	stableSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", stableSHA+":refs/heads/stable")
+	fixture.pushRemoteCommit(t, "advance main for concurrent fetch")
+	mainFields := strings.Fields(gitTestOutput(t, fixture.canonical, "ls-remote", "origin", "refs/heads/main"))
+	if len(mainFields) != 2 || !isGitObjectID(mainFields[0]) {
+		t.Fatalf("unexpected origin/main response: %#v", mainFields)
+	}
+	expected := map[string]string{"main": mainFields[0], "stable": stableSHA}
+
+	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
+	fetchHeadSentinel := []byte("caller-owned FETCH_HEAD sentinel\n")
+	if err := os.WriteFile(fetchHeadPath, fetchHeadSentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		base string
+		sha  string
+		err  error
+	}
+	ready := make(chan string, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFetches := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFetches)
+	results := make(chan result, 2)
+	for _, base := range []string{"main", "stable"} {
+		go func(base string) {
+			canonical, err := openCanonicalRepository(fixture.canonical)
+			if err != nil {
+				results <- result{base: base, err: err}
+				return
+			}
+			defer canonical.close()
+			sha, err := synchronizeCanonicalWithHook(context.Background(), canonical, "acme/app", base, func() {
+				ready <- base
+				<-release
+			})
+			results <- result{base: base, sha: sha, err: err}
+		}(base)
+	}
+	for range 2 {
+		select {
+		case <-ready:
+		case result := <-results:
+			t.Fatalf("concurrent %s fetch exited before both private refs were ready: sha=%q err=%v", result.base, result.sha, result.err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("concurrent origin-base fetches did not both reach the post-fetch boundary")
+		}
+	}
+	releaseFetches()
+	for range 2 {
+		result := <-results
+		if result.err != nil || result.sha != expected[result.base] {
+			t.Fatalf("concurrent %s fetch = %q, err=%v; want %q", result.base, result.sha, result.err, expected[result.base])
+		}
+	}
+	if got, err := os.ReadFile(fetchHeadPath); err != nil || string(got) != string(fetchHeadSentinel) {
+		t.Fatalf("shared FETCH_HEAD changed to %q, err=%v", got, err)
+	}
+	if refs := gitTestOutput(t, fixture.canonical, "for-each-ref", "--format=%(refname)", "refs/wb/fetch-base"); refs != "" {
+		t.Fatalf("private origin-base fetch refs were not cleaned up: %q", refs)
+	}
+}
+
 func TestAcquireRepositoryRegistrationLockConcurrentFirstOpen(t *testing.T) {
 	fixture := newGitFixture(t)
 	lockPath := filepath.Join(fixture.canonical, ".git", repositoryRegistrationLockName)
