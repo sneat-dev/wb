@@ -78,6 +78,105 @@ func TestRunBumpNpmDryRunPlansOnlyDirectConsumers(t *testing.T) {
 	}
 }
 
+// TestRunBumpNpmSecondSweepTraversesPublishedPeerDependencyCarrier covers a
+// published consumer whose only selected provider is a peer dependency. The
+// fleet graph deliberately includes every npm dependency field, so registry
+// verification must consume that same field set before it decides a consumer
+// release cannot carry the next provider wave.
+func TestRunBumpNpmSecondSweepTraversesPublishedPeerDependencyCarrier(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newNpmBumpRepository(t, root, githubDir, "provider", map[string]string{
+			"package.json": npmPackageJSONWithDependency("@acme/provider", "left-pad", "^1.0.0"),
+		}),
+		newNpmBumpRepository(t, root, githubDir, "adapter", map[string]string{
+			"package.json": "{\n  \"name\": \"@acme/adapter\",\n  \"version\": \"0.2.1\",\n  \"peerDependencies\": {\n    \"@acme/provider\": \"0.2.0\"\n  }\n}\n",
+		}),
+		newNpmBumpRepository(t, root, githubDir, "consumer", map[string]string{
+			"package.json": npmPackageJSONWithDependency("@acme/consumer", "@acme/adapter", "0.1.0"),
+		}),
+	}
+
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pnpm := filepath.Join(binDir, "pnpm")
+	writeTestFile(t, pnpm, `#!/bin/sh
+if [ "$1" = "view" ] && [ "$3" = "version" ]; then
+  printf '%s\n' '0.2.1'
+  exit 0
+fi
+if [ "$1" = "view" ] && [ "$2" = "@acme/adapter@0.2.1" ]; then
+  case " $* " in
+    *" peerDependencies "*)
+      printf '%s\n' '{"dependencies":{"tslib":"^2.3.0"},"peerDependencies":{"@acme/provider":"0.2.0"}}'
+      exit 0
+      ;;
+  esac
+  printf '%s\n' '{"tslib":"^2.3.0"}'
+  exit 0
+fi
+printf 'unexpected pnpm arguments: %s\n' "$*" >&2
+exit 1
+`)
+	if err := os.Chmod(pnpm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "@acme/provider", Version: "0.2.0", Source: "explicit"}}, repositories, BumpOptions{
+		Ecosystem: EcosystemNPM,
+		Options:   Options{GitHubDir: githubDir, Ref: "main", Parallel: 2, DryRun: true, Timeout: time.Minute},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "planned" || len(report.Waves) != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if release := report.Waves[0].Releases[0]; release.Module != "@acme/adapter" || release.After != "0.2.1" || release.Status != "released" {
+		t.Fatalf("existing peer release = %+v", release)
+	}
+	if repository := report.Waves[0].Repositories[0]; repository.Repository != "acme/consumer" || repository.Status != "planned" {
+		t.Fatalf("downstream repository = %+v", repository)
+	}
+}
+
+func TestParsePublishedNpmRequirementsUsesCanonicalDiscoveryFields(t *testing.T) {
+	requirements, err := parsePublishedNpmRequirements(`{
+  "dependencies": {"@acme/core": "1.0.0"},
+  "devDependencies": {"@acme/data": "1.0.0"},
+  "peerDependencies": {"@acme/dto": "1.0.0"},
+  "optionalDependencies": {"@acme/space": "1.0.0"}
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"@acme/core": "1.0.0", "@acme/data": "1.0.0", "@acme/dto": "1.0.0", "@acme/space": "1.0.0",
+	}
+	if len(requirements) != len(want) {
+		t.Fatalf("requirements = %#v, want %#v", requirements, want)
+	}
+	for dependency, version := range want {
+		if requirements[dependency] != version {
+			t.Fatalf("requirements[%q] = %q, want %q", dependency, requirements[dependency], version)
+		}
+	}
+}
+
+func TestParsePublishedNpmRequirementsRejectsConflictingFields(t *testing.T) {
+	_, err := parsePublishedNpmRequirements(`{
+  "dependencies": {"@acme/core": "1.0.0"},
+  "peerDependencies": {"@acme/core": "2.0.0"}
+}`)
+	if err == nil || !strings.Contains(err.Error(), "conflicting published npm selections") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 // TestRunBumpNpmNoRegistrySkipsCurrentCarrierEvidence proves the explicit
 // no-registry policy used by `wb deps publish npm` plans. The adapter is
 // already current for the provider event and has an external consumer, which
