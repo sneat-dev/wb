@@ -182,7 +182,6 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 		select {
 		case <-setupReady:
 		case result := <-results:
-			receivedResults = append(receivedResults, result)
 			t.Fatalf("concurrent creator exited before the pre-lock boundary: created=%#v, err=%v", result.created, result.err)
 		case <-time.After(2 * time.Minute):
 			t.Fatal("concurrent creations did not both reach the pre-lock boundary")
