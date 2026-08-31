@@ -85,7 +85,10 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 
 	started := time.Now()
 	_, _, err := runCommand(context.Background(), time.Second, 0, directory, launcher, pidFile)
-	if elapsed := time.Since(started); elapsed > time.Second {
+	// Leave a small scheduler allowance around the one-second command timeout.
+	// The regression boundary is the two-second descendant-held pipe, not a
+	// sub-millisecond assertion about when a loaded runner observes a deadline.
+	if elapsed := time.Since(started); elapsed > 1100*time.Millisecond {
 		t.Fatalf("runCommand waited %s for a descendant-held output pipe", elapsed)
 	}
 	if !errors.Is(err, exec.ErrWaitDelay) {
