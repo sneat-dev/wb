@@ -569,7 +569,7 @@ func newWorktreeLogHandoffCmd() *cobra.Command {
 
 func newWorktreeLogRecoverCmd() *cobra.Command {
 	var actor, format, reconcileBranch, expectedHead, reason, eventID string
-	var apply, takeover, remote bool
+	var apply, establishClaim, takeover, remote bool
 	command := &cobra.Command{
 		Use:   "recover [worktree-path]",
 		Short: "Diagnose and rebuild derived work-log state",
@@ -585,7 +585,7 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 			defer releaseAdmission()
 			result, err := worktrees.LogRecover(command.Context(), worktrees.LogRecoverOptions{
 				ProjectsRoot: projectsRoot, Worktree: worktreeLogPath(args),
-				Apply: apply, Takeover: takeover, Actor: actor,
+				Apply: apply, EstablishClaim: establishClaim, Takeover: takeover, Actor: actor,
 				ReconcileBranch: reconcileBranch, ExpectedHead: expectedHead, Remote: remote,
 				Reason: reason, EventID: eventID,
 			})
@@ -596,6 +596,7 @@ func newWorktreeLogRecoverCmd() *cobra.Command {
 		},
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "rewrite projection.json from journal evidence")
+	command.Flags().BoolVar(&establishClaim, "establish-claim", false, "with --apply, recover a missing private claim from a blank-ClaimID immutable campaign manifest")
 	command.Flags().BoolVar(&takeover, "takeover", false, "with --apply, append an explicit takeover event")
 	command.Flags().StringVar(&actor, "actor", "", "required with --takeover")
 	command.Flags().StringVar(&reconcileBranch, "reconcile-branch", "", "live branch to reconcile back to the immutable Work Log claim")

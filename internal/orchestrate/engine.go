@@ -218,7 +218,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if err := prepareWorktree(ctx, canonical, worktree, options.Branch, base, options); err != nil {
 		return failResult(result, err)
 	}
-	if err := recordWorktreeManifest(ctx, canonical, worktree, repository, resolvedBase, options); err != nil {
+	if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
 		return failResult(result, err)
 	}
 	phase("apply")
@@ -481,7 +481,7 @@ func prepareWorktree(ctx context.Context, canonical, worktree, branch, base stri
 // idempotent, so a --resume'd worktree that already carries a manifest and
 // prompt from an earlier run is left untouched (a manifest is immutable by
 // design; see worktrees.WriteManifest).
-func recordWorktreeManifest(ctx context.Context, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, options Options) error {
+func recordWorktreeManifest(ctx context.Context, home, canonical, worktree string, repository Repository, resolvedBase ResolvedBase, options Options) error {
 	baseSHA, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "origin/"+resolvedBase.Ref)
 	if err != nil {
 		return err
@@ -491,6 +491,11 @@ func recordWorktreeManifest(ctx context.Context, canonical, worktree string, rep
 		return err
 	}
 	effortID := worktreeEffortID(options.Operation, owner, name)
+	claimResult := worktrees.CreateResult{
+		Repository: repository.Slug, WorktreeDir: worktree, Branch: options.Branch,
+		Base: resolvedBase.Ref, BaseSHA: strings.TrimSpace(baseSHA),
+	}
+	claimID := worktrees.WorkLogClaimID(effortID, claimResult)
 	createdAt := time.Now().UTC()
 	manifest := worktrees.Manifest{
 		Version: 1, EffortID: effortID, ParentEffort: worktrees.ParentEffort(effortID),
@@ -499,7 +504,7 @@ func recordWorktreeManifest(ctx context.Context, canonical, worktree string, rep
 		CreatedAt: createdAt, Initiator: options.Initiator, AgentRuntime: options.AgentRuntime,
 		Model: options.Model, CLI: options.CLI, Provider: options.Provider,
 		DependencyCampaign: options.DependencyCampaign,
-		Provenance:         worktrees.ProvenanceCreated,
+		RunID:              options.Operation, ClaimID: claimID, Provenance: worktrees.ProvenanceCreated,
 	}
 	if err := worktrees.EnsureManifest(worktree, manifest); err != nil {
 		return fmt.Errorf("record worktree manifest: %w", err)
@@ -510,6 +515,13 @@ func recordWorktreeManifest(ctx context.Context, canonical, worktree string, rep
 	}
 	if err := worktrees.EnsurePrompt(worktree, header, []byte(options.Prompt)); err != nil {
 		return fmt.Errorf("record worktree originating instruction: %w", err)
+	}
+	if _, err := worktrees.EnsureWorkLogClaim(home, worktreeEffortID(options.Operation, owner, name), claimResult, worktrees.WorkLogOptions{
+		EffortID: effortID, RunID: options.Operation, Initiator: options.Initiator,
+		AgentRuntime: options.AgentRuntime, Model: options.Model,
+		CLI: options.CLI, Provider: options.Provider,
+	}); err != nil {
+		return fmt.Errorf("record worktree Work Log claim: %w", err)
 	}
 	return nil
 }
