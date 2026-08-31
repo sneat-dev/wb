@@ -313,6 +313,137 @@ func TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingR
 	}
 }
 
+func TestSupersedeValidationFailedWorktreeMergeIsIdempotentAndRefusesReplacementDrift(t *testing.T) {
+	fixture, receipt, replacement := supersessionFixture(t)
+	originalReceipt, originalCandidateClaim, replacementClaim := mergeSupersessionImmutableBytes(t, fixture, receipt, replacement)
+	first, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "first audited supersession",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAck, err := os.ReadFile(first.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "first audited supersession",
+	})
+	if err != nil || second.ID != first.ID || second.ReceiptSHA256 != first.ReceiptSHA256 || second.Replacement != first.Replacement || second.CurrentTargetSHA != first.CurrentTargetSHA {
+		t.Fatalf("exact second apply = %+v err=%v, want immutable existing acknowledgement %+v", second, err, first)
+	}
+	secondAck, err := os.ReadFile(first.AcknowledgementPath)
+	if err != nil || string(secondAck) != string(firstAck) {
+		t.Fatalf("second apply rewrote acknowledgement: err=%v", err)
+	}
+	assertMergeSupersessionImmutableBytes(t, fixture, receipt, replacement, originalReceipt, originalCandidateClaim, replacementClaim)
+
+	// A clean commit after acknowledgement changes the proposed replacement
+	// identity. It must not overwrite or reuse the existing acknowledgement.
+	writeEngineFile(t, filepath.Join(replacement.WorktreeDir, "replacement-drift.txt"), "drift\n")
+	runEngineGit(t, replacement.WorktreeDir, "add", "replacement-drift.txt")
+	runEngineGit(t, replacement.WorktreeDir, "commit", "-m", "test: advance replacement after acknowledgement")
+	_, err = SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "unsafe replacement drift",
+	})
+	if err == nil || !strings.Contains(err.Error(), "binds different target or replacement evidence") {
+		t.Fatalf("clean replacement drift error = %v", err)
+	}
+	ackAfterDrift, err := os.ReadFile(first.AcknowledgementPath)
+	if err != nil || string(ackAfterDrift) != string(firstAck) {
+		t.Fatalf("replacement drift rewrote acknowledgement: err=%v", err)
+	}
+}
+
+func TestSupersedeValidationFailedWorktreeMergeRefusesDifferentReplacementWithoutMutation(t *testing.T) {
+	fixture, receipt, replacement := supersessionFixture(t)
+	originalReceipt, originalCandidateClaim, replacementClaim := mergeSupersessionImmutableBytes(t, fixture, receipt, replacement)
+	first, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "first audited supersession",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAck, err := os.ReadFile(first.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondReplacement := createMergeSource(t, fixture, "supersession-replacement-second", "feature/supersession-replacement-second", "second.txt", "second\n")
+	runEngineGit(t, secondReplacement.WorktreeDir, "fetch", "origin")
+	runEngineGit(t, secondReplacement.WorktreeDir, "merge", "--no-edit", "origin/feature/supersession-source")
+	secondReplacementClaim, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: secondReplacement.WorktreeDir})
+	if err != nil || secondReplacementClaim.Claim == nil {
+		t.Fatalf("load second replacement claim: %+v err=%v", secondReplacementClaim, err)
+	}
+	secondReplacementClaimBytes, err := os.ReadFile(secondReplacementClaim.Claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: secondReplacement.WorktreeDir, Apply: true, Actor: "reviewer", Reason: "unsafe different replacement",
+	})
+	if err == nil || !strings.Contains(err.Error(), "binds different target or replacement evidence") {
+		t.Fatalf("different replacement error = %v", err)
+	}
+	ackAfter, err := os.ReadFile(first.AcknowledgementPath)
+	if err != nil || string(ackAfter) != string(firstAck) {
+		t.Fatalf("different replacement rewrote acknowledgement: err=%v", err)
+	}
+	assertMergeSupersessionImmutableBytes(t, fixture, receipt, replacement, originalReceipt, originalCandidateClaim, replacementClaim)
+	if current, err := os.ReadFile(secondReplacementClaim.Claim.ClaimPath); err != nil || string(current) != string(secondReplacementClaimBytes) {
+		t.Fatalf("different replacement Work Log changed: err=%v", err)
+	}
+}
+
+func mergeSupersessionImmutableBytes(t *testing.T, fixture engineFixture, receipt WorktreeMergeReceipt, replacement worktrees.CreateResult) ([]byte, []byte, []byte) {
+	t.Helper()
+	receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
+	if err != nil || candidateView.Claim == nil {
+		t.Fatalf("load candidate claim: %+v err=%v", candidateView, err)
+	}
+	candidateBytes, err := os.ReadFile(candidateView.Claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: replacement.WorktreeDir})
+	if err != nil || replacementView.Claim == nil {
+		t.Fatalf("load replacement claim: %+v err=%v", replacementView, err)
+	}
+	replacementBytes, err := os.ReadFile(replacementView.Claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return receiptBytes, candidateBytes, replacementBytes
+}
+
+func assertMergeSupersessionImmutableBytes(t *testing.T, fixture engineFixture, receipt WorktreeMergeReceipt, replacement worktrees.CreateResult, wantReceipt, wantCandidateClaim, wantReplacementClaim []byte) {
+	t.Helper()
+	gotReceipt, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil || string(gotReceipt) != string(wantReceipt) {
+		t.Fatalf("receipt changed: err=%v", err)
+	}
+	candidateView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
+	if err != nil || candidateView.Claim == nil {
+		t.Fatalf("load candidate claim: %+v err=%v", candidateView, err)
+	}
+	gotCandidateClaim, err := os.ReadFile(candidateView.Claim.ClaimPath)
+	if err != nil || string(gotCandidateClaim) != string(wantCandidateClaim) {
+		t.Fatalf("candidate Work Log changed: err=%v", err)
+	}
+	replacementView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: replacement.WorktreeDir})
+	if err != nil || replacementView.Claim == nil {
+		t.Fatalf("load replacement claim: %+v err=%v", replacementView, err)
+	}
+	gotReplacementClaim, err := os.ReadFile(replacementView.Claim.ClaimPath)
+	if err != nil || string(gotReplacementClaim) != string(wantReplacementClaim) {
+		t.Fatalf("replacement Work Log changed: err=%v", err)
+	}
+}
+
 func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -328,6 +459,46 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 				}
 			},
 			want: "want prepare validation_failed",
+		},
+		{
+			name: "wrong receipt phase with validation failed status",
+			mutate: func(t *testing.T, _ engineFixture, receipt *WorktreeMergeReceipt, _ worktrees.CreateResult) {
+				receipt.Phase = WorktreeMergePhaseLand
+				if err := persistWorktreeMergeReceipt(*receipt); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "want prepare validation_failed",
+		},
+		{
+			name: "missing original candidate claim",
+			mutate: func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt, _ worktrees.CreateResult) {
+				view, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
+				if err != nil || view.Claim == nil {
+					t.Fatalf("load original candidate claim: %+v err=%v", view, err)
+				}
+				if err := os.Remove(view.Claim.ClaimPath); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "load candidate Work Log",
+		},
+		{
+			name: "identity mismatched original candidate claim",
+			mutate: func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt, _ worktrees.CreateResult) {
+				view, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
+				if err != nil || view.Claim == nil {
+					t.Fatalf("load original candidate claim: %+v err=%v", view, err)
+				}
+				contents, err := os.ReadFile(view.Claim.ClaimPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(view.Claim.ClaimPath, []byte(strings.Replace(string(contents), view.Claim.Task, "other-task", 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "matching the immutable receipt target and identity",
 		},
 		{
 			name: "dirty old candidate",
