@@ -23,14 +23,14 @@ import (
 )
 
 type depsSetOptions struct {
-	fleet, dryRun, resume, allowDowngrade, noVerify, propagate bool
-	commit, push, pr, merge, order                             bool
-	match, regex, ref, checks, format, reportDir, layer        string
-	parallel, retry, maxWaves                                  int
-	timeout, releasePoll, refreshAfter                         time.Duration
-	goPrivate                                                  []string
-	layers                                                     deps.LayerSelection
-	campaign                                                   *campaignProgress
+	fleet, dryRun, resume, allowDowngrade, noVerify, propagate      bool
+	commit, push, pr, merge, order                                  bool
+	match, regex, ref, checks, validation, format, reportDir, layer string
+	parallel, retry, maxWaves                                       int
+	timeout, releasePoll, refreshAfter                              time.Duration
+	goPrivate                                                       []string
+	layers                                                          deps.LayerSelection
+	campaign                                                        *campaignProgress
 }
 
 func newDepsCmd() *cobra.Command {
@@ -287,9 +287,11 @@ func newDepsSetCmd() *cobra.Command {
 			if options.fleet && len(args) == 3 {
 				return fmt.Errorf("repository-path cannot be used with --fleet")
 			}
-			if options.noVerify && command.Flags().Changed("checks") {
-				return fmt.Errorf("--no-verify and --checks cannot be used together")
+			validationMode, checks, err := dependencyValidationOptions(command, options)
+			if err != nil {
+				return err
 			}
+			options.validation = string(validationMode)
 			if command.Flags().Changed("layer") && !options.order {
 				return fmt.Errorf("--layer requires --dependency-order")
 			}
@@ -306,10 +308,6 @@ func newDepsSetCmd() *cobra.Command {
 				}
 			}
 			if options.layers, err = deps.ParseLayerSelection(options.layer); err != nil {
-				return err
-			}
-			checks, err := quality.ParseChecks(options.checks)
-			if err != nil {
 				return err
 			}
 			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps set")
@@ -371,10 +369,11 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 30*time.Second, "provider release polling interval when --propagate is used")
 	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before a downstream build when --propagate is used (0 disables)")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
-	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "explicitly skip local verification")
+	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge")
+	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "legacy explicit escape hatch that skips local verification (distinct from --validation=fast)")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check and CI wait (0 disables)")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
-	command.Flags().BoolVar(&options.commit, "commit", false, "commit verified changes on operation branches")
+	command.Flags().BoolVar(&options.commit, "commit", false, "commit dependency changes on operation branches")
 	command.Flags().BoolVar(&options.push, "push", false, "push operation branches; implies --commit")
 	command.Flags().BoolVar(&options.pr, "pr", false, "open pull requests; implies --push and --commit")
 	command.Flags().BoolVar(&options.merge, "merge", false, "wait for passing GitHub checks and merge; implies --pr, --push, and --commit")
@@ -401,14 +400,12 @@ func newDepsBumpCmd() *cobra.Command {
 			if !options.fleet {
 				return fmt.Errorf("deps bump requires --fleet")
 			}
-			if options.noVerify && command.Flags().Changed("checks") {
-				return fmt.Errorf("--no-verify and --checks cannot be used together")
-			}
-			events, err := parseReleaseEvents(ecosystem, changed)
+			validationMode, checks, err := dependencyValidationOptions(command, options)
 			if err != nil {
 				return err
 			}
-			checks, err := quality.ParseChecks(options.checks)
+			options.validation = string(validationMode)
+			events, err := parseReleaseEvents(ecosystem, changed)
 			if err != nil {
 				return err
 			}
@@ -432,13 +429,14 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 30*time.Second, "interval between provider release observations")
 	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before starting a downstream build (0 disables)")
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect the first wave without creating worktrees or changing dependency files")
-	command.Flags().BoolVar(&options.resume, "resume", false, "reuse validated wave worktrees, branches, PRs, and report state")
+	command.Flags().BoolVar(&options.resume, "resume", false, "reuse existing wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
-	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "explicitly skip local verification")
+	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge")
+	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "legacy explicit escape hatch that skips local verification (distinct from --validation=fast)")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check, CI wait, or release wait (0 disables)")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
-	command.Flags().BoolVar(&options.commit, "commit", false, "commit verified changes on wave branches")
+	command.Flags().BoolVar(&options.commit, "commit", false, "commit dependency changes on wave branches")
 	command.Flags().BoolVar(&options.push, "push", false, "push wave branches; implies --commit")
 	command.Flags().BoolVar(&options.pr, "pr", false, "open pull requests; implies --push and --commit")
 	command.Flags().BoolVar(&options.merge, "merge", false, "merge passing PRs and observe releases; implies --pr, --push, and --commit")
@@ -449,15 +447,53 @@ func newDepsBumpCmd() *cobra.Command {
 }
 
 func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Options {
+	validationMode := deps.ValidationMode(options.validation)
+	if options.noVerify {
+		validationMode = deps.ValidationModeNone
+	} else if validationMode == "" {
+		validationMode = deps.ValidationModeFull
+	}
 	return deps.Options{
 		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
 		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
-		Verify: !options.noVerify, Checks: checks, Timeout: options.timeout, Retry: options.retry,
+		ValidationMode: validationMode, Verify: validationMode == deps.ValidationModeFull, Checks: checks, Timeout: options.timeout, Retry: options.retry,
 		GoPrivate: options.goPrivate,
 		Commit:    options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
 		ReportDir: options.reportDir,
 		Order:     options.order, Layers: options.layers,
 	}
+}
+
+func dependencyValidationOptions(command *cobra.Command, options depsSetOptions) (deps.ValidationMode, []quality.Check, error) {
+	validationChanged := command != nil && command.Flags().Changed("validation")
+	checksChanged := command != nil && command.Flags().Changed("checks")
+	if options.noVerify {
+		if validationChanged {
+			return "", nil, fmt.Errorf("--no-verify and --validation cannot be used together")
+		}
+		if checksChanged {
+			return "", nil, fmt.Errorf("--no-verify and --checks cannot be used together")
+		}
+		return deps.ValidationModeNone, nil, nil
+	}
+	mode, err := deps.ParseValidationMode(options.validation)
+	if err != nil {
+		return "", nil, err
+	}
+	if mode == deps.ValidationModeFast {
+		if checksChanged {
+			return "", nil, fmt.Errorf("--validation=fast and --checks cannot be used together")
+		}
+		if !options.dryRun && !options.merge {
+			return "", nil, fmt.Errorf("--validation=fast requires --merge so exact PR-head GitHub checks remain mandatory")
+		}
+		return mode, nil, nil
+	}
+	checks, err := quality.ParseChecks(options.checks)
+	if err != nil {
+		return "", nil, err
+	}
+	return mode, checks, nil
 }
 
 func parseReleaseEvents(ecosystem deps.Ecosystem, values []string) ([]deps.ReleaseEvent, error) {

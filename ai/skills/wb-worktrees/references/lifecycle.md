@@ -104,6 +104,12 @@ direct push to the target is also eligible. A local-only merge is
 `awaiting_push`. Preserve skipped work and report the reason; do not reset,
 clean, stash, or delete it manually.
 
+If `wb worktree log finalize --apply` already sealed the same clean HEAD as
+`landed`, cleanup corroborates that immutable terminal and its exact sealed
+outbox receipt. It does not try to relabel either record as `removed`; a
+mismatched claim, commit, disposition, successor, or outbox still refuses
+closed.
+
 Work absorbed into a differently named integration branch — the batching a
 target requiring linear history forces — is eligible too, because the branch
 name is not the evidence. WB reads the merged pull request GitHub associates

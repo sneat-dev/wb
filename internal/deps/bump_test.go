@@ -659,10 +659,11 @@ func TestBumpReportRoundTrip(t *testing.T) {
 	report := BumpReport{
 		SchemaVersion: 1, Operation: "deps-bump-go-test", Status: "awaiting_release", Phase: BumpPhaseAwaitingRelease, Ecosystem: EcosystemGo,
 		SeedEvents: []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}},
-		BaseRef:    "main", Progress: BumpProgress{Wave: 1, RepositoriesTotal: 3, RepositoriesCompleted: 2, LastRepository: "acme/adapter"},
+		BaseRef:    "main", ValidationMode: ValidationModeFast, Parallel: 4,
+		Progress:       BumpProgress{Wave: 1, RepositoriesTotal: 3, RepositoriesCompleted: 2, LastRepository: "acme/adapter"},
 		DiscoverySkips: []GraphDiscoverySkip{{Repository: "acme/website", Reason: "no go.mod"}},
 		Waves: []BumpWaveReport{{
-			Index: 1, Status: "awaiting_release",
+			Index: 1, Status: "awaiting_release", ValidationMode: ValidationModeFast,
 			DeferredRepositories: []string{"acme/app"},
 			Refreshes: []ReleaseEventRefresh{{
 				Dependency: "example.com/provider", Before: "v0.2.0", After: "v0.3.0", CheckedAt: time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC),
@@ -679,7 +680,7 @@ func TestBumpReportRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Operation != report.Operation || loaded.Phase != BumpPhaseAwaitingRelease || loaded.Progress.RepositoriesCompleted != 2 || loaded.Waves[0].Releases[0].Before != "v0.4.0" {
+	if loaded.Operation != report.Operation || loaded.ValidationMode != ValidationModeFast || loaded.Waves[0].ValidationMode != ValidationModeFast || loaded.Phase != BumpPhaseAwaitingRelease || loaded.Progress.RepositoriesCompleted != 2 || loaded.Waves[0].Releases[0].Before != "v0.4.0" {
 		t.Fatalf("loaded report = %+v", loaded)
 	}
 	markdown, err := os.ReadFile(filepath.Join(directory, "deps-bump.md"))
@@ -687,6 +688,7 @@ func TestBumpReportRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(markdown), "Release evidence") || !strings.Contains(string(markdown), "example.com/adapter") ||
+		!strings.Contains(string(markdown), "Validation mode: `fast`") || !strings.Contains(string(markdown), "Parallelism: `4`") ||
 		!strings.Contains(string(markdown), "Phase: `awaiting_release`") || !strings.Contains(string(markdown), "repositories `2/3`") ||
 		!strings.Contains(string(markdown), "Skipped discovery failures") || !strings.Contains(string(markdown), "Stale-event registry checks") ||
 		!strings.Contains(string(markdown), "Deferred to coalesce releases") {

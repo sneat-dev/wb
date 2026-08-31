@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -1396,6 +1397,113 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	_ = sealedAt
 	projection.Lifecycle = "terminal"
 	return writeWorkLogProjection(worktree, projection)
+}
+
+func sealWorkLogForCleanup(home, worktree, finalCommit string) error {
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if projection.Lifecycle == "terminal" {
+		return acceptExistingCleanupTerminal(home, worktree, finalCommit)
+	}
+	sealErr := sealWorkLogForRecycle(home, worktree, finalCommit, "removed")
+	if sealErr == nil {
+		return nil
+	}
+	// Finalize and cleanup use the same claim fence but not the same outer task
+	// lock. If finalize won after the first projection read, accept only the
+	// exact landed authority it published; every other sealing error survives.
+	projection, projectionErr := readWorkLogProjectionForClaim(home, worktree)
+	if projectionErr == nil && projection.Lifecycle == "terminal" {
+		if acceptErr := acceptExistingCleanupTerminal(home, worktree, finalCommit); acceptErr == nil {
+			return nil
+		}
+	}
+	return sealErr
+}
+
+// acceptExistingCleanupTerminal lets cleanup compose with the public
+// `wb worktree log finalize --apply` journey. Finalize has already sealed the
+// immutable claim as landed, so cleanup must corroborate that exact authority
+// instead of trying to rewrite it as removed. An exact removed terminal is
+// accepted too, making a cleanup interrupted after sealing safely retryable.
+func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
+	projection, err := readWorkLogProjectionForClaim(home, worktree)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if projection.Lifecycle != "terminal" {
+		return fmt.Errorf("existing cleanup terminal requires a terminal work-log projection")
+	}
+	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return fmt.Errorf("open private work-log run: %w", err)
+	}
+	defer func() { _ = runDir.Close() }()
+	claimLock, err := lockClaim(runDir, projection.ClaimID)
+	if err != nil {
+		return err
+	}
+	defer claimLock()
+	currentProjection, err := readWorkLogProjection(worktree)
+	if err != nil || currentProjection != projection {
+		return fmt.Errorf("work-log projection changed while waiting for claim fence")
+	}
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return err
+	}
+	var claim workLogClaim
+	readClaimErr := readJSONAt(claims, projection.ClaimID+".json", &claim)
+	_ = claims.Close()
+	if readClaimErr != nil {
+		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
+	}
+	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
+		return err
+	}
+	terminals, err := openPrivateChild(runDir, "terminals", false)
+	if err != nil {
+		return err
+	}
+	var terminal workLogTerminalRecord
+	readTerminalErr := readJSONAt(terminals, projection.ClaimID+".json", &terminal)
+	_ = terminals.Close()
+	if readTerminalErr != nil {
+		return fmt.Errorf("read immutable work-log terminal: %w", readTerminalErr)
+	}
+	expectedClaim := claim
+	expectedClaim.Lifecycle = "terminal"
+	if !reflect.DeepEqual(terminal.workLogClaim, expectedClaim) || terminal.FinalCommit != finalCommit || terminal.SealedAt.IsZero() ||
+		(terminal.Disposition != "landed" && terminal.Disposition != "removed") || terminal.SuccessorClaimID != "" || terminal.SuccessorAgentID != "" ||
+		terminal.ExternalHandoff != nil || terminal.Orphaned != nil || terminal.DirtyCapture != nil || terminal.Supersession != nil {
+		return fmt.Errorf("immutable terminal does not authorize cleanup of the finalized claim")
+	}
+	outbox, err := openWorkLogOutbox(home, claim.EffortID, false)
+	if err != nil {
+		return fmt.Errorf("open immutable terminal outbox: %w", err)
+	}
+	var event workLogPublicEvent
+	readOutboxErr := readJSONAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", &event)
+	_ = outbox.Close()
+	if readOutboxErr != nil {
+		return fmt.Errorf("read immutable terminal outbox: %w", readOutboxErr)
+	}
+	expectedEvent := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
+		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: finalCommit,
+		Lifecycle: "terminal", Disposition: terminal.Disposition}
+	if !reflect.DeepEqual(event, expectedEvent) {
+		return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
+	}
+	return nil
 }
 
 // transferWorkLogClaim seals exactly one old claim and atomically rebinds the

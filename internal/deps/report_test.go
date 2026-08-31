@@ -24,8 +24,9 @@ func TestReportWritesLinkedMarkdownAndDeterministicYAML(t *testing.T) {
 			Ecosystem: EcosystemGitHubActions, Dependency: "acme/cicd",
 			Version: "v1.2.3", Resolved: strings.Repeat("a", 40),
 		},
-		BaseRef:  "main",
-		Parallel: 2,
+		BaseRef:        "main",
+		ValidationMode: ValidationModeFast,
+		Parallel:       2,
 		Repositories: []RepositoryReport{{
 			Repository: "acme/app", CanonicalDir: filepath.Join(worktree, "canonical"),
 			WorktreeDir: worktree, Branch: "wb/deps/set", Ref: "main",
@@ -42,7 +43,7 @@ func TestReportWritesLinkedMarkdownAndDeterministicYAML(t *testing.T) {
 		}},
 	}
 	markdown := report.Markdown()
-	for _, expected := range []string{"acme/cicd@v1.2.3", "[PR](https://github.com/acme/app/pull/7)", "Dependency decisions", "go test ./...", "GitHub checks"} {
+	for _, expected := range []string{"acme/cicd@v1.2.3", "Validation mode: `fast`", "[PR](https://github.com/acme/app/pull/7)", "Dependency decisions", "go test ./...", "GitHub checks"} {
 		if !strings.Contains(markdown, expected) {
 			t.Errorf("Markdown does not contain %q:\n%s", expected, markdown)
 		}
@@ -64,7 +65,7 @@ func TestReportWritesLinkedMarkdownAndDeterministicYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), "schema_version: 1") || !strings.Contains(string(raw), "repository: acme/app") {
+	if !strings.Contains(string(raw), "schema_version: 1") || !strings.Contains(string(raw), "validation_mode: fast") || !strings.Contains(string(raw), "repository: acme/app") {
 		t.Fatalf("unexpected YAML:\n%s", raw)
 	}
 }

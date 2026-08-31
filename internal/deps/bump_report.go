@@ -31,6 +31,10 @@ func (report BumpReport) Markdown() string {
 		output.WriteByte('\n')
 	}
 	fmt.Fprintf(&output, "- Base ref: `%s`\n", report.BaseRef)
+	if report.ValidationMode != "" {
+		fmt.Fprintf(&output, "- Validation mode: `%s`\n", report.ValidationMode)
+	}
+	fmt.Fprintf(&output, "- Parallelism: `%d`\n", report.Parallel)
 	if report.RegistryLookupsSkipped {
 		output.WriteString("- Registry carrier and stale-event lookups: `skipped` (no-registry plan policy)\n")
 	}
@@ -70,6 +74,9 @@ func (report BumpReport) Markdown() string {
 	}
 	for _, wave := range report.Waves {
 		fmt.Fprintf(&output, "\n## Wave %d — `%s`\n\n", wave.Index, wave.Status)
+		if wave.ValidationMode != "" {
+			fmt.Fprintf(&output, "Validation mode: `%s`\n\n", wave.ValidationMode)
+		}
 		output.WriteString("Events:\n\n")
 		for _, event := range wave.Events {
 			fmt.Fprintf(&output, "- `%s@%s` — `%s`\n", event.Dependency, event.Version, event.Source)

@@ -78,6 +78,45 @@ func TestNormalizeOptionsMakesPublicationFlagsCumulative(t *testing.T) {
 	}
 }
 
+func TestNormalizeOptionsKeepsFastValidationBoundToMerge(t *testing.T) {
+	t.Parallel()
+	options, lifecycle, err := normalizeOptions(Options{
+		GitHubDir: t.TempDir(), ValidationMode: ValidationModeFast, Merge: true,
+	}, "deps-set-fast")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.ValidationMode != ValidationModeFast || options.Verify || lifecycle.Verify || !lifecycle.Merge {
+		t.Fatalf("normalized fast options = %+v lifecycle=%+v", options, lifecycle)
+	}
+	if _, _, err := normalizeOptions(Options{
+		GitHubDir: t.TempDir(), ValidationMode: ValidationModeFast,
+	}, "deps-set-unsafe-fast"); err == nil || !strings.Contains(err.Error(), "requires --merge") {
+		t.Fatalf("fast validation without merge error = %v", err)
+	}
+}
+
+func TestDependencyPullRequestBodiesReportValidationAuthorityTruthfully(t *testing.T) {
+	t.Parallel()
+	target := Target{Ecosystem: EcosystemNPM, Dependency: "@acme/lib", Version: "1.2.3"}
+	_, fastSet := exactSetHandler{target: target, options: Options{ValidationMode: ValidationModeFast}}.PullRequest(Repository{})
+	if !strings.Contains(fastSet, "exact PR-head GitHub checks") || strings.Contains(fastSet, "local lint") {
+		t.Fatalf("fast deps set PR body = %q", fastSet)
+	}
+	_, fastBump := (waveHandler{ecosystem: EcosystemNPM, options: Options{ValidationMode: ValidationModeFast}, targetsByRepository: map[string][]Target{
+		"acme/app": {target},
+	}}).PullRequest(Repository{Slug: "acme/app"})
+	if !strings.Contains(fastBump, "exact PR-head GitHub checks") || strings.Contains(fastBump, "full local verification") {
+		t.Fatalf("fast deps bump PR body = %q", fastBump)
+	}
+	_, fullBump := (waveHandler{ecosystem: EcosystemNPM, options: Options{ValidationMode: ValidationModeFull}, targetsByRepository: map[string][]Target{
+		"acme/app": {target},
+	}}).PullRequest(Repository{Slug: "acme/app"})
+	if !strings.Contains(fullBump, "full local verification completed") {
+		t.Fatalf("full deps bump PR body = %q", fullBump)
+	}
+}
+
 func TestDryRunDoesNotCreateOperationWorktreeRoot(t *testing.T) {
 	fixture := t.TempDir()
 	// Scope WB_HOME to this fixture's own root. Without this, a fresh temp

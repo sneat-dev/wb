@@ -31,7 +31,11 @@ Use `--layer N` or `N-M` only when deliberately staging layers. Use
 `--propagate` to delegate the exact Go release event to bump waves.
 
 Local verification is on by default. Tune it with `--checks`,
-`--timeout`, and `--retry`; use `--no-verify` only with an explicit reason.
+`--timeout`, and `--retry`. For a CI-authoritative fleet update,
+`--validation=fast --merge --parallel <N>` retains repository push hooks,
+opens independent PRs concurrently, and requires passing exact PR-head GitHub
+checks before merge. The legacy `--no-verify` flag remains a separate explicit
+escape hatch, not the fast mode.
 A semantic downgrade requires `--allow-downgrade`.
 
 For private modules, repeat `--go-private <pattern>`. Configure credentials

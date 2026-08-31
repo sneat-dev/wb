@@ -1678,7 +1678,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			if refreshed.SupersededAtOrigin && refreshed.supersessionReceipt != nil {
 				sealErr = sealWorkLogForSupersession(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, refreshed.supersessionReceipt)
 			} else {
-				sealErr = sealWorkLogForRecycle(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA, "removed")
+				sealErr = sealWorkLogForCleanup(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA)
 			}
 			if sealErr != nil {
 				closeCanonical()

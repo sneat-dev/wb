@@ -16,6 +16,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	progresspkg "github.com/sneat-dev/wb/internal/progress"
+	"github.com/sneat-dev/wb/internal/quality"
 	"golang.org/x/mod/modfile"
 	modmodule "golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
@@ -38,7 +39,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	report := BumpReport{
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
 		Ecosystem: options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
-		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, Parallel: lifecycle.Parallel,
+		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, ValidationMode: options.ValidationMode, Parallel: lifecycle.Parallel,
 		RegistryLookupsSkipped: options.NoRegistry,
 	}
 	if lifecycle.Verify {
@@ -52,9 +53,13 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			return report, resumeErr
 		}
 		if report.Status == "completed" {
+			report.ValidationMode = options.ValidationMode
+			report.Verification = currentVerification(lifecycle)
 			return report, nil
 		}
 	}
+	report.ValidationMode = options.ValidationMode
+	report.Verification = currentVerification(lifecycle)
 	if err := persistBumpReport(options, report); err != nil {
 		return report, err
 	}
@@ -139,7 +144,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		// GitHub Actions run.
 		if carrierErr != nil && graph.pendingCarriersBlockTargets(carriers, targetsByRepository) {
 			wave := BumpWaveReport{
-				Index: waveIndex, Status: "awaiting_release", Events: append([]ReleaseEvent(nil), events...),
+				Index: waveIndex, Status: "awaiting_release", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 				Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
 			}
 			if lifecycle.DryRun {
@@ -171,7 +176,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		if len(targetsByRepository) == 0 {
 			if len(refreshes) > 0 || len(carriers) > 0 {
 				report.Waves = append(report.Waves, BumpWaveReport{
-					Index: waveIndex, Status: "completed", Events: append([]ReleaseEvent(nil), events...),
+					Index: waveIndex, Status: "completed", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 					Refreshes: refreshes, Releases: carriers,
 				})
 			}
@@ -183,7 +188,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			return report, nil
 		}
 		wave := BumpWaveReport{
-			Index: waveIndex, Status: "running", Events: append([]ReleaseEvent(nil), events...),
+			Index: waveIndex, Status: "running", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 			Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
 		}
 		affectedRepositories := selectWaveRepositories(repositories, targetsByRepository)
@@ -277,6 +282,13 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 func ValidateBumpOptions(options BumpOptions, events []ReleaseEvent) error {
 	_, _, _, err := normalizeBumpOptions(options, events)
 	return err
+}
+
+func currentVerification(lifecycle orchestrate.Options) []quality.Check {
+	if !lifecycle.Verify {
+		return nil
+	}
+	return append([]quality.Check(nil), lifecycle.Checks...)
 }
 
 func resumeBumpReport(ctx context.Context, empty BumpReport, seedEvents []ReleaseEvent, options BumpOptions) (BumpReport, []ReleaseEvent, int, error) {
@@ -756,7 +768,14 @@ func (handler waveHandler) CommitMessage(repository orchestrate.Repository) stri
 
 func (handler waveHandler) PullRequest(repository orchestrate.Repository) (string, string) {
 	title := handler.CommitMessage(repository)
-	return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling and local verification completed before this pull request was opened.", handler.ecosystem)
+	switch handler.options.ValidationMode {
+	case ValidationModeFast:
+		return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling. Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before merge.", handler.ecosystem)
+	case ValidationModeNone:
+		return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling. Local verification was explicitly skipped with the legacy no-verify policy.", handler.ecosystem)
+	default:
+		return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling and full local verification completed before this pull request was opened.", handler.ecosystem)
+	}
 }
 
 func captureReleaseBaselines(ctx context.Context, graph bumpFleetGraph, affected map[string]map[string]bool, options BumpOptions) (map[string]ReleaseObservation, error) {

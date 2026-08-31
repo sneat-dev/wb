@@ -25,6 +25,34 @@ const (
 	EcosystemNPM           Ecosystem = "npm"
 )
 
+// ValidationMode names the local validation policy for dependency mutations.
+// Remote PR-head checks remain a separate merge authority.
+type ValidationMode string
+
+const (
+	// ValidationModeFull runs the configured local lint, test, and build checks.
+	ValidationModeFull ValidationMode = "full"
+	// ValidationModeFast relies on repository push hooks locally and requires
+	// exact PR-head GitHub checks before WB may merge the change.
+	ValidationModeFast ValidationMode = "fast"
+	// ValidationModeNone is the legacy explicit --no-verify escape hatch.
+	ValidationModeNone ValidationMode = "none"
+)
+
+// ParseValidationMode validates the public fast/full policy names.
+func ParseValidationMode(value string) (ValidationMode, error) {
+	mode := ValidationMode(strings.TrimSpace(value))
+	if mode == "" {
+		mode = ValidationModeFull
+	}
+	switch mode {
+	case ValidationModeFull, ValidationModeFast:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("unknown validation mode %q (want full or fast)", value)
+	}
+}
+
 // Target is the exact dependency identity and version requested by the user.
 type Target struct {
 	Ecosystem  Ecosystem `yaml:"ecosystem"`
@@ -69,6 +97,7 @@ type Options struct {
 	DryRun         bool
 	Resume         bool
 	AllowDowngrade bool
+	ValidationMode ValidationMode
 	Verify         bool
 	Checks         []quality.Check
 	Timeout        time.Duration
@@ -98,16 +127,17 @@ type Options struct {
 
 // Report is the stable Markdown/YAML index for one exact-set operation.
 type Report struct {
-	SchemaVersion int                `yaml:"schema_version"`
-	Operation     string             `yaml:"operation"`
-	Status        string             `yaml:"status"`
-	Target        Target             `yaml:"target"`
-	GitHubDir     string             `yaml:"github_dir"`
-	BaseRef       string             `yaml:"base_ref"`
-	Verification  []quality.Check    `yaml:"verification,omitempty"`
-	Parallel      int                `yaml:"parallel"`
-	Order         *OrderReport       `yaml:"order,omitempty"`
-	Repositories  []RepositoryReport `yaml:"repositories"`
+	SchemaVersion  int                `yaml:"schema_version"`
+	Operation      string             `yaml:"operation"`
+	Status         string             `yaml:"status"`
+	Target         Target             `yaml:"target"`
+	GitHubDir      string             `yaml:"github_dir"`
+	BaseRef        string             `yaml:"base_ref"`
+	ValidationMode ValidationMode     `yaml:"validation_mode,omitempty"`
+	Verification   []quality.Check    `yaml:"verification,omitempty"`
+	Parallel       int                `yaml:"parallel"`
+	Order          *OrderReport       `yaml:"order,omitempty"`
+	Repositories   []RepositoryReport `yaml:"repositories"`
 }
 
 // OrderReport records the provider-first layer plan an ordered run followed.
