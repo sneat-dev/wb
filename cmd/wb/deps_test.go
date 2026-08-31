@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -51,6 +52,67 @@ func TestDepsCommandIncludesBumpWithWaveLifecycleFlags(t *testing.T) {
 		if bump.Flags().Lookup(name) == nil {
 			t.Errorf("deps bump is missing --%s", name)
 		}
+	}
+}
+
+func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(t *testing.T) {
+	reportDir := t.TempDir()
+	events := []deps.ReleaseEvent{{Dependency: "@acme/provider", Version: "0.2.0", Source: "explicit", CheckedAt: time.Unix(1, 0)}}
+	persisted := deps.BumpReport{
+		SchemaVersion: 1, Operation: deps.BumpOperationIDFor(deps.EcosystemNPM, events), Status: "planned", Ecosystem: deps.EcosystemNPM,
+		SeedEvents: events, BaseRef: "main", Parallel: 1,
+		Waves: []deps.BumpWaveReport{{Index: 1, Status: "planned", Events: events, Repositories: []deps.RepositoryReport{{Repository: "acme/consumer", Status: "planned"}}}},
+	}
+	if err := deps.WriteBumpReports(reportDir, persisted); err != nil {
+		t.Fatalf("write initial report: %v", err)
+	}
+	loaded, err := deps.LoadBumpReport(reportDir)
+	if err != nil || loaded.Parallel != 1 {
+		t.Fatalf("load initial report: report=%+v err=%v", persisted, err)
+	}
+
+	explicitCommand := newDepsBumpCmd()
+	if err := explicitCommand.Flags().Set("parallel", "2"); err != nil {
+		t.Fatal(err)
+	}
+	explicitParallel, err := explicitCommand.Flags().GetInt("parallel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicitExecution, explicit, err := resolveDepsBumpResumeParallel(deps.Options{Parallel: explicitParallel}, loaded, depsBumpParallelExplicit(explicitCommand))
+	if err != nil {
+		t.Fatalf("resolve explicit resume parallelism: %v", err)
+	}
+	if explicitExecution.Parallel != 2 || explicit.Parallel != 2 {
+		t.Fatalf("explicit runtime/report parallel = %d/%d, want 2/2", explicitExecution.Parallel, explicit.Parallel)
+	}
+	if !reflect.DeepEqual(loaded.Waves, explicit.Waves) {
+		t.Fatalf("explicit parallelism changed consumer waves: before=%+v after=%+v", loaded.Waves, explicit.Waves)
+	}
+	if err := deps.WriteBumpReports(reportDir, explicit); err != nil {
+		t.Fatalf("write explicit resume report: %v", err)
+	}
+	if persisted, err := deps.LoadBumpReport(reportDir); err != nil || persisted.Parallel != 2 {
+		t.Fatalf("load explicit resume report: report=%+v err=%v", persisted, err)
+	}
+
+	omittedCommand := newDepsBumpCmd()
+	omittedParallel, err := omittedCommand.Flags().GetInt("parallel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	omittedExecution, omitted, err := resolveDepsBumpResumeParallel(deps.Options{Parallel: omittedParallel}, explicit, depsBumpParallelExplicit(omittedCommand))
+	if err != nil {
+		t.Fatalf("resolve omitted resume parallelism: %v", err)
+	}
+	if omittedExecution.Parallel != 2 || omitted.Parallel != 2 {
+		t.Fatalf("omitted runtime/report parallel = %d/%d, want persisted 2/2", omittedExecution.Parallel, omitted.Parallel)
+	}
+	if !reflect.DeepEqual(explicit.Waves, omitted.Waves) {
+		t.Fatalf("omitted parallelism changed consumer waves: before=%+v after=%+v", explicit.Waves, omitted.Waves)
+	}
+	if persisted, err := deps.LoadBumpReport(reportDir); err != nil || persisted.Parallel != 2 {
+		t.Fatalf("load omitted resume report: report=%+v err=%v", persisted, err)
 	}
 }
 
