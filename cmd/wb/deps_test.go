@@ -56,10 +56,13 @@ func TestDepsCommandIncludesBumpWithWaveLifecycleFlags(t *testing.T) {
 }
 
 func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(t *testing.T) {
-	reportDir := t.TempDir()
+	root := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, "wb-home"))
+	reportDir := filepath.Join(root, "report")
+	githubDir := filepath.Join(root, "projects")
 	events := []deps.ReleaseEvent{{Dependency: "@acme/provider", Version: "0.2.0", Source: "explicit", CheckedAt: time.Unix(1, 0)}}
 	persisted := deps.BumpReport{
-		SchemaVersion: 1, Operation: deps.BumpOperationIDFor(deps.EcosystemNPM, events), Status: "planned", Ecosystem: deps.EcosystemNPM,
+		SchemaVersion: 1, Operation: deps.BumpOperationIDFor(deps.EcosystemNPM, events), Status: "completed", Ecosystem: deps.EcosystemNPM,
 		SeedEvents: events, BaseRef: "main", Parallel: 1,
 		Waves: []deps.BumpWaveReport{{Index: 1, Status: "planned", Events: events, Repositories: []deps.RepositoryReport{{Repository: "acme/consumer", Status: "planned"}}}},
 	}
@@ -79,18 +82,18 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 	if err != nil {
 		t.Fatal(err)
 	}
-	explicitExecution, explicit, err := resolveDepsBumpResumeParallel(deps.Options{Parallel: explicitParallel}, loaded, depsBumpParallelExplicit(explicitCommand))
+	explicitCommand.SetOut(io.Discard)
+	explicitCommand.SetErr(io.Discard)
+	explicit, returnedReportDir, err := executeDepsBumpWithRegistryPolicy(explicitCommand, deps.EcosystemNPM, events, nil,
+		depsSetOptions{resume: true, reportDir: reportDir}, deps.Options{GitHubDir: githubDir, Ref: "main", Parallel: explicitParallel, Resume: true}, false)
 	if err != nil {
-		t.Fatalf("resolve explicit resume parallelism: %v", err)
+		t.Fatalf("execute explicit resume: %v", err)
 	}
-	if explicitExecution.Parallel != 2 || explicit.Parallel != 2 {
-		t.Fatalf("explicit runtime/report parallel = %d/%d, want 2/2", explicitExecution.Parallel, explicit.Parallel)
+	if returnedReportDir != reportDir || explicit.Parallel != 2 {
+		t.Fatalf("explicit execution report directory/parallel = %q/%d, want %q/2", returnedReportDir, explicit.Parallel, reportDir)
 	}
 	if !reflect.DeepEqual(loaded.Waves, explicit.Waves) {
 		t.Fatalf("explicit parallelism changed consumer waves: before=%+v after=%+v", loaded.Waves, explicit.Waves)
-	}
-	if err := deps.WriteBumpReports(reportDir, explicit); err != nil {
-		t.Fatalf("write explicit resume report: %v", err)
 	}
 	if persisted, err := deps.LoadBumpReport(reportDir); err != nil || persisted.Parallel != 2 {
 		t.Fatalf("load explicit resume report: report=%+v err=%v", persisted, err)
@@ -101,12 +104,15 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 	if err != nil {
 		t.Fatal(err)
 	}
-	omittedExecution, omitted, err := resolveDepsBumpResumeParallel(deps.Options{Parallel: omittedParallel}, explicit, depsBumpParallelExplicit(omittedCommand))
+	omittedCommand.SetOut(io.Discard)
+	omittedCommand.SetErr(io.Discard)
+	omitted, returnedReportDir, err := executeDepsBumpWithRegistryPolicy(omittedCommand, deps.EcosystemNPM, events, nil,
+		depsSetOptions{resume: true, reportDir: reportDir}, deps.Options{GitHubDir: githubDir, Ref: "main", Parallel: omittedParallel, Resume: true}, false)
 	if err != nil {
-		t.Fatalf("resolve omitted resume parallelism: %v", err)
+		t.Fatalf("execute omitted resume: %v", err)
 	}
-	if omittedExecution.Parallel != 2 || omitted.Parallel != 2 {
-		t.Fatalf("omitted runtime/report parallel = %d/%d, want persisted 2/2", omittedExecution.Parallel, omitted.Parallel)
+	if returnedReportDir != reportDir || omitted.Parallel != 2 {
+		t.Fatalf("omitted execution report directory/parallel = %q/%d, want %q/2", returnedReportDir, omitted.Parallel, reportDir)
 	}
 	if !reflect.DeepEqual(explicit.Waves, omitted.Waves) {
 		t.Fatalf("omitted parallelism changed consumer waves: before=%+v after=%+v", explicit.Waves, omitted.Waves)
