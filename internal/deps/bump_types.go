@@ -61,17 +61,18 @@ type PublishedGoRelease struct {
 
 // BumpReport is the persistent Markdown/YAML state of a wave campaign.
 type BumpReport struct {
-	SchemaVersion int             `yaml:"schema_version"`
-	Operation     string          `yaml:"operation"`
-	Status        string          `yaml:"status"`
-	Phase         BumpPhase       `yaml:"phase"`
-	Progress      BumpProgress    `yaml:"progress"`
-	Ecosystem     Ecosystem       `yaml:"ecosystem"`
-	SeedEvents    []ReleaseEvent  `yaml:"seed_events"`
-	GitHubDir     string          `yaml:"github_dir"`
-	BaseRef       string          `yaml:"base_ref"`
-	Verification  []quality.Check `yaml:"verification,omitempty"`
-	Parallel      int             `yaml:"parallel"`
+	SchemaVersion  int             `yaml:"schema_version"`
+	Operation      string          `yaml:"operation"`
+	Status         string          `yaml:"status"`
+	Phase          BumpPhase       `yaml:"phase"`
+	Progress       BumpProgress    `yaml:"progress"`
+	Ecosystem      Ecosystem       `yaml:"ecosystem"`
+	SeedEvents     []ReleaseEvent  `yaml:"seed_events"`
+	GitHubDir      string          `yaml:"github_dir"`
+	BaseRef        string          `yaml:"base_ref"`
+	ValidationMode ValidationMode  `yaml:"validation_mode,omitempty"`
+	Verification   []quality.Check `yaml:"verification,omitempty"`
+	Parallel       int             `yaml:"parallel"`
 	// RegistryLookupsSkipped records that this plan intentionally omitted
 	// registry-derived carrier and stale-event evidence.
 	RegistryLookupsSkipped bool                          `yaml:"registry_lookups_skipped,omitempty"`
@@ -112,6 +113,7 @@ type BumpProgress struct {
 type BumpWaveReport struct {
 	Index                int                   `yaml:"index"`
 	Status               string                `yaml:"status"`
+	ValidationMode       ValidationMode        `yaml:"validation_mode,omitempty"`
 	Events               []ReleaseEvent        `yaml:"events"`
 	Refreshes            []ReleaseEventRefresh `yaml:"refreshes,omitempty"`
 	DeferredRepositories []string              `yaml:"deferred_repositories,omitempty"`

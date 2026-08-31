@@ -16,12 +16,19 @@ Then reuse the exact selection:
 wb deps bump go --fleet \
   --changed <root-a>@<version-a> \
   --changed <root-b>@<version-b> \
-  --match '<owner>/*' --parallel 2 --merge
+  --match '<owner>/*' --validation=fast --parallel 4 --merge
 ```
 
+`--validation=full` is the default and runs local lint, test, and build checks.
+Use `--validation=fast` for a CI-authoritative campaign: repository push hooks
+still run, and WB accepts the mode only with `--merge`, so the exact PR head
+must pass required GitHub checks. This is distinct from the legacy
+`--no-verify` escape hatch.
+
 WB accumulates ready dependency events before updating a consumer. It opens
-independent PRs before waiting, merges passing providers, observes their
-releases, and recalculates downstream readiness.
+independent PRs concurrently up to `--parallel`, then waits on their checks
+concurrently, merges passing providers, observes their releases, and
+recalculates downstream readiness. Dependency layers remain ordered.
 
 Leave `--refresh-after` unset to use the `5m` default. If a release event has
 waited longer than that, WB checks for a newer semantic version immediately
@@ -37,7 +44,7 @@ After a failure:
 wb deps bump go --fleet \
   --changed <root-a>@<version-a> \
   --changed <root-b>@<version-b> \
-  --match '<owner>/*' --parallel 2 --merge --resume
+  --match '<owner>/*' --validation=fast --parallel 4 --merge --resume
 ```
 
 Keep any explicit `--report-dir` unchanged. Do not close/reopen the PR or push

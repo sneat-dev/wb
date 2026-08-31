@@ -151,6 +151,7 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 		err     error
 	}
 	results := make(chan result, 2)
+	receivedResults := make([]result, 0, 2)
 	var wait sync.WaitGroup
 	for _, task := range []string{"concurrent-repair-one", "concurrent-repair-two"} {
 		wait.Add(1)
@@ -180,6 +181,8 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 	for range 2 {
 		select {
 		case <-setupReady:
+		case result := <-results:
+			t.Fatalf("concurrent creator exited before the pre-lock boundary: created=%#v, err=%v", result.created, result.err)
 		case <-time.After(2 * time.Minute):
 			t.Fatal("concurrent creations did not both reach the pre-lock boundary")
 		}
@@ -215,6 +218,9 @@ func TestCreateDifferentTasksSerializeSharedRepositoryRegistrationRepair(t *test
 	wait.Wait()
 	close(results)
 	for result := range results {
+		receivedResults = append(receivedResults, result)
+	}
+	for _, result := range receivedResults {
 		if result.err != nil || len(result.created) != 1 || result.created[0].Action != "created" {
 			t.Fatalf("concurrent different-task create = %#v, err=%v", result, result.err)
 		}

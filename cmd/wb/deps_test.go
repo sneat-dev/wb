@@ -34,7 +34,7 @@ func TestGitHubSlugSupportsSSHAndHTTPS(t *testing.T) {
 func TestDepsCommandExposesCumulativeLifecycleFlags(t *testing.T) {
 	t.Parallel()
 	command := newDepsSetCmd()
-	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll", "refresh-after", "dependency-order", "layer"} {
+	for _, name := range []string{"commit", "push", "pr", "merge", "parallel", "resume", "retry", "timeout", "propagate", "max-waves", "release-poll", "refresh-after", "dependency-order", "layer", "validation"} {
 		if command.Flags().Lookup(name) == nil {
 			t.Errorf("deps set is missing --%s", name)
 		}
@@ -48,10 +48,49 @@ func TestDepsCommandIncludesBumpWithWaveLifecycleFlags(t *testing.T) {
 	if err != nil || bump == command {
 		t.Fatalf("find bump: command=%q, error=%v", bump.Name(), err)
 	}
-	for _, name := range []string{"changed", "fleet", "parallel", "max-waves", "release-poll", "refresh-after", "resume", "commit", "push", "pr", "merge"} {
+	for _, name := range []string{"changed", "fleet", "parallel", "max-waves", "release-poll", "refresh-after", "resume", "commit", "push", "pr", "merge", "validation"} {
 		if bump.Flags().Lookup(name) == nil {
 			t.Errorf("deps bump is missing --%s", name)
 		}
+	}
+}
+
+func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
+	tests := []struct {
+		name       string
+		options    depsSetOptions
+		flags      map[string]string
+		wantMode   deps.ValidationMode
+		wantChecks int
+		wantError  string
+	}{
+		{name: "full default", options: depsSetOptions{validation: "full"}, wantMode: deps.ValidationModeFull, wantChecks: 3},
+		{name: "fast merged", options: depsSetOptions{validation: "fast", merge: true}, flags: map[string]string{"validation": "fast"}, wantMode: deps.ValidationModeFast},
+		{name: "fast dry run", options: depsSetOptions{validation: "fast", dryRun: true}, flags: map[string]string{"validation": "fast"}, wantMode: deps.ValidationModeFast},
+		{name: "fast without merge", options: depsSetOptions{validation: "fast"}, flags: map[string]string{"validation": "fast"}, wantError: "requires --merge"},
+		{name: "fast with local checks", options: depsSetOptions{validation: "fast", merge: true, checks: "lint"}, flags: map[string]string{"validation": "fast", "checks": "lint"}, wantError: "cannot be used together"},
+		{name: "legacy no verify", options: depsSetOptions{validation: "full", noVerify: true}, wantMode: deps.ValidationModeNone},
+		{name: "legacy no verify with validation", options: depsSetOptions{validation: "fast", noVerify: true}, flags: map[string]string{"validation": "fast"}, wantError: "cannot be used together"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := newDepsBumpCmd()
+			for name, value := range test.flags {
+				if err := command.Flags().Set(name, value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			mode, checks, err := dependencyValidationOptions(command, test.options)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("validation error = %v, want %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil || mode != test.wantMode || len(checks) != test.wantChecks {
+				t.Fatalf("validation = mode %q checks %v err %v, want mode %q and %d checks", mode, checks, err, test.wantMode, test.wantChecks)
+			}
+		})
 	}
 }
 

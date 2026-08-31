@@ -20,6 +20,9 @@ func (report Report) Markdown() string {
 	fmt.Fprintf(&output, "- Resolved reference: `%s`\n", report.Target.Resolved)
 	fmt.Fprintf(&output, "- Status: `%s`\n", report.Status)
 	fmt.Fprintf(&output, "- Base ref: `%s`\n", report.BaseRef)
+	if report.ValidationMode != "" {
+		fmt.Fprintf(&output, "- Validation mode: `%s`\n", report.ValidationMode)
+	}
 	fmt.Fprintf(&output, "- Parallelism: `%d`\n\n", report.Parallel)
 	output.WriteString(report.Order.Markdown())
 	output.WriteString("## Repository index\n\n")

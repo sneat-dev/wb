@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1534,6 +1535,87 @@ func prepareMergedTask(t *testing.T, task string) (*gitFixture, CreateResult, st
 	fixture := newGitFixture(t)
 	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, task)
 	return fixture, result, head, mergedAt
+}
+
+// The public success journey is finalize first, then cleanup. Finalize seals
+// the immutable claim as landed; cleanup must accept that exact authority
+// without rewriting either the terminal or its outbox receipt.
+func TestCleanupAcceptsAlreadyFinalizedLandedClaim(t *testing.T) {
+	const task = "cleanup-finalized-landed"
+	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	finalized, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
+		Result: "success", Message: "landed and ready for cleanup", Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finalized.Applied {
+		t.Fatalf("finalize did not seal the claim: %#v", finalized)
+	}
+	projection, err := readWorkLogProjection(result.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminalPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "terminals", projection.ClaimID+".json")
+	outboxPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "outbox", projection.RunID+"-"+projection.ClaimID+"-sealed.json")
+	terminalBefore, err := os.ReadFile(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outboxBefore, err := os.ReadFile(outboxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, DeleteRemote: true,
+		OlderThan: 0, Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("finalized cleanup outcome = %#v", outcome.Results)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("finalized worktree remains after cleanup: %v", statErr)
+	}
+	terminalAfter, err := os.ReadFile(terminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outboxAfter, err := os.ReadFile(outboxPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(terminalBefore, terminalAfter) || !bytes.Equal(outboxBefore, outboxAfter) {
+		t.Fatal("cleanup modified immutable finalize authority")
+	}
+}
+
+func TestCleanupRejectsAlreadyFinalizedNotLandedClaim(t *testing.T) {
+	const task = "cleanup-finalized-not-landed"
+	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
+		Result: "failure", Message: "not landed", Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, DeleteRemote: true,
+		OlderThan: 0, Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not authorize cleanup") {
+		t.Fatalf("not-landed cleanup error = %v", err)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); statErr != nil {
+		t.Fatalf("not-landed cleanup touched the worktree: %v", statErr)
+	}
 }
 
 func prepareMergedTaskInFixture(t *testing.T, fixture *gitFixture, task string) (CreateResult, string, time.Time) {

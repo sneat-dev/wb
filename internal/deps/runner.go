@@ -33,7 +33,7 @@ func Run(ctx context.Context, target Target, repositories []Repository, options 
 	handler := exactSetHandler{adapter: adapter, target: target, options: options}
 	report := Report{
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "completed", Target: target,
-		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, Parallel: lifecycle.Parallel,
+		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, ValidationMode: options.ValidationMode, Parallel: lifecycle.Parallel,
 	}
 	if lifecycle.Verify {
 		report.Verification = append(report.Verification, lifecycle.Checks...)
@@ -209,11 +209,24 @@ func (handler exactSetHandler) CommitMessage(orchestrate.Repository) string {
 
 func (handler exactSetHandler) PullRequest(orchestrate.Repository) (string, string) {
 	title := handler.CommitMessage(orchestrate.Repository{})
-	body := fmt.Sprintf("Automated by `wb deps set %s %s@%s`. Applicable local lint, test, and build verification completed before this pull request was opened.", handler.target.Ecosystem, handler.target.Dependency, handler.target.Version)
+	body := fmt.Sprintf("Automated by `wb deps set %s %s@%s`.", handler.target.Ecosystem, handler.target.Dependency, handler.target.Version)
+	switch handler.options.ValidationMode {
+	case ValidationModeFast:
+		body += " Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before merge."
+	case ValidationModeNone:
+		body += " Local verification was explicitly skipped with the legacy no-verify policy."
+	default:
+		body += " Full local lint, test, and build verification completed before this pull request was opened."
+	}
 	return title, body
 }
 
 func normalizeOptions(options Options, operation string) (Options, orchestrate.Options, error) {
+	var err error
+	options, err = normalizeValidationMode(options)
+	if err != nil {
+		return Options{}, orchestrate.Options{}, err
+	}
 	lifecycle, err := orchestrate.Normalize(orchestrate.Options{
 		GitHubDir: options.GitHubDir, Operation: operation,
 		Branch: "wb/deps/" + strings.TrimPrefix(operation, "deps-"), Ref: options.Ref,
@@ -236,6 +249,35 @@ func normalizeOptions(options Options, operation string) (Options, orchestrate.O
 	options.PR = lifecycle.PR
 	options.Merge = lifecycle.Merge
 	return options, lifecycle, nil
+}
+
+func normalizeValidationMode(options Options) (Options, error) {
+	mode := options.ValidationMode
+	if mode == "" {
+		if options.Verify {
+			mode = ValidationModeFull
+		} else {
+			mode = ValidationModeNone
+		}
+	}
+	switch mode {
+	case ValidationModeFull:
+		options.Verify = true
+	case ValidationModeFast:
+		if !options.DryRun && !options.Merge {
+			return Options{}, fmt.Errorf("validation mode fast requires --merge so exact PR-head GitHub checks remain mandatory")
+		}
+		if len(options.Checks) != 0 {
+			return Options{}, fmt.Errorf("validation mode fast cannot be combined with local --checks")
+		}
+		options.Verify = false
+	case ValidationModeNone:
+		options.Verify = false
+	default:
+		return Options{}, fmt.Errorf("unknown validation mode %q (want full, fast, or the legacy no-verify policy)", mode)
+	}
+	options.ValidationMode = mode
+	return options, nil
 }
 
 func operationID(target Target) string {

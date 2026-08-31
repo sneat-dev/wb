@@ -237,7 +237,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	}
 	if !options.Commit {
 		result.Status = "changed"
-		result.Reason = "verified changes remain in the local operation worktree"
+		if options.Verify {
+			result.Reason = "verified changes remain in the local operation worktree"
+		} else {
+			result.Reason = "changes remain in the local operation worktree; full local verification was not run"
+		}
 		return nil
 	}
 	if len(result.ChangedFiles) > 0 {
@@ -255,7 +259,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	}
 	result.Commit = strings.TrimSpace(head)
 	result.Status = "committed"
-	result.Reason = "verified operation committed locally"
+	if options.Verify {
+		result.Reason = "verified operation committed locally"
+	} else {
+		result.Reason = "operation committed locally; full local verification was not run"
+	}
 	if options.Push {
 		phase("push")
 		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "-u", "origin", options.Branch); err != nil {
@@ -263,7 +271,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		}
 		result.Pushed = true
 		result.Status = "pushed"
-		result.Reason = "verified commit pushed to the operation branch"
+		if options.Verify {
+			result.Reason = "verified commit pushed to the operation branch"
+		} else {
+			result.Reason = "commit pushed to the operation branch; full local verification was not run"
+		}
 	}
 	if options.PR {
 		phase("open_pr")
@@ -274,7 +286,13 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		}
 		result.PR = prURL
 		result.Status = "pr_open"
-		result.Reason = "pull request opened; local verification passed"
+		if options.Verify {
+			result.Reason = "pull request opened; local verification passed"
+		} else if options.Merge {
+			result.Reason = "pull request opened; exact PR-head GitHub checks are pending"
+		} else {
+			result.Reason = "pull request opened; full local verification was not run"
+		}
 	}
 	return nil
 }
