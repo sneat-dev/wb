@@ -521,20 +521,25 @@ func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ec
 		}
 		reportDirectory = filepath.Join(home, "reports", operation)
 	}
-	bumpOptions := deps.BumpOptions{
-		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
-		NoRegistry: noRegistry,
-		Persist:    func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
-	}
+	var previous *deps.BumpReport
 	if options.resume {
-		if previous, err := deps.LoadBumpReport(reportDirectory); err == nil {
-			bumpOptions.Previous = &previous
+		if loaded, err := deps.LoadBumpReport(reportDirectory); err == nil {
+			lifecycle, loaded, err = resolveDepsBumpResumeParallel(lifecycle, loaded, depsBumpParallelExplicit(command))
+			if err != nil {
+				return deps.BumpReport{}, reportDirectory, err
+			}
+			previous = &loaded
 		} else {
 			if os.IsNotExist(err) {
 				return deps.BumpReport{}, reportDirectory, fmt.Errorf("--resume requires %s: %w", filepath.Join(reportDirectory, "deps-bump.yaml"), err)
 			}
 			return deps.BumpReport{}, reportDirectory, err
 		}
+	}
+	bumpOptions := deps.BumpOptions{
+		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
+		Previous: previous, NoRegistry: noRegistry,
+		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	report, runErr := deps.RunBump(commandExecutionContext(command), events, repositories, bumpOptions)
 	if ownedCampaign {
@@ -551,6 +556,27 @@ func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ec
 		return report, reportDirectory, err
 	}
 	return report, reportDirectory, runErr
+}
+
+func depsBumpParallelExplicit(command *cobra.Command) bool {
+	return command != nil && command.Flags().Changed("parallel")
+}
+
+// resolveDepsBumpResumeParallel keeps campaign identity from the persisted
+// report while treating concurrency as an intentional live-runtime override.
+func resolveDepsBumpResumeParallel(lifecycle deps.Options, report deps.BumpReport, explicit bool) (deps.Options, deps.BumpReport, error) {
+	if explicit {
+		// Parallelism bounds only the live worker pool. It neither selects
+		// repositories nor changes the campaign's identity, so an operator may
+		// safely raise or lower it while resuming.
+		report.Parallel = lifecycle.Parallel
+		return lifecycle, report, nil
+	}
+	if report.Parallel < 1 {
+		return deps.Options{}, deps.BumpReport{}, fmt.Errorf("resume report has invalid parallelism %d", report.Parallel)
+	}
+	lifecycle.Parallel = report.Parallel
+	return lifecycle, report, nil
 }
 
 func commandExecutionContext(command *cobra.Command) context.Context {
