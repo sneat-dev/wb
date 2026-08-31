@@ -13,7 +13,6 @@ import (
 
 	"charm.land/fang/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/hooks"
 	"github.com/sneat-dev/wb/internal/sessionlaunch"
@@ -259,9 +258,6 @@ func persistentCommandID(cmd *cobra.Command) string {
 }
 
 func main() {
-	// Publish the link-time version before anything can record provenance, so
-	// a release build stamps its own version into whatever it writes.
-	buildinfo.Set(version)
 	if len(os.Args) > 1 && os.Args[1] == sessionlaunch.PrivateLauncherArgument {
 		os.Exit(sessionlaunch.RunPrivateLauncher(os.Args[2:]))
 	}
@@ -333,7 +329,7 @@ func runWithStdin(args []string, stdin io.Reader, stdout, stderr io.Writer) int 
 	// Handled before Execute so `wb --version` answers even when a later flag
 	// is invalid, and so it never depends on subcommand wiring.
 	if hasVersionFlag(args) {
-		return printVersion(stdout, false)
+		return printBareVersion(stdout)
 	}
 
 	commandStarted = false
