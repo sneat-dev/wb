@@ -230,6 +230,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if !sameWorktreeMergeSources(existing.Sources, sources) || existing.Repository != repository || existing.Target != target {
 			return existing, fmt.Errorf("merger lane %s already owns a different candidate at %s", lane, receiptPath)
 		}
+		if acknowledged, ackErr := hasLandedFailureAcknowledgement(existing); ackErr != nil {
+			return existing, ackErr
+		} else if acknowledged {
+			return existing, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; prepare a new source candidate", receiptPath)
+		}
 		if existing.Status != WorktreeMergePreparing && existing.Status != WorktreeMergeConflict && existing.Status != WorktreeMergeValidationFailed {
 			return existing, nil
 		}
@@ -482,6 +487,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	receipt, err := readWorktreeMergeReceipt(receiptPath)
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
+	}
+	if acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt); ackErr != nil {
+		return receipt, ackErr
+	} else if acknowledged {
+		return receipt, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; it cannot be replayed", receiptPath)
 	}
 	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Completed, string(receipt.Status)+" at "+receiptPath)
 	if receipt.Status == WorktreeMergeComplete {
@@ -1275,6 +1285,9 @@ func resolveWorktreeMergeReceiptPath(projectsRoot, input string) (string, error)
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
+		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) {
+			continue
+		}
 		path := filepath.Join(reports, entry.Name())
 		receipt, readErr := readWorktreeMergeReceipt(path)
 		if readErr == nil && filepath.Clean(receipt.Candidate.Worktree) == filepath.Clean(absolute) {
@@ -1789,6 +1802,14 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err := extractWorktreeMergeArchive(archivePath, snapshot); err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("materialize target %s: %w", targetSHA, err)
 	}
+	// Some repository checks, including SpecScore project-host validation,
+	// intentionally inspect the checkout's origin remote. An archive has no
+	// .git directory, so recreate only that read-only context from the
+	// candidate before comparing failure identities. The snapshot remains an
+	// exact target tree: no commits, refs, index, or candidate files are used.
+	if err := configureWorktreeMergeBaselineRemote(ctx, repositoryDir, snapshot, timeout, retry); err != nil {
+		return quality.VerificationReport{}, err
+	}
 	runOptions, err := quality.RepositoryRunOptions(snapshot, quality.RunOptions{Timeout: timeout, Retry: retry})
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
@@ -1802,6 +1823,24 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	report.Revision = targetSHA
 	report.WorkspaceClean = true
 	return report, nil
+}
+
+func configureWorktreeMergeBaselineRemote(ctx context.Context, candidateWorktree, snapshot string, timeout time.Duration, retry int) error {
+	remote, _, err := runCommand(ctx, timeout, retry, candidateWorktree, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return fmt.Errorf("read candidate origin remote for target baseline: %w", err)
+	}
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return errors.New("candidate origin remote for target baseline is empty")
+	}
+	if _, _, err := runCommand(ctx, timeout, retry, snapshot, "git", "init", "--quiet"); err != nil {
+		return fmt.Errorf("initialize target baseline Git context: %w", err)
+	}
+	if _, _, err := runCommand(ctx, timeout, retry, snapshot, "git", "remote", "add", "origin", remote); err != nil {
+		return fmt.Errorf("configure target baseline origin remote: %w", err)
+	}
+	return nil
 }
 
 func extractWorktreeMergeArchive(archivePath, destination string) error {
@@ -1878,6 +1917,12 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 	}
 	matched := make([]bool, len(baselineFailures))
 	for _, candidateFailure := range candidateFailures {
+		if candidateFailure.Language == "specscore" {
+			if matchSpecScoreBaselineFailure(baselineFailures, candidateFailure) {
+				continue
+			}
+			return fmt.Errorf("candidate validation introduced or changed failure: %s %s %s", candidateFailure.Language, candidateFailure.Check, candidateFailure.Command)
+		}
 		found := false
 		for index, baselineFailure := range baselineFailures {
 			if !matched[index] && sameWorktreeMergeFailure(baselineFailure, candidateFailure) {
@@ -1891,6 +1936,59 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 		}
 	}
 	return nil
+}
+
+// matchSpecScoreBaselineFailure treats the exact violation identity set as the
+// authoritative comparison for SpecScore. A candidate may remove a legacy
+// finding (or report the same finding from a different checkout path) but may
+// never introduce an identity absent from the exact target baseline. Counts
+// and rendered diagnostics are not identities, so a strict subset is a safe
+// improvement while a new rule remains a hard failure.
+func matchSpecScoreBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
+	candidateIDs := specScoreViolationIdentities(candidate.Detail)
+	if len(candidateIDs) == 0 {
+		return false
+	}
+	for _, baselineFailure := range baseline {
+		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || baselineFailure.Command != candidate.Command {
+			continue
+		}
+		baselineIDs := specScoreViolationIdentities(baselineFailure.Detail)
+		if len(baselineIDs) == 0 {
+			continue
+		}
+		allKnown := true
+		for identity := range candidateIDs {
+			if _, ok := baselineIDs[identity]; !ok {
+				allKnown = false
+				break
+			}
+		}
+		if allKnown {
+			return true
+		}
+	}
+	return false
+}
+
+var specScoreViolationIdentityPattern = regexp.MustCompile(`^(.+?):[0-9]+(?:-[0-9]+)?\s+([^:]+):`)
+
+func specScoreViolationIdentities(detail string) map[string]struct{} {
+	identities := make(map[string]struct{})
+	for _, rawLine := range strings.Split(detail, "\n") {
+		line := strings.TrimSpace(normalizeWorktreeMergeFailureDetail(rawLine))
+		match := specScoreViolationIdentityPattern.FindStringSubmatch(line)
+		if len(match) != 3 {
+			continue
+		}
+		path := strings.TrimSpace(match[1])
+		rule := strings.TrimSpace(match[2])
+		if path == "" || rule == "" {
+			continue
+		}
+		identities[strings.Join(strings.Fields(path+" "+rule), " ")] = struct{}{}
+	}
+	return identities
 }
 
 func failedWorktreeMergeVerificationEntries(report quality.VerificationReport) []quality.VerificationEntry {
@@ -1968,6 +2066,9 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
+		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) {
+			continue
+		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
 			continue
 		}
@@ -1984,6 +2085,13 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 			receiptLane = worktreeMergeLaneID(receipt.Repository, receipt.Target)
 		}
 		if receiptLane == lane && receipt.Status != WorktreeMergeComplete {
+			acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt)
+			if ackErr != nil {
+				return nil, ackErr
+			}
+			if acknowledged {
+				continue
+			}
 			return &receipt, nil
 		}
 	}

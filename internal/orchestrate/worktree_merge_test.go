@@ -253,6 +253,11 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 			Language: "go", Module: ".", Check: quality.CheckTest, Command: "go test ./...", Status: quality.StatusFailed, Detail: detail,
 		}}}
 	}
+	specFailing := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "specscore", Module: ".", Check: quality.CheckSpec, Command: "specscore spec lint", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
 	for _, test := range []struct {
 		name      string
 		baseline  quality.VerificationReport
@@ -262,6 +267,9 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 		{name: "passing target and candidate", baseline: quality.VerificationReport{Status: quality.StatusPassed}, candidate: quality.VerificationReport{Status: quality.StatusPassed}},
 		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
 		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
+		{name: "specscore environment-only baseline extra finding permits candidate", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo\nspec/features/x.md:12 missing-owner: owner is required"), candidate: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo")},
+		{name: "specscore new identity", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo"), candidate: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo\nspec/features/x.md:12 missing-owner: owner is required"), wantError: true},
+		{name: "specscore same identity changed detail", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo"), candidate: specFailing("specscore.yaml:0 studio-toolbar: now requires a configured remote")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := worktreeMergeValidationRegression(test.baseline, test.candidate)
@@ -269,6 +277,37 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 				t.Fatalf("regression error = %v, want error=%t", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
+	writeEngineFile(t, filepath.Join(fixture.canonical, "spec", "README.md"), "# Example\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go", "spec/README.md")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "feat: add target baseline fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	target := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	wantOrigin := strings.TrimSpace(runEngineGit(t, fixture.canonical, "remote", "get-url", "origin"))
+	observedOrigin := filepath.Join(t.TempDir(), "baseline-origin.txt")
+	bin := t.TempDir()
+	specscore := filepath.Join(bin, "specscore")
+	if err := os.WriteFile(specscore, []byte("#!/bin/sh\nset -eu\nif [ \"$1 $2\" != \"spec lint\" ]; then exit 2; fi\ngit remote get-url origin >\"$WB_TEST_BASELINE_ORIGIN\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_BASELINE_ORIGIN", observedOrigin)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	report, err := verifyWorktreeMergeTarget(context.Background(), fixture.repository.Slug, fixture.canonical, target, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != quality.StatusPassed {
+		t.Fatalf("target baseline report = %+v", report)
+	}
+	got, err := os.ReadFile(observedOrigin)
+	if err != nil || strings.TrimSpace(string(got)) != wantOrigin {
+		t.Fatalf("target baseline origin = %q err=%v, want %q", got, err, wantOrigin)
 	}
 }
 

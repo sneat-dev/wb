@@ -39,13 +39,20 @@ candidate stops without rewriting it. Candidate validation consumes tracked .wb/
 policy; an exact target baseline runs only when candidate failure needs comparison. A landed failure retains before/after evidence for a
 forward revert. If exact post-target CI fails and the same source advances with a clean
 forward repair, rerunning merge advances the retained candidate onto the landed target,
-records the failed landing, and opens a new repair PR without rewriting history.`,
+records the failed landing, and opens a new repair PR without rewriting history.
+Use acknowledge-landed-failed only for an audited historical
+validation_failed or landed_post_target_ci_failed receipt whose exact candidate
+is already contained in the current remote target; it writes a separate
+acknowledgement rather than rewriting the failed receipt.`,
 		Example: `# Finish one compatible worktree end to end
 wb worktree merge . --route auto --cleanup
 
 # Split preparation from landing for a resumable handoff
 wb worktree merge prepare /path/to/worktree --format json
-wb worktree merge land /path/to/landing-receipt --cleanup`,
+wb worktree merge land /path/to/landing-receipt --cleanup
+
+# Free a stale lane only after proving the failed candidate already landed
+wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --actor operator --reason "audited landed validation failure"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
@@ -63,6 +70,7 @@ wb worktree merge land /path/to/landing-receipt --cleanup`,
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd())
 	return command
 }
 
@@ -133,6 +141,57 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 		},
 	}
 	bindWorktreeMergeFlags(command, &flags, false, true)
+	return command
+}
+
+func newWorktreeMergeAcknowledgeLandedFailedCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-landed-failed <merge-receipt>",
+		Short: "Acknowledge a proved landed failure without rewriting its receipt",
+		Long: `Prove that either a validation_failed prepare receipt or a
+landed_post_target_ci_failed land receipt has its clean candidate and every
+receipted source contained in the exact current remote target, then record a
+separate audited acknowledgement so a fresh forward repair can own the lane.
+Post-target CI receipts must also prove their exact failed landing. The immutable
+Work Log and historical merge receipt are never rewritten. This is a dry-run by
+default; --apply requires --actor and --reason and writes only the new
+acknowledgement artifact. Any missing claim, target, ancestry, or cleanliness
+proof refuses closed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeLandedMergeFailure(command.Context(), orchestrate.WorktreeMergeLandedFailureAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.CandidateSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }
 
