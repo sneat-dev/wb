@@ -249,6 +249,19 @@ func TestNormalizePublicationImplicationsAndValidation(t *testing.T) {
 	if !options.Commit || !options.Push || !options.PR || !options.Merge || options.Ref != "main" || options.Parallel != 1 {
 		t.Fatalf("options = %+v", options)
 	}
+	waitOnly, err := Normalize(Options{GitHubDir: t.TempDir(), Operation: "wait-only", PR: true, WaitForPRChecks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !waitOnly.PR || waitOnly.Merge || !waitOnly.WaitForPRChecks {
+		t.Fatalf("wait-only options = %+v", waitOnly)
+	}
+	if _, err := Normalize(Options{GitHubDir: t.TempDir(), Operation: "wait-only-merge", PR: true, Merge: true, WaitForPRChecks: true}); err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("wait-only merge combination error = %v", err)
+	}
+	if _, err := Normalize(Options{GitHubDir: t.TempDir(), Operation: "wait-only-no-pr", WaitForPRChecks: true}); err == nil || !strings.Contains(err.Error(), "require pull-request") {
+		t.Fatalf("wait-only without PR error = %v", err)
+	}
 	if _, err := Normalize(Options{GitHubDir: t.TempDir()}); err == nil {
 		t.Fatal("missing operation was accepted")
 	}
@@ -394,6 +407,37 @@ echo "unexpected gh args: $*" >&2; exit 2
 	}
 	if result.Merged || result.Status == "merged" {
 		t.Fatalf("protected merge rejection was reported as merged: %+v", result)
+	}
+}
+
+func TestWaitForPRChecksAcceptsUnfencedValidationOnlyReceipt(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{}}}'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+echo "unexpected gh args: $*" >&2; exit 2
+`
+	writeEngineFile(t, filepath.Join(bin, "gh"), script)
+	if err := os.Chmod(filepath.Join(bin, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	result := Result[string]{Repository: "acme/app", WorktreeDir: t.TempDir(), PR: "https://github.com/acme/app/pull/1", Ref: "main", Commit: "0123456789012345678901234567890123456789"}
+	if err := waitForPRChecks(context.Background(), Options{Timeout: 30 * time.Second, CheckPollInterval: time.Millisecond}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "validated" || result.Merged || result.Checks == nil || result.Reason == "" || !strings.Contains(result.Reason, "awaiting merge") {
+		t.Fatalf("wait-only result = %+v", result)
 	}
 }
 

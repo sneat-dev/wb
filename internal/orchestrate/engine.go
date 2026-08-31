@@ -71,6 +71,18 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 				errorsByRepository[index] = fmt.Errorf("%s: %w", repositories[index].Slug, err)
 			}
 		})
+	} else if options.WaitForPRChecks {
+		runParallel(len(repositories), options.Parallel, func(index int) {
+			if errorsByRepository[index] != nil || results[index].PR == "" {
+				return
+			}
+			progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "wait_for_pr_checks", Repository: repositories[index].Slug, State: progress.Waiting})
+			if err := waitForPRChecks(ctx, options, &results[index]); err != nil {
+				results[index].Status = "failed"
+				results[index].Reason = err.Error()
+				errorsByRepository[index] = fmt.Errorf("%s: %w", repositories[index].Slug, err)
+			}
+		})
 	}
 	var runErrors []error
 	for _, err := range errorsByRepository {
@@ -124,6 +136,12 @@ func Normalize(options Options) (Options, error) {
 		options.PR = true
 		options.Push = true
 		options.Commit = true
+	}
+	if options.WaitForPRChecks && options.Merge {
+		return Options{}, fmt.Errorf("wait-only PR checks cannot be combined with --merge")
+	}
+	if options.WaitForPRChecks && !options.PR {
+		return Options{}, fmt.Errorf("wait-only PR checks require pull-request publication")
 	}
 	if options.DryRun && (options.Commit || options.Push || options.PR || options.Merge || options.Resume) {
 		return Options{}, fmt.Errorf("--dry-run cannot be combined with --commit, --push, --pr, --merge, or --resume")
@@ -615,6 +633,38 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	result.Status = "merged"
 	result.Reason = "producer-aware required policy and the exact-head observed check set were stable before the pull request merged"
 	return nil
+}
+
+func waitForPRChecks[T any](ctx context.Context, options Options, result *Result[T]) error {
+	slice := 8 * time.Minute
+	if options.Timeout > 0 && options.Timeout < slice {
+		slice = options.Timeout
+	}
+	interval := githubChecksPollInterval(options)
+	if interval >= slice {
+		return fmt.Errorf("CI poll interval %s must be shorter than bounded PR-check slice %s", interval, slice)
+	}
+	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
+		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
+		AllowUnfenced: true, Slice: slice, CheckPollInterval: interval,
+		Progress: reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+	})
+	if err != nil {
+		return err
+	}
+	result.Checks = receipt.Checks
+	switch receipt.Status {
+	case PullRequestWaitPassed:
+		result.Status = "validated"
+		result.Reason = "exact PR-head GitHub checks passed; pull request is awaiting merge"
+		return nil
+	case PullRequestWaitPending:
+		result.Status = "awaiting_merge"
+		result.Reason = "exact PR-head GitHub checks remain pending; pull request is awaiting merge: " + receipt.Reason
+		return nil
+	default:
+		return fmt.Errorf("GitHub CI receipt failed for %s at %s: %s", result.PR, result.Commit, receipt.Reason)
+	}
 }
 
 func decodePullRequestChecks(pr, output, stderr string, commandErr error) ([]RemoteCheck, bool, error) {

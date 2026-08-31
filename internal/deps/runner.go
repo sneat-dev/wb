@@ -212,7 +212,11 @@ func (handler exactSetHandler) PullRequest(orchestrate.Repository) (string, stri
 	body := fmt.Sprintf("Automated by `wb deps set %s %s@%s`.", handler.target.Ecosystem, handler.target.Dependency, handler.target.Version)
 	switch handler.options.ValidationMode {
 	case ValidationModeFast:
-		body += " Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before merge."
+		if handler.options.Merge {
+			body += " Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before merge."
+		} else {
+			body += " Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before reporting this PR validated; merge remains an explicit follow-up."
+		}
 	case ValidationModeNone:
 		body += " Local verification was explicitly skipped with the legacy no-verify policy."
 	default:
@@ -233,6 +237,7 @@ func normalizeOptions(options Options, operation string) (Options, orchestrate.O
 		Parallel: options.Parallel, DryRun: options.DryRun, Resume: options.Resume,
 		Verify: options.Verify, Checks: options.Checks, Timeout: options.Timeout, Retry: options.Retry,
 		Commit: options.Commit, Push: options.Push, PR: options.PR, Merge: options.Merge,
+		WaitForPRChecks:    options.ValidationMode == ValidationModeFast && options.PR && !options.Merge,
 		DependencyCampaign: true,
 		Progress:           options.Progress,
 	})
@@ -264,8 +269,8 @@ func normalizeValidationMode(options Options) (Options, error) {
 	case ValidationModeFull:
 		options.Verify = true
 	case ValidationModeFast:
-		if !options.DryRun && !options.Merge {
-			return Options{}, fmt.Errorf("validation mode fast requires --merge so exact PR-head GitHub checks remain mandatory")
+		if !options.DryRun && !options.PR && !options.Merge {
+			return Options{}, fmt.Errorf("validation mode fast requires --pr or --merge so exact PR-head GitHub checks remain mandatory")
 		}
 		if len(options.Checks) != 0 {
 			return Options{}, fmt.Errorf("validation mode fast cannot be combined with local --checks")

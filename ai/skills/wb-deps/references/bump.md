@@ -27,8 +27,10 @@ wb deps bump go --fleet \
 
 `--validation=full` is the default and runs local lint, test, and build checks.
 `--validation=fast` removes that duplicate full local pass while retaining the
-repository's managed push hooks; it is accepted only with `--merge`, so WB must
-observe passing checks for the exact PR head before merging. The legacy
+repository's managed push hooks. With `--pr`, WB observes passing checks for
+the exact PR head and reports each PR as validated/awaiting merge; a later
+merger refreshes the target and lands it. With `--merge`, WB additionally
+requires the server-enforced freshness fence before merging. The legacy
 `--no-verify` flag remains a separate explicit escape hatch and is not the fast
 campaign mode.
 
