@@ -1018,7 +1018,7 @@ func latestVersionCommandDescription(ecosystem Ecosystem, module string) string 
 
 func latestPublishedReleaseCommandDescription(ecosystem Ecosystem, module string) string {
 	if ecosystem == EcosystemNPM {
-		return "pnpm view " + module + "@latest dependencies"
+		return "pnpm view " + module + "@latest " + strings.Join(npmDependencyFieldNames, " ")
 	}
 	return "go mod download " + module + "@latest"
 }
@@ -1066,21 +1066,53 @@ func latestPublishedNpmRelease(ctx context.Context, module string, options BumpO
 	if err != nil {
 		return PublishedGoRelease{}, err
 	}
-	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "pnpm", "view", module+"@"+version, "dependencies", "--json")
+	arguments := append([]string{"view", module + "@" + version}, npmDependencyFieldNames...)
+	arguments = append(arguments, "--json")
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, options.GitHubDir, "pnpm", arguments...)
 	if err != nil {
 		return PublishedGoRelease{}, err
 	}
-	requirements := map[string]string{}
-	trimmed := strings.TrimSpace(output)
-	if trimmed != "" && trimmed != "undefined" {
-		if err := json.Unmarshal([]byte(trimmed), &requirements); err != nil {
-			return PublishedGoRelease{}, fmt.Errorf("decode published npm dependencies for %s@%s: %w", module, version, err)
-		}
+	requirements, err := parsePublishedNpmRequirements(output)
+	if err != nil {
+		return PublishedGoRelease{}, fmt.Errorf("decode published npm dependency fields for %s@%s: %w", module, version, err)
 	}
 	return PublishedGoRelease{
 		Version: version, Requirements: requirements,
-		Source: "pnpm view " + module + "@" + version + " dependencies",
+		Source: "pnpm view " + module + "@" + version + " " + strings.Join(npmDependencyFieldNames, " "),
 	}, nil
+}
+
+// parsePublishedNpmRequirements merges the same dependency fields discovery
+// treats as provider selections. A package that declares one dependency at
+// conflicting exact values in two fields is ambiguous, so verification stops
+// instead of accepting one field arbitrarily.
+func parsePublishedNpmRequirements(output string) (map[string]string, error) {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" || trimmed == "undefined" {
+		return map[string]string{}, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &fields); err != nil {
+		return nil, err
+	}
+	requirements := map[string]string{}
+	for _, field := range npmDependencyFieldNames {
+		raw, exists := fields[field]
+		if !exists || string(raw) == "null" {
+			continue
+		}
+		var section map[string]string
+		if err := json.Unmarshal(raw, &section); err != nil {
+			return nil, fmt.Errorf("decode %s: %w", field, err)
+		}
+		for dependency, version := range section {
+			if selected, exists := requirements[dependency]; exists && selected != version {
+				return nil, fmt.Errorf("conflicting published npm selections for %s: %s and %s", dependency, selected, version)
+			}
+			requirements[dependency] = version
+		}
+	}
+	return requirements, nil
 }
 
 func latestGoVersion(ctx context.Context, module string, options BumpOptions) (string, error) {
