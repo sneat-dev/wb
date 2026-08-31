@@ -1,6 +1,10 @@
 package deps
 
-import "strings"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // unreadableCloneFailureFragments are git fatal-error fragments indicating
 // that a local clone cannot be used as a git repository at all — no origin
@@ -49,6 +53,145 @@ type fleetRequirement struct {
 	ConsumerModule string
 	Repository     string
 	Version        string
+}
+
+// coalescedCampaignTargets chooses the first provider-first layer after
+// excluding repositories that own explicit campaign seeds. A seed records a
+// release that has already happened: its owning repository is a fixed root of
+// this campaign, not a consumer to update again when a later carrier release
+// happens to flow back into it. Edges into a fixed root therefore stop this
+// campaign's traversal; every non-root consumer remains eligible.
+func coalescedCampaignTargets(allTargets map[string][]Target, adjacency map[string][]string, consumerRoots, fixedRoots map[string]bool) (map[string][]Target, []string) {
+	for repository := range fixedRoots {
+		delete(allTargets, repository)
+	}
+	if len(allTargets) == 0 {
+		return nil, nil
+	}
+	reachable := map[string]bool{}
+	var visit func(string)
+	visit = func(repository string) {
+		if fixedRoots[repository] || reachable[repository] {
+			return
+		}
+		reachable[repository] = true
+		for _, consumer := range adjacency[repository] {
+			visit(consumer)
+		}
+	}
+	for repository := range consumerRoots {
+		visit(repository)
+	}
+	restricted := map[string][]string{}
+	for repository := range reachable {
+		for _, consumer := range adjacency[repository] {
+			if reachable[consumer] {
+				restricted[repository] = append(restricted[repository], consumer)
+			}
+		}
+		if _, exists := restricted[repository]; !exists {
+			restricted[repository] = nil
+		}
+	}
+	levels := map[string]int{}
+	for _, component := range topologicalLayers(restricted) {
+		for _, repository := range component.nodes {
+			levels[repository] = component.level
+		}
+	}
+	firstLevel := int(^uint(0) >> 1)
+	for repository := range allTargets {
+		level, exists := levels[repository]
+		if !exists {
+			level = 0
+		}
+		if level < firstLevel {
+			firstLevel = level
+		}
+	}
+	selected := map[string][]Target{}
+	var deferred []string
+	for repository, targets := range allTargets {
+		level, exists := levels[repository]
+		if !exists {
+			level = 0
+		}
+		if level == firstLevel {
+			selected[repository] = targets
+		} else {
+			deferred = append(deferred, repository)
+		}
+	}
+	sort.Strings(deferred)
+	return selected, deferred
+}
+
+// validateAcyclicCampaignPropagation rejects a cycle that this campaign must
+// order. An edge that returns to a fixed seed owner is deliberately not such a
+// cycle: the owner has already published the seed and is never scheduled as a
+// consumer in this campaign. Traversal still starts at fixed roots so a real
+// cycle entirely among their downstream consumers continues to fail closed.
+func validateAcyclicCampaignPropagation(adjacency map[string][]string, roots, fixedRoots map[string]bool) error {
+	reachable := map[string]bool{}
+	var visitReachable func(string)
+	visitReachable = func(repository string) {
+		if reachable[repository] {
+			return
+		}
+		reachable[repository] = true
+		for _, consumer := range adjacency[repository] {
+			if !fixedRoots[consumer] {
+				visitReachable(consumer)
+			}
+		}
+	}
+	for repository := range roots {
+		visitReachable(repository)
+	}
+	state := map[string]uint8{}
+	stack := make([]string, 0, len(reachable))
+	stackIndex := map[string]int{}
+	var cycle []string
+	var visitCycle func(string) bool
+	visitCycle = func(repository string) bool {
+		state[repository] = 1
+		stackIndex[repository] = len(stack)
+		stack = append(stack, repository)
+		consumers := make([]string, 0, len(adjacency[repository]))
+		for _, consumer := range adjacency[repository] {
+			if reachable[consumer] && !fixedRoots[consumer] {
+				consumers = append(consumers, consumer)
+			}
+		}
+		sort.Strings(consumers)
+		for _, consumer := range consumers {
+			switch state[consumer] {
+			case 0:
+				if visitCycle(consumer) {
+					return true
+				}
+			case 1:
+				cycle = append(cycle, stack[stackIndex[consumer]:]...)
+				cycle = append(cycle, consumer)
+				return true
+			}
+		}
+		stack = stack[:len(stack)-1]
+		delete(stackIndex, repository)
+		state[repository] = 2
+		return false
+	}
+	repositories := make([]string, 0, len(reachable))
+	for repository := range reachable {
+		repositories = append(repositories, repository)
+	}
+	sort.Strings(repositories)
+	for _, repository := range repositories {
+		if state[repository] == 0 && visitCycle(repository) {
+			return fmt.Errorf("dependency propagation cycle requires a coordinated release protocol: %s", strings.Join(cycle, " -> "))
+		}
+	}
+	return nil
 }
 
 // bumpFleetGraph is the fleet dependency evidence the bump wave engine needs

@@ -455,72 +455,27 @@ func (graph npmFleetGraph) repositoriesForEvents(events []ReleaseEvent) map[stri
 // receives every release in one PR and one CI build.
 func (graph npmFleetGraph) coalescedRepositoriesForEvents(seedEvents, events []ReleaseEvent) (map[string][]Target, []string) {
 	allTargets := graph.repositoriesForEvents(events)
-	if len(allTargets) == 0 {
-		return nil, nil
+	return coalescedCampaignTargets(allTargets, graph.repositoryAdjacency(), graph.seedConsumerRepositories(seedEvents), graph.fixedSeedProviderRepositories(seedEvents))
+}
+
+func (graph npmFleetGraph) fixedSeedProviderRepositories(events []ReleaseEvent) map[string]bool {
+	repositories := map[string]bool{}
+	for _, event := range events {
+		if provider, exists := graph.packages[event.Dependency]; exists {
+			repositories[provider.Repository] = true
+		}
 	}
-	adjacency := graph.repositoryAdjacency()
-	roots := map[string]bool{}
-	for _, event := range seedEvents {
+	return repositories
+}
+
+func (graph npmFleetGraph) seedConsumerRepositories(events []ReleaseEvent) map[string]bool {
+	repositories := map[string]bool{}
+	for _, event := range events {
 		for _, requirement := range graph.requirements[event.Dependency] {
-			roots[requirement.Repository] = true
+			repositories[requirement.Repository] = true
 		}
 	}
-	reachable := map[string]bool{}
-	var visit func(string)
-	visit = func(repository string) {
-		if reachable[repository] {
-			return
-		}
-		reachable[repository] = true
-		for _, consumer := range adjacency[repository] {
-			visit(consumer)
-		}
-	}
-	for repository := range roots {
-		visit(repository)
-	}
-	restricted := map[string][]string{}
-	for repository := range reachable {
-		for _, consumer := range adjacency[repository] {
-			if reachable[consumer] {
-				restricted[repository] = append(restricted[repository], consumer)
-			}
-		}
-		if _, exists := restricted[repository]; !exists {
-			restricted[repository] = nil
-		}
-	}
-	levels := map[string]int{}
-	for _, component := range topologicalLayers(restricted) {
-		for _, repository := range component.nodes {
-			levels[repository] = component.level
-		}
-	}
-	firstLevel := int(^uint(0) >> 1)
-	for repository := range allTargets {
-		level, exists := levels[repository]
-		if !exists {
-			level = 0
-		}
-		if level < firstLevel {
-			firstLevel = level
-		}
-	}
-	selected := map[string][]Target{}
-	var deferred []string
-	for repository, targets := range allTargets {
-		level, exists := levels[repository]
-		if !exists {
-			level = 0
-		}
-		if level == firstLevel {
-			selected[repository] = targets
-		} else {
-			deferred = append(deferred, repository)
-		}
-	}
-	sort.Strings(deferred)
-	return selected, deferred
+	return repositories
 }
 
 func (graph npmFleetGraph) repositoryAdjacency() map[string][]string {
@@ -621,89 +576,12 @@ func (graph npmFleetGraph) hasExternalConsumers(packageName, repository string) 
 // a release wave cannot safely order a relevant cross-repository cycle
 // without a separate coordinated-version protocol.
 func (graph npmFleetGraph) validateAcyclicPropagation(events []ReleaseEvent) error {
-	adjacency := map[string]map[string]bool{}
-	for dependency, requirements := range graph.requirements {
-		provider, internal := graph.packages[dependency]
-		if !internal {
-			continue
-		}
-		for _, requirement := range requirements {
-			if provider.Repository == requirement.Repository {
-				continue
-			}
-			if adjacency[provider.Repository] == nil {
-				adjacency[provider.Repository] = map[string]bool{}
-			}
-			adjacency[provider.Repository][requirement.Repository] = true
-		}
+	fixedRoots := graph.fixedSeedProviderRepositories(events)
+	roots := graph.seedConsumerRepositories(events)
+	for repository := range fixedRoots {
+		roots[repository] = true
 	}
-	roots := map[string]bool{}
-	for _, event := range events {
-		if provider, exists := graph.packages[event.Dependency]; exists {
-			roots[provider.Repository] = true
-		}
-		for _, requirement := range graph.requirements[event.Dependency] {
-			roots[requirement.Repository] = true
-		}
-	}
-	reachable := map[string]bool{}
-	var visitReachable func(string)
-	visitReachable = func(repository string) {
-		if reachable[repository] {
-			return
-		}
-		reachable[repository] = true
-		for consumer := range adjacency[repository] {
-			visitReachable(consumer)
-		}
-	}
-	for repository := range roots {
-		visitReachable(repository)
-	}
-	state := map[string]uint8{}
-	stack := make([]string, 0, len(reachable))
-	stackIndex := map[string]int{}
-	var cycle []string
-	var visitCycle func(string) bool
-	visitCycle = func(repository string) bool {
-		state[repository] = 1
-		stackIndex[repository] = len(stack)
-		stack = append(stack, repository)
-		consumers := make([]string, 0, len(adjacency[repository]))
-		for consumer := range adjacency[repository] {
-			if reachable[consumer] {
-				consumers = append(consumers, consumer)
-			}
-		}
-		sort.Strings(consumers)
-		for _, consumer := range consumers {
-			switch state[consumer] {
-			case 0:
-				if visitCycle(consumer) {
-					return true
-				}
-			case 1:
-				cycle = append(cycle, stack[stackIndex[consumer]:]...)
-				cycle = append(cycle, consumer)
-				return true
-			}
-		}
-		stack = stack[:len(stack)-1]
-		delete(stackIndex, repository)
-		state[repository] = 2
-		return false
-	}
-	repositories := make([]string, 0, len(reachable))
-	for repository := range reachable {
-		repositories = append(repositories, repository)
-	}
-	sort.Strings(repositories)
-	for _, repository := range repositories {
-		if state[repository] == 0 && visitCycle(repository) {
-			return fmt.Errorf("dependency propagation cycle requires a coordinated release protocol: %s", strings.Join(cycle, " -> "))
-		}
-	}
-	return nil
+	return validateAcyclicCampaignPropagation(graph.repositoryAdjacency(), roots, fixedRoots)
 }
 
 var (

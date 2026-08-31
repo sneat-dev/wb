@@ -220,6 +220,98 @@ func TestGoFleetGraphCoalescesAllReleasesIntoDiamondSink(t *testing.T) {
 	}
 }
 
+func TestGoFleetGraphTreatsSeedProviderAsFixedCampaignRoot(t *testing.T) {
+	t.Parallel()
+	seed := []ReleaseEvent{{Dependency: "example.com/a", Version: "v0.2.0", Source: "explicit"}}
+	events := append(append([]ReleaseEvent(nil), seed...), ReleaseEvent{Dependency: "example.com/b", Version: "v0.2.0", Source: "observed_release"})
+	first := goFleetGraph{
+		modules: map[string]goFleetModule{
+			"example.com/a": {Path: "example.com/a", Repository: "acme/a"},
+			"example.com/b": {Path: "example.com/b", Repository: "acme/b"},
+		},
+		requirements: map[string][]goFleetRequirement{
+			"example.com/a": {{Dependency: "example.com/a", Version: "v0.1.0", ConsumerModule: "example.com/b", Repository: "acme/b"}},
+			"example.com/b": {
+				{Dependency: "example.com/b", Version: "v0.1.0", ConsumerModule: "example.com/a", Repository: "acme/a"},
+				{Dependency: "example.com/b", Version: "v0.1.0", ConsumerModule: "example.com/c", Repository: "acme/c"},
+			},
+		},
+	}
+	if err := first.validateAcyclicPropagation(seed); err != nil {
+		t.Fatal(err)
+	}
+	targets, deferred := first.coalescedRepositoriesForEvents(seed, events)
+	if len(targets) != 1 || len(targets["acme/b"]) != 1 || targets["acme/b"][0].Dependency != "example.com/a" || len(deferred) != 1 || deferred[0] != "acme/c" {
+		t.Fatalf("first targets = %+v, deferred = %v", targets, deferred)
+	}
+	if _, scheduled := targets["acme/a"]; scheduled {
+		t.Fatalf("fixed seed provider was scheduled: %+v", targets)
+	}
+
+	// After acme/b's release is observed, acme/a still consumes that release
+	// but remains fixed; acme/c is the only next-wave target.
+	next := first
+	next.requirements = map[string][]goFleetRequirement{
+		"example.com/a": {{Dependency: "example.com/a", Version: "v0.2.0", ConsumerModule: "example.com/b", Repository: "acme/b"}},
+		"example.com/b": first.requirements["example.com/b"],
+	}
+	if err := next.validateAcyclicPropagation(seed); err != nil {
+		t.Fatal(err)
+	}
+	targets, deferred = next.coalescedRepositoriesForEvents(seed, events)
+	if len(targets) != 1 || len(targets["acme/c"]) != 1 || targets["acme/c"][0].Dependency != "example.com/b" || len(deferred) != 0 {
+		t.Fatalf("next targets = %+v, deferred = %v", targets, deferred)
+	}
+	if _, scheduled := targets["acme/a"]; scheduled {
+		t.Fatalf("fixed seed provider was rescheduled: %+v", targets)
+	}
+}
+
+func TestNpmFleetGraphTreatsSeedProviderAsFixedCampaignRoot(t *testing.T) {
+	t.Parallel()
+	seed := []ReleaseEvent{{Dependency: "@acme/a", Version: "0.2.0", Source: "explicit"}}
+	events := append(append([]ReleaseEvent(nil), seed...), ReleaseEvent{Dependency: "@acme/b", Version: "0.2.0", Source: "observed_release"})
+	first := npmFleetGraph{
+		packages: map[string]npmFleetPackage{
+			"@acme/a": {Name: "@acme/a", Repository: "acme/a"},
+			"@acme/b": {Name: "@acme/b", Repository: "acme/b"},
+		},
+		requirements: map[string][]npmFleetRequirement{
+			"@acme/a": {{Dependency: "@acme/a", Version: "0.1.0", ConsumerPackage: "@acme/b", Repository: "acme/b"}},
+			"@acme/b": {
+				{Dependency: "@acme/b", Version: "0.1.0", ConsumerPackage: "@acme/a", Repository: "acme/a"},
+				{Dependency: "@acme/b", Version: "0.1.0", ConsumerPackage: "@acme/c", Repository: "acme/c"},
+			},
+		},
+	}
+	if err := first.validateAcyclicPropagation(seed); err != nil {
+		t.Fatal(err)
+	}
+	targets, deferred := first.coalescedRepositoriesForEvents(seed, events)
+	if len(targets) != 1 || len(targets["acme/b"]) != 1 || targets["acme/b"][0].Dependency != "@acme/a" || len(deferred) != 1 || deferred[0] != "acme/c" {
+		t.Fatalf("first targets = %+v, deferred = %v", targets, deferred)
+	}
+	if _, scheduled := targets["acme/a"]; scheduled {
+		t.Fatalf("fixed seed provider was scheduled: %+v", targets)
+	}
+
+	next := first
+	next.requirements = map[string][]npmFleetRequirement{
+		"@acme/a": {{Dependency: "@acme/a", Version: "0.2.0", ConsumerPackage: "@acme/b", Repository: "acme/b"}},
+		"@acme/b": first.requirements["@acme/b"],
+	}
+	if err := next.validateAcyclicPropagation(seed); err != nil {
+		t.Fatal(err)
+	}
+	targets, deferred = next.coalescedRepositoriesForEvents(seed, events)
+	if len(targets) != 1 || len(targets["acme/c"]) != 1 || targets["acme/c"][0].Dependency != "@acme/b" || len(deferred) != 0 {
+		t.Fatalf("next targets = %+v, deferred = %v", targets, deferred)
+	}
+	if _, scheduled := targets["acme/a"]; scheduled {
+		t.Fatalf("fixed seed provider was rescheduled: %+v", targets)
+	}
+}
+
 func TestRefreshStaleReleaseEventsUsesNewestVersionBeforeCI(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
@@ -349,15 +441,37 @@ func TestGoFleetGraphRejectsRelevantCrossRepositoryCycle(t *testing.T) {
 	t.Parallel()
 	graph := goFleetGraph{
 		modules: map[string]goFleetModule{
-			"example.com/a": {Path: "example.com/a", Repository: "acme/a"},
-			"example.com/b": {Path: "example.com/b", Repository: "acme/b"},
+			"example.com/provider": {Path: "example.com/provider", Repository: "acme/provider"},
+			"example.com/a":        {Path: "example.com/a", Repository: "acme/a"},
+			"example.com/b":        {Path: "example.com/b", Repository: "acme/b"},
 		},
 		requirements: map[string][]goFleetRequirement{
-			"example.com/a": {{Dependency: "example.com/a", ConsumerModule: "example.com/b", Repository: "acme/b"}},
-			"example.com/b": {{Dependency: "example.com/b", ConsumerModule: "example.com/a", Repository: "acme/a"}},
+			"example.com/provider": {{Dependency: "example.com/provider", ConsumerModule: "example.com/a", Repository: "acme/a"}},
+			"example.com/a":        {{Dependency: "example.com/a", ConsumerModule: "example.com/b", Repository: "acme/b"}},
+			"example.com/b":        {{Dependency: "example.com/b", ConsumerModule: "example.com/a", Repository: "acme/a"}},
 		},
 	}
-	err := graph.validateAcyclicPropagation([]ReleaseEvent{{Dependency: "example.com/a", Version: "v0.2.0"}})
+	err := graph.validateAcyclicPropagation([]ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0"}})
+	if err == nil || !strings.Contains(err.Error(), "acme/a -> acme/b -> acme/a") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestNpmFleetGraphRejectsRelevantNonSeedCrossRepositoryCycle(t *testing.T) {
+	t.Parallel()
+	graph := npmFleetGraph{
+		packages: map[string]npmFleetPackage{
+			"@acme/provider": {Name: "@acme/provider", Repository: "acme/provider"},
+			"@acme/a":        {Name: "@acme/a", Repository: "acme/a"},
+			"@acme/b":        {Name: "@acme/b", Repository: "acme/b"},
+		},
+		requirements: map[string][]npmFleetRequirement{
+			"@acme/provider": {{Dependency: "@acme/provider", ConsumerPackage: "@acme/a", Repository: "acme/a"}},
+			"@acme/a":        {{Dependency: "@acme/a", ConsumerPackage: "@acme/b", Repository: "acme/b"}},
+			"@acme/b":        {{Dependency: "@acme/b", ConsumerPackage: "@acme/a", Repository: "acme/a"}},
+		},
+	}
+	err := graph.validateAcyclicPropagation([]ReleaseEvent{{Dependency: "@acme/provider", Version: "0.2.0"}})
 	if err == nil || !strings.Contains(err.Error(), "acme/a -> acme/b -> acme/a") {
 		t.Fatalf("error = %v", err)
 	}
