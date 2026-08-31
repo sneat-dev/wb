@@ -44,7 +44,7 @@ func generateNxVersionPlan(ctx context.Context, worktree, waveID string, decisio
 		// A generated filename is wave-scoped. Refusing to overwrite a file with
 		// different contents preserves user-authored plans and makes a collision
 		// visible instead of silently publishing an incomplete candidate.
-		return fmt.Errorf("Nx version plan %s already exists with different contents", filepath.ToSlash(filepath.Join(".nx", "version-plans", filename)))
+		return fmt.Errorf("nx version plan %s already exists with different contents", filepath.ToSlash(filepath.Join(".nx", "version-plans", filename)))
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return readErr
 	}
