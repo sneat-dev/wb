@@ -3,6 +3,7 @@ package deps
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+)
+
+const (
+	leakedOutputPipeHelperEnv  = "WB_TEST_LEAKED_OUTPUT_PIPE_HELPER"
+	leakedOutputPipePIDFileEnv = "WB_TEST_LEAKED_OUTPUT_PIPE_PID_FILE"
 )
 
 func TestGoCommandEnvironmentExtendsPrivateModuleSettings(t *testing.T) {
@@ -66,10 +72,6 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 
 	directory := t.TempDir()
 	pidFile := filepath.Join(directory, "descendant.pid")
-	launcher := filepath.Join(directory, "launcher.sh")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 2 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
 		contents, err := os.ReadFile(pidFile)
 		if err != nil {
@@ -83,15 +85,48 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 		}
 	})
 
+	environment := append(os.Environ(),
+		leakedOutputPipeHelperEnv+"=1",
+		leakedOutputPipePIDFileEnv+"="+pidFile,
+	)
 	started := time.Now()
-	_, _, err := runCommand(context.Background(), time.Second, 0, directory, launcher, pidFile)
-	// Leave a small scheduler allowance around the one-second command timeout.
-	// The regression boundary is the two-second descendant-held pipe, not a
-	// sub-millisecond assertion about when a loaded runner observes a deadline.
-	if elapsed := time.Since(started); elapsed > 1100*time.Millisecond {
+	_, _, err := runCommandWithEnv(
+		context.Background(),
+		5*time.Second,
+		0,
+		directory,
+		environment,
+		os.Args[0],
+		"-test.run=^TestRunCommandLeakedOutputPipeHelper$",
+	)
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("runCommand waited %s for a descendant-held output pipe", elapsed)
 	}
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		t.Fatalf("error = %v, want wrapped exec.ErrWaitDelay", err)
 	}
+}
+
+func TestRunCommandLeakedOutputPipeHelper(t *testing.T) {
+	if os.Getenv(leakedOutputPipeHelperEnv) != "1" {
+		return
+	}
+	pidFile := os.Getenv(leakedOutputPipePIDFileEnv)
+	if pidFile == "" {
+		fmt.Fprintln(os.Stderr, "missing leaked-output-pipe PID file")
+		os.Exit(2)
+	}
+	descendant := exec.Command("sleep", "10")
+	descendant.Stdout = os.Stdout
+	descendant.Stderr = os.Stderr
+	if err := descendant.Start(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(3)
+	}
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(descendant.Process.Pid)), 0o600); err != nil {
+		_ = descendant.Process.Kill()
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(4)
+	}
+	os.Exit(0)
 }
