@@ -1,8 +1,15 @@
 package deps
 
 import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGoCommandEnvironmentExtendsPrivateModuleSettings(t *testing.T) {
@@ -47,4 +54,41 @@ func environmentValues(environment []string) map[string]string {
 		}
 	}
 	return values
+}
+
+func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
+	// Keep this regression bounded while preserving the production five-second
+	// protection interval. This test is deliberately not parallel because it
+	// changes a package-private process-launch setting.
+	previousWaitDelay := commandPipeDrainWaitDelay
+	commandPipeDrainWaitDelay = 25 * time.Millisecond
+	t.Cleanup(func() { commandPipeDrainWaitDelay = previousWaitDelay })
+
+	directory := t.TempDir()
+	pidFile := filepath.Join(directory, "descendant.pid")
+	launcher := filepath.Join(directory, "launcher.sh")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 2 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		contents, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(contents)))
+		if err == nil {
+			if process, processErr := os.FindProcess(pid); processErr == nil {
+				_ = process.Kill()
+			}
+		}
+	})
+
+	started := time.Now()
+	_, _, err := runCommand(context.Background(), time.Second, 0, directory, launcher, pidFile)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("runCommand waited %s for a descendant-held output pipe", elapsed)
+	}
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("error = %v, want wrapped exec.ErrWaitDelay", err)
+	}
 }
