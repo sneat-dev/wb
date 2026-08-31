@@ -369,7 +369,7 @@ func newDepsSetCmd() *cobra.Command {
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 30*time.Second, "provider release polling interval when --propagate is used")
 	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before a downstream build when --propagate is used (0 disables)")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
-	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge")
+	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge or PR validation")
 	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "legacy explicit escape hatch that skips local verification (distinct from --validation=fast)")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check and CI wait (0 disables)")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
@@ -432,7 +432,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse existing wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
-	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge")
+	command.Flags().StringVar(&options.validation, "validation", string(deps.ValidationModeFull), "validation mode: full, or fast with mandatory exact PR-head CI before merge or PR validation")
 	command.Flags().BoolVar(&options.noVerify, "no-verify", false, "legacy explicit escape hatch that skips local verification (distinct from --validation=fast)")
 	command.Flags().DurationVar(&options.timeout, "timeout", 30*time.Minute, "maximum duration per external check, CI wait, or release wait (0 disables)")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
@@ -484,8 +484,8 @@ func dependencyValidationOptions(command *cobra.Command, options depsSetOptions)
 		if checksChanged {
 			return "", nil, fmt.Errorf("--validation=fast and --checks cannot be used together")
 		}
-		if !options.dryRun && !options.merge {
-			return "", nil, fmt.Errorf("--validation=fast requires --merge so exact PR-head GitHub checks remain mandatory")
+		if !options.dryRun && !options.pr && !options.merge {
+			return "", nil, fmt.Errorf("--validation=fast requires --pr or --merge so exact PR-head GitHub checks remain mandatory")
 		}
 		return mode, nil, nil
 	}

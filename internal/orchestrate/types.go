@@ -39,7 +39,11 @@ type Options struct {
 	Push              bool
 	PR                bool
 	Merge             bool
-	Progress          progress.Reporter
+	// WaitForPRChecks observes exact PR-head checks after opening a pull
+	// request, but deliberately does not merge it. It is only valid with PR
+	// publication and is intended for validation-only campaigns.
+	WaitForPRChecks bool
+	Progress        progress.Reporter
 
 	// Prompt is recorded as the originating instruction in the WB manifest
 	// journal of every worktree this operation creates, satisfying wb's own
@@ -112,8 +116,12 @@ type PullRequestWaitOptions struct {
 	// landed Head must remain an ancestor of the observed target. Pre-landing
 	// candidate and pull-request waits retain exact target-head freshness.
 	AllowTargetDescendant bool
-	Slice                 time.Duration
-	CheckPollInterval     time.Duration
+	// AllowUnfenced permits a validation-only PR check receipt when the target
+	// branch has no server-enforced strict freshness fence. Merge callers leave
+	// this false; it is an explicit opt-in for wait-only validation.
+	AllowUnfenced     bool
+	Slice             time.Duration
+	CheckPollInterval time.Duration
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
 	Progress func(PullRequestWaitProgress)

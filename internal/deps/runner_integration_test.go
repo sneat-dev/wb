@@ -78,7 +78,7 @@ func TestNormalizeOptionsMakesPublicationFlagsCumulative(t *testing.T) {
 	}
 }
 
-func TestNormalizeOptionsKeepsFastValidationBoundToMerge(t *testing.T) {
+func TestNormalizeOptionsKeepsFastValidationBoundToPublication(t *testing.T) {
 	t.Parallel()
 	options, lifecycle, err := normalizeOptions(Options{
 		GitHubDir: t.TempDir(), ValidationMode: ValidationModeFast, Merge: true,
@@ -89,10 +89,19 @@ func TestNormalizeOptionsKeepsFastValidationBoundToMerge(t *testing.T) {
 	if options.ValidationMode != ValidationModeFast || options.Verify || lifecycle.Verify || !lifecycle.Merge {
 		t.Fatalf("normalized fast options = %+v lifecycle=%+v", options, lifecycle)
 	}
+	prOptions, prLifecycle, err := normalizeOptions(Options{
+		GitHubDir: t.TempDir(), ValidationMode: ValidationModeFast, PR: true,
+	}, "deps-set-fast-pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prOptions.ValidationMode != ValidationModeFast || prOptions.Verify || prLifecycle.Verify || prLifecycle.Merge || !prLifecycle.PR || !prLifecycle.WaitForPRChecks {
+		t.Fatalf("normalized fast PR options = %+v lifecycle=%+v", prOptions, prLifecycle)
+	}
 	if _, _, err := normalizeOptions(Options{
 		GitHubDir: t.TempDir(), ValidationMode: ValidationModeFast,
-	}, "deps-set-unsafe-fast"); err == nil || !strings.Contains(err.Error(), "requires --merge") {
-		t.Fatalf("fast validation without merge error = %v", err)
+	}, "deps-set-unsafe-fast"); err == nil || !strings.Contains(err.Error(), "requires --pr or --merge") {
+		t.Fatalf("fast validation without publication error = %v", err)
 	}
 }
 

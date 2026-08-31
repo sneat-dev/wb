@@ -66,8 +66,9 @@ func TestDependencyValidationModesKeepFastBoundToExactPRHeadCI(t *testing.T) {
 	}{
 		{name: "full default", options: depsSetOptions{validation: "full"}, wantMode: deps.ValidationModeFull, wantChecks: 3},
 		{name: "fast merged", options: depsSetOptions{validation: "fast", merge: true}, flags: map[string]string{"validation": "fast"}, wantMode: deps.ValidationModeFast},
+		{name: "fast pull request", options: depsSetOptions{validation: "fast", pr: true}, flags: map[string]string{"validation": "fast"}, wantMode: deps.ValidationModeFast},
 		{name: "fast dry run", options: depsSetOptions{validation: "fast", dryRun: true}, flags: map[string]string{"validation": "fast"}, wantMode: deps.ValidationModeFast},
-		{name: "fast without merge", options: depsSetOptions{validation: "fast"}, flags: map[string]string{"validation": "fast"}, wantError: "requires --merge"},
+		{name: "fast without publication", options: depsSetOptions{validation: "fast"}, flags: map[string]string{"validation": "fast"}, wantError: "requires --pr or --merge"},
 		{name: "fast with local checks", options: depsSetOptions{validation: "fast", merge: true, checks: "lint"}, flags: map[string]string{"validation": "fast", "checks": "lint"}, wantError: "cannot be used together"},
 		{name: "legacy no verify", options: depsSetOptions{validation: "full", noVerify: true}, wantMode: deps.ValidationModeNone},
 		{name: "legacy no verify with validation", options: depsSetOptions{validation: "fast", noVerify: true}, flags: map[string]string{"validation": "fast"}, wantError: "cannot be used together"},

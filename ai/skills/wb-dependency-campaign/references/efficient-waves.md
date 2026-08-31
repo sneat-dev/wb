@@ -21,8 +21,9 @@ wb deps bump go --fleet \
 
 `--validation=full` is the default and runs local lint, test, and build checks.
 Use `--validation=fast` for a CI-authoritative campaign: repository push hooks
-still run, and WB accepts the mode only with `--merge`, so the exact PR head
-must pass required GitHub checks. This is distinct from the legacy
+still run. With `--pr`, WB waits for required checks on the exact PR head and
+reports the PR as validated/awaiting merge; with `--merge`, it additionally
+requires the server-enforced freshness fence before merging. This is distinct from the legacy
 `--no-verify` escape hatch.
 
 WB accumulates ready dependency events before updating a consumer. It opens

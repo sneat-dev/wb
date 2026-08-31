@@ -770,7 +770,10 @@ func (handler waveHandler) PullRequest(repository orchestrate.Repository) (strin
 	title := handler.CommitMessage(repository)
 	switch handler.options.ValidationMode {
 	case ValidationModeFast:
-		return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling. Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before merge.", handler.ecosystem)
+		if handler.options.Merge {
+			return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling. Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before merge.", handler.ecosystem)
+		}
+		return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling. Fast validation retained repository push hooks, and WB requires passing exact PR-head GitHub checks before reporting this PR validated; merge remains an explicit follow-up.", handler.ecosystem)
 	case ValidationModeNone:
 		return title, fmt.Sprintf("Automated by `wb deps bump`. Published provider versions were applied with %s tooling. Local verification was explicitly skipped with the legacy no-verify policy.", handler.ecosystem)
 	default:
