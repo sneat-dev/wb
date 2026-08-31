@@ -211,7 +211,12 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		waveLifecycle.Operation = fmt.Sprintf("%s-wave-%02d", lifecycle.Operation, waveIndex)
 		waveLifecycle.Branch = fmt.Sprintf("wb/deps/bump-%s-wave-%02d", strings.TrimPrefix(lifecycle.Operation, bumpOperationPrefix(options.Ecosystem)), waveIndex)
 		waveLifecycle.Prompt = bumpWavePrompt(options.Ecosystem, waveIndex, report.SeedEvents)
-		handler := waveHandler{ecosystem: options.Ecosystem, targetsByRepository: targetsByRepository, options: options.Options}
+		handler := waveHandler{
+			ecosystem:           options.Ecosystem,
+			targetsByRepository: targetsByRepository,
+			options:             options.Options,
+			versionPlanID:       waveLifecycle.Operation,
+		}
 		results, runErr := orchestrate.Run(ctx, affectedRepositories, handler, waveLifecycle)
 		for _, result := range results {
 			waveReport.Repositories = append(waveReport.Repositories, repositoryReportFromResult(result))
@@ -639,6 +644,10 @@ type waveHandler struct {
 	ecosystem           Ecosystem
 	targetsByRepository map[string][]Target
 	options             Options
+	// versionPlanID is the deterministic identity of this candidate wave. It
+	// is empty outside RunBump's wave lifecycle, so exact deps set remains
+	// deliberately unaffected by Nx version-plan generation.
+	versionPlanID string
 }
 
 func (handler waveHandler) Inspect(ctx context.Context, canonical, base string, repository orchestrate.Repository) (orchestrate.Assessment[[]Decision], error) {
@@ -688,6 +697,11 @@ func (handler waveHandler) Apply(ctx context.Context, worktree string, repositor
 	if handler.ecosystem != EcosystemNPM {
 		if validationErrors := validateGoWaveSelections(ctx, worktree, decisions, handler.options); validationErrors != nil {
 			updateErrors = append(updateErrors, validationErrors)
+		}
+	}
+	if handler.ecosystem == EcosystemNPM && len(updateErrors) == 0 {
+		if err := generateNxVersionPlan(ctx, worktree, handler.versionPlanID, decisions, handler.options); err != nil {
+			updateErrors = append(updateErrors, err)
 		}
 	}
 	sortDecisions(decisions)

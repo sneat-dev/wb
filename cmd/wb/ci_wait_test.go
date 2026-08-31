@@ -1079,6 +1079,10 @@ func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
 
 func writeCIWaitExecutable(t *testing.T, path, contents string) {
 	t.Helper()
+	// Every fake GitHub process must observe only the responses prepared by
+	// this test. Reusing the real per-user observer cache lets another test or
+	// WB process supply a fresh cached response for the same acme/app fixture.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.WriteFile(path, []byte(contents), 0o700); err != nil {
 		t.Fatal(err)
 	}
