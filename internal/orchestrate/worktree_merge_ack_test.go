@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -192,35 +194,66 @@ func TestAcknowledgeLandedFailureAcceptsOlderClaimBaseOnlyWhenItIsAnAncestor(t *
 func TestAcknowledgeLandedFailureRefusesNonAncestorClaimBaseAndIdentityMismatch(t *testing.T) {
 	t.Run("non-ancestor claim base", func(t *testing.T) {
 		fixture := newEngineFixture(t)
+		initialTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+		unrelatedWorktree := filepath.Join(t.TempDir(), "unrelated")
+		runEngineGit(t, fixture.canonical, "worktree", "add", "-b", "test/ack-unrelated", unrelatedWorktree, initialTarget)
+		writeEngineFile(t, filepath.Join(unrelatedWorktree, "unrelated.txt"), "unrelated\n")
+		runEngineGit(t, unrelatedWorktree, "add", "unrelated.txt")
+		runEngineGit(t, unrelatedWorktree, "commit", "-m", "test: unrelated claim base")
+		unrelated := strings.TrimSpace(runEngineGit(t, unrelatedWorktree, "rev-parse", "HEAD"))
 		source := createMergeSource(t, fixture, "ack-bad-base", "feature/ack-bad-base", "source.txt", "source\n")
-		receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+		home, err := wbhome.EnsureRoot(fixture.githubDir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		receipt.Status = WorktreeMergeValidationFailed
+		candidateTask := "ack-non-ancestor"
+		candidateBranch := "wb/integration/main/ack-non-ancestor"
+		candidateWorktree := filepath.Join(home, "worktrees", candidateTask, "acme", "app")
+		if err := os.MkdirAll(filepath.Dir(candidateWorktree), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		runEngineGit(t, fixture.canonical, "worktree", "add", "-b", candidateBranch, candidateWorktree, initialTarget)
+		runEngineGit(t, candidateWorktree, "merge", "--no-edit", source.Branch)
+		candidateSHA := strings.TrimSpace(runEngineGit(t, candidateWorktree, "rev-parse", "HEAD"))
+		prompt := filepath.Join(t.TempDir(), "prompt.txt")
+		if err := os.WriteFile(prompt, []byte("authoritative non-ancestor claim fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err = worktrees.EnsureWorkLogClaim(home, candidateTask, worktrees.CreateResult{
+			Repository: fixture.repository.Slug, CanonicalDir: fixture.canonical, WorktreeDir: candidateWorktree,
+			Branch: candidateBranch, Base: "main", BaseSHA: unrelated,
+		}, worktrees.WorkLogOptions{
+			EffortID: candidateTask, RunID: candidateTask + "-run", Initiator: "test", AgentID: candidateTask,
+			AgentRuntime: "test", Model: "test-model", OriginalPrompt: prompt, RequireOriginalPrompt: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		sources := []WorktreeMergeSource{{Task: "ack-bad-base", Worktree: source.WorktreeDir, Branch: source.Branch, SHA: strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))}}
+		lane := worktreeMergeLaneID(fixture.repository.Slug, "main")
+		receipt := WorktreeMergeReceipt{
+			SchemaVersion: 1, ID: worktreeMergeOperationID(lane, sources), Lane: lane,
+			Phase: WorktreeMergePhasePrepare, Status: WorktreeMergeValidationFailed,
+			Repository: fixture.repository.Slug, Target: "main", TargetSHA: initialTarget,
+			Sources: sources, Candidate: WorktreeMergeCandidate{Task: candidateTask, Worktree: candidateWorktree, Branch: candidateBranch, SHA: candidateSHA},
+			ReceiptPath: filepath.Join(home, "reports", "worktree-merge", "non-ancestor-claim-base.json"), CreatedAt: now, UpdatedAt: now,
+		}
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			t.Fatal(err)
 		}
-		runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", receipt.Candidate.SHA)
+		runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", candidateSHA)
 		runEngineGit(t, fixture.canonical, "push", "origin", "main")
-		writeEngineFile(t, filepath.Join(fixture.canonical, "unrelated.txt"), "unrelated\n")
-		runEngineGit(t, fixture.canonical, "add", "unrelated.txt")
-		runEngineGit(t, fixture.canonical, "commit", "-m", "test: unrelated claim base")
-		unrelated := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
 		view, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: receipt.Candidate.Worktree})
-		if err != nil || view.Claim == nil {
-			t.Fatalf("load candidate claim: %+v err=%v", view, err)
-		}
-		contents, err := os.ReadFile(view.Claim.ClaimPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(view.Claim.ClaimPath, []byte(strings.Replace(string(contents), view.Claim.BaseSHA, unrelated, 1)), 0o600); err != nil {
-			t.Fatal(err)
+		if err != nil || view.Claim != nil || !strings.Contains(strings.Join(view.Notes, "\n"), "live HEAD is not descended from claimed base") {
+			t.Fatalf("invalid-base claim must be rejected by Work Log corroboration: %+v err=%v", view, err)
 		}
 		_, err = AcknowledgeLandedMergeFailure(context.Background(), WorktreeMergeLandedFailureAcknowledgementOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "unsafe claim base"})
-		if err == nil || !strings.Contains(err.Error(), "does not contain immutable claim base") {
-			t.Fatalf("non-ancestor claim base error = %v", err)
+		if err == nil || !strings.Contains(err.Error(), "matching the immutable receipt target and identity") {
+			t.Fatalf("invalid-base public-path error = %v", err)
+		}
+		if err := requireCandidateContainsImmutableClaimBase(context.Background(), candidateWorktree, unrelated, candidateSHA); err == nil || !strings.Contains(err.Error(), "does not contain immutable claim base") {
+			t.Fatalf("non-ancestor claim base predicate error = %v", err)
 		}
 	})
 
@@ -481,7 +514,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 					t.Fatal(err)
 				}
 			},
-			want: "load candidate Work Log",
+			want: "candidate has no active Work Log claim matching the immutable receipt target and identity",
 		},
 		{
 			name: "identity mismatched original candidate claim",
@@ -544,7 +577,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 					t.Fatal(err)
 				}
 			},
-			want: "load replacement Work Log",
+			want: "replacement has no authoritative active Work Log claim matching its identity",
 		},
 		{
 			name: "remote target moved outside replacement",

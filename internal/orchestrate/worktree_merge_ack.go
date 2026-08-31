@@ -146,10 +146,7 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 	if head != receipt.Candidate.SHA {
 		return WorktreeMergeLandedFailureAcknowledgement{}, fmt.Errorf("candidate HEAD %s does not match receipted candidate %s", head, receipt.Candidate.SHA)
 	}
-	if contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, view.Claim.BaseSHA, head); err != nil || !contains {
-		if err == nil {
-			err = fmt.Errorf("candidate %s does not contain immutable claim base %s", head, view.Claim.BaseSHA)
-		}
+	if err := requireCandidateContainsImmutableClaimBase(ctx, receipt.Candidate.Worktree, view.Claim.BaseSHA, head); err != nil {
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	if contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.TargetSHA, head); err != nil || !contains {
@@ -312,6 +309,17 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	return ack, nil
+}
+
+func requireCandidateContainsImmutableClaimBase(ctx context.Context, candidateWorktree, claimBaseSHA, candidateSHA string) error {
+	contains, err := isMergeAncestor(ctx, candidateWorktree, claimBaseSHA, candidateSHA)
+	if err != nil {
+		return err
+	}
+	if !contains {
+		return fmt.Errorf("candidate %s does not contain immutable claim base %s", candidateSHA, claimBaseSHA)
+	}
+	return nil
 }
 
 func validateMergeAcknowledgementCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, candidate WorktreeMergeCandidate) (*worktrees.WorkLogClaimView, error) {
