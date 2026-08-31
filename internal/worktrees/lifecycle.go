@@ -2538,9 +2538,9 @@ func remoteBranchHead(ctx context.Context, repository, branch string) (string, e
 }
 
 // fetchRemoteTargetHead obtains the exact origin target object used for the
-// integration decision. FETCH_HEAD is deliberately used instead of trusting
-// a possibly stale origin/<base> tracking ref. Cleanup repeats this immediately
-// before deletion, so a force-pushed target cannot reuse old evidence.
+// integration decision through an invocation-private ref rather than a stale
+// tracking ref or shared FETCH_HEAD. Cleanup repeats this immediately before
+// deletion, so a force-pushed target cannot reuse old evidence.
 func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (string, error) {
 	if cache := targetHeadCacheFrom(ctx); cache != nil {
 		return cache.resolve(repository, branch, func() (string, error) {
@@ -2563,7 +2563,10 @@ var remoteTargetFetchTimeout = 90 * time.Second
 func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, remoteTargetFetchTimeout)
 	defer cancel()
-	if _, err := git(fetchCtx, repository, "fetch", "--no-tags", "origin", "refs/heads/"+branch); err != nil {
+	head, err := fetchOriginBranchToPrivateRef(fetchCtx, repository, branch, func(runCtx context.Context, args ...string) (string, error) {
+		return git(runCtx, repository, args...)
+	}, nil)
+	if err != nil {
 		// Distinguish our own deadline from a caller who cancelled the whole run:
 		// the operator needs to know this one remote never answered, and which
 		// budget it blew, rather than reading a bare "signal: killed".
@@ -2571,13 +2574,6 @@ func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch strin
 			return "", fmt.Errorf("fetch exact origin/%s target: remote did not answer within %s", branch, remoteTargetFetchTimeout)
 		}
 		return "", fmt.Errorf("fetch exact origin/%s target: %w", branch, err)
-	}
-	head, err := git(ctx, repository, "rev-parse", "FETCH_HEAD")
-	if err != nil {
-		return "", fmt.Errorf("resolve fetched origin/%s target: %w", branch, err)
-	}
-	if !isGitObjectID(head) {
-		return "", fmt.Errorf("origin/%s returned invalid target SHA %q", branch, head)
 	}
 	return head, nil
 }

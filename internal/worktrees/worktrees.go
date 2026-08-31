@@ -397,8 +397,8 @@ func (operation preparedOperationRoot) close() {
 // canonical checkout is only a Git capability: WB never switches it to the
 // base, fast-forwards a local branch, or changes its index or working tree as
 // a side effect of creation. This remains safe when an already-unsafe
-// canonical checkout is dirty or off-base: creation starts from FETCH_HEAD,
-// not from that checkout's local state.
+// canonical checkout is dirty or off-base: creation starts from an exact
+// invocation-private fetched ref, not from that checkout's local state.
 func Create(ctx context.Context, repositories []string, options CreateOptions) ([]CreateResult, error) {
 	normalized, err := normalizeCreateOptions(options)
 	if err != nil {
@@ -1440,6 +1440,15 @@ func canonicalRepositoryPath(projectsRoot, repository string) (owner, name, cano
 // ID pins the new worktree to the commit just verified from origin, even if a
 // later fetch advances origin/<base> before Git creates the branch.
 func synchronizeCanonical(ctx context.Context, canonical *canonicalRepository, repository, base string) (string, error) {
+	return synchronizeCanonicalWithHook(ctx, canonical, repository, base, nil)
+}
+
+func synchronizeCanonicalWithHook(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	repository, base string,
+	afterFetch func(),
+) (string, error) {
 	if err := canonical.validate(); err != nil {
 		return "", err
 	}
@@ -1457,21 +1466,55 @@ func synchronizeCanonical(ctx context.Context, canonical *canonicalRepository, r
 	if gitDir != commonDir {
 		return "", fmt.Errorf("%s is a linked worktree, not the canonical clone for %s", canonical.path, repository)
 	}
-	// Fetching this fully-qualified ref writes only fetch metadata. In
-	// particular, it does not update refs/heads/<base>, which could be stale or
-	// checked out in another worktree. A missing or inaccessible remote base
-	// fails before WB creates a branch or publishes a checkout.
-	if _, err := gitCanonical(ctx, canonical, "fetch", "--no-tags", "origin", "refs/heads/"+base); err != nil {
+	baseRevision, err := fetchOriginBranchToPrivateRef(ctx, repository, base, func(runCtx context.Context, args ...string) (string, error) {
+		return gitCanonical(runCtx, canonical, args...)
+	}, afterFetch)
+	if err != nil {
 		return "", fmt.Errorf("fetch verified origin base %s/%s: %w", repository, base, err)
 	}
-	baseRevision, err := gitCanonical(ctx, canonical, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
-	if err != nil {
-		return "", fmt.Errorf("verify fetched origin base %s/%s: %w", repository, base, err)
-	}
-	if !isGitObjectID(baseRevision) {
-		return "", fmt.Errorf("verify fetched origin base %s/%s: Git returned invalid commit %q", repository, base, baseRevision)
-	}
 	return baseRevision, nil
+}
+
+type originBranchGit func(context.Context, ...string) (string, error)
+
+// fetchOriginBranchToPrivateRef returns the exact commit fetched by this
+// invocation without reading or writing FETCH_HEAD. That file belongs to the
+// whole common Git directory and is therefore not safe authority when WB
+// operations run concurrently against a canonical clone or its worktrees.
+func fetchOriginBranchToPrivateRef(
+	ctx context.Context,
+	repository, branch string,
+	run originBranchGit,
+	afterFetch func(),
+) (revision string, resultErr error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", fmt.Errorf("generate private fetch ref for %s/%s: %w", repository, branch, err)
+	}
+	fetchedRef := fmt.Sprintf("refs/wb/fetch-base/%x", token[:])
+	defer func() {
+		cleanupCtx, cancel := rollbackContext(ctx)
+		defer cancel()
+		if _, err := run(cleanupCtx, "update-ref", "-d", fetchedRef); err != nil {
+			revision = ""
+			resultErr = errors.Join(resultErr, fmt.Errorf("delete private fetch ref %s for %s/%s: %w", fetchedRef, repository, branch, err))
+		}
+	}()
+	refspec := "+refs/heads/" + branch + ":" + fetchedRef
+	if _, err := run(ctx, "fetch", "--no-tags", "--force", "--no-write-fetch-head", "--", "origin", refspec); err != nil {
+		return "", err
+	}
+	if afterFetch != nil {
+		afterFetch()
+	}
+	revision, err := run(ctx, "rev-parse", "--verify", fetchedRef+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if !isGitObjectID(revision) {
+		return "", fmt.Errorf("git returned invalid commit %q", revision)
+	}
+	return revision, nil
 }
 
 func validateExistingWorktree(ctx context.Context, canonical *canonicalRepository, worktree, branch string) error {
