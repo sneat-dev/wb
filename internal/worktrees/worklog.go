@@ -595,6 +595,14 @@ func workLogClaimID(effort string, result CreateResult) string {
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+// WorkLogClaimID returns the portable identity of the claim for one effort
+// and checkout.  Orchestration engines that create a worktree before the
+// normal Work Log writer runs use this same function so the immutable
+// checkout manifest and private claim cannot diverge.
+func WorkLogClaimID(effort string, result CreateResult) string {
+	return workLogClaimID(effort, result)
+}
+
 func successorWorkLogClaimID(parentClaimID, successor, disposition string) string {
 	hash := sha256.New()
 	for _, value := range []string{"successor", parentClaimID, successor, disposition} {
@@ -633,6 +641,30 @@ func validClaimID(value string) bool {
 func recordWorkLog(home, task string, result CreateResult, options WorkLogOptions) (string, error) {
 	outcome, err := recordWorkLogWithHooks(home, task, result, options, workLogPublicationHooks{})
 	return outcome.ClaimPath, err
+}
+
+// EnsureWorkLogClaim publishes the authoritative private claim for a
+// worktree, or confirms the already-published claim on resume.  The local
+// projection remains untrusted: an existing claim is accepted only through
+// activeWorkLogClaim, which corroborates it against the live checkout and its
+// deterministic identity.
+func EnsureWorkLogClaim(home, task string, result CreateResult, options WorkLogOptions) (WorkLogPublicationOutcome, error) {
+	if claim, _, claimPath, err := activeWorkLogClaim(home, result.WorktreeDir); err == nil {
+		effort, run, normalizeErr := normalizeWorkLogOptions(task, options, time.Now().UTC())
+		if normalizeErr != nil {
+			return WorkLogPublicationOutcome{}, normalizeErr
+		}
+		want := workLogClaimID(effort, result)
+		if claim.EffortID != effort || claim.RunID != run || claim.Task != task || claim.Repository != result.Repository ||
+			filepath.Clean(claim.Worktree) != filepath.Clean(result.WorktreeDir) || claim.Branch != result.Branch ||
+			claim.Base != result.Base || claim.BaseSHA != result.BaseSHA || claim.ClaimID != want {
+			return WorkLogPublicationOutcome{}, fmt.Errorf("existing active Work Log claim does not match the operation checkout identity")
+		}
+		return WorkLogPublicationOutcome{ClaimPath: claimPath, EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, ClaimWritten: true, ProjectionWritten: true, OutboxWritten: true}, nil
+	} else if !errors.Is(err, errWorkLogProjectionNotFound) {
+		return WorkLogPublicationOutcome{}, err
+	}
+	return recordWorkLogWithHooks(home, task, result, options, workLogPublicationHooks{})
 }
 
 func recordWorkLogWithHooks(home, task string, result CreateResult, options WorkLogOptions, hooks workLogPublicationHooks) (WorkLogPublicationOutcome, error) {

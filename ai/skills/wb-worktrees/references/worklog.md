@@ -14,6 +14,20 @@ wb worktree log sync .
 wb worktree log finalize . --result success
 ```
 
+For an internally-created dependency-campaign worktree whose immutable
+manifest has a blank `ClaimID`, use the explicit audited recovery path after
+reviewing its diagnosis:
+
+```sh
+wb worktree log recover <worktree> --establish-claim
+wb worktree log recover <worktree> --establish-claim --apply
+```
+
+This publishes the deterministic missing private claim and rebuilds derived
+projections. It refuses non-campaign manifests, changed live branch/base
+identity, or a manifest that already names a claim; immutable manifest and
+journal records are never rewritten.
+
 `wb worktree set --prompt` remains the human-facing alias of `log steer` and
 records `human_declared`. Bare `wb worktree log` still dumps private prompt
 bodies for agent bootstrap; prefer `log show` when bodies must stay redacted.

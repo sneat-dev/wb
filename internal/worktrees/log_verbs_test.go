@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLogVerbsSteerCheckpointRefreshFinalize(t *testing.T) {
@@ -139,6 +140,89 @@ func TestLogRecoverDryRunAndApply(t *testing.T) {
 	}
 	if !applied.Applied || applied.Event == nil || applied.Event.Type != LocalEventRecover {
 		t.Fatalf("apply recover = %#v", applied)
+	}
+}
+
+func TestLogRecoverEstablishesClaimForBlankCampaignManifest(t *testing.T) {
+	fixture := newGitFixture(t)
+	operation := "deps-bump-npm-legacy"
+	worktree := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
+	branch := "wb/" + operation
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", branch, worktree, "origin/main")
+	baseOutput, err := gitTestRun(fixture.canonical, "rev-parse", "origin/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSHA := strings.TrimSpace(baseOutput)
+	if err := WriteManifest(worktree, Manifest{
+		Version: 1, EffortID: operation + ".acme-app", ParentEffort: operation,
+		EffortKind: EffortKindTask, Repository: "acme/app", Worktree: worktree,
+		Branch: branch, Base: "main", BaseSHA: baseSHA, CreatedAt: time.Now().UTC(),
+		DependencyCampaign: true,
+		RunID:              "", ClaimID: "", Provenance: ProvenanceCreated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsurePrompt(worktree, PromptHeader{Source: PromptSourceAgent, Slug: "campaign"}, []byte("dependency campaign")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LogInit(context.Background(), LogInitOptions{ProjectsRoot: fixture.projectsRoot, Worktree: worktree}); err != nil {
+		t.Fatal(err)
+	}
+	manifestBefore, err := os.ReadFile(filepath.Join(worktree, ".wb", "local", "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsBefore, err := os.ReadFile(filepath.Join(worktree, ".wb", "local", "worklog", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dry, err := LogRecover(context.Background(), LogRecoverOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, EstablishClaim: true,
+	})
+	if err != nil || dry.Applied || len(dry.Diagnosis) == 0 {
+		t.Fatalf("dry claim recovery = %#v err=%v", dry, err)
+	}
+	if _, _, _, err := activeWorkLogClaim(fixture.home, worktree); err == nil {
+		t.Fatal("dry claim recovery published an authoritative claim")
+	}
+
+	applied, err := LogRecover(context.Background(), LogRecoverOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, EstablishClaim: true, Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Applied || applied.Event == nil || applied.Event.Type != LocalEventRecover || applied.Projection == nil || applied.Projection.ClaimID == "" {
+		t.Fatalf("applied claim recovery = %#v", applied)
+	}
+	manifestAfter, err := os.ReadFile(filepath.Join(worktree, ".wb", "local", "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(manifestAfter) != string(manifestBefore) {
+		t.Fatal("claim recovery rewrote the immutable manifest")
+	}
+	eventsAfter, err := os.ReadFile(filepath.Join(worktree, ".wb", "local", "worklog", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(eventsAfter), string(eventsBefore)) || len(eventsAfter) <= len(eventsBefore) {
+		t.Fatal("claim recovery did not preserve and append to the local journal")
+	}
+	claim, projection, _, err := activeWorkLogClaim(fixture.home, worktree)
+	if err != nil {
+		t.Fatalf("recovered claim is not authoritative: %v", err)
+	}
+	if claim.ClaimID != applied.Projection.ClaimID || projection.ClaimID != claim.ClaimID {
+		t.Fatalf("claim/projection = %s/%s, result = %s", claim.ClaimID, projection.ClaimID, applied.Projection.ClaimID)
+	}
+	retried, err := LogRecover(context.Background(), LogRecoverOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, EstablishClaim: true, Apply: true,
+	})
+	if err != nil || !retried.Applied || retried.Projection == nil || retried.Projection.ClaimID != claim.ClaimID {
+		t.Fatalf("idempotent claim recovery = %#v err=%v", retried, err)
 	}
 }
 

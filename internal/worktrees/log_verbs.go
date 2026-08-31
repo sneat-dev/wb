@@ -642,9 +642,14 @@ func LogHandoff(ctx context.Context, options LogHandoffOptions) (LogVerbResult, 
 
 // LogRecoverOptions configures wb worktree log recover.
 type LogRecoverOptions struct {
-	ProjectsRoot    string
-	Worktree        string
-	Apply           bool
+	ProjectsRoot string
+	Worktree     string
+	Apply        bool
+	// EstablishClaim is an explicit audited recovery for an internally-created
+	// worktree whose immutable manifest predates private claim publication.
+	// It never rewrites the manifest or local journal events; it only publishes
+	// the missing immutable claim and rebuilds the derived projections.
+	EstablishClaim  bool
 	Takeover        bool
 	Actor           string
 	ReconcileBranch string
@@ -670,6 +675,9 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	if err != nil {
 		return LogVerbResult{}, err
 	}
+	if options.EstablishClaim && options.Takeover {
+		return LogVerbResult{}, fmt.Errorf("--establish-claim cannot be combined with --takeover")
+	}
 	diagnosis := []string{}
 	events, err := readLocalEvents(root)
 	if err != nil {
@@ -681,8 +689,9 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 	if projErr != nil {
 		diagnosis = append(diagnosis, "projection rebuild: "+projErr.Error())
 	}
-	if manifest, err := ReadManifest(root); err != nil {
-		diagnosis = append(diagnosis, "manifest: "+err.Error())
+	manifest, manifestErr := ReadManifest(root)
+	if manifestErr != nil {
+		diagnosis = append(diagnosis, "manifest: "+manifestErr.Error())
 	} else {
 		diagnosis = append(diagnosis, "manifest effort "+manifest.EffortID)
 		projection.EffortID = manifest.EffortID
@@ -707,6 +716,41 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 
 	result := LogVerbResult{
 		Worktree: root, Verb: "recover", Diagnosis: diagnosis, Projection: &projection,
+	}
+	if options.EstablishClaim {
+		if manifestErr != nil {
+			return LogVerbResult{}, fmt.Errorf("establish claim requires a readable immutable manifest: %w", manifestErr)
+		}
+		claimID, err := recoverableBlankManifestClaimID(ctx, root, manifest)
+		if err != nil {
+			return LogVerbResult{}, err
+		}
+		diagnosis = append(diagnosis, "expected recovered claim "+claimID)
+		result.Diagnosis = diagnosis
+		if !options.Apply {
+			result.Notes = []string{"dry-run only; pass --apply to publish the missing private Work Log claim and rebuild derived projections"}
+			return result, nil
+		}
+		home, err := wbhome.Root(options.ProjectsRoot)
+		if err != nil {
+			return LogVerbResult{}, err
+		}
+		outcome, err := recoverBlankManifestClaim(ctx, home, root, manifest)
+		if err != nil {
+			return LogVerbResult{}, err
+		}
+		event, recoveredProjection, err := appendLocalEvent(root, LocalWorkLogEvent{
+			Type: LocalEventRecover, Message: "authoritative Work Log claim recovered from immutable campaign manifest",
+			Extra: map[string]any{"claim_id": outcome.ClaimID, "recovery": "blank_manifest_claim"},
+		})
+		if err != nil {
+			return LogVerbResult{}, fmt.Errorf("record claim recovery event: %w", err)
+		}
+		result.Event = &event
+		result.Projection = &recoveredProjection
+		result.Applied = true
+		result.Notes = []string{"published authoritative private Work Log claim", "rebuilt derived Work Log projections"}
+		return result, nil
 	}
 	if !options.Apply {
 		result.Notes = []string{"dry-run only; pass --apply to rewrite projection.json", "pass --takeover with --apply to record an explicit takeover event"}
@@ -743,6 +787,62 @@ func LogRecover(ctx context.Context, options LogRecoverOptions) (LogVerbResult, 
 		result.Projection = &updated
 	}
 	return result, nil
+}
+
+func recoverableBlankManifestClaimID(ctx context.Context, root string, manifest Manifest) (string, error) {
+	if !manifest.DependencyCampaign {
+		return "", fmt.Errorf("claim establishment is supported only for dependency-campaign manifests")
+	}
+	if strings.TrimSpace(manifest.ClaimID) != "" {
+		return "", fmt.Errorf("manifest already records ClaimID %q; refusing to establish a replacement claim", manifest.ClaimID)
+	}
+	if strings.TrimSpace(manifest.EffortID) == "" || strings.TrimSpace(manifest.Repository) == "" ||
+		strings.TrimSpace(manifest.Worktree) == "" || strings.TrimSpace(manifest.Branch) == "" ||
+		strings.TrimSpace(manifest.Base) == "" || !isGitObjectID(strings.TrimSpace(manifest.BaseSHA)) {
+		return "", fmt.Errorf("immutable campaign manifest lacks complete checkout identity; refusing claim recovery")
+	}
+	if filepath.Clean(manifest.Worktree) != filepath.Clean(root) {
+		return "", fmt.Errorf("immutable campaign manifest names worktree %q, not %q", manifest.Worktree, root)
+	}
+	evidence := observeLocalGit(ctx, root)
+	if evidence.Branch != manifest.Branch {
+		return "", fmt.Errorf("live branch %q does not match immutable campaign manifest branch %q", evidence.Branch, manifest.Branch)
+	}
+	if _, err := git(ctx, root, "merge-base", "--is-ancestor", manifest.BaseSHA, evidence.Head); err != nil {
+		return "", fmt.Errorf("live HEAD is not descended from immutable campaign base %s: %w", manifest.BaseSHA, err)
+	}
+	effort := manifest.EffortID
+	return WorkLogClaimID(effort, CreateResult{
+		Repository: manifest.Repository, WorktreeDir: root, Branch: manifest.Branch,
+		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
+	}), nil
+}
+
+func recoverBlankManifestClaim(ctx context.Context, home, root string, manifest Manifest) (WorkLogPublicationOutcome, error) {
+	claimID, err := recoverableBlankManifestClaimID(ctx, root, manifest)
+	if err != nil {
+		return WorkLogPublicationOutcome{}, err
+	}
+	task := ParentEffort(manifest.EffortID)
+	if task == "" {
+		task = manifest.EffortID
+	}
+	runID := strings.TrimSpace(manifest.RunID)
+	if runID == "" {
+		runID = "recovery-" + claimID[:16]
+	}
+	model := strings.TrimSpace(manifest.Model)
+	if model == "" {
+		model = "unknown"
+	}
+	return EnsureWorkLogClaim(home, task, CreateResult{
+		Repository: manifest.Repository, WorktreeDir: root, Branch: manifest.Branch,
+		Base: manifest.Base, BaseSHA: manifest.BaseSHA,
+	}, WorkLogOptions{
+		EffortID: manifest.EffortID, RunID: runID, Initiator: manifest.Initiator,
+		AgentID: manifest.AgentID, AgentRuntime: manifest.AgentRuntime, Model: model,
+		CLI: manifest.CLI, Provider: manifest.Provider,
+	})
 }
 
 // LogFinalizeOptions configures wb worktree log finalize.

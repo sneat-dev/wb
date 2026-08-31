@@ -123,6 +123,22 @@ func TestRunWaveWorktreeSatisfiesOwnCommitAdmissionGuard(t *testing.T) {
 	if result.Status != "committed" || result.Commit == "" {
 		t.Fatalf("result = %+v", result)
 	}
+	manifest, err := worktrees.ReadManifest(result.WorktreeDir)
+	if err != nil {
+		t.Fatalf("read wave manifest: %v", err)
+	}
+	if manifest.ClaimID == "" || manifest.RunID == "" {
+		t.Fatalf("wave manifest lacks claim identity: %+v", manifest)
+	}
+	view, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
+		ProjectsRoot: fixture.githubDir, Worktree: result.WorktreeDir,
+	})
+	if err != nil {
+		t.Fatalf("load wave Work Log: %v", err)
+	}
+	if view.Claim == nil || view.Claim.ClaimID != manifest.ClaimID {
+		t.Fatalf("wave Work Log claim = %+v, manifest = %+v", view.Claim, manifest)
+	}
 	guardResult, err := worktrees.Guard(context.Background(), result.WorktreeDir, worktrees.GuardOptions{
 		ProjectsRoot: fixture.githubDir, Base: "main", Admission: worktrees.AdmissionEnforce,
 	})

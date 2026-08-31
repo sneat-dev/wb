@@ -7632,6 +7632,7 @@
               "flags": [
                 "--actor",
                 "--apply",
+                "--establish-claim",
                 "--event-id",
                 "--expected-head",
                 "--format",
@@ -7642,6 +7643,7 @@
               ],
               "modes": [
                 "Diagnoses journal/claim disagreement; --apply rewrites projection.json; --takeover records explicit takeover.",
+                "--establish-claim is an explicit audited recovery for dependency-campaign manifests with blank ClaimID; it publishes the missing private claim and rebuilds derived projections without changing immutable manifest or journal records.",
                 "--reconcile-branch is dry-run by default. With --apply --remote plus exact head, actor, reason, and event ID, it verifies immutable claim/live worktree/owner/PR/target/remote evidence, preserves both old claim refs in private verified bundles, retires them with exact leases, rebinds the live branch, appends one idempotent branch_reconciled event, resumes from its private stage record, and reports ready_for_normal_cleanup."
               ]
             }
@@ -7655,6 +7657,7 @@
               "command": "wb worktree log recover --help",
               "contains": [
                 "--apply",
+                "--establish-claim",
                 "--reconcile-branch",
                 "--expected-head",
                 "--remote",
