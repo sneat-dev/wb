@@ -100,6 +100,34 @@ func TestSyncDryRunPlansPullWithoutClaimingItRan(t *testing.T) {
 	}
 }
 
+func TestSyncDryRunMatchesApplyForDetachedClone(t *testing.T) {
+	origin := newRemote(t)
+	local := t.TempDir()
+	cloneInto(t, origin, local)
+	git(t, local, "switch", "--detach", "-q", "HEAD")
+
+	repo := discover.Repo{Org: "acme", Name: "widgets", Path: local, Remote: true}
+	dry := Sync(context.Background(), repo, "", true, false)
+	apply := Sync(context.Background(), repo, "", false, false)
+
+	if dry.Status != NoUpstream || apply.Status != NoUpstream {
+		t.Fatalf("detached clone statuses = dry-run %v, apply %v; want NoUpstream for both", dry.Status, apply.Status)
+	}
+	if dry.Tracking != apply.Tracking {
+		t.Fatalf("detached clone tracking differs: dry-run %+v, apply %+v", dry.Tracking, apply.Tracking)
+	}
+	if dry.Tracking.Branch != "" || dry.Tracking.Summary() != "detached HEAD" {
+		t.Fatalf("detached clone tracking = %+v, want detached HEAD", dry.Tracking)
+	}
+	if dry.PullPlanned || dry.PullAttempted || apply.PullPlanned || !apply.PullAttempted {
+		t.Fatalf("pull actions = dry-run planned=%t attempted=%t, apply planned=%t attempted=%t; want preview neither and apply attempted only",
+			dry.PullPlanned, dry.PullAttempted, apply.PullPlanned, apply.PullAttempted)
+	}
+	if dry.Err != nil || apply.Err != nil {
+		t.Fatalf("classified detached clone errors = dry-run %v, apply %v; want nil", dry.Err, apply.Err)
+	}
+}
+
 // An archived remote is read-only, so unpushed commits in its clone can never
 // be pushed. That is a decision someone has to make, not a keep-and-forget.
 // This classification only fires with --prune-archived: it exists to explain
