@@ -282,6 +282,16 @@ func syncActive(repo discover.Repo, projectsRoot string, res Result, dryRun bool
 		return res
 	}
 	if dryRun {
+		// A detached clone cannot be pulled. Apply mode discovers this when
+		// git pull fails and the tracking probe classifies the refusal as
+		// NoUpstream; preview must make the same decision without attempting a
+		// mutating command.
+		if track, trackErr := gitops.Tracking(repo.Path); trackErr == nil && track.Branch == "" {
+			res.Status = NoUpstream
+			res.Detail = status
+			res.Tracking = track
+			return res
+		}
 		res.Status = Pulled
 		res.PullPlanned = true
 		return res
