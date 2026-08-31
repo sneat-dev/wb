@@ -67,7 +67,11 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 	directory := t.TempDir()
 	pidFile := filepath.Join(directory, "descendant.pid")
 	launcher := filepath.Join(directory, "launcher.sh")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 2 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
+	// The descendant sleeps far longer than commandPipeDrainWaitDelay so the
+	// pipe is still provably held open when the WaitDelay bound fires; its
+	// exact length is otherwise irrelevant since the launched process is
+	// killed in cleanup and never awaited.
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 30 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -83,9 +87,25 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 		}
 	})
 
+	// The 25ms commandPipeDrainWaitDelay override above is the actual
+	// mechanism under test: it is what makes runCommand return quickly
+	// despite the descendant still holding the pipe. The values below are
+	// deliberately NOT tuned to that 25ms figure. operationTimeout is a
+	// generous outer safety net so the process-level context deadline can
+	// never be the thing that actually ends this call (removing any race
+	// between "WaitDelay fired" and "context timed out" under scheduler
+	// load); wallClockHangBound is a hang-detector, not a performance
+	// assertion — it only has to be small next to operationTimeout and the
+	// descendant's 30s sleep, not next to the 25ms WaitDelay, so ordinary
+	// scheduling noise (even the ~1s overruns observed on a loaded machine)
+	// cannot make it flake.
+	const (
+		operationTimeout   = 30 * time.Second
+		wallClockHangBound = 10 * time.Second
+	)
 	started := time.Now()
-	_, _, err := runCommand(context.Background(), time.Second, 0, directory, launcher, pidFile)
-	if elapsed := time.Since(started); elapsed > time.Second {
+	_, _, err := runCommand(context.Background(), operationTimeout, 0, directory, launcher, pidFile)
+	if elapsed := time.Since(started); elapsed > wallClockHangBound {
 		t.Fatalf("runCommand waited %s for a descendant-held output pipe", elapsed)
 	}
 	if !errors.Is(err, exec.ErrWaitDelay) {
