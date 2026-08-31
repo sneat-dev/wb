@@ -3,7 +3,6 @@ package deps
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,11 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-)
-
-const (
-	leakedOutputPipeHelperEnv  = "WB_TEST_LEAKED_OUTPUT_PIPE_HELPER"
-	leakedOutputPipePIDFileEnv = "WB_TEST_LEAKED_OUTPUT_PIPE_PID_FILE"
 )
 
 func TestGoCommandEnvironmentExtendsPrivateModuleSettings(t *testing.T) {
@@ -72,6 +66,14 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 
 	directory := t.TempDir()
 	pidFile := filepath.Join(directory, "descendant.pid")
+	launcher := filepath.Join(directory, "launcher.sh")
+	// The descendant sleeps far longer than commandPipeDrainWaitDelay so the
+	// pipe is still provably held open when the WaitDelay bound fires; its
+	// exact length is otherwise irrelevant since the launched process is
+	// killed in cleanup and never awaited.
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nsleep 30 &\necho $! > \"$1\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		contents, err := os.ReadFile(pidFile)
 		if err != nil {
@@ -85,48 +87,28 @@ func TestRunCommandBoundsLeakedPackageManagerOutputPipe(t *testing.T) {
 		}
 	})
 
-	environment := append(os.Environ(),
-		leakedOutputPipeHelperEnv+"=1",
-		leakedOutputPipePIDFileEnv+"="+pidFile,
+	// The 25ms commandPipeDrainWaitDelay override above is the actual
+	// mechanism under test: it is what makes runCommand return quickly
+	// despite the descendant still holding the pipe. The values below are
+	// deliberately NOT tuned to that 25ms figure. operationTimeout is a
+	// generous outer safety net so the process-level context deadline can
+	// never be the thing that actually ends this call (removing any race
+	// between "WaitDelay fired" and "context timed out" under scheduler
+	// load); wallClockHangBound is a hang-detector, not a performance
+	// assertion — it only has to be small next to operationTimeout and the
+	// descendant's 30s sleep, not next to the 25ms WaitDelay, so ordinary
+	// scheduling noise (even the ~1s overruns observed on a loaded machine)
+	// cannot make it flake.
+	const (
+		operationTimeout   = 30 * time.Second
+		wallClockHangBound = 10 * time.Second
 	)
 	started := time.Now()
-	_, _, err := runCommandWithEnv(
-		context.Background(),
-		5*time.Second,
-		0,
-		directory,
-		environment,
-		os.Args[0],
-		"-test.run=^TestRunCommandLeakedOutputPipeHelper$",
-	)
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
+	_, _, err := runCommand(context.Background(), operationTimeout, 0, directory, launcher, pidFile)
+	if elapsed := time.Since(started); elapsed > wallClockHangBound {
 		t.Fatalf("runCommand waited %s for a descendant-held output pipe", elapsed)
 	}
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		t.Fatalf("error = %v, want wrapped exec.ErrWaitDelay", err)
 	}
-}
-
-func TestRunCommandLeakedOutputPipeHelper(t *testing.T) {
-	if os.Getenv(leakedOutputPipeHelperEnv) != "1" {
-		return
-	}
-	pidFile := os.Getenv(leakedOutputPipePIDFileEnv)
-	if pidFile == "" {
-		fmt.Fprintln(os.Stderr, "missing leaked-output-pipe PID file")
-		os.Exit(2)
-	}
-	descendant := exec.Command("sleep", "10")
-	descendant.Stdout = os.Stdout
-	descendant.Stderr = os.Stderr
-	if err := descendant.Start(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(3)
-	}
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(descendant.Process.Pid)), 0o600); err != nil {
-		_ = descendant.Process.Kill()
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(4)
-	}
-	os.Exit(0)
 }

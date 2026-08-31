@@ -5,18 +5,11 @@ import (
 	"fmt"
 	"io"
 	"runtime"
-	"runtime/debug"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 )
-
-// version is overridden at link time by the release build
-// (-ldflags "-X main.version=v1.2.3"). Builds without that stamp fall back to
-// the module version and VCS metadata the Go toolchain embeds, so `wb version`
-// always identifies the binary rather than reporting nothing.
-var version = ""
 
 type versionInfo struct {
 	Version  string `json:"version"`
@@ -68,23 +61,24 @@ func printVersion(out io.Writer, asJSON bool) int {
 	return exitOK
 }
 
+// printBareVersion prints just the resolved version — no "wb " name, no
+// revision, no decoration, no trailing detail — for `wb --version`/`wb -v`,
+// matching the bare-semver contract a script piping `$(wb --version)`
+// expects. `wb version`'s richer multi-line form stays printVersion's job;
+// both are sourced from the identical buildinfo.Version(), so the two
+// surfaces can never disagree about which version this binary is.
+func printBareVersion(out io.Writer) int {
+	_, _ = fmt.Fprintln(out, buildinfo.Version())
+	return exitOK
+}
+
 func collectVersion() versionInfo {
-	info := versionInfo{
+	return versionInfo{
 		Version:  buildinfo.Version(),
+		Revision: buildinfo.Revision(),
+		Built:    buildinfo.Date(),
+		Modified: buildinfo.Modified(),
 		Go:       runtime.Version(),
 		Platform: runtime.GOOS + "/" + runtime.GOARCH,
 	}
-	if build, ok := debug.ReadBuildInfo(); ok {
-		for _, setting := range build.Settings {
-			switch setting.Key {
-			case "vcs.revision":
-				info.Revision = setting.Value
-			case "vcs.time":
-				info.Built = setting.Value
-			case "vcs.modified":
-				info.Modified = setting.Value == "true"
-			}
-		}
-	}
-	return info
 }
