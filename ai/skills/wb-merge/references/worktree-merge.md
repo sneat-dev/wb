@@ -10,6 +10,7 @@ wb worktree merge prepare <source-worktree...> --target main --progress --format
 wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress --format json
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
+wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -55,3 +56,15 @@ tree equality with its receipted squash landing. It then advances the retained
 candidate without rewriting published history, records the failed attempt in
 `forward_repairs`, and opens a fresh PR.
 Do not edit or terminalize the failed receipt by hand.
+
+When a historical prepare `validation_failed` receipt (such as Yardius) or a
+land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but
+its clean candidate is proved by the immutable Work Log base, every exact clean
+receipted source, and the exact freshly fetched remote target to have already
+landed, use `acknowledge-landed-failed`. A post-target CI acknowledgement also
+requires the receipted landing and failed exact-head CI result. It writes a
+separate audited acknowledgement and frees the merger lane for a fresh forward
+repair without changing the historical receipt or Work Log. A candidate or
+landing that is not an ancestor of the current target, a missing active claim,
+or any dirty/drifted receipt/source identity refuses closed; branch names,
+patch similarity, and PR state are never substitutes for the ancestry proof.
