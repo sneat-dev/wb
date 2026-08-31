@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // CoverageReport is a deterministic, machine-readable coverage index.
@@ -190,8 +192,36 @@ func NewCoverageReport(repositories []RepositoryCoverage) CoverageReport {
 }
 
 func goModules(root string) ([]string, error) {
+	workspacePath := filepath.Join(root, "go.work")
+	workspace, err := os.ReadFile(workspacePath)
+	if err == nil {
+		parsed, parseErr := modfile.ParseWork(workspacePath, workspace, nil)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse go.work: %w", parseErr)
+		}
+		modules := make([]string, 0, len(parsed.Use))
+		for _, use := range parsed.Use {
+			module := use.Path
+			if !filepath.IsAbs(module) {
+				module = filepath.Join(root, module)
+			}
+			module, absErr := filepath.Abs(module)
+			if absErr != nil {
+				return nil, fmt.Errorf("resolve go.work use %q: %w", use.Path, absErr)
+			}
+			if _, statErr := os.Stat(filepath.Join(module, "go.mod")); statErr != nil {
+				return nil, fmt.Errorf("go.work use %q has no readable go.mod: %w", use.Path, statErr)
+			}
+			modules = append(modules, module)
+		}
+		sort.Strings(modules)
+		return modules, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read go.work: %w", err)
+	}
 	var modules []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

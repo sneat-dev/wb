@@ -16,10 +16,11 @@ import (
 type Check string
 
 const (
-	CheckLint  Check = "lint"
-	CheckTest  Check = "test"
-	CheckBuild Check = "build"
-	CheckSpec  Check = "spec"
+	CheckLint    Check = "lint"
+	CheckTest    Check = "test"
+	CheckBuild   Check = "build"
+	CheckSpec    Check = "spec"
+	checkInstall Check = "install"
 )
 
 // RunOptions bounds a single external command and retries only failed
@@ -125,20 +126,33 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			report.Results = append(report.Results, entry)
 		}
 	}
-	if node, ok, err := nodeProject(path); err != nil {
+	if nodes, ok, err := nodeProjects(path); err != nil {
 		report.Results = append(report.Results, VerificationEntry{Language: "node", Status: StatusFailed, Detail: err.Error()})
 	} else if ok {
-		for _, check := range checks {
-			if check == CheckSpec {
-				continue
+		for _, node := range nodes {
+			hasScript := false
+			for _, check := range checks {
+				if check != CheckSpec && node.Scripts[string(check)] {
+					hasScript = true
+					break
+				}
 			}
-			if !node.Scripts[string(check)] {
-				report.Results = append(report.Results, VerificationEntry{Language: "node", Check: check, Status: StatusSkipped, Detail: "script is not defined"})
-				continue
+			if hasScript && node.Locked {
+				command := nodeInstallCommand(node.PackageManager)
+				report.Results = append(report.Results, runVerification(ctx, options, "node", node.Module, checkInstall, node.Path, command...))
 			}
-			command := []string{node.PackageManager, "run", string(check)}
-			entry := runVerification(ctx, options, "node", ".", check, path, command...)
-			report.Results = append(report.Results, entry)
+			for _, check := range checks {
+				if check == CheckSpec {
+					continue
+				}
+				if !node.Scripts[string(check)] {
+					report.Results = append(report.Results, VerificationEntry{Language: "node", Module: node.Module, Check: check, Status: StatusSkipped, Detail: "script is not defined"})
+					continue
+				}
+				command := []string{node.PackageManager, "run", string(check)}
+				entry := runVerification(ctx, options, "node", node.Module, check, node.Path, command...)
+				report.Results = append(report.Results, entry)
+			}
 		}
 	}
 	if containsCheck(checks, CheckSpec) {
@@ -267,26 +281,100 @@ type nodeManifest struct {
 type nodeProjectInfo struct {
 	Scripts        map[string]bool
 	PackageManager string
+	Path           string
+	Module         string
+	Locked         bool
 }
 
-func nodeProject(root string) (nodeProjectInfo, bool, error) {
-	path := filepath.Join(root, "package.json")
+func nodeProject(root, path string, locked bool) (nodeProjectInfo, error) {
 	contents, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nodeProjectInfo{}, false, nil
-	}
 	if err != nil {
-		return nodeProjectInfo{}, false, err
+		return nodeProjectInfo{}, err
 	}
 	var manifest nodeManifest
 	if err := json.Unmarshal(contents, &manifest); err != nil {
-		return nodeProjectInfo{}, false, fmt.Errorf("parse package.json: %w", err)
+		return nodeProjectInfo{}, fmt.Errorf("parse package.json: %w", err)
 	}
-	project := nodeProjectInfo{Scripts: map[string]bool{}, PackageManager: detectPackageManager(root, manifest.PackageManager)}
+	project := nodeProjectInfo{Scripts: map[string]bool{}, PackageManager: detectPackageManager(root, manifest.PackageManager), Path: root, Locked: locked}
 	for name := range manifest.Scripts {
 		project.Scripts[name] = true
 	}
-	return project, true, nil
+	return project, nil
+}
+
+// nodeProjects selects the package.json at each independent lockfile scope.
+// A workspace member without its own lockfile is verified by its workspace
+// root, while an independent nested workspace gets its own frozen install and
+// scripts. A root package without a lockfile retains the historical script-only
+// behavior because there is no deterministic install command to run.
+func nodeProjects(root string) ([]nodeProjectInfo, bool, error) {
+	packages := map[string]string{}
+	locked := map[string]bool{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "node_modules", "vendor", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		switch entry.Name() {
+		case "package.json":
+			packages[filepath.Dir(path)] = path
+		case "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock", "bun.lockb":
+			locked[filepath.Dir(path)] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(packages) == 0 {
+		return nil, false, nil
+	}
+	scopes := make([]string, 0, len(locked)+1)
+	for scope := range locked {
+		if _, ok := packages[scope]; ok {
+			scopes = append(scopes, scope)
+		}
+	}
+	if _, ok := packages[root]; ok {
+		selected := false
+		for _, scope := range scopes {
+			if scope == root {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			scopes = append(scopes, root)
+		}
+	}
+	sort.Strings(scopes)
+	projects := make([]nodeProjectInfo, 0, len(scopes))
+	for _, scope := range scopes {
+		project, projectErr := nodeProject(scope, packages[scope], locked[scope])
+		if projectErr != nil {
+			return nil, false, projectErr
+		}
+		project.Module = relativePath(root, scope)
+		projects = append(projects, project)
+	}
+	return projects, true, nil
+}
+
+func nodeInstallCommand(packageManager string) []string {
+	switch packageManager {
+	case "pnpm", "bun":
+		return []string{packageManager, "install", "--frozen-lockfile"}
+	case "yarn":
+		return []string{"yarn", "install", "--frozen-lockfile"}
+	default:
+		return []string{"npm", "ci"}
+	}
 }
 
 func detectPackageManager(root, declared string) string {
