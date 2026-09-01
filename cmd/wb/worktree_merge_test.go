@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -60,6 +61,14 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 		if name != "acknowledge-landed-failed" && name != "acknowledge-receipt-collision" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
 			t.Errorf("merge %s is missing --progress", name)
 		}
+	}
+	resume, _, err := command.Find([]string{"resume"})
+	if err != nil || resume == nil || resume.Flags().Lookup("stop-before-merge") == nil {
+		t.Fatalf("merge resume must expose --stop-before-merge: command=%v err=%v", resume, err)
+	}
+	land, _, err := command.Find([]string{"land"})
+	if err != nil || land == nil || land.Flags().Lookup("stop-before-merge") != nil {
+		t.Fatalf("merge land must not expose resume-only --stop-before-merge: command=%v err=%v", land, err)
 	}
 	ack, _, err := command.Find([]string{"acknowledge-landed-failed"})
 	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil {
@@ -128,6 +137,43 @@ func TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence(t *tes
 	command.SetArgs([]string{"prepare-published-forward-repair", "receipt.json", "source-worktree"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "expected receipt, immutable claim, self-supersession, current target, and one expected SHA per source") {
 		t.Fatalf("missing published forward-repair evidence error = %v", err)
+	}
+}
+
+func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   worktreeMergeFlags
+		wantErr string
+	}{
+		{
+			name:    "requires pull request route",
+			flags:   worktreeMergeFlags{format: "text", route: "auto", onFailure: "stop", timeout: time.Second, stopBeforeMerge: true},
+			wantErr: "requires --route pr",
+		},
+		{
+			name:    "cannot clean before merge",
+			flags:   worktreeMergeFlags{format: "text", route: "pr", onFailure: "stop", timeout: time.Second, cleanup: true, stopBeforeMerge: true},
+			wantErr: "cannot be combined with --cleanup",
+		},
+		{
+			name:  "valid PR handoff",
+			flags: worktreeMergeFlags{format: "text", route: "pr", onFailure: "stop", timeout: time.Second, stopBeforeMerge: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateWorktreeMergeFlags(tt.flags)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateWorktreeMergeFlags() error = %v, want %q", err, tt.wantErr)
+			}
+		})
 	}
 }
 

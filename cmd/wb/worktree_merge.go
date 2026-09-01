@@ -21,6 +21,7 @@ type worktreeMergeFlags struct {
 	model, runtime, agentID, cli, provider string
 	cleanup                                bool
 	progress                               bool
+	stopBeforeMerge                        bool
 	timeout                                time.Duration
 	retry                                  int
 	interval                               time.Duration
@@ -200,6 +201,9 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 		},
 	}
 	bindWorktreeMergeFlags(command, &flags, false, true)
+	if name == "resume" {
+		command.Flags().BoolVar(&flags.stopBeforeMerge, "stop-before-merge", false, "PR-only: validate and publish the exact candidate, prove the open PR, then stop before checks or merge")
+	}
 	return command
 }
 
@@ -567,6 +571,12 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 	if flags.onFailure != "" && flags.onFailure != "stop" && flags.onFailure != "revert" {
 		return fmt.Errorf("unsupported --on-failure %q; use stop or revert", flags.onFailure)
 	}
+	if flags.stopBeforeMerge && orchestrate.WorktreeMergeRoute(flags.route) != orchestrate.WorktreeMergeRoutePullRequest {
+		return fmt.Errorf("--stop-before-merge requires --route pr")
+	}
+	if flags.stopBeforeMerge && flags.cleanup {
+		return fmt.Errorf("--stop-before-merge cannot be combined with --cleanup")
+	}
 	if flags.retry < 0 || flags.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive and --retry must not be negative")
 	}
@@ -582,7 +592,8 @@ func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter pr
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter) orchestrate.WorktreeMergeLandOptions {
 	return orchestrate.WorktreeMergeLandOptions{ProjectsRoot: projectsRoot, Receipt: receipt,
 		Route: orchestrate.WorktreeMergeRoute(flags.route), Cleanup: flags.cleanup, OnFailure: flags.onFailure,
-		Timeout: flags.timeout, Retry: flags.retry, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress}
+		Timeout: flags.timeout, Retry: flags.retry, CheckPollInterval: flags.interval, Progress: reporter, ProgressRequested: flags.progress,
+		StopBeforeMerge: flags.stopBeforeMerge}
 }
 
 func newWorktreeMergeProgress(command *cobra.Command, flags worktreeMergeFlags) *campaignProgress {
