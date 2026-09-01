@@ -533,8 +533,12 @@ receipt, its Work Log, the corrupt self-supersession acknowledgement, a receipt
 collision acknowledgement, or any published record, and it does not write a
 new merge receipt. The caller pins the failed receipt, immutable claim,
 self-supersession acknowledgement, current target, and each supplied source.
-WB requires every receipted source, claim base, receipt target, historical
-self-supersession target, current target, and current repair source to be an
+WB reads every receipted and source-refresh tuple only from the immutable
+receipt as a historical ancestry root; those historical worktrees need not remain live. Each
+supplied source is instead a current WB-managed worktree and
+must have an exact active claim, path, branch, clean HEAD, and pinned SHA.
+Every historical root, claim base, receipt target, historical
+self-supersession target, current target, and current repair source must be an
 ancestor of the resulting clean candidate. The candidate can then be passed to
 correct-self-supersession. Dry-run writes nothing; --apply requires --actor
 and --reason and creates only the new WB candidate and Work Log.`,

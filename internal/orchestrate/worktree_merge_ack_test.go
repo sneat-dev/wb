@@ -1343,14 +1343,14 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 		}
 	})
 
-	t.Run("recorded source", func(t *testing.T) {
+	t.Run("historical source remains effective after its live worktree advances", func(t *testing.T) {
 		fixture, receipt, _, _ := newCorrected(t)
 		source := receipt.Sources[0]
 		writeEngineFile(t, filepath.Join(source.Worktree, "source-drift.txt"), "source drift\n")
 		runEngineGit(t, source.Worktree, "add", "source-drift.txt")
 		runEngineGit(t, source.Worktree, "commit", "-m", "test: drift source after correction")
-		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "does not match") {
-			t.Fatalf("source drift = superseded=%t err=%v", superseded, err)
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+			t.Fatalf("advanced historical source = superseded=%t err=%v", superseded, err)
 		}
 	})
 }

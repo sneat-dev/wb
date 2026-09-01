@@ -170,6 +170,11 @@ func TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence(t *tes
 			t.Errorf("published forward-repair is missing --%s", flag)
 		}
 	}
+	for _, phrase := range []string{"historical ancestry root", "historical worktrees need not remain live", "current WB-managed worktree", "exact active claim"} {
+		if !strings.Contains(child.Long, phrase) {
+			t.Errorf("published forward-repair help is missing %q", phrase)
+		}
+	}
 	command.SetArgs([]string{"prepare-published-forward-repair", "receipt.json", "source-worktree"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "expected receipt, immutable claim, self-supersession, current target, and one expected SHA per source") {
 		t.Fatalf("missing published forward-repair evidence error = %v", err)
