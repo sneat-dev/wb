@@ -179,7 +179,7 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 		return result, nil
 	}
 	beforePublishedForwardRepairCreate()
-	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, sources, currentTarget); err != nil {
+	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, sources, repository, canonical, currentTarget); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	listed, err := worktrees.List(ctx, worktrees.ListOptions{ProjectsRoot: options.ProjectsRoot, Task: task, Base: receipt.Target, Workers: 1})
@@ -250,7 +250,7 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	// Re-read every pre-existing boundary after construction. No new merge
 	// receipt is ever persisted, so a race cannot rewrite historic evidence.
 	beforePublishedForwardRepairFinalRevalidation()
-	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, sources, currentTarget); err != nil {
+	if err := revalidatePublishedForwardRepairEvidence(ctx, options, receiptPath, receiptHash, claimHash, supersessionHash, sources, repository, canonical, currentTarget); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	for _, root := range roots {
@@ -359,7 +359,7 @@ func mergePublishedForwardRepairRoots(ctx context.Context, worktree string, root
 	return nil
 }
 
-func revalidatePublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, receiptPath, receiptHash, claimHash, supersessionHash string, sources []WorktreeMergeSource, currentTarget string) error {
+func revalidatePublishedForwardRepairEvidence(ctx context.Context, options WorktreeMergePublishedForwardRepairOptions, receiptPath, receiptHash, claimHash, supersessionHash string, sources []WorktreeMergeSource, repository, canonical, currentTarget string) error {
 	receipt, err := readWorktreeMergeReceipt(receiptPath)
 	if err != nil || validateValidationFailedSupersessionReceipt(receipt, receiptPath) != nil {
 		return errors.New("failed receipt changed during published forward-repair construction")
@@ -388,8 +388,15 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	} else if !errors.Is(correctionErr, os.ErrNotExist) {
 		return fmt.Errorf("self-supersession correction changed during published forward-repair construction: %w", correctionErr)
 	}
-	if err := recheckWorktreeMergeSources(ctx, sources); err != nil {
-		return err
+	refreshedSources, refreshedRepository, refreshedCanonical, err := inspectPublishedForwardRepairSources(ctx, options.ProjectsRoot, options.Sources, receipt.Target)
+	if err != nil {
+		return fmt.Errorf("revalidate current repair source identity: %w", err)
+	}
+	if refreshedRepository != repository || filepath.Clean(refreshedCanonical) != filepath.Clean(canonical) || !sameWorktreeMergeSources(refreshedSources, sources) {
+		return errors.New("current repair source slice, repository, or canonical identity changed during published forward-repair construction")
+	}
+	if err := requireExpectedPublishedForwardRepairSources(refreshedSources, options.ExpectedSourceSHAs, receipt.Sources); err != nil {
+		return fmt.Errorf("revalidate current repair source evidence: %w", err)
 	}
 	fetched, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil || fetched != currentTarget || fetched != options.ExpectedCurrentTargetSHA {
