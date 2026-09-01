@@ -8216,6 +8216,70 @@
       "notes": "The acknowledgement is not a landing receipt and never rewrites the historical merge receipt or Work Log; exact source and candidate claims/cleanliness, ancestry, and freshly fetched current-target evidence are mandatory."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-receipt-collision",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-receipt-collision",
+              "flags": ["--actor", "--apply", "--expected-candidate", "--expected-current-source", "--expected-historical-refresh-source", "--expected-immutable-claim-sha256", "--expected-receipt-sha256", "--expected-target", "--format", "--initiator", "--mode", "--reason"],
+              "modes": [
+                "Requires explicit digests and revisions for one known historical preparing-receipt collision, then re-reads every proof under the lane lock",
+                "Writes only a separate append-only acknowledgement; the historical validation_failed state is an explicit operator assertion because no pre-mutation receipt digest exists"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-receipt-collision --help",
+              "contains": ["current receipt SHA256", "historical validation_failed", "--apply", "--expected-target", "--expected-candidate", "--actor", "--initiator", "--mode", "--reason"]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": ["wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>"]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
+    },
+    {
       "id": "wb.worktree.merge.land",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",

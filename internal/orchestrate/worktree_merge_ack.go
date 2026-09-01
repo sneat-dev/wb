@@ -16,13 +16,52 @@ import (
 )
 
 const (
-	worktreeMergeLandedFailureAcknowledgementSchemaVersion  = 1
-	worktreeMergeLandedFailureAcknowledgementSuffix         = ".landed-validation-failed.ack.json"
-	worktreeMergeValidationFailureSupersessionSchemaVersion = 1
-	worktreeMergeValidationFailureSupersessionSuffix        = ".validation-failed.superseded.ack.json"
-	worktreeMergePreparedRebatchSchemaVersion               = 1
-	worktreeMergePreparedRebatchSuffix                      = ".prepared.rebatched.ack.json"
+	worktreeMergeLandedFailureAcknowledgementSchemaVersion    = 1
+	worktreeMergeLandedFailureAcknowledgementSuffix           = ".landed-validation-failed.ack.json"
+	worktreeMergeValidationFailureSupersessionSchemaVersion   = 1
+	worktreeMergeValidationFailureSupersessionSuffix          = ".validation-failed.superseded.ack.json"
+	worktreeMergePreparedRebatchSchemaVersion                 = 1
+	worktreeMergePreparedRebatchSuffix                        = ".prepared.rebatched.ack.json"
+	worktreeMergeReceiptCollisionAcknowledgementSchemaVersion = 1
+	worktreeMergeReceiptCollisionAcknowledgementSuffix        = ".receipt-collision.ack.json"
 )
+
+// WorktreeMergeReceiptCollisionAcknowledgement is the narrowly scoped,
+// append-only recovery record for a receipt that was historically rewritten by
+// the pre-guard prepare collision. Historical validation_failed is an operator
+// assertion here: no byte digest of the pre-mutation receipt exists.
+type WorktreeMergeReceiptCollisionAcknowledgement struct {
+	SchemaVersion                               int                    `json:"schema_version"`
+	ID                                          string                 `json:"id"`
+	Status                                      string                 `json:"status"`
+	ReceiptPath                                 string                 `json:"receipt_path"`
+	AcknowledgementPath                         string                 `json:"acknowledgement_path"`
+	ReceiptSHA256                               string                 `json:"receipt_sha256"`
+	ImmutableClaimSHA256                        string                 `json:"immutable_claim_sha256"`
+	ReceiptID                                   string                 `json:"receipt_id"`
+	Lane                                        string                 `json:"lane"`
+	Repository                                  string                 `json:"repository"`
+	Target                                      string                 `json:"target"`
+	ExpectedTargetSHA                           string                 `json:"expected_target_sha"`
+	ExpectedCandidateSHA                        string                 `json:"expected_candidate_sha"`
+	ExpectedCurrentSourceSHA                    string                 `json:"expected_current_source_sha"`
+	ExpectedHistoricalRefreshSourceSHA          string                 `json:"expected_historical_refresh_source_sha"`
+	ClaimBaseSHA                                string                 `json:"claim_base_sha"`
+	Candidate                                   WorktreeMergeCandidate `json:"candidate"`
+	CurrentSources                              []WorktreeMergeSource  `json:"current_sources"`
+	HistoricalRefreshSources                    []WorktreeMergeSource  `json:"historical_refresh_sources"`
+	HistoricalValidationFailedOperatorAssertion bool                   `json:"historical_validation_failed_operator_assertion"`
+	Actor                                       string                 `json:"actor"`
+	Reason                                      string                 `json:"reason"`
+	RecordedAt                                  time.Time              `json:"recorded_at"`
+}
+
+type WorktreeMergeReceiptCollisionAcknowledgementOptions struct {
+	ProjectsRoot, Receipt, ExpectedReceiptSHA256, ExpectedImmutableClaimSHA256                            string
+	ExpectedTargetSHA, ExpectedCandidateSHA, ExpectedCurrentSourceSHA, ExpectedHistoricalRefreshSourceSHA string
+	Apply                                                                                                 bool
+	Actor, Reason                                                                                         string
+}
 
 // WorktreeMergePreparedRebatch is an append-only link from one unlanded
 // prepared receipt to a newly prepared candidate with an additive source set.
@@ -123,6 +162,212 @@ type WorktreeMergeValidationFailureSupersessionOptions struct {
 	Reason              string
 }
 
+// AcknowledgeWorktreeMergeReceiptCollision records the one audited recovery
+// path for a known historical receipt collision. It never infers the incident:
+// the caller must pin every observed digest and revision before --apply can
+// write the separate acknowledgement.
+func AcknowledgeWorktreeMergeReceiptCollision(ctx context.Context, options WorktreeMergeReceiptCollisionAcknowledgementOptions) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
+	if err := requireReceiptCollisionExpectations(options); err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
+	}
+	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	lock, err := AcquireOperationLock(options.ProjectsRoot, receipt.Lane, true)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	defer func() { _ = lock.Release() }()
+
+	// Re-read beneath the lane lock before every proof and before the only write.
+	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	if err := validateReceiptCollisionShape(receipt, receiptPath, options); err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	if err != nil || receiptHash != options.ExpectedReceiptSHA256 {
+		if err == nil {
+			err = fmt.Errorf("receipt SHA256 %s does not match expected %s", receiptHash, options.ExpectedReceiptSHA256)
+		}
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	claim, err := validateMergeAcknowledgementCandidate(ctx, options.ProjectsRoot, receipt, receipt.Candidate)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("validate collision candidate: %w", err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("read immutable candidate claim: %w", err)
+	}
+	claimDigest := sha256.Sum256(claimBytes)
+	claimHash := hex.EncodeToString(claimDigest[:])
+	if claimHash != options.ExpectedImmutableClaimSHA256 {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("immutable claim SHA256 %s does not match expected %s", claimHash, options.ExpectedImmutableClaimSHA256)
+	}
+	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	if strings.TrimSpace(remote) != "" {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, errors.New("collision candidate is published")
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	if currentTarget != options.ExpectedTargetSHA || receipt.TargetSHA != currentTarget {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("exact current target %s or receipt target %s does not match expected %s", currentTarget, receipt.TargetSHA, options.ExpectedTargetSHA)
+	}
+	for _, root := range []string{claim.BaseSHA, receipt.TargetSHA, receipt.Sources[0].SHA, receipt.SourceRefreshes[0].Sources[0].SHA} {
+		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, root, receipt.Candidate.SHA)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("collision candidate %s does not contain required root %s", receipt.Candidate.SHA, root)
+			}
+			return WorktreeMergeReceiptCollisionAcknowledgement{}, ancestorErr
+		}
+	}
+	ackPath := receiptCollisionAcknowledgementPath(receiptPath)
+	ack := WorktreeMergeReceiptCollisionAcknowledgement{
+		SchemaVersion: worktreeMergeReceiptCollisionAcknowledgementSchemaVersion, Status: "receipt_collision_acknowledged",
+		ReceiptPath: receiptPath, AcknowledgementPath: ackPath, ReceiptSHA256: receiptHash, ImmutableClaimSHA256: claimHash,
+		ReceiptID: receipt.ID, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target,
+		ExpectedTargetSHA: options.ExpectedTargetSHA, ExpectedCandidateSHA: options.ExpectedCandidateSHA,
+		ExpectedCurrentSourceSHA: options.ExpectedCurrentSourceSHA, ExpectedHistoricalRefreshSourceSHA: options.ExpectedHistoricalRefreshSourceSHA,
+		ClaimBaseSHA: claim.BaseSHA, Candidate: receipt.Candidate, CurrentSources: append([]WorktreeMergeSource(nil), receipt.Sources...),
+		HistoricalRefreshSources:                    append([]WorktreeMergeSource(nil), receipt.SourceRefreshes[0].Sources...),
+		HistoricalValidationFailedOperatorAssertion: true, Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
+	}
+	ack.ID = receiptCollisionAcknowledgementID(ack)
+	if existing, readErr := readReceiptCollisionAcknowledgement(ackPath, receipt); readErr == nil {
+		if existing.ReceiptSHA256 != receiptHash || existing.ImmutableClaimSHA256 != claimHash {
+			return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("receipt-collision acknowledgement %s binds different immutable evidence", ackPath)
+		}
+		return existing, nil
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, readErr
+	}
+	if !options.Apply {
+		return ack, nil
+	}
+	if err := persistReceiptCollisionAcknowledgement(ackPath, ack); err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	return ack, nil
+}
+
+func requireReceiptCollisionExpectations(options WorktreeMergeReceiptCollisionAcknowledgementOptions) error {
+	for _, expected := range []string{options.ExpectedReceiptSHA256, options.ExpectedImmutableClaimSHA256, options.ExpectedTargetSHA, options.ExpectedCandidateSHA, options.ExpectedCurrentSourceSHA, options.ExpectedHistoricalRefreshSourceSHA} {
+		if strings.TrimSpace(expected) == "" {
+			return errors.New("all expected receipt, claim, target, candidate, current-source, and historical-source identities are required")
+		}
+	}
+	return nil
+}
+
+func validateReceiptCollisionShape(receipt WorktreeMergeReceipt, receiptPath string, options WorktreeMergeReceiptCollisionAcknowledgementOptions) error {
+	if receipt.ReceiptPath != receiptPath || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePreparing || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.ID == "" || receipt.Lane != worktreeMergeLaneID(receipt.Repository, receipt.Target) {
+		return errors.New("receipt is not an exact unlanded preparing collision shape")
+	}
+	if receipt.Candidate.SHA != options.ExpectedCandidateSHA || len(receipt.Sources) != 1 || receipt.Sources[0].SHA != options.ExpectedCurrentSourceSHA || len(receipt.SourceRefreshes) != 1 || len(receipt.SourceRefreshes[0].Sources) != 1 || receipt.SourceRefreshes[0].Sources[0].SHA != options.ExpectedHistoricalRefreshSourceSHA {
+		return errors.New("receipt collision sources or candidate do not match explicit expected identity")
+	}
+	return nil
+}
+
+func receiptCollisionAcknowledgementPath(receiptPath string) string {
+	return receiptPath + worktreeMergeReceiptCollisionAcknowledgementSuffix
+}
+
+func receiptCollisionAcknowledgementID(ack WorktreeMergeReceiptCollisionAcknowledgement) string {
+	hash := sha256.New()
+	for _, value := range []string{ack.ReceiptPath, ack.ReceiptSHA256, ack.ImmutableClaimSHA256, ack.ReceiptID, ack.Lane, ack.ExpectedTargetSHA, ack.ExpectedCandidateSHA, ack.ExpectedCurrentSourceSHA, ack.ExpectedHistoricalRefreshSourceSHA, ack.ClaimBaseSHA} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func persistReceiptCollisionAcknowledgement(path string, ack WorktreeMergeReceiptCollisionAcknowledgement) error {
+	contents, err := json.MarshalIndent(ack, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".receipt-collision-ack-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+func readReceiptCollisionAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	var ack WorktreeMergeReceiptCollisionAcknowledgement
+	if err := json.Unmarshal(contents, &ack); err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("decode receipt-collision acknowledgement %s: %w", path, err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	if ack.SchemaVersion != worktreeMergeReceiptCollisionAcknowledgementSchemaVersion || ack.Status != "receipt_collision_acknowledged" ||
+		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptSHA256 != receiptHash || ack.ReceiptID != receipt.ID || ack.Lane != receipt.Lane ||
+		ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.Candidate != receipt.Candidate || !sameWorktreeMergeSources(ack.CurrentSources, receipt.Sources) ||
+		receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePreparing || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+		len(receipt.Sources) != 1 || len(receipt.SourceRefreshes) != 1 || len(receipt.SourceRefreshes[0].Sources) != 1 || !sameWorktreeMergeSources(ack.HistoricalRefreshSources, receipt.SourceRefreshes[0].Sources) ||
+		ack.ExpectedTargetSHA != receipt.TargetSHA || ack.ExpectedCandidateSHA != receipt.Candidate.SHA || ack.ExpectedCurrentSourceSHA != receipt.Sources[0].SHA || ack.ExpectedHistoricalRefreshSourceSHA != receipt.SourceRefreshes[0].Sources[0].SHA ||
+		!ack.HistoricalValidationFailedOperatorAssertion || ack.ImmutableClaimSHA256 == "" || ack.ClaimBaseSHA == "" || ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != receiptCollisionAcknowledgementID(ack) {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("receipt-collision acknowledgement %s has invalid immutable identity", path)
+	}
+	return ack, nil
+}
+
+func hasReceiptCollisionAcknowledgement(receipt WorktreeMergeReceipt) (bool, error) {
+	_, err := readReceiptCollisionAcknowledgement(receiptCollisionAcknowledgementPath(receipt.ReceiptPath), receipt)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // validatePreparedWorktreeMergeRebatch proves that the old prepared lane is
 // untouched and that the requested source list is a strict additive rebatch:
 // every old branch remains and may only advance by ancestry; new branches are
@@ -137,7 +382,13 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	if err != nil {
 		return nil, err
 	}
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePrepared || receipt.LandingSHA != "" ||
+	collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(receipt)
+	if collisionErr != nil {
+		return nil, collisionErr
+	}
+	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
+		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
+	if receipt.Phase != WorktreeMergePhasePrepare || !preparedOrAcknowledgedCollision || receipt.LandingSHA != "" ||
 		receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.Repository != repository || receipt.Target != target ||
 		receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || len(receipt.Sources) == 0 {
 		return nil, fmt.Errorf("rebatch receipt %s is not an unlanded prepared candidate with complete immutable identity", receiptPath)
@@ -299,9 +550,15 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 	if err != nil {
 		return WorktreeMergePreparedRebatch{}, err
 	}
+	collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(receipt)
+	if collisionErr != nil {
+		return WorktreeMergePreparedRebatch{}, collisionErr
+	}
+	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
+		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
 	if rebatch.SchemaVersion != worktreeMergePreparedRebatchSchemaVersion || rebatch.Status != "prepared_rebatched" ||
 		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
-		rebatch.ReceiptSHA256 != receiptHash || rebatch.ReceiptStatus != WorktreeMergePrepared || rebatch.Lane != receipt.Lane ||
+		rebatch.ReceiptSHA256 != receiptHash || !preparedOrAcknowledgedCollision || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
 		rebatch.Repository != receipt.Repository || rebatch.Target != receipt.Target || rebatch.ReceiptTargetSHA != receipt.TargetSHA ||
 		rebatch.CurrentTargetSHA != receipt.TargetSHA || rebatch.OriginalCandidate != receipt.Candidate ||
 		!sameWorktreeMergeSources(rebatch.OriginalSources, receipt.Sources) || rebatch.ReplacementReceiptPath == receipt.ReceiptPath ||

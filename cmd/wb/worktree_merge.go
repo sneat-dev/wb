@@ -81,7 +81,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
 	return command
 }
 
@@ -276,6 +276,67 @@ proof refuses closed.`,
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeAcknowledgeReceiptCollisionCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	var receiptSHA, claimSHA, targetSHA, candidateSHA, currentSourceSHA, historicalSourceSHA string
+	command := &cobra.Command{
+		Use:   "acknowledge-receipt-collision <merge-receipt>",
+		Short: "Append an audited acknowledgement for one historical receipt collision",
+		Long: `Record the narrowly scoped recovery evidence for a known prepare receipt
+collision without rewriting its receipt or Work Log. The caller must explicitly
+pin the current receipt SHA256, immutable claim SHA256, current target,
+candidate, current source, and historical refresh source. WB re-reads all
+evidence under the lane lock, requires an unlanded clean unpublished preparing
+candidate, and writes only <receipt>.receipt-collision.ack.json. Historical
+validation_failed is recorded as an operator assertion because no pre-mutation
+receipt digest exists. This is a dry-run by default; --apply also requires
+--actor and --reason.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeWorktreeMergeReceiptCollision(command.Context(), orchestrate.WorktreeMergeReceiptCollisionAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				ExpectedReceiptSHA256: receiptSHA, ExpectedImmutableClaimSHA256: claimSHA, ExpectedTargetSHA: targetSHA,
+				ExpectedCandidateSHA: candidateSHA, ExpectedCurrentSourceSHA: currentSourceSHA, ExpectedHistoricalRefreshSourceSHA: historicalSourceSHA,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nacknowledgement: %s\ncandidate: %s\ncurrent-target: %s\n",
+				ack.Status, ack.ReceiptPath, ack.AcknowledgementPath, ack.Candidate.SHA, ack.ExpectedTargetSHA)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&receiptSHA, "expected-receipt-sha256", "", "required SHA256 of the current mutated receipt")
+	command.Flags().StringVar(&claimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable candidate Work Log claim")
+	command.Flags().StringVar(&targetSHA, "expected-target", "", "required exact current remote target SHA")
+	command.Flags().StringVar(&candidateSHA, "expected-candidate", "", "required exact collision candidate SHA")
+	command.Flags().StringVar(&currentSourceSHA, "expected-current-source", "", "required exact current source SHA in the receipt")
+	command.Flags().StringVar(&historicalSourceSHA, "expected-historical-refresh-source", "", "required exact historical source SHA from source_refreshes")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	addMutationAdmissionFlags(command)
 	return command
