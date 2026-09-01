@@ -258,6 +258,11 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 			Language: "specscore", Module: ".", Check: quality.CheckSpec, Command: "specscore spec lint", Status: quality.StatusFailed, Detail: detail,
 		}}}
 	}
+	nodeFailing := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "node", Module: "frontend", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
 	for _, test := range []struct {
 		name      string
 		baseline  quality.VerificationReport
@@ -266,6 +271,8 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 	}{
 		{name: "passing target and candidate", baseline: quality.VerificationReport{Status: quality.StatusPassed}, candidate: quality.VerificationReport{Status: quality.StatusPassed}},
 		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
+		{name: "same Nx failure at different quoted snapshot paths", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"`)},
+		{name: "different Nx failure remains different", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"; install dependencies first`), wantError: true},
 		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
 		{name: "specscore environment-only baseline extra finding permits candidate", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo\nspec/features/x.md:12 missing-owner: owner is required"), candidate: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo")},
 		{name: "specscore new identity", baseline: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo"), candidate: specFailing("specscore.yaml:0 studio-toolbar: requires project host/org/repo\nspec/features/x.md:12 missing-owner: owner is required"), wantError: true},

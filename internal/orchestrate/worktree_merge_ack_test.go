@@ -346,6 +346,58 @@ func TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingR
 	}
 }
 
+func TestSupersedeValidationFailedWorktreeMergeRoundTripsToNextPrepare(t *testing.T) {
+	fixture, receipt, replacement := supersessionFixture(t)
+	ack, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		Apply: true, Actor: "reviewer", Reason: "audited replacement candidate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the production writer-to-next-reader boundary: the replacement
+	// acknowledgement frees the lane, and a subsequent public prepare must scan
+	// the same report directory without treating the acknowledgement as a
+	// merge receipt.
+	next, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{replacement.WorktreeDir}, Target: receipt.Target,
+		Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatalf("next prepare rejected valid supersession %s: %v", ack.AcknowledgementPath, err)
+	}
+	if next.Candidate.SHA == "" || next.Status != WorktreeMergePrepared {
+		t.Fatalf("next prepare did not create a prepared candidate: %+v", next)
+	}
+}
+
+func TestSupersedeValidationFailedWorktreeMergeRoundTripRefusesTamperedAcknowledgement(t *testing.T) {
+	fixture, receipt, replacement := supersessionFixture(t)
+	ack, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		Apply: true, Actor: "reviewer", Reason: "audited replacement candidate",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(ack.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ack.AcknowledgementPath, []byte(strings.Replace(string(contents), ack.ID, "tampered", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{replacement.WorktreeDir}, Target: receipt.Target,
+		Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
+		t.Fatalf("tampered supersession was accepted: %v", err)
+	}
+}
+
 func TestSupersedeValidationFailedWorktreeMergeIsIdempotentAndRefusesReplacementDrift(t *testing.T) {
 	fixture, receipt, replacement := supersessionFixture(t)
 	originalReceipt, originalCandidateClaim, replacementClaim := mergeSupersessionImmutableBytes(t, fixture, receipt, replacement)
