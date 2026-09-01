@@ -493,6 +493,57 @@ echo "unexpected gh args: $*" >&2; exit 30
 	}
 }
 
+func TestCIWaitConfirmsTerminalChecksWithoutWaitingAFullPollInterval(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "already-green")
+	script := `#!/bin/sh
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
+  echo '{"object":{"sha":"0123456789012345678901234567890123456789"}}'; exit 0
+fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo '{"protected":true,"protection":{"required_status_checks":{"contexts":["CI"]}}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[[]]'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
+  count=0
+  if [ -f "$WB_CI_WAIT_STATE" ]; then count=$(cat "$WB_CI_WAIT_STATE"); fi
+  count=$((count + 1)); printf '%s' "$count" > "$WB_CI_WAIT_STATE"
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}'
+  exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
+  echo '{"total_count":0,"statuses":[]}'; exit 0
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("WB_CI_WAIT_STATE", state)
+	var stdout, stderr bytes.Buffer
+	// The interval leaves no room for a second quota-cadence poll inside the
+	// slice, exactly like a default 30s cadence against real CI. A check set
+	// that is already terminal on the first observation must still confirm
+	// its stable reread within this same slice on the shorter confirmation
+	// delay instead of returning a pending receipt the caller has to resume.
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", ciWaitSingleObservationInterval.String(), "--json"}, &stdout, &stderr)
+	var output ciWaitOutput
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+		t.Fatal(err)
+	}
+	if code != exitOK || output.Status != "passed" || output.StableObservations != 2 {
+		t.Fatalf("terminal confirmation = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if observations := ciWaitObservations(t, state); observations != 2 {
+		t.Fatalf("expected one terminal observation plus one confirming reread in a single slice; observations=%d", observations)
+	}
+}
+
 func TestCIWaitDirectTargetHonorsPinnedRequiredCheckIntegration(t *testing.T) {
 	for _, test := range []struct {
 		name       string

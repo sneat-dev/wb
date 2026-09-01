@@ -1322,7 +1322,7 @@
               "modes": [
                 "Propagates published Go or npm release events through dependency-ordered consumer waves.",
                 "--validation=full runs local lint, test, and build checks before publication; --validation=fast retains repository push hooks and is accepted only with --merge, which requires passing exact PR-head GitHub checks.",
-                "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered."
+                "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered. When --parallel is left at its default, read-only pools (per-wave graph discovery fetches and registry release observations) widen to a floor of 4 workers; an explicit --parallel bounds every pool in both directions."
               ]
             }
           ],

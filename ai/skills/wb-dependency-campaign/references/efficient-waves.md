@@ -31,6 +31,13 @@ independent PRs concurrently up to `--parallel`, then waits on their checks
 concurrently, merges passing providers, observes their releases, and
 recalculates downstream readiness. Dependency layers remain ordered.
 
+Read-only work does not wait for `--parallel`: when the flag is left at its
+default, per-wave graph discovery (one `git fetch` plus manifest reads per
+fleet repository) and registry release observations run on a floor of 4
+workers, matching `wb sync`'s default. An explicit `--parallel` bounds every
+pool in both directions — pass `--parallel 1` to force a fully serial
+campaign.
+
 Leave `--refresh-after` unset to use the `5m` default. If a release event has
 waited longer than that, WB checks for a newer semantic version immediately
 before a downstream build and uses it when available. This avoids paying for a

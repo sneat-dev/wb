@@ -91,17 +91,23 @@ type Repository = orchestrate.Repository
 
 // Options controls repository isolation, verification, and optional publishing.
 type Options struct {
-	GitHubDir      string
-	Ref            string
-	Parallel       int
-	DryRun         bool
-	Resume         bool
-	AllowDowngrade bool
-	ValidationMode ValidationMode
-	Verify         bool
-	Checks         []quality.Check
-	Timeout        time.Duration
-	Retry          int
+	GitHubDir string
+	Ref       string
+	Parallel  int
+	// ParallelExplicit records that the operator set --parallel themselves.
+	// An explicit value bounds every pool, including the read-only graph
+	// discovery and release-observation pools; when it is left at its default
+	// those read-only pools get the wider readOnlyWorkerCount floor instead
+	// (mutating lifecycle stages always keep the Parallel bound).
+	ParallelExplicit bool
+	DryRun           bool
+	Resume           bool
+	AllowDowngrade   bool
+	ValidationMode   ValidationMode
+	Verify           bool
+	Checks           []quality.Check
+	Timeout          time.Duration
+	Retry            int
 	// GoPrivate supplies comma-separated Go module path patterns that must not
 	// be looked up through a public module proxy or checksum database. The
 	// patterns are merged with the caller's GOPRIVATE/GONOPROXY/GONOSUMDB only

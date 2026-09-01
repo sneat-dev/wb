@@ -42,6 +42,18 @@ func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
 	}
 }
 
+func TestStableRereadDelayNeverExceedsThePollInterval(t *testing.T) {
+	if got := stableRereadDelay(DefaultCheckPollInterval); got != stableRereadConfirmationDelay {
+		t.Fatalf("stable reread delay under the default cadence = %s, want %s", got, stableRereadConfirmationDelay)
+	}
+	if got := stableRereadDelay(100 * time.Millisecond); got != 100*time.Millisecond {
+		t.Fatalf("a poll interval shorter than the confirmation delay must win, got %s", got)
+	}
+	if stableRereadConfirmationDelay >= DefaultCheckPollInterval {
+		t.Fatalf("confirmation delay %s must undercut the quota-aware poll cadence %s", stableRereadConfirmationDelay, DefaultCheckPollInterval)
+	}
+}
+
 func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *testing.T) {
 	for _, test := range []struct {
 		name          string
