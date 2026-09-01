@@ -2211,6 +2211,11 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	if err != nil {
 		return fmt.Errorf("load candidate quality policy: %w", err)
 	}
+	// Keep unbounded process-isolated Go test output adjacent to the durable
+	// candidate receipt. The receipt itself remains bounded, while a failed
+	// candidate has a deterministic, candidate-scoped raw diagnostic path.
+	runOptions.CoverageDiagnosticsDir = filepath.Join(filepath.Dir(receipt.ReceiptPath), receipt.ID+".candidate-coverage")
+	runOptions.CoverageDiagnosticsRepository = receipt.Repository
 	receipt.Validation = quality.VerifyWithOptions(ctx, receipt.Repository, receipt.Candidate.Worktree,
 		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
 		runOptions)
@@ -2478,6 +2483,9 @@ var (
 	worktreeMergeFailureParenthesizedPattern = regexp.MustCompile(`\(\+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\)`)
 	worktreeMergeFailureTruncationPattern    = regexp.MustCompile(`(?s)(… output truncated; final [0-9]+ bytes:\r?\n)([^\r\n]*)`)
 	worktreeMergeFailurePartialTimingPattern = regexp.MustCompile(`(?i)^([[:alpha:]]+)\s+in\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)$`)
+	worktreeMergeFailureGoTestPackagePattern = regexp.MustCompile(`(?m)^ok\s+(\S+)\s+[0-9]+(?:\.[0-9]+)?s\s+coverage:\s+[0-9]+(?:\.[0-9]+)?%\s+of statements$`)
+	worktreeMergeFailureGoTestPartialPattern = regexp.MustCompile(`(?m)^ok\s+(\S+)\s+[0-9]+(?:\.[0-9]+)?s\s+coverage:\s*$`)
+	worktreeMergeFailureGoTestTailPattern    = regexp.MustCompile(`(?m)^[0-9]+(?:\.[0-9]+)?s\s+coverage:\s+[0-9]+(?:\.[0-9]+)?%\s+of statements$`)
 )
 
 func normalizeWorktreeMergeFailureDetail(detail string) string {
@@ -2491,6 +2499,13 @@ func normalizeWorktreeMergeFailureDetail(detail string) string {
 	detail = worktreeMergeFailureGeneratedPattern.ReplaceAllString(detail, `${1} <duration>`)
 	detail = worktreeMergeFailureBuiltPattern.ReplaceAllString(detail, `${1} <duration>`)
 	detail = worktreeMergeFailureParenthesizedPattern.ReplaceAllString(detail, `(+<duration>)`)
+	// Go's successful package telemetry is incidental when the overall Go test
+	// command fails: elapsed time and package coverage fluctuate across the
+	// candidate and exact target snapshots, while an actual test/panic/error
+	// line remains untouched and therefore still fails closed.
+	detail = worktreeMergeFailureGoTestPackagePattern.ReplaceAllString(detail, `ok ${1} <duration> coverage: <coverage> of statements`)
+	detail = worktreeMergeFailureGoTestPartialPattern.ReplaceAllString(detail, `ok ${1} <duration> coverage:`)
+	detail = worktreeMergeFailureGoTestTailPattern.ReplaceAllString(detail, `<duration> coverage: <coverage> of statements`)
 	detail = worktreeMergeFailureTruncationPattern.ReplaceAllStringFunc(detail, normalizeWorktreeMergeFailureTruncatedTail)
 	fields := strings.Fields(detail)
 	for index, field := range fields {

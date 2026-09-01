@@ -343,6 +343,44 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 	}
 }
 
+func TestWorktreeMergeValidationRegressionMatchesVolatileGoTestPackageTelemetry(t *testing.T) {
+	failing := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "go", Module: ".", Check: quality.CheckTest,
+			Command: "go test -coverprofile … ./... (8 process-isolated shards for ./internal/worktrees)",
+			Status:  quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := failing(strings.Join([]string{
+		"[unsharded packages]",
+		"ok  \tgithub.com/sneat-dev/wb/cmd/wb\t245.518s\tcoverage: 57.5% of statements",
+		"ok  \tgithub.com/sneat-dev/wb/internal/archiveprune\t36.775s\tcoverage:",
+		"… output truncated; final 750 bytes:",
+		"5s\tcoverage: 65.9% of statements",
+		"FAIL",
+		"exit status 1",
+	}, "\n"))
+	candidate := failing(strings.Join([]string{
+		"[unsharded packages]",
+		"ok  \tgithub.com/sneat-dev/wb/cmd/wb\t231.705s\tcoverage: 57.8% of statements",
+		"ok  \tgithub.com/sneat-dev/wb/internal/archiveprune\t35.707s\tcoverage:",
+		"… output truncated; final 750 bytes:",
+		"0s\tcoverage: 65.9% of statements",
+		"FAIL",
+		"exit status 1",
+	}, "\n"))
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("same Go test failure with volatile package telemetry = %v", err)
+	}
+	if err := worktreeMergeValidationRegression(quality.VerificationReport{Status: quality.StatusPassed}, candidate); err == nil {
+		t.Fatal("candidate-only Go test failure unexpectedly matched a passing baseline")
+	}
+	changed := failing(candidate.Results[0].Detail + "\n--- FAIL: TestCandidateOnly (0.00s)\n    changed_test.go:1: changed behavior")
+	if err := worktreeMergeValidationRegression(baseline, changed); err == nil {
+		t.Fatal("changed Go test failure unexpectedly matched the baseline")
+	}
+}
+
 func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
 	nodeFailing := func(detail string) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
