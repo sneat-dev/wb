@@ -105,6 +105,7 @@ Inputs are passed in deterministic key order to their repository-owned
 workflow dispatch only.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
+			options.parallelExplicit = depsBumpParallelExplicit(command)
 			return run(command, options)
 		},
 	}

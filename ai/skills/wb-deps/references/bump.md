@@ -39,6 +39,9 @@ WB opens independent eligible PRs in the ready wave concurrently up to
 providers, observes releases, recalculates ready consumers, and never merges a
 checkless, failing, cancelled, conflicted, stale-head, or timed-out PR.
 Dependency layers remain ordered even when PRs inside one layer are parallel.
+When `--parallel` is left at its default, read-only pools — per-wave graph
+discovery fetches and registry release observations — widen to a floor of 4
+workers; an explicit `--parallel` bounds every pool in both directions.
 
 `--refresh-after` defaults to `5m`. Before starting a downstream build from an
 older event, WB checks for a newer semantic version and substitutes it. This

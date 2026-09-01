@@ -27,10 +27,14 @@ type depsSetOptions struct {
 	commit, push, pr, merge, order                                  bool
 	match, regex, ref, checks, validation, format, reportDir, layer string
 	parallel, retry, maxWaves                                       int
-	timeout, releasePoll, refreshAfter                              time.Duration
-	goPrivate                                                       []string
-	layers                                                          deps.LayerSelection
-	campaign                                                        *campaignProgress
+	// parallelExplicit records whether the operator set --parallel themselves;
+	// see deps.Options.ParallelExplicit for how the wave engine widens only
+	// read-only pools when the flag is left at its default.
+	parallelExplicit                   bool
+	timeout, releasePoll, refreshAfter time.Duration
+	goPrivate                          []string
+	layers                             deps.LayerSelection
+	campaign                           *campaignProgress
 }
 
 func newDepsCmd() *cobra.Command {
@@ -292,6 +296,7 @@ func newDepsSetCmd() *cobra.Command {
 				return err
 			}
 			options.validation = string(validationMode)
+			options.parallelExplicit = depsBumpParallelExplicit(command)
 			if command.Flags().Changed("layer") && !options.order {
 				return fmt.Errorf("--layer requires --dependency-order")
 			}
@@ -405,6 +410,7 @@ func newDepsBumpCmd() *cobra.Command {
 				return err
 			}
 			options.validation = string(validationMode)
+			options.parallelExplicit = depsBumpParallelExplicit(command)
 			events, err := parseReleaseEvents(ecosystem, changed)
 			if err != nil {
 				return err
@@ -454,7 +460,7 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 		validationMode = deps.ValidationModeFull
 	}
 	return deps.Options{
-		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
+		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel, ParallelExplicit: options.parallelExplicit,
 		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
 		ValidationMode: validationMode, Verify: validationMode == deps.ValidationModeFull, Checks: checks, Timeout: options.timeout, Retry: options.retry,
 		GoPrivate: options.goPrivate,
