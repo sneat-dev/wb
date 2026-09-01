@@ -177,6 +177,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 		},
 	}
 	bindWorktreeMergeFlags(command, &flags, true, false)
+	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable prepared receipt to replace with an additive source-set rebatch")
 	return command
 }
 
@@ -340,7 +341,6 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 		command.Flags().StringVar(&flags.agentID, "agent-id", "", "agent identity recorded in the candidate Work Log")
 		command.Flags().StringVar(&flags.cli, "cli", "wb", "CLI identity recorded in the candidate Work Log")
 		command.Flags().StringVar(&flags.provider, "provider", "", "routing or billing provider identity, never a credential")
-		command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable prepared receipt to replace with an additive source-set rebatch")
 	}
 	if land {
 		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")

@@ -377,7 +377,14 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return WorktreeMergeReceipt{}, err
 		}
 	}
-	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, activeExcept...); activeErr != nil {
+	// A same-source refresh adopts the active receipt path above. Recompute the
+	// exclusions after that reassignment so the post-lock owner check does not
+	// mistake the resumable prior receipt for a competing lane.
+	postLockExcept := []string{receiptPath}
+	if rebatch != nil {
+		postLockExcept = append(postLockExcept, rebatch.ReceiptPath)
+	}
+	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, postLockExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)

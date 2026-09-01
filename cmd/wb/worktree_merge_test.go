@@ -33,10 +33,17 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
-	for _, flag := range []string{"target", "rebatch-receipt", "route", "cleanup", "on-failure", "format", "progress"} {
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("combined merge is missing --%s", flag)
 		}
+	}
+	if command.Flags().Lookup("rebatch-receipt") != nil {
+		t.Error("combined merge must not expose --rebatch-receipt; rebatching is a prepare-only transition")
+	}
+	prepare, _, err := command.Find([]string{"prepare"})
+	if err != nil || prepare == nil || prepare.Flags().Lookup("rebatch-receipt") == nil {
+		t.Fatalf("merge prepare must expose --rebatch-receipt: command=%v err=%v", prepare, err)
 	}
 	if route := command.Flags().Lookup("route"); route == nil || route.DefValue != "auto" {
 		t.Fatalf("--route = %#v, want auto", route)

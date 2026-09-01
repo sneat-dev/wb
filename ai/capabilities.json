@@ -1035,7 +1035,6 @@
                 "--on-failure",
                 "--progress",
                 "--provider",
-				"--rebatch-receipt",
                 "--retry",
                 "--route",
                 "--target",
