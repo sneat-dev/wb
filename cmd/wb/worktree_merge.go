@@ -362,8 +362,8 @@ collision without rewriting its receipt or Work Log. The caller must explicitly
 pin the current receipt SHA256, immutable claim SHA256, current target,
 candidate, current source, and historical refresh source. WB re-reads all
 evidence under the lane lock, requires an unlanded clean unpublished preparing
-candidate, and writes only <receipt>.receipt-collision.ack.json. Historical
-validation_failed is recorded as an operator assertion because no pre-mutation
+candidate, and writes only <receipt>.receipt-collision.ack.json. The historical validation_failed
+status is recorded as an operator assertion because no pre-mutation
 receipt digest exists. This is a dry-run by default; --apply also requires
 --actor and --reason.`,
 		Args: cobra.ExactArgs(1),

@@ -12,6 +12,7 @@ wb worktree merge resume <candidate-worktree-or-receipt> --progress --format jso
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 ```
@@ -59,6 +60,13 @@ tree equality with its receipted squash landing. It then advances the retained
 candidate without rewriting published history, records the failed attempt in
 `forward_repairs`, and opens a fresh PR.
 Do not edit or terminalize the failed receipt by hand.
+
+For the one audited preparing-receipt collision recovery, use
+`acknowledge-receipt-collision` only with all six explicit expected digests and
+revisions. It writes only the append-only acknowledgement beside the receipt;
+the historical `validation_failed` state is an operator assertion because the
+pre-mutation receipt bytes are unavailable. Normal prepare stays blocked after
+that acknowledgement and the audited rebatch path rechecks it before use.
 
 When a historical prepare `validation_failed` receipt (such as Yardius) or a
 land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but

@@ -64,7 +64,7 @@
           "limitation": null
         },
         "tests": {
-          "status": "Partial",
+          "status": "Full",
           "references": [
             {
               "path": "internal/archiveprune/archiveprune_test.go",
