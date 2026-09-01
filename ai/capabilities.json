@@ -8161,7 +8161,7 @@
           "commands": [
             {
               "path": "wb worktree merge acknowledge-landed-failed",
-              "flags": ["--actor", "--apply", "--format", "--reason"],
+              "flags": ["--actor", "--apply", "--format", "--initiator", "--mode", "--reason"],
               "modes": [
                 "Proves an exact clean candidate and every exact clean receipted source are contained in the freshly fetched remote target",
                 "Acknowledges only stale prepare validation_failed or landed_post_target_ci_failed receipts without falsely making either a successful landing"
@@ -8175,7 +8175,7 @@
           "anchors": [
             {
               "command": "wb worktree merge acknowledge-landed-failed --help",
-              "contains": ["separate audited acknowledgement", "--apply", "--actor", "--reason"]
+              "contains": ["separate audited acknowledgement", "--apply", "--actor", "--initiator", "--mode", "--reason"]
             }
           ],
           "limitation": null
@@ -8202,6 +8202,11 @@
             {
               "path": "internal/orchestrate/worktree_merge_ack_test.go",
               "name": "TestAcknowledgeLandedPostTargetCIFailureLeavesReceiptForFreshForwardRepair",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeRecoveryApplyUsesAdmissionFlags",
               "kind": "integration"
             }
           ],
@@ -8268,7 +8273,7 @@
           "commands": [
             {
               "path": "wb worktree merge supersede-validation-failed",
-              "flags": ["--actor", "--apply", "--format", "--reason"],
+              "flags": ["--actor", "--apply", "--format", "--initiator", "--mode", "--reason"],
               "modes": [
                 "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",
                 "Accepts only prepare validation_failed receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
@@ -8282,7 +8287,7 @@
           "anchors": [
             {
               "command": "wb worktree merge supersede-validation-failed --help",
-              "contains": ["separate append-only supersession acknowledgement", "--apply", "--actor", "--reason"]
+              "contains": ["separate append-only supersession acknowledgement", "--apply", "--actor", "--initiator", "--mode", "--reason"]
             }
           ],
           "limitation": null
@@ -8304,6 +8309,11 @@
             {
               "path": "internal/orchestrate/worktree_merge_ack_test.go",
               "name": "TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingReceipt",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeRecoveryApplyUsesAdmissionFlags",
               "kind": "integration"
             }
           ],

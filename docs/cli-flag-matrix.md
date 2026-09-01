@@ -7,13 +7,15 @@ Leaf help hides inherited selectors that the selected command would reject.
 This matrix covers inherited/root flags; command-specific flags are listed by
 their own `wb <command> --help` and remain scoped to that command.
 
-Mutation admission flags are command-specific: `worktree adopt` and
-`worktree rename` expose `--mode` and `--initiator` (only `--apply` requires
-admission); `worktree own` and `worktree correct-identity` always mutate and
-therefore use the same flags. Work Log mutation leaves inherit these flags
-from `worktree log`; `show`, and `recover`/`archive` without `--apply`, remain
-read-only. `--mode agent` requires a live registered session, while
-`--mode manual` requires `--initiator`.
+Mutation admission flags are command-specific: `worktree adopt`,
+`worktree rename`, and the recovery leaves `worktree merge
+acknowledge-landed-failed`/`supersede-validation-failed` expose `--mode` and
+`--initiator` (only `--apply` requires admission); `worktree own` and
+`worktree correct-identity` always mutate and therefore use the same flags.
+Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
+`recover`/`archive` without `--apply`, remain read-only. `--mode agent`
+requires a live registered session, while `--mode manual` requires
+`--initiator`.
 
 The machine-readable, checked-in capability × help × AI-skill × tests view is
 [`ai/capabilities.json`](../ai/capabilities.json). It conforms to the exact
