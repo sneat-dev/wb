@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/gitops"
 )
 
 func testMeta() RunMeta {
@@ -50,5 +53,126 @@ func TestIssuesMarkdownIsDeterministic(t *testing.T) {
 	second := IssuesMarkdown(testMeta(), nil)
 	if first != second {
 		t.Fatal("two renders of identical input differ")
+	}
+}
+
+func TestIssuesMarkdownRendersDivergedEntry(t *testing.T) {
+	results := []Result{{
+		Repo:   discover.Repo{Org: "sneat-co", Name: "competios", Path: "/home/ai/projects/sneat-co/competios"},
+		Status: Diverged,
+		Tracking: gitops.TrackingState{
+			Branch: "main", Upstream: "origin/main", Ahead: 2, Behind: 5, Configured: true,
+		},
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	for _, want := range []string{
+		"## Needs attention",
+		"### sneat-co/competios — diverged",
+		"**Clone:** `/home/ai/projects/sneat-co/competios`",
+		"main is 2 ahead, 5 behind origin/main",
+		"not pulled",
+		"**Inspect**",
+		"git -C /home/ai/projects/sneat-co/competios log --oneline --left-right main...origin/main",
+		"**Resolve**",
+		"wb worktree create",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestIssuesMarkdownRendersNoUpstreamEntry(t *testing.T) {
+	results := []Result{{
+		Repo:   discover.Repo{Org: "sneat-dev", Name: "wb", Path: "/home/ai/projects/sneat-dev/wb"},
+		Status: NoUpstream,
+		Tracking: gitops.TrackingState{
+			Branch: "fix/auth", Configured: true,
+		},
+		Detail: gitops.RepoStatus{Unpushed: []string{"2fb7069 fix(sync): fail on auth"}},
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	for _, want := range []string{
+		"### sneat-dev/wb — no upstream",
+		"fix/auth tracks an upstream that no longer resolves",
+		"git push -u origin fix/auth",
+		"git -C /home/ai/projects/sneat-dev/wb log --oneline origin/main..HEAD",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestIssuesMarkdownRendersUnpushedEntry(t *testing.T) {
+	results := []Result{{
+		Repo:   discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"},
+		Status: Unpushed,
+		Detail: gitops.RepoStatus{Unpushed: []string{"abc1234 wip"}},
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	for _, want := range []string{
+		"### o/r — unpushed commits",
+		"pulled, but holds 1 unpushed commit",
+		"git -C /p/o/r log --oneline --branches --not --remotes",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestIssuesMarkdownRendersArchivedUnlandableEntryWithReason(t *testing.T) {
+	results := []Result{{
+		Repo:     discover.Repo{Org: "o", Name: "old", Path: "/p/o/old"},
+		Status:   ArchivedUnlandable,
+		Archived: true,
+		Detail:   gitops.RepoStatus{Unpushed: []string{"abc1234 wip", "def5678 more"}},
+		Reason:   "2 unpushed commits on branch main",
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	for _, want := range []string{
+		"### o/old — archived, holds unpushed commits",
+		"can never be pushed",
+		"2 unpushed commits on branch main",
+		"unarchive",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestIssuesMarkdownSeparatesArchivedNotPrunedFromDefects(t *testing.T) {
+	results := []Result{{
+		Repo:              discover.Repo{Org: "o", Name: "stale", Path: "/p/o/stale"},
+		Status:            Pulled,
+		Archived:          true,
+		ArchivedNotPruned: true,
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	if !strings.Contains(got, "## Archived, not pruned") {
+		t.Errorf("missing informational section:\n%s", got)
+	}
+	if !strings.Contains(got, "Nothing is broken") {
+		t.Errorf("informational section must say nothing is broken:\n%s", got)
+	}
+	if !strings.Contains(got, "--prune-archived") {
+		t.Errorf("informational section must name the flag:\n%s", got)
+	}
+	if strings.Contains(got, "## Needs attention") {
+		t.Errorf("an archived-not-pruned repo is not a defect:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownQuotesPathsNeedingIt(t *testing.T) {
+	results := []Result{{
+		Repo:   discover.Repo{Org: "o", Name: "r", Path: "/p/with space/o/r"},
+		Status: Unpushed,
+		Detail: gitops.RepoStatus{Unpushed: []string{"abc1234 wip"}},
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	if !strings.Contains(got, "git -C '/p/with space/o/r'") {
+		t.Errorf("path with a space must be shell-quoted:\n%s", got)
 	}
 }
