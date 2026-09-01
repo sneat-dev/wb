@@ -2186,7 +2186,8 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) {
+		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) {
 			continue
 		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
