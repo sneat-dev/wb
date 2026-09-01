@@ -58,11 +58,10 @@ func IssuesMarkdown(meta RunMeta, results []Result) string {
 }
 
 // inspectFirstNote is the standing instruction to whoever reads the report.
-// Resolution options are deliberately prose rather than a ready-to-paste
-// command: rebasing or resetting the wrong clone is not recoverable from a
-// report.
+// The report deliberately never picks a resolution for the reader — every
+// option is a choice that deserves inspection first.
 const inspectFirstNote = "> Inspection commands are read-only and safe to run as-is. Resolution " +
-	"options are deliberately not copy-paste ready: inspect first, then choose.\n\n"
+	"options are choices, not a script — read the inspection output before running any of them.\n\n"
 
 // splitAttention divides the attention group into genuine defects and the
 // merely informational. An archived repository that was not pruned is in the
@@ -184,8 +183,18 @@ func resolveOptions(result Result) []string {
 		}
 	case NoUpstream:
 		branch := result.Tracking.Branch
+		if branch == "" {
+			// A detached HEAD has no branch to publish, so every
+			// branch-shaped remedy below is meaningless for it.
+			return []string{
+				"Identify the commit and put it on a branch before anything else: " +
+					fmt.Sprintf("`git -C %s switch -c <branch>`", shellQuote(result.Repo.Path)),
+				"Or, if the detached commit is already reachable from a branch, return the clone to its base branch",
+				worktree,
+			}
+		}
 		return []string{
-			fmt.Sprintf("Publish the branch: `git push -u origin %s`", branch),
+			fmt.Sprintf("Publish the branch: `git -C %s push -u origin %s`", shellQuote(result.Repo.Path), branch),
 			"Or, if the work already landed upstream under a squashed commit, return the clone to its " +
 				"base branch and delete the leftover branch",
 			"Or `wb repo init-remote " + shellQuote(result.Repo.Path) + "` if the branch was never published at all",
@@ -200,7 +209,7 @@ func resolveOptions(result Result) []string {
 		}
 	case ArchivedUnlandable:
 		return []string{
-			"unarchive the repository on GitHub if the commits must land",
+			"Unarchive the repository on GitHub if the commits must land",
 			"Or discard the commits and let `wb sync --prune-archived` remove the clone",
 			"Never force the push: the remote is read-only while archived",
 		}

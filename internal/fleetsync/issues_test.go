@@ -95,7 +95,7 @@ func TestIssuesMarkdownRendersNoUpstreamEntry(t *testing.T) {
 	for _, want := range []string{
 		"### sneat-dev/wb — no upstream",
 		"fix/auth tracks an upstream that no longer resolves",
-		"git push -u origin fix/auth",
+		"push -u origin fix/auth",
 		"git -C /home/ai/projects/sneat-dev/wb log --oneline origin/main..HEAD",
 	} {
 		if !strings.Contains(got, want) {
@@ -135,7 +135,7 @@ func TestIssuesMarkdownRendersArchivedUnlandableEntryWithReason(t *testing.T) {
 		"### o/old — archived, holds unpushed commits",
 		"can never be pushed",
 		"2 unpushed commits on branch main",
-		"unarchive",
+		"Unarchive the repository",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("report missing %q\n---\n%s", want, got)
@@ -174,5 +174,38 @@ func TestIssuesMarkdownQuotesPathsNeedingIt(t *testing.T) {
 	got := IssuesMarkdown(testMeta(), results)
 	if !strings.Contains(got, "git -C '/p/with space/o/r'") {
 		t.Errorf("path with a space must be shell-quoted:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownDetachedHeadOffersNoBranchPublish(t *testing.T) {
+	results := []Result{{
+		Repo:     discover.Repo{Org: "o", Name: "detached", Path: "/p/o/detached"},
+		Status:   NoUpstream,
+		Tracking: gitops.TrackingState{},
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	if !strings.Contains(got, "detached HEAD") {
+		t.Errorf("detached state not described:\n%s", got)
+	}
+	if strings.Contains(got, "push -u origin \n") || strings.Contains(got, "push -u origin `") {
+		t.Errorf("a detached HEAD has no branch to publish, but a push command was rendered:\n%s", got)
+	}
+	if !strings.Contains(got, "switch -c <branch>") {
+		t.Errorf("detached HEAD needs a put-it-on-a-branch option:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownAnchorsEveryMutatingCommandToItsClone(t *testing.T) {
+	results := []Result{{
+		Repo:     discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"},
+		Status:   NoUpstream,
+		Tracking: gitops.TrackingState{Branch: "feature", Configured: true},
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	if strings.Contains(got, "`git push") {
+		t.Errorf("a mutating command must carry -C <path> so it cannot act on the wrong repository:\n%s", got)
+	}
+	if !strings.Contains(got, "git -C /p/o/r push -u origin feature") {
+		t.Errorf("push command not anchored to the clone:\n%s", got)
 	}
 }
