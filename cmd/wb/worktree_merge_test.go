@@ -51,13 +51,13 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
 		t.Fatalf("--cleanup = %#v, want false", cleanup)
 	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "seal-validation-failed", "supersede-validation-failed"} {
+	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-receipt-collision", "seal-validation-failed", "supersede-validation-failed"} {
 		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 			continue
 		}
 		child, _, _ := command.Find([]string{name})
-		if name != "acknowledge-landed-failed" && name != "seal-validation-failed" && name != "supersede-validation-failed" && child.Flags().Lookup("progress") == nil {
+		if name != "acknowledge-landed-failed" && name != "acknowledge-receipt-collision" && name != "seal-validation-failed" && name != "supersede-validation-failed" && child.Flags().Lookup("progress") == nil {
 			t.Errorf("merge %s is missing --progress", name)
 		}
 	}
@@ -77,6 +77,23 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 		if !strings.Contains(command.Long, phrase) {
 			t.Errorf("merge help is missing %q", phrase)
 		}
+	}
+}
+
+func TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence(t *testing.T) {
+	command := newWorktreeMergeCmd()
+	child, _, err := command.Find([]string{"acknowledge-receipt-collision"})
+	if err != nil || child == nil {
+		t.Fatalf("find collision acknowledgement command: child=%v err=%v", child, err)
+	}
+	for _, flag := range []string{"expected-receipt-sha256", "expected-immutable-claim-sha256", "expected-target", "expected-candidate", "expected-current-source", "expected-historical-refresh-source"} {
+		if child.Flags().Lookup(flag) == nil {
+			t.Errorf("collision acknowledgement is missing --%s", flag)
+		}
+	}
+	command.SetArgs([]string{"acknowledge-receipt-collision", "receipt.json"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "all expected receipt, claim, target, candidate, current-source, and historical-source identities are required") {
+		t.Fatalf("missing collision evidence error = %v", err)
 	}
 }
 
