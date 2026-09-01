@@ -14,6 +14,8 @@ wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <ope
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
+wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>
+wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -99,3 +101,23 @@ claim. The old failed candidate itself is deliberately not required to be an
 ancestor. WB writes a receipt-hash-bound append-only supersession artifact;
 it never rewrites the failed receipt or either Work Log. Missing ancestry,
 claim identity, clean worktree, or receipt integrity refuses closed.
+
+If a historical supersession acknowledgement incorrectly named the failed
+candidate as its own replacement, do not edit it. Use
+`correct-self-supersession` only with the exact existing acknowledgement and
+immutable-claim SHA256 values plus a distinct replacement. It creates one
+hash-pinned correction artifact; missing, malformed, tampered, or conflicting
+corrections leave the self-supersession ineffective and refuse closed.
+
+When that exact self-supersession is the only reason a distinct replacement
+cannot yet be prepared, `prepare-published-forward-repair` is the sole cycle
+breaker. Pin the immutable failed receipt and claim, the corrupt acknowledgement,
+the exact current target, and every current source. WB reads receipted and
+source-refresh tuples from the immutable receipt as historical DAG roots; they
+need not remain live worktrees. Each supplied source is instead checked as an
+exact clean WB-managed current worktree with an active claim and pinned HEAD.
+It creates a new clean candidate only after proving every historical source,
+claim base, target, and current source is an ancestor; it writes no merge
+receipt and never changes the historical receipt, claim, acknowledgement, or
+collision evidence. Pass its candidate only to `correct-self-supersession`;
+normal `prepare` remains blocked.

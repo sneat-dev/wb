@@ -8280,6 +8280,18 @@
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
+      "id": "wb.worktree.merge.correct-self-supersession",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge correct-self-supersession", "flags": ["--actor", "--apply", "--expected-immutable-claim-sha256", "--expected-supersession-sha256", "--format", "--initiator", "--mode", "--reason"], "modes": ["Admits only an existing hash-pinned self-supersession and one distinct clean active-claim replacement after rechecking every immutable root", "Writes one separate create-if-absent correction without editing the receipt, immutable claim, or historical supersession acknowledgement"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge correct-self-supersession --help", "contains": ["self-supersession", "--expected-supersession-sha256", "--expected-immutable-claim-sha256", "--apply", "--actor", "--initiator", "--mode", "--reason"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_ack_test.go", "name": "TestCorrectValidationFailedSelfSupersessionIsAppendOnlyAndReplaySafe", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_ack_test.go", "name": "TestSupersedeValidationFailedWorktreeMergeRefusesSelfReplacementWithoutMutation", "kind": "integration"}, {"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "This narrow recovery makes a historical self-supersession effective only through a separate hash-pinned correction with a distinct replacement; all source, target, claim, and immutable-record boundaries remain fail-closed."
+    },
+    {
       "id": "wb.worktree.merge.land",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",
@@ -8302,6 +8314,18 @@
         "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure", "kind": "integration"}], "limitation": null}
       },
       "notes": "Prepared means local and validated, not remotely landed."
+    },
+    {
+      "id": "wb.worktree.merge.prepare-published-forward-repair",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare-published-forward-repair", "flags": ["--actor", "--agent-id", "--agent-runtime", "--apply", "--cli", "--expected-current-target", "--expected-immutable-claim-sha256", "--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256", "--format", "--initiator", "--mode", "--model", "--provider", "--reason", "--retry", "--timeout"], "modes": ["Dry-runs pinned immutable receipt/claim/self-supersession historical roots and exact active current-source proof without creating a worktree", "Creates one distinct clean WB-managed candidate with immutable historical receipt/refresh roots and pinned current sources as ancestors, without requiring historical worktrees to remain live or changing any historical record"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare-published-forward-repair --help", "contains": ["self-supersession", "historical worktrees need not remain live", "--expected-receipt-sha256", "--expected-immutable-claim-sha256", "--expected-supersession-sha256", "--expected-current-target", "--expected-source-sha", "--apply", "--actor", "--initiator", "--mode", "--reason"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate", "kind": "integration"}, {"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "This explicit recovery-only candidate constructor does not relax normal prepare or rebatch. Historical source tuples are immutable receipt/refresh ancestry evidence, while only explicitly supplied current sources require live managed identities. It creates no merge receipt and only a distinct candidate later consumable by the append-only self-supersession correction."
     },
     {
       "id": "wb.worktree.merge.resume",

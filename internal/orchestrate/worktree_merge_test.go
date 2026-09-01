@@ -1757,7 +1757,7 @@ func TestPrepareWorktreeMergeRebatchesPreparedReceiptAdditivelyAndPreservesOldEv
 	if err != nil || ack.ReplacementReceiptPath != replacement.ReceiptPath || ack.Replacement != replacement.Candidate {
 		t.Fatalf("rebatch acknowledgement = %+v err=%v", ack, err)
 	}
-	active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(first.ReceiptPath), first.Lane)
+	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(first.ReceiptPath), first.Lane)
 	if err != nil || active == nil || active.ReceiptPath != replacement.ReceiptPath {
 		t.Fatalf("active lane after rebatch = %+v err=%v", active, err)
 	}
@@ -1904,7 +1904,7 @@ func TestPrepareWorktreeMergeRebatchRetryCompletesAcknowledgementAfterPostReceip
 	if _, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first); err != nil {
 		t.Fatalf("recovered acknowledgement = %v", err)
 	}
-	active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(first.ReceiptPath), first.Lane)
+	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(first.ReceiptPath), first.Lane)
 	if err != nil || active == nil || active.ReceiptPath != recovered.ReceiptPath {
 		t.Fatalf("active lane after acknowledgement recovery = %+v err=%v", active, err)
 	}

@@ -255,7 +255,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		} else if acknowledged {
 			return existing, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; prepare a new source candidate", receiptPath)
 		}
-		if superseded, supersessionErr := hasValidationFailureSupersession(existing); supersessionErr != nil {
+		if superseded, supersessionErr := hasValidationFailureSupersession(ctx, projectsRoot, existing); supersessionErr != nil {
 			return existing, supersessionErr
 		} else if superseded {
 			return existing, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; prepare a new source candidate", receiptPath)
@@ -329,7 +329,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if rebatch != nil {
 		activeExcept = append(activeExcept, rebatch.ReceiptPath)
 	}
-	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, activeExcept...); activeErr != nil {
+	if active, activeErr := activeWorktreeMergeLaneReceipt(ctx, projectsRoot, reportsDir, lane, activeExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		if collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(*active); collisionErr != nil {
@@ -441,7 +441,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if rebatch != nil {
 		postLockExcept = append(postLockExcept, rebatch.ReceiptPath)
 	}
-	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, postLockExcept...); activeErr != nil {
+	if active, activeErr := activeWorktreeMergeLaneReceipt(ctx, projectsRoot, reportsDir, lane, postLockExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)
@@ -671,7 +671,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	} else if acknowledged {
 		return receipt, fmt.Errorf("merge receipt %s was acknowledged as a historical landed failure; it cannot be replayed", receiptPath)
 	}
-	if superseded, supersessionErr := hasValidationFailureSupersession(receipt); supersessionErr != nil {
+	if superseded, supersessionErr := hasValidationFailureSupersession(ctx, options.ProjectsRoot, receipt); supersessionErr != nil {
 		return receipt, supersessionErr
 	} else if superseded {
 		return receipt, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; it cannot be replayed", receiptPath)
@@ -2475,7 +2475,7 @@ func mergeOperationSuffix(operation string) string {
 	return operation
 }
 
-func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (*WorktreeMergeReceipt, error) {
+func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDir, lane string, except ...string) (*WorktreeMergeReceipt, error) {
 	entries, err := os.ReadDir(reportsDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -2489,6 +2489,7 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (
 		}
 		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeSelfSupersessionCorrectionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) {
 			continue
@@ -2523,7 +2524,7 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (
 			if acknowledged {
 				continue
 			}
-			superseded, supersessionErr := hasValidationFailureSupersession(receipt)
+			superseded, supersessionErr := hasValidationFailureSupersession(ctx, projectsRoot, receipt)
 			if supersessionErr != nil {
 				return nil, supersessionErr
 			}
