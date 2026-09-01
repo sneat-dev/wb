@@ -943,6 +943,192 @@ func supersessionFixture(t *testing.T) (engineFixture, WorktreeMergeReceipt, wor
 	return fixture, receipt, replacement
 }
 
+func TestSupersedeValidationFailedWorktreeMergeRefusesSelfReplacementWithoutMutation(t *testing.T) {
+	fixture, receipt, _ := supersessionFixture(t)
+	receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: receipt.Candidate.Worktree, Apply: true, Actor: "reviewer", Reason: "must refuse self replacement",
+	})
+	if err == nil || !strings.Contains(err.Error(), "distinct from the failed receipt candidate") {
+		t.Fatalf("self replacement error = %v", err)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBytes) {
+		t.Fatalf("receipt changed on self replacement refusal: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(claim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBytes) {
+		t.Fatalf("claim changed on self replacement refusal: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(validationFailureSupersessionPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("self replacement refusal wrote supersession: %v", statErr)
+	}
+}
+
+func TestCorrectValidationFailedSelfSupersessionIsAppendOnlyAndReplaySafe(t *testing.T) {
+	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+	receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersessionBytes, err := os.ReadFile(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if superseded, err := hasValidationFailureSupersession(receipt); err == nil || superseded {
+		t.Fatalf("uncorrected self supersession = superseded=%t err=%v", superseded, err)
+	}
+	options := WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+		Apply: true, Actor: "reviewer", Reason: "correct historical self supersession",
+	}
+	correction, err := CorrectValidationFailedSelfSupersession(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if correction.CorrectedReplacement.Worktree != replacement.WorktreeDir || correction.CorrectedReplacement.SHA == receipt.Candidate.SHA || correction.CorrectedReplacement.SHA != strings.TrimSpace(runEngineGit(t, replacement.WorktreeDir, "rev-parse", "HEAD")) {
+		t.Fatalf("corrected replacement = %+v", correction.CorrectedReplacement)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBytes) {
+		t.Fatalf("receipt changed by correction: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(claim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBytes) {
+		t.Fatalf("claim changed by correction: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(supersession.AcknowledgementPath); readErr != nil || !bytes.Equal(current, supersessionBytes) {
+		t.Fatalf("self supersession changed by correction: err=%v", readErr)
+	}
+	if superseded, err := hasValidationFailureSupersession(receipt); err != nil || !superseded {
+		t.Fatalf("corrected self supersession = superseded=%t err=%v", superseded, err)
+	}
+	if active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(receipt.ReceiptPath), receipt.Lane); err != nil || active != nil {
+		t.Fatalf("active lane after correction = %+v err=%v", active, err)
+	}
+	replayed, err := CorrectValidationFailedSelfSupersession(context.Background(), options)
+	if err != nil || replayed.ID != correction.ID {
+		t.Fatalf("correction replay = %+v err=%v", replayed, err)
+	}
+	correctionBytes, err := os.ReadFile(correction.CorrectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting := options
+	conflicting.Reason = "a different correction must not overwrite the first"
+	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), conflicting); err == nil || !strings.Contains(err.Error(), "binds different immutable evidence") {
+		t.Fatalf("conflicting correction error = %v", err)
+	}
+	if current, readErr := os.ReadFile(correction.CorrectionPath); readErr != nil || !bytes.Equal(current, correctionBytes) {
+		t.Fatalf("conflicting correction replaced existing record: err=%v", readErr)
+	}
+	if err := os.WriteFile(correction.CorrectionPath, []byte(strings.Replace(string(correctionBytes), correction.ID, "tampered", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if superseded, err := hasValidationFailureSupersession(receipt); err == nil || superseded {
+		t.Fatalf("tampered correction = superseded=%t err=%v", superseded, err)
+	}
+}
+
+func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCreate(t *testing.T) {
+	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+		Apply: true, Actor: "reviewer", Reason: "the intended correction",
+	}
+	dryRun := options
+	dryRun.Apply = false
+	competing, err := CorrectValidationFailedSelfSupersession(context.Background(), dryRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competing.Reason = "a concurrently published correction"
+	competing.ID = selfSupersessionCorrectionID(competing)
+	competingBytes, err := json.MarshalIndent(competing, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingBytes = append(competingBytes, '\n')
+	previousLink := linkSelfSupersessionCorrection
+	linkSelfSupersessionCorrection = func(_, path string) error {
+		if err := os.WriteFile(path, competingBytes, 0o600); err != nil {
+			return err
+		}
+		return os.ErrExist
+	}
+	t.Cleanup(func() { linkSelfSupersessionCorrection = previousLink })
+	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), options); err == nil || !strings.Contains(err.Error(), "concurrent self-supersession correction") {
+		t.Fatalf("concurrent correction error = %v", err)
+	}
+	current, err := os.ReadFile(selfSupersessionCorrectionPath(receipt.ReceiptPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(current, competingBytes) {
+		t.Fatal("concurrent correction was overwritten")
+	}
+}
+
+func selfSupersessionFixture(t *testing.T) (engineFixture, WorktreeMergeReceipt, worktrees.CreateResult, WorktreeMergeValidationFailureSupersession, string) {
+	t.Helper()
+	fixture, receipt, replacement := supersessionFixture(t)
+	originalClaim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(originalClaim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimDigest := sha256.Sum256(claimBytes)
+	claimHash := hex.EncodeToString(claimDigest[:])
+	currentTarget, err := fetchExactMergeTarget(context.Background(), replacement.WorktreeDir, receipt.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackPath := validationFailureSupersessionPath(receipt.ReceiptPath)
+	ack := WorktreeMergeValidationFailureSupersession{
+		SchemaVersion: worktreeMergeValidationFailureSupersessionSchemaVersion, Status: "validation_failure_superseded", ReceiptPath: receipt.ReceiptPath, AcknowledgementPath: ackPath,
+		ReceiptID: receipt.ID, ReceiptSHA256: receiptHash, ReceiptStatus: receipt.Status, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target, ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget,
+		OriginalCandidate: receipt.Candidate, OriginalClaimBaseSHA: originalClaim.BaseSHA, Replacement: receipt.Candidate, ReplacementClaimBaseSHA: originalClaim.BaseSHA,
+		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), Actor: "historical-operator", Reason: "historical self supersession", RecordedAt: time.Now().UTC(),
+	}
+	ack.ID = validationFailureSupersessionID(ack)
+	if err := persistValidationFailureSupersession(ackPath, ack); err != nil {
+		t.Fatal(err)
+	}
+	return fixture, receipt, replacement, ack, claimHash
+}
+
 func TestAcknowledgeLandedValidationFailureRefusesMissingTargetContainment(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "ack-refuse", "feature/ack-refuse", "ack.txt", "ack\n")

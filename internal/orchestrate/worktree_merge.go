@@ -2600,6 +2600,7 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (
 		}
 		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeSelfSupersessionCorrectionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) {

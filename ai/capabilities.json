@@ -8654,6 +8654,18 @@
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
+      "id": "wb.worktree.merge.correct-self-supersession",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge correct-self-supersession", "flags": ["--actor", "--apply", "--expected-immutable-claim-sha256", "--expected-supersession-sha256", "--format", "--initiator", "--mode", "--reason"], "modes": ["Admits only an existing hash-pinned self-supersession and one distinct clean active-claim replacement after rechecking every immutable root", "Writes one separate create-if-absent correction without editing the receipt, immutable claim, or historical supersession acknowledgement"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge correct-self-supersession --help", "contains": ["self-supersession", "--expected-supersession-sha256", "--expected-immutable-claim-sha256", "--apply", "--actor", "--initiator", "--mode", "--reason"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_ack_test.go", "name": "TestCorrectValidationFailedSelfSupersessionIsAppendOnlyAndReplaySafe", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_ack_test.go", "name": "TestSupersedeValidationFailedWorktreeMergeRefusesSelfReplacementWithoutMutation", "kind": "integration"}, {"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "This narrow recovery makes a historical self-supersession effective only through a separate hash-pinned correction with a distinct replacement; all source, target, claim, and immutable-record boundaries remain fail-closed."
+    },
+    {
       "id": "wb.worktree.merge.land",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",
