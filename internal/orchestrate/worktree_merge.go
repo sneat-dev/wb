@@ -245,6 +245,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if !sameWorktreeMergeSources(existing.Sources, sources) || existing.Repository != repository || existing.Target != target {
 			return existing, fmt.Errorf("merger lane %s already owns a different candidate at %s", lane, receiptPath)
 		}
+		if collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(existing); collisionErr != nil {
+			return existing, fmt.Errorf("validate receipt-collision acknowledgement for %s: %w", receiptPath, collisionErr)
+		} else if collisionAcknowledged {
+			return existing, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", receiptPath)
+		}
 		if acknowledged, ackErr := hasLandedFailureAcknowledgement(existing); ackErr != nil {
 			return existing, ackErr
 		} else if acknowledged {
@@ -323,6 +328,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, activeExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
+		if collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(*active); collisionErr != nil {
+			return *active, fmt.Errorf("validate receipt-collision acknowledgement for %s: %w", active.ReceiptPath, collisionErr)
+		} else if collisionAcknowledged {
+			return *active, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", active.ReceiptPath)
+		}
 		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, *active, sources)
 		if refreshErr != nil {
 			return *active, refreshErr
@@ -368,6 +378,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		current, readErr := readWorktreeMergeReceipt(receiptPath)
 		if readErr != nil {
 			return WorktreeMergeReceipt{}, readErr
+		}
+		if collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(current); collisionErr != nil {
+			return current, fmt.Errorf("re-read receipt-collision acknowledgement for %s: %w", receiptPath, collisionErr)
+		} else if collisionAcknowledged {
+			return current, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", receiptPath)
 		}
 		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, current, sources)
 		if refreshErr != nil {
@@ -1803,21 +1818,17 @@ func validateRebatchedWorktreeMergeCleanup(ctx context.Context, projectsRoot str
 	if receipt.RebatchOf == "" {
 		return nil
 	}
-	if receipt.LandingSHA == "" {
-		return errors.New("rebatched candidate has no remote landing; old candidate cleanup is not yet eligible")
-	}
 	original, err := readWorktreeMergeReceipt(receipt.RebatchOf)
 	if err != nil {
 		return fmt.Errorf("read rebatched receipt before cleanup: %w", err)
 	}
 	if original.Status == WorktreeMergePreparing {
-		acknowledged, ackErr := hasReceiptCollisionAcknowledgement(original)
-		if ackErr != nil {
-			return fmt.Errorf("re-read receipt-collision acknowledgement before cleanup: %w", ackErr)
+		if _, ackErr := validateReceiptCollisionAcknowledgement(ctx, projectsRoot, original); ackErr != nil {
+			return fmt.Errorf("revalidate receipt-collision acknowledgement before cleanup: %w", ackErr)
 		}
-		if !acknowledged {
-			return errors.New("rebatched preparing receipt has no receipt-collision acknowledgement")
-		}
+	}
+	if receipt.LandingSHA == "" {
+		return errors.New("rebatched candidate has no remote landing; old candidate cleanup is not yet eligible")
 	}
 	rebatch, err := readPreparedWorktreeMergeRebatch(rebatchPath(receipt.RebatchOf), original)
 	if err != nil {

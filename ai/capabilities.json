@@ -64,7 +64,7 @@
           "limitation": null
         },
         "tests": {
-          "status": "Full",
+          "status": "Partial",
           "references": [
             {
               "path": "internal/archiveprune/archiveprune_test.go",
@@ -8256,7 +8256,7 @@
           "limitation": null
         },
         "tests": {
-          "status": "Full",
+          "status": "Partial",
           "references": [
             {
               "path": "internal/orchestrate/worktree_merge_ack_test.go",
@@ -8270,11 +8270,11 @@
             },
             {
               "path": "cmd/wb/worktree_merge_test.go",
-              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "name": "TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence",
               "kind": "integration"
             }
           ],
-          "limitation": null
+          "limitation": "CLI coverage proves required evidence flags and missing-evidence refusal; the production proof sequence is exercised through the orchestration integration tests."
         }
       },
       "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."

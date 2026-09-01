@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,25 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe(t *te
 	if current, readErr := os.ReadFile(claim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBefore) {
 		t.Fatalf("collision claim changed: err=%v", readErr)
 	}
+	ackBefore, err := os.ReadFile(ack.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{receipt.Sources[0].Worktree}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "may proceed only as --rebatch-receipt original") || blocked.ReceiptPath != receipt.ReceiptPath {
+		t.Fatalf("ordinary prepare after collision acknowledgement = receipt %+v err=%v", blocked, err)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
+		t.Fatalf("ordinary prepare changed collision receipt: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(claim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBefore) {
+		t.Fatalf("ordinary prepare changed collision claim: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(ack.AcknowledgementPath); readErr != nil || !bytes.Equal(current, ackBefore) {
+		t.Fatalf("ordinary prepare changed collision acknowledgement: err=%v", readErr)
+	}
 	replayed, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options)
 	if err != nil || replayed.ID != ack.ID || replayed.AcknowledgementPath != ack.AcknowledgementPath || replayed.ReceiptSHA256 != ack.ReceiptSHA256 {
 		t.Fatalf("collision acknowledgement replay = %+v err=%v", replayed, err)
@@ -65,6 +85,39 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe(t *te
 	}
 }
 
+func TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebatchAndCleanup(t *testing.T) {
+	fixture, receipt, options := collisionAcknowledgementFixture(t)
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited historical prepare receipt collision"
+	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tampered := bytes.Replace(claimBytes, []byte("test-model"), []byte("other-model"), 1)
+	if bytes.Equal(tampered, claimBytes) {
+		t.Fatal("claim fixture has no model value to tamper")
+	}
+	if err := os.WriteFile(claim.ClaimPath, tampered, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	extra := createMergeSource(t, fixture, "collision-claim-extra", "feature/collision-claim-extra", "extra.go", "package app\n\nfunc Extra() {}\n")
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{receipt.Sources[0].Worktree, extra.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "immutable claim SHA256") {
+		t.Fatalf("rebatch after claim tamper error = %v", err)
+	}
+	if err := validateRebatchedWorktreeMergeCleanup(context.Background(), fixture.githubDir, WorktreeMergeReceipt{RebatchOf: receipt.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "immutable claim SHA256") {
+		t.Fatalf("cleanup after claim tamper error = %v", err)
+	}
+}
+
 func TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite(t *testing.T) {
 	_, receipt, options := collisionAcknowledgementFixture(t)
 	options.ExpectedCandidateSHA = strings.Repeat("f", 40)
@@ -74,6 +127,50 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithou
 	}
 	if _, statErr := os.Stat(receiptCollisionAcknowledgementPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
 		t.Fatalf("falsifier created acknowledgement: %v", statErr)
+	}
+}
+
+func TestAcknowledgeWorktreeMergeReceiptCollisionNeverOverwritesConcurrentAcknowledgement(t *testing.T) {
+	_, receipt, options := collisionAcknowledgementFixture(t)
+	options.Apply, options.Actor, options.Reason = false, "reviewer", "audited historical prepare receipt collision"
+	intended, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting := intended
+	conflicting.Actor, conflicting.Reason = "other-reviewer", "different audited recovery"
+	conflicting.ID = receiptCollisionAcknowledgementID(conflicting)
+	conflictingBytes, err := json.MarshalIndent(conflicting, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictingBytes = append(conflictingBytes, '\n')
+	path := receiptCollisionAcknowledgementPath(receipt.ReceiptPath)
+	previousLink := linkReceiptCollisionAcknowledgement
+	linkReceiptCollisionAcknowledgement = func(_, destination string) error {
+		if destination != path {
+			t.Fatalf("atomic create destination = %s, want %s", destination, path)
+		}
+		if err := os.WriteFile(destination, conflictingBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return os.ErrExist
+	}
+	t.Cleanup(func() { linkReceiptCollisionAcknowledgement = previousLink })
+
+	options.Apply = true
+	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err == nil || !strings.Contains(err.Error(), "binds different immutable evidence") {
+		t.Fatalf("concurrent conflicting acknowledgement error = %v", err)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(current, conflictingBytes) {
+		t.Fatalf("conflicting acknowledgement was replaced: err=%v", err)
+	}
+
+	linkReceiptCollisionAcknowledgement = previousLink
+	replayed, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options)
+	if err == nil || replayed.ID != "" {
+		t.Fatalf("conflicting replay was accepted: acknowledgement=%+v err=%v", replayed, err)
 	}
 }
 

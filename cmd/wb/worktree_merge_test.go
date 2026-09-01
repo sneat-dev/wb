@@ -80,6 +80,23 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	}
 }
 
+func TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence(t *testing.T) {
+	command := newWorktreeMergeCmd()
+	child, _, err := command.Find([]string{"acknowledge-receipt-collision"})
+	if err != nil || child == nil {
+		t.Fatalf("find collision acknowledgement command: child=%v err=%v", child, err)
+	}
+	for _, flag := range []string{"expected-receipt-sha256", "expected-immutable-claim-sha256", "expected-target", "expected-candidate", "expected-current-source", "expected-historical-refresh-source"} {
+		if child.Flags().Lookup(flag) == nil {
+			t.Errorf("collision acknowledgement is missing --%s", flag)
+		}
+	}
+	command.SetArgs([]string{"acknowledge-receipt-collision", "receipt.json"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "all expected receipt, claim, target, candidate, current-source, and historical-source identities are required") {
+		t.Fatalf("missing collision evidence error = %v", err)
+	}
+}
+
 func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
 	t.Run("acknowledge-landed-failed", func(t *testing.T) {
 		fixture := newCLIWorktreeMergeFixture(t, 1)
