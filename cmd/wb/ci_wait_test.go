@@ -525,6 +525,9 @@ echo "unexpected gh args: $*" >&2; exit 30
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WB_CI_WAIT_STATE", state)
+	previousDelay := orchestrate.DefaultStableRereadDelay
+	orchestrate.DefaultStableRereadDelay = 300 * time.Millisecond
+	t.Cleanup(func() { orchestrate.DefaultStableRereadDelay = previousDelay })
 	var stdout, stderr bytes.Buffer
 	// The interval leaves no room for a second quota-cadence poll inside the
 	// slice, exactly like a default 30s cadence against real CI. A check set

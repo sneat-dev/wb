@@ -40,6 +40,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
 		Ecosystem: options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, ValidationMode: options.ValidationMode, Parallel: lifecycle.Parallel,
+		ParallelExplicit:       options.ParallelExplicit,
 		RegistryLookupsSkipped: options.NoRegistry,
 	}
 	if lifecycle.Verify {
@@ -387,7 +388,12 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 	// The registry rechecks are independent read-only lookups, so they run on
 	// the read-only worker bound instead of one serial round-trip per stale
 	// event. Results apply below in event order, keeping refresh reporting
-	// deterministic regardless of lookup completion order.
+	// deterministic regardless of lookup completion order. Any recorded
+	// failure is fatal upstream, so the first one cancels every outstanding
+	// lookup instead of letting each of them run to its own timeout while the
+	// operation lock stays held.
+	lookupCtx, cancelLookups := context.WithCancel(ctx)
+	defer cancelLookups()
 	latestByIndex := make([]string, len(stale))
 	errorsByIndex := make([]error, len(stale))
 	workers := readOnlyWorkerCount(options.Parallel, options.ParallelExplicit, len(stale))
@@ -398,14 +404,26 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 		go func() {
 			defer group.Done()
 			for position := range jobs {
+				if lookupCtx.Err() != nil {
+					continue
+				}
 				event := events[stale[position]]
-				latest, err := latestReleaseVersion(ctx, event.Dependency, options)
+				latest, err := latestReleaseVersion(lookupCtx, event.Dependency, options)
 				if err != nil {
-					errorsByIndex[position] = fmt.Errorf("refresh stale release event %s@%s: %w", event.Dependency, event.Version, err)
+					// A lookup that failed only because a sibling's failure
+					// already cancelled it is not its own finding; the
+					// sibling's recorded error fails the wave. Cancellation of
+					// the whole campaign context is still recorded so the
+					// caller sees why nothing was refreshed.
+					if lookupCtx.Err() == nil || ctx.Err() != nil {
+						errorsByIndex[position] = fmt.Errorf("refresh stale release event %s@%s: %w", event.Dependency, event.Version, err)
+					}
+					cancelLookups()
 					continue
 				}
 				if !universalSemverValid(latest) {
 					errorsByIndex[position] = fmt.Errorf("refresh stale release event %s@%s: registry returned invalid version %q", event.Dependency, event.Version, latest)
+					cancelLookups()
 					continue
 				}
 				latestByIndex[position] = latest
@@ -426,6 +444,11 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 		}
 		event := &events[index]
 		latest := latestByIndex[position]
+		if latest == "" {
+			// This lookup was cancelled before it completed; the joined error
+			// below already fails the wave, so the event stays unrefreshed.
+			continue
+		}
 		refresh := ReleaseEventRefresh{
 			Dependency: event.Dependency, Before: event.Version, After: event.Version, CheckedAt: now,
 			Reason: "registry recheck found no newer release; accumulated event retained",
@@ -836,7 +859,12 @@ func captureReleaseBaselines(ctx context.Context, graph bumpFleetGraph, affected
 			targets = append(targets, baselineTarget{module: module, repository: repository})
 		}
 	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].module < targets[j].module })
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].module == targets[j].module {
+			return targets[i].repository < targets[j].repository
+		}
+		return targets[i].module < targets[j].module
+	})
 	// Baseline capture is an independent read-only registry lookup per
 	// module, so it runs on the read-only worker bound instead of one serial
 	// round-trip per module.

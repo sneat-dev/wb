@@ -122,6 +122,12 @@ type PullRequestWaitOptions struct {
 	AllowUnfenced     bool
 	Slice             time.Duration
 	CheckPollInterval time.Duration
+	// StableRereadDelay overrides the shortened wait before the confirming
+	// reread of a checks-bearing terminal observation. A zero value uses
+	// DefaultStableRereadDelay, and the delay never exceeds
+	// CheckPollInterval. The no-applicable-checks receipt and any reread
+	// after fingerprint churn always wait the full CheckPollInterval.
+	StableRereadDelay time.Duration
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
 	Progress func(PullRequestWaitProgress)

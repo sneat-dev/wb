@@ -6,6 +6,11 @@ WB never accepts an npm token and never runs `npm publish`. The command is a
 plan by default, and `--apply` is the explicit approval to dispatch workflows
 and read registry evidence.
 
+Downstream propagation runs in the shared dependency-wave engine, where
+leaving `--parallel` at its default widens read-only pools (per-wave graph
+discovery fetches and registry release observations) to a floor of 4 workers;
+an explicit `--parallel` bounds every pool in both directions.
+
 Plan mode validates the tuples and runs the existing downstream dependency-wave
 engine in dry-run mode. It retains real fleet findings and the engine's durable
 report, but never dispatches a release workflow, queries the npm registry, or

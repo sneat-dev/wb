@@ -28,7 +28,10 @@ wb deps set go <module>@<version> --fleet \
 ```
 
 Use `--layer N` or `N-M` only when deliberately staging layers. Use
-`--propagate` to delegate the exact Go release event to bump waves.
+`--propagate` to delegate the exact Go release event to bump waves; there,
+leaving `--parallel` at its default widens read-only pools (per-wave graph
+discovery fetches and registry release observations) to a floor of 4 workers,
+while an explicit `--parallel` bounds every pool in both directions.
 
 Local verification is on by default. Tune it with `--checks`,
 `--timeout`, and `--retry`. For a CI-authoritative fleet update,

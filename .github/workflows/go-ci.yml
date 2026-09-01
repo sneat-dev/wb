@@ -93,10 +93,35 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # The development VMs this repository is usually written on have no C
+      # compiler, so -race cannot run there; this shard is the fleet's only
+      # data-race gate. It is scoped to the packages that run in-process
+      # worker pools and shared observers rather than the whole module, so
+      # the gate stays fast enough to sit in the required aggregate below.
+      - name: go test -race (concurrency-bearing packages)
+        run: >-
+          go test -race
+          ./internal/deps/...
+          ./internal/orchestrate/...
+          ./internal/githubobserver/...
+          ./internal/fleetsync/...
+
   test:
     name: Build, vet, test
     if: ${{ always() }}
-    needs: [static, lint, coverage]
+    needs: [static, lint, coverage, race]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -105,9 +130,10 @@ jobs:
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
+          RACE_RESULT: ${{ needs.race.result }}
         run: |
           set -eu
-          for result in "$STATIC_RESULT" "$LINT_RESULT" "$COVERAGE_RESULT"; do
+          for result in "$STATIC_RESULT" "$LINT_RESULT" "$COVERAGE_RESULT" "$RACE_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "A required parallel Go gate concluded: $result" >&2
               exit 1

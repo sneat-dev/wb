@@ -612,12 +612,17 @@ func resolveDepsBumpResumeParallel(lifecycle deps.Options, report deps.BumpRepor
 		// repositories nor changes the campaign's identity, so an operator may
 		// safely raise or lower it while resuming.
 		report.Parallel = lifecycle.Parallel
+		report.ParallelExplicit = true
 		return lifecycle, report, nil
 	}
 	if report.Parallel < 1 {
 		return deps.Options{}, deps.BumpReport{}, fmt.Errorf("resume report has invalid parallelism %d", report.Parallel)
 	}
 	lifecycle.Parallel = report.Parallel
+	// Restore the original run's explicit-parallel authority too: a resumed
+	// `--parallel 1` campaign must not regain the read-only worker floor
+	// merely because the resume invocation itself omitted the flag.
+	lifecycle.ParallelExplicit = report.ParallelExplicit
 	return lifecycle, report, nil
 }
 

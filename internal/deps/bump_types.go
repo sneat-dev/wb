@@ -73,6 +73,12 @@ type BumpReport struct {
 	ValidationMode ValidationMode  `yaml:"validation_mode,omitempty"`
 	Verification   []quality.Check `yaml:"verification,omitempty"`
 	Parallel       int             `yaml:"parallel"`
+	// ParallelExplicit records whether the operator set --parallel themselves
+	// when this campaign ran. A resume without its own explicit --parallel
+	// restores it, so "an explicit --parallel bounds every pool in both
+	// directions" — including the read-only worker floor staying off for an
+	// explicit --parallel 1 — survives interruption and resume.
+	ParallelExplicit bool `yaml:"parallel_explicit,omitempty"`
 	// RegistryLookupsSkipped records that this plan intentionally omitted
 	// registry-derived carrier and stale-event evidence.
 	RegistryLookupsSkipped bool                          `yaml:"registry_lookups_skipped,omitempty"`

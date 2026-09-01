@@ -15,7 +15,11 @@ queue.
 
 `passed` means GitHub's required-check policy was read successfully, every
 required context was present, and the complete observed terminal set was
-unchanged on a later foreground read. In every mode WB verifies an App-pinned
+unchanged on a later foreground read. That confirming read arrives on a
+shorter bounded delay (15s default) once a checks-bearing set is terminal —
+at most one shortened reread per terminal episode, with churn falling back to
+the normal cadence — while the empty no-applicable-checks receipt always
+waits a full poll interval first. In every mode WB verifies an App-pinned
 context against an exact-head check run from that App; a same-named PR summary
 or legacy commit status is not producer evidence. This is a bounded quiescence receipt.
 Optional workflows can register after that window, so collect the
