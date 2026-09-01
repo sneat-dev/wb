@@ -601,6 +601,121 @@ func TestLandWorktreeMergeDirectWalksExactRemoteJourney(t *testing.T) {
 	}
 }
 
+func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "published-stop-source", "feature/published-stop", "published-stop.txt", "published stop\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergePublishOnlyPRGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	t.Setenv("WB_TEST_GH_LOG", logPath)
+
+	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("publish-only resume failed: receipt=%+v err=%v", published, err)
+	}
+	if published.Status != WorktreeMergePublished || published.PullRequest != "https://example.test/acme/app/pull/41" ||
+		published.PublishedCandidateSHA != receipt.Candidate.SHA || published.LandingSHA != "" || published.Checks.Status != "" {
+		t.Fatalf("published handoff receipt = %+v", published)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, receipt.Candidate.SHA+"\t") {
+		t.Fatalf("remote candidate = %q, want exact %s", got, receipt.Candidate.SHA)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD")); got != receipt.TargetSHA {
+		t.Fatalf("publish-only handoff changed target from %s to %s", receipt.TargetSHA, got)
+	}
+	logContents, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, forbidden := range []string{"pr merge", "check-runs", "/status?"} {
+		if strings.Contains(string(logContents), forbidden) {
+			t.Fatalf("publish-only handoff invoked %q:\n%s", forbidden, logContents)
+		}
+	}
+	persisted, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if persisted.Status != WorktreeMergePublished || persisted.Candidate.SHA != receipt.Candidate.SHA || persisted.TargetSHA != receipt.TargetSHA {
+		t.Fatalf("persisted published handoff = %+v", persisted)
+	}
+
+	continued, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil || continued.Status != WorktreeMergeChecksFailed {
+		t.Fatalf("ordinary resume did not continue into the candidate-check boundary: receipt=%+v err=%v", continued, err)
+	}
+	logContents, readErr = os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(logContents), "pr checks https://example.test/acme/app/pull/41") || strings.Contains(string(logContents), "pr merge") {
+		t.Fatalf("ordinary resume did not continue from the published handoff at checks without merging:\n%s", logContents)
+	}
+}
+
+func TestResumeWorktreeMergeStopBeforeMergeRefusesTargetOrSourceDrift(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		drift func(t *testing.T, fixture engineFixture, source worktrees.CreateResult)
+		want  string
+	}{
+		{
+			name: "target",
+			drift: func(t *testing.T, fixture engineFixture, _ worktrees.CreateResult) {
+				writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "target drift\n")
+				runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
+				runEngineGit(t, fixture.canonical, "commit", "-m", "test: target drift")
+				runEngineGit(t, fixture.canonical, "push", "origin", "main")
+			},
+			want: "target drifted",
+		},
+		{
+			name: "source",
+			drift: func(t *testing.T, _ engineFixture, source worktrees.CreateResult) {
+				writeEngineFile(t, filepath.Join(source.WorktreeDir, "source-drift.txt"), "source drift\n")
+				runEngineGit(t, source.WorktreeDir, "add", "source-drift.txt")
+				runEngineGit(t, source.WorktreeDir, "commit", "-m", "test: source drift")
+			},
+			want: "advanced from",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			source := createMergeSource(t, fixture, "published-stop-drift-"+test.name, "feature/published-stop-drift-"+test.name, "drift.txt", "candidate\n")
+			receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+				ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.drift(t, fixture, source)
+			failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+				ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+				StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) || failed.Status != WorktreeMergeConflict {
+				t.Fatalf("drift=%s receipt=%+v err=%v", test.name, failed, err)
+			}
+			if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD")); got != receipt.Candidate.SHA {
+				t.Fatalf("preserved candidate changed after %s drift: got %s want %s", test.name, got, receipt.Candidate.SHA)
+			}
+		})
+	}
+}
+
 func TestResumeWorktreeMergeAcceptsPostLandingTargetDescendant(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "post-land-descendant-source", "feature/post-land-descendant", "candidate.txt", "candidate\n")
@@ -2148,6 +2263,56 @@ set -eu
 case "$*" in
   'pr view https://example.test/acme/app/pull/23 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
     printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
+  *) echo "unexpected gh command: $*" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func installWorktreeMergePublishOnlyPRGH(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := filepath.Join(bin, "gh")
+	body := `#!/bin/sh
+set -eu
+printf '%s\n' "$*" >>"$WB_TEST_GH_LOG"
+state_file="${WB_TEST_PR_STATE_FILE:-$WB_TEST_GH_LOG.state}"
+state="OPEN"
+if [ -f "$state_file" ]; then state="$(cat "$state_file")"; fi
+case "$*" in
+  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":true,"protection":{"required_pull_request_reviews":{}}}' ;;
+  'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[[]]' ;;
+  'pr list --head '*' --base main --state open --json url --jq .[0].url') printf '\n' ;;
+  'pr create --base main --head '* ) printf '%s\n' 'https://example.test/acme/app/pull/41' ;;
+  'pr view https://example.test/acme/app/pull/41 --repo acme/app --json state,headRefOid,baseRefName')
+    printf '{"state":"%s","headRefOid":"%s","baseRefName":"main"}\n' "$state" "$WB_TEST_CANDIDATE_SHA" ;;
+  'pr view https://example.test/acme/app/pull/41 --repo acme/app --json headRefOid,baseRefName')
+    printf '{"headRefOid":"%s","baseRefName":"main"}\n' "$WB_TEST_CANDIDATE_SHA" ;;
+  'pr view https://example.test/acme/app/pull/41 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
+    if [ "$state" = MERGED ]; then
+      printf '{"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$WB_TEST_CANDIDATE_SHA" "$WB_TEST_CANDIDATE_SHA"
+    else
+      printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$WB_TEST_CANDIDATE_SHA"
+    fi ;;
+  'api repos/acme/app --include'|'api repos/acme/app') printf '%s\n' '{"allow_merge_commit":true,"allow_squash_merge":false,"allow_rebase_merge":false}' ;;
+  'pr merge https://example.test/acme/app/pull/41 --match-head-commit '*' --merge')
+    git --git-dir="$WB_TEST_REMOTE" update-ref refs/heads/main "$WB_TEST_CANDIDATE_SHA"
+    printf 'MERGED\n' >"$state_file" ;;
+  *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
+  *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
+  'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main') printf '{"object":{"sha":"%s"}}\n' "$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)" ;;
+  'api repos/acme/app/compare/'*'...'* )
+    pair="${2#*compare/}"
+    base="${pair%%...*}"
+    candidate="${pair#*...}"
+    merge_base="$(git --git-dir="$WB_TEST_REMOTE" merge-base "$base" "$candidate")"
+    if git --git-dir="$WB_TEST_REMOTE" merge-base --is-ancestor "$base" "$candidate"; then status="ahead"; else status="diverged"; fi
+    printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
+  'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
