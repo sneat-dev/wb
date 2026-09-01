@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/process"
 )
 
 // Check selects a conventional verification class.
@@ -402,7 +403,7 @@ func detectPackageManager(root, declared string) string {
 }
 
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
-	command := exec.CommandContext(ctx, name, args...)
+	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
 	output, err := command.CombinedOutput()
 	return string(output), err

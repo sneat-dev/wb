@@ -3,11 +3,14 @@ package quality
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -422,6 +425,72 @@ func TestRunWithOptionsRetriesAndTimesOut(t *testing.T) {
 	if _, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 10 * time.Millisecond}, dir, timeoutTool); err == nil || attempts != 1 || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
 	}
+}
+
+func TestRunWithOptionsTimeoutTerminatesForkedProcessTree(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("WB process-tree cancellation is supported on Darwin and Linux")
+	}
+	dir := t.TempDir()
+	pidsPath := filepath.Join(dir, "pids")
+	tool := filepath.Join(dir, "forking-timeout-tool")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 30 &\nprintf '%s %s' \"$$\" \"$!\" > \""+pidsPath+"\"\nwhile :; do sleep 1; done\n")
+	if err := os.Chmod(tool, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 250 * time.Millisecond}, dir, tool)
+	if err == nil || !strings.Contains(err.Error(), "timed out after 250ms") || attempts != 1 {
+		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
+	}
+	pids := strings.Fields(string(readQualityFile(t, pidsPath)))
+	if len(pids) != 2 {
+		t.Fatalf("recorded PIDs = %q, want parent and child", pids)
+	}
+	for _, rawPID := range pids {
+		pid, parseErr := strconv.Atoi(rawPID)
+		if parseErr != nil || pid <= 0 {
+			t.Fatalf("recorded PID %q: %v", rawPID, parseErr)
+		}
+		assertQualityProcessGone(t, pid)
+	}
+}
+
+func readQualityFile(t *testing.T, path string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(path)
+		if err == nil {
+			if strings.TrimSpace(string(raw)) != "" {
+				return raw
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
+	return nil
+}
+
+func assertQualityProcessGone(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		err := syscall.Kill(pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("probe PID %d: %v", pid, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("forked process PID %d survived the timeout", pid)
 }
 
 func checkStrings(checks []Check) []string {
