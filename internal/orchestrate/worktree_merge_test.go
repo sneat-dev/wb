@@ -330,6 +330,119 @@ Have you run npm/yarn install?
 	}
 }
 
+func TestWorktreeMergeValidationRegressionMatchesExactContactusTruncatedTail(t *testing.T) {
+	nodeFailing := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
+04:56:35 [types] Generated 58ms
+04:56:35 [build] output: "static"
+04:56:35 [build] mode: "static"
+04:56:35 [build] directory: /private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/
+… output truncated; final 750 bytes:
+ built in 591ms
+04:56:36 [vite] ✓ built in 8ms
+04:56:36 [build] Rearranging server assets...
+
+ generating static routes
+04:56:36   ├─ /en/privacy/index.html (+8ms)
+04:56:36   ├─ /index.html (+4ms)
+04:56:36 ✓ Completed in 21ms.
+
+04:56:36 [build] ✓ Completed in 637ms.
+04:56:36 [@astrojs/sitemap] ` + "\x60" + `sitemap-index.xml` + "\x60" + ` created at ` + "\x60" + `dist` + "\x60" + `
+04:56:36 [build] 2 page(s) built in 719ms
+04:56:36 [build] Complete!
+$ cd ../frontend && npx nx build contactus-app --base-href=/
+
+ NX   Could not find Nx modules at "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-3002203795/tree/frontend".
+
+Have you run npm/yarn install?
+
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.`)
+	candidate := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
+04:56:25 [types] Generated 27ms
+04:56:25 [build] output: "static"
+04:56:25 [build] mode: "static"
+04:56:25 [build] directory: /Users/alex/.wb/worktrees/merge-sneat-co-contactus-main
+… output truncated; final 750 bytes:
+ilt in 112ms
+04:56:25 [vite] ✓ built in 9ms
+04:56:25 [build] Rearranging server assets...
+
+ generating static routes
+04:56:25   ├─ /en/privacy/index.html (+8ms)
+04:56:25   ├─ /index.html (+4ms)
+04:56:25 ✓ Completed in 20ms.
+
+04:56:25 [build] ✓ Completed in 158ms.
+04:56:25 [@astrojs/sitemap] ` + "\x60" + `sitemap-index.xml` + "\x60" + ` created at ` + "\x60" + `dist` + "\x60" + `
+04:56:25 [build] 2 page(s) built in 215ms
+04:56:25 [build] Complete!
+$ cd ../frontend && npx nx build contactus-app --base-href=/
+
+ NX   Could not find Nx modules at "/Users/alex/.wb/worktrees/merge-sneat-co-contactus-main-355e0d554d15-c46e04b0fe6b/sneat-co/contactus/frontend".
+
+Have you run npm/yarn install?
+
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.`)
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("exact Contactus receipt-shaped tail should be equivalent: %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(string) string
+	}{
+		{name: "different Nx error text", mutate: func(detail string) string {
+			return strings.Replace(detail, "Could not find Nx modules", "Could not find Nx workspace", 1)
+		}},
+		{name: "different Nx error code", mutate: func(detail string) string {
+			return strings.Replace(detail, "exit code 1", "exit code 2", 1)
+		}},
+		{name: "different Nx error number", mutate: func(detail string) string {
+			return strings.Replace(detail, "2 page(s) built", "3 page(s) built", 1)
+		}},
+		{name: "different truncated timing verb", mutate: func(detail string) string {
+			return strings.Replace(detail, " built in 591ms", "failed in 591ms", 1)
+		}},
+		{name: "extra Nx diagnostic", mutate: func(detail string) string {
+			return detail + "\nNX diagnostic: install dependencies first"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if sameWorktreeMergeFailure(nodeFailing(baseline.Results[0].Detail).Results[0], nodeFailing(test.mutate(baseline.Results[0].Detail)).Results[0]) {
+				t.Fatalf("normalized comparison erased %s", test.name)
+			}
+		})
+	}
+}
+
+func TestNormalizeWorktreeMergeFailureDetailTruncatedTimingIsFailClosed(t *testing.T) {
+	const marker = "… output truncated; final 750 bytes:\n"
+	for _, test := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "partial built", in: marker + "ilt in 112ms", want: strings.TrimSpace(marker) + " built in <duration>"},
+		{name: "partial completed", in: marker + "pleted in 112ms", want: strings.TrimSpace(marker) + " completed in <duration>"},
+		{name: "unknown timing phrase", in: marker + "error in 112ms", want: strings.TrimSpace(marker) + " error in 112ms"},
+		{name: "semantic partial line", in: marker + "or in 112ms", want: strings.TrimSpace(marker) + " or in 112ms"},
+		{name: "marker without tail line", in: marker, want: strings.TrimSpace(marker)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := normalizeWorktreeMergeFailureDetail(test.in); got != test.want {
+				t.Fatalf("normalized detail = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestWorktreeMergeValidationRegressionMatchesYardiusEnvironmentFailures(t *testing.T) {
 	nodeFailing := func(detail string) quality.VerificationEntry {
 		return quality.VerificationEntry{Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail}

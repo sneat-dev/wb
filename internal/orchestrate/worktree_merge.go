@@ -2140,6 +2140,8 @@ var (
 	worktreeMergeFailureGeneratedPattern     = regexp.MustCompile(`(?i)\b(Generated)\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
 	worktreeMergeFailureBuiltPattern         = regexp.MustCompile(`(?i)\b(built in|Completed in)\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
 	worktreeMergeFailureParenthesizedPattern = regexp.MustCompile(`\(\+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\)`)
+	worktreeMergeFailureTruncationPattern    = regexp.MustCompile(`(?s)(… output truncated; final [0-9]+ bytes:\r?\n)([^\r\n]*)`)
+	worktreeMergeFailurePartialTimingPattern = regexp.MustCompile(`(?i)^([[:alpha:]]+)\s+in\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)$`)
 )
 
 func normalizeWorktreeMergeFailureDetail(detail string) string {
@@ -2153,11 +2155,32 @@ func normalizeWorktreeMergeFailureDetail(detail string) string {
 	detail = worktreeMergeFailureGeneratedPattern.ReplaceAllString(detail, `${1} <duration>`)
 	detail = worktreeMergeFailureBuiltPattern.ReplaceAllString(detail, `${1} <duration>`)
 	detail = worktreeMergeFailureParenthesizedPattern.ReplaceAllString(detail, `(+<duration>)`)
+	detail = worktreeMergeFailureTruncationPattern.ReplaceAllStringFunc(detail, normalizeWorktreeMergeFailureTruncatedTail)
 	fields := strings.Fields(detail)
 	for index, field := range fields {
 		fields[index] = normalizeWorktreeMergeFailureField(field)
 	}
 	return strings.Join(fields, " ")
+}
+
+func normalizeWorktreeMergeFailureTruncatedTail(match string) string {
+	const markerEnd = "\n"
+	lineStart := strings.Index(match, markerEnd)
+	if lineStart < 0 || lineStart+len(markerEnd) >= len(match) {
+		return match
+	}
+	line := strings.TrimSpace(match[lineStart+len(markerEnd):])
+	partial := worktreeMergeFailurePartialTimingPattern.FindStringSubmatch(line)
+	if len(partial) != 2 {
+		return match
+	}
+	word := strings.ToLower(partial[1])
+	for _, complete := range []string{"built", "completed"} {
+		if strings.HasSuffix(complete, word) {
+			return match[:lineStart+len(markerEnd)] + complete + " in <duration>"
+		}
+	}
+	return match
 }
 
 const worktreeMergeFailurePathPunctuation = "\"'`()[]{}<>,;."
