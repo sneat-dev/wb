@@ -810,14 +810,8 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
-	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeValidationFailed || receipt.LandingSHA != "" {
-		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("receipt %s is %s/%s, want prepare validation_failed without a landing", receiptPath, receipt.Phase, receipt.Status)
-	}
-	if err := validateLandedFailureAcknowledgementReceipt(receipt, receiptPath); err != nil {
+	if err := validateValidationFailedSupersessionReceipt(receipt, receiptPath); err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
-	}
-	if receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || len(receipt.Sources) == 0 {
-		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("receipt %s lacks complete immutable target, candidate, or source identity", receiptPath)
 	}
 	if strings.TrimSpace(options.ReplacementWorktree) == "" {
 		return WorktreeMergeValidationFailureSupersession{}, errors.New("replacement worktree is required")
@@ -925,12 +919,15 @@ func CorrectValidationFailedSelfSupersession(ctx context.Context, options Worktr
 	if err != nil {
 		return WorktreeMergeSelfSupersessionCorrection{}, err
 	}
+	if err := validateValidationFailedSupersessionReceipt(receipt, receiptPath); err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
 	ackPath := validationFailureSupersessionPath(receiptPath)
 	supersession, err := readValidationFailureSupersession(ackPath, receipt)
 	if err != nil {
 		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("read existing supersession: %w", err)
 	}
-	if supersession.Replacement != supersession.OriginalCandidate || supersession.OriginalCandidate != receipt.Candidate {
+	if supersession.Replacement != supersession.OriginalCandidate || supersession.OriginalCandidate != receipt.Candidate || supersession.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA {
 		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("existing supersession is not the exact self-supersession correction shape")
 	}
 	supersessionHash, err := worktreeMergeReceiptSHA256(ackPath)
@@ -969,7 +966,7 @@ func CorrectValidationFailedSelfSupersession(ctx context.Context, options Worktr
 	if err != nil {
 		return WorktreeMergeSelfSupersessionCorrection{}, err
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
@@ -1111,6 +1108,28 @@ func validateLandedFailureAcknowledgementReceipt(receipt WorktreeMergeReceipt, r
 		}
 	default:
 		return fmt.Errorf("receipt %s is %s, want prepare validation_failed or landed_post_target_ci_failed", receiptPath, receipt.Status)
+	}
+	return nil
+}
+
+// validateValidationFailedSupersessionReceipt defines the immutable boundary
+// shared by ordinary supersession and the exceptional self-supersession
+// correction. A correction may only describe an exact, unlanded prepare
+// failure; it must never bless a malformed or later-landed receipt.
+func validateValidationFailedSupersessionReceipt(receipt WorktreeMergeReceipt, receiptPath string) error {
+	if err := validateLandedFailureAcknowledgementReceipt(receipt, receiptPath); err != nil {
+		return err
+	}
+	if receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeValidationFailed || receipt.LandingSHA != "" ||
+		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 ||
+		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
+		receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
+		return fmt.Errorf("receipt %s lacks a complete exact validation_failed immutable identity", receiptPath)
+	}
+	for _, source := range receipt.Sources {
+		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+			return fmt.Errorf("receipt %s has an incomplete immutable source identity", receiptPath)
+		}
 	}
 	return nil
 }
@@ -1313,7 +1332,10 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 	return ack, nil
 }
 
-func hasValidationFailureSupersession(receipt WorktreeMergeReceipt) (bool, error) {
+// hasValidationFailureSupersession refuses to treat a historical self-
+// supersession as effective until its separate correction still matches all
+// live receipt, claim, source, target, and candidate evidence.
+func hasValidationFailureSupersession(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (bool, error) {
 	ackPath := validationFailureSupersessionPath(receipt.ReceiptPath)
 	ack, err := readValidationFailureSupersession(ackPath, receipt)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1323,7 +1345,7 @@ func hasValidationFailureSupersession(receipt WorktreeMergeReceipt) (bool, error
 		return false, err
 	}
 	if ack.Replacement == ack.OriginalCandidate {
-		if _, correctionErr := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receipt.ReceiptPath), receipt, ack); correctionErr != nil {
+		if correctionErr := validateSelfSupersessionCorrection(ctx, projectsRoot, receipt, ack); correctionErr != nil {
 			if errors.Is(correctionErr, os.ErrNotExist) {
 				return false, fmt.Errorf("validation-failed supersession %s is a self-supersession and requires an append-only correction", ackPath)
 			}
@@ -1331,6 +1353,58 @@ func hasValidationFailureSupersession(receipt WorktreeMergeReceipt) (bool, error
 		}
 	}
 	return true, nil
+}
+
+func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession) error {
+	if err := validateValidationFailedSupersessionReceipt(receipt, receipt.ReceiptPath); err != nil {
+		return err
+	}
+	correction, err := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receipt.ReceiptPath), receipt, supersession)
+	if err != nil {
+		return err
+	}
+	originalClaim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
+	if err != nil {
+		return fmt.Errorf("validate corrected self-supersession original candidate: %w", err)
+	}
+	originalClaimBytes, err := os.ReadFile(originalClaim.ClaimPath)
+	if err != nil {
+		return fmt.Errorf("read corrected self-supersession immutable claim: %w", err)
+	}
+	originalClaimDigest := sha256.Sum256(originalClaimBytes)
+	if originalClaimHash := hex.EncodeToString(originalClaimDigest[:]); originalClaimHash != correction.ImmutableClaimSHA256 ||
+		originalClaim.BaseSHA != supersession.OriginalClaimBaseSHA || originalClaim.BaseSHA != correction.OriginalClaimBaseSHA {
+		return errors.New("corrected self-supersession immutable claim SHA256 or base no longer matches recorded evidence")
+	}
+	replacement, replacementClaim, err := validateValidationFailureReplacement(ctx, projectsRoot, receipt, correction.CorrectedReplacement.Worktree)
+	if err != nil {
+		return fmt.Errorf("validate corrected self-supersession replacement: %w", err)
+	}
+	if replacement != correction.CorrectedReplacement || replacementClaim.BaseSHA != correction.ReplacementClaimBaseSHA {
+		return errors.New("corrected self-supersession replacement identity or claim base no longer matches recorded evidence")
+	}
+	for _, source := range receipt.Sources {
+		if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, receipt, source); err != nil {
+			return fmt.Errorf("validate corrected self-supersession source: %w", err)
+		}
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
+	if err != nil {
+		return err
+	}
+	if currentTarget != supersession.CurrentTargetSHA || currentTarget != correction.CurrentTargetSHA {
+		return fmt.Errorf("corrected self-supersession target drifted from recorded %s to %s", correction.CurrentTargetSHA, currentTarget)
+	}
+	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("corrected self-supersession replacement %s does not contain recorded immutable root %s", replacement.SHA, root)
+			}
+			return ancestorErr
+		}
+	}
+	return nil
 }
 
 func selfSupersessionCorrectionPath(receiptPath string) string {
@@ -1382,8 +1456,9 @@ func readSelfSupersessionCorrection(path string, receipt WorktreeMergeReceipt, s
 	if correction.SchemaVersion != worktreeMergeSelfSupersessionCorrectionSchemaVersion || correction.Status != "validation_failure_self_supersession_corrected" ||
 		correction.CorrectionPath != path || correction.ReceiptPath != receipt.ReceiptPath || correction.ReceiptSHA256 != receiptHash ||
 		correction.SupersessionPath != supersession.AcknowledgementPath || correction.SupersessionSHA256 != supersessionHash || correction.SupersessionID != supersession.ID ||
-		correction.OriginalCandidate != receipt.Candidate || correction.OriginalCandidate != supersession.OriginalCandidate || supersession.Replacement != supersession.OriginalCandidate ||
+		correction.OriginalCandidate != receipt.Candidate || correction.OriginalCandidate != supersession.OriginalCandidate || supersession.Replacement != supersession.OriginalCandidate || supersession.ReplacementClaimBaseSHA != supersession.OriginalClaimBaseSHA ||
 		correction.OriginalClaimBaseSHA != supersession.OriginalClaimBaseSHA || correction.ImmutableClaimSHA256 == "" || correction.ReplacementClaimBaseSHA == "" || correction.CurrentTargetSHA == "" ||
+		correction.CurrentTargetSHA != supersession.CurrentTargetSHA ||
 		correction.CorrectedReplacement.Task == "" || correction.CorrectedReplacement.Worktree == "" || correction.CorrectedReplacement.Branch == "" || correction.CorrectedReplacement.SHA == "" ||
 		correction.CorrectedReplacement == receipt.Candidate || correction.CorrectedReplacement.SHA == receipt.Candidate.SHA || !sameWorktreeMergeSources(correction.Sources, receipt.Sources) ||
 		correction.Actor == "" || correction.Reason == "" || correction.RecordedAt.IsZero() || correction.ID != selfSupersessionCorrectionID(correction) {
