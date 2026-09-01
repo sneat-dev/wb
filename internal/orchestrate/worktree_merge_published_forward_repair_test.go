@@ -3,10 +3,13 @@ package orchestrate
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -42,6 +45,235 @@ func assertNoPublishedForwardRepairCandidate(t *testing.T, fixture engineFixture
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("refusal leaked candidate worktree: listed=%+v err=%v", listed, err)
 	}
+}
+
+// A historical source hash is audit evidence for the failed candidate, not an
+// arbitrary merge root.  Both Sources and SourceRefreshes enter the shared
+// helper, so exercise each list independently with a real, conflict-free
+// commit that the failed candidate never contained.
+func TestRequireImmutableHistoricalWorktreeMergeSourcesRefusesSideCommitOutsideFailedCandidate(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*WorktreeMergeReceipt, WorktreeMergeSource)
+	}{
+		{
+			name: "sources",
+			mutate: func(receipt *WorktreeMergeReceipt, side WorktreeMergeSource) {
+				receipt.Sources[0] = side
+			},
+		},
+		{
+			name: "source refreshes",
+			mutate: func(receipt *WorktreeMergeReceipt, side WorktreeMergeSource) {
+				receipt.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: time.Now().UTC(), Sources: []WorktreeMergeSource{side}}}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, receipt, _, _, _ := selfSupersessionFixture(t)
+			tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", receipt.TargetSHA+"^{tree}"))
+			sideSHA := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-p", receipt.TargetSHA, "-m", "test: historical side source"))
+			if contains, err := isMergeAncestor(context.Background(), receipt.Candidate.Worktree, sideSHA, receipt.Candidate.SHA); err != nil || contains {
+				t.Fatalf("side source unexpectedly belongs to failed candidate: contains=%t err=%v", contains, err)
+			}
+			side := receipt.Sources[0]
+			side.SHA = sideSHA
+			test.mutate(&receipt, side)
+
+			if err := requireImmutableHistoricalWorktreeMergeSources(context.Background(), receipt.Candidate.Worktree, receipt); err == nil || !strings.Contains(err.Error(), "is not an ancestor of failed candidate") {
+				t.Fatalf("historical side-source validation error = %v", err)
+			}
+		})
+	}
+}
+
+type historicalRefreshSideState struct {
+	fixture      engineFixture
+	receipt      WorktreeMergeReceipt
+	replacement  worktrees.CreateResult
+	supersession WorktreeMergeValidationFailureSupersession
+	claimHash    string
+	options      WorktreeMergePublishedForwardRepairOptions
+}
+
+// historicalRefreshSideFixture leaves all candidate and claim identities
+// intact, but makes the receipt and self-supersession hash-consistent with a
+// resolvable source-refresh commit outside the failed candidate's DAG.
+func historicalRefreshSideFixture(t *testing.T) historicalRefreshSideState {
+	t.Helper()
+	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+	tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", receipt.TargetSHA+"^{tree}"))
+	sideSHA := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-p", receipt.TargetSHA, "-m", "test: hash-consistent historical refresh side source"))
+	if contains, err := isMergeAncestor(context.Background(), receipt.Candidate.Worktree, sideSHA, receipt.Candidate.SHA); err != nil || contains {
+		t.Fatalf("side refresh unexpectedly belongs to failed candidate: contains=%t err=%v", contains, err)
+	}
+	side := receipt.Sources[0]
+	side.SHA = sideSHA
+	receipt.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: time.Now().UTC(), Sources: []WorktreeMergeSource{side}}}
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersession.ReceiptSHA256 = receiptHash
+	supersession.ID = validationFailureSupersessionID(supersession)
+	if err := persistValidationFailureSupersession(supersession.AcknowledgementPath, supersession); err != nil {
+		t.Fatal(err)
+	}
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTarget, err := fetchExactMergeTarget(context.Background(), receipt.Candidate.Worktree, receipt.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra := createMergeSource(t, fixture, "historical-refresh-side-extra", "feature/historical-refresh-side-extra", "repair.txt", "repair\n")
+	extraSHA := strings.TrimSpace(runEngineGit(t, extra.WorktreeDir, "rev-parse", "HEAD"))
+	return historicalRefreshSideState{
+		fixture: fixture, receipt: receipt, replacement: replacement, supersession: supersession, claimHash: claimHash,
+		options: WorktreeMergePublishedForwardRepairOptions{
+			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Sources: []string{receipt.Sources[0].Worktree, extra.WorktreeDir},
+			ExpectedReceiptSHA256: receiptHash, ExpectedImmutableClaimSHA256: claimHash, ExpectedSupersessionSHA256: supersessionHash,
+			ExpectedCurrentTargetSHA: currentTarget, ExpectedSourceSHAs: []string{receipt.Sources[0].SHA, extraSHA},
+			Actor: "reviewer", Reason: "must refuse historical side source outside failed candidate DAG",
+		},
+	}
+}
+
+func snapshotHistoricalSideArtifacts(t *testing.T, fixture engineFixture, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession) (receiptBytes, claimBytes, supersessionBytes []byte) {
+	t.Helper()
+	var err error
+	if receiptBytes, err = os.ReadFile(receipt.ReceiptPath); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimBytes, err = os.ReadFile(claim.ClaimPath); err != nil {
+		t.Fatal(err)
+	}
+	if supersessionBytes, err = os.ReadFile(supersession.AcknowledgementPath); err != nil {
+		t.Fatal(err)
+	}
+	return receiptBytes, claimBytes, supersessionBytes
+}
+
+func assertHistoricalSideArtifacts(t *testing.T, fixture engineFixture, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, receiptBytes, claimBytes, supersessionBytes []byte) {
+	t.Helper()
+	currentReceipt, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil || !bytes.Equal(currentReceipt, receiptBytes) {
+		t.Fatalf("failed receipt changed: err=%v", err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentClaim, err := os.ReadFile(claim.ClaimPath)
+	if err != nil || !bytes.Equal(currentClaim, claimBytes) {
+		t.Fatalf("failed candidate claim changed: err=%v", err)
+	}
+	currentSupersession, err := os.ReadFile(supersession.AcknowledgementPath)
+	if err != nil || !bytes.Equal(currentSupersession, supersessionBytes) {
+		t.Fatalf("self-supersession acknowledgement changed: err=%v", err)
+	}
+}
+
+func TestHistoricalRefreshSideCommitRefusesForwardRepairCorrectionAndEffectiveReader(t *testing.T) {
+	t.Run("forward repair dry-run and apply", func(t *testing.T) {
+		for _, apply := range []bool{false, true} {
+			t.Run(fmt.Sprintf("apply=%t", apply), func(t *testing.T) {
+				state := historicalRefreshSideFixture(t)
+				receiptBytes, claimBytes, supersessionBytes := snapshotHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession)
+				options := state.options
+				options.Apply = apply
+				result, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options)
+				if err == nil || result.Candidate.Worktree != "" || !strings.Contains(err.Error(), "is not an ancestor of failed candidate") {
+					t.Fatalf("historical refresh side forward repair = %+v err=%v", result, err)
+				}
+				assertHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession, receiptBytes, claimBytes, supersessionBytes)
+				assertNoPublishedForwardRepairCandidate(t, state.fixture, state.receipt, options)
+			})
+		}
+	})
+
+	t.Run("correction", func(t *testing.T) {
+		state := historicalRefreshSideFixture(t)
+		receiptBytes, claimBytes, supersessionBytes := snapshotHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession)
+		_, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+			ProjectsRoot: state.fixture.githubDir, Receipt: state.receipt.ReceiptPath, ReplacementWorktree: state.replacement.WorktreeDir,
+			ExpectedSupersessionSHA256: state.options.ExpectedSupersessionSHA256, ExpectedImmutableClaimSHA256: state.claimHash,
+			Apply: true, Actor: "reviewer", Reason: "must reject a hash-consistent historical side source",
+		})
+		if err == nil || !strings.Contains(err.Error(), "is not an ancestor of failed candidate") {
+			t.Fatalf("historical refresh side correction error = %v", err)
+		}
+		assertHistoricalSideArtifacts(t, state.fixture, state.receipt, state.supersession, receiptBytes, claimBytes, supersessionBytes)
+		if _, statErr := os.Stat(selfSupersessionCorrectionPath(state.receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+			t.Fatalf("historical refresh side correction wrote artifact: %v", statErr)
+		}
+	})
+
+	t.Run("effective reader", func(t *testing.T) {
+		fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+		supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		correction, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+			ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+			Apply: true, Actor: "reviewer", Reason: "establish reader fixture before side-source tamper",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", receipt.TargetSHA+"^{tree}"))
+		sideSHA := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-p", receipt.TargetSHA, "-m", "test: effective reader historical refresh side source"))
+		side := receipt.Sources[0]
+		side.SHA = sideSHA
+		receipt.SourceRefreshes = []WorktreeMergeSourceRefresh{{RecordedAt: time.Now().UTC(), Sources: []WorktreeMergeSource{side}}}
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			t.Fatal(err)
+		}
+		receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		supersession.ReceiptSHA256 = receiptHash
+		supersession.ID = validationFailureSupersessionID(supersession)
+		if err := persistValidationFailureSupersession(supersession.AcknowledgementPath, supersession); err != nil {
+			t.Fatal(err)
+		}
+		updatedSupersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		correction.ReceiptSHA256, correction.SupersessionSHA256, correction.SupersessionID = receiptHash, updatedSupersessionHash, supersession.ID
+		correction.ID = selfSupersessionCorrectionID(correction)
+		correctionBytes, err := json.MarshalIndent(correction, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(correction.CorrectionPath, append(correctionBytes, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		receiptBytes, claimBytes, supersessionBytes := snapshotHistoricalSideArtifacts(t, fixture, receipt, supersession)
+		correctionBefore, err := os.ReadFile(correction.CorrectionPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "is not an ancestor of failed candidate") {
+			t.Fatalf("historical refresh side effective reader = superseded=%t err=%v", superseded, err)
+		}
+		assertHistoricalSideArtifacts(t, fixture, receipt, supersession, receiptBytes, claimBytes, supersessionBytes)
+		if current, readErr := os.ReadFile(correction.CorrectionPath); readErr != nil || !bytes.Equal(current, correctionBefore) {
+			t.Fatalf("effective reader changed correction: err=%v", readErr)
+		}
+	})
 }
 
 func TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance(t *testing.T) {

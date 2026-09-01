@@ -309,10 +309,21 @@ func requireExpectedPublishedForwardRepairSources(sources []WorktreeMergeSource,
 }
 
 // requireImmutableHistoricalWorktreeMergeSources treats the pinned failed
-// receipt and its source-refresh chain as immutable DAG roots, not live
-// worktree requirements. Current sources are supplied separately and receive
-// the full managed-worktree and active-claim checks above.
+// receipt and its source-refresh chain as immutable roots of the failed
+// candidate DAG, not live worktree requirements. Current sources are supplied
+// separately and receive the full managed-worktree and active-claim checks
+// above.
 func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, repositoryDir string, receipt WorktreeMergeReceipt) error {
+	if receipt.Candidate.SHA == "" {
+		return errors.New("failed receipt has no immutable candidate SHA for historical source provenance")
+	}
+	candidateSHA, err := mergeRevision(ctx, repositoryDir, receipt.Candidate.SHA)
+	if err != nil || candidateSHA != receipt.Candidate.SHA {
+		if err == nil {
+			err = fmt.Errorf("resolved %s", candidateSHA)
+		}
+		return fmt.Errorf("immutable failed candidate %s is not an available exact commit: %w", receipt.Candidate.SHA, err)
+	}
 	for _, source := range immutableHistoricalWorktreeMergeSources(receipt) {
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 			return errors.New("failed receipt contains an incomplete immutable historical source identity")
@@ -323,6 +334,13 @@ func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, reposit
 				err = fmt.Errorf("resolved %s", revision)
 			}
 			return fmt.Errorf("immutable historical source %s@%s is not an available exact commit: %w", source.Branch, source.SHA, err)
+		}
+		contains, ancestorErr := isMergeAncestor(ctx, repositoryDir, source.SHA, receipt.Candidate.SHA)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("immutable historical source %s@%s is not an ancestor of failed candidate %s", source.Branch, source.SHA, receipt.Candidate.SHA)
+			}
+			return ancestorErr
 		}
 	}
 	return nil
