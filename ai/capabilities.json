@@ -8487,7 +8487,9 @@
     },
     {
       "id": "wb.worktree.merge.acknowledge-stranded-landing",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -8495,7 +8497,14 @@
           "commands": [
             {
               "path": "wb worktree merge acknowledge-stranded-landing",
-              "flags": ["--actor", "--apply", "--format", "--initiator", "--mode", "--reason"],
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
               "modes": [
                 "Proves, using only GitHub's own remote state, that a land conflict receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
                 "Accepts only a land-phase conflict receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
@@ -8509,7 +8518,14 @@
           "anchors": [
             {
               "command": "wb worktree merge acknowledge-stranded-landing --help",
-              "contains": ["only GitHub's own remote state", "--apply", "--actor", "--initiator", "--mode", "--reason"]
+              "contains": [
+                "only GitHub's own remote state",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
             }
           ],
           "limitation": null
@@ -8520,7 +8536,9 @@
             {
               "path": "ai/skills/wb-merge/references/worktree-merge.md",
               "marker": "# Mechanical worktree merge",
-              "examples": ["wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>"]
+              "examples": [
+                "wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
             }
           ],
           "limitation": null
@@ -8543,6 +8561,97 @@
         }
       },
       "notes": "This recovers a land/conflict receipt whose own landing-result read failed on I/O or environment error, typically because the candidate worktree was already removed before a resume could confirm the server landing. Unlike acknowledge-landed-failed it depends on no local worktree at all; containment is proved purely against GitHub's remote state and rechecked live under the lane lock at apply time."
+    },
+    {
+      "id": "wb.worktree.merge.acknowledge-receipt-collision",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-receipt-collision",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--expected-candidate",
+                "--expected-current-source",
+                "--expected-historical-refresh-source",
+                "--expected-immutable-claim-sha256",
+                "--expected-receipt-sha256",
+                "--expected-target",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Requires explicit digests and revisions for one known historical preparing-receipt collision, then re-reads every proof under the lane lock",
+                "Writes only a separate append-only acknowledgement; the historical validation_failed state is an explicit operator assertion because no pre-mutation receipt digest exists"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-receipt-collision --help",
+              "contains": [
+                "current receipt SHA256",
+                "historical validation_failed",
+                "--apply",
+                "--expected-target",
+                "--expected-candidate",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
     },
     {
       "id": "wb.worktree.merge.land",
