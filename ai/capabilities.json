@@ -8316,6 +8316,18 @@
       "notes": "Prepared means local and validated, not remotely landed."
     },
     {
+      "id": "wb.worktree.merge.prepare-published-forward-repair",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare-published-forward-repair", "flags": ["--actor", "--agent-id", "--agent-runtime", "--apply", "--cli", "--expected-current-target", "--expected-immutable-claim-sha256", "--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256", "--format", "--initiator", "--mode", "--model", "--provider", "--reason", "--retry", "--timeout"], "modes": ["Dry-runs the receipt, immutable claim, corrupt self-supersession acknowledgement, exact target, and exact current-source proof without creating a worktree", "Creates one distinct clean WB-managed candidate with every immutable historical root and every pinned repair source as ancestors, without writing a merge receipt or changing any historical record"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare-published-forward-repair --help", "contains": ["self-supersession", "--expected-receipt-sha256", "--expected-immutable-claim-sha256", "--expected-supersession-sha256", "--expected-current-target", "--expected-source-sha", "--apply", "--actor", "--initiator", "--mode", "--reason"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate", "kind": "integration"}, {"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "This explicit recovery-only candidate constructor does not relax normal prepare or rebatch. It creates no merge receipt and only a distinct candidate later consumable by the append-only self-supersession correction."
+    },
+    {
       "id": "wb.worktree.merge.resume",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "v0.66.0",

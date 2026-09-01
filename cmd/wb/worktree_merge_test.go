@@ -51,13 +51,13 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
 		t.Fatalf("--cleanup = %#v, want false", cleanup)
 	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-receipt-collision", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession"} {
+	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-receipt-collision", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair"} {
 		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 			continue
 		}
 		child, _, _ := command.Find([]string{name})
-		if name != "acknowledge-landed-failed" && name != "acknowledge-receipt-collision" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && child.Flags().Lookup("progress") == nil {
+		if name != "acknowledge-landed-failed" && name != "acknowledge-receipt-collision" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
 			t.Errorf("merge %s is missing --progress", name)
 		}
 	}
@@ -106,6 +106,23 @@ func TestWorktreeMergeCorrectSelfSupersessionCommandRequiresExpectedEvidence(t *
 	command.SetArgs([]string{"correct-self-supersession", "receipt.json", "replacement-worktree"})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "--expected-supersession-sha256 and --expected-immutable-claim-sha256 are required") {
 		t.Fatalf("missing self-supersession evidence error = %v", err)
+	}
+}
+
+func TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence(t *testing.T) {
+	command := newWorktreeMergeCmd()
+	child, _, err := command.Find([]string{"prepare-published-forward-repair"})
+	if err != nil || child == nil {
+		t.Fatalf("find published forward-repair command: child=%v err=%v", child, err)
+	}
+	for _, flag := range []string{"expected-receipt-sha256", "expected-immutable-claim-sha256", "expected-supersession-sha256", "expected-current-target", "expected-source-sha", "apply", "actor", "reason"} {
+		if child.Flags().Lookup(flag) == nil {
+			t.Errorf("published forward-repair is missing --%s", flag)
+		}
+	}
+	command.SetArgs([]string{"prepare-published-forward-repair", "receipt.json", "source-worktree"})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "expected receipt, immutable claim, self-supersession, current target, and one expected SHA per source") {
+		t.Fatalf("missing published forward-repair evidence error = %v", err)
 	}
 }
 
