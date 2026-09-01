@@ -34,16 +34,27 @@ func IssuesMarkdown(meta RunMeta, results []Result) string {
 
 	groups := Summary(results)
 	attention, _ := SummaryGroupByLabel(groups, "Needs attention")
+	failures, _ := SummaryGroupByLabel(groups, "Errors")
 	defects, informational := splitAttention(attention.Results)
 
-	writeIssuesHeader(&out, meta, len(defects), len(informational))
+	writeIssuesHeader(&out, meta, len(defects), len(informational), len(failures.Results))
 
-	if len(defects) == 0 && len(informational) == 0 {
+	// A run that never scanned cannot say anything about the fleet, so it
+	// reports only its own failure. Claiming "in sync" here would be a lie an
+	// agent would act on.
+	if meta.RunErr != nil {
+		writeRunFailure(&out, meta)
+		return out.String()
+	}
+
+	if len(defects) == 0 && len(informational) == 0 && len(failures.Results) == 0 {
 		out.WriteString("All repositories are in sync. Nothing requires attention.\n")
 		return out.String()
 	}
 
-	out.WriteString(inspectFirstNote)
+	if len(defects) > 0 || len(failures.Results) > 0 {
+		out.WriteString(inspectFirstNote)
+	}
 
 	if len(defects) > 0 {
 		out.WriteString("## Needs attention\n\n")
@@ -53,6 +64,12 @@ func IssuesMarkdown(meta RunMeta, results []Result) string {
 	}
 	if len(informational) > 0 {
 		writeArchivedNotPruned(&out, informational)
+	}
+	if len(failures.Results) > 0 {
+		out.WriteString("## Errors\n\n")
+		for _, result := range failures.Results {
+			writeErrorEntry(&out, result)
+		}
 	}
 	return out.String()
 }
@@ -84,14 +101,18 @@ func splitAttention(results []Result) (defects, informational []Result) {
 	return defects, informational
 }
 
-func writeIssuesHeader(out *strings.Builder, meta RunMeta, defects, informational int) {
+func writeIssuesHeader(out *strings.Builder, meta RunMeta, defects, informational, failures int) {
 	fmt.Fprintf(out, "**Run:** %s · **Projects root:** %s\n",
 		meta.StartedAt.UTC().Format(time.RFC3339), meta.ProjectsRoot)
-	if defects == 0 && informational == 0 {
+	switch {
+	case meta.RunErr != nil:
+		fmt.Fprintf(out, "**Scanned:** %d repositories · **Run failed before scanning**\n\n", meta.Scanned)
+	case defects == 0 && informational == 0 && failures == 0:
 		fmt.Fprintf(out, "**Scanned:** %d repositories · **Issues:** none\n\n", meta.Scanned)
-	} else {
-		fmt.Fprintf(out, "**Scanned:** %d repositories · **Needs attention:** %d · **Archived, not pruned:** %d\n\n",
-			meta.Scanned, defects, informational)
+	default:
+		fmt.Fprintf(out,
+			"**Scanned:** %d repositories · **Needs attention:** %d · **Archived, not pruned:** %d · **Errors:** %d\n\n",
+			meta.Scanned, defects, informational, failures)
 	}
 	if meta.DryRun {
 		out.WriteString("**Dry run:** the fleet was not modified. Findings are real, but " +
@@ -229,6 +250,41 @@ func writeArchivedNotPruned(out *strings.Builder, results []Result) {
 		fmt.Fprintf(out, "- `%s` — pass `--prune-archived` to evaluate it for cleanup\n", result.Repo.Slug())
 	}
 	out.WriteString("\n")
+}
+
+// writeErrorEntry renders one failed repository. The error value is reproduced
+// verbatim: a re-worded error is a different error, and the reader may need to
+// match it against Git's or gh's own output.
+func writeErrorEntry(out *strings.Builder, result Result) {
+	fmt.Fprintf(out, "### %s — failed\n\n", result.Repo.Slug())
+	writeClone(out, result)
+	fmt.Fprintf(out, "- **Error:** `%v`\n", result.Err)
+
+	at := "git -C " + shellQuote(result.Repo.Path)
+	out.WriteString("\n**Inspect**\n\n```sh\n")
+	out.WriteString("gh auth status -h github.com\n")
+	out.WriteString(at + " config --get remote.origin.url\n")
+	out.WriteString(at + " status -sb\n")
+	out.WriteString("```\n\n**Resolve** — choose after inspecting:\n\n")
+	out.WriteString("- Re-authenticate if the error is about credentials: `gh auth login -h github.com`\n")
+	out.WriteString("- Switch the remote to SSH if this clone was created outside WB with an HTTPS URL\n")
+	out.WriteString("- Re-run the single repository to see the full Git output: " +
+		fmt.Sprintf("`wb sync --filter %s`\n", result.Repo.Name))
+	out.WriteString("\n")
+}
+
+// writeRunFailure reports a run that failed before scanning. Broken GitHub
+// authentication leaves every clone unmanaged, so it is exactly the finding
+// worth handing to an agent — and until now it existed only on stderr.
+func writeRunFailure(out *strings.Builder, meta RunMeta) {
+	out.WriteString("## Run failed\n\n")
+	out.WriteString("The sync failed before it reached the fleet, so no repository was scanned and " +
+		"nothing below reflects the state of any clone.\n\n")
+	fmt.Fprintf(out, "- **Error:** `%v`\n", meta.RunErr)
+	out.WriteString("\n**Inspect**\n\n```sh\ngh auth status -h github.com\n```\n\n")
+	out.WriteString("**Resolve** — choose after inspecting:\n\n")
+	out.WriteString("- Re-authenticate: `gh auth login -h github.com`\n")
+	out.WriteString("- Then re-run `wb sync`; every clone is unmanaged until it succeeds\n")
 }
 
 // safeShellWord matches a path that needs no quoting, so the common case reads

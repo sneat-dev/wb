@@ -1,6 +1,7 @@
 package fleetsync
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -207,5 +208,79 @@ func TestIssuesMarkdownAnchorsEveryMutatingCommandToItsClone(t *testing.T) {
 	}
 	if !strings.Contains(got, "git -C /p/o/r push -u origin feature") {
 		t.Errorf("push command not anchored to the clone:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownRendersErrorsVerbatim(t *testing.T) {
+	results := []Result{{
+		Repo:   discover.Repo{Org: "o", Name: "broken", Path: "/p/o/broken"},
+		Status: Failed,
+		Err:    errors.New("git pull: could not read Username for 'https://github.com'"),
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	for _, want := range []string{
+		"## Errors",
+		"### o/broken — failed",
+		"could not read Username for 'https://github.com'",
+		"gh auth status -h github.com",
+		"gh auth login -h github.com",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestIssuesMarkdownCountsErrorsInHeader(t *testing.T) {
+	results := []Result{
+		{Repo: discover.Repo{Org: "o", Name: "a", Path: "/p/o/a"}, Status: Failed, Err: errors.New("boom")},
+		{Repo: discover.Repo{Org: "o", Name: "b", Path: "/p/o/b"}, Status: Unpushed,
+			Detail: gitops.RepoStatus{Unpushed: []string{"abc1234 wip"}}},
+	}
+	got := IssuesMarkdown(testMeta(), results)
+	if !strings.Contains(got, "**Needs attention:** 1") {
+		t.Errorf("attention count wrong:\n%s", got)
+	}
+	if !strings.Contains(got, "**Errors:** 1") {
+		t.Errorf("error count wrong:\n%s", got)
+	}
+	if strings.Contains(got, "**Issues:** none") {
+		t.Errorf("a run with issues must not claim none:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownReportsRunThatFailedBeforeScanning(t *testing.T) {
+	meta := testMeta()
+	meta.Scanned = 0
+	meta.RunErr = errors.New("GitHub authentication failed: gh: not logged in")
+	got := IssuesMarkdown(meta, nil)
+	for _, want := range []string{
+		"## Run failed",
+		"gh: not logged in",
+		"no repository was scanned",
+		"gh auth login -h github.com",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("report missing %q\n---\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "All repositories are in sync") {
+		t.Errorf("a failed run must never claim the fleet is in sync:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownOmitsTheInspectNoteWhenNothingIsInspectable(t *testing.T) {
+	results := []Result{{
+		Repo:              discover.Repo{Org: "o", Name: "stale", Path: "/p/o/stale"},
+		Status:            Pulled,
+		Archived:          true,
+		ArchivedNotPruned: true,
+	}}
+	got := IssuesMarkdown(testMeta(), results)
+	if !strings.Contains(got, "## Archived, not pruned") {
+		t.Fatalf("informational section missing:\n%s", got)
+	}
+	if strings.Contains(got, "Inspection commands are read-only") {
+		t.Errorf("a report with no Inspect section must not carry the inspect-first note:\n%s", got)
 	}
 }
