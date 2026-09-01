@@ -17,6 +17,7 @@ import (
 
 type worktreeMergeFlags struct {
 	target, route, onFailure, format       string
+	rebatchReceipt                         string
 	model, runtime, agentID, cli, provider string
 	cleanup                                bool
 	progress                               bool
@@ -176,6 +177,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 		},
 	}
 	bindWorktreeMergeFlags(command, &flags, true, false)
+	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable prepared receipt to replace with an additive source-set rebatch")
 	return command
 }
 
@@ -373,7 +375,7 @@ func validateWorktreeMergeFlags(flags worktreeMergeFlags) error {
 func prepareMergeOptions(flags worktreeMergeFlags, sources []string, reporter progress.Reporter) orchestrate.WorktreeMergePrepareOptions {
 	return orchestrate.WorktreeMergePrepareOptions{ProjectsRoot: projectsRoot, Sources: sources, Target: flags.target,
 		Model: flags.model, AgentRuntime: flags.runtime, AgentID: flags.agentID, CLI: flags.cli, Provider: flags.provider,
-		Timeout: flags.timeout, Retry: flags.retry, Progress: reporter, ProgressRequested: flags.progress}
+		Timeout: flags.timeout, Retry: flags.retry, Progress: reporter, ProgressRequested: flags.progress, RebatchReceipt: flags.rebatchReceipt}
 }
 
 func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progress.Reporter) orchestrate.WorktreeMergeLandOptions {
