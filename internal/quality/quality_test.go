@@ -433,15 +433,28 @@ func TestRunWithOptionsTimeoutTerminatesForkedProcessTree(t *testing.T) {
 	}
 	dir := t.TempDir()
 	pidsPath := filepath.Join(dir, "pids")
+	triggerPath := filepath.Join(dir, "trigger")
 	tool := filepath.Join(dir, "forking-timeout-tool")
-	writeQualityFile(t, tool, "#!/bin/sh\nsleep 30 &\nprintf '%s %s' \"$$\" \"$!\" > \""+pidsPath+"\"\nwhile :; do sleep 1; done\n")
+	writeQualityFile(t, tool, "#!/bin/sh\nsleep 30 &\nchild=$!\nprintf '%s %s' \"$$\" \"$child\" > \""+pidsPath+"\"\nwhile [ ! -e \""+triggerPath+"\" ]; do sleep 0.01; done\nwhile :; do sleep 1; done\n")
 	if err := os.Chmod(tool, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	_, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: 250 * time.Millisecond}, dir, tool)
-	if err == nil || !strings.Contains(err.Error(), "timed out after 250ms") || attempts != 1 {
-		t.Fatalf("timeout result = err %v, attempts %d", err, attempts)
+	type result struct {
+		output   string
+		attempts int
+		err      error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		output, attempts, err := runWithOptions(context.Background(), RunOptions{Timeout: time.Second}, dir, tool)
+		resultCh <- result{output: output, attempts: attempts, err: err}
+	}()
+	_ = readQualityFile(t, pidsPath)
+	writeQualityFile(t, triggerPath, "go")
+	outcome := <-resultCh
+	if outcome.err == nil || !strings.Contains(outcome.err.Error(), "timed out after 1s") || outcome.attempts != 1 {
+		t.Fatalf("timeout result = err %v, attempts %d, output %q", outcome.err, outcome.attempts, outcome.output)
 	}
 	pids := strings.Fields(string(readQualityFile(t, pidsPath)))
 	if len(pids) != 2 {
