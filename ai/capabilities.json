@@ -8264,6 +8264,65 @@
       "notes": "The landing receipt retains the remote before and after identities needed to construct the inverse tree delta."
     },
     {
+      "id": "wb.worktree.merge.seal-validation-failed",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge seal-validation-failed",
+              "flags": ["--actor", "--agent-id", "--agent-runtime", "--apply", "--cli", "--format", "--initiator", "--mode", "--model", "--provider", "--reason", "--retry", "--timeout"],
+              "modes": [
+                "Dry-runs immutable receipt, claim, source, and freshly fetched target proofs without creating a worktree",
+                "Creates one WB-managed replacement at the exact current target, adds only missing approved ancestry with a no-content merge, and refuses unless the final tree is exactly target-identical"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge seal-validation-failed --help",
+              "contains": ["fresh WB-managed replacement candidate", "--apply", "--actor", "--reason", "--model", "--mode"]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": ["wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>"]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": ["wb worktree merge seal-validation-failed <validation-failed-receipt> --apply --actor <operator> --reason <reason>"]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_seal_test.go",
+              "name": "TestPrepareValidationFailedWorktreeMergeSealPreservesTargetTreeAndHistoricalRecords",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This is a narrow audited graph-recovery constructor: it preserves target content exactly and never edits the historical receipt or existing Work Logs. The prepared seal does not supersede the failed receipt; record that separate transition with supersede-validation-failed."
+    },
+    {
       "id": "wb.worktree.merge.supersede-validation-failed",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",

@@ -78,6 +78,10 @@ wb worktree merge land <candidate-worktree-or-receipt>
   [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
 wb worktree merge resume <candidate-worktree-or-receipt>
 wb worktree merge revert <landing-receipt> [--route auto|direct|pr]
+wb worktree merge seal-validation-failed <validation-failed-receipt>
+  [--apply --actor <identity> --reason <reason>]
+wb worktree merge supersede-validation-failed <validation-failed-receipt>
+  <replacement-worktree> [--apply --actor <identity> --reason <reason>]
 ```
 
 Bare `wb worktree merge` composes prepare and land. `prepare` is the deliberate
@@ -108,6 +112,14 @@ file with that name is preserved unchanged.
   canonical synchronization failures are typed non-terminal states with an
   exact resume command.
 - Merge or revert conflicts are never resolved by this command.
+- A historical validation failure may be given a no-content ancestry seal only
+  in a fresh WB-managed candidate based on the freshly fetched target. The
+  immutable failed-candidate claim base, receipt target, current target, and
+  every exact clean receipted source must be ancestors; the final candidate
+  tree must exactly equal the target tree; and source, target, claim, receipt,
+  and cleanliness evidence is re-read before success. The failed receipt and
+  existing Work Logs are never edited, and a separate append-only supersession
+  acknowledgement is still required.
 - `--cleanup` is ignored until remote receipt and required canonical
   synchronization have succeeded. Cleanup retains the landing receipt needed
   to prepare a later revert.
@@ -193,6 +205,17 @@ Given a remotely receipted landing, omission of `--cleanup` retains all assets
 and reports cleanup pending; inclusion removes only the exact absorbed source
 and candidate assets after canonical synchronization and leaves the durable
 landing/revert receipt readable.
+
+### AC: squash-recovery-preserves-target-content-and-history-records
+
+Given an unlanded prepare `validation_failed` receipt whose historical source
+was squash-landed and whose immutable graph no longer reaches the live target,
+when `merge seal-validation-failed --apply` runs with an audited actor and
+reason, then WB creates a clean managed replacement based on the exact current
+target, adds only the approved immutable ancestry, proves its tree is exactly
+the target tree, rechecks every mutable boundary, and leaves the failed receipt
+and all existing Work Logs byte-for-byte unchanged. Missing ancestry, target
+drift, source drift, claim drift, dirtiness, or any tree change refuses closed.
 
 ### AC: agents-discover-merge-from-creation-and-completion-intent
 

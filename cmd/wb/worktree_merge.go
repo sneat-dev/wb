@@ -44,6 +44,8 @@ Use acknowledge-landed-failed only for an audited historical
 validation_failed or landed_post_target_ci_failed receipt whose exact candidate
 is already contained in the current remote target; it writes a separate
 acknowledgement rather than rewriting the failed receipt. Use
+seal-validation-failed to prepare a target-tree-identical ancestry-only
+replacement when an audited squash landing broke the historical graph. Use
 supersede-validation-failed only for a prepare failure that did not land: it
 binds a separately proved replacement candidate without rewriting history.`,
 		Example: `# Finish one compatible worktree end to end
@@ -55,6 +57,9 @@ wb worktree merge land /path/to/landing-receipt --cleanup
 
 # Free a stale lane only after proving the failed candidate already landed
 wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --actor operator --reason "audited landed validation failure"
+
+# Prepare an ancestry-only replacement without changing the target tree
+wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor operator --reason "audited squash recovery"
 
 # Replace a stale prepare failure only after proving every immutable root
 wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/replacement --apply --actor operator --reason "audited replacement candidate"`,
@@ -75,7 +80,80 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	return command
+}
+
+func newWorktreeMergeSealValidationFailedCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	var model, runtime, agentID, cli, provider string
+	var timeout time.Duration
+	var retry int
+	command := &cobra.Command{
+		Use:   "seal-validation-failed <merge-receipt>",
+		Short: "Prepare a target-tree-identical ancestry seal for a failed receipt",
+		Long: `Prepare a fresh WB-managed replacement candidate at the exact current
+remote target for one historical prepare validation_failed receipt. Any missing
+immutable failed-candidate claim base, receipt target, current remote target,
+and receipted source ancestry is added with a no-content merge. WB then requires
+the final candidate tree to equal the fetched target tree exactly and rechecks
+every source, target, claim, and clean-worktree boundary. The failed receipt and
+all existing Work Logs remain immutable. This is a dry-run by default; --apply
+requires --actor and --reason. The resulting candidate must still be recorded
+separately with supersede-validation-failed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			identity, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			if strings.TrimSpace(model) == "" {
+				model = identity.Model
+			}
+			if strings.TrimSpace(runtime) == "" {
+				runtime = identity.Runtime
+			}
+			if strings.TrimSpace(agentID) == "" {
+				agentID = identity.AgentID
+			}
+			seal, err := orchestrate.PrepareValidationFailedWorktreeMergeSeal(command.Context(), orchestrate.WorktreeMergeValidationFailureSealOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				Model: model, AgentRuntime: runtime, AgentID: agentID, Initiator: mutationInitiator(command), CLI: cli, Provider: provider,
+				SessionRequired: identity.Registered, Timeout: timeout, Retry: retry,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(seal)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncurrent-target: %s\ntarget-tree: %s\ncandidate: %s\n",
+				seal.Status, seal.ReceiptPath, seal.CurrentTargetSHA, seal.TargetTreeSHA, seal.Candidate.Worktree)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to create the ancestry seal candidate")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "create the WB-managed ancestry seal candidate")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&model, "model", "", "model identity recorded in the replacement Work Log")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "agent runtime recorded in the replacement Work Log")
+	command.Flags().StringVar(&agentID, "agent-id", "", "agent identity recorded in the replacement Work Log")
+	command.Flags().StringVar(&cli, "cli", "wb", "CLI identity recorded in the replacement Work Log")
+	command.Flags().StringVar(&provider, "provider", "", "routing or billing provider identity, never a credential")
+	command.Flags().DurationVar(&timeout, "timeout", 8*time.Minute, "bounded Git operation timeout")
+	command.Flags().IntVar(&retry, "retry", 0, "retry transient Git command failures")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 

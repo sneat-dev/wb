@@ -92,7 +92,7 @@ retains every failed landing in the receipt, and reuses the exclusive lane.
 ### Task 5: Prove isolation and the full journey
 
 **Id:** task-5
-**Verifies:** mechanical-worktree-merge#ac:combined-command-walks-the-whole-journey, mechanical-worktree-merge#ac:unpublished-candidate-rebases-over-target-drift, mechanical-worktree-merge#ac:retry-resumes-without-duplicate-effects, mechanical-worktree-merge#ac:every-pre-landing-failure-preserves-work, mechanical-worktree-merge#ac:agents-discover-merge-from-creation-and-completion-intent
+**Verifies:** mechanical-worktree-merge#ac:combined-command-walks-the-whole-journey, mechanical-worktree-merge#ac:unpublished-candidate-rebases-over-target-drift, mechanical-worktree-merge#ac:retry-resumes-without-duplicate-effects, mechanical-worktree-merge#ac:every-pre-landing-failure-preserves-work, mechanical-worktree-merge#ac:agents-discover-merge-from-creation-and-completion-intent, mechanical-worktree-merge#ac:squash-recovery-preserves-target-content-and-history-records
 **Depends-On:** 4
 **Status:** complete
 
@@ -100,6 +100,10 @@ Add real-Git isolation tests and a fake-host end-to-end journey covering
 prepare-only, combined PR and direct routes, interruption/resume, clean and
 conflicting target rebases, failed checks, canonical blockers, exact-repository
 cleanup gating, and revert.
+The recovery journey also rewrites a target branch away from the historical
+receipt, prepares an audited no-content ancestry seal, proves exact target-tree
+identity and every required ancestor, round-trips it through supersession, and
+refuses a later semantic tree drift while preserving historical records.
 
 ## Open Questions
 
