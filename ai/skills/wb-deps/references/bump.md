@@ -51,5 +51,8 @@ wait. Use `--refresh-after=0` only when the exact older event must be preserved.
 After interruption or a failed check, fix the existing branch/PR and use the
 same inputs with `--resume`; `--parallel` and `--validation` may be changed for
 the next incomplete wave, while completed waves retain their recorded mode.
+A resume that omits `--parallel` restores the original run's value and its
+explicit/default authority, so an explicitly serial `--parallel 1` campaign
+stays fully serial across resumes.
 Restarting without resume risks duplicate work and unnecessary CI. Keep the
 report directory stable when overriding it.

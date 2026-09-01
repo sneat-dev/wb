@@ -36,7 +36,9 @@ default, per-wave graph discovery (one `git fetch` plus manifest reads per
 fleet repository) and registry release observations run on a floor of 4
 workers, matching `wb sync`'s default. An explicit `--parallel` bounds every
 pool in both directions — pass `--parallel 1` to force a fully serial
-campaign.
+campaign. That explicit authority is persisted in the campaign report, so a
+`--resume` that omits `--parallel` restores it rather than regaining the
+read-only floor.
 
 Leave `--refresh-after` unset to use the `5m` default. If a release event has
 waited longer than that, WB checks for a newer semantic version immediately

@@ -116,7 +116,7 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().StringVar(&target, "target", "", "required target branch containing the exact direct-push head, or the PR base")
 	command.Flags().StringVar(&head, "head", "", "required exact 40- or 64-hex Git head SHA")
 	command.Flags().DurationVar(&slice, "slice", defaultCIWaitSlice, "maximum foreground observation slice (must be at most 9m)")
-	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a terminal set's confirming reread waits at most 5s)")
+	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
 	return command
 }

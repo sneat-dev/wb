@@ -21,24 +21,42 @@ const MaxForegroundCheckWaitSlice = 9 * time.Minute
 // the bounded slice and is fetched again before a pass is returned.
 const DefaultCheckPollInterval = 30 * time.Second
 
-// stableRereadConfirmationDelay bounds the wait before the confirming reread
-// of an already-terminal check set. The stability fingerprint exists to catch
-// a check set that is still registering, not to space out load: once every
-// observed and required check is terminal, only this one confirming
+// DefaultStableRereadDelay bounds the wait before the confirming reread of a
+// checks-bearing terminal observation. The stability fingerprint exists to
+// catch a check set that is still registering, not to space out load: once
+// every observed and required check is terminal, only this one confirming
 // observation (plus the fresh authority and identity receipts) stands between
 // the campaign and its receipt, so waiting a full quota-aware poll interval
-// here would add DefaultCheckPollInterval of pure latency to every passing
-// PR merge, PR validation, and direct-target receipt.
-const stableRereadConfirmationDelay = 5 * time.Second
+// there adds DefaultCheckPollInterval of pure latency to every passing PR
+// merge, PR validation, and direct-target receipt. Fifteen seconds sits
+// outside GitHub's usual push-to-registration envelope for lazily created
+// non-required checks (matrix expansion, workflow_run chains) while still
+// cutting half the default cadence. It is a variable, and
+// PullRequestWaitOptions.StableRereadDelay overrides it per wait, so tests
+// and unusual deployments can tune it without recompiling callers.
+//
+// Two terminal receipts never shorten this wait: the no-applicable-checks
+// receipt (an empty observed set with an enumerated empty policy), whose only
+// time-based guard against a repository whose CI simply has not registered
+// yet IS this gap, and any reread after the previous observation was already
+// terminal — a churning terminal fingerprint (for example a moving target
+// head) falls back to the full poll cadence instead of re-observing on the
+// short delay without bound.
+var DefaultStableRereadDelay = 15 * time.Second
 
 // stableRereadDelay returns the wait before a confirming reread of a
-// terminal check observation: the confirmation delay, never longer than the
-// caller's own poll interval.
-func stableRereadDelay(pollInterval time.Duration) time.Duration {
-	if pollInterval < stableRereadConfirmationDelay {
+// checks-bearing terminal observation: the configured confirmation delay
+// (DefaultStableRereadDelay when unset), never longer than the caller's own
+// poll interval.
+func stableRereadDelay(pollInterval, configured time.Duration) time.Duration {
+	delay := configured
+	if delay <= 0 {
+		delay = DefaultStableRereadDelay
+	}
+	if pollInterval < delay {
 		return pollInterval
 	}
-	return stableRereadConfirmationDelay
+	return delay
 }
 
 // WaitForCommitChecks observes checks for one exact target commit. PullRequest
@@ -75,6 +93,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	stableFingerprint := ""
 	stableObservations := 0
 	observations := 0
+	previousObservationTerminal := false
 	policyCache := requiredChecksCache{}
 	for {
 		if err := sliceCtx.Err(); err != nil {
@@ -309,13 +328,21 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		nextObservation := options.CheckPollInterval
 		if terminal {
 			result.Reason = "terminal checks require one unchanged foreground reread before they form a bounded CI receipt"
-			// The confirming reread of an already-terminal check set does not
+			// The confirming reread of a checks-bearing terminal set does not
 			// need the full quota-aware poll cadence: the fingerprint guard is
 			// against a check set still registering, and the authority and
-			// identity receipts are re-read after stability regardless. Waiting
-			// a full poll interval here only delays every passing receipt.
-			nextObservation = stableRereadDelay(options.CheckPollInterval)
+			// identity receipts are re-read after stability regardless. Two
+			// receipts never shorten it (see DefaultStableRereadDelay): the
+			// no-applicable-checks receipt, whose only time-based guard against
+			// unregistered CI is this gap, and any observation whose
+			// predecessor was already terminal — a churning terminal
+			// fingerprint falls back to the full cadence instead of
+			// re-observing on the short delay without bound.
+			if !noApplicableChecks && !previousObservationTerminal {
+				nextObservation = stableRereadDelay(options.CheckPollInterval, options.StableRereadDelay)
+			}
 		}
+		previousObservationTerminal = terminal
 		if !time.Now().Add(nextObservation).Before(deadline) {
 			pendingResult := result
 			pendingResult.Status = PullRequestWaitPending

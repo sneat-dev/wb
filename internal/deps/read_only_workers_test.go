@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -133,14 +134,17 @@ func TestRefreshStaleReleaseEventsHonorsExplicitSerialParallel(t *testing.T) {
 	}
 }
 
-func TestRefreshStaleReleaseEventsJoinsLookupFailuresDeterministically(t *testing.T) {
+func TestRefreshStaleReleaseEventsRetainsCompletedRefreshesBeforeAFailure(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	// Explicitly serial so the ordering is deterministic: the healthy event
+	// sorts (and therefore refreshes) before the broken one fails and cancels
+	// the round. Its completed refresh evidence must survive the failure.
 	events, refreshes, err := refreshStaleReleaseEvents(context.Background(), []ReleaseEvent{
+		{Dependency: "example.com/a-healthy", Version: "v1.2.0", Source: "observed_release", CheckedAt: now.Add(-10 * time.Minute)},
 		{Dependency: "example.com/broken", Version: "v1.2.0", Source: "observed_release", CheckedAt: now.Add(-10 * time.Minute)},
-		{Dependency: "example.com/healthy", Version: "v1.2.0", Source: "observed_release", CheckedAt: now.Add(-10 * time.Minute)},
 	}, BumpOptions{
-		Options:      Options{Parallel: 1},
+		Options:      Options{Parallel: 1, ParallelExplicit: true},
 		RefreshAfter: 5 * time.Minute,
 		Now:          func() time.Time { return now },
 		LatestGoVersion: func(_ context.Context, module string) (string, error) {
@@ -153,14 +157,50 @@ func TestRefreshStaleReleaseEventsJoinsLookupFailuresDeterministically(t *testin
 	if err == nil || !strings.Contains(err.Error(), "example.com/broken@v1.2.0") || !strings.Contains(err.Error(), "registry unavailable") {
 		t.Fatalf("err = %v", err)
 	}
-	if len(refreshes) != 1 || refreshes[0].Dependency != "example.com/healthy" || refreshes[0].After != "v1.3.0" {
+	if len(refreshes) != 1 || refreshes[0].Dependency != "example.com/a-healthy" || refreshes[0].After != "v1.3.0" {
 		t.Fatalf("refreshes = %+v", refreshes)
 	}
-	if events[0].Dependency != "example.com/broken" || events[0].Version != "v1.2.0" {
-		t.Fatalf("failed event must stay unrefreshed: %+v", events[0])
+	if events[0].Version != "v1.3.0" {
+		t.Fatalf("healthy event must keep its completed refresh: %+v", events[0])
 	}
-	if events[1].Version != "v1.3.0" {
-		t.Fatalf("healthy event must still refresh: %+v", events[1])
+	if events[1].Dependency != "example.com/broken" || events[1].Version != "v1.2.0" {
+		t.Fatalf("failed event must stay unrefreshed: %+v", events[1])
+	}
+}
+
+func TestRefreshStaleReleaseEventsCancelsOutstandingLookupsOnFirstFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	started := time.Now()
+	_, refreshes, err := refreshStaleReleaseEvents(context.Background(), staleRefreshEvents(now, defaultReadOnlyParallel), BumpOptions{
+		Options:      Options{Parallel: 1},
+		RefreshAfter: 5 * time.Minute,
+		Now:          func() time.Time { return now },
+		LatestGoVersion: func(ctx context.Context, module string) (string, error) {
+			if module == "example.com/stale-0" {
+				return "", errors.New("registry unavailable")
+			}
+			// A dead registry keeps every other lookup hanging until its own
+			// timeout; the first recorded failure must cancel them instead.
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(8 * time.Second):
+				return "", errors.New("lookup was not cancelled")
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "example.com/stale-0@v1.2.0") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(err.Error(), "lookup was not cancelled") {
+		t.Fatalf("outstanding lookups ran to their own timeout instead of being cancelled: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 5*time.Second {
+		t.Fatalf("refresh held the campaign for %s after its first fatal failure", elapsed)
+	}
+	if len(refreshes) != 0 {
+		t.Fatalf("refreshes = %+v, want none after a cancelled refresh round", refreshes)
 	}
 }
 
@@ -193,6 +233,45 @@ func TestCaptureReleaseBaselinesObservesModulesConcurrently(t *testing.T) {
 		if observation.Module != module || observation.Repository != "acme/provider" || observation.Before != "v0.9.0" || observation.Status != "baseline" || !observation.RequireNewer {
 			t.Fatalf("observation for %s = %+v", module, observation)
 		}
+	}
+}
+
+func TestRunBumpPersistsExplicitParallelAuthority(t *testing.T) {
+	root := t.TempDir()
+	githubDir := filepath.Join(root, "projects")
+	repositories := []Repository{
+		newBumpRepository(t, root, githubDir, "provider", "module example.com/provider\n\ngo 1.24\n"),
+		newBumpRepository(t, root, githubDir, "adapter", "module example.com/adapter\n\ngo 1.24\n\nrequire example.com/provider v0.1.0\n"),
+	}
+	var persisted []BumpReport
+	report, err := RunBump(context.Background(), []ReleaseEvent{{Dependency: "example.com/provider", Version: "v0.2.0", Source: "explicit"}}, repositories, BumpOptions{
+		Options: Options{GitHubDir: githubDir, Ref: "main", Parallel: 1, ParallelExplicit: true, DryRun: true},
+		Persist: func(report BumpReport) error {
+			persisted = append(persisted, report)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.ParallelExplicit {
+		t.Fatalf("report = %+v, want persisted explicit parallel authority", report)
+	}
+	for index, snapshot := range persisted {
+		if !snapshot.ParallelExplicit {
+			t.Fatalf("persisted snapshot %d lost explicit parallel authority: %+v", index, snapshot)
+		}
+	}
+	reportDir := filepath.Join(root, "reports")
+	if err := WriteBumpReports(reportDir, report); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadBumpReport(reportDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.ParallelExplicit || loaded.Parallel != 1 {
+		t.Fatalf("loaded report = %+v, want parallel_explicit to round-trip", loaded)
 	}
 }
 

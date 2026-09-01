@@ -43,14 +43,20 @@ func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
 }
 
 func TestStableRereadDelayNeverExceedsThePollInterval(t *testing.T) {
-	if got := stableRereadDelay(DefaultCheckPollInterval); got != stableRereadConfirmationDelay {
-		t.Fatalf("stable reread delay under the default cadence = %s, want %s", got, stableRereadConfirmationDelay)
+	if got := stableRereadDelay(DefaultCheckPollInterval, 0); got != DefaultStableRereadDelay {
+		t.Fatalf("stable reread delay under the default cadence = %s, want %s", got, DefaultStableRereadDelay)
 	}
-	if got := stableRereadDelay(100 * time.Millisecond); got != 100*time.Millisecond {
+	if got := stableRereadDelay(100*time.Millisecond, 0); got != 100*time.Millisecond {
 		t.Fatalf("a poll interval shorter than the confirmation delay must win, got %s", got)
 	}
-	if stableRereadConfirmationDelay >= DefaultCheckPollInterval {
-		t.Fatalf("confirmation delay %s must undercut the quota-aware poll cadence %s", stableRereadConfirmationDelay, DefaultCheckPollInterval)
+	if got := stableRereadDelay(DefaultCheckPollInterval, 3*time.Second); got != 3*time.Second {
+		t.Fatalf("a configured confirmation delay must win over the default, got %s", got)
+	}
+	if got := stableRereadDelay(time.Second, 3*time.Second); got != time.Second {
+		t.Fatalf("a configured delay is still capped by the poll interval, got %s", got)
+	}
+	if DefaultStableRereadDelay >= DefaultCheckPollInterval {
+		t.Fatalf("confirmation delay %s must undercut the quota-aware poll cadence %s", DefaultStableRereadDelay, DefaultCheckPollInterval)
 	}
 }
 

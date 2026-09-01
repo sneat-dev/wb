@@ -1574,7 +1574,14 @@ proof that an optional workflow cannot register later, so collect separate
 repository release evidence before cleanup. Both modes reject identity drift.
 Do not replace this with a detached or long-running shell poller.
 
-The default observation interval is 30 seconds. Within one foreground slice,
+The default observation interval is 30 seconds while checks are pending. Once
+a checks-bearing observation is terminal, its confirming unchanged reread
+waits a shorter bounded delay (15 seconds by default) instead of a full
+interval — at most one shortened reread per terminal episode, falling back to
+the full cadence if the terminal fingerprint churns. The empty
+no-applicable-checks receipt always waits the full interval before its
+reread, because that gap is its only time-based guard against CI that has
+not registered yet. Within one foreground slice,
 WB caches the initial branch-protection and active-rules receipt while it polls
 the exact mutable PR and commit state; before reporting a pass it fetches that
 policy receipt again. This keeps the same fail-closed merge evidence while
