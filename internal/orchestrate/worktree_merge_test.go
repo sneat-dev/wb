@@ -287,6 +287,118 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 	}
 }
 
+func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
+	nodeFailing := func(detail string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
+03:53:52 [types] Generated 51ms
+03:53:52 [build] output: "static"
+03:53:52 [build] directory: /private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/
+… output truncated; final 750 bytes:
+03:53:53 [vite] ✓ built in 508ms
+03:53:53 ✓ Completed in 13ms.
+03:53:53 [build] ✓ Completed in 540ms.
+03:53:53 [node] 2 page(s) built in 611ms
+$ cd ../frontend && npx nx build contactus-app --base-href=/
+
+ NX   Could not find Nx modules at "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-515900289/tree/frontend".
+
+Have you run npm/yarn install?
+
+[ELIFECYCLE] Command failed with exit code 1.`)
+	candidate := nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
+03:53:43 [types] Generated 49ms
+03:53:43 [build] output: "static"
+03:53:43 [build] directory: /Users/alex/.wb/worktrees/merge-sneat-co-contactus-main
+… output truncated; final 750 bytes:
+03:53:44 [vite] ✓ built in 505ms
+03:53:44 ✓ Completed in 13ms.
+03:53:44 [build] ✓ Completed in 537ms.
+03:53:44 [node] 2 page(s) built in 606ms
+$ cd ../frontend && npx nx build contactus-app --base-href=/
+
+ NX   Could not find Nx modules at "/Users/alex/.wb/worktrees/merge-sneat-co-contactus-main-355e0d554d15-c46e04b0fe6b/sneat-co/contactus/frontend".
+
+Have you run npm/yarn install?
+
+[ELIFECYCLE] Command failed with exit code 1.`)
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("receipt-shaped volatile output should be equivalent: %v", err)
+	}
+}
+
+func TestWorktreeMergeValidationRegressionMatchesYardiusEnvironmentFailures(t *testing.T) {
+	nodeFailing := func(detail string) quality.VerificationEntry {
+		return quality.VerificationEntry{Language: "node", Module: "landings", Check: quality.CheckBuild, Command: "pnpm run build", Status: quality.StatusFailed, Detail: detail}
+	}
+	specFailing := func(detail string) quality.VerificationEntry {
+		return quality.VerificationEntry{Language: "specscore", Module: "", Check: quality.CheckSpec, Command: "", Status: quality.StatusFailed, Detail: detail}
+	}
+	baseline := quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
+		nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
+03:54:32 [types] Generated 48ms
+03:54:32 [build] directory: /private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/
+… output truncated; final 750 bytes:
+$ cd .. && npx nx build yardius-app --base-href=/
+
+ NX   Could not find Nx modules at "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-786210721/tree".
+
+Have you run npm/yarn install?
+
+[ELIFECYCLE] Command failed with exit code 1.`),
+		specFailing(`SpecScore config "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-786210721/tree/specscore.yaml" requires root "/private/var/folders/c6/pty228l52dx19k5xfxjz1ztr0000gn/T/wb-worktree-merge-target-786210721/tree/spec", but the root is missing`),
+	}}
+	candidate := quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{
+		nodeFailing(`$ astro build && pnpm run build:app && node scripts/assemble-app.mjs
+03:54:25 [types] Generated 46ms
+03:54:25 [build] directory: /Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius
+… output truncated; final 750 bytes:
+$ cd .. && npx nx build yardius-app --base-href=/
+
+ NX   Could not find Nx modules at "/Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius".
+
+Have you run npm/yarn install?
+
+[ELIFECYCLE] Command failed with exit code 1.`),
+		specFailing(`SpecScore config "/Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius/specscore.yaml" requires root "/Users/alex/.wb/worktrees/merge-sneat-co-yardius-main-b3d61f4f34c9-220bcc8b0858/sneat-co/yardius/spec", but the root is missing`),
+	}}
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("receipt-shaped environment failures should be equivalent: %v", err)
+	}
+}
+
+func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(t *testing.T) {
+	baseline := `03:53:52 Generated 51ms at /private/var/folders/c6/target/tree/frontend".`
+	candidate := `03:53:43 Generated 49ms at /Users/alex/.wb/worktrees/candidate/tree/frontend".`
+	if got, want := normalizeWorktreeMergeFailureDetail(baseline), normalizeWorktreeMergeFailureDetail(candidate); got != want {
+		t.Fatalf("timestamp/duration/path-only difference normalized to %q and %q", got, want)
+	}
+	if got, want := normalizeWorktreeMergeFailureDetail(`Nx modules at "/private/var/folders/c6/target/tree".`), `Nx modules at "<workspace>".`; got != want {
+		t.Fatalf("absolute path terminal punctuation normalization = %q, want %q", got, want)
+	}
+	for _, test := range []struct {
+		name      string
+		baseline  string
+		candidate string
+	}{
+		{name: "semantic duration", baseline: "command timed out after 30s", candidate: "command timed out after 60s"},
+		{name: "embedded timestamp", baseline: "error identity recorded at 03:53:43", candidate: "error identity recorded at 03:53:44"},
+		{name: "error code", baseline: "command failed with exit code 1", candidate: "command failed with exit code 2"},
+		{name: "semantic number", baseline: "2 page(s) built", candidate: "3 page(s) built"},
+		{name: "error text", baseline: "Could not find Nx modules", candidate: "Could not find Nx workspace"},
+		{name: "added diagnostic", baseline: "Nx modules missing", candidate: "Nx modules missing; install dependencies first"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if left, right := normalizeWorktreeMergeFailureDetail(test.baseline), normalizeWorktreeMergeFailureDetail(test.candidate); left == right {
+				t.Fatalf("normalized comparison erased %s: %q", test.name, left)
+			}
+		})
+	}
+}
+
 func TestVerifyWorktreeMergeTargetProvidesCandidateOriginRemoteContext(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")

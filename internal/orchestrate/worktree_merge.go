@@ -2066,15 +2066,21 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 // improvement while a new rule remains a hard failure.
 func matchSpecScoreBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
 	candidateIDs := specScoreViolationIdentities(candidate.Detail)
-	if len(candidateIDs) == 0 {
-		return false
-	}
 	for _, baselineFailure := range baseline {
 		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || baselineFailure.Command != candidate.Command {
 			continue
 		}
 		baselineIDs := specScoreViolationIdentities(baselineFailure.Detail)
-		if len(baselineIDs) == 0 {
+		if len(candidateIDs) == 0 || len(baselineIDs) == 0 {
+			// Some SpecScore failures describe an environment/configuration
+			// problem rather than a rule violation (for example, a missing
+			// configured spec root). There is no structured identity to compare;
+			// use the same normalized diagnostic comparison as other checks so
+			// paths and other approved volatile tokens do not become behavior.
+			if len(candidateIDs) == 0 && len(baselineIDs) == 0 &&
+				normalizeWorktreeMergeFailureDetail(baselineFailure.Detail) == normalizeWorktreeMergeFailureDetail(candidate.Detail) {
+				return true
+			}
 			continue
 		}
 		allKnown := true
@@ -2122,9 +2128,19 @@ func failedWorktreeMergeVerificationEntries(report quality.VerificationReport) [
 }
 
 func sameWorktreeMergeFailure(baseline, candidate quality.VerificationEntry) bool {
+	// The discriminating comparison is the exact check identity plus the
+	// normalized diagnostic. Any identity mismatch or remaining normalized
+	// detail difference falsifies equivalence.
 	return baseline.Language == candidate.Language && baseline.Module == candidate.Module && baseline.Check == candidate.Check &&
 		baseline.Command == candidate.Command && normalizeWorktreeMergeFailureDetail(baseline.Detail) == normalizeWorktreeMergeFailureDetail(candidate.Detail)
 }
+
+var (
+	worktreeMergeFailureTimestampPattern     = regexp.MustCompile(`(?m)^((?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9])(\s|$)`)
+	worktreeMergeFailureGeneratedPattern     = regexp.MustCompile(`(?i)\b(Generated)\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
+	worktreeMergeFailureBuiltPattern         = regexp.MustCompile(`(?i)\b(built in|Completed in)\s+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\b`)
+	worktreeMergeFailureParenthesizedPattern = regexp.MustCompile(`\(\+[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h)\)`)
+)
 
 func normalizeWorktreeMergeFailureDetail(detail string) string {
 	// Quality command output can include the ephemeral checkout path. It is not
@@ -2133,6 +2149,10 @@ func normalizeWorktreeMergeFailureDetail(detail string) string {
 	// normalize it inside the field rather than requiring the whole field to be
 	// an absolute path. All command, check, module, and error text still has to
 	// match.
+	detail = worktreeMergeFailureTimestampPattern.ReplaceAllString(detail, `<timestamp>${2}`)
+	detail = worktreeMergeFailureGeneratedPattern.ReplaceAllString(detail, `${1} <duration>`)
+	detail = worktreeMergeFailureBuiltPattern.ReplaceAllString(detail, `${1} <duration>`)
+	detail = worktreeMergeFailureParenthesizedPattern.ReplaceAllString(detail, `(+<duration>)`)
 	fields := strings.Fields(detail)
 	for index, field := range fields {
 		fields[index] = normalizeWorktreeMergeFailureField(field)
@@ -2140,7 +2160,7 @@ func normalizeWorktreeMergeFailureDetail(detail string) string {
 	return strings.Join(fields, " ")
 }
 
-const worktreeMergeFailurePathPunctuation = "\"'`()[]{}<>,;"
+const worktreeMergeFailurePathPunctuation = "\"'`()[]{}<>,;."
 
 func normalizeWorktreeMergeFailureField(field string) string {
 	start := 0
@@ -2151,10 +2171,10 @@ func normalizeWorktreeMergeFailureField(field string) string {
 	for end > start && strings.ContainsRune(worktreeMergeFailurePathPunctuation, rune(field[end-1])) {
 		end--
 	}
-	if start == end || !filepath.IsAbs(field[start:end]) {
-		return field
+	if start != end && filepath.IsAbs(field[start:end]) {
+		field = field[:start] + "<workspace>" + field[end:]
 	}
-	return field[:start] + "<workspace>" + field[end:]
+	return field
 }
 
 func activeRuleCount(pages [][]githubActiveBranchRule) int {
