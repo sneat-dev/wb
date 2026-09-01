@@ -304,7 +304,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			// A published PR candidate is already immutable and exact-source retry is
 			// idempotent: return its receipt rather than reconstructing or rewriting
 			// it. Descendant sources still take the active-lane refusal below.
-			if existing.PullRequest != "" && existing.PublishedCandidateSHA == existing.Candidate.SHA {
+			replay, replayErr := isExactPublishedValidationFailureReplay(ctx, projectsRoot, existing, sources)
+			if replayErr != nil {
+				return existing, fmt.Errorf("verify published validation failure replay for %s: %w", receiptPath, replayErr)
+			}
+			if replay {
 				return existing, nil
 			}
 			return existing, fmt.Errorf("merge receipt %s is validation_failed; only an exact preparing receipt may resume", receiptPath)
@@ -332,6 +336,17 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return *active, fmt.Errorf("validate receipt-collision acknowledgement for %s: %w", active.ReceiptPath, collisionErr)
 		} else if collisionAcknowledged {
 			return *active, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", active.ReceiptPath)
+		}
+		// This is a read-only replay of an already published candidate, not a
+		// resume. It preserves the supported checks-failed forward-repair path
+		// after that path has recorded validation_failed, while a descendant
+		// source remains a hard validation_failed boundary below.
+		replay, replayErr := isExactPublishedValidationFailureReplay(ctx, projectsRoot, *active, sources)
+		if replayErr != nil {
+			return *active, fmt.Errorf("verify published validation failure replay for %s: %w", active.ReceiptPath, replayErr)
+		}
+		if replay {
+			return *active, nil
 		}
 		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, *active, sources)
 		if refreshErr != nil {
@@ -383,6 +398,13 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return current, fmt.Errorf("re-read receipt-collision acknowledgement for %s: %w", receiptPath, collisionErr)
 		} else if collisionAcknowledged {
 			return current, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", receiptPath)
+		}
+		replay, replayErr := isExactPublishedValidationFailureReplay(ctx, projectsRoot, current, sources)
+		if replayErr != nil {
+			return current, fmt.Errorf("verify published validation failure replay for %s: %w", receiptPath, replayErr)
+		}
+		if replay {
+			return current, nil
 		}
 		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, current, sources)
 		if refreshErr != nil {
@@ -2568,6 +2590,61 @@ func canRefreshWorktreeMergeReceipt(ctx context.Context, prior WorktreeMergeRece
 		published = prior.Candidate.SHA
 	}
 	return strings.HasPrefix(remote, published+"\t"), nil
+}
+
+// isExactPublishedValidationFailureReplay proves the only read-only retry
+// allowed after validation_failed. It additionally accepts the founder-approved
+// recorded forward-repair shape only after every immutable ancestry root is
+// re-read from the exact clean candidate.
+func isExactPublishedValidationFailureReplay(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, sources []WorktreeMergeSource) (bool, error) {
+	if receipt.Status != WorktreeMergeValidationFailed || receipt.PullRequest == "" ||
+		receipt.PublishedCandidateSHA == "" || receipt.Candidate.SHA == "" ||
+		!sameWorktreeMergeSources(receipt.Sources, sources) {
+		return false, nil
+	}
+	if receipt.PublishedCandidateSHA == receipt.Candidate.SHA {
+		return true, nil
+	}
+	if len(receipt.SourceRefreshes) == 0 {
+		return false, nil
+	}
+	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
+	if err != nil {
+		return false, err
+	}
+	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
+		return false, err
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	if err != nil {
+		return false, err
+	}
+	roots := []string{claim.BaseSHA, receipt.TargetSHA, currentTarget, receipt.PublishedCandidateSHA}
+	for _, refresh := range receipt.SourceRefreshes {
+		for _, source := range refresh.Sources {
+			roots = append(roots, source.SHA)
+		}
+	}
+	for _, source := range receipt.Sources {
+		roots = append(roots, source.SHA)
+	}
+	for _, root := range roots {
+		if root == "" {
+			return false, errors.New("published repair replay has an incomplete immutable ancestry root")
+		}
+		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, root, receipt.Candidate.SHA)
+		if ancestorErr != nil {
+			return false, ancestorErr
+		}
+		if !contains {
+			return false, fmt.Errorf("candidate %s does not contain immutable replay root %s", receipt.Candidate.SHA, root)
+		}
+	}
+	remote, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return false, err
+	}
+	return strings.HasPrefix(strings.TrimSpace(remote), receipt.PublishedCandidateSHA+"\t"), nil
 }
 
 // validateExactPreparingWorktreeMergeReceipt defines the normal recovery
