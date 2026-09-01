@@ -251,7 +251,7 @@ func AcknowledgeWorktreeMergeReceiptCollision(ctx context.Context, options Workt
 	}
 	ack.ID = receiptCollisionAcknowledgementID(ack)
 	if existing, readErr := readReceiptCollisionAcknowledgement(ackPath, receipt); readErr == nil {
-		if existing.ReceiptSHA256 != receiptHash || existing.ImmutableClaimSHA256 != claimHash {
+		if !sameReceiptCollisionAcknowledgement(existing, ack) {
 			return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("receipt-collision acknowledgement %s binds different immutable evidence", ackPath)
 		}
 		return existing, nil
@@ -262,6 +262,16 @@ func AcknowledgeWorktreeMergeReceiptCollision(ctx context.Context, options Workt
 		return ack, nil
 	}
 	if err := persistReceiptCollisionAcknowledgement(ackPath, ack); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, readErr := readReceiptCollisionAcknowledgement(ackPath, receipt)
+			if readErr != nil {
+				return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("re-read receipt-collision acknowledgement after atomic create collision: %w", readErr)
+			}
+			if !sameReceiptCollisionAcknowledgement(existing, ack) {
+				return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("receipt-collision acknowledgement %s binds different immutable evidence", ackPath)
+			}
+			return existing, nil
+		}
 		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
 	}
 	return ack, nil
@@ -292,12 +302,28 @@ func receiptCollisionAcknowledgementPath(receiptPath string) string {
 
 func receiptCollisionAcknowledgementID(ack WorktreeMergeReceiptCollisionAcknowledgement) string {
 	hash := sha256.New()
-	for _, value := range []string{ack.ReceiptPath, ack.ReceiptSHA256, ack.ImmutableClaimSHA256, ack.ReceiptID, ack.Lane, ack.ExpectedTargetSHA, ack.ExpectedCandidateSHA, ack.ExpectedCurrentSourceSHA, ack.ExpectedHistoricalRefreshSourceSHA, ack.ClaimBaseSHA} {
+	for _, value := range []string{ack.ReceiptPath, ack.ReceiptSHA256, ack.ImmutableClaimSHA256, ack.ReceiptID, ack.Lane, ack.ExpectedTargetSHA, ack.ExpectedCandidateSHA, ack.ExpectedCurrentSourceSHA, ack.ExpectedHistoricalRefreshSourceSHA, ack.ClaimBaseSHA, ack.Actor, ack.Reason} {
 		_, _ = hash.Write([]byte(value))
 		_, _ = hash.Write([]byte{0})
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
+
+func sameReceiptCollisionAcknowledgement(left, right WorktreeMergeReceiptCollisionAcknowledgement) bool {
+	return left.ID == right.ID && left.Status == right.Status && left.ReceiptPath == right.ReceiptPath &&
+		left.AcknowledgementPath == right.AcknowledgementPath && left.ReceiptSHA256 == right.ReceiptSHA256 &&
+		left.ImmutableClaimSHA256 == right.ImmutableClaimSHA256 && left.ReceiptID == right.ReceiptID &&
+		left.Lane == right.Lane && left.Repository == right.Repository && left.Target == right.Target &&
+		left.ExpectedTargetSHA == right.ExpectedTargetSHA && left.ExpectedCandidateSHA == right.ExpectedCandidateSHA &&
+		left.ExpectedCurrentSourceSHA == right.ExpectedCurrentSourceSHA && left.ExpectedHistoricalRefreshSourceSHA == right.ExpectedHistoricalRefreshSourceSHA &&
+		left.ClaimBaseSHA == right.ClaimBaseSHA && left.Candidate == right.Candidate &&
+		sameWorktreeMergeSources(left.CurrentSources, right.CurrentSources) &&
+		sameWorktreeMergeSources(left.HistoricalRefreshSources, right.HistoricalRefreshSources) &&
+		left.HistoricalValidationFailedOperatorAssertion == right.HistoricalValidationFailedOperatorAssertion &&
+		left.Actor == right.Actor && left.Reason == right.Reason
+}
+
+var linkReceiptCollisionAcknowledgement = os.Link
 
 func persistReceiptCollisionAcknowledgement(path string, ack WorktreeMergeReceiptCollisionAcknowledgement) error {
 	contents, err := json.MarshalIndent(ack, "", "  ")
@@ -329,7 +355,7 @@ func persistReceiptCollisionAcknowledgement(path string, ack WorktreeMergeReceip
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return linkReceiptCollisionAcknowledgement(temporaryPath, path)
 }
 
 func readReceiptCollisionAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
@@ -368,6 +394,30 @@ func hasReceiptCollisionAcknowledgement(receipt WorktreeMergeReceipt) (bool, err
 	return true, nil
 }
 
+// validateReceiptCollisionAcknowledgement replays the static acknowledgement
+// identity and its live immutable-claim digest before rebatch or cleanup can
+// rely on the historically corrupted preparing receipt.
+func validateReceiptCollisionAcknowledgement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (WorktreeMergeReceiptCollisionAcknowledgement, error) {
+	ack, err := readReceiptCollisionAcknowledgement(receiptCollisionAcknowledgementPath(receipt.ReceiptPath), receipt)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, err
+	}
+	claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("validate collision acknowledgement candidate: %w", err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, fmt.Errorf("read collision acknowledgement immutable claim: %w", err)
+	}
+	digest := sha256.Sum256(claimBytes)
+	claimHash := hex.EncodeToString(digest[:])
+	if claimHash != ack.ImmutableClaimSHA256 || claim.BaseSHA != ack.ClaimBaseSHA {
+		return WorktreeMergeReceiptCollisionAcknowledgement{}, errors.New("collision acknowledgement immutable claim SHA256 or base no longer matches recorded evidence")
+	}
+	return ack, nil
+}
+
 // validatePreparedWorktreeMergeRebatch proves that the old prepared lane is
 // untouched and that the requested source list is a strict additive rebatch:
 // every old branch remains and may only advance by ancestry; new branches are
@@ -382,9 +432,12 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	if err != nil {
 		return nil, err
 	}
-	collisionAcknowledged, collisionErr := hasReceiptCollisionAcknowledgement(receipt)
-	if collisionErr != nil {
-		return nil, collisionErr
+	collisionAcknowledged := false
+	if receipt.Status == WorktreeMergePreparing {
+		if _, err := validateReceiptCollisionAcknowledgement(ctx, projectsRoot, receipt); err != nil {
+			return nil, err
+		}
+		collisionAcknowledged = true
 	}
 	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
 		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
