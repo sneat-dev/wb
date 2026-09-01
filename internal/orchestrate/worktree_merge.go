@@ -619,6 +619,18 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
 			return receipt, nil
 		}
+		if terminalized, terminalErr := recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry); terminalErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, terminalErr)
+		} else if terminalized {
+			reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Completed, strings.Join(receipt.CleanedTasks, ", "))
+			receipt.Status = WorktreeMergeComplete
+			receipt.Failure = ""
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			return receipt, nil
+		}
 		if err := lock.Release(); err != nil {
 			return receipt, err
 		}
@@ -1638,6 +1650,104 @@ func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receip
 		}
 	}
 	return nil
+}
+
+// recoverAlreadyTerminalizedWorktreeMergeCleanup handles the narrow crash and
+// cross-session recovery case where supported cleanup has already sealed and
+// removed every exact receipt worktree, but did not update this merge receipt.
+// It trusts neither the absent worktree nor a caller-supplied cleanup report:
+// immutable claim+terminal evidence must reproduce each receipt identity.
+func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
+	if receipt == nil {
+		return false, errors.New("nil merge receipt")
+	}
+	expectations, err := terminalWorkLogExpectations(*receipt)
+	if err != nil {
+		return false, err
+	}
+	absent := 0
+	for _, expectation := range expectations {
+		if _, statErr := os.Lstat(expectation.Worktree); statErr == nil {
+			continue
+		} else if os.IsNotExist(statErr) {
+			absent++
+		} else {
+			return false, fmt.Errorf("inspect receipted cleanup worktree %s: %w", expectation.Worktree, statErr)
+		}
+	}
+	if absent == 0 {
+		return false, nil
+	}
+	if absent != len(expectations) {
+		return false, errors.New("receipt cleanup assets are only partially terminalized; refusing to infer the missing cleanup")
+	}
+	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, expectations); err != nil {
+		return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w", err)
+	}
+	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, *receipt, expectations, timeout, retry); err != nil {
+		return false, err
+	}
+	receipt.CleanedTasks = sortedUniqueMergeTasks(*receipt)
+	return true, nil
+}
+
+// requireTerminalCleanupBranchesAbsent prevents a sealed-but-interrupted
+// cleanup from being mistaken for a complete one. A removed Work Log proves
+// the worktree terminalization; local and origin branch absence independently
+// prove the remaining branch-retirement part of cleanup.
+func requireTerminalCleanupBranchesAbsent(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, expectations []worktrees.TerminalWorkLogExpectation, timeout time.Duration, retry int) error {
+	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	for _, expectation := range expectations {
+		if expectation.Branch == receipt.Target {
+			return fmt.Errorf("terminal cleanup recovery refuses receipt task %s because its branch is the target %s", expectation.Task, receipt.Target)
+		}
+		local, _, err := runCommand(ctx, timeout, retry, canonical, "git", "branch", "--list", "--format=%(refname:short)", expectation.Branch)
+		if err != nil {
+			return fmt.Errorf("inspect local cleanup branch for task %s: %w", expectation.Task, err)
+		}
+		if strings.TrimSpace(local) != "" {
+			return fmt.Errorf("terminal cleanup recovery refuses task %s because local branch %s remains", expectation.Task, expectation.Branch)
+		}
+		remote, _, err := runCommand(ctx, timeout, retry, canonical, "git", "ls-remote", "--heads", "origin", "refs/heads/"+expectation.Branch)
+		if err != nil {
+			return fmt.Errorf("inspect remote cleanup branch for task %s: %w", expectation.Task, err)
+		}
+		if strings.TrimSpace(remote) != "" {
+			return fmt.Errorf("terminal cleanup recovery refuses task %s because remote branch %s remains", expectation.Task, expectation.Branch)
+		}
+	}
+	return nil
+}
+
+func terminalWorkLogExpectations(receipt WorktreeMergeReceipt) ([]worktrees.TerminalWorkLogExpectation, error) {
+	if receipt.Repository == "" || receipt.Target == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" ||
+		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" {
+		return nil, errors.New("receipt lacks exact candidate identity for terminal cleanup recovery")
+	}
+	expectations := []worktrees.TerminalWorkLogExpectation{{
+		Task: receipt.Candidate.Task, Repository: receipt.Repository, Worktree: receipt.Candidate.Worktree,
+		Branch: receipt.Candidate.Branch, Base: receipt.Target, FinalCommit: receipt.Candidate.SHA,
+	}}
+	byTask := map[string]worktrees.TerminalWorkLogExpectation{receipt.Candidate.Task: expectations[0]}
+	for _, source := range receipt.Sources {
+		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+			return nil, errors.New("receipt lacks exact source identity for terminal cleanup recovery")
+		}
+		expectation := worktrees.TerminalWorkLogExpectation{
+			Task: source.Task, Repository: receipt.Repository, Worktree: source.Worktree,
+			Branch: source.Branch, FinalCommit: source.SHA,
+		}
+		if previous, exists := byTask[source.Task]; exists {
+			if previous != expectation {
+				return nil, fmt.Errorf("receipt has conflicting terminal cleanup identities for task %s", source.Task)
+			}
+			continue
+		}
+		byTask[source.Task] = expectation
+		expectations = append(expectations, expectation)
+	}
+	sort.Slice(expectations, func(i, j int) bool { return expectations[i].Task < expectations[j].Task })
+	return expectations, nil
 }
 
 func worktreeMergeCleanupProofs(receipt WorktreeMergeReceipt, task string) []worktrees.MergeReceiptCleanupProof {
