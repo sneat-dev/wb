@@ -1105,12 +1105,24 @@ func TestCorrectValidationFailedSelfSupersessionRefusesUnsafeHistoricalEvidence(
 		} {
 			t.Run(mutate.name, func(t *testing.T) {
 				fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
-				ackBefore, err := os.ReadFile(supersession.AcknowledgementPath)
+				mutate.apply(&receipt)
+				if err := persistWorktreeMergeReceipt(receipt); err != nil {
+					t.Fatal(err)
+				}
+				receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
 				if err != nil {
 					t.Fatal(err)
 				}
-				mutate.apply(&receipt)
-				if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				// Keep the historical acknowledgement byte-consistent with the
+				// mutated receipt. Before the exact-state guard, this made the
+				// malformed receipt reach the self-supersession correction path.
+				supersession.ReceiptSHA256 = receiptHash
+				supersession.ID = validationFailureSupersessionID(supersession)
+				if err := persistValidationFailureSupersession(supersession.AcknowledgementPath, supersession); err != nil {
+					t.Fatal(err)
+				}
+				ackBefore, err := os.ReadFile(supersession.AcknowledgementPath)
+				if err != nil {
 					t.Fatal(err)
 				}
 				ackHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
@@ -1156,11 +1168,20 @@ func TestCorrectValidationFailedSelfSupersessionRefusesUnsafeHistoricalEvidence(
 
 	t.Run("replacement lacks historical current target", func(t *testing.T) {
 		fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
-		writeEngineFile(t, filepath.Join(fixture.canonical, "later-target.txt"), "later target\n")
-		runEngineGit(t, fixture.canonical, "add", "later-target.txt")
-		runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance historical current target")
-		runEngineGit(t, fixture.canonical, "push", "origin", "main")
-		supersession.CurrentTargetSHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+		currentTarget, err := fetchExactMergeTarget(context.Background(), replacement.WorktreeDir, receipt.Target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidateSHA := strings.TrimSpace(runEngineGit(t, replacement.WorktreeDir, "rev-parse", "HEAD"))
+		if contains, err := isMergeAncestor(context.Background(), replacement.WorktreeDir, currentTarget, candidateSHA); err != nil || !contains {
+			t.Fatalf("replacement does not contain fresh current target: contains=%t err=%v", contains, err)
+		}
+		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", currentTarget+"^{tree}"))
+		sideCommit := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-p", currentTarget, "-m", "test: unreceipted historical target side commit"))
+		if contains, err := isMergeAncestor(context.Background(), replacement.WorktreeDir, sideCommit, candidateSHA); err != nil || contains {
+			t.Fatalf("side commit unexpectedly belongs to replacement: contains=%t err=%v", contains, err)
+		}
+		supersession.CurrentTargetSHA = sideCommit
 		supersession.ID = validationFailureSupersessionID(supersession)
 		if err := persistValidationFailureSupersession(supersession.AcknowledgementPath, supersession); err != nil {
 			t.Fatal(err)
@@ -1177,6 +1198,47 @@ func TestCorrectValidationFailedSelfSupersessionRefusesUnsafeHistoricalEvidence(
 			t.Fatalf("historical current target ancestry error = %v", err)
 		}
 	})
+}
+
+func TestCorrectedSelfSupersessionClaimTamperBlocksLandAndActiveLaneBeforeTerminalization(t *testing.T) {
+	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
+	ackHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		ExpectedSupersessionSHA256: ackHash, ExpectedImmutableClaimSHA256: claimHash, Apply: true, Actor: "reviewer", Reason: "establish valid correction before lifecycle wiring falsifier",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+		t.Fatalf("valid corrected supersession = superseded=%t err=%v", superseded, err)
+	}
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(claim.ClaimPath, append(claimBytes, ' '), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "immutable claim SHA256") {
+		t.Fatalf("land after claim tamper error = %v", err)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
+		t.Fatalf("land after claim tamper terminalized receipt: err=%v", readErr)
+	}
+	if _, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(receipt.ReceiptPath), receipt.Lane); err == nil || !strings.Contains(err.Error(), "immutable claim SHA256") {
+		t.Fatalf("active-lane cleanup gate after claim tamper error = %v", err)
+	}
 }
 
 func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
