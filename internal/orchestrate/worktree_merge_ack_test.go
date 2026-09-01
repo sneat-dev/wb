@@ -1050,6 +1050,51 @@ func TestCorrectValidationFailedSelfSupersessionIsAppendOnlyAndReplaySafe(t *tes
 	}
 }
 
+func TestCorrectValidationFailedSelfSupersessionRefusesFailedCandidateReplacementWithoutMutation(t *testing.T) {
+	fixture, receipt, _, supersession, claimHash := selfSupersessionFixture(t)
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalClaim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBefore, err := os.ReadFile(originalClaim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersessionBefore, err := os.ReadFile(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: receipt.Candidate.Worktree,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+		Apply: true, Actor: "reviewer", Reason: "must refuse failed candidate as corrected replacement",
+	})
+	if err == nil || !strings.Contains(err.Error(), "distinct from the failed receipt candidate") {
+		t.Fatalf("self corrected-replacement error = %v", err)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
+		t.Fatalf("self corrected-replacement changed failed receipt: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(originalClaim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBefore) {
+		t.Fatalf("self corrected-replacement changed failed claim: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(supersession.AcknowledgementPath); readErr != nil || !bytes.Equal(current, supersessionBefore) {
+		t.Fatalf("self corrected-replacement changed self-supersession acknowledgement: err=%v", readErr)
+	}
+	if _, statErr := os.Stat(selfSupersessionCorrectionPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("self corrected-replacement leaked correction artifact: %v", statErr)
+	}
+}
+
 func TestCorrectValidationFailedSelfSupersessionRefusesConcurrentConflictingCreate(t *testing.T) {
 	fixture, receipt, replacement, supersession, claimHash := selfSupersessionFixture(t)
 	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
