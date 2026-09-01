@@ -2,8 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/wbhome"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestWorktreeMergeForcedProgressIsNewlineDelimited(t *testing.T) {
@@ -58,4 +67,195 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 			t.Errorf("merge help is missing %q", phrase)
 		}
 	}
+}
+
+func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
+	t.Run("acknowledge-landed-failed", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		originalReceipt := readCLIFile(t, fixture.receiptPath)
+		runCLIWorktreeGit(t, fixture.canonical, "update-ref", "refs/heads/main", fixture.receipt.Candidate.SHA)
+		runCLIWorktreeGit(t, fixture.canonical, "push", "origin", "main")
+
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "acknowledge-landed-failed", fixture.receiptPath,
+			"--apply", "--actor", "test-operator", "--reason", "regression-test",
+			"--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("production acknowledge apply failed: %v\nstderr: %s", err, stderr.String())
+		}
+		var acknowledgement orchestrate.WorktreeMergeLandedFailureAcknowledgement
+		if err := json.Unmarshal(stdout.Bytes(), &acknowledgement); err != nil {
+			t.Fatalf("decode acknowledge output %q: %v", stdout.String(), err)
+		}
+		assertCLIWorktreeMergeAcknowledgement(t, fixture.receiptPath, originalReceipt, acknowledgement.AcknowledgementPath)
+	})
+
+	t.Run("supersede-validation-failed", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 2)
+		originalReceipt := readCLIFile(t, fixture.receiptPath)
+		for _, source := range fixture.sources {
+			runCLIWorktreeGit(t, source.WorktreeDir, "push", "origin", source.Branch)
+		}
+		writeCLIWorktreeFile(t, filepath.Join(fixture.canonical, "target.txt"), "target\n")
+		runCLIWorktreeGit(t, fixture.canonical, "add", "target.txt")
+		runCLIWorktreeGit(t, fixture.canonical, "commit", "-m", "test: advance target for CLI supersession")
+		runCLIWorktreeGit(t, fixture.canonical, "push", "origin", "main")
+		replacement := createCLIWorktreeSource(t, fixture, "supersede-replacement", "feature/supersede-replacement", "replacement.txt", "replacement\n")
+		runCLIWorktreeGit(t, replacement.WorktreeDir, "fetch", "origin")
+		for _, source := range fixture.sources {
+			runCLIWorktreeGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/"+source.Branch)
+		}
+
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, replacement.WorktreeDir,
+			"--apply", "--actor", "test-operator", "--reason", "regression-test",
+			"--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("production supersede apply failed: %v\nstderr: %s", err, stderr.String())
+		}
+		var acknowledgement orchestrate.WorktreeMergeValidationFailureSupersession
+		if err := json.Unmarshal(stdout.Bytes(), &acknowledgement); err != nil {
+			t.Fatalf("decode supersede output %q: %v", stdout.String(), err)
+		}
+		assertCLIWorktreeMergeAcknowledgement(t, fixture.receiptPath, originalReceipt, acknowledgement.AcknowledgementPath)
+	})
+}
+
+type cliWorktreeMergeFixture struct {
+	projectsRoot string
+	canonical    string
+	receiptPath  string
+	receipt      orchestrate.WorktreeMergeReceipt
+	sources      []worktrees.CreateResult
+}
+
+func newCLIWorktreeMergeFixture(t *testing.T, sourceCount int) cliWorktreeMergeFixture {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv(wbhome.EnvOverride, filepath.Join(root, ".wb"))
+	seed := filepath.Join(root, "seed")
+	remote := filepath.Join(root, "remote.git")
+	projectsRoot := filepath.Join(root, "projects")
+	canonical := filepath.Join(projectsRoot, "acme", "app")
+	writeCLIWorktreeFile(t, filepath.Join(seed, "initial.txt"), "initial\n")
+	runCLIWorktreeGit(t, seed, "init", "-b", "main")
+	runCLIWorktreeGit(t, seed, "config", "user.name", "WB Test")
+	runCLIWorktreeGit(t, seed, "config", "user.email", "wb@example.test")
+	runCLIWorktreeGit(t, seed, "add", "-A")
+	runCLIWorktreeGit(t, seed, "commit", "-m", "initial")
+	runCLIWorktreeGit(t, root, "clone", "--bare", seed, remote)
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runCLIWorktreeGit(t, root, "clone", remote, canonical)
+	runCLIWorktreeGit(t, canonical, "config", "user.name", "WB Test")
+	runCLIWorktreeGit(t, canonical, "config", "user.email", "wb@example.test")
+
+	fixture := cliWorktreeMergeFixture{projectsRoot: projectsRoot, canonical: canonical}
+	for i := 0; i < sourceCount; i++ {
+		task := "cli-supersede-source-" + string(rune('a'+i))
+		branch := "feature/cli-supersede-" + string(rune('a'+i))
+		fixture.sources = append(fixture.sources, createCLIWorktreeSource(t, fixture, task, branch, task+".txt", task+"\n"))
+	}
+	sourcePaths := make([]string, 0, len(fixture.sources))
+	for _, source := range fixture.sources {
+		sourcePaths = append(sourcePaths, source.WorktreeDir)
+	}
+	receipt, err := orchestrate.PrepareWorktreeMerge(context.Background(), orchestrate.WorktreeMergePrepareOptions{
+		ProjectsRoot: projectsRoot, Sources: sourcePaths, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Status = orchestrate.WorktreeMergeValidationFailed
+	receipt.Failure = "historical validation failure"
+	contents, err := json.MarshalIndent(receipt, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents = append(contents, '\n')
+	if err := os.WriteFile(receipt.ReceiptPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.receipt = receipt
+	fixture.receiptPath = receipt.ReceiptPath
+	return fixture
+}
+
+func createCLIWorktreeSource(t *testing.T, fixture cliWorktreeMergeFixture, task, branch, name, contents string) worktrees.CreateResult {
+	t.Helper()
+	prompt := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(prompt, []byte("CLI recovery command fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: task, Branch: branch, BranchChosen: true, Base: "main",
+		WorkLog: worktrees.WorkLogOptions{
+			EffortID: task, RunID: task + "-run", Initiator: "test", AgentID: task, AgentRuntime: "test", Model: "test-model",
+			OriginalPrompt: prompt, RequireOriginalPrompt: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	writeCLIWorktreeFile(t, filepath.Join(result.WorktreeDir, name), contents)
+	runCLIWorktreeGit(t, result.WorktreeDir, "add", name)
+	runCLIWorktreeGit(t, result.WorktreeDir, "commit", "-m", "feat: add "+name)
+	return result
+}
+
+func assertCLIWorktreeMergeAcknowledgement(t *testing.T, receiptPath string, originalReceipt []byte, acknowledgementPath string) {
+	t.Helper()
+	if strings.TrimSpace(acknowledgementPath) == "" {
+		t.Fatal("production command returned an empty acknowledgement path")
+	}
+	if _, err := os.Stat(acknowledgementPath); err != nil {
+		t.Fatalf("acknowledgement artifact missing: %v", err)
+	}
+	if got := readCLIFile(t, receiptPath); string(got) != string(originalReceipt) {
+		t.Fatal("production command rewrote the historical receipt")
+	}
+}
+
+func writeCLIWorktreeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readCLIFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
+}
+
+func runCLIWorktreeGit(t *testing.T, directory string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = directory
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
