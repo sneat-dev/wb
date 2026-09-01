@@ -45,6 +45,7 @@ can rebase onto that SHA while Phase 2 waits for GitHub.
 ```sh
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --cleanup --progress --format json
+wb worktree merge seal-validation-failed <validation-failed-receipt> --apply --actor <operator> --reason <reason>
 ```
 
 Use the receipt's exact `resume_args`; do not reconstruct state from branch

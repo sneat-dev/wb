@@ -9,7 +9,7 @@ their own `wb <command> --help` and remain scoped to that command.
 
 Mutation admission flags are command-specific: `worktree adopt`,
 `worktree rename`, and the recovery leaves `worktree merge
-acknowledge-landed-failed`/`supersede-validation-failed` expose `--mode` and
+acknowledge-landed-failed`/`seal-validation-failed`/`supersede-validation-failed` expose `--mode` and
 `--initiator` (only `--apply` requires admission); `worktree own` and
 `worktree correct-identity` always mutate and therefore use the same flags.
 Work Log mutation leaves inherit these flags from `worktree log`; `show`, and
@@ -54,7 +54,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |
 | `worktree create`, `guard`, `log`, `info` | yes | rejected | rejected | yes |
-| `worktree merge`, `merge prepare`, `merge land`, `merge resume`, `merge revert`, `merge acknowledge-landed-failed`, `merge supersede-validation-failed` | yes | rejected | rejected | yes |
+| `worktree merge`, `merge prepare`, `merge land`, `merge resume`, `merge revert`, `merge acknowledge-landed-failed`, `merge seal-validation-failed`, `merge supersede-validation-failed` | yes | rejected | rejected | yes |
 | `worktree log init`, `steer`, `show`, `checkpoint`, `refresh`, `integrate`, `handoff`, `recover`, `finalize`, `sync`, `archive` | yes | rejected | rejected | yes |
 | `worktree orphans`, `backfill` | yes | rejected | rejected | yes |
 | `worktree checkpoint-fetch` | rejected | rejected | rejected | yes |
