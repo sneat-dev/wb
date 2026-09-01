@@ -371,8 +371,8 @@ Have you run npm/yarn install?
 }
 
 func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(t *testing.T) {
-	baseline := `03:53:52 Generated 51ms at /private/var/folders/c6/target/tree/frontend".`
-	candidate := `03:53:43 Generated 49ms at /Users/alex/.wb/worktrees/candidate/tree/frontend".`
+	baseline := `03:53:52 [types] Generated 51ms at /private/var/folders/c6/target/tree/frontend".`
+	candidate := `03:53:43 [types] Generated 49ms at /Users/alex/.wb/worktrees/candidate/tree/frontend".`
 	if got, want := normalizeWorktreeMergeFailureDetail(baseline), normalizeWorktreeMergeFailureDetail(candidate); got != want {
 		t.Fatalf("timestamp/duration/path-only difference normalized to %q and %q", got, want)
 	}
@@ -386,6 +386,7 @@ func TestNormalizeWorktreeMergeFailureDetailPreservesBehaviorAndSemanticNumbers(
 	}{
 		{name: "semantic duration", baseline: "command timed out after 30s", candidate: "command timed out after 60s"},
 		{name: "embedded timestamp", baseline: "error identity recorded at 03:53:43", candidate: "error identity recorded at 03:53:44"},
+		{name: "line-leading semantic timestamp", baseline: "03:53:43 error identity", candidate: "03:53:44 error identity"},
 		{name: "error code", baseline: "command failed with exit code 1", candidate: "command failed with exit code 2"},
 		{name: "semantic number", baseline: "2 page(s) built", candidate: "3 page(s) built"},
 		{name: "error text", baseline: "Could not find Nx modules", candidate: "Could not find Nx workspace"},
