@@ -1720,6 +1720,75 @@ func TestPrepareWorktreeMergeUsesRemoteDefaultInsteadOfAssumingMain(t *testing.T
 	}
 }
 
+// TestActiveMergeLaneClaimReportsSourceBranchOfAnActiveReceipt covers the
+// lesson merger-lane-branch-race: a main agent deciding whether to push to a
+// candidate branch (a revert included) has no way to see that a merger lane
+// has already claimed it for an in-flight batch. ActiveMergeLaneClaim answers
+// "is anyone draining this?" before the push instead of after the merge.
+func TestActiveMergeLaneClaimReportsSourceBranchOfAnActiveReceipt(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "claim-source", "feature/claimed", "claimed.txt", "a\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claim, err := ActiveMergeLaneClaim(fixture.githubDir, fixture.repository.Slug, "feature/claimed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim == nil {
+		t.Fatalf("expected an active merger-lane claim for %s, got none", "feature/claimed")
+	}
+	if claim.Lane != receipt.Lane || claim.Target != "main" || claim.ReceiptPath != receipt.ReceiptPath {
+		t.Fatalf("claim = %+v, want lane=%s target=main receipt=%s", claim, receipt.Lane, receipt.ReceiptPath)
+	}
+
+	unclaimed, err := ActiveMergeLaneClaim(fixture.githubDir, fixture.repository.Slug, "feature/never-touched")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unclaimed != nil {
+		t.Fatalf("expected no claim for an unrelated branch, got %+v", unclaimed)
+	}
+}
+
+// TestActiveMergeLaneClaimIgnoresACompletedReceipt proves a landed-and-cleaned
+// lane no longer reports the branch as claimed, so the check does not go on
+// warning about work that already shipped.
+func TestActiveMergeLaneClaimIgnoresACompletedReceipt(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "complete-source", "feature/completed", "completed.txt", "a\n")
+	prepared, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", prepared.Candidate.SHA)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: prepared.ReceiptPath, Route: WorktreeMergeRouteAuto, Cleanup: true,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Status != WorktreeMergeComplete {
+		t.Fatalf("expected a complete landing, got %+v", landed)
+	}
+
+	claim, err := ActiveMergeLaneClaim(fixture.githubDir, fixture.repository.Slug, "feature/completed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claim != nil {
+		t.Fatalf("expected no claim once the lane landed, got %+v", claim)
+	}
+}
+
 func TestPrepareWorktreeMergeKeepsOneExclusiveActiveTargetLane(t *testing.T) {
 	fixture := newEngineFixture(t)
 	sourceA := createMergeSource(t, fixture, "lane-source-a", "feature/lane-a", "lane-a.txt", "a\n")
