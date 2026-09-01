@@ -37,10 +37,15 @@ const (
 type WorktreeMergeStatus string
 
 const (
-	WorktreeMergePreparing            WorktreeMergeStatus = "preparing"
-	WorktreeMergePrepared             WorktreeMergeStatus = "prepared"
-	WorktreeMergeConflict             WorktreeMergeStatus = "conflict"
-	WorktreeMergeValidationFailed     WorktreeMergeStatus = "validation_failed"
+	WorktreeMergePreparing        WorktreeMergeStatus = "preparing"
+	WorktreeMergePrepared         WorktreeMergeStatus = "prepared"
+	WorktreeMergeConflict         WorktreeMergeStatus = "conflict"
+	WorktreeMergeValidationFailed WorktreeMergeStatus = "validation_failed"
+	// WorktreeMergePublished is an intentional non-terminal handoff point: the
+	// exact validated candidate is remotely published in an open pull request,
+	// but WB has not observed checks or attempted a merge. A later ordinary
+	// resume continues the landing journey from this exact receipt.
+	WorktreeMergePublished            WorktreeMergeStatus = "published_merge_pending"
 	WorktreeMergeChecksPending        WorktreeMergeStatus = "checks_pending"
 	WorktreeMergeChecksFailed         WorktreeMergeStatus = "checks_failed"
 	WorktreeMergeLanded               WorktreeMergeStatus = "landed_cleanup_pending"
@@ -171,6 +176,12 @@ type WorktreeMergeLandOptions struct {
 	CheckPollInterval time.Duration
 	Progress          progress.Reporter
 	ProgressRequested bool
+	// StopBeforeMerge is the explicit PR-only handoff mode. It validates the
+	// preserved candidate and proves the remote open PR identity, then returns
+	// before CI observation or any merge operation. It is deliberately not
+	// persisted as future landing intent: a bare resume is how the merger takes
+	// over from the published handoff.
+	StopBeforeMerge bool
 }
 
 type WorktreeMergePrepareOptions struct {
@@ -609,6 +620,12 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
 	}
+	if options.StopBeforeMerge && options.Route != WorktreeMergeRoutePullRequest {
+		return receipt, fmt.Errorf("stop-before-merge requires the pull-request route")
+	}
+	if options.StopBeforeMerge && options.Cleanup {
+		return receipt, fmt.Errorf("stop-before-merge cannot clean managed assets before a landing receipt exists")
+	}
 	if acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt); ackErr != nil {
 		return receipt, ackErr
 	} else if acknowledged {
@@ -787,6 +804,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
 	reportWorktreeMergeProgress(options.Progress, "refresh_target", progress.Completed, receipt.Target+"@"+shortMergeRevision(remoteTarget))
+	if options.StopBeforeMerge && remoteTarget != receipt.TargetSHA {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("target drifted from recorded %s to %s; refusing to republish preserved candidate %s", receipt.TargetSHA, remoteTarget, receipt.Candidate.SHA))
+	}
 	containsTarget, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, remoteTarget, receipt.Candidate.SHA)
 	if err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
@@ -830,6 +850,13 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("candidate validation failed after incorporating target drift: %w", validationErr))
 		}
 	}
+	if options.StopBeforeMerge {
+		reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
+		}
+		reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
+	}
 
 	decision, err := ResolveWorktreeMergeRoute(ctx, receipt.Repository, receipt.Target, options.Route)
 	if err != nil {
@@ -847,6 +874,20 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
+	}
+	if options.StopBeforeMerge && receipt.PullRequest != "" {
+		if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+		}
+		receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+		receipt.Status = WorktreeMergePublished
+		receipt.Failure = ""
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		reportWorktreeMergeProgress(options.Progress, "published_merge_pending", progress.Completed, receipt.PullRequest)
+		return receipt, nil
 	}
 
 	serverLanding := receipt.Candidate.SHA
@@ -892,6 +933,19 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			return receipt, err
+		}
+		if options.StopBeforeMerge {
+			if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			}
+			receipt.Status = WorktreeMergePublished
+			receipt.Failure = ""
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			reportWorktreeMergeProgress(options.Progress, "published_merge_pending", progress.Completed, receipt.PullRequest)
+			return receipt, nil
 		}
 		reportWorktreeMergeProgress(options.Progress, "candidate_checks", progress.Waiting, receipt.PullRequest)
 		checks, err := waitForWorktreeMergeChecks(ctx, receipt, options, receipt.PullRequest, receipt.Candidate.SHA, false)
@@ -1706,6 +1760,50 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 		return "", false, fmt.Errorf("merged pull request omitted its time or server merge-result commit")
 	}
 	return view.MergeCommit.OID, true, nil
+}
+
+// verifyPublishedWorktreeMergePullRequest proves the exact remote handoff
+// identity before an intentional stop. An open pull request at the candidate
+// SHA and target has one unambiguous remote diff; verifying just a local
+// branch, or a PR number without its current head, is insufficient.
+func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) error {
+	if receipt.PullRequest == "" {
+		return errors.New("published handoff has no pull request")
+	}
+	if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		return fmt.Errorf("published candidate %s does not match preserved candidate %s", receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
+	}
+	viewOutput, err := githubRead(ctx, receipt.Candidate.Worktree, "pr", "view", receipt.PullRequest,
+		"--repo", receipt.Repository, "--json", "state,headRefOid,baseRefName")
+	if err != nil {
+		return fmt.Errorf("read published pull-request identity: %w", err)
+	}
+	var view struct {
+		State       string `json:"state"`
+		HeadRefOID  string `json:"headRefOid"`
+		BaseRefName string `json:"baseRefName"`
+	}
+	if err := json.Unmarshal([]byte(viewOutput), &view); err != nil {
+		return fmt.Errorf("decode published pull-request identity: %w", err)
+	}
+	if view.State != "OPEN" {
+		return fmt.Errorf("published pull request %s is %s, not open", receipt.PullRequest, view.State)
+	}
+	if view.BaseRefName != receipt.Target {
+		return fmt.Errorf("published pull-request base %s does not match target %s", view.BaseRefName, receipt.Target)
+	}
+	if view.HeadRefOID != receipt.Candidate.SHA {
+		return fmt.Errorf("published pull-request head %s does not match preserved candidate %s", view.HeadRefOID, receipt.Candidate.SHA)
+	}
+	remote, _, err := runCommand(ctx, options.Timeout, options.Retry, receipt.Candidate.Worktree,
+		"git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return fmt.Errorf("read published candidate ref: %w", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(remote), receipt.Candidate.SHA+"\t") {
+		return fmt.Errorf("published candidate ref %s does not match preserved candidate %s", receipt.Candidate.Branch, receipt.Candidate.SHA)
+	}
+	return nil
 }
 
 func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing string, timeout time.Duration, retry int) (string, error) {
