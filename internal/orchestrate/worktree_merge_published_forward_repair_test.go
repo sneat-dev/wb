@@ -44,6 +44,103 @@ func assertNoPublishedForwardRepairCandidate(t *testing.T, fixture engineFixture
 	}
 }
 
+func TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance(t *testing.T) {
+	fixture, receipt, _, supersession, claimHash := selfSupersessionFixture(t)
+	if len(receipt.SourceRefreshes) != 0 {
+		t.Fatalf("fixture source refreshes = %+v, want none", receipt.SourceRefreshes)
+	}
+	historicalSource := receipt.Sources[0]
+	writeEngineFile(t, filepath.Join(historicalSource.Worktree, "advanced-current-source.txt"), "advanced current source\n")
+	runEngineGit(t, historicalSource.Worktree, "add", "advanced-current-source.txt")
+	runEngineGit(t, historicalSource.Worktree, "commit", "-m", "test: advance current source beyond immutable receipt")
+	advancedHistoricalSource := strings.TrimSpace(runEngineGit(t, historicalSource.Worktree, "rev-parse", "HEAD"))
+	contains, err := isMergeAncestor(context.Background(), historicalSource.Worktree, historicalSource.SHA, advancedHistoricalSource)
+	if err != nil || !contains {
+		t.Fatalf("advanced current source does not retain immutable source: contains=%t err=%v", contains, err)
+	}
+	extra := createMergeSource(t, fixture, "published-forward-current-extra", "feature/published-forward-current-extra", "repair.txt", "repair\n")
+	extraSHA := strings.TrimSpace(runEngineGit(t, extra.WorktreeDir, "rev-parse", "HEAD"))
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalClaim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBefore, err := os.ReadFile(originalClaim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersessionBefore, err := os.ReadFile(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentTarget, err := fetchExactMergeTarget(context.Background(), receipt.Candidate.Worktree, receipt.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := WorktreeMergePublishedForwardRepairOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath,
+		Sources:               []string{historicalSource.Worktree, extra.WorktreeDir},
+		ExpectedReceiptSHA256: receiptHash, ExpectedImmutableClaimSHA256: claimHash,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedCurrentTargetSHA: currentTarget,
+		ExpectedSourceSHAs: []string{advancedHistoricalSource, extraSHA},
+		Actor:              "reviewer", Reason: "retain immutable source roots while using current managed sources",
+	}
+
+	dryRun, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options)
+	if err != nil || dryRun.Status != "published_forward_repair_planned" {
+		t.Fatalf("advanced-current-source forward repair dry-run = %+v err=%v", dryRun, err)
+	}
+	assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
+	for _, path := range []string{receipt.ReceiptPath, originalClaim.ClaimPath, supersession.AcknowledgementPath} {
+		want := map[string][]byte{receipt.ReceiptPath: receiptBefore, originalClaim.ClaimPath: claimBefore, supersession.AcknowledgementPath: supersessionBefore}[path]
+		if current, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(current, want) {
+			t.Fatalf("dry-run changed historical artifact %s: err=%v", path, readErr)
+		}
+	}
+
+	options.Apply = true
+	repair, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options)
+	if err != nil {
+		t.Fatalf("advanced-current-source forward repair apply: %v", err)
+	}
+	if repair.Candidate.SHA == "" || repair.Candidate.SHA == receipt.Candidate.SHA {
+		t.Fatalf("advanced-current-source repair candidate = %+v", repair.Candidate)
+	}
+	for _, root := range []string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, historicalSource.SHA, advancedHistoricalSource, extraSHA} {
+		contains, ancestorErr := isMergeAncestor(context.Background(), repair.Candidate.Worktree, root, repair.Candidate.SHA)
+		if ancestorErr != nil || !contains {
+			t.Fatalf("repair candidate lacks root %s: contains=%t err=%v", root, contains, ancestorErr)
+		}
+	}
+	for _, path := range []string{receipt.ReceiptPath, originalClaim.ClaimPath, supersession.AcknowledgementPath} {
+		want := map[string][]byte{receipt.ReceiptPath: receiptBefore, originalClaim.ClaimPath: claimBefore, supersession.AcknowledgementPath: supersessionBefore}[path]
+		if current, readErr := os.ReadFile(path); readErr != nil || !bytes.Equal(current, want) {
+			t.Fatalf("apply changed historical artifact %s: err=%v", path, readErr)
+		}
+	}
+	if _, err := CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: repair.Candidate.Worktree,
+		ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: claimHash,
+		Apply: true, Actor: "reviewer", Reason: "consume retained historical-source repair candidate",
+	}); err != nil {
+		t.Fatalf("correct self-supersession with advanced-current-source repair candidate: %v", err)
+	}
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+		t.Fatalf("advanced-current-source corrected supersession = superseded=%t err=%v", superseded, err)
+	}
+}
+
 func TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence(t *testing.T) {
 	fixture, receipt, _, supersession, claimHash := selfSupersessionFixture(t)
 	extra := createMergeSource(t, fixture, "published-forward-extra", "feature/published-forward-extra", "repair.txt", "repair\n")
@@ -229,12 +326,24 @@ func TestPreparePublishedForwardRepairRefusesTamperDriftAndRaceBeforeCandidateCr
 		assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 	})
 
-	t.Run("missing receipted source", func(t *testing.T) {
+	t.Run("omitted historical worktree remains an immutable root", func(t *testing.T) {
 		fixture, receipt, _, options := publishedForwardRepairFixture(t)
 		options.Sources = options.Sources[1:]
 		options.ExpectedSourceSHAs = options.ExpectedSourceSHAs[1:]
-		if _, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options); err == nil || !strings.Contains(err.Error(), "retain exact receipted source") {
-			t.Fatalf("missing-source refusal error = %v", err)
+		options.Apply = false
+		planned, err := PreparePublishedValidationFailureForwardRepair(context.Background(), options)
+		if err != nil || planned.Status != "published_forward_repair_planned" {
+			t.Fatalf("omitted historical worktree plan = %+v err=%v", planned, err)
+		}
+		foundHistoricalRoot := false
+		for _, root := range planned.RequiredRoots {
+			if root.Kind == "receipted_source:"+receipt.Sources[0].Task && root.SHA == receipt.Sources[0].SHA {
+				foundHistoricalRoot = true
+				break
+			}
+		}
+		if !foundHistoricalRoot {
+			t.Fatalf("omitted historical source was absent from immutable roots: %+v", planned.RequiredRoots)
 		}
 		assertNoPublishedForwardRepairCandidate(t, fixture, receipt, options)
 	})

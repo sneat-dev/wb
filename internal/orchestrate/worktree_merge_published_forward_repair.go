@@ -45,7 +45,7 @@ type WorktreeMergePublishedForwardRepair struct {
 // WorktreeMergePublishedForwardRepairOptions pins every mutable historical
 // input needed to create a distinct candidate for one known self-supersession.
 // ExpectedSourceSHAs are positional with Sources, so a caller cannot silently
-// replace a requested repair source with another clean worktree.
+// replace a requested current repair source with another clean worktree.
 type WorktreeMergePublishedForwardRepairOptions struct {
 	ProjectsRoot, Receipt, ExpectedReceiptSHA256, ExpectedImmutableClaimSHA256 string
 	ExpectedSupersessionSHA256, ExpectedCurrentTargetSHA                       string
@@ -156,7 +156,10 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if repository != receipt.Repository {
 		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("repair sources belong to %s, want failed receipt repository %s", repository, receipt.Repository)
 	}
-	if err := requireExpectedPublishedForwardRepairSources(sources, options.ExpectedSourceSHAs, receipt.Sources); err != nil {
+	if err := requireExpectedPublishedForwardRepairSources(sources, options.ExpectedSourceSHAs); err != nil {
+		return WorktreeMergePublishedForwardRepair{}, err
+	}
+	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, canonical, receipt); err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
 	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
@@ -293,7 +296,7 @@ func inspectPublishedForwardRepairSources(ctx context.Context, projectsRoot stri
 	return sources, repository, canonical, nil
 }
 
-func requireExpectedPublishedForwardRepairSources(sources []WorktreeMergeSource, expected []string, historical []WorktreeMergeSource) error {
+func requireExpectedPublishedForwardRepairSources(sources []WorktreeMergeSource, expected []string) error {
 	if len(sources) != len(expected) {
 		return errors.New("expected repair source SHA count does not match sources")
 	}
@@ -302,19 +305,35 @@ func requireExpectedPublishedForwardRepairSources(sources []WorktreeMergeSource,
 			return fmt.Errorf("repair source %s SHA %s does not match expected %s", source.Worktree, source.SHA, expected[i])
 		}
 	}
-	for _, old := range historical {
-		matched := false
-		for _, source := range sources {
-			if source.Task == old.Task && filepath.Clean(source.Worktree) == filepath.Clean(old.Worktree) && source.Branch == old.Branch && source.SHA == old.SHA {
-				matched = true
-				break
-			}
+	return nil
+}
+
+// requireImmutableHistoricalWorktreeMergeSources treats the pinned failed
+// receipt and its source-refresh chain as immutable DAG roots, not live
+// worktree requirements. Current sources are supplied separately and receive
+// the full managed-worktree and active-claim checks above.
+func requireImmutableHistoricalWorktreeMergeSources(ctx context.Context, repositoryDir string, receipt WorktreeMergeReceipt) error {
+	for _, source := range immutableHistoricalWorktreeMergeSources(receipt) {
+		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+			return errors.New("failed receipt contains an incomplete immutable historical source identity")
 		}
-		if !matched {
-			return fmt.Errorf("repair source set must retain exact receipted source %s@%s", old.Branch, old.SHA)
+		revision, err := mergeRevision(ctx, repositoryDir, source.SHA)
+		if err != nil || revision != source.SHA {
+			if err == nil {
+				err = fmt.Errorf("resolved %s", revision)
+			}
+			return fmt.Errorf("immutable historical source %s@%s is not an available exact commit: %w", source.Branch, source.SHA, err)
 		}
 	}
 	return nil
+}
+
+func immutableHistoricalWorktreeMergeSources(receipt WorktreeMergeReceipt) []WorktreeMergeSource {
+	sources := append([]WorktreeMergeSource(nil), receipt.Sources...)
+	for _, refresh := range receipt.SourceRefreshes {
+		sources = append(sources, refresh.Sources...)
+	}
+	return sources
 }
 
 func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource) []WorktreeMergeValidationFailureSealRoot {
@@ -395,8 +414,11 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	if refreshedRepository != repository || filepath.Clean(refreshedCanonical) != filepath.Clean(canonical) || !sameWorktreeMergeSources(refreshedSources, sources) {
 		return errors.New("current repair source slice, repository, or canonical identity changed during published forward-repair construction")
 	}
-	if err := requireExpectedPublishedForwardRepairSources(refreshedSources, options.ExpectedSourceSHAs, receipt.Sources); err != nil {
+	if err := requireExpectedPublishedForwardRepairSources(refreshedSources, options.ExpectedSourceSHAs); err != nil {
 		return fmt.Errorf("revalidate current repair source evidence: %w", err)
+	}
+	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, refreshedCanonical, receipt); err != nil {
+		return fmt.Errorf("revalidate immutable historical source evidence: %w", err)
 	}
 	fetched, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil || fetched != currentTarget || fetched != options.ExpectedCurrentTargetSHA {

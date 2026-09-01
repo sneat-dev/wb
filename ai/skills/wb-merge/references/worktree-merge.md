@@ -112,8 +112,12 @@ corrections leave the self-supersession ineffective and refuse closed.
 When that exact self-supersession is the only reason a distinct replacement
 cannot yet be prepared, `prepare-published-forward-repair` is the sole cycle
 breaker. Pin the immutable failed receipt and claim, the corrupt acknowledgement,
-the exact current target, and every current source. It creates a new clean
-candidate only after proving every historical source, claim base, target, and
-current source is an ancestor; it writes no merge receipt and never changes the
-historical receipt, claim, acknowledgement, or collision evidence. Pass its
-candidate only to `correct-self-supersession`; normal `prepare` remains blocked.
+the exact current target, and every current source. WB reads receipted and
+source-refresh tuples from the immutable receipt as historical DAG roots; they
+need not remain live worktrees. Each supplied source is instead checked as an
+exact clean WB-managed current worktree with an active claim and pinned HEAD.
+It creates a new clean candidate only after proving every historical source,
+claim base, target, and current source is an ancestor; it writes no merge
+receipt and never changes the historical receipt, claim, acknowledgement, or
+collision evidence. Pass its candidate only to `correct-self-supersession`;
+normal `prepare` remains blocked.

@@ -957,16 +957,14 @@ func CorrectValidationFailedSelfSupersession(ctx context.Context, options Worktr
 	if replacement == receipt.Candidate || replacement.SHA == receipt.Candidate.SHA {
 		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("corrected replacement candidate must be distinct from the failed receipt candidate")
 	}
-	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
-			return WorktreeMergeSelfSupersessionCorrection{}, err
-		}
+	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, replacement.Worktree, receipt); err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("validate immutable historical source evidence: %w", err)
 	}
 	currentTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
 	if err != nil {
 		return WorktreeMergeSelfSupersessionCorrection{}, err
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
@@ -1383,10 +1381,8 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 	if replacement != correction.CorrectedReplacement || replacementClaim.BaseSHA != correction.ReplacementClaimBaseSHA {
 		return errors.New("corrected self-supersession replacement identity or claim base no longer matches recorded evidence")
 	}
-	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, receipt, source); err != nil {
-			return fmt.Errorf("validate corrected self-supersession source: %w", err)
-		}
+	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, replacement.Worktree, receipt); err != nil {
+		return fmt.Errorf("validate corrected self-supersession historical source: %w", err)
 	}
 	currentTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
 	if err != nil {
@@ -1395,7 +1391,7 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 	if currentTarget != supersession.CurrentTargetSHA || currentTarget != correction.CurrentTargetSHA {
 		return fmt.Errorf("corrected self-supersession target drifted from recorded %s to %s", correction.CurrentTargetSHA, currentTarget)
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
