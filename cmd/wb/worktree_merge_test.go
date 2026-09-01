@@ -35,13 +35,13 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
 		t.Fatalf("--cleanup = %#v, want false", cleanup)
 	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed"} {
+	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "supersede-validation-failed"} {
 		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 			continue
 		}
 		child, _, _ := command.Find([]string{name})
-		if name != "acknowledge-landed-failed" && child.Flags().Lookup("progress") == nil {
+		if name != "acknowledge-landed-failed" && name != "supersede-validation-failed" && child.Flags().Lookup("progress") == nil {
 			t.Errorf("merge %s is missing --progress", name)
 		}
 	}
@@ -49,7 +49,11 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if err != nil || ack == nil || ack.Flags().Lookup("apply") == nil || ack.Flags().Lookup("actor") == nil || ack.Flags().Lookup("reason") == nil {
 		t.Fatalf("acknowledge-landed-failed flags = %#v err=%v", ack, err)
 	}
-	for _, phrase := range []string{"prepared locally, not landed", "never force-push", "exact remote target", "forward revert", "forward repair", "acknowledge-landed-failed"} {
+	supersede, _, err := command.Find([]string{"supersede-validation-failed"})
+	if err != nil || supersede == nil || supersede.Flags().Lookup("apply") == nil || supersede.Flags().Lookup("actor") == nil || supersede.Flags().Lookup("reason") == nil {
+		t.Fatalf("supersede-validation-failed flags = %#v err=%v", supersede, err)
+	}
+	for _, phrase := range []string{"prepared locally, not landed", "never force-push", "exact remote target", "forward revert", "forward repair", "acknowledge-landed-failed", "supersede-validation-failed"} {
 		if !strings.Contains(command.Long, phrase) {
 			t.Errorf("merge help is missing %q", phrase)
 		}

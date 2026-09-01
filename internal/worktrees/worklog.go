@@ -227,6 +227,254 @@ type workLogTerminalRecord struct {
 	Supersession     *SupersessionReceipt            `json:"supersession,omitempty"`
 }
 
+// TerminalWorkLogExpectation identifies one worktree which was already
+// terminalized by supported cleanup. It deliberately contains only receipt
+// identity and the receipted final commit: the immutable claim supplies the
+// remaining identity and must be reproduced exactly by its terminal record.
+//
+// This is intended for recovery paths after a terminalized worktree has been
+// removed. Live-worktree validation must continue to use activeWorkLogClaim.
+type TerminalWorkLogExpectation struct {
+	Task        string
+	Repository  string
+	Worktree    string
+	Branch      string
+	Base        string
+	FinalCommit string
+}
+
+// ValidateRemovedTerminalWorkLogs proves that every supplied worktree was
+// terminalized by WB cleanup without trusting a deleted checkout or a mutable
+// cleanup report. For each exact receipt identity it requires one immutable
+// active claim and the terminal bearing that claim's exact ID. The terminal
+// must reproduce the claim verbatim except for Lifecycle=terminal and must be
+// a sealed, ordinary removed-worktree terminal at the receipted final commit.
+//
+// It fails closed for missing, duplicated, malformed, or mismatched evidence.
+func ValidateRemovedTerminalWorkLogs(projectsRoot string, expectations []TerminalWorkLogExpectation) error {
+	if len(expectations) == 0 {
+		return errors.New("no terminal Work Log expectations supplied")
+	}
+	home, err := wbhome.Root(projectsRoot)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(expectations))
+	for _, expectation := range expectations {
+		if err := validateRemovedTerminalExpectation(expectation); err != nil {
+			return err
+		}
+		key := strings.Join([]string{expectation.Task, expectation.Repository, filepath.Clean(expectation.Worktree), expectation.Branch, expectation.Base}, "\x00")
+		if seen[key] {
+			return fmt.Errorf("duplicate terminal Work Log expectation for task %s", expectation.Task)
+		}
+		seen[key] = true
+		if err := validateRemovedTerminalWorkLog(home, expectation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRemovedTerminalExpectation(expectation TerminalWorkLogExpectation) error {
+	if !validSafeSegment(expectation.Task) || strings.TrimSpace(expectation.Repository) == "" ||
+		strings.TrimSpace(expectation.Worktree) == "" || strings.TrimSpace(expectation.Branch) == "" ||
+		strings.TrimSpace(expectation.FinalCommit) == "" {
+		return fmt.Errorf("invalid terminal Work Log expectation for task %q", expectation.Task)
+	}
+	return nil
+}
+
+func validateRemovedTerminalWorkLog(home string, expectation TerminalWorkLogExpectation) error {
+	homeDir, err := openAbsoluteDirectoryNoFollow(home, false)
+	if err != nil {
+		return fmt.Errorf("open terminal Work Log home: %w", err)
+	}
+	defer func() { _ = homeDir.Close() }()
+	worklogs, err := openPrivateChild(homeDir, "worklogs", false)
+	if err != nil {
+		return fmt.Errorf("open terminal Work Logs: %w", err)
+	}
+	defer func() { _ = worklogs.Close() }()
+	effort, err := openPrivateChild(worklogs, expectation.Task, false)
+	if err != nil {
+		return fmt.Errorf("open terminal Work Log task %s: %w", expectation.Task, err)
+	}
+	defer func() { _ = effort.Close() }()
+	runs, err := openPrivateChild(effort, "runs", false)
+	if err != nil {
+		return fmt.Errorf("open terminal Work Log runs for task %s: %w", expectation.Task, err)
+	}
+	defer func() { _ = runs.Close() }()
+	runNames, err := runs.Readdirnames(-1)
+	if err != nil {
+		return fmt.Errorf("read terminal Work Log runs for task %s: %w", expectation.Task, err)
+	}
+	sort.Strings(runNames)
+	matches := 0
+	for _, run := range runNames {
+		if !validSafeSegment(run) {
+			return fmt.Errorf("unsafe terminal Work Log run %q for task %s", run, expectation.Task)
+		}
+		if err := validateRemovedTerminalWorkLogRun(home, expectation, run, &matches); err != nil {
+			return err
+		}
+	}
+	if matches == 0 {
+		return fmt.Errorf("missing exact removed terminal Work Log for task %s", expectation.Task)
+	}
+	if matches != 1 {
+		return fmt.Errorf("ambiguous removed terminal Work Log evidence for task %s", expectation.Task)
+	}
+	return nil
+}
+
+func validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, run string, matches *int) error {
+	runDir, _, err := openWorkLogRun(home, expectation.Task, run, false)
+	if err != nil {
+		return fmt.Errorf("open terminal Work Log run %s for task %s: %w", run, expectation.Task, err)
+	}
+	defer func() { _ = runDir.Close() }()
+	claims, err := openPrivateChild(runDir, "claims", false)
+	if err != nil {
+		return fmt.Errorf("open terminal Work Log claims for task %s: %w", expectation.Task, err)
+	}
+	claimNames, readErr := claims.Readdirnames(-1)
+	_ = claims.Close()
+	if readErr != nil {
+		return fmt.Errorf("read terminal Work Log claims for task %s: %w", expectation.Task, readErr)
+	}
+	sort.Strings(claimNames)
+	for _, name := range claimNames {
+		claimID := strings.TrimSuffix(name, ".json")
+		if name != claimID+".json" || !validClaimID(claimID) {
+			return fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)
+		}
+		claims, err = openPrivateChild(runDir, "claims", false)
+		if err != nil {
+			return fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
+		}
+		var claim workLogClaim
+		readErr = readJSONAt(claims, name, &claim)
+		_ = claims.Close()
+		if readErr != nil {
+			return fmt.Errorf("read immutable terminal Work Log claim %s: %w", claimID, readErr)
+		}
+		if !matchesRemovedTerminalExpectation(claim, expectation) {
+			continue
+		}
+		if err := validateStaticWorkLogClaim(claim, expectation.Task, run); err != nil {
+			return fmt.Errorf("validate immutable terminal Work Log claim %s: %w", claimID, err)
+		}
+		*matches++
+		if *matches > 1 {
+			continue
+		}
+		terminals, err := openPrivateChild(runDir, "terminals", false)
+		if err != nil {
+			return fmt.Errorf("open terminal Work Log terminals for task %s: %w", expectation.Task, err)
+		}
+		var terminal workLogTerminalRecord
+		readErr = readJSONAt(terminals, claimID+".json", &terminal)
+		_ = terminals.Close()
+		if readErr != nil {
+			return fmt.Errorf("read removed terminal Work Log for task %s: %w", expectation.Task, readErr)
+		}
+		expectedClaim := claim
+		expectedClaim.Lifecycle = "terminal"
+		if !reflect.DeepEqual(terminal.workLogClaim, expectedClaim) || terminal.FinalCommit != expectation.FinalCommit ||
+			terminal.Disposition != "removed" || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
+			terminal.SuccessorAgentID != "" || terminal.ExternalHandoff != nil || terminal.Orphaned != nil ||
+			terminal.DirtyCapture != nil || terminal.Supersession != nil {
+			return fmt.Errorf("removed terminal Work Log does not exactly corroborate task %s", expectation.Task)
+		}
+		if err := validateRemovedTerminalOutbox(home, claim, terminal); err != nil {
+			return fmt.Errorf("validate removed terminal Work Log outbox for task %s: %w", expectation.Task, err)
+		}
+	}
+	return nil
+}
+
+func matchesRemovedTerminalExpectation(claim workLogClaim, expectation TerminalWorkLogExpectation) bool {
+	return claim.Version >= 1 && claim.EffortID == expectation.Task && claim.Task == expectation.Task &&
+		claim.Repository == expectation.Repository && filepath.Clean(claim.Worktree) == filepath.Clean(expectation.Worktree) &&
+		claim.Branch == expectation.Branch && (expectation.Base == "" || claim.Base == expectation.Base) && claim.Lifecycle == "active"
+}
+
+// validateStaticWorkLogClaim is the non-live half of corroborateClaim. It is
+// intentionally shared by deleted-worktree recovery: a claim+terminal pair is
+// not authority unless the immutable claim itself has a deterministic identity
+// and valid execution/handoff metadata.
+func validateStaticWorkLogClaim(claim workLogClaim, effort, run string) error {
+	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != effort || claim.RunID != run || claim.Lifecycle != "active" ||
+		!validSafeSegment(claim.EffortID) || !validSafeSegment(claim.RunID) || !validClaimID(claim.ClaimID) || !isGitObjectID(claim.BaseSHA) {
+		return errors.New("immutable Work Log claim identity metadata is invalid")
+	}
+	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
+	if claim.ParentClaimID != "" {
+		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" ||
+			(claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" &&
+				claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume") {
+			return errors.New("immutable successor Work Log claim metadata is invalid")
+		}
+		var err error
+		switch claim.AcquiredVia {
+		case "external_handoff":
+			wantID, err = expectedExternalClaimID(claim)
+		case "parked_session_resume":
+			wantID, err = expectedParkedSessionClaimID(claim)
+		case "recycle_failed":
+			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
+		case "handoff", "not_landed":
+			if claim.Version == 2 {
+				wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
+					ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
+			} else {
+				wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume" && claim.ExternalHandoff != nil {
+		return errors.New("ordinary immutable Work Log claim carries external handoff evidence")
+	}
+	if wantID != claim.ClaimID {
+		return errors.New("immutable Work Log claim digest mismatch")
+	}
+	if claim.Version == 2 {
+		identity := identityFromClaim(claim)
+		if !validExecutionIdentifier(identity.Model, true) ||
+			(identity.CLI != "" && !validExecutionIdentifier(identity.CLI, false)) ||
+			(identity.Provider != "" && !validExecutionIdentifier(identity.Provider, false)) ||
+			(identity.ModelProvenance != modelProvenanceCallerDeclared && identity.ModelProvenance != modelProvenanceRuntimeObserved && identity.ModelProvenance != modelProvenanceUnknown) {
+			return errors.New("immutable Work Log claim execution identity metadata is invalid")
+		}
+	}
+	return nil
+}
+
+func validateRemovedTerminalOutbox(home string, claim workLogClaim, terminal workLogTerminalRecord) error {
+	outbox, err := openWorkLogOutbox(home, claim.EffortID, false)
+	if err != nil {
+		return fmt.Errorf("open immutable terminal outbox: %w", err)
+	}
+	defer func() { _ = outbox.Close() }()
+	var event workLogPublicEvent
+	if err := readJSONAt(outbox, claim.RunID+"-"+claim.ClaimID+"-sealed.json", &event); err != nil {
+		return fmt.Errorf("read immutable terminal outbox: %w", err)
+	}
+	expected := workLogPublicEvent{Version: 1, Type: "worktree.sealed", At: terminal.SealedAt,
+		EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID, Repository: claim.Repository,
+		Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit,
+		Lifecycle: "terminal", Disposition: terminal.Disposition}
+	if !reflect.DeepEqual(event, expected) {
+		return errors.New("immutable terminal outbox does not corroborate cleanup authority")
+	}
+	return nil
+}
+
 type workLogPublicEvent struct {
 	Version         int                             `json:"version"`
 	Type            string                          `json:"type"`
@@ -1950,38 +2198,11 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" {
 		return fmt.Errorf("work-log projection does not match immutable active claim")
 	}
-	if !validSafeSegment(claim.EffortID) || !validSafeSegment(claim.RunID) || !validClaimID(claim.ClaimID) || filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
+	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
 		return fmt.Errorf("private work-log claim identity/path mismatch")
 	}
-	wantID := workLogClaimID(claim.EffortID, CreateResult{Repository: claim.Repository, WorktreeDir: claim.Worktree, Branch: claim.Branch, Base: claim.Base, BaseSHA: claim.BaseSHA})
-	if claim.ParentClaimID != "" {
-		if !validClaimID(claim.ParentClaimID) || claim.AgentID == "" || (claim.AcquiredVia != "handoff" && claim.AcquiredVia != "not_landed" && claim.AcquiredVia != "recycle_failed" && claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume") {
-			return fmt.Errorf("private successor claim metadata is invalid")
-		}
-		if claim.AcquiredVia == "external_handoff" {
-			var externalErr error
-			wantID, externalErr = expectedExternalClaimID(claim)
-			if externalErr != nil {
-				return externalErr
-			}
-		} else if claim.AcquiredVia == "parked_session_resume" {
-			var parkedErr error
-			wantID, parkedErr = expectedParkedSessionClaimID(claim)
-			if parkedErr != nil {
-				return parkedErr
-			}
-		} else if claim.Version == 2 && claim.AcquiredVia != "recycle_failed" {
-			wantID = declaredSuccessorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia,
-				ClaimExecutionIdentity{Model: claim.Model, CLI: claim.CLI, Provider: claim.Provider})
-		} else {
-			wantID = successorWorkLogClaimID(claim.ParentClaimID, claim.AgentID, claim.AcquiredVia)
-		}
-	}
-	if claim.AcquiredVia != "external_handoff" && claim.AcquiredVia != "parked_session_resume" && claim.ExternalHandoff != nil {
-		return fmt.Errorf("ordinary private claim carries unexpected external handoff evidence")
-	}
-	if wantID != claim.ClaimID {
-		return fmt.Errorf("private work-log claim digest mismatch")
+	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
+		return err
 	}
 	branch, err := git(context.Background(), worktree, "branch", "--show-current")
 	if err != nil || branch != claim.Branch {
@@ -1997,20 +2218,8 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	if err != nil || head != finalCommit {
 		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
 	}
-	if !isGitObjectID(claim.BaseSHA) {
-		return fmt.Errorf("private claim has invalid base SHA")
-	}
 	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
 		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
-	}
-	if claim.Version == 2 {
-		identity := identityFromClaim(claim)
-		if !validExecutionIdentifier(identity.Model, true) ||
-			(identity.CLI != "" && !validExecutionIdentifier(identity.CLI, false)) ||
-			(identity.Provider != "" && !validExecutionIdentifier(identity.Provider, false)) ||
-			(identity.ModelProvenance != modelProvenanceCallerDeclared && identity.ModelProvenance != modelProvenanceRuntimeObserved && identity.ModelProvenance != modelProvenanceUnknown) {
-			return fmt.Errorf("private claim has invalid execution identity metadata")
-		}
 	}
 	return nil
 }

@@ -43,7 +43,9 @@ records the failed landing, and opens a new repair PR without rewriting history.
 Use acknowledge-landed-failed only for an audited historical
 validation_failed or landed_post_target_ci_failed receipt whose exact candidate
 is already contained in the current remote target; it writes a separate
-acknowledgement rather than rewriting the failed receipt.`,
+acknowledgement rather than rewriting the failed receipt. Use
+supersede-validation-failed only for a prepare failure that did not land: it
+binds a separately proved replacement candidate without rewriting history.`,
 		Example: `# Finish one compatible worktree end to end
 wb worktree merge . --route auto --cleanup
 
@@ -52,7 +54,10 @@ wb worktree merge prepare /path/to/worktree --format json
 wb worktree merge land /path/to/landing-receipt --cleanup
 
 # Free a stale lane only after proving the failed candidate already landed
-wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --actor operator --reason "audited landed validation failure"`,
+wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --actor operator --reason "audited landed validation failure"
+
+# Replace a stale prepare failure only after proving every immutable root
+wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/replacement --apply --actor operator --reason "audited replacement candidate"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
@@ -70,7 +75,7 @@ wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --act
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
 	return command
 }
 
@@ -191,6 +196,57 @@ proof refuses closed.`,
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	return command
+}
+
+func newWorktreeMergeSupersedeValidationFailedCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "supersede-validation-failed <merge-receipt> <replacement-worktree>",
+		Short: "Supersede an unlanded failed prepare receipt with a proved replacement",
+		Long: `Prove that a prepare validation_failed receipt never landed and that
+one exact clean replacement candidate contains the immutable failed-candidate
+claim base, receipt target, freshly fetched current remote target, and every
+exact clean receipted source. The failed candidate itself need not be an
+ancestor. This is a dry-run by default; --apply requires --actor and --reason
+and writes only a separate append-only supersession acknowledgement. The
+historical merge receipt and every Work Log remain immutable. Any missing
+identity, active claim, cleanliness, receipt integrity, or ancestry proof
+refuses closed.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.SupersedeValidationFailedWorktreeMerge(command.Context(), orchestrate.WorktreeMergeValidationFailureSupersessionOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], ReplacementWorktree: args[1], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nreplacement: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.Replacement.SHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited supersession acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited supersession reason")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
 }

@@ -686,6 +686,229 @@ func TestCleanupWorktreeMergeAssetsTerminalizesSourceWithReceiptProvenSquashLand
 	}
 }
 
+func TestResumeWorktreeMergeCompletesAlreadyTerminalizedCleanup(t *testing.T) {
+	fixture, source, landed, claims := landedTerminalCleanupFixture(t)
+	claimBytes := map[string][]byte{}
+	for task, claimPath := range claims {
+		contents, err := os.ReadFile(claimPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimBytes[task] = contents
+	}
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	terminalBytes := terminalWorkLogBytes(t, claims)
+
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Status != WorktreeMergeComplete || !resumed.Cleanup || strings.Join(resumed.CleanedTasks, ",") != strings.Join(sortedUniqueMergeTasks(landed), ",") {
+		t.Fatalf("terminalized cleanup resume = %+v", resumed)
+	}
+	for task, claimPath := range claims {
+		if got, err := os.ReadFile(claimPath); err != nil || string(got) != string(claimBytes[task]) {
+			t.Fatalf("immutable claim %s changed: err=%v", task, err)
+		}
+	}
+	assertTerminalWorkLogBytes(t, claims, terminalBytes)
+	if _, err := os.Stat(source.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("source worktree survived external cleanup: %v", err)
+	}
+}
+
+func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		breakEvidence func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, claims map[string]string)
+		want          string
+	}{
+		{
+			name: "missing terminal", want: "read removed terminal Work Log",
+			breakEvidence: func(t *testing.T, _ engineFixture, landed WorktreeMergeReceipt, claims map[string]string) {
+				if err := os.Remove(terminalWorkLogPath(claims[landed.Candidate.Task])); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "mismatched terminal", want: "does not exactly corroborate",
+			breakEvidence: func(t *testing.T, _ engineFixture, landed WorktreeMergeReceipt, claims map[string]string) {
+				path := terminalWorkLogPath(claims[landed.Candidate.Task])
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(strings.Replace(string(contents), landed.Candidate.SHA, strings.Repeat("f", len(landed.Candidate.SHA)), 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "tampered immutable claim digest", want: "claim digest mismatch",
+			breakEvidence: func(t *testing.T, _ engineFixture, landed WorktreeMergeReceipt, claims map[string]string) {
+				path := claims[landed.Candidate.Task]
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				claimID := strings.TrimSuffix(filepath.Base(path), ".json")
+				if err := os.WriteFile(path, []byte(strings.Replace(string(contents), claimID, strings.Repeat("0", len(claimID)), 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "missing sealed outbox", want: "read immutable terminal outbox",
+			breakEvidence: func(t *testing.T, _ engineFixture, landed WorktreeMergeReceipt, claims map[string]string) {
+				if err := os.Remove(sealedTerminalOutboxPath(claims[landed.Candidate.Task])); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "mismatched sealed outbox", want: "outbox does not corroborate",
+			breakEvidence: func(t *testing.T, _ engineFixture, landed WorktreeMergeReceipt, claims map[string]string) {
+				path := sealedTerminalOutboxPath(claims[landed.Candidate.Task])
+				contents, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(strings.Replace(string(contents), landed.Candidate.SHA, strings.Repeat("f", len(landed.Candidate.SHA)), 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "partial terminal cleanup", want: "only partially terminalized",
+			breakEvidence: func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, _ map[string]string) {
+				externallyTerminalizeTask(t, fixture, &landed, landed.Candidate.Task)
+			},
+		},
+		{
+			name: "local branch remains", want: "local branch",
+			breakEvidence: func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, _ map[string]string) {
+				runEngineGit(t, fixture.canonical, "branch", landed.Candidate.Branch, landed.Candidate.SHA)
+			},
+		},
+		{
+			name: "remote branch remains", want: "remote branch",
+			breakEvidence: func(t *testing.T, fixture engineFixture, landed WorktreeMergeReceipt, _ map[string]string) {
+				runEngineGit(t, fixture.canonical, "push", "origin", landed.Candidate.SHA+":refs/heads/"+landed.Candidate.Branch)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+			if test.name == "partial terminal cleanup" {
+				test.breakEvidence(t, fixture, landed, claims)
+			} else {
+				externallyTerminalizeMergeCleanup(t, fixture, &landed)
+				test.breakEvidence(t, fixture, landed, claims)
+			}
+			failed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+				ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+				Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) || failed.Status == WorktreeMergeComplete {
+				t.Fatalf("terminal cleanup refusal = %+v err=%v, want %q", failed, err, test.want)
+			}
+		})
+	}
+}
+
+func landedTerminalCleanupFixture(t *testing.T) (engineFixture, worktrees.CreateResult, WorktreeMergeReceipt, map[string]string) {
+	t.Helper()
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "terminal-cleanup-source", "feature/terminal-cleanup", "source.txt", "source\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", receipt.Candidate.SHA)
+	landed, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil || landed.Status != WorktreeMergeLanded {
+		t.Fatalf("land terminal cleanup fixture = %+v err=%v", landed, err)
+	}
+	claims := map[string]string{}
+	for _, expectation := range []struct {
+		task, worktree string
+	}{{landed.Candidate.Task, landed.Candidate.Worktree}, {landed.Sources[0].Task, landed.Sources[0].Worktree}} {
+		view, viewErr := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: expectation.worktree})
+		if viewErr != nil || view.Claim == nil {
+			t.Fatalf("load %s Work Log claim: %+v err=%v", expectation.task, view, viewErr)
+		}
+		claims[expectation.task] = view.Claim.ClaimPath
+	}
+	return fixture, source, landed, claims
+}
+
+func externallyTerminalizeMergeCleanup(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt) {
+	t.Helper()
+	for _, task := range sortedUniqueMergeTasks(*receipt) {
+		externallyTerminalizeTask(t, fixture, receipt, task)
+	}
+}
+
+func externallyTerminalizeTask(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt, task string) {
+	t.Helper()
+	outcome, err := worktrees.Cleanup(context.Background(), worktrees.CleanupOptions{
+		ProjectsRoot: fixture.githubDir, Task: task, Base: receipt.Target, ExactRepository: receipt.Repository,
+		AbsorbedBy: receipt.LandingSHA, MergeReceiptProofs: worktreeMergeCleanupProofs(*receipt, task),
+		Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
+	})
+	if err != nil {
+		t.Fatalf("external cleanup task %s: %v", task, err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("external cleanup task %s = %+v", task, outcome)
+	}
+}
+
+func terminalWorkLogPath(claimPath string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(claimPath)), "terminals", filepath.Base(claimPath))
+}
+
+func sealedTerminalOutboxPath(claimPath string) string {
+	claimID := strings.TrimSuffix(filepath.Base(claimPath), ".json")
+	run := filepath.Base(filepath.Dir(filepath.Dir(claimPath)))
+	taskDir := filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(claimPath))))
+	return filepath.Join(taskDir, "outbox", run+"-"+claimID+"-sealed.json")
+}
+
+func terminalWorkLogBytes(t *testing.T, claims map[string]string) map[string][]byte {
+	t.Helper()
+	bytes := make(map[string][]byte, len(claims))
+	for task, claimPath := range claims {
+		contents, err := os.ReadFile(terminalWorkLogPath(claimPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bytes[task] = contents
+	}
+	return bytes
+}
+
+func assertTerminalWorkLogBytes(t *testing.T, claims map[string]string, want map[string][]byte) {
+	t.Helper()
+	for task, claimPath := range claims {
+		got, err := os.ReadFile(terminalWorkLogPath(claimPath))
+		if err != nil || string(got) != string(want[task]) {
+			t.Fatalf("immutable terminal %s changed: err=%v", task, err)
+		}
+	}
+}
+
 func TestCleanupWorktreeMergeReceiptProofRefusesBrokenLinks(t *testing.T) {
 	tests := []struct {
 		name         string
