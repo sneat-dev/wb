@@ -149,11 +149,15 @@ type WorktreeMergeReceipt struct {
 	CleanupReports        []string                            `json:"cleanup_reports,omitempty"`
 	CleanedTasks          []string                            `json:"cleaned_tasks,omitempty"`
 	SourceRefreshes       []WorktreeMergeSourceRefresh        `json:"source_refreshes,omitempty"`
-	Failure               string                              `json:"failure,omitempty"`
-	ResumeArgs            []string                            `json:"resume_args,omitempty"`
-	ReceiptPath           string                              `json:"receipt_path"`
-	CreatedAt             time.Time                           `json:"created_at"`
-	UpdatedAt             time.Time                           `json:"updated_at"`
+	// RebatchOf binds this candidate to an immutable prepared receipt whose
+	// source set was safely expanded. The old receipt is never rewritten.
+	RebatchOf           string                   `json:"rebatch_of,omitempty"`
+	RebatchedCandidates []WorktreeMergeCandidate `json:"rebatched_candidates,omitempty"`
+	Failure             string                   `json:"failure,omitempty"`
+	ResumeArgs          []string                 `json:"resume_args,omitempty"`
+	ReceiptPath         string                   `json:"receipt_path"`
+	CreatedAt           time.Time                `json:"created_at"`
+	UpdatedAt           time.Time                `json:"updated_at"`
 }
 
 type WorktreeMergeLandOptions struct {
@@ -183,6 +187,9 @@ type WorktreeMergePrepareOptions struct {
 	Retry             int
 	Progress          progress.Reporter
 	ProgressRequested bool
+	// RebatchReceipt is an immutable, still-unlanded prepared receipt whose
+	// sources are being replaced additively and/or extended in this prepare.
+	RebatchReceipt string
 }
 
 func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptions) (WorktreeMergeReceipt, error) {
@@ -218,6 +225,13 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return WorktreeMergeReceipt{}, fmt.Errorf("source worktree %s is on target branch %q", source.Worktree, target)
 		}
 	}
+	var rebatch *WorktreeMergePreparedRebatch
+	if strings.TrimSpace(options.RebatchReceipt) != "" {
+		rebatch, err = validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, options.RebatchReceipt, repository, target, sources)
+		if err != nil {
+			return WorktreeMergeReceipt{}, err
+		}
+	}
 	lane := worktreeMergeLaneID(repository, target)
 	operation := worktreeMergeOperationID(lane, sources)
 	home, err := wbhome.Root(projectsRoot)
@@ -240,6 +254,46 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		} else if superseded {
 			return existing, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; prepare a new source candidate", receiptPath)
 		}
+		if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(existing); rebatchErr != nil {
+			return existing, rebatchErr
+		} else if rebatched {
+			return existing, fmt.Errorf("merge receipt %s was rebatched into an audited replacement candidate; prepare the replacement receipt", receiptPath)
+		}
+		if rebatch != nil && existing.RebatchOf == rebatch.ReceiptPath && existing.Status == WorktreeMergePrepared {
+			lock, lockErr := AcquireOperationLock(projectsRoot, lane, true)
+			if lockErr != nil {
+				return existing, lockErr
+			}
+			defer func() { _ = lock.Release() }()
+			// Re-read all evidence under the lane lock. This is the only recovery
+			// permitted after a crash or write failure between durable replacement
+			// receipt creation and append-only acknowledgement persistence.
+			current, currentErr := readWorktreeMergeReceipt(receiptPath)
+			if currentErr != nil {
+				return existing, currentErr
+			}
+			rechecked, recheckErr := validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources)
+			if recheckErr != nil {
+				return existing, recheckErr
+			}
+			if current.RebatchOf != rechecked.ReceiptPath || current.Candidate.SHA == "" || len(current.RebatchedCandidates) != 1 || current.RebatchedCandidates[0] != rechecked.OriginalCandidate || !sameWorktreeMergeSources(current.Sources, sources) {
+				return existing, fmt.Errorf("existing replacement receipt %s no longer matches the requested immutable rebatch", receiptPath)
+			}
+			if _, candidateErr := validateMergeAcknowledgementCandidate(ctx, projectsRoot, current, current.Candidate); candidateErr != nil {
+				return existing, fmt.Errorf("validate replacement candidate before rebatch acknowledgement recovery: %w", candidateErr)
+			}
+			containsOriginal, ancestorErr := isMergeAncestor(ctx, current.Candidate.Worktree, rechecked.OriginalCandidate.SHA, current.Candidate.SHA)
+			if ancestorErr != nil || !containsOriginal {
+				if ancestorErr == nil {
+					ancestorErr = fmt.Errorf("replacement candidate %s does not retain original rebatch candidate %s", current.Candidate.SHA, rechecked.OriginalCandidate.SHA)
+				}
+				return existing, ancestorErr
+			}
+			if err := ensurePreparedWorktreeMergeRebatch(rechecked, current); err != nil {
+				return existing, err
+			}
+			return current, nil
+		}
 		if existing.Status != WorktreeMergePreparing && existing.Status != WorktreeMergeConflict && existing.Status != WorktreeMergeValidationFailed {
 			return existing, nil
 		}
@@ -248,7 +302,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	var prior *WorktreeMergeReceipt
 	forwardRepair := false
-	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, receiptPath); activeErr != nil {
+	activeExcept := []string{receiptPath}
+	if rebatch != nil {
+		activeExcept = append(activeExcept, rebatch.ReceiptPath)
+	}
+	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, activeExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		canRefresh, refreshErr := canRefreshWorktreeMergeReceipt(ctx, *active, sources)
@@ -310,7 +368,16 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		}
 		prior = &current
 	}
-	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, receiptPath); activeErr != nil {
+	if rebatch != nil {
+		// The original target and all source identities are re-read only after
+		// exclusivity is held. A changed candidate, source, or target invalidates
+		// the rebatch rather than silently replacing immutable evidence.
+		rebatch, err = validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources)
+		if err != nil {
+			return WorktreeMergeReceipt{}, err
+		}
+	}
+	if active, activeErr := activeWorktreeMergeLaneReceipt(reportsDir, lane, activeExcept...); activeErr != nil {
 		return WorktreeMergeReceipt{}, activeErr
 	} else if active != nil {
 		return *active, fmt.Errorf("merger lane %s is still owned by non-terminal receipt %s with status %s", lane, active.ReceiptPath, active.Status)
@@ -402,6 +469,10 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		ResumeArgs:      worktreeMergePrepareResumeArgs(receiptPath, options.ProgressRequested),
 		ReceiptPath:     receiptPath, CreatedAt: createdAt, UpdatedAt: now,
 	}
+	if rebatch != nil {
+		receipt.RebatchOf = rebatch.ReceiptPath
+		receipt.RebatchedCandidates = []WorktreeMergeCandidate{rebatch.OriginalCandidate}
+	}
 	if prior != nil {
 		receipt.Route = prior.Route
 		receipt.Cleanup = prior.Cleanup
@@ -427,6 +498,30 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	}
+	if rebatch != nil {
+		// A rebatch is not only a source-list assertion: retain the original
+		// candidate in the new candidate DAG. That gives receipt-gated cleanup a
+		// real graph/landing proof for the superseded integration branch instead
+		// of treating an acknowledgement as if it were a landing.
+		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, rebatch.OriginalCandidate.SHA, "HEAD")
+		if ancestorErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
+		}
+		if !containsOriginal {
+			if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
+				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr))
+			}
+			receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
+			if err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			}
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+		}
 	}
 
 	for index := range receipt.Sources {
@@ -457,6 +552,15 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
+	for _, original := range receipt.RebatchedCandidates {
+		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, original.SHA, receipt.Candidate.SHA)
+		if ancestorErr != nil || !containsOriginal {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("replacement candidate %s does not retain rebatched candidate %s", receipt.Candidate.SHA, original.SHA)
+			}
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
+		}
+	}
 	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
@@ -475,6 +579,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	receipt.UpdatedAt = time.Now().UTC()
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
+	}
+	if rebatch != nil {
+		if err := ensurePreparedWorktreeMergeRebatch(rebatch, receipt); err != nil {
+			return receipt, err
+		}
 	}
 	reportWorktreeMergeProgress(options.Progress, "prepared", progress.Completed, receipt.ReceiptPath)
 	return receipt, nil
@@ -502,6 +611,11 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, supersessionErr
 	} else if superseded {
 		return receipt, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; it cannot be replayed", receiptPath)
+	}
+	if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt); rebatchErr != nil {
+		return receipt, rebatchErr
+	} else if rebatched {
+		return receipt, fmt.Errorf("merge receipt %s was rebatched into an audited replacement candidate; it cannot be replayed", receiptPath)
 	}
 	reportWorktreeMergeProgress(options.Progress, "read_receipt", progress.Completed, string(receipt.Status)+" at "+receiptPath)
 	if receipt.Status == WorktreeMergeComplete {
@@ -1619,6 +1733,9 @@ func syncCanonicalMergeTarget(ctx context.Context, canonical, target, landing st
 }
 
 func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt) error {
+	if err := validateRebatchedWorktreeMergeCleanup(ctx, projectsRoot, *receipt); err != nil {
+		return err
+	}
 	cleaned := make(map[string]bool, len(receipt.CleanedTasks))
 	for _, task := range receipt.CleanedTasks {
 		cleaned[task] = true
@@ -1648,6 +1765,43 @@ func cleanupWorktreeMergeAssets(ctx context.Context, projectsRoot string, receip
 		if err := persistWorktreeMergeReceipt(*receipt); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateRebatchedWorktreeMergeCleanup admits retirement of the old candidate
+// only after the replacement has an exact remote landing. The acknowledgement
+// is not itself a landing claim.
+func validateRebatchedWorktreeMergeCleanup(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) error {
+	if receipt.RebatchOf == "" {
+		return nil
+	}
+	if receipt.LandingSHA == "" {
+		return errors.New("rebatched candidate has no remote landing; old candidate cleanup is not yet eligible")
+	}
+	original, err := readWorktreeMergeReceipt(receipt.RebatchOf)
+	if err != nil {
+		return fmt.Errorf("read rebatched receipt before cleanup: %w", err)
+	}
+	rebatch, err := readPreparedWorktreeMergeRebatch(rebatchPath(receipt.RebatchOf), original)
+	if err != nil {
+		return fmt.Errorf("validate rebatched receipt before cleanup: %w", err)
+	}
+	if rebatch.ReplacementReceiptPath != receipt.ReceiptPath || rebatch.Replacement != receipt.Candidate ||
+		!sameWorktreeMergeSources(rebatch.Sources, receipt.Sources) || len(receipt.RebatchedCandidates) != 1 ||
+		receipt.RebatchedCandidates[0] != original.Candidate {
+		return errors.New("replacement receipt does not carry the exact append-only rebatch cleanup proof")
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
+	if err != nil {
+		return err
+	}
+	containsLanding, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.LandingSHA, currentTarget)
+	if err != nil || !containsLanding {
+		if err == nil {
+			err = fmt.Errorf("replacement landing %s is not contained in exact current target %s", receipt.LandingSHA, currentTarget)
+		}
+		return err
 	}
 	return nil
 }
@@ -1744,6 +1898,23 @@ func terminalWorkLogExpectations(receipt WorktreeMergeReceipt) ([]worktrees.Term
 			continue
 		}
 		byTask[source.Task] = expectation
+		expectations = append(expectations, expectation)
+	}
+	for _, candidate := range receipt.RebatchedCandidates {
+		if candidate.Task == "" || candidate.Worktree == "" || candidate.Branch == "" || candidate.SHA == "" {
+			return nil, errors.New("receipt lacks exact rebatched candidate identity for terminal cleanup recovery")
+		}
+		expectation := worktrees.TerminalWorkLogExpectation{
+			Task: candidate.Task, Repository: receipt.Repository, Worktree: candidate.Worktree,
+			Branch: candidate.Branch, Base: receipt.Target, FinalCommit: candidate.SHA,
+		}
+		if previous, exists := byTask[candidate.Task]; exists {
+			if previous != expectation {
+				return nil, fmt.Errorf("receipt has conflicting terminal cleanup identities for task %s", candidate.Task)
+			}
+			continue
+		}
+		byTask[candidate.Task] = expectation
 		expectations = append(expectations, expectation)
 	}
 	sort.Slice(expectations, func(i, j int) bool { return expectations[i].Task < expectations[j].Task })
@@ -2235,7 +2406,7 @@ func mergeOperationSuffix(operation string) string {
 	return operation
 }
 
-func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeMergeReceipt, error) {
+func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (*WorktreeMergeReceipt, error) {
 	entries, err := os.ReadDir(reportsDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -2248,14 +2419,22 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 			continue
 		}
 		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) {
+			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) {
 			continue
 		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
 			continue
 		}
 		path := filepath.Join(reportsDir, entry.Name())
-		if filepath.Clean(path) == filepath.Clean(except) {
+		excluded := false
+		for _, ignored := range except {
+			if filepath.Clean(path) == filepath.Clean(ignored) {
+				excluded = true
+				break
+			}
+		}
+		if excluded {
 			continue
 		}
 		receipt, readErr := readWorktreeMergeReceipt(path)
@@ -2279,6 +2458,13 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane, except string) (*WorktreeM
 				return nil, supersessionErr
 			}
 			if superseded {
+				continue
+			}
+			rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt)
+			if rebatchErr != nil {
+				return nil, rebatchErr
+			}
+			if rebatched {
 				continue
 			}
 			return &receipt, nil
@@ -2558,7 +2744,7 @@ func sameWorktreeMergeSources(left, right []WorktreeMergeSource) bool {
 		return false
 	}
 	for index := range left {
-		if left[index].Worktree != right[index].Worktree || left[index].Branch != right[index].Branch || left[index].SHA != right[index].SHA {
+		if left[index].Task != right[index].Task || left[index].Worktree != right[index].Worktree || left[index].Branch != right[index].Branch || left[index].SHA != right[index].SHA {
 			return false
 		}
 	}
@@ -2575,7 +2761,14 @@ func sortedUniqueMergeTasks(receipt WorktreeMergeReceipt) []string {
 		}
 	}
 	if receipt.Candidate.Task != "" && !seen[receipt.Candidate.Task] {
+		seen[receipt.Candidate.Task] = true
 		tasks = append(tasks, receipt.Candidate.Task)
+	}
+	for _, candidate := range receipt.RebatchedCandidates {
+		if candidate.Task != "" && !seen[candidate.Task] {
+			seen[candidate.Task] = true
+			tasks = append(tasks, candidate.Task)
+		}
 	}
 	sort.Strings(tasks)
 	return tasks

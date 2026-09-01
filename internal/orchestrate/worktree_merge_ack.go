@@ -20,7 +20,35 @@ const (
 	worktreeMergeLandedFailureAcknowledgementSuffix         = ".landed-validation-failed.ack.json"
 	worktreeMergeValidationFailureSupersessionSchemaVersion = 1
 	worktreeMergeValidationFailureSupersessionSuffix        = ".validation-failed.superseded.ack.json"
+	worktreeMergePreparedRebatchSchemaVersion               = 1
+	worktreeMergePreparedRebatchSuffix                      = ".prepared.rebatched.ack.json"
 )
+
+// WorktreeMergePreparedRebatch is an append-only link from one unlanded
+// prepared receipt to a newly prepared candidate with an additive source set.
+// It deliberately retains the original candidate and its exact receipt digest;
+// neither historical record is changed to make room for a later source.
+type WorktreeMergePreparedRebatch struct {
+	SchemaVersion          int                    `json:"schema_version"`
+	ID                     string                 `json:"id"`
+	Status                 string                 `json:"status"`
+	ReceiptPath            string                 `json:"receipt_path"`
+	AcknowledgementPath    string                 `json:"acknowledgement_path"`
+	ReceiptID              string                 `json:"receipt_id"`
+	ReceiptSHA256          string                 `json:"receipt_sha256"`
+	ReceiptStatus          WorktreeMergeStatus    `json:"receipt_status"`
+	Lane                   string                 `json:"lane"`
+	Repository             string                 `json:"repository"`
+	Target                 string                 `json:"target"`
+	ReceiptTargetSHA       string                 `json:"receipt_target_sha"`
+	CurrentTargetSHA       string                 `json:"current_target_sha"`
+	OriginalCandidate      WorktreeMergeCandidate `json:"original_candidate"`
+	OriginalSources        []WorktreeMergeSource  `json:"original_sources"`
+	ReplacementReceiptPath string                 `json:"replacement_receipt_path"`
+	Replacement            WorktreeMergeCandidate `json:"replacement"`
+	Sources                []WorktreeMergeSource  `json:"sources"`
+	RecordedAt             time.Time              `json:"recorded_at"`
+}
 
 // WorktreeMergeLandedFailureAcknowledgement is a separate, append-only
 // acknowledgement for a historical merge receipt whose candidate is proved to
@@ -93,6 +121,207 @@ type WorktreeMergeValidationFailureSupersessionOptions struct {
 	Apply               bool
 	Actor               string
 	Reason              string
+}
+
+// validatePreparedWorktreeMergeRebatch proves that the old prepared lane is
+// untouched and that the requested source list is a strict additive rebatch:
+// every old branch remains and may only advance by ancestry; new branches are
+// distinct. The remote target must not have moved because a rebatch is a
+// source-set transition, not an implicit target rebase.
+func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, receiptInput, repository, target string, sources []WorktreeMergeSource) (*WorktreeMergePreparedRebatch, error) {
+	receiptPath, err := resolveWorktreeMergeReceiptPath(projectsRoot, receiptInput)
+	if err != nil {
+		return nil, err
+	}
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return nil, err
+	}
+	if receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergePrepared || receipt.LandingSHA != "" ||
+		receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.Repository != repository || receipt.Target != target ||
+		receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || len(receipt.Sources) == 0 {
+		return nil, fmt.Errorf("rebatch receipt %s is not an unlanded prepared candidate with complete immutable identity", receiptPath)
+	}
+	if receipt.Lane != worktreeMergeLaneID(repository, target) {
+		return nil, fmt.Errorf("rebatch receipt %s has inconsistent lane identity", receiptPath)
+	}
+	if _, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate); err != nil {
+		return nil, fmt.Errorf("validate prepared rebatch candidate: %w", err)
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, target)
+	if err != nil {
+		return nil, err
+	}
+	if currentTarget != receipt.TargetSHA {
+		return nil, fmt.Errorf("rebatch refuses target drift from %s to %s", receipt.TargetSHA, currentTarget)
+	}
+	byBranch := make(map[string]WorktreeMergeSource, len(sources))
+	for _, source := range sources {
+		if source.Branch == "" || source.SHA == "" {
+			return nil, errors.New("rebatch source has incomplete ref identity")
+		}
+		if _, exists := byBranch[source.Branch]; exists {
+			return nil, fmt.Errorf("rebatch source ref %s was supplied more than once", source.Branch)
+		}
+		byBranch[source.Branch] = source
+	}
+	if len(sources) <= len(receipt.Sources) {
+		return nil, fmt.Errorf("rebatch source set must add at least one distinct source ref")
+	}
+	for _, oldSource := range receipt.Sources {
+		newSource, ok := byBranch[oldSource.Branch]
+		if !ok {
+			return nil, fmt.Errorf("rebatch removes immutable source ref %s", oldSource.Branch)
+		}
+		containsOld, err := isMergeAncestor(ctx, newSource.Worktree, oldSource.SHA, newSource.SHA)
+		if err != nil {
+			return nil, fmt.Errorf("verify rebatch source %s ancestry: %w", oldSource.Branch, err)
+		}
+		if !containsOld {
+			return nil, fmt.Errorf("rebatch source ref %s is not a descendant of receipted head %s", oldSource.Branch, oldSource.SHA)
+		}
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	if err != nil {
+		return nil, err
+	}
+	return &WorktreeMergePreparedRebatch{
+		SchemaVersion: worktreeMergePreparedRebatchSchemaVersion, Status: "prepared_rebatched",
+		ReceiptPath: receiptPath, AcknowledgementPath: rebatchPath(receiptPath), ReceiptID: receipt.ID, ReceiptSHA256: receiptHash,
+		ReceiptStatus: receipt.Status, Lane: receipt.Lane, Repository: repository, Target: target, ReceiptTargetSHA: receipt.TargetSHA,
+		CurrentTargetSHA: currentTarget, OriginalCandidate: receipt.Candidate,
+		OriginalSources: append([]WorktreeMergeSource(nil), receipt.Sources...),
+	}, nil
+}
+
+func completePreparedWorktreeMergeRebatch(rebatch WorktreeMergePreparedRebatch, replacement WorktreeMergeReceipt) WorktreeMergePreparedRebatch {
+	rebatch.ReplacementReceiptPath = replacement.ReceiptPath
+	rebatch.Replacement = replacement.Candidate
+	rebatch.Sources = append([]WorktreeMergeSource(nil), replacement.Sources...)
+	rebatch.RecordedAt = time.Now().UTC()
+	rebatch.ID = preparedRebatchID(rebatch)
+	return rebatch
+}
+
+func preparedRebatchID(rebatch WorktreeMergePreparedRebatch) string {
+	hash := sha256.New()
+	for _, value := range []string{rebatch.ReceiptID, rebatch.ReceiptPath, rebatch.ReceiptSHA256, string(rebatch.ReceiptStatus), rebatch.ReceiptTargetSHA, rebatch.CurrentTargetSHA, rebatch.OriginalCandidate.Task, rebatch.OriginalCandidate.Worktree, rebatch.OriginalCandidate.Branch, rebatch.OriginalCandidate.SHA, rebatch.ReplacementReceiptPath, rebatch.Replacement.Task, rebatch.Replacement.Worktree, rebatch.Replacement.Branch, rebatch.Replacement.SHA} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, group := range [][]WorktreeMergeSource{rebatch.OriginalSources, rebatch.Sources} {
+		for _, source := range group {
+			for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+				_, _ = hash.Write([]byte(value))
+				_, _ = hash.Write([]byte{0})
+			}
+		}
+		_, _ = hash.Write([]byte{0xff})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func rebatchPath(receiptPath string) string { return receiptPath + worktreeMergePreparedRebatchSuffix }
+
+func persistPreparedWorktreeMergeRebatch(path string, rebatch WorktreeMergePreparedRebatch) error {
+	contents, err := json.MarshalIndent(rebatch, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".prepared-rebatch-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
+}
+
+// persistPreparedWorktreeMergeRebatchForPrepare is a narrow test seam for the
+// durable receipt -> acknowledgement boundary. Production always persists the
+// append-only acknowledgement with the atomic writer above.
+var persistPreparedWorktreeMergeRebatchForPrepare = persistPreparedWorktreeMergeRebatch
+
+func ensurePreparedWorktreeMergeRebatch(rebatch *WorktreeMergePreparedRebatch, replacement WorktreeMergeReceipt) error {
+	if rebatch == nil {
+		return errors.New("prepared rebatch evidence is required")
+	}
+	path := rebatchPath(rebatch.ReceiptPath)
+	complete := completePreparedWorktreeMergeRebatch(*rebatch, replacement)
+	original, err := readWorktreeMergeReceipt(rebatch.ReceiptPath)
+	if err != nil {
+		return err
+	}
+	if existing, err := readPreparedWorktreeMergeRebatch(path, original); err == nil {
+		if existing.ReplacementReceiptPath != replacement.ReceiptPath || existing.Replacement != replacement.Candidate || !sameWorktreeMergeSources(existing.Sources, replacement.Sources) {
+			return fmt.Errorf("prepared rebatch acknowledgement %s binds different replacement evidence", path)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return persistPreparedWorktreeMergeRebatchForPrepare(path, complete)
+}
+
+func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt) (WorktreeMergePreparedRebatch, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergePreparedRebatch{}, err
+	}
+	var rebatch WorktreeMergePreparedRebatch
+	if err := json.Unmarshal(contents, &rebatch); err != nil {
+		return WorktreeMergePreparedRebatch{}, fmt.Errorf("decode prepared rebatch %s: %w", path, err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return WorktreeMergePreparedRebatch{}, err
+	}
+	replacement, err := readWorktreeMergeReceipt(rebatch.ReplacementReceiptPath)
+	if err != nil {
+		return WorktreeMergePreparedRebatch{}, err
+	}
+	if rebatch.SchemaVersion != worktreeMergePreparedRebatchSchemaVersion || rebatch.Status != "prepared_rebatched" ||
+		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
+		rebatch.ReceiptSHA256 != receiptHash || rebatch.ReceiptStatus != WorktreeMergePrepared || rebatch.Lane != receipt.Lane ||
+		rebatch.Repository != receipt.Repository || rebatch.Target != receipt.Target || rebatch.ReceiptTargetSHA != receipt.TargetSHA ||
+		rebatch.CurrentTargetSHA != receipt.TargetSHA || rebatch.OriginalCandidate != receipt.Candidate ||
+		!sameWorktreeMergeSources(rebatch.OriginalSources, receipt.Sources) || rebatch.ReplacementReceiptPath == receipt.ReceiptPath ||
+		replacement.RebatchOf != receipt.ReceiptPath || replacement.Repository != receipt.Repository || replacement.Target != receipt.Target ||
+		replacement.TargetSHA != receipt.TargetSHA || replacement.Candidate != rebatch.Replacement || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != receipt.Candidate || !sameWorktreeMergeSources(replacement.Sources, rebatch.Sources) ||
+		len(rebatch.Sources) <= len(rebatch.OriginalSources) || rebatch.RecordedAt.IsZero() || rebatch.ID != preparedRebatchID(rebatch) {
+		return WorktreeMergePreparedRebatch{}, fmt.Errorf("prepared rebatch %s has invalid immutable identity", path)
+	}
+	return rebatch, nil
+}
+
+func hasPreparedWorktreeMergeRebatch(receipt WorktreeMergeReceipt) (bool, error) {
+	_, err := readPreparedWorktreeMergeRebatch(rebatchPath(receipt.ReceiptPath), receipt)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // AcknowledgeLandedMergeFailure proves that a non-terminal failed receipt is

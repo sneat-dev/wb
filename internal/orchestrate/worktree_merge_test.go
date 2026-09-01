@@ -1,6 +1,7 @@
 package orchestrate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -1656,6 +1657,201 @@ func TestPrepareWorktreeMergeRefreshesUnpublishedCandidateWhenSourceAdvances(t *
 	}
 	if _, err := os.Stat(filepath.Join(refreshed.Candidate.Worktree, "second.txt")); err != nil {
 		t.Fatalf("refreshed candidate lacks advanced source content: %v", err)
+	}
+}
+
+func TestPrepareWorktreeMergeRebatchesPreparedReceiptAdditivelyAndPreservesOldEvidence(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "rebatch-first", "feature/rebatch-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "rebatch-second", "feature/rebatch-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(first.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, filepath.Join(firstSource.WorktreeDir, "advance.txt"), "advance\n")
+	runEngineGit(t, firstSource.WorktreeDir, "add", "advance.txt")
+	runEngineGit(t, firstSource.WorktreeDir, "commit", "-m", "feat: advance first rebatch source")
+	advancedFirst := strings.TrimSpace(runEngineGit(t, firstSource.WorktreeDir, "rev-parse", "HEAD"))
+	if contains, err := isMergeAncestor(context.Background(), firstSource.WorktreeDir, first.Candidate.SHA, advancedFirst); err != nil || contains {
+		t.Fatalf("fixture did not create a non-ancestor original candidate DAG: contains=%t err=%v", contains, err)
+	}
+	thirdSource := createMergeSource(t, fixture, "rebatch-third", "feature/rebatch-third", "third.txt", "third\n")
+
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir, thirdSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ReceiptPath == first.ReceiptPath || replacement.RebatchOf != first.ReceiptPath || len(replacement.Sources) != 3 || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != first.Candidate {
+		t.Fatalf("replacement receipt = %+v", replacement)
+	}
+	if contains, err := isMergeAncestor(context.Background(), replacement.Candidate.Worktree, first.Candidate.SHA, replacement.Candidate.SHA); err != nil || !contains {
+		t.Fatalf("replacement does not retain original candidate DAG: contains=%t err=%v", contains, err)
+	}
+	if current, err := os.ReadFile(first.ReceiptPath); err != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("original receipt changed: err=%v\nwant=%s\ngot=%s", err, originalReceipt, current)
+	}
+	ack, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first)
+	if err != nil || ack.ReplacementReceiptPath != replacement.ReceiptPath || ack.Replacement != replacement.Candidate {
+		t.Fatalf("rebatch acknowledgement = %+v err=%v", ack, err)
+	}
+	active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(first.ReceiptPath), first.Lane)
+	if err != nil || active == nil || active.ReceiptPath != replacement.ReceiptPath {
+		t.Fatalf("active lane after rebatch = %+v err=%v", active, err)
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: first.ReceiptPath}); err == nil || !strings.Contains(err.Error(), "rebatched") {
+		t.Fatalf("old receipt replay = %v, want rebatched refusal", err)
+	}
+	if err := validateRebatchedWorktreeMergeCleanup(context.Background(), fixture.githubDir, replacement); err == nil || !strings.Contains(err.Error(), "no remote landing") {
+		t.Fatalf("pre-landing old-candidate cleanup eligibility = %v", err)
+	}
+	runEngineGit(t, fixture.canonical, "merge", "--no-ff", "--no-edit", replacement.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	replacement.LandingSHA = strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+	if err := persistWorktreeMergeReceipt(replacement); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRebatchedWorktreeMergeCleanup(context.Background(), fixture.githubDir, replacement); err != nil {
+		t.Fatalf("post-landing old-candidate cleanup eligibility = %v", err)
+	}
+	// The original candidate is deliberately not an ancestor of the advanced
+	// first source. The replacement candidate carries the original candidate in
+	// its DAG, so WB cleanup can prove absorption at the replacement landing.
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", replacement.LandingSHA)
+	oldCandidateCleanup, err := worktrees.Cleanup(context.Background(), worktrees.CleanupOptions{
+		ProjectsRoot: fixture.githubDir, Task: first.Candidate.Task, Base: replacement.Target, ExactRepository: replacement.Repository,
+		AbsorbedBy: replacement.LandingSHA, Apply: true, DeleteRemote: true, OlderThan: 0, Workers: 1,
+	})
+	if err != nil || len(oldCandidateCleanup.Results) != 1 || !oldCandidateCleanup.Results[0].Applied {
+		t.Fatalf("old non-ancestor candidate cleanup = %+v err=%v", oldCandidateCleanup, err)
+	}
+}
+
+func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvidence(t *testing.T) {
+	newPrepared := func(t *testing.T) (engineFixture, worktrees.CreateResult, WorktreeMergeReceipt) {
+		t.Helper()
+		fixture := newEngineFixture(t)
+		source := createMergeSource(t, fixture, "rebatch-negative", "feature/rebatch-negative", "source.txt", "source\n")
+		receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fixture, source, receipt
+	}
+	t.Run("source removal", func(t *testing.T) {
+		fixture, source, receipt := newPrepared(t)
+		_, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+		if err == nil || !strings.Contains(err.Error(), "must add") {
+			t.Fatalf("source removal error = %v", err)
+		}
+	})
+	t.Run("target drift", func(t *testing.T) {
+		fixture, source, receipt := newPrepared(t)
+		second := createMergeSource(t, fixture, "rebatch-drift-extra", "feature/rebatch-drift-extra", "extra.txt", "extra\n")
+		writeEngineFile(t, filepath.Join(fixture.canonical, "target.txt"), "target\n")
+		runEngineGit(t, fixture.canonical, "add", "target.txt")
+		runEngineGit(t, fixture.canonical, "commit", "-m", "test: drift rebatch target")
+		runEngineGit(t, fixture.canonical, "push", "origin", "main")
+		_, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+		if err == nil || !strings.Contains(err.Error(), "target drift") {
+			t.Fatalf("target drift error = %v", err)
+		}
+	})
+	t.Run("non descendant replacement ref", func(t *testing.T) {
+		fixture, _, receipt := newPrepared(t)
+		extra := createMergeSource(t, fixture, "rebatch-non-descendant-extra", "feature/rebatch-non-descendant-extra", "extra.txt", "extra\n")
+		extraSources, _, _, err := inspectWorktreeMergeSources(context.Background(), fixture.githubDir, []string{extra.WorktreeDir}, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonDescendant := receipt.Sources[0]
+		nonDescendant.SHA = receipt.TargetSHA
+		_, err = validatePreparedWorktreeMergeRebatch(context.Background(), fixture.githubDir, receipt.ReceiptPath, "acme/app", "main", append([]WorktreeMergeSource{nonDescendant}, extraSources...))
+		if err == nil || !strings.Contains(err.Error(), "not a descendant") {
+			t.Fatalf("non-descendant replacement error = %v", err)
+		}
+	})
+	t.Run("duplicate source ref", func(t *testing.T) {
+		fixture, _, receipt := newPrepared(t)
+		extra := createMergeSource(t, fixture, "rebatch-duplicate-extra", "feature/rebatch-duplicate-extra", "extra.txt", "extra\n")
+		extraSources, _, _, err := inspectWorktreeMergeSources(context.Background(), fixture.githubDir, []string{extra.WorktreeDir}, "main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		duplicate := receipt.Sources[0]
+		_, err = validatePreparedWorktreeMergeRebatch(context.Background(), fixture.githubDir, receipt.ReceiptPath, "acme/app", "main", append(append([]WorktreeMergeSource{}, receipt.Sources[0], duplicate), extraSources...))
+		if err == nil || !strings.Contains(err.Error(), "supplied more than once") {
+			t.Fatalf("duplicate source ref error = %v", err)
+		}
+	})
+	t.Run("dirty candidate", func(t *testing.T) {
+		fixture, source, receipt := newPrepared(t)
+		second := createMergeSource(t, fixture, "rebatch-dirty-extra", "feature/rebatch-dirty-extra", "extra.txt", "extra\n")
+		writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "dirty.txt"), "dirty\n")
+		_, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+		if err == nil || !strings.Contains(err.Error(), "candidate is not clean") {
+			t.Fatalf("dirty candidate error = %v", err)
+		}
+	})
+	t.Run("dirty source", func(t *testing.T) {
+		fixture, source, receipt := newPrepared(t)
+		second := createMergeSource(t, fixture, "rebatch-dirty-source-extra", "feature/rebatch-dirty-source-extra", "extra.txt", "extra\n")
+		writeEngineFile(t, filepath.Join(second.WorktreeDir, "dirty.txt"), "dirty\n")
+		_, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+		if err == nil || !strings.Contains(err.Error(), "worktree is dirty") {
+			t.Fatalf("dirty source error = %v", err)
+		}
+	})
+}
+
+func TestPrepareWorktreeMergeRebatchRetryCompletesAcknowledgementAfterPostReceiptWriteFailure(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "rebatch-retry-first", "feature/rebatch-retry-first", "first.txt", "first\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(first.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSource := createMergeSource(t, fixture, "rebatch-retry-second", "feature/rebatch-retry-second", "second.txt", "second\n")
+	previousPersist := persistPreparedWorktreeMergeRebatchForPrepare
+	persistPreparedWorktreeMergeRebatchForPrepare = func(string, WorktreeMergePreparedRebatch) error { return os.ErrPermission }
+	defer func() { persistPreparedWorktreeMergeRebatchForPrepare = previousPersist }()
+	partial, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err == nil || partial.Status != WorktreeMergePrepared || partial.RebatchOf != first.ReceiptPath {
+		t.Fatalf("post-receipt acknowledgement failure = receipt %+v err=%v", partial, err)
+	}
+	if _, statErr := os.Stat(rebatchPath(first.ReceiptPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("acknowledgement exists after injected write failure: %v", statErr)
+	}
+	if current, err := os.ReadFile(first.ReceiptPath); err != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("original receipt changed by failed rebatch acknowledgement: err=%v", err)
+	}
+	persistPreparedWorktreeMergeRebatchForPrepare = previousPersist
+	recovered, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err != nil || recovered.ReceiptPath != partial.ReceiptPath || recovered.Candidate != partial.Candidate {
+		t.Fatalf("rebatch acknowledgement recovery = receipt %+v err=%v", recovered, err)
+	}
+	if _, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first); err != nil {
+		t.Fatalf("recovered acknowledgement = %v", err)
+	}
+	active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(first.ReceiptPath), first.Lane)
+	if err != nil || active == nil || active.ReceiptPath != recovered.ReceiptPath {
+		t.Fatalf("active lane after acknowledgement recovery = %+v err=%v", active, err)
 	}
 }
 

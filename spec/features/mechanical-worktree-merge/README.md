@@ -74,6 +74,7 @@ wb worktree merge <source-worktree...> [--target <branch>]
   [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
 
 wb worktree merge prepare <source-worktree...> [--target <branch>]
+  [--rebatch-receipt <prepared-receipt>]
 wb worktree merge land <candidate-worktree-or-receipt>
   [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
 wb worktree merge resume <candidate-worktree-or-receipt>
@@ -108,6 +109,14 @@ file with that name is preserved unchanged.
   and recovery state.
 - A clean retry is idempotent. Mutable remote facts are re-read before mutation;
   immutable completed phase receipts are replayed without repeating effects.
+- A prepared, unlanded lane can be rebatched only by naming its immutable
+  receipt and supplying every original source ref (at the same or a descendant
+  head) plus at least one new distinct ref. WB rejects target drift, dirty
+  candidates or sources, removals, duplicate refs, and non-descendant
+  replacements. It creates a new candidate and receipt, retains the old
+  candidate in the replacement DAG for receipt-gated cleanup, and writes a
+  separate append-only rebatch acknowledgement; it never edits the old receipt
+  or candidate.
 - Merge, revert, validation, policy, authentication, target-drift, CI, and
   canonical synchronization failures are typed non-terminal states with an
   exact resume command.

@@ -33,7 +33,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if command.Use != "merge <source-worktree...>" {
 		t.Fatalf("Use = %q", command.Use)
 	}
-	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+	for _, flag := range []string{"target", "rebatch-receipt", "route", "cleanup", "on-failure", "format", "progress"} {
 		if command.Flags().Lookup(flag) == nil {
 			t.Errorf("combined merge is missing --%s", flag)
 		}
