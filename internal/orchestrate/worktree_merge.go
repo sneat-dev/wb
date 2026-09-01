@@ -574,31 +574,6 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 	}
-	if rebatch != nil {
-		// A rebatch is not only a source-list assertion: retain the original
-		// candidate in the new candidate DAG. That gives receipt-gated cleanup a
-		// real graph/landing proof for the superseded integration branch instead
-		// of treating an acknowledgement as if it were a landing.
-		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, rebatch.OriginalCandidate.SHA, "HEAD")
-		if ancestorErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
-		}
-		if !containsOriginal {
-			if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
-				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr))
-			}
-			receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
-			if err != nil {
-				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
-			}
-			receipt.UpdatedAt = time.Now().UTC()
-			if err := persistWorktreeMergeReceipt(receipt); err != nil {
-				return receipt, err
-			}
-		}
-	}
-
 	for index := range receipt.Sources {
 		source := &receipt.Sources[index]
 		ancestor, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, source.SHA, "HEAD")
@@ -626,6 +601,29 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+	}
+	if rebatch != nil {
+		// Integrate the supplied current sources first. A root-complete source may
+		// already retain the historical candidate, avoiding a conflicting replay
+		// of that candidate into the current target tree.
+		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, rebatch.OriginalCandidate.SHA, "HEAD")
+		if ancestorErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, ancestorErr)
+		}
+		if !containsOriginal {
+			if _, _, mergeErr := runCommand(ctx, options.Timeout, options.Retry, candidate.WorktreeDir, "git", "merge", "--no-edit", rebatch.OriginalCandidate.SHA); mergeErr != nil {
+				_, _, _ = runCommand(ctx, options.Timeout, 0, candidate.WorktreeDir, "git", "merge", "--abort")
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("merge original rebatch candidate %s: %w", rebatch.OriginalCandidate.SHA, mergeErr))
+			}
+			receipt.Candidate.SHA, err = mergeRevision(ctx, candidate.WorktreeDir, "HEAD")
+			if err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			}
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+		}
 	}
 	for _, original := range receipt.RebatchedCandidates {
 		containsOriginal, ancestorErr := isMergeAncestor(ctx, candidate.WorktreeDir, original.SHA, receipt.Candidate.SHA)

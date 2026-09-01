@@ -85,6 +85,102 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe(t *te
 	}
 }
 
+func TestReceiptCollisionAcknowledgementRebatchesAtDescendantTargetWithRootCompleteSource(t *testing.T) {
+	fixture, receipt, options := collisionAcknowledgementFixture(t)
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBefore, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited collision rebatch after target advance"
+	ack, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackBefore, err := os.ReadFile(ack.AcknowledgementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeEngineFile(t, filepath.Join(fixture.canonical, "target-advance.go"), "package app\n\nfunc TargetAdvance() {}\n")
+	runEngineGit(t, fixture.canonical, "add", "target-advance.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance collision rebatch target")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	currentTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+
+	rootComplete := createMergeSource(t, fixture, "collision-root-complete", "feature/collision-root-complete", "root_complete.go", "package app\n\nfunc RootComplete() {}\n")
+	runEngineGit(t, rootComplete.WorktreeDir, "merge", "--no-edit", receipt.Candidate.SHA)
+	rootCompleteHead := strings.TrimSpace(runEngineGit(t, rootComplete.WorktreeDir, "rev-parse", "HEAD"))
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{receipt.Sources[0].Worktree, rootComplete.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.TargetSHA != currentTarget || replacement.RebatchOf != receipt.ReceiptPath || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != receipt.Candidate {
+		t.Fatalf("advanced collision replacement = %+v, want target %s", replacement, currentTarget)
+	}
+	for _, root := range []string{receipt.TargetSHA, currentTarget, receipt.Candidate.SHA, receipt.Sources[0].SHA, rootCompleteHead} {
+		contains, ancestorErr := isMergeAncestor(context.Background(), replacement.Candidate.Worktree, root, replacement.Candidate.SHA)
+		if ancestorErr != nil || !contains {
+			t.Fatalf("replacement omits required root %s: contains=%t err=%v", root, contains, ancestorErr)
+		}
+	}
+	preparedRebatch, err := readPreparedWorktreeMergeRebatch(rebatchPath(receipt.ReceiptPath), receipt)
+	if err != nil || preparedRebatch.CurrentTargetSHA != currentTarget || preparedRebatch.Replacement != replacement.Candidate {
+		t.Fatalf("advanced collision rebatch acknowledgement = %+v err=%v", preparedRebatch, err)
+	}
+	for _, immutable := range []struct {
+		path string
+		want []byte
+	}{
+		{receipt.ReceiptPath, receiptBefore},
+		{claim.ClaimPath, claimBefore},
+		{ack.AcknowledgementPath, ackBefore},
+	} {
+		current, readErr := os.ReadFile(immutable.path)
+		if readErr != nil || !bytes.Equal(current, immutable.want) {
+			t.Fatalf("immutable evidence changed at %s: err=%v", immutable.path, readErr)
+		}
+	}
+}
+
+func TestReceiptCollisionAcknowledgementRebatchRefusesMissingOrChangedRoots(t *testing.T) {
+	fixture, receipt, options := collisionAcknowledgementFixture(t)
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited collision rebatch root refusals"
+	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	rootComplete := createMergeSource(t, fixture, "collision-root-refusal", "feature/collision-root-refusal", "root_complete.go", "package app\n\nfunc RootComplete() {}\n")
+	runEngineGit(t, rootComplete.WorktreeDir, "merge", "--no-edit", receipt.Candidate.SHA)
+	extra := createMergeSource(t, fixture, "collision-extra-refusal", "feature/collision-extra-refusal", "extra.go", "package app\n\nfunc Extra() {}\n")
+	extraSources, _, _, err := inspectWorktreeMergeSources(context.Background(), fixture.githubDir, []string{rootComplete.WorktreeDir, extra.WorktreeDir}, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("missing immutable source ref", func(t *testing.T) {
+		_, err := validatePreparedWorktreeMergeRebatch(context.Background(), fixture.githubDir, receipt.ReceiptPath, "acme/app", "main", extraSources)
+		if err == nil || !strings.Contains(err.Error(), "removes immutable source ref") {
+			t.Fatalf("missing root error = %v", err)
+		}
+	})
+	t.Run("changed immutable source ref", func(t *testing.T) {
+		changed := receipt.Sources[0]
+		changed.SHA = receipt.TargetSHA
+		_, err := validatePreparedWorktreeMergeRebatch(context.Background(), fixture.githubDir, receipt.ReceiptPath, "acme/app", "main", append([]WorktreeMergeSource{changed}, extraSources[:1]...))
+		if err == nil || !strings.Contains(err.Error(), "not a descendant") {
+			t.Fatalf("changed root error = %v", err)
+		}
+	})
+}
+
 func TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebatchAndCleanup(t *testing.T) {
 	fixture, receipt, options := collisionAcknowledgementFixture(t)
 	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited historical prepare receipt collision"

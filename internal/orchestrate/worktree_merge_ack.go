@@ -461,7 +461,9 @@ func validateReceiptCollisionAcknowledgement(ctx context.Context, projectsRoot s
 // untouched and that the requested source list is a strict additive rebatch:
 // every old branch remains and may only advance by ancestry; new branches are
 // distinct. The remote target must not have moved because a rebatch is a
-// source-set transition, not an implicit target rebase.
+// source-set transition, not an implicit target rebase. The sole exception is
+// an append-only acknowledged historical preparing-receipt collision: it may
+// move to a descendant target while retaining that immutable target as a root.
 func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, receiptInput, repository, target string, sources []WorktreeMergeSource) (*WorktreeMergePreparedRebatch, error) {
 	receiptPath, err := resolveWorktreeMergeReceiptPath(projectsRoot, receiptInput)
 	if err != nil {
@@ -495,8 +497,17 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	if err != nil {
 		return nil, err
 	}
-	if currentTarget != receipt.TargetSHA {
+	if currentTarget != receipt.TargetSHA && !collisionAcknowledged {
 		return nil, fmt.Errorf("rebatch refuses target drift from %s to %s", receipt.TargetSHA, currentTarget)
+	}
+	if collisionAcknowledged && currentTarget != receipt.TargetSHA {
+		containsReceiptTarget, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.TargetSHA, currentTarget)
+		if ancestorErr != nil {
+			return nil, fmt.Errorf("verify collision rebatch target ancestry: %w", ancestorErr)
+		}
+		if !containsReceiptTarget {
+			return nil, fmt.Errorf("collision rebatch target %s is not a descendant of immutable receipt target %s", currentTarget, receipt.TargetSHA)
+		}
 	}
 	byBranch := make(map[string]WorktreeMergeSource, len(sources))
 	for _, source := range sources {
@@ -652,12 +663,15 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
 		rebatch.ReceiptSHA256 != receiptHash || !preparedOrAcknowledgedCollision || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
 		rebatch.Repository != receipt.Repository || rebatch.Target != receipt.Target || rebatch.ReceiptTargetSHA != receipt.TargetSHA ||
-		rebatch.CurrentTargetSHA != receipt.TargetSHA || rebatch.OriginalCandidate != receipt.Candidate ||
+		rebatch.CurrentTargetSHA == "" || rebatch.OriginalCandidate != receipt.Candidate ||
 		!sameWorktreeMergeSources(rebatch.OriginalSources, receipt.Sources) || rebatch.ReplacementReceiptPath == receipt.ReceiptPath ||
 		replacement.RebatchOf != receipt.ReceiptPath || replacement.Repository != receipt.Repository || replacement.Target != receipt.Target ||
-		replacement.TargetSHA != receipt.TargetSHA || replacement.Candidate != rebatch.Replacement || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != receipt.Candidate || !sameWorktreeMergeSources(replacement.Sources, rebatch.Sources) ||
+		replacement.TargetSHA != rebatch.CurrentTargetSHA || replacement.Candidate != rebatch.Replacement || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != receipt.Candidate || !sameWorktreeMergeSources(replacement.Sources, rebatch.Sources) ||
 		len(rebatch.Sources) <= len(rebatch.OriginalSources) || rebatch.RecordedAt.IsZero() || rebatch.ID != preparedRebatchID(rebatch) {
 		return WorktreeMergePreparedRebatch{}, fmt.Errorf("prepared rebatch %s has invalid immutable identity", path)
+	}
+	if !collisionAcknowledged && rebatch.CurrentTargetSHA != receipt.TargetSHA {
+		return WorktreeMergePreparedRebatch{}, fmt.Errorf("prepared rebatch %s has invalid immutable target identity", path)
 	}
 	return rebatch, nil
 }

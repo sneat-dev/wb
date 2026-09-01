@@ -68,6 +68,9 @@ revisions. It writes only the append-only acknowledgement beside the receipt;
 the historical `validation_failed` state is an operator assertion because the
 pre-mutation receipt bytes are unavailable. Normal prepare stays blocked after
 that acknowledgement and the audited rebatch path rechecks it before use.
+Ordinary prepared rebatches still refuse target drift. Only this exact
+acknowledged preparing collision may record a freshly fetched descendant target,
+while its replacement candidate retains the immutable receipt target as a root.
 
 When a historical prepare `validation_failed` receipt (such as Yardius) or a
 land `landed_post_target_ci_failed` receipt (such as Contactus) is stale but
