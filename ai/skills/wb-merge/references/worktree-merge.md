@@ -14,6 +14,7 @@ wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <ope
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
+wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -99,3 +100,10 @@ claim. The old failed candidate itself is deliberately not required to be an
 ancestor. WB writes a receipt-hash-bound append-only supersession artifact;
 it never rewrites the failed receipt or either Work Log. Missing ancestry,
 claim identity, clean worktree, or receipt integrity refuses closed.
+
+If a historical supersession acknowledgement incorrectly named the failed
+candidate as its own replacement, do not edit it. Use
+`correct-self-supersession` only with the exact existing acknowledgement and
+immutable-claim SHA256 values plus a distinct replacement. It creates one
+hash-pinned correction artifact; missing, malformed, tampered, or conflicting
+corrections leave the self-supersession ineffective and refuse closed.

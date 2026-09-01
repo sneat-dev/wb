@@ -20,11 +20,18 @@ const (
 	worktreeMergeLandedFailureAcknowledgementSuffix           = ".landed-validation-failed.ack.json"
 	worktreeMergeValidationFailureSupersessionSchemaVersion   = 1
 	worktreeMergeValidationFailureSupersessionSuffix          = ".validation-failed.superseded.ack.json"
+	worktreeMergeSelfSupersessionCorrectionSchemaVersion      = 1
+	worktreeMergeSelfSupersessionCorrectionSuffix             = ".validation-failed.self-supersession.corrected.ack.json"
 	worktreeMergePreparedRebatchSchemaVersion                 = 1
 	worktreeMergePreparedRebatchSuffix                        = ".prepared.rebatched.ack.json"
 	worktreeMergeReceiptCollisionAcknowledgementSchemaVersion = 1
 	worktreeMergeReceiptCollisionAcknowledgementSuffix        = ".receipt-collision.ack.json"
 )
+
+// linkSelfSupersessionCorrection publishes a fully synced temporary file without
+// replacing an existing correction. It is replaceable only by tests that prove
+// the concurrent create-if-absent path is fail-closed.
+var linkSelfSupersessionCorrection = os.Link
 
 // WorktreeMergeReceiptCollisionAcknowledgement is the narrowly scoped,
 // append-only recovery record for a receipt that was historically rewritten by
@@ -160,6 +167,38 @@ type WorktreeMergeValidationFailureSupersessionOptions struct {
 	Apply               bool
 	Actor               string
 	Reason              string
+}
+
+// WorktreeMergeSelfSupersessionCorrection is the only repair for a historical
+// supersession acknowledgement that incorrectly named the failed candidate as
+// its own replacement. It is append-only and binds both the exact corrupt ack
+// bytes and one distinct, fully revalidated replacement candidate.
+type WorktreeMergeSelfSupersessionCorrection struct {
+	SchemaVersion           int                    `json:"schema_version"`
+	ID                      string                 `json:"id"`
+	Status                  string                 `json:"status"`
+	CorrectionPath          string                 `json:"correction_path"`
+	ReceiptPath             string                 `json:"receipt_path"`
+	ReceiptSHA256           string                 `json:"receipt_sha256"`
+	ImmutableClaimSHA256    string                 `json:"immutable_claim_sha256"`
+	SupersessionPath        string                 `json:"supersession_path"`
+	SupersessionSHA256      string                 `json:"supersession_sha256"`
+	SupersessionID          string                 `json:"supersession_id"`
+	OriginalCandidate       WorktreeMergeCandidate `json:"original_candidate"`
+	OriginalClaimBaseSHA    string                 `json:"original_claim_base_sha"`
+	CorrectedReplacement    WorktreeMergeCandidate `json:"corrected_replacement"`
+	ReplacementClaimBaseSHA string                 `json:"replacement_claim_base_sha"`
+	CurrentTargetSHA        string                 `json:"current_target_sha"`
+	Sources                 []WorktreeMergeSource  `json:"sources"`
+	Actor                   string                 `json:"actor"`
+	Reason                  string                 `json:"reason"`
+	RecordedAt              time.Time              `json:"recorded_at"`
+}
+
+type WorktreeMergeSelfSupersessionCorrectionOptions struct {
+	ProjectsRoot, Receipt, ReplacementWorktree, ExpectedSupersessionSHA256, ExpectedImmutableClaimSHA256 string
+	Apply                                                                                                bool
+	Actor, Reason                                                                                        string
 }
 
 // AcknowledgeWorktreeMergeReceiptCollision records the one audited recovery
@@ -800,6 +839,9 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
+	if replacement == receipt.Candidate || replacement.SHA == receipt.Candidate.SHA {
+		return WorktreeMergeValidationFailureSupersession{}, errors.New("replacement candidate must be distinct from the failed receipt candidate")
+	}
 	for _, source := range receipt.Sources {
 		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
 			return WorktreeMergeValidationFailureSupersession{}, err
@@ -848,6 +890,136 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	return ack, nil
+}
+
+// CorrectValidationFailedSelfSupersession repairs only a pre-guard
+// self-supersession. It never replaces that acknowledgement: it records one
+// separate correction whose identity pins the exact existing acknowledgement,
+// receipt, immutable claim, and distinct replacement evidence.
+func CorrectValidationFailedSelfSupersession(ctx context.Context, options WorktreeMergeSelfSupersessionCorrectionOptions) (WorktreeMergeSelfSupersessionCorrection, error) {
+	if strings.TrimSpace(options.ExpectedSupersessionSHA256) == "" || strings.TrimSpace(options.ExpectedImmutableClaimSHA256) == "" {
+		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("--expected-supersession-sha256 and --expected-immutable-claim-sha256 are required")
+	}
+	if strings.TrimSpace(options.ReplacementWorktree) == "" {
+		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("replacement worktree is required")
+	}
+	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
+		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("--actor and --reason are required with --apply")
+	}
+	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	lock, err := AcquireOperationLock(options.ProjectsRoot, receipt.Lane, true)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	defer func() { _ = lock.Release() }()
+	// All evidence is re-read after the lane lock, including the immutable
+	// receipt that the corrupt acknowledgement already hashes.
+	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	ackPath := validationFailureSupersessionPath(receiptPath)
+	supersession, err := readValidationFailureSupersession(ackPath, receipt)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("read existing supersession: %w", err)
+	}
+	if supersession.Replacement != supersession.OriginalCandidate || supersession.OriginalCandidate != receipt.Candidate {
+		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("existing supersession is not the exact self-supersession correction shape")
+	}
+	supersessionHash, err := worktreeMergeReceiptSHA256(ackPath)
+	if err != nil || supersessionHash != options.ExpectedSupersessionSHA256 {
+		if err == nil {
+			err = fmt.Errorf("supersession SHA256 %s does not match expected %s", supersessionHash, options.ExpectedSupersessionSHA256)
+		}
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	originalClaim, err := validateMergeAcknowledgementCandidate(ctx, options.ProjectsRoot, receipt, receipt.Candidate)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("validate failed candidate: %w", err)
+	}
+	claimBytes, err := os.ReadFile(originalClaim.ClaimPath)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("read immutable failed candidate claim: %w", err)
+	}
+	claimDigest := sha256.Sum256(claimBytes)
+	claimHash := hex.EncodeToString(claimDigest[:])
+	if claimHash != options.ExpectedImmutableClaimSHA256 || originalClaim.BaseSHA != supersession.OriginalClaimBaseSHA {
+		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("immutable failed candidate claim bytes or base no longer match expected supersession evidence")
+	}
+	replacement, replacementClaim, err := validateValidationFailureReplacement(ctx, options.ProjectsRoot, receipt, options.ReplacementWorktree)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	if replacement == receipt.Candidate || replacement.SHA == receipt.Candidate.SHA {
+		return WorktreeMergeSelfSupersessionCorrection{}, errors.New("corrected replacement candidate must be distinct from the failed receipt candidate")
+	}
+	for _, source := range receipt.Sources {
+		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+			return WorktreeMergeSelfSupersessionCorrection{}, err
+		}
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("corrected replacement %s does not contain required immutable root %s", replacement.SHA, root)
+			}
+			return WorktreeMergeSelfSupersessionCorrection{}, ancestorErr
+		}
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
+	if err != nil || receiptHash != supersession.ReceiptSHA256 {
+		if err == nil {
+			err = errors.New("receipt bytes no longer match the existing supersession acknowledgement")
+		}
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	correctionPath := selfSupersessionCorrectionPath(receiptPath)
+	correction := WorktreeMergeSelfSupersessionCorrection{
+		SchemaVersion: worktreeMergeSelfSupersessionCorrectionSchemaVersion, Status: "validation_failure_self_supersession_corrected",
+		CorrectionPath: correctionPath, ReceiptPath: receiptPath, ReceiptSHA256: receiptHash, ImmutableClaimSHA256: claimHash,
+		SupersessionPath: ackPath, SupersessionSHA256: supersessionHash, SupersessionID: supersession.ID,
+		OriginalCandidate: receipt.Candidate, OriginalClaimBaseSHA: originalClaim.BaseSHA,
+		CorrectedReplacement: replacement, ReplacementClaimBaseSHA: replacementClaim.BaseSHA, CurrentTargetSHA: currentTarget,
+		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), Actor: strings.TrimSpace(options.Actor), Reason: strings.TrimSpace(options.Reason), RecordedAt: time.Now().UTC(),
+	}
+	correction.ID = selfSupersessionCorrectionID(correction)
+	if existing, readErr := readSelfSupersessionCorrection(correctionPath, receipt, supersession); readErr == nil {
+		if !sameSelfSupersessionCorrection(existing, correction) {
+			return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("self-supersession correction %s binds different immutable evidence", correctionPath)
+		}
+		return existing, nil
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return WorktreeMergeSelfSupersessionCorrection{}, readErr
+	}
+	if !options.Apply {
+		return correction, nil
+	}
+	if err := persistSelfSupersessionCorrection(correctionPath, correction); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return WorktreeMergeSelfSupersessionCorrection{}, err
+		}
+		existing, readErr := readSelfSupersessionCorrection(correctionPath, receipt, supersession)
+		if readErr != nil || !sameSelfSupersessionCorrection(existing, correction) {
+			if readErr != nil {
+				return WorktreeMergeSelfSupersessionCorrection{}, readErr
+			}
+			return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("concurrent self-supersession correction %s binds different immutable evidence", correctionPath)
+		}
+		return existing, nil
+	}
+	return correction, nil
 }
 
 func requireCandidateContainsImmutableClaimBase(ctx context.Context, candidateWorktree, claimBaseSHA, candidateSHA string) error {
@@ -1142,12 +1314,113 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 }
 
 func hasValidationFailureSupersession(receipt WorktreeMergeReceipt) (bool, error) {
-	_, err := readValidationFailureSupersession(validationFailureSupersessionPath(receipt.ReceiptPath), receipt)
+	ackPath := validationFailureSupersessionPath(receipt.ReceiptPath)
+	ack, err := readValidationFailureSupersession(ackPath, receipt)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
+	if ack.Replacement == ack.OriginalCandidate {
+		if _, correctionErr := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receipt.ReceiptPath), receipt, ack); correctionErr != nil {
+			if errors.Is(correctionErr, os.ErrNotExist) {
+				return false, fmt.Errorf("validation-failed supersession %s is a self-supersession and requires an append-only correction", ackPath)
+			}
+			return false, correctionErr
+		}
+	}
 	return true, nil
+}
+
+func selfSupersessionCorrectionPath(receiptPath string) string {
+	return receiptPath + worktreeMergeSelfSupersessionCorrectionSuffix
+}
+
+func selfSupersessionCorrectionID(correction WorktreeMergeSelfSupersessionCorrection) string {
+	hash := sha256.New()
+	for _, value := range []string{correction.ReceiptPath, correction.ReceiptSHA256, correction.ImmutableClaimSHA256, correction.SupersessionPath, correction.SupersessionSHA256, correction.SupersessionID, correction.OriginalClaimBaseSHA, correction.ReplacementClaimBaseSHA, correction.CurrentTargetSHA, correction.CorrectedReplacement.Task, correction.CorrectedReplacement.Worktree, correction.CorrectedReplacement.Branch, correction.CorrectedReplacement.SHA, correction.Actor, correction.Reason} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, source := range correction.Sources {
+		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func sameSelfSupersessionCorrection(left, right WorktreeMergeSelfSupersessionCorrection) bool {
+	return left.ID == right.ID && left.Status == right.Status && left.CorrectionPath == right.CorrectionPath &&
+		left.ReceiptPath == right.ReceiptPath && left.ReceiptSHA256 == right.ReceiptSHA256 && left.ImmutableClaimSHA256 == right.ImmutableClaimSHA256 &&
+		left.SupersessionPath == right.SupersessionPath && left.SupersessionSHA256 == right.SupersessionSHA256 && left.SupersessionID == right.SupersessionID &&
+		left.OriginalCandidate == right.OriginalCandidate && left.OriginalClaimBaseSHA == right.OriginalClaimBaseSHA &&
+		left.CorrectedReplacement == right.CorrectedReplacement && left.ReplacementClaimBaseSHA == right.ReplacementClaimBaseSHA &&
+		left.CurrentTargetSHA == right.CurrentTargetSHA && sameWorktreeMergeSources(left.Sources, right.Sources) &&
+		left.Actor == right.Actor && left.Reason == right.Reason
+}
+
+func readSelfSupersessionCorrection(path string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession) (WorktreeMergeSelfSupersessionCorrection, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	var correction WorktreeMergeSelfSupersessionCorrection
+	if err := json.Unmarshal(contents, &correction); err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("decode self-supersession correction %s: %w", path, err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	supersessionHash, err := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath)
+	if err != nil {
+		return WorktreeMergeSelfSupersessionCorrection{}, err
+	}
+	if correction.SchemaVersion != worktreeMergeSelfSupersessionCorrectionSchemaVersion || correction.Status != "validation_failure_self_supersession_corrected" ||
+		correction.CorrectionPath != path || correction.ReceiptPath != receipt.ReceiptPath || correction.ReceiptSHA256 != receiptHash ||
+		correction.SupersessionPath != supersession.AcknowledgementPath || correction.SupersessionSHA256 != supersessionHash || correction.SupersessionID != supersession.ID ||
+		correction.OriginalCandidate != receipt.Candidate || correction.OriginalCandidate != supersession.OriginalCandidate || supersession.Replacement != supersession.OriginalCandidate ||
+		correction.OriginalClaimBaseSHA != supersession.OriginalClaimBaseSHA || correction.ImmutableClaimSHA256 == "" || correction.ReplacementClaimBaseSHA == "" || correction.CurrentTargetSHA == "" ||
+		correction.CorrectedReplacement.Task == "" || correction.CorrectedReplacement.Worktree == "" || correction.CorrectedReplacement.Branch == "" || correction.CorrectedReplacement.SHA == "" ||
+		correction.CorrectedReplacement == receipt.Candidate || correction.CorrectedReplacement.SHA == receipt.Candidate.SHA || !sameWorktreeMergeSources(correction.Sources, receipt.Sources) ||
+		correction.Actor == "" || correction.Reason == "" || correction.RecordedAt.IsZero() || correction.ID != selfSupersessionCorrectionID(correction) {
+		return WorktreeMergeSelfSupersessionCorrection{}, fmt.Errorf("self-supersession correction %s has invalid immutable identity", path)
+	}
+	return correction, nil
+}
+
+func persistSelfSupersessionCorrection(path string, correction WorktreeMergeSelfSupersessionCorrection) error {
+	contents, err := json.MarshalIndent(correction, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".validation-failed-self-supersession-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return linkSelfSupersessionCorrection(temporaryPath, path)
 }

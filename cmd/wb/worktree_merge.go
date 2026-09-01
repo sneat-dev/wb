@@ -81,7 +81,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd())
 	return command
 }
 
@@ -389,6 +389,59 @@ refuses closed.`,
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited supersession acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited supersession reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeCorrectSelfSupersessionCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format, expectedSupersessionSHA, expectedClaimSHA string
+	command := &cobra.Command{
+		Use:   "correct-self-supersession <merge-receipt> <replacement-worktree>",
+		Short: "Append a correction for one historical self-supersession",
+		Long: `Correct only an existing validation_failed supersession acknowledgement
+that incorrectly bound the failed candidate as its own replacement. The caller
+must pin the exact existing acknowledgement SHA256 and immutable claim SHA256.
+WB re-reads the receipt, claim, corrupt acknowledgement, target, sources, and a
+distinct clean active-claim replacement under the lane lock. It writes only a
+separate create-if-absent correction artifact; neither the receipt, claim, nor
+self-supersession acknowledgement is ever changed. This is dry-run by default;
+--apply requires --actor and --reason.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			correction, err := orchestrate.CorrectValidationFailedSelfSupersession(command.Context(), orchestrate.WorktreeMergeSelfSupersessionCorrectionOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], ReplacementWorktree: args[1], ExpectedSupersessionSHA256: expectedSupersessionSHA, ExpectedImmutableClaimSHA256: expectedClaimSHA,
+				Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(correction)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nreplacement: %s\ncorrection: %s\n", correction.Status, correction.ReceiptPath, correction.CorrectedReplacement.SHA, correction.CorrectionPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate append-only correction artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited correction reason")
+	command.Flags().StringVar(&expectedSupersessionSHA, "expected-supersession-sha256", "", "required SHA256 of the existing self-supersession acknowledgement")
+	command.Flags().StringVar(&expectedClaimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable failed candidate Work Log claim")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	addMutationAdmissionFlags(command)
 	return command
