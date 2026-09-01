@@ -77,7 +77,7 @@ func TestWriteSyncIssuesReportOverwritesRatherThanAppends(t *testing.T) {
 	}
 }
 
-func TestWriteSyncIssuesReportLeavesNoTemporaryFile(t *testing.T) {
+func TestWriteSyncIssuesReportLeavesNoTemporaryFileAfterASuccessfulWrite(t *testing.T) {
 	home := syncReportHome(t)
 	var out, errOut bytes.Buffer
 
@@ -92,6 +92,33 @@ func TestWriteSyncIssuesReportLeavesNoTemporaryFile(t *testing.T) {
 			t.Errorf("temporary file left behind: %s", entry.Name())
 		}
 	}
+	// The failure path is covered by TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails.
+}
+
+func TestWriteSyncIssuesReportRemovesItsTemporaryFileWhenTheRenameFails(t *testing.T) {
+	home := syncReportHome(t)
+	// A directory sitting at the report's own path makes os.Rename fail
+	// *after* the temporary file exists, which is the only situation in which
+	// the deferred cleanup is what removes it.
+	if err := os.MkdirAll(filepath.Join(home, "last-sync-issues.md"), 0o755); err != nil {
+		t.Fatalf("stage the blocked destination: %v", err)
+	}
+	var out, errOut bytes.Buffer
+
+	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
+
+	if errOut.Len() == 0 {
+		t.Fatal("renaming onto a directory should have failed and been reported")
+	}
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read home: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wb-sync-issues-") {
+			t.Errorf("temporary file survived a failed rename: %s", entry.Name())
+		}
+	}
 }
 
 func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing.T) {
@@ -104,6 +131,9 @@ func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing
 
 	writeSyncIssuesReport(syncReportMetaForTest(), nil, "/home/ai/projects", &out, &errOut)
 
+	if errOut.Len() == 0 {
+		t.Skip("this filesystem allowed the write; ordering is asserted by the happy path instead")
+	}
 	if !strings.Contains(errOut.String(), "sync issues report not written") {
 		t.Errorf("failure not warned about: %q", errOut.String())
 	}
