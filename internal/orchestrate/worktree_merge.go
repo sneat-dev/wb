@@ -2129,14 +2129,32 @@ func sameWorktreeMergeFailure(baseline, candidate quality.VerificationEntry) boo
 func normalizeWorktreeMergeFailureDetail(detail string) string {
 	// Quality command output can include the ephemeral checkout path. It is not
 	// behavior, so compare a whitespace-normalized form after erasing absolute
-	// paths. All command, check, module, and error text still has to match.
+	// paths. The path may be quoted or wrapped in diagnostic punctuation, so
+	// normalize it inside the field rather than requiring the whole field to be
+	// an absolute path. All command, check, module, and error text still has to
+	// match.
 	fields := strings.Fields(detail)
 	for index, field := range fields {
-		if filepath.IsAbs(field) {
-			fields[index] = "<workspace>"
-		}
+		fields[index] = normalizeWorktreeMergeFailureField(field)
 	}
 	return strings.Join(fields, " ")
+}
+
+const worktreeMergeFailurePathPunctuation = "\"'`()[]{}<>,;"
+
+func normalizeWorktreeMergeFailureField(field string) string {
+	start := 0
+	for start < len(field) && strings.ContainsRune(worktreeMergeFailurePathPunctuation, rune(field[start])) {
+		start++
+	}
+	end := len(field)
+	for end > start && strings.ContainsRune(worktreeMergeFailurePathPunctuation, rune(field[end-1])) {
+		end--
+	}
+	if start == end || !filepath.IsAbs(field[start:end]) {
+		return field
+	}
+	return field[:start] + "<workspace>" + field[end:]
 }
 
 func activeRuleCount(pages [][]githubActiveBranchRule) int {
