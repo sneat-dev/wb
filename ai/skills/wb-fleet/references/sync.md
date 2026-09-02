@@ -71,3 +71,24 @@ Read it before deciding what to fix. Run the inspection commands before any
 resolution command: the inspect commands are read-only and safe as-is, while
 the resolution options are choices to make after reading their output, not a
 script to run top to bottom.
+
+## Check the report is not stale before acting
+
+The report states its own scope on every run: whether it covered every visible
+owner, or was restricted by `--org`/`--filter`. A restricted run never claims
+the fleet is in sync, and a run that finished fewer repositories than it
+selected is marked `**Incomplete:**`. Read those lines before treating the file
+as a fleet-wide picture — it is overwritten by every run, including scoped ones.
+
+Each entry records `**HEAD when reported:**`, and its first inspection command
+re-reads HEAD:
+
+```sh
+git -C <clone> rev-parse HEAD   # must equal <recorded sha>, or this entry is stale
+```
+
+Run it first. If HEAD has moved, the finding was made against a different
+commit and may no longer hold — re-run `wb sync` rather than acting on it. This
+matters most for the destructive options (resetting a clone to its upstream,
+discarding commits): those are unrecoverable if the repository changed after
+the report was written.

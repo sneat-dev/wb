@@ -904,3 +904,80 @@ func TestIssuesMarkdownOmitsTheInspectNoteWhenNothingIsInspectable(t *testing.T)
 		t.Errorf("a report with no Inspect section must not carry the inspect-first note:\n%s", got)
 	}
 }
+
+func TestIssuesMarkdownAlwaysStatesItsScope(t *testing.T) {
+	full := IssuesMarkdown(testMeta(), nil)
+	if !strings.Contains(full, "**Scope:** every owner and organization") {
+		t.Errorf("an unscoped run must still say so:\n%s", full)
+	}
+	meta := testMeta()
+	meta.Owners = []string{"acme"}
+	meta.Filter = "api"
+	scoped := IssuesMarkdown(meta, nil)
+	for _, want := range []string{"restricted to", "owners acme", "filter api",
+		"says nothing about any repository outside that selection"} {
+		if !strings.Contains(scoped, want) {
+			t.Errorf("scoped run missing %q:\n%s", want, scoped)
+		}
+	}
+}
+
+func TestIssuesMarkdownScopedCleanRunDoesNotClaimTheFleetIsInSync(t *testing.T) {
+	meta := testMeta()
+	meta.Owners = []string{"acme"}
+	got := IssuesMarkdown(meta, nil)
+	if strings.Contains(got, "All repositories are in sync") {
+		t.Errorf("a scoped run may not speak for the fleet:\n%s", got)
+	}
+	if !strings.Contains(got, "not a statement about the rest of the fleet") {
+		t.Errorf("scoped clean run must disclaim:\n%s", got)
+	}
+}
+
+func TestIssuesMarkdownInterruptedRunIsNeverReportedAsHealth(t *testing.T) {
+	meta := testMeta()
+	meta.Discovered = 400
+	meta.Scanned = 37
+	got := IssuesMarkdown(meta, nil)
+	if strings.Contains(got, "All repositories are in sync") {
+		t.Fatalf("an interrupted run may not claim health:\n%s", got)
+	}
+	for _, want := range []string{"**Incomplete:**", "finished 37 of 400", "not evidence they are healthy",
+		"Nothing needed attention among the repositories this run reached"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestIssuesMarkdownRecordsHeadAndOffersADriftCheck(t *testing.T) {
+	got := IssuesMarkdown(testMeta(), []Result{{
+		Repo:    discover.Repo{Org: "o", Name: "r", Path: "/p/o/r"},
+		Status:  Unpushed,
+		Detail:  gitops.RepoStatus{Unpushed: []string{"abc1234 wip"}},
+		HeadSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+	}})
+	if !strings.Contains(got, "**HEAD when reported:** `deadbeefdeadbeefdeadbeefdeadbeefdeadbeef`") {
+		t.Errorf("HEAD not recorded:\n%s", got)
+	}
+	if !strings.Contains(got, "rev-parse HEAD   # must equal deadbeef") {
+		t.Errorf("drift check missing or not first:\n%s", got)
+	}
+	inspect := got[strings.Index(got, "**Inspect**"):]
+	if !strings.HasPrefix(strings.TrimSpace(strings.SplitN(inspect, "```sh\n", 2)[1]), "git -C /p/o/r rev-parse HEAD") {
+		t.Errorf("drift check must be the FIRST inspect command:\n%s", inspect)
+	}
+}
+
+func TestIssuesMarkdownOmitsTheDriftCheckWithoutAClone(t *testing.T) {
+	got := IssuesMarkdown(testMeta(), []Result{{
+		Repo: discover.Repo{Org: "o", Name: "noclone"}, Status: Failed,
+		Err: errors.New("clone failed"),
+	}})
+	if strings.Contains(got, "rev-parse HEAD") {
+		t.Errorf("no clone means nothing to compare against:\n%s", got)
+	}
+	if strings.Contains(got, "HEAD when reported") {
+		t.Errorf("no HEAD to report:\n%s", got)
+	}
+}

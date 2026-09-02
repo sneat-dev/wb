@@ -119,6 +119,14 @@ type Result struct {
 	// verbatim explanation from internal/archiveprune.Evaluate — the same
 	// safety predicate wb archive clean uses — never a re-derived summary.
 	Reason string
+	// HeadSHA is the clone's HEAD when Sync finished with it, empty when
+	// there was no clone to read (never cloned, or just removed). A report is
+	// read and acted on later — sometimes hours later, by an agent that
+	// cannot see the fleet — and a remedy like "reset the clone to its
+	// upstream" is unrecoverable if the clone has moved since. Recording the
+	// commit the finding was made against lets a reader prove the state it
+	// describes still holds before mutating anything.
+	HeadSHA string
 }
 
 // PullSummary renders the pull action independently of the final repository
@@ -165,6 +173,25 @@ func (r Result) PullSummary() string {
 // called verbatim, not re-derived, so this path and `wb archive clean` can
 // never drift into different definitions of "safe to delete".
 func Sync(ctx context.Context, repo discover.Repo, projectsRoot string, dryRun, pruneArchived bool) Result {
+	return withHeadSHA(classify(ctx, repo, projectsRoot, dryRun, pruneArchived))
+}
+
+// withHeadSHA stamps the clone's HEAD onto a finished result. It is read after
+// every mutation this run performed, so it is the commit the finding actually
+// describes. A clone that does not exist — never cloned, or removed as an
+// archived repository — has nothing to read and keeps an empty HeadSHA; a
+// failure to read it is not worth failing a sync over, so it is discarded.
+func withHeadSHA(res Result) Result {
+	if res.Repo.Path == "" || res.Status == RemovedArchived {
+		return res
+	}
+	if sha, err := gitops.HeadSHA(res.Repo.Path); err == nil {
+		res.HeadSHA = sha
+	}
+	return res
+}
+
+func classify(ctx context.Context, repo discover.Repo, projectsRoot string, dryRun, pruneArchived bool) Result {
 	res := Result{Repo: repo, Archived: repo.Archived}
 
 	if !repo.Remote || repo.IsFork {
