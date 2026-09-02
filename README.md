@@ -40,7 +40,7 @@ wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
-wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves
+wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves (--exclude/--hold)
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
 wb deps drift [path] [flags] # report go/npm dependency convergence, replaces, splits, behind-latest
 wb deps policy <verb> [flags] # enforce which dependencies and import directions are allowed
@@ -916,6 +916,35 @@ green PRs merge, WB captures an actual newer registry version before touching
 downstream repositories; it never invents the next version. If a release is
 not visible before `--timeout`, the report remains `awaiting_release` and
 `--resume` continues from the persisted pre-merge baseline.
+
+#### Choosing which repositories a campaign touches
+
+`--exclude` and `--hold` narrow a campaign in two different ways, and the
+difference matters:
+
+| flag | the repository is | ends up |
+|---|---|---|
+| `--exclude <org/repo glob>` | removed before anything is discovered — no graph entry, no wave, no worktree, no PR | listed under **Excluded repositories** in the report |
+| `--hold <org/repo glob>` | bumped, verified, pushed, PR opened, exact PR-head CI waited | **PR left open**, even under `--merge` |
+
+Use `--exclude` for an archived or irrelevant repository. Use `--hold` for one
+whose merge is a human decision — a gated deploy repository, for example:
+
+```sh
+wb deps bump npm --fleet --changed @sneat/core@1.4.0 --merge \
+  --hold sneat-co/sneat-go --hold sneat-co/sneat-apps
+```
+
+Both accept `path.Match` globs, where `*` never crosses a `/`, and an exact
+`owner/name` always matches itself.
+
+A release that needs a human merge cannot be waited for, so a wave containing a
+held repository stops the campaign with status `awaiting_hold_release` and names
+the pull requests the remaining waves are waiting on. That is a stopping point,
+not a failure: merge the held PRs and `--resume`, which continues by observing
+the release that merge published. Excluded slugs stay in the report so "this
+repository needed nothing" is never confused with "this repository was never
+looked at".
 
 Interactive set/bump campaigns report repository selection immediately, then
 their current wave, repository, and lifecycle phase on stderr. The elapsed time

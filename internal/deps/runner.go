@@ -65,7 +65,7 @@ func repositoryReportFromResult(result orchestrate.Result[[]Decision]) Repositor
 		Status: result.Status, Reason: result.Reason, Decisions: result.Metadata,
 		ChangedFiles: result.ChangedFiles, Verifications: result.Verifications,
 		Commit: result.Commit, Pushed: result.Pushed, PR: result.PR,
-		Merged: result.Merged,
+		Merged: result.Merged, Held: result.Held,
 	}
 	repository.DependencyDeltas = dependencyDeltasFromResult(result)
 	for _, check := range result.Checks {
@@ -238,6 +238,7 @@ func normalizeOptions(options Options, operation string) (Options, orchestrate.O
 		Verify: options.Verify, Checks: options.Checks, Timeout: options.Timeout, Retry: options.Retry,
 		CheckPollInterval: options.CheckPollInterval,
 		Commit:            options.Commit, Push: options.Push, PR: options.PR, Merge: options.Merge,
+		Hold:               options.Hold,
 		WaitForPRChecks:    options.ValidationMode == ValidationModeFast && options.PR && !options.Merge,
 		DependencyCampaign: true,
 		Progress:           options.Progress,

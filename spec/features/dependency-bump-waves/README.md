@@ -55,6 +55,32 @@ GitHub directory. Organization and path filters MUST apply before cloning or
 creating worktrees. Repository clones MUST use `<github-dir>/<org>/<repo>`;
 missing selected repositories MAY be cloned when cloning is enabled.
 
+#### REQ: excluded-and-held-repository-selection
+
+Two selections MUST be available and MUST NOT be conflated.
+
+An *excluded* repository MUST be removed before any discovery runs: it MUST
+NOT enter the dependency graph, join a wave, receive a worktree, or receive a
+pull request. Every excluded repository MUST be named in the report, so a
+reader can always distinguish "this repository needed nothing" from "this
+repository was never inspected".
+
+A *held* repository MUST be processed exactly like any other — changed,
+verified, pushed, its pull request opened, and its exact PR-head GitHub checks
+waited on — and MUST then be left open, even under `--merge`. Holding is for a
+repository whose merge is a human decision, so the mechanical work is complete
+and only the irreversible step waits.
+
+Because a release that requires a human merge cannot be waited for, a wave
+containing a held repository MUST stop the campaign in an explicit
+hold-awaiting state that names the held pull requests, rather than polling
+until `--timeout` or silently advancing consumers past an unpublished
+provider. That state MUST be a stopping point, not a failure, and `--resume`
+MUST continue once the held pull requests are merged.
+
+Both selections MUST accept `owner/name` glob patterns whose `*` never crosses
+a `/`, and an exact `owner/name` MUST match itself.
+
 #### REQ: provider-first-recalculated-waves
 
 WB MUST process providers before their dependants. After a provider release is
@@ -306,6 +332,19 @@ consumer that depends on both
 **Then** WB recalculates the graph after each release, gives the consumer one
 aggregate PR with the newest checked provider versions, and reaches a fixpoint
 without a temporary replace or duplicate consumer CI build.
+
+### AC: excluded-and-held-repositories-are-distinct
+
+**Requirements:** dependency-bump-waves#req:excluded-and-held-repository-selection, dependency-bump-waves#req:scoped-repository-discovery, dependency-bump-waves#req:explicit-publication-flags
+
+**Given** a fictional fleet with one provider and two consumers, one consumer
+excluded and the other held
+**When** a merging bump campaign runs
+**Then** the excluded consumer never appears in any wave and is named in the
+report as excluded, the held consumer is bumped and receives a pull request
+whose exact PR-head checks are observed but which is never merged, and the
+campaign stops in an explicit hold-awaiting state naming that pull request
+rather than failing or waiting for a release it cannot receive.
 
 ### AC: dirty-clone-and-red-ci-are-safe
 

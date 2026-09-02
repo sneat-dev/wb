@@ -42,9 +42,16 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		}
 		defer func() { _ = lock.Release() }()
 	}
+	// Exclusion happens before anything is discovered, so an excluded
+	// repository never enters the graph, never joins a wave, never gets a
+	// worktree, and never gets a pull request. It is recorded so a reader can
+	// always tell "this repository needed nothing" from "this repository was
+	// never looked at".
+	repositories, excluded := partitionExcludedRepositories(repositories, options.ExcludeRepositories)
 	report := BumpReport{
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
-		Ecosystem: options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
+		ExcludedRepositories: excluded,
+		Ecosystem:            options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, ValidationMode: options.ValidationMode, Parallel: lifecycle.Parallel,
 		ParallelExplicit:       options.ParallelExplicit,
 		RegistryLookupsSkipped: options.NoRegistry,
@@ -72,6 +79,11 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	// memo is process-local, so a previous run's setting attributes nothing
 	// about the discovery passes this run performs.
 	report.FetchCacheEnabled = options.FetchCache
+	// So does the exclusion list. The repositories this run will actually
+	// touch were partitioned above from THIS invocation's --exclude, so a
+	// resumed report that kept a previous run's list would name a set the run
+	// no longer matches.
+	report.ExcludedRepositories = excluded
 	if err := persistBumpReport(options, report); err != nil {
 		return report, err
 	}
@@ -282,10 +294,29 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		}
 		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "observe_releases", State: progresspkg.Waiting, Wave: waveIndex})
 		waveReport.Status = "merged"
+		waveReport.HeldRepositories = heldRepositoryPullRequests(waveReport.Repositories)
+		report.HeldRepositories = mergeHeldRepositories(report.HeldRepositories, waveReport.HeldRepositories)
 		if persistErr := persistBumpReport(options, report); persistErr != nil {
 			return report, persistErr
 		}
 		pending := mergeReleaseObservations(carriers, mergedReleaseBaselines(results, affectedModules, baselines))
+		// A held repository's pull request is green and open, so any release
+		// it would publish cannot arrive until a human merges it. Polling for
+		// that release would burn the campaign's whole timeout waiting on a
+		// decision no amount of waiting produces, so the campaign stops here
+		// and says exactly which PRs the remaining waves are waiting on.
+		if held := heldReleaseBlockers(waveReport.Repositories, options.Hold); len(held) > 0 {
+			waveReport.HeldRepositories = held
+			waveReport.Releases = pending
+			waveReport.Status = "awaiting_hold_release"
+			report.HeldRepositories = mergeHeldRepositories(report.HeldRepositories, held)
+			report.Status = "awaiting_hold_release"
+			report.Phase = BumpPhaseAwaitingRelease
+			if persistErr := persistBumpReport(options, report); persistErr != nil {
+				return report, persistErr
+			}
+			return report, nil
+		}
 		var releaseErr error
 		waveReport.Releases, releaseErr = resumeReleaseObservations(ctx, pending, options)
 		if releaseErr != nil {
@@ -339,11 +370,22 @@ func resumeBumpReport(ctx context.Context, empty BumpReport, seedEvents []Releas
 	lastIndex := len(previous.Waves) - 1
 	last := &previous.Waves[lastIndex]
 	switch last.Status {
-	case "merged", "awaiting_release":
+	// A wave stopped on a held pull request resumes exactly like one already
+	// waiting for a release: the hold is a stopping point, not a failure, and
+	// the release the human's merge publishes is the very thing this poll
+	// waits for. Replaying the wave instead would re-run every sibling
+	// repository's CI to learn the same thing.
+	case "merged", "awaiting_release", "awaiting_hold_release":
 		observations, err := resumeReleaseObservations(ctx, last.Releases, options)
 		last.Releases = observations
 		if err != nil {
+			// Keep saying *why* the campaign is stalled. A held wave whose
+			// release still has not appeared is waiting on a human merge, not
+			// on a release that is merely slow to publish.
 			previous.Status = "awaiting_release"
+			if len(last.HeldRepositories) > 0 {
+				previous.Status = "awaiting_hold_release"
+			}
 			return previous, nil, last.Index, persistBumpFailure(options, previous, err)
 		}
 		last.Status = "completed"
@@ -1414,4 +1456,57 @@ func persistBumpFailure(options BumpOptions, report BumpReport, cause error) err
 		return errors.Join(cause, fmt.Errorf("persist dependency bump state: %w", persistErr))
 	}
 	return cause
+}
+
+// HeldRepository names one repository whose passing pull request was left
+// open for its owner, and the wave that produced it.
+type HeldRepository struct {
+	Repository string `yaml:"repository"`
+	PR         string `yaml:"pr,omitempty"`
+	Reason     string `yaml:"reason,omitempty"`
+}
+
+// heldRepositoryPullRequests projects the held results of one wave.
+func heldRepositoryPullRequests(repositories []RepositoryReport) []HeldRepository {
+	var held []HeldRepository
+	for _, repository := range repositories {
+		if !repository.Held {
+			continue
+		}
+		held = append(held, HeldRepository{
+			Repository: repository.Repository, PR: repository.PR, Reason: repository.Reason,
+		})
+	}
+	sort.Slice(held, func(i, j int) bool { return held[i].Repository < held[j].Repository })
+	return held
+}
+
+// heldReleaseBlockers returns the held repositories of one wave that the
+// campaign would now have to wait on. A held repository that published
+// nothing this wave still blocks: WB cannot know whether a later wave depends
+// on it without the release that merge would have produced, and guessing
+// would either strand the campaign in a poll loop or silently skip a
+// consumer.
+func heldReleaseBlockers(repositories []RepositoryReport, hold []string) []HeldRepository {
+	if len(hold) == 0 {
+		return nil
+	}
+	return heldRepositoryPullRequests(repositories)
+}
+
+func mergeHeldRepositories(existing, addition []HeldRepository) []HeldRepository {
+	seen := make(map[string]bool, len(existing))
+	merged := append([]HeldRepository(nil), existing...)
+	for _, held := range existing {
+		seen[held.Repository] = true
+	}
+	for _, held := range addition {
+		if seen[held.Repository] {
+			continue
+		}
+		seen[held.Repository] = true
+		merged = append(merged, held)
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Repository < merged[j].Repository })
+	return merged
 }

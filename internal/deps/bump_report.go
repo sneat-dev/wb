@@ -43,6 +43,24 @@ func (report BumpReport) Markdown() string {
 	for _, event := range report.SeedEvents {
 		fmt.Fprintf(&output, "- `%s@%s` — `%s`\n", event.Dependency, event.Version, event.Source)
 	}
+	if len(report.ExcludedRepositories) > 0 {
+		output.WriteString("\n## Excluded repositories\n\n")
+		output.WriteString("Removed by `--exclude` before any discovery ran. Nothing below was inspected, branched, or opened a pull request:\n\n")
+		for _, slug := range report.ExcludedRepositories {
+			fmt.Fprintf(&output, "- `%s`\n", slug)
+		}
+	}
+	if len(report.HeldRepositories) > 0 {
+		output.WriteString("\n## Held pull requests\n\n")
+		output.WriteString("Matched by `--hold`: bumped, verified, pushed, and CI-waited, then deliberately left open for a human to merge. Any wave that depends on a release these would publish is waiting on them, not failed:\n\n")
+		for _, held := range report.HeldRepositories {
+			pr := held.PR
+			if pr == "" {
+				pr = "—"
+			}
+			fmt.Fprintf(&output, "- `%s` — %s\n", held.Repository, pr)
+		}
+	}
 	if len(report.DiscoverySkips) > 0 {
 		output.WriteString("\n## Skipped discovery failures\n\n")
 		output.WriteString("Each repository below failed discovery but was not treated as fatal: either a local scan proved it carries no relevant manifest, or its local clone was unreadable and needs manual repair. Neither case was silently dropped:\n\n")
@@ -94,6 +112,12 @@ func (report BumpReport) Markdown() string {
 			output.WriteString("\n### Deferred to coalesce releases\n\n")
 			output.WriteString("No worktree or CI run was started for these later provider-path repositories: ")
 			fmt.Fprintf(&output, "`%s`.\n", strings.Join(wave.DeferredRepositories, "`, `"))
+		}
+		if len(wave.HeldRepositories) > 0 {
+			output.WriteString("\nWaves after this one are waiting on held pull requests:\n\n")
+			for _, held := range wave.HeldRepositories {
+				fmt.Fprintf(&output, "- `%s` — %s\n", held.Repository, held.PR)
+			}
 		}
 		output.WriteString("\n| Repository | Status | Reason | Changed | Commit | PR | Merged |\n")
 		output.WriteString("|---|---|---|---:|---|---|---|\n")

@@ -1299,10 +1299,12 @@
                 "--checks",
                 "--commit",
                 "--dry-run",
+                "--exclude",
                 "--fetch-cache",
                 "--fleet",
                 "--format",
                 "--go-private",
+                "--hold",
                 "--match",
                 "--max-waves",
                 "--merge",
@@ -1339,7 +1341,10 @@
                 "--changed",
                 "--refresh-after",
                 "--merge",
-                "--validation"
+                "--validation",
+                "--exclude",
+                "--hold",
+                "awaiting_hold_release"
               ]
             }
           ],
@@ -1352,7 +1357,8 @@
               "path": "ai/skills/wb-deps/references/bump.md",
               "marker": "# Propagate release events",
               "examples": [
-                "wb deps bump go --fleet --changed example.com/lib@v1.2.3 --dry-run"
+                "wb deps bump go --fleet --changed example.com/lib@v1.2.3 --dry-run",
+                "wb deps bump npm --fleet --changed @sneat/core@0.31.0 --merge --hold sneat-co/sneat-go --hold sneat-co/sneat-apps"
               ]
             }
           ],
@@ -1364,6 +1370,16 @@
             {
               "path": "internal/deps/bump_test.go",
               "name": "TestRunBumpDefersDiamondSinkToAvoidDuplicateCI",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/deps/bump_exclude_hold_test.go",
+              "name": "TestRunBumpExcludeRemovesTheRepositoryFromWaveComputation",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/hold_test.go",
+              "name": "TestRunHoldOpensAndVerifiesThePullRequestButNeverMergesIt",
               "kind": "integration"
             },
             {
