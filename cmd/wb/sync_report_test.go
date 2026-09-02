@@ -138,3 +138,46 @@ func TestWriteSyncIssuesReportWarnsWithoutFailingWhenHomeIsUnwritable(t *testing
 		t.Errorf("failure not warned about: %q", errOut.String())
 	}
 }
+
+func TestFinishSyncWritesReportEvenWhenARepositoryFailed(t *testing.T) {
+	home := syncReportHome(t)
+	var out, errOut bytes.Buffer
+
+	results := []fleetsync.Result{{
+		Repo:   discover.Repo{Org: "o", Name: "broken", Path: "/p/o/broken"},
+		Status: fleetsync.Failed,
+		Err:    errors.New("git pull: transport failure"),
+	}}
+	code := finishSync(syncReportMetaForTest(), results, false, false, remoteDeps{},
+		t.TempDir(), "", 1, &out, &errOut)
+
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	contents, err := os.ReadFile(filepath.Join(home, "last-sync-issues.md"))
+	if err != nil {
+		t.Fatalf("a run with errors must still produce a report: %v", err)
+	}
+	if !strings.Contains(string(contents), "transport failure") {
+		t.Errorf("error not reported:\n%s", contents)
+	}
+}
+
+func TestFinishSyncReportFailureDoesNotChangeExitCode(t *testing.T) {
+	home := syncReportHome(t)
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(home, 0o700) })
+	var out, errOut bytes.Buffer
+
+	code := finishSync(syncReportMetaForTest(), nil, false, false, remoteDeps{},
+		t.TempDir(), "", 1, &out, &errOut)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0: an unwritable report must not fail a clean sync", code)
+	}
+	if !strings.Contains(errOut.String(), "sync issues report not written") {
+		t.Errorf("failure not warned about: %q", errOut.String())
+	}
+}
