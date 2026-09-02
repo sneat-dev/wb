@@ -272,11 +272,22 @@ func TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog(t *testi
 	}
 }
 
-func TestNamedCleanupApplyRequiresRemoteBranchRetirementBeforeInspection(t *testing.T) {
+// Named terminal cleanup used to refuse without --remote from the flag shape
+// alone, before WB inspected anything — so a task whose origin branch had
+// already been deleted by the merge that landed it still refused. The
+// requirement now lives in cleanupEligibility, where the remote branch WB
+// actually observed decides it (see
+// internal/worktrees/cleanup_remote_retirement_test.go). What the CLI still
+// owns is that a named --apply run which retires nothing exits non-zero
+// rather than reporting success.
+func TestNamedCleanupApplyFailsWhenNothingWasRetired(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--projects-root", t.TempDir(), "worktree", "cleanup", "delivered-task", "--apply"}, &stdout, &stderr)
-	if code == exitOK || !strings.Contains(stderr.String(), "requires --remote") {
-		t.Fatalf("named cleanup without remote exit=%d stderr=%q", code, stderr.String())
+	if code == exitOK {
+		t.Fatalf("named cleanup of an absent task succeeded: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "delivered-task") {
+		t.Fatalf("named cleanup failure did not name the task: %q", stderr.String())
 	}
 }
 

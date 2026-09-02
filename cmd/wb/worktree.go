@@ -1816,10 +1816,14 @@ a deterministic content digest in a private receipt, and with --apply archives
 the exact stage before it can be cleaned. Ambiguous or changed evidence stays
 in place. Run normal cleanup again after recovery has completed.
 
-For one or more specifically named tasks, the implicit age window is zero and --apply
-requires --remote: definition of done includes retirement of the source remote
-branch as well as the local worktree/branch. --all-merged fleet sweeping keeps
-the 24-hour merged-PR grace window unless --older-than overrides it.
+For one or more specifically named tasks, the implicit age window is zero and
+definition of done includes retirement of the source remote branch as well as
+the local worktree/branch — so --apply requires --remote whenever WB can still
+see that branch on origin. It is the observed branch, not the flag shape, that
+decides: a task whose origin branch is already gone (deleted by the merge that
+landed it, or by an earlier cleanup) has nothing left to retire and is cleaned
+without --remote. --all-merged fleet sweeping keeps the 24-hour merged-PR grace
+window unless --older-than overrides it.
 
 --parallel bounds both phases. The inventory walk inspects that many
 candidates at once; the apply phase removes that many worktrees at once, one
@@ -1947,9 +1951,6 @@ required to remove anything.`,
 			if len(tasks) != 0 && !command.Flags().Changed("older-than") {
 				olderThan = 0
 			}
-			if len(tasks) != 0 && apply && !deleteRemote {
-				return fmt.Errorf("named terminal cleanup requires --remote so the retired source branch cannot remain as backlog")
-			}
 			if resumeInterrupted && len(tasks) != 1 {
 				return fmt.Errorf("--resume-interrupted requires one explicit task")
 			}
@@ -1967,11 +1968,17 @@ required to remove anything.`,
 				Apply:             apply,
 				ResumeInterrupted: resumeInterrupted,
 				DeleteRemote:      deleteRemote,
-				OlderThan:         olderThan,
-				ReportDir:         reportDir,
-				Progress:          progress.report,
-				Workers:           workers,
-				Now:               func() time.Time { return now },
+				// Finishing a named task must not leave its source branch on
+				// origin as backlog. WB decides that from the branch WB can
+				// actually see: a task whose origin branch is already gone —
+				// deleted by the merge that landed it, or by an earlier
+				// cleanup — has nothing left to retire and needs no --remote.
+				RequireRemoteRetirement: len(tasks) != 0 && apply,
+				OlderThan:               olderThan,
+				ReportDir:               reportDir,
+				Progress:                progress.report,
+				Workers:                 workers,
+				Now:                     func() time.Time { return now },
 			})
 			if err != nil {
 				return err
