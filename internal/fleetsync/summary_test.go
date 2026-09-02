@@ -45,3 +45,31 @@ func TestSummaryIsOrderedSharedAccountingModel(t *testing.T) {
 		t.Fatalf("Pulled repository order = %v", got)
 	}
 }
+
+// TestNeedsAttentionExcludesBrokenArchivedRepositories pins the root-cause fix
+// for a repository appearing in two groups at once. ArchivedNotPruned is set on
+// whatever the inner sync returned, so a failed archived clone carries it — and
+// selecting it here counted one repository twice and let a renderer call a
+// failure "archived, not pruned".
+func TestNeedsAttentionExcludesBrokenArchivedRepositories(t *testing.T) {
+	results := []Result{
+		{Repo: discover.Repo{Org: "o", Name: "broken"}, Status: Failed, Archived: true, ArchivedNotPruned: true},
+		{Repo: discover.Repo{Org: "o", Name: "dirty"}, Status: SkippedDirty, Archived: true, ArchivedNotPruned: true},
+		{Repo: discover.Repo{Org: "o", Name: "fine"}, Status: Pulled, Archived: true, ArchivedNotPruned: true},
+	}
+	groups := Summary(results)
+	attention, _ := SummaryGroupByLabel(groups, "Needs attention")
+	if len(attention.Results) != 1 || attention.Results[0].Repo.Name != "fine" {
+		t.Fatalf("attention = %d entries (%v), want only the benign one",
+			len(attention.Results), attention.Results)
+	}
+	failures, _ := SummaryGroupByLabel(groups, "Errors")
+	if len(failures.Results) != 1 {
+		t.Fatalf("errors = %d, want 1", len(failures.Results))
+	}
+	for _, r := range attention.Results {
+		if r.Status == Failed {
+			t.Errorf("%s is counted as both attention and error", r.Repo.Slug())
+		}
+	}
+}

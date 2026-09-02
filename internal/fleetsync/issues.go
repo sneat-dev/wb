@@ -48,7 +48,26 @@ func IssuesMarkdown(meta RunMeta, results []Result) string {
 	}
 
 	if len(defects) == 0 && len(informational) == 0 && len(failures.Results) == 0 {
-		out.WriteString("All repositories are in sync. Nothing requires attention.\n")
+		switch {
+		case meta.Scanned == 0:
+			// A --filter or --org that matched nothing looks identical to a
+			// clean fleet unless said explicitly: "no issues" here is a
+			// selection outcome, not evidence any repository was checked.
+			out.WriteString("No repository was scanned. This is a selection result — an --org or " +
+				"--filter matched nothing — not a health result: it says nothing about whether any " +
+				"repository is in sync.\n")
+		case meta.DryRun:
+			// Diverged and Unpushed are structurally unreachable in dry-run
+			// (see syncActive): a dry run never attempts the pull that would
+			// reveal them. Silence here is silence, not a clean bill of
+			// health.
+			// The header stamp already explains what a dry run cannot see, so
+			// this line only has to refuse the health claim itself.
+			out.WriteString("Nothing needed attention among what a dry run can detect. " +
+				"That is not a clean bill of health — see the dry-run note above.\n")
+		default:
+			out.WriteString("All repositories are in sync. Nothing requires attention.\n")
+		}
 		return out.String()
 	}
 
@@ -81,24 +100,56 @@ const inspectFirstNote = "> Inspection commands are read-only and safe to run as
 	"options are choices, not a script — read the inspection output before running any of them.\n\n"
 
 // splitAttention divides the attention group into genuine defects and the
-// merely informational. An archived repository that was not pruned is in the
-// attention group so it stays visible, but nothing about it is broken — the
-// operator simply did not pass --prune-archived. Rendering it beside real
-// defects would invite an agent to "fix" a repository that is fine.
+// merely informational. An archived repository that was not pruned is
+// informational ONLY when its own sync outcome was itself benign (Pulled,
+// NoOp, Cloned, AbsentArchived) — the operator simply did not pass
+// --prune-archived, and nothing about the repository is broken. Any other
+// status the attention group selects — one of the four recognized defect
+// statuses, or an archived-not-pruned repository whose own sync outcome was
+// itself a fault such as Failed or SkippedDirty — is a genuine defect and
+// must never be filed as merely informational: an agent reading "Nothing is
+// broken" would skip a repository that actually needs help.
 //
-// The two are mutually exclusive by construction: needsAttention matches the
-// four defect statuses first and only falls through to ArchivedNotPruned in
-// its default branch.
+// The previous version of this function and its doc comment claimed the two
+// buckets were "mutually exclusive by construction" because needsAttention
+// supposedly matched the four defect statuses before ever falling through to
+// ArchivedNotPruned. That was false: needsAttention's default arm returns
+// ArchivedNotPruned regardless of status, so a Failed or SkippedDirty
+// archived-not-pruned repository reached this function's old default branch
+// and was misfiled as informational — while also, independently, matching
+// the Errors group, so it was rendered (and counted) twice.
 func splitAttention(results []Result) (defects, informational []Result) {
 	for _, result := range results {
-		switch result.Status {
-		case Diverged, NoUpstream, Unpushed, ArchivedUnlandable:
+		switch {
+		case result.Status == Diverged, result.Status == NoUpstream,
+			result.Status == Unpushed, result.Status == ArchivedUnlandable:
 			defects = append(defects, result)
-		default:
+		case result.ArchivedNotPruned && isBenignStatus(result.Status):
 			informational = append(informational, result)
+		default:
+			// A result that reaches here matched needsAttention (so
+			// something about it is worth surfacing) but is neither a
+			// recognized defect status nor genuinely benign — e.g. a
+			// SkippedDirty or Failed archived-not-pruned repository, should
+			// needsAttention ever again select one. Keep it visible as a
+			// defect rather than silently dropping it or mislabeling it
+			// informational.
+			defects = append(defects, result)
 		}
 	}
 	return defects, informational
+}
+
+// isBenignStatus reports whether status, on its own, describes nothing wrong
+// with a repository. It is the same list needsAttention uses to decide
+// whether ArchivedNotPruned alone should count as attention-worthy.
+func isBenignStatus(status Status) bool {
+	switch status {
+	case Pulled, NoOp, Cloned, AbsentArchived:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeIssuesHeader(out *strings.Builder, meta RunMeta, defects, informational, failures int) {
@@ -107,6 +158,8 @@ func writeIssuesHeader(out *strings.Builder, meta RunMeta, defects, informationa
 	switch {
 	case meta.RunErr != nil:
 		fmt.Fprintf(out, "**Scanned:** %d repositories · **Run failed before scanning**\n\n", meta.Scanned)
+	case meta.Scanned == 0:
+		out.WriteString("**Scanned:** 0 repositories · **Selection matched nothing**\n\n")
 	case defects == 0 && informational == 0 && failures == 0:
 		fmt.Fprintf(out, "**Scanned:** %d repositories · **Issues:** none\n\n", meta.Scanned)
 	default:
@@ -115,8 +168,9 @@ func writeIssuesHeader(out *strings.Builder, meta RunMeta, defects, informationa
 			meta.Scanned, defects, informational, failures)
 	}
 	if meta.DryRun {
-		out.WriteString("**Dry run:** the fleet was not modified. Findings are real, but " +
-			"unpushed-commit detection normally runs after a pull and may be incomplete.\n\n")
+		out.WriteString("**Dry run:** the fleet was not modified. Diverged and Unpushed are only " +
+			"detected after a real pull, so this run cannot classify either — their absence below is " +
+			"not evidence the fleet is clean. Re-run without --dry-run to classify them.\n\n")
 	}
 }
 
@@ -128,7 +182,7 @@ func writeAttentionEntry(out *strings.Builder, result Result) {
 
 	switch result.Status {
 	case Diverged, NoUpstream:
-		fmt.Fprintf(out, "- **Tracking:** %s\n", result.Tracking.Summary())
+		fmt.Fprintf(out, "- **Tracking:** %s\n", oneLine(result.Tracking.Summary()))
 		out.WriteString("- **Impact:** not pulled\n")
 	case Unpushed:
 		fmt.Fprintf(out, "- **Impact:** pulled, but holds %s\n", result.Detail.Summary())
@@ -136,8 +190,17 @@ func writeAttentionEntry(out *strings.Builder, result Result) {
 		fmt.Fprintf(out, "- **Impact:** archived on GitHub, so its %s can never be pushed\n",
 			result.Detail.Summary())
 	}
+	if result.Archived {
+		// The default (non --prune-archived) sync path can leave an archived
+		// repository at Diverged, NoUpstream or Unpushed — Status alone never
+		// says "archived", and an agent told to "push the commits" or
+		// "discard them if superseded" on a read-only remote would either
+		// fail loudly or destroy commits that exist nowhere else.
+		out.WriteString("- **Archived:** this repository is archived on GitHub — its remote is " +
+			"read-only, so any commits held only here can never be pushed to it\n")
+	}
 	if result.Reason != "" {
-		fmt.Fprintf(out, "- **Detail:** %s\n", result.Reason)
+		fmt.Fprintf(out, "- **Detail:** %s\n", oneLine(result.Reason))
 	}
 
 	out.WriteString("\n**Inspect**\n\n```sh\n")
@@ -162,18 +225,28 @@ func writeClone(out *strings.Builder, result Result) {
 // inspectCommands returns read-only commands that show the reader exactly what
 // state the repository is in. Nothing here mutates a repository.
 func inspectCommands(result Result) []string {
+	if result.Repo.Path == "" {
+		// shellQuote("") is "''", and `git -C '' <anything>` silently runs
+		// against the current working directory instead of failing — so a
+		// missing-clone entry must never emit a `git -C` command at all.
+		return []string{"gh repo view " + result.Repo.Slug()}
+	}
 	at := "git -C " + shellQuote(result.Repo.Path)
 	switch result.Status {
 	case Diverged:
-		branch := result.Tracking.Branch
+		branch := shellQuote(result.Tracking.Branch)
+		upstream := shellQuote(result.Tracking.Upstream)
 		return []string{
-			fmt.Sprintf("%s log --oneline --left-right %s...%s", at, branch, result.Tracking.Upstream),
-			fmt.Sprintf("%s cherry -v %s %s", at, result.Tracking.Upstream, branch),
+			fmt.Sprintf("%s log --oneline --left-right %s...%s", at, branch, upstream),
+			fmt.Sprintf("%s cherry -v %s %s", at, upstream, branch),
 			at + " status -sb",
 		}
 	case NoUpstream:
 		return []string{
-			at + " log --oneline origin/main..HEAD",
+			// Branch-agnostic, matching the Unpushed form below: a hardcoded
+			// origin/main..HEAD fails with "unknown revision" on any clone
+			// whose default branch is master, develop, or anything else.
+			at + " log --oneline --branches --not --remotes",
 			at + " status -sb",
 			at + " branch -vv",
 		}
@@ -189,15 +262,33 @@ func inspectCommands(result Result) []string {
 
 // resolveOptions describes the ways out, with their consequences. A canonical
 // clone is expected to sit on its base branch with nothing unpushed, so every
-// option ends by pointing real work at a worktree rather than the clone.
+// non-archived option ends by pointing real work at a worktree rather than
+// the clone.
 func resolveOptions(result Result) []string {
-	slug := result.Repo.Slug()
-	worktree := fmt.Sprintf("Move real work off the canonical clone: `wb worktree create <task> %s`", slug)
+	if result.Archived {
+		// Every path here — Diverged, NoUpstream, Unpushed, or the dedicated
+		// ArchivedUnlandable status — shares one fact that overrides all of
+		// them: the remote is read-only. Offering push, rebase-and-push, or
+		// publish-the-branch would either fail or, worse, an agent could
+		// misread the failure and reach for something destructive instead.
+		return []string{
+			"Unarchive the repository on GitHub if the commits must land",
+			"Or discard the commits and let `wb sync --prune-archived` remove the clone",
+			"Never force the push: the remote is read-only while archived",
+		}
+	}
+
+	// wb worktree create requires --model and --original-prompt-file (a WB
+	// Work Log claim), so the single-line command this used to render fails
+	// exactly as typed. State the move as prose instead of a broken
+	// copy-pasteable command.
+	worktree := "Move real work off the canonical clone into a WB worktree " +
+		"(`wb worktree create` — see `$wb-worktrees`)."
 	switch result.Status {
 	case Diverged:
 		return []string{
 			"If the local commits are unlanded work, replay them onto the upstream: " +
-				fmt.Sprintf("`git -C %s rebase %s`", shellQuote(result.Repo.Path), result.Tracking.Upstream),
+				fmt.Sprintf("`git -C %s rebase %s`", shellQuote(result.Repo.Path), shellQuote(result.Tracking.Upstream)),
 			"If `git cherry` above marked every commit `-`, they already landed upstream under different SHAs; " +
 				"reset the clone to its upstream instead of rebasing",
 			worktree,
@@ -215,7 +306,8 @@ func resolveOptions(result Result) []string {
 			}
 		}
 		return []string{
-			fmt.Sprintf("Publish the branch: `git -C %s push -u origin %s`", shellQuote(result.Repo.Path), branch),
+			fmt.Sprintf("Publish the branch: `git -C %s push -u origin %s`",
+				shellQuote(result.Repo.Path), shellQuote(branch)),
 			"Or, if the work already landed upstream under a squashed commit, return the clone to its " +
 				"base branch and delete the leftover branch",
 			"Or `wb repo init-remote " + shellQuote(result.Repo.Path) + "` if the branch was never published at all",
@@ -228,12 +320,6 @@ func resolveOptions(result Result) []string {
 			"Or discard them if they were superseded — confirm with the log above first",
 			worktree,
 		}
-	case ArchivedUnlandable:
-		return []string{
-			"Unarchive the repository on GitHub if the commits must land",
-			"Or discard the commits and let `wb sync --prune-archived` remove the clone",
-			"Never force the push: the remote is read-only while archived",
-		}
 	default:
 		return []string{worktree}
 	}
@@ -241,7 +327,7 @@ func resolveOptions(result Result) []string {
 
 // writeArchivedNotPruned renders the informational section: archived
 // repositories that were pulled like any other clone because pruning was not
-// requested.
+// requested, and whose own sync outcome was itself benign.
 func writeArchivedNotPruned(out *strings.Builder, results []Result) {
 	out.WriteString("## Archived, not pruned\n\n")
 	out.WriteString("Informational: these are archived on GitHub and were pulled like any other clone " +
@@ -254,22 +340,40 @@ func writeArchivedNotPruned(out *strings.Builder, results []Result) {
 
 // writeErrorEntry renders one failed repository. The error value is reproduced
 // verbatim: a re-worded error is a different error, and the reader may need to
-// match it against Git's or gh's own output.
+// match it against Git's or gh's own output. It is fenced, not quoted inline,
+// because git's combined output is multi-line and may contain blank lines —
+// an inline code span breaks on the first one, and everything after becomes
+// document structure in a file an AI agent reads as instructions.
 func writeErrorEntry(out *strings.Builder, result Result) {
 	fmt.Fprintf(out, "### %s — failed\n\n", result.Repo.Slug())
 	writeClone(out, result)
-	fmt.Fprintf(out, "- **Error:** `%v`\n", result.Err)
+	out.WriteString("- **Error:**\n\n")
+	out.WriteString(fencedBlock(fmt.Sprintf("%v", result.Err)))
 
-	at := "git -C " + shellQuote(result.Repo.Path)
 	out.WriteString("\n**Inspect**\n\n```sh\n")
 	out.WriteString("gh auth status -h github.com\n")
-	out.WriteString(at + " config --get remote.origin.url\n")
-	out.WriteString(at + " status -sb\n")
+	if result.Repo.Path == "" {
+		// No local clone exists yet (e.g. the clone itself failed), so there
+		// is no working tree for `git -C` to inspect — and git -C '' would
+		// silently inspect the current directory instead of failing loudly.
+		out.WriteString("gh repo view " + result.Repo.Slug() + "\n")
+	} else {
+		at := "git -C " + shellQuote(result.Repo.Path)
+		out.WriteString(at + " config --get remote.origin.url\n")
+		out.WriteString(at + " status -sb\n")
+	}
 	out.WriteString("```\n\n**Resolve** — choose after inspecting:\n\n")
 	out.WriteString("- Re-authenticate if the error is about credentials: `gh auth login -h github.com`\n")
 	out.WriteString("- Switch the remote to SSH if this clone was created outside WB with an HTTPS URL\n")
-	out.WriteString("- Re-run the single repository to see the full Git output: " +
-		fmt.Sprintf("`wb sync --filter %s`\n", result.Repo.Name))
+	if result.Repo.Path != "" {
+		// `wb sync --filter <name>` runs a full sync, which ends in
+		// finishSync and overwrites last-sync-issues.md — destroying the
+		// very report the reader is working through, with no history kept
+		// by design. A plain, scoped git pull shows the same full output
+		// without that side effect.
+		out.WriteString("- Re-run to see the full git output: " +
+			fmt.Sprintf("`git -C %s pull --ff-only`\n", shellQuote(result.Repo.Path)))
+	}
 	out.WriteString("\n")
 }
 
@@ -280,11 +384,52 @@ func writeRunFailure(out *strings.Builder, meta RunMeta) {
 	out.WriteString("## Run failed\n\n")
 	out.WriteString("The sync failed before it reached the fleet, so no repository was scanned and " +
 		"nothing below reflects the state of any clone.\n\n")
-	fmt.Fprintf(out, "- **Error:** `%v`\n", meta.RunErr)
+	out.WriteString("- **Error:**\n\n")
+	out.WriteString(fencedBlock(fmt.Sprintf("%v", meta.RunErr)))
 	out.WriteString("\n**Inspect**\n\n```sh\ngh auth status -h github.com\n```\n\n")
 	out.WriteString("**Resolve** — choose after inspecting:\n\n")
 	out.WriteString("- Re-authenticate: `gh auth login -h github.com`\n")
 	out.WriteString("- Then re-run `wb sync`; every clone is unmanaged until it succeeds\n")
+}
+
+// oneLine collapses newlines in untrusted, inline-rendered text to spaces.
+// Every other value this file renders as untrusted content sits inside a
+// fenced block (see fencedBlock); result.Reason and TrackingState.Summary
+// are instead rendered inline in a single list item, where even one embedded
+// blank line would end that list item and let the remainder become document
+// structure in a file an AI agent reads as instructions.
+func oneLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\r", " ")
+}
+
+// fencedBlock renders untrusted text as a fenced code block whose fence is
+// longer than the longest run of consecutive backticks inside content, so
+// nothing in content can terminate the fence early and spill into document
+// structure. Git errors carry a repository's own bytes — tree entry names,
+// branch names, remote URLs — into a file an AI agent reads as instructions,
+// so they must stay data here, never markup, regardless of what they
+// contain: blank lines, headings, or backtick runs meant to defeat a fixed
+// three-backtick fence.
+func fencedBlock(content string) string {
+	longest, run := 0, 0
+	for _, r := range content {
+		if r == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	fenceLen := longest + 1
+	if fenceLen < 3 {
+		fenceLen = 3
+	}
+	fence := strings.Repeat("`", fenceLen)
+	return fence + "text\n" + strings.TrimRight(content, "\n") + "\n" + fence + "\n"
 }
 
 // safeShellWord matches a path that needs no quoting, so the common case reads

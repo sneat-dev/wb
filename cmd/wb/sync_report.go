@@ -5,10 +5,23 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/sneat-dev/wb/internal/fleetsync"
 	"github.com/sneat-dev/wb/internal/wbhome"
 )
+
+// credentialedURL matches the userinfo component of a URL — the
+// "user:secret@" that a clone created outside WB can carry in its remote, and
+// that git reproduces verbatim in its failure output.
+var credentialedURL = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
+
+// redactCredentials removes userinfo from URLs in content. The report is a
+// file on disk that gets pasted into agent contexts and issue trackers, and a
+// token that reaches it is a token that has leaked.
+func redactCredentials(content string) string {
+	return credentialedURL.ReplaceAllString(content, "${1}REDACTED@")
+}
 
 // syncIssuesReportName is the stable filename under WB home. It is stable on
 // purpose: the path is the instruction handed to an agent ("read
@@ -33,7 +46,8 @@ func writeSyncIssuesReport(
 		return
 	}
 	path := filepath.Join(home, syncIssuesReportName)
-	if err := writeSyncIssuesFile(path, fleetsync.IssuesMarkdown(meta, results)); err != nil {
+	content := redactCredentials(fleetsync.IssuesMarkdown(meta, results))
+	if err := writeSyncIssuesFile(path, content); err != nil {
 		_, _ = fmt.Fprintln(errOut, "sync issues report not written:", err)
 		return
 	}
@@ -58,7 +72,13 @@ func writeSyncIssuesFile(path, contents string) error {
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close %s: %w", name, err)
 	}
-	if err := os.Chmod(name, 0o644); err != nil {
+	// 0o600, not something wider: the report carries verbatim git output,
+	// which can include a credentialed remote URL (a clone made outside WB,
+	// e.g. https://x-access-token:TOKEN@github.com/o/r.git, reproduces it
+	// verbatim in failure text). os.CreateTemp already yields 0600; this
+	// makes that guarantee explicit rather than implicit, matching
+	// archiveprune's receipt files.
+	if err := os.Chmod(name, 0o600); err != nil {
 		return fmt.Errorf("set permissions on %s: %w", name, err)
 	}
 	if err := os.Rename(name, path); err != nil {

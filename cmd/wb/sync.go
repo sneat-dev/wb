@@ -169,14 +169,39 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 
 		printSyncSummary(os.Stdout, results, pruneArchived)
 
-		if interactive {
-			if err := runResultsBrowser(results); err != nil {
-				fmt.Fprintln(os.Stderr, "results browser error:", err)
-			}
-		}
+		// Written here, before runResultsBrowser — not only inside finishSync
+		// below. runResultsBrowser blocks on a keystroke, so without this an
+		// operator who walks away with it open (or whose terminal dies there)
+		// is left with a report describing the previous run, with a plausible
+		// timestamp and no sign a newer sync ever finished. finishSync writes
+		// again on the way out; that second write is harmless, since it
+		// renders these same results and meta to the same path.
+		showResultsBrowser(meta(len(results), nil), results, projectsRoot, interactive, runResultsBrowser, os.Stdout, os.Stderr)
 	}
 
 	return finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, os.Stdout, os.Stderr)
+}
+
+// showResultsBrowser writes the issues report and then, only when interactive,
+// hands off to the (blocking) results browser. browser is a parameter — not a
+// direct call to runResultsBrowser — purely so a test can assert the report
+// exists before the browser runs: the real browser is a bubbletea program
+// that needs a TTY and cannot run under `go test`.
+func showResultsBrowser(
+	meta fleetsync.RunMeta,
+	results []fleetsync.Result,
+	projectsRoot string,
+	interactive bool,
+	browser func([]fleetsync.Result) error,
+	out, errOut io.Writer,
+) {
+	writeSyncIssuesReport(meta, results, projectsRoot, out, errOut)
+	if !interactive {
+		return
+	}
+	if err := browser(results); err != nil {
+		_, _ = fmt.Fprintln(errOut, "results browser error:", err)
+	}
 }
 
 // finishSync maps sync results to an exit code, writes the issues report, and,

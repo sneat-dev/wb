@@ -41,32 +41,56 @@ report deliberately does not.
 Its entire purpose is to be handed to an agent by path. A stable path is a
 usable instruction ("read `~/.wb/last-sync-issues.md` and fix what it lists");
 a timestamped directory requires the operator to look up the newest run first,
-every time. Sync's issue list is also inherently current-state — a week-old
-list of repositories that needed attention is not evidence of anything, unlike
-a cleanup receipt which records an irreversible mutation. History is not worth
-the indirection here.
+every time. Sync's issue list is also inherently current-state: a week-old list
+of repositories that needed attention is not evidence of anything.
+
+An earlier draft justified this by adding "unlike a cleanup receipt, which
+records an irreversible mutation." That is wrong and is struck: `wb sync
+--prune-archived` calls `os.RemoveAll` on local clones, which is exactly an
+irreversible mutation, and it is the one WB command that deletes clones
+**without** writing the receipt `wb archive clean` writes. The stable path is
+still the right choice for *this* artifact, but it is not evidence that sync
+needs no durable record. Two follow-ups stand on their own merits and are out
+of scope here: a prune receipt for `--prune-archived`, and a timestamped copy
+beside the stable path.
 
 ## Scope
 
 ### In scope
 
 Every result the existing `fleetsync.Summary()` already places in the
-`Needs attention` group, which on current `main` is five statuses:
+`Needs attention` group. That group is **four statuses plus one flag**, and the
+difference matters:
 
-| Status | Meaning |
-|---|---|
-| `Diverged` | Branch and upstream each hold commits the other lacks; no fast-forward, not pulled |
-| `NoUpstream` | Checked-out branch tracks nothing; nowhere to pull from |
-| `Unpushed` | Pull succeeded, but the clone holds commits on no remote |
-| `ArchivedUnlandable` | Archived clone holding unpushed commits; the remote is read-only, so they can never be pushed |
-| `ArchivedNotPruned` | Archived, but `--prune-archived` was not passed, so it was pulled like any other clone |
+| Selector | Kind | Meaning |
+|---|---|---|
+| `Diverged` | Status | Branch and upstream each hold commits the other lacks; no fast-forward, not pulled |
+| `NoUpstream` | Status | Checked-out branch tracks nothing, or HEAD is detached; nowhere to pull from |
+| `Unpushed` | Status | Pull succeeded, but the clone holds commits on no remote |
+| `ArchivedUnlandable` | Status | Archived clone holding unpushed commits; the remote is read-only, so they can never be pushed. **Only assigned when `--prune-archived` is passed** |
+| `ArchivedNotPruned` | **Flag** | Archived, `--prune-archived` not passed. Set on top of *whatever* status the inner sync returned |
+
+`ArchivedNotPruned` is a boolean field, not a `Status` constant. An earlier
+draft of this document listed it as a fifth status, and that error propagated:
+a renderer that switched on `Status` alone put a *failed* archived repository
+into the informational bucket, describing a failure as "nothing is broken",
+while it also appeared under Errors — one repository, two entries, both counts
+inflated. Any selector must test the flag together with a benign status.
+
+The same asymmetry means an archived repository holding unpushed commits is
+`ArchivedUnlandable` only under `--prune-archived`; on the **default** path it
+is a plain `Unpushed` with `Archived` true. A renderer keying on `Status` alone
+therefore offers "push" and "discard" for commits that can never be pushed and
+exist nowhere else. Every renderer must read `Archived`, not just `Status`.
 
 Plus the `Errors` group (`Failed`), and one new case the terminal has never
 surfaced: a run that failed before scanning.
 
-`ArchivedNotPruned` is informational rather than broken — nothing is wrong,
-the operator simply did not ask for pruning. It renders in its own clearly
-labelled subsection so an agent does not treat it as a defect to fix.
+`ArchivedNotPruned` **on a benign status** is informational rather than broken:
+nothing is wrong, the operator simply did not ask for pruning. Those render in
+their own clearly labelled subsection so an agent does not treat them as
+defects to fix. The flag on any other status is not informational, per the
+correction above, and keeps its real classification.
 
 ### Out of scope
 
@@ -142,10 +166,23 @@ if !dryRun {
 the exit code. The report writer sits beside it, with one deliberate
 difference: it also runs on `--dry-run`.
 
-Dry-run detection is read-only and identical to a real run, so its findings are
-real and worth reporting. The report is stamped `Dry run: true` so an agent
-knows the fleet was not actually pulled and that `Unpushed` detection, which
-normally runs after a pull, may be incomplete.
+Dry-run detection is **not** identical to a real run — an earlier draft of this
+document claimed it was, and that claim was false. In `syncActive`'s dry-run
+branch the only classification performed is a dirty check and a tracking probe,
+so it can produce `NoUpstream` (detached HEAD only) or `Pulled`, and nothing
+else. `Diverged` is assigned only after a real `git pull` fails; `Unpushed` only
+after a pull succeeds. **Both are structurally unreachable in a dry run.**
+
+That makes a clean dry-run report actively dangerous if it is allowed to speak
+like a real one: three of the five attention selectors cannot fire, so silence
+is silence, not health — and the report would overwrite an accurate one from
+the last real run with a false all-clear, on the command an operator reaches
+for precisely to "check first".
+
+So the report is still written on `--dry-run` (its findings, where it can make
+them, are real), but under `DryRun` it may never emit "All repositories are in
+sync". It states instead which categories a dry run cannot classify and that
+their absence is not evidence of their absence.
 
 The run-failed-early path in `runSync` writes a report too, before returning
 `exitFindings`:
@@ -188,7 +225,7 @@ treat a missing path as a success case.
 
 - **Clone:** `/home/ai/projects/sneat-dev/wb`
 - **Branch:** `fix/sync-authentication-failure`
-- **Upstream:** `origin/fix/sync-authentication-failure` is configured but gone from the remote
+- **Upstream:** none configured for this branch
 - **Impact:** not pulled; 1 commit exists on no remote
 
 **Inspect**
@@ -272,6 +309,32 @@ CI enforces these; the change is not complete without them.
   involved
 - `~/.wb/README.md` already states the directory holds "command reports"; no
   change needed
+
+## Corrections after adversarial review
+
+This document was red-teamed after implementation. Four claims in the original
+draft were factually wrong and are corrected above rather than quietly edited:
+
+1. **`ArchivedNotPruned` listed as a fifth `Status`.** It is a boolean flag set
+   on top of any status. This error propagated into the implementation and
+   caused a failed archived repository to be reported as "nothing is broken".
+2. **"Dry-run detection is read-only and identical to a real run."** False.
+   `Diverged` and `Unpushed` are structurally unreachable in a dry run.
+3. **A `NoUpstream` worked example showing a configured-but-deleted upstream.**
+   `fleetsync` deliberately classifies that state as `Failed` so it keeps
+   failing loudly; `NoUpstream` means no upstream configured, or detached HEAD.
+4. **"Unlike a cleanup receipt, which records an irreversible mutation."**
+   `wb sync --prune-archived` deletes local clones and writes no receipt.
+
+Also found and fixed in implementation, none of which this design anticipated:
+unescaped error text able to forge report structure; `git -C ''` targeting the
+reader's own repository on a failed clone; unquoted branch names reaching a
+shell command; a report written only after a blocking interactive browser; a
+world-readable file able to contain a credentialed remote URL; and two
+recommended commands that did not run or destroyed the report itself.
+
+The common thread: this design reasoned about `Status` as the whole
+classification and never enumerated the states the code can actually produce.
 
 ## Decisions
 
