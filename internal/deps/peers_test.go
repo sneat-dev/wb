@@ -88,7 +88,7 @@ func TestInspectPeersJudgesEveryPublishedRequirementAgainstTheLockedVersion(t *t
 			"@acme/old":  "^2.0.0",
 			"vue":        "^3.0.0",
 			"@acme/opt":  "^1.0.0",
-			"typescript": ">=5.0.0 <6.0.0",
+			"typescript": "5.0.0 - 6.0.0",
 		},
 		Optional: map[string]bool{"@acme/opt": true},
 		Source:   "test registry",
@@ -119,8 +119,8 @@ func TestInspectPeersJudgesEveryPublishedRequirementAgainstTheLockedVersion(t *t
 	if optional := peerRowByName(t, report, "@acme/opt"); optional.Verdict != PeerOptionalMissing || !optional.Optional {
 		t.Fatalf("@acme/opt row = %+v, want optional_missing", optional)
 	}
-	// A compound range is outside the evaluated subset; WB says so instead of
-	// guessing in either direction.
+	// A hyphen range is a distinct grammar outside the evaluated subset; WB
+	// says so instead of guessing in either direction.
 	unevaluated := peerRowByName(t, report, "typescript")
 	if unevaluated.Verdict != PeerUnevaluated || unevaluated.Reason == "" {
 		t.Fatalf("typescript row = %+v, want unevaluated with a reason", unevaluated)
@@ -145,7 +145,7 @@ func TestPeersFailedIgnoresUnevaluatedButTheReportRefusesToCallItAPass(t *testin
 
 	report, err := InspectPeers(context.Background(), peerOptions(t, root, PublishedPeerSet{
 		Version: "2.1.0",
-		Peers:   map[string]string{"react": "^18.0.0", "typescript": ">=5.0.0 <6.0.0"},
+		Peers:   map[string]string{"react": "^18.0.0", "typescript": "5.0.0 - 6.0.0"},
 	}))
 	if err != nil {
 		t.Fatal(err)

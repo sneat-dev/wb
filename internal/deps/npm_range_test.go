@@ -1,6 +1,9 @@
 package deps
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNpmRangeAdmitsEvaluatesTheSupportedSubset(t *testing.T) {
 	t.Parallel()
@@ -29,6 +32,15 @@ func TestNpmRangeAdmitsEvaluatesTheSupportedSubset(t *testing.T) {
 		{name: "strictly greater at the boundary", specifier: ">1.2.3", version: "1.2.3", evaluated: true, admits: false},
 		{name: "less than", specifier: "<2.0.0", version: "1.9.9", evaluated: true, admits: true},
 		{name: "less or equal at the boundary", specifier: "<=1.2.3", version: "1.2.3", evaluated: true, admits: true},
+		// A space-separated conjunction is how npm pins a major line, and it is
+		// the shape every Angular and Ionic peerDependency in this fleet uses.
+		{name: "conjunction pins a major line", specifier: ">=22.0.0 <23.0.0", version: "22.1.4", evaluated: true, admits: true},
+		{name: "conjunction rejects the next major", specifier: ">=22.0.0 <23.0.0", version: "23.0.0", evaluated: true, admits: false},
+		{name: "conjunction rejects below its floor", specifier: ">=22.0.0 <23.0.0", version: "21.9.9", evaluated: true, admits: false},
+		{name: "conjunction of caret and upper bound", specifier: "^1.2.0 <1.9.0", version: "1.5.0", evaluated: true, admits: true},
+		{name: "union admits its second branch", specifier: "1.0.0||2.0.0", version: "2.0.0", evaluated: true, admits: true},
+		{name: "union rejects a version no branch admits", specifier: "^1.0.0 || ^2.0.0", version: "3.0.0", evaluated: true, admits: false},
+		{name: "union of conjunctions", specifier: ">=15.0.0 <16.0.0 || >=22.0.0 <23.0.0", version: "22.1.4", evaluated: true, admits: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -52,7 +64,6 @@ func TestNpmRangeAdmitsRefusesToGuessUnsupportedShapes(t *testing.T) {
 		{name: "catalog protocol", specifier: "catalog:default", version: "1.0.0"},
 		{name: "npm alias", specifier: "npm:@other/name@1.0.0", version: "1.0.0"},
 		{name: "file protocol", specifier: "file:../local", version: "1.0.0"},
-		{name: "union", specifier: "1.0.0||2.0.0", version: "2.0.0"},
 		{name: "hyphen range", specifier: "1.0.0 - 2.0.0", version: "1.5.0"},
 		{name: "wildcard minor", specifier: "1.x", version: "1.5.0"},
 		{name: "prerelease specifier", specifier: "^1.0.0-beta.1", version: "1.0.0"},
@@ -85,5 +96,53 @@ func TestNpmCaretAndTildeCeilings(t *testing.T) {
 		if got := npmTildeCeiling(testCase.literal); got != testCase.tilde {
 			t.Fatalf("npmTildeCeiling(%q) = %q, want %q", testCase.literal, got, testCase.tilde)
 		}
+	}
+}
+
+// The two asymmetries are the whole safety argument for evaluating compound
+// ranges at all. In each direction, one readable comparator settles the
+// question; otherwise WB reports that it could not read the range rather than
+// guessing — and it never guesses in the direction that hides a conflict.
+func TestNpmCompoundRangesNeverGuessInTheUnsafeDirection(t *testing.T) {
+	t.Parallel()
+
+	// A conjunction: one readable comparator that REJECTS is decisive, because
+	// AND means every comparator must hold.
+	if verdict := npmRangeAdmits(">=22.0.0 <23.0.0-weird.x", "21.0.0"); !verdict.Evaluated || verdict.Admits {
+		t.Fatalf("a readable rejecting comparator must settle a conjunction: %+v", verdict)
+	}
+	// The same conjunction with a version its readable comparator accepts
+	// cannot be answered: the unreadable comparator might still reject.
+	verdict := npmRangeAdmits(">=22.0.0 <23.0.0-weird.x", "99.0.0")
+	if verdict.Evaluated || verdict.Reason == "" {
+		t.Fatalf("an unreadable comparator must leave a conjunction unevaluated: %+v", verdict)
+	}
+
+	// A union: one readable branch that ADMITS is decisive, because OR means
+	// any branch may hold.
+	if verdict := npmRangeAdmits("^1.0.0 || 2.x", "1.5.0"); !verdict.Evaluated || !verdict.Admits {
+		t.Fatalf("a readable admitting branch must settle a union: %+v", verdict)
+	}
+	// The same union with a version its readable branch rejects cannot be
+	// answered: the unreadable branch might still have admitted it.
+	verdict = npmRangeAdmits("^1.0.0 || 2.x", "2.5.0")
+	if verdict.Evaluated || verdict.Reason == "" {
+		t.Fatalf("an unreadable branch must leave a union unevaluated: %+v", verdict)
+	}
+}
+
+// Hyphen ranges and comma lists stay declined, each with its own reason: a
+// hyphen range is a distinct grammar rather than a conjunction, and npm ranges
+// never use commas, so a comma is more likely a manifest written for another
+// ecosystem than a range WB should interpret.
+func TestNpmRangeStillDeclinesHyphenAndCommaShapes(t *testing.T) {
+	t.Parallel()
+	hyphen := npmRangeAdmits("1.0.0 - 2.0.0", "1.5.0")
+	if hyphen.Evaluated || !strings.Contains(hyphen.Reason, "hyphen range") {
+		t.Fatalf("hyphen verdict = %+v", hyphen)
+	}
+	comma := npmRangeAdmits(">=1.0.0, <2.0.0", "1.5.0")
+	if comma.Evaluated || !strings.Contains(comma.Reason, "comma-separated") {
+		t.Fatalf("comma verdict = %+v", comma)
 	}
 }

@@ -30,9 +30,12 @@ manifest field that produced it, and one verdict:
 | `unevaluated` | WB will not guess this specifier shape, and says so |
 
 `unevaluated` is never a pass. WB evaluates the specifier subset a Sneat
-manifest actually uses; a union, a hyphen range, or a `workspace:`/`catalog:`
-protocol is reported with its reason rather than silently counted as
-compatible. Treat those rows as unanswered, not as answered "yes".
+manifest actually uses: exact pins, carets, tildes, comparison operators, the
+space-separated conjunction every Angular and Ionic peer uses
+(`>=22.0.0 <23.0.0`), and `||` unions of those. A hyphen range or a
+`workspace:`/`catalog:` protocol is reported with its reason rather than
+silently counted as compatible. Treat those rows as unanswered, not as answered
+"yes".
 
 A package declaring no peers at all is reported as requiring nothing of its
 host — the most reusable answer there is, not an empty screen.
