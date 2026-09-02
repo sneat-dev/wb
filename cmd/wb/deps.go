@@ -41,8 +41,21 @@ type depsSetOptions struct {
 	// exclude removes repositories from the run entirely; hold keeps them in
 	// the run but never merges their pull request. See the flag help.
 	exclude, hold []string
-	layers        deps.LayerSelection
-	campaign      *campaignProgress
+	// latest derives a bump campaign's seed release events from the registry
+	// for the --scope globs, instead of requiring every module@version on the
+	// command line. It is only registered on `wb deps bump`.
+	latest bool
+	// scopes are the published-module globs --latest derives from. The name
+	// and glob semantics match `wb deps drift --scope` deliberately: one
+	// concept, one spelling, across the deps verbs.
+	scopes []string
+	// scopeResolutions is what --latest actually read from the registry. It is
+	// carried into the persisted report so a campaign seeded from a scope can
+	// be audited afterwards, including the matched modules that published
+	// nothing and therefore seeded nothing.
+	scopeResolutions []deps.LatestScopeResolution
+	layers           deps.LayerSelection
+	campaign         *campaignProgress
 }
 
 func newDepsCmd() *cobra.Command {
@@ -432,6 +445,22 @@ func newDepsBumpCmd() *cobra.Command {
 		Short: "Propagate published dependency versions through recalculated waves",
 		Long: `Propagate published dependency versions through recalculated consumer waves.
 
+Seeding the campaign:
+
+  --changed <module@version>  The published release event, typed exactly.
+
+  --latest --scope <glob>     WB reads the modules the selected repositories
+                              declare, keeps the ones a --scope glob matches,
+                              and asks the registry for each one's published
+                              latest version — producing the same --changed
+                              list without typing it. Every matched module is
+                              listed in the report, including the ones that
+                              published nothing, so a scope's coverage is
+                              auditable rather than assumed. The two compose:
+                              the newest version observed for a dependency
+                              wins, so a release still in flight can be named
+                              with --changed alongside a --latest sweep.
+
 Two flags shape which repositories the campaign touches, and they mean
 different things:
 
@@ -455,7 +484,10 @@ different things:
                               the remaining waves are waiting on.
 
 Both accept path.Match globs, where "*" never crosses a "/", and an exact
-"owner/name" always matches itself.`,
+"owner/name" always matches itself. --scope uses the same glob semantics
+against a module path or package name, exactly as "wb deps drift --scope"
+does: "@sneat/*" matches "@sneat/core", and "github.com/dal-go/*" matches
+"github.com/dal-go/dalgo" but not a nested "github.com/dal-go/dalgo/x".`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			ecosystem := deps.Ecosystem(args[0])
@@ -473,21 +505,39 @@ Both accept path.Match globs, where "*" never crosses a "/", and an exact
 			}
 			options.validation = string(validationMode)
 			options.parallelExplicit = depsBumpParallelExplicit(command)
-			events, err := parseReleaseEvents(ecosystem, changed)
-			if err != nil {
-				return err
+			// Both halves of the derivation are checked before a single
+			// repository is discovered: a fleet-wide registry sweep with no
+			// selection is nobody's intended default, and a scope that
+			// silently does nothing is worse than a refusal.
+			if len(options.scopes) > 0 && !options.latest {
+				return fmt.Errorf("--scope selects which published modules --latest derives release events from; pass --latest, or name the events with --changed")
+			}
+			if options.latest && len(deps.NormalizeScopes(options.scopes)) == 0 {
+				return fmt.Errorf("--latest derives release events for the modules --scope selects; pass at least one --scope glob, e.g. --scope '@sneat/*'")
 			}
 			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps bump")
 			options.campaign = campaign
+			// Repository selection comes first now: --latest derives its seed
+			// events from the modules the selected repositories actually
+			// declare, so there is nothing to derive from until the selection
+			// exists.
 			repositories, err := dependencyRepositories([]string{args[0], "events"}, options)
 			if err != nil {
 				campaign.finish("failed")
 				return err
 			}
-			return runDepsBump(command, ecosystem, events, repositories, options, dependencyOptions(options, checks))
+			lifecycle := dependencyOptions(options, checks)
+			events, err := depsBumpSeedEvents(command, ecosystem, changed, repositories, &options, lifecycle)
+			if err != nil {
+				campaign.finish("failed")
+				return err
+			}
+			return runDepsBump(command, ecosystem, events, repositories, options, lifecycle)
 		},
 	}
 	command.Flags().StringArrayVar(&changed, "changed", nil, "published module@version release event (repeatable)")
+	command.Flags().BoolVar(&options.latest, "latest", false, "derive the seed release events from the registry's published latest version of every module matching --scope")
+	command.Flags().StringArrayVar(&options.scopes, "scope", nil, "with --latest, glob matched against a published module path or package name, e.g. @sneat/* (repeatable)")
 	command.Flags().StringArrayVar(&options.exclude, "exclude", nil, "org/repo glob removed from the campaign entirely: no graph entry, no wave, no worktree, no PR (repeatable)")
 	command.Flags().StringArrayVar(&options.hold, "hold", nil, "org/repo glob whose PR is opened and CI-waited but never merged, even under --merge; downstream waves stop and name the held PRs (repeatable)")
 	command.Flags().BoolVar(&options.fleet, "fleet", false, "reconcile and process selected local and owned GitHub repositories")
@@ -566,6 +616,58 @@ func dependencyValidationOptions(command *cobra.Command, options depsSetOptions)
 		return "", nil, err
 	}
 	return mode, checks, nil
+}
+
+// depsBumpSeedEvents produces the campaign's seed release events, from what
+// the operator typed, from what the registry has published, or from both.
+//
+// Typing every `module@version` by hand is a dozen chances to get a
+// coordinated release wrong, and the worst failure is silent: an omitted
+// provider is not an error, it is a consumer that stays stale. --latest reads
+// the published version of every module matching --scope instead, so the seed
+// list is derived from what exists rather than from what was remembered.
+//
+// Explicit --changed events compose with derived ones under the wave engine's
+// own rule: the newest version observed for a dependency wins. So an operator
+// seeding a release still in flight keeps their newer version, while a scope
+// that has since published something newer than a stale hand-typed event
+// corrects it rather than propagating the stale one.
+func depsBumpSeedEvents(command *cobra.Command, ecosystem deps.Ecosystem, changed []string, repositories []deps.Repository, options *depsSetOptions, lifecycle deps.Options) ([]deps.ReleaseEvent, error) {
+	if !options.latest {
+		return parseReleaseEvents(ecosystem, changed)
+	}
+	var explicit []deps.ReleaseEvent
+	if len(changed) > 0 {
+		parsed, err := parseReleaseEvents(ecosystem, changed)
+		if err != nil {
+			return nil, err
+		}
+		explicit = parsed
+	}
+	if options.campaign != nil {
+		lifecycle.Progress = options.campaign.reporter()
+	}
+	derived, resolutions, err := deps.DeriveLatestReleaseEvents(
+		commandExecutionContext(command), repositories, options.scopes,
+		deps.BumpOptions{Options: lifecycle, Ecosystem: ecosystem},
+	)
+	if err != nil {
+		return nil, err
+	}
+	options.scopeResolutions = resolutions
+	return deps.MergeReleaseEvents(explicit, derived), nil
+}
+
+// bumpDerivedScopes records scopes in the report only when they actually
+// derived this campaign's seed events. `deps set --propagate` and the
+// composite publication commands share this execution path without a --latest
+// derivation, and a report that named scopes they never used would claim
+// provenance the run does not have.
+func bumpDerivedScopes(options depsSetOptions) []string {
+	if !options.latest {
+		return nil
+	}
+	return options.scopes
 }
 
 func parseReleaseEvents(ecosystem deps.Ecosystem, values []string) ([]deps.ReleaseEvent, error) {
@@ -647,6 +749,7 @@ func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ec
 	bumpOptions := deps.BumpOptions{
 		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
 		Previous: previous, NoRegistry: noRegistry, FetchCache: options.fetchCache,
+		Scopes: bumpDerivedScopes(options), ScopeResolutions: options.scopeResolutions,
 		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	report, runErr := deps.RunBump(commandExecutionContext(command), events, repositories, bumpOptions)

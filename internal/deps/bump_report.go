@@ -61,6 +61,20 @@ func (report BumpReport) Markdown() string {
 			fmt.Fprintf(&output, "- `%s` — %s\n", held.Repository, pr)
 		}
 	}
+	if len(report.Scopes) > 0 {
+		output.WriteString("\n## Derived scopes\n\n")
+		fmt.Fprintf(&output, "Seed events above were derived by `--latest` from the registry for `%s`. Every module the scopes matched is listed, so a module that published nothing is visible rather than absent:\n\n", strings.Join(report.Scopes, "`, `"))
+		output.WriteString("| Module | Repository | Published version | Reason |\n")
+		output.WriteString("|---|---|---|---|\n")
+		for _, resolution := range report.ScopeResolutions {
+			version := resolution.Version
+			if version == "" {
+				version = "—"
+			}
+			fmt.Fprintf(&output, "| `%s` | `%s` | `%s` | %s |\n",
+				resolution.Dependency, resolution.Repository, version, escapeTable(resolution.Reason))
+		}
+	}
 	if len(report.DiscoverySkips) > 0 {
 		output.WriteString("\n## Skipped discovery failures\n\n")
 		output.WriteString("Each repository below failed discovery but was not treated as fatal: either a local scan proved it carries no relevant manifest, or its local clone was unreadable and needs manual repair. Neither case was silently dropped:\n\n")

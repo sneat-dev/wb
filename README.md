@@ -40,7 +40,7 @@ wb sync   [flags]            # clone/pull/prune local clones to match GitHub, in
 wb run    [recipe] [flags]   # run a fleet-wide recipe defined in config
 wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
-wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves (--exclude/--hold)
+wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves (--latest/--scope, --exclude/--hold)
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
 wb deps drift [path] [flags] # report go/npm dependency convergence, replaces, splits, behind-latest
 wb deps policy <verb> [flags] # enforce which dependencies and import directions are allowed
@@ -916,6 +916,34 @@ green PRs merge, WB captures an actual newer registry version before touching
 downstream repositories; it never invents the next version. If a release is
 not visible before `--timeout`, the report remains `awaiting_release` and
 `--resume` continues from the persisted pre-merge baseline.
+
+#### Deriving the seed events instead of typing them
+
+A coordinated release of a dozen packages under one scope is a dozen chances to
+typo a version or omit a provider — and an omitted provider is not an error,
+just a consumer that stays stale. `--latest --scope` reads the modules the
+selected repositories declare, keeps the ones a scope glob matches, and asks the
+registry (the Go module proxy or the npm registry) for each one's published
+latest version:
+
+```sh
+wb deps bump npm --fleet --latest --scope '@sneat/*' --dry-run
+```
+
+`--scope` is a `path.Match` glob against a module path or package name, exactly
+as in `wb deps drift --scope`: `*` never crosses a `/`, so `@sneat/*` matches
+`@sneat/core`, and `github.com/dal-go/*` matches `github.com/dal-go/dalgo` but
+not a nested `github.com/dal-go/dalgo/x`. `--latest` requires at least one
+scope; a scope that matches no declared module, or whose modules have published
+nothing, is refused rather than run as an empty campaign that looks like
+success.
+
+The report's **Derived scopes** table lists every matched module — including the
+ones with no readable published version, which seeded nothing — so a scope's
+coverage is auditable rather than assumed. `--changed` composes with `--latest`
+under the engine's own rule, the newest version observed for a dependency wins:
+a provider release still in flight can be named explicitly alongside a scope
+sweep, and a stale hand-typed event is corrected by a newer published one.
 
 #### Choosing which repositories a campaign touches
 

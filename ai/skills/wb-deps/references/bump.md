@@ -16,6 +16,32 @@ Combining roots lets WB recalculate one dependency graph, accumulate all
 ready updates for a consumer, and build that consumer once per wave instead
 of once per upstream dependency.
 
+## Deriving the roots instead of typing them
+
+A coordinated release of a dozen packages under one scope is a dozen chances
+to typo a version or omit a provider — and an omitted provider is not an
+error, just a consumer that stays stale. `--latest --scope` reads the modules
+the selected repositories declare, keeps the ones a scope glob matches, and
+asks the registry for each one's published latest version:
+
+```sh
+wb deps bump npm --fleet --latest --scope '@sneat/*' --dry-run
+```
+
+`--scope` is a `path.Match` glob against a module path or package name, exactly
+as in `wb deps drift --scope`: `*` never crosses a `/`, so `@sneat/*` matches
+`@sneat/core`, and `github.com/dal-go/*` matches `github.com/dal-go/dalgo` but
+not a nested `github.com/dal-go/dalgo/x`. `--latest` requires at least one
+scope, and a scope that matches nothing — or whose modules have published
+nothing — is refused rather than run as an empty campaign.
+
+The report's **Derived scopes** table lists every matched module, including the
+ones with no readable published version, so a scope's coverage is auditable
+rather than assumed. `--changed` composes with `--latest` under the engine's own
+rule — the newest version observed for a dependency wins — so a provider release
+still in flight can be named explicitly alongside a scope sweep. Repositories
+removed by `--exclude` seed nothing either.
+
 Publish after reviewing the first-wave preview:
 
 ```sh
