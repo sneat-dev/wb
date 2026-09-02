@@ -53,8 +53,8 @@ func TestWriteSyncIssuesReportWritesToWBHome(t *testing.T) {
 	if !strings.Contains(string(contents), "# WB sync issues") {
 		t.Errorf("unexpected contents:\n%s", contents)
 	}
-	if !strings.Contains(out.String(), path) {
-		t.Errorf("path not announced on stdout: %q", out.String())
+	if want := "Sync issues: 0 records — errors on 0 repos and 0 repos require attention; details in " + path; !strings.Contains(out.String(), want) {
+		t.Errorf("sync issue summary = %q, want %q", out.String(), want)
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("unexpected stderr: %q", errOut.String())
