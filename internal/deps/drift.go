@@ -2,6 +2,7 @@ package deps
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -31,9 +32,17 @@ func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftO
 	if options.Online {
 		mode = "online"
 	}
+	if options.Ecosystem == "" {
+		options.Ecosystem = EcosystemGo
+	}
+	switch options.Ecosystem {
+	case EcosystemGo, EcosystemNPM:
+	default:
+		return DriftReport{}, fmt.Errorf("dependency drift supports the go and npm ecosystems, not %q", options.Ecosystem)
+	}
 	report := DriftReport{
 		SchemaVersion: 1,
-		Ecosystem:     EcosystemGo,
+		Ecosystem:     options.Ecosystem,
 		Mode:          mode,
 		BaseRef:       options.Ref,
 		ObservedAt:    observedAt,
@@ -41,7 +50,9 @@ func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftO
 	if report.BaseRef == "" {
 		report.BaseRef = "main"
 	}
+	repositories, report.Excluded = partitionExcludedRepositories(repositories, options.ExcludeRepositories)
 
+	latest := newNpmLatestVersions()
 	type result struct {
 		repository DriftRepository
 		skip       *GraphDiscoverySkip
@@ -72,11 +83,11 @@ func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftO
 					if repository.Path == "" {
 						results[index].skip = &GraphDiscoverySkip{
 							Repository: repository.Slug,
-							Reason:     "repository has no local clone path; drift inspects checked-out go.mod files only",
+							Reason:     "repository has no local clone path; drift inspects checked-out manifests only",
 						}
 						return
 					}
-					inspected, err := inspectGoDriftRepository(ctx, repository, options, observedAt)
+					inspected, err := inspectDriftRepository(ctx, repository, options, observedAt, latest)
 					if err != nil {
 						results[index].repository = DriftRepository{
 							Repository: repository.Slug,
@@ -119,8 +130,47 @@ func AnalyzeDrift(ctx context.Context, repositories []Repository, options DriftO
 	return report, nil
 }
 
+// inspectDriftRepository dispatches one repository to its ecosystem's
+// manifest reader. It is the single seam that keeps AnalyzeDrift's
+// parallelism, progress reporting, and grouping ecosystem-agnostic.
+func inspectDriftRepository(ctx context.Context, repository Repository, options DriftOptions, observedAt time.Time, latest *npmLatestVersions) (DriftRepository, error) {
+	if options.Ecosystem == EcosystemNPM {
+		return inspectNpmDriftRepository(ctx, repository, options, observedAt, latest)
+	}
+	return inspectGoDriftRepository(ctx, repository, options, observedAt)
+}
+
+// partitionExcludedRepositories removes every repository whose "owner/name"
+// matches an --exclude glob and returns the excluded slugs so the report can
+// say so out loud. An excluded repository is never inspected, never fetched,
+// and never counted — the distinction between "clean" and "not looked at"
+// must survive into the report.
+func partitionExcludedRepositories(repositories []Repository, patterns []string) (retained []Repository, excluded []string) {
+	if len(patterns) == 0 {
+		return repositories, nil
+	}
+	retained = make([]Repository, 0, len(repositories))
+	for _, repository := range repositories {
+		if matchesAnyGlob(repository.Slug, patterns) {
+			excluded = append(excluded, repository.Slug)
+			continue
+		}
+		retained = append(retained, repository)
+	}
+	sort.Strings(excluded)
+	return retained, excluded
+}
+
 // DriftFailed reports whether the complete report should exit non-zero.
 func DriftFailed(report DriftReport, failOnDrift bool) bool {
+	return DriftFailedWith(report, failOnDrift, false)
+}
+
+// DriftFailedWith adds the behind-latest gate to DriftFailed. Behind-latest
+// is a separate opt-in because it can only be observed with --online, and a
+// fleet that has deliberately not yet adopted a release is not the same
+// finding as one whose repositories disagree with each other.
+func DriftFailedWith(report DriftReport, failOnDrift, failOnBehind bool) bool {
 	if report.Summary.Error > 0 {
 		return true
 	}
@@ -128,6 +178,9 @@ func DriftFailed(report DriftReport, failOnDrift bool) bool {
 		if repository.Status == "error" {
 			return true
 		}
+	}
+	if failOnBehind && report.Summary.Behind > 0 {
+		return true
 	}
 	if !failOnDrift {
 		return false
@@ -150,10 +203,16 @@ func summarizeDrift(report DriftReport) DriftSummary {
 			summary.Replaced++
 		case DriftMajorPathSplit:
 			summary.MajorSplit++
+		case DriftBehindLatest:
+			// behind_latest is also counted below through group.Behind; the
+			// classification only records that nothing more urgent applied.
 		case DriftUnavailable:
 			summary.Unavailable++
 		case DriftError:
 			summary.Error++
+		}
+		if group.Behind {
+			summary.Behind++
 		}
 	}
 	for _, repository := range report.Repositories {
@@ -169,6 +228,7 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 		dependency string
 		version    string
 		kind       string
+		declared   string
 		repository string
 		replaced   bool
 		latest     *VersionEvidence
@@ -176,14 +236,14 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 	}
 	byDependency := map[string][]observation{}
 	families := map[string]map[string]struct{}{}
-	filter := dependencyFilterSet(options.Dependencies)
+	selector := newDriftDependencySelector(options)
 
 	for _, repository := range repositories {
 		if repository.Status == "error" {
 			continue
 		}
 		for _, dependency := range repository.Dependencies {
-			if len(filter) > 0 && !filter[dependency.Dependency] {
+			if !selector.matches(dependency.Dependency) {
 				continue
 			}
 			version := dependency.Selected.Value
@@ -200,12 +260,20 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 				dependency: dependency.Dependency,
 				version:    version,
 				kind:       kind,
+				declared:   dependency.Declared.Value,
 				repository: repository.Repository,
 				replaced:   dependency.Replacement != nil,
 				latest:     dependency.Latest,
 				err:        dependency.Selected.Reason != "" && strings.Contains(dependency.Selected.Reason, "inspection failed"),
 			}
 			byDependency[dependency.Dependency] = append(byDependency[dependency.Dependency], obs)
+			// Major-path families are a Go module convention (`/v2` suffixes).
+			// npm encodes a major bump in the version, never in the package
+			// name, so grouping npm names into families would invent a split
+			// that cannot exist.
+			if options.Ecosystem == EcosystemNPM {
+				continue
+			}
 			family := modulePathFamily(dependency.Dependency)
 			if families[family] == nil {
 				families[family] = map[string]struct{}{}
@@ -229,9 +297,9 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 
 	groups := make([]DriftVersionGroup, 0, len(byDependency))
 	for dependency, observations := range byDependency {
-		group := DriftVersionGroup{
-			Dependency: dependency,
-			Family:     modulePathFamily(dependency),
+		group := DriftVersionGroup{Dependency: dependency}
+		if options.Ecosystem != EcosystemNPM {
+			group.Family = modulePathFamily(dependency)
 		}
 		versionUses := map[string]*DriftVersionUse{}
 		replaced := false
@@ -245,7 +313,10 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 				use = &DriftVersionUse{Version: observation.version, Kind: observation.kind}
 				versionUses[key] = use
 			}
-			use.Repositories = append(use.Repositories, observation.repository)
+			// One repository can declare the same dependency in several
+			// manifests (an npm monorepo routinely does). The group answers
+			// "which repositories use this version", so list each once.
+			use.Repositories = appendUniqueSorted(use.Repositories, observation.repository)
 			if observation.replaced {
 				replaced = true
 			}
@@ -271,6 +342,18 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 			return group.Versions[i].Version < group.Versions[j].Version
 		})
 		group.Latest = latest
+		if latest != nil && latest.Value != "" {
+			for _, observation := range observations {
+				if !observationLagsLatest(options.Ecosystem, observation.version, observation.kind, observation.declared, latest.Value) {
+					continue
+				}
+				group.Behind = true
+				group.BehindRepositories = appendUniqueSorted(group.BehindRepositories, observation.repository)
+			}
+			if group.Behind {
+				group.BehindReason = "at least one repository resolves or admits only versions older than the published latest " + latest.Value
+			}
+		}
 		if paths := splitFamilies[group.Family]; len(paths) > 1 {
 			group.Classification = DriftMajorPathSplit
 			group.MajorPaths = paths
@@ -287,6 +370,9 @@ func classifyDriftGroups(repositories []DriftRepository, options DriftOptions, o
 		} else if distinctSelectedVersions(group.Versions) > 1 {
 			group.Classification = DriftDivergent
 			group.Reason = "repositories select different versions of this module path"
+		} else if group.Behind {
+			group.Classification = DriftBehindLatest
+			group.Reason = group.BehindReason
 		} else {
 			group.Classification = DriftConverged
 			group.Reason = "selected repositories agree on one version"
@@ -337,6 +423,89 @@ func dependencyFilterSet(dependencies []string) map[string]bool {
 	return set
 }
 
+// driftDependencySelector retains a dependency when it is named exactly by
+// --dependency or matched by a --scope glob. With neither flag set every
+// dependency is retained, which is the historical behaviour.
+type driftDependencySelector struct {
+	exact  map[string]bool
+	scopes []string
+}
+
+func newDriftDependencySelector(options DriftOptions) driftDependencySelector {
+	selector := driftDependencySelector{exact: dependencyFilterSet(options.Dependencies)}
+	for _, scope := range options.Scopes {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			selector.scopes = append(selector.scopes, scope)
+		}
+	}
+	return selector
+}
+
+func (selector driftDependencySelector) matches(dependency string) bool {
+	if len(selector.exact) == 0 && len(selector.scopes) == 0 {
+		return true
+	}
+	if selector.exact[dependency] {
+		return true
+	}
+	return matchesAnyGlob(dependency, selector.scopes)
+}
+
+// matchesAnyGlob reports whether value matches any pattern under path.Match
+// semantics, where "*" never crosses a "/". A pattern that is not a valid
+// glob is compared literally rather than silently matching nothing.
+func matchesAnyGlob(value string, patterns []string) bool {
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if pattern == value {
+			return true
+		}
+		if matched, err := path.Match(pattern, value); err == nil && matched {
+			return true
+		}
+	}
+	return false
+}
+
+// observationLagsLatest reports whether one repository's observation provably
+// resolves or admits only versions older than the published latest.
+//
+// A locked/selected exact version is compared directly. An npm declaration
+// with no lockfile evidence is judged by whether its range could admit the
+// latest release at all: `"0.14.0"` cannot, `^0.14.0` cannot reach 0.15.x,
+// and a range WB does not evaluate is never reported as behind. Nothing is
+// inferred from a specifier WB could not read.
+func observationLagsLatest(ecosystem Ecosystem, version, kind, declared, latest string) bool {
+	if kind == "selected" && universalSemverValid(version) {
+		return universalSemverCompare(version, latest) < 0
+	}
+	if ecosystem != EcosystemNPM {
+		if universalSemverValid(version) {
+			return universalSemverCompare(version, latest) < 0
+		}
+		return false
+	}
+	if universalSemverValid(version) {
+		return universalSemverCompare(version, latest) < 0
+	}
+	verdict := npmRangeAdmits(declared, latest)
+	return verdict.Evaluated && !verdict.Admits
+}
+
+func appendUniqueSorted(values []string, addition string) []string {
+	for _, value := range values {
+		if value == addition {
+			return values
+		}
+	}
+	values = append(values, addition)
+	sort.Strings(values)
+	return values
+}
+
 func modulePathFamily(modulePath string) string {
 	prefix, _, ok := module.SplitPathVersion(modulePath)
 	if !ok || prefix == "" {
@@ -356,13 +525,6 @@ func sanitizeDriftReason(reason string) string {
 		reason = pattern.ReplaceAllString(reason, "[redacted]")
 	}
 	return reason
-}
-
-func matchesDriftDependency(modulePath string, filter map[string]bool) bool {
-	if len(filter) == 0 {
-		return true
-	}
-	return filter[modulePath]
 }
 
 func relativeManifest(repositoryPath, manifestPath string) string {

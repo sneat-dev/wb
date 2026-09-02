@@ -64,12 +64,47 @@ paths such as `example.org/lib` and `example.org/lib/v2`, local or forked
 `replace` directives, and the shortest known requirement edges that force a
 selected version.
 
+#### REQ: npm-selection-semantics
+
+The npm adapter MUST read every `package.json` dependency field and every
+`pnpm-workspace.yaml` `overrides:`/`catalog:`/`catalogs:` entry as declared
+references, recording the manifest section each reference lives in. It MUST
+resolve the selected version from the lockfile that governs that manifest —
+`pnpm-lock.yaml` or `package-lock.json`, choosing the most specific
+lockfile-owning directory — because a range describes what a fresh resolve
+could pick while the committed lockfile decides what a build installs. A
+lockfile whose importers pin conflicting versions MUST be reported as a
+conflict rather than reduced to one version, and a reference with no lockfile
+evidence MUST fall back to its declared specifier with an explicit reason.
+
 #### REQ: fleet-version-groups
 
 A fleet report MUST group each canonical dependency path by every declared
 and selected version found across repositories. Each group MUST link the
 repositories using it and classify the fleet state as converged, divergent,
-replaced, major-path split, unavailable, or error.
+replaced, major-path split, behind latest, unavailable, or error. Major-path
+splits are a Go module convention and MUST NOT be reported for npm packages,
+whose names never encode a major version.
+
+#### REQ: behind-latest-evidence
+
+When an online run has observed a published latest version, the report MUST
+mark a group as behind and name every repository whose evidence provably lags
+it: a selected version lower than latest, or a declared specifier that
+provably cannot admit latest. WB MUST evaluate only specifier shapes it can
+decide exactly — an exact version, `^`, `~`, `*`, and the `>`, `>=`, `<`, and
+`<=` comparators. Every other shape, including unions, hyphen ranges,
+wildcards, and the `workspace:`, `catalog:`, `npm:`, and `file:` protocols,
+MUST be reported as unevaluated and MUST NOT be counted as behind.
+
+#### REQ: bounded-online-scope
+
+Because an online run costs one registry query per retained dependency, the
+command MUST accept dependency scope globs and exact dependency names that
+bound which dependencies are retained, and MUST query a registry only for
+retained dependencies. It MUST also accept repository exclusion globs; an
+excluded repository MUST never be inspected and MUST be listed in the report,
+so a clean result is never confused with an uninspected one.
 
 #### REQ: private-dependency-evidence
 
@@ -91,8 +126,11 @@ classifications, timestamps, and reasons with deterministic ordering.
 `--fail-on-drift` MUST return non-zero after the complete report when any
 selected dependency is divergent, replaced, or split across major paths.
 Without that flag, detected drift MUST be reportable without turning the
-read-only command into a failing quality gate. Inspection errors MUST always
-produce a non-zero exit after all selected repositories are reported.
+read-only command into a failing quality gate. A separate behind-latest gate
+MUST exist, because a fleet that has not yet adopted a published release is a
+different finding from one whose repositories disagree with each other.
+Inspection errors MUST always produce a non-zero exit after all selected
+repositories are reported.
 
 ## Synthetic Use Cases
 
@@ -150,6 +188,29 @@ contains both v1 and v2 module paths
 **Then** it reports distinct replaced and major-path-split classifications and
 returns non-zero only after the complete index is written.
 
+### AC: npm-lockfile-decides-the-selected-version
+
+**Requirements:** dependency-drift#req:npm-selection-semantics, dependency-drift#req:fleet-version-groups
+
+**Given** two fictional npm repositories declare the same package with the
+same caret range but their committed lockfiles resolve different versions
+**When** an npm fleet drift report is generated
+**Then** the declared range and the locked version are reported separately for
+each repository, the group is classified divergent on the locked versions, and
+no major-path split is invented for the package name.
+
+### AC: behind-latest-never-guesses-an-unevaluable-range
+
+**Requirements:** dependency-drift#req:behind-latest-evidence, dependency-drift#req:bounded-online-scope
+
+**Given** one fictional repository pins a package at an exact version below the
+published latest and another declares it through a `workspace:` protocol
+**When** an online drift report restricted to that dependency scope is
+generated
+**Then** the exact pin is reported as behind with the repository named, the
+`workspace:` reference is reported as unevaluated and is not counted as behind,
+and no registry query is made for a dependency outside the requested scope.
+
 ### AC: unavailable-private-version-is-auditable
 
 **Requirements:** dependency-drift#req:read-only-analysis, dependency-drift#req:private-dependency-evidence
@@ -162,10 +223,16 @@ attempt and timestamp, exposes no credential, and makes no repository change.
 
 ## Open Questions
 
-- Should the first release support only Go, or expose an adapter registry while
-  shipping Go as the sole implemented adapter?
+- ~~Should the first release support only Go, or expose an adapter registry
+  while shipping Go as the sole implemented adapter?~~ **Resolved:** Go shipped
+  first; npm was added behind the same `--ecosystem` selector `wb deps graph`
+  and `wb deps bump` already use, dispatching at a single per-repository
+  inspection seam rather than through a registry abstraction.
 - Should `--fail-on-drift` accept classifications, for example
   `--fail-on-drift=replaced,divergent`, in its first release?
+- Should an npm specifier shape WB currently reports as unevaluated (unions,
+  hyphen ranges, wildcards) be evaluated by adopting a full npm range library,
+  or does the fleet's own manifest vocabulary make that unnecessary?
 
 ---
 *This document follows the https://specscore.md/feature-specification*
