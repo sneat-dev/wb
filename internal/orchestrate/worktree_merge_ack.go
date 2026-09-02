@@ -850,16 +850,21 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 	if replacement == receipt.Candidate || replacement.SHA == receipt.Candidate.SHA {
 		return WorktreeMergeValidationFailureSupersession{}, errors.New("replacement candidate must be distinct from the failed receipt candidate")
 	}
+	currentSourceHeads := make([]string, 0, len(receipt.Sources))
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
-			return WorktreeMergeValidationFailureSupersession{}, err
+		currentSourceHead, sourceErr := validateValidationFailedSupersessionSource(ctx, options.ProjectsRoot, receipt, source, originalClaim.BaseSHA)
+		if sourceErr != nil {
+			return WorktreeMergeValidationFailureSupersession{}, sourceErr
 		}
+		currentSourceHeads = append(currentSourceHeads, currentSourceHead)
 	}
 	currentTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
 	if err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...) {
+	roots := append([]string{originalClaim.BaseSHA, receipt.TargetSHA, currentTarget, replacementClaim.BaseSHA}, sourceSHAs(receipt.Sources)...)
+	roots = append(roots, currentSourceHeads...)
+	for _, root := range roots {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
@@ -1176,6 +1181,51 @@ func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoo
 		return fmt.Errorf("receipted source %s has no matching active Work Log claim", source.Worktree)
 	}
 	return nil
+}
+
+// validateValidationFailedSupersessionSource preserves the exact historical
+// source identity for an unlanded validation failure. The sole forward-repair
+// exception permits that same managed source to advance, but only when its
+// immutable commit and claim base remain ancestry roots of the replacement.
+// A sibling worktree, branch, task, changed base, or rewritten source remains
+// an exact-identity refusal.
+func validateValidationFailedSupersessionSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, expectedClaimBase string) (string, error) {
+	if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, receipt, source); err == nil {
+		return source.SHA, nil
+	}
+	guard, err := worktrees.Guard(ctx, source.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
+	if err != nil {
+		return "", fmt.Errorf("guard receipted source %s: %w", source.Worktree, err)
+	}
+	if guard.Kind != "linked" || guard.Transient || guard.Branch != source.Branch || filepath.Clean(guard.Path) != filepath.Clean(source.Worktree) {
+		return "", fmt.Errorf("receipted source %s no longer has its exact linked-worktree identity", source.Worktree)
+	}
+	if err := requireCleanMergeWorktree(ctx, source.Worktree); err != nil {
+		return "", fmt.Errorf("receipted source %s is not clean: %w", source.Worktree, err)
+	}
+	head, err := mergeRevision(ctx, source.Worktree, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
+	}
+	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: source.Worktree})
+	if err != nil {
+		return "", fmt.Errorf("load receipted source Work Log %s: %w", source.Worktree, err)
+	}
+	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Repository != receipt.Repository || view.Claim.Task != source.Task ||
+		filepath.Clean(view.Claim.Worktree) != filepath.Clean(source.Worktree) || view.Claim.Branch != source.Branch {
+		return "", fmt.Errorf("receipted source %s has no matching active Work Log claim", source.Worktree)
+	}
+	if view.Claim.Base != receipt.Target || view.Claim.BaseSHA != expectedClaimBase {
+		return "", fmt.Errorf("receipted source %s claim base no longer matches immutable failure evidence", source.Worktree)
+	}
+	containsRecordedSource, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+	if ancestorErr != nil {
+		return "", fmt.Errorf("verify receipted source %s descendant ancestry: %w", source.Worktree, ancestorErr)
+	}
+	if !containsRecordedSource {
+		return "", fmt.Errorf("receipted source %s does not retain recorded source %s", source.Worktree, source.SHA)
+	}
+	return head, nil
 }
 
 func landedFailureAcknowledgementID(ack WorktreeMergeLandedFailureAcknowledgement) string {
