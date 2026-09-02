@@ -101,6 +101,31 @@ leaving the canonical branch, index, and working tree unchanged. Internal hook
 callers MAY omit the network check; their checkout-policy result MUST retain
 its existing local-only behavior.
 
+#### REQ: verified-publication-after-push
+
+Git offers no post-push hook and runs `pre-push` only when it has refs to
+update, so no hook can observe a push that updates nothing. WB MUST therefore
+offer an explicit, opt-in verification for a linked worktree: fetch that
+worktree's own branch and compare the exact local `HEAD` with it.
+
+The verification MUST distinguish, with a separate remedy for each: `HEAD`
+exactly at `origin/<branch>`; `HEAD` ahead of it, meaning local work is not on
+the remote; a branch that has never been pushed at all; the remote branch ahead
+of `HEAD`; and divergence. It MUST exit non-zero for every state other than
+exactly-published, and its refusal MUST name the command that resolves that
+specific state.
+
+A state WB could not observe — unreachable remote, failed fetch, or a ref that
+moves during the check — MUST be reported as unverified and MUST NEVER be
+reported as published. The verification MUST leave the branch, index, and
+working tree unchanged, and MUST remain opt-in so no Git hook depends on
+reaching the remote.
+
+The guard's detached-`HEAD` refusal MUST state the consequence, not only the
+policy: a commit made on a detached `HEAD` is reachable from no branch, so a
+subsequent `git push` can truthfully report that everything is up to date while
+the work is orphaned.
+
 #### REQ: guarded-transient-rebase
 
 The guard MUST reject detached development by default. It MAY allow a detached
@@ -418,6 +443,21 @@ Worktree Lifecycle owns the separate inventory and cleanup rules for linked
 task checkouts.
 
 ## Acceptance Criteria
+
+### AC: a-push-is-verified-not-assumed
+
+**Requirements:** worktree-lifecycle#req:verified-publication-after-push, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:point-of-read-canonical-freshness
+
+**Given** a real bare remote and a managed linked worktree
+**When** publication is verified after pushing, after committing without
+pushing, before the branch has ever been pushed, and while the remote cannot be
+reached
+**Then** only the pushed case is reported published and exits zero; the
+committed-but-unpushed case exits non-zero naming the push that publishes
+`HEAD`; the never-pushed case exits non-zero with the upstream-setting push
+instead; the unreachable case is reported unverified rather than published; no
+verification changes the branch, index, or working tree; and a guard run
+without the opt-in performs no remote access at all.
 
 ### AC: safe-real-git-lifecycle
 

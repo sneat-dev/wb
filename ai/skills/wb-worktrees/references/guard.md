@@ -14,6 +14,29 @@ git status --short --branch
 A passing canonical clone is safe for synchronization and read-only use only.
 A passing linked checkout is safe for feature work.
 
+## Verify every push
+
+Run this after pushing, before reporting the work as delivered:
+
+```sh
+wb worktree guard . --published
+```
+
+Git offers no post-push hook, and it runs pre-push only when it has refs to
+update — so the most dangerous push is the one that does nothing. A detached
+HEAD, or a branch other than the one HEAD is on, makes `git push` print
+"Everything up-to-date" while the commit reaches the remote nowhere at all.
+That is not a hypothetical: it orphaned a finished commit on 2026-09-02.
+
+`--published` fetches this worktree's own branch and compares it to `HEAD`,
+exiting `1` with the exact remedy unless `HEAD` is provably at
+`origin/<branch>`. Unpublished, never-pushed, behind, and diverged are separate
+diagnoses with separate fixes. Anything WB could not observe — offline, a failed
+fetch, a ref that moved mid-check — is reported unverified and never assumed
+published. Nothing is fetched into the working tree, merged, or reset.
+
+`git push` printing success is not evidence. This is.
+
 For a canonical clone, `wb worktree guard` also performs the point-of-read
 freshness check: it fetches the configured `origin/<base>` target, then compares
 the exact local `HEAD` with that fetched ref using

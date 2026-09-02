@@ -83,6 +83,24 @@ hook profile, then exercise candidate create, guard, list, transient rebase,
 commit, and safe cleanup. Update README and WB worktree/hook skills with the
 authoritative-home and compatibility behavior; addresses #33 and #34.
 
+### Task 5: Verify a push instead of assuming it
+
+**Id:** task-5
+**Verifies:** worktree-lifecycle#ac:a-push-is-verified-not-assumed
+**Depends-On:** task-3
+**Status:** complete
+
+Give the guard an opt-in post-push verification for a linked worktree, because
+Git offers no post-push hook and runs `pre-push` only when it has refs to
+update — so the push that updates nothing, and still prints "Everything
+up-to-date", is invisible to every hook. Fetch the worktree's own branch,
+compare it to the exact local `HEAD`, and give published, unpublished,
+never-pushed, behind, and diverged their own remedies. Report anything WB could
+not observe as unverified rather than published, leave the checkout untouched,
+and keep the check opt-in so no hook depends on the network. Extend the guard's
+detached-`HEAD` refusal to state the orphaning consequence rather than only the
+policy.
+
 ## Open Questions
 
 None at this time.

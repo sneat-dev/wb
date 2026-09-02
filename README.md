@@ -182,6 +182,29 @@ not prevent `wb worktree create` from safely fetching a remote base without
 mutating an unsafe canonical checkout. A detached linked checkout is allowed
 only while Git has a real active `rebase-merge` or `rebase-apply` state.
 
+#### Verify every push
+
+```sh
+git push
+wb worktree guard . --published
+```
+
+Git offers no post-push hook, and it runs `pre-push` only when it has refs to
+update — so the most dangerous push is the one that does nothing. A detached
+HEAD, or a branch other than the one HEAD is on, makes `git push` print
+`Everything up-to-date` while the commit reaches the remote nowhere at all.
+That is not hypothetical: it orphaned a finished commit on 2026-09-02.
+
+`--published` fetches this worktree's own branch and compares it to `HEAD`,
+exiting `1` with the exact remedy unless `HEAD` is provably at
+`origin/<branch>`. Unpublished, never-pushed, behind, and diverged are separate
+diagnoses with separate fixes. Anything WB could not observe — offline, a failed
+fetch, a ref that moved mid-check — is reported unverified and never assumed
+published. Nothing is merged, reset, or fast-forwarded, and the check stays
+opt-in so no Git hook depends on reaching origin.
+
+`git push` printing success is not evidence. This is.
+
 Inspect live task worktrees without contacting GitHub:
 
 ```sh
