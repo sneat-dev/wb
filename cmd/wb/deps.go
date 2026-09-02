@@ -440,7 +440,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 30*time.Second, "interval between provider release observations")
 	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before starting a downstream build (0 disables)")
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect the first wave without creating worktrees or changing dependency files")
-	command.Flags().BoolVar(&options.fetchCache, "fetch-cache", false, "memoize discovery fetches within this run for repositories the campaign never pushed to, opened a PR for, or merged (opt-in; nothing persists across invocations)")
+	command.Flags().BoolVar(&options.fetchCache, "fetch-cache", false, "memoize DISCOVERY fetches for up to 15m within this run for repositories the campaign never pushed to, opened a PR for, or merged (opt-in; wave mutation bases always re-fetch; nothing persists across invocations; avoid when others may land on main mid-campaign)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse existing wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")

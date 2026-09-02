@@ -287,7 +287,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		// Invalidate before attempting: even a failed or ambiguous push leaves
 		// this run's view of origin unsound, and the only cost of
 		// over-invalidating is one extra fetch (see FetchMemo).
-		options.FetchMemo.MarkTouched(repository.Slug)
+		options.FetchMemo.MarkTouched(canonical)
 		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "push", "-u", "origin", options.Branch); err != nil {
 			return failResult(result, err)
 		}
@@ -304,7 +304,7 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 		// A repository this run opened (or resumed) a pull request for is
 		// permanently un-memoizable too: the PR can land server-side at any
 		// later point of the run without a local push (see FetchMemo).
-		options.FetchMemo.MarkTouched(repository.Slug)
+		options.FetchMemo.MarkTouched(canonical)
 		title, body := handler.PullRequest(repository)
 		prURL, err := openPullRequest(ctx, worktree, options.Branch, resolvedBase.Ref, title, body, options)
 		if err != nil {
@@ -362,15 +362,17 @@ func EnsureCanonical(ctx context.Context, repository Repository, canonical strin
 	} else if err != nil {
 		return ResolvedBase{}, err
 	}
-	if options.FetchMemo.SkipFetch(repository.Slug) {
-		// This run already fetched this repository and has never pushed to,
-		// opened a PR for, or merged into it, so its previous fetch is still an
-		// authoritative view of origin for this run (see FetchMemo).
+	if options.FetchMemoDiscovery && options.FetchMemo.SkipFetch(canonical) {
+		// Read-only discovery may reuse this run's recent fetch of a clone the
+		// run has never pushed to, opened a PR for, or merged into (bounded by
+		// FetchMemoMaxAge). The mutation engine never takes this branch — it
+		// leaves FetchMemoDiscovery false so every wave's branch base comes
+		// from a fetch completed moments before (see Options.FetchMemoDiscovery).
 	} else {
 		if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "fetch", "--quiet", "origin"); err != nil {
 			return ResolvedBase{}, err
 		}
-		options.FetchMemo.MarkFetched(repository.Slug)
+		options.FetchMemo.MarkFetched(canonical)
 	}
 	if verifyErr := verifyRemoteRef(ctx, canonical, options, options.Ref); verifyErr == nil {
 		return ResolvedBase{Ref: options.Ref}, nil
@@ -657,7 +659,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 	// can never again be reused within this run (see FetchMemo). The push and
 	// PR stages already invalidated it; this hook keeps the merge stage
 	// self-sufficiently sound rather than relying on that ordering.
-	options.FetchMemo.MarkTouched(result.Repository)
+	options.FetchMemo.MarkTouched(result.CanonicalDir)
 	mergeArgs := []string{"pr", "merge", result.PR, "--match-head-commit", result.Commit, "--merge"}
 	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, result.WorktreeDir, "gh", mergeArgs...); err != nil {
 		return err
