@@ -1,12 +1,12 @@
 ---
 format: https://specscore.md/feature-specification
-status: Stable
+status: Amending
 ---
 
 # Feature: Mechanical Worktree Merge
 
 > [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/mechanical-worktree-merge?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/mechanical-worktree-merge?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/mechanical-worktree-merge?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/mechanical-worktree-merge?op=request-change) |
-**Status:** Stable
+**Status:** Amending
 **Source Ideas:** mechanical-worktree-merge
 
 ## Summary
@@ -79,6 +79,9 @@ wb worktree merge land <candidate-worktree-or-receipt>
   [--route auto|direct|pr] [--cleanup] [--on-failure stop|revert]
 wb worktree merge resume <candidate-worktree-or-receipt>
 wb worktree merge revert <landing-receipt> [--route auto|direct|pr]
+wb worktree merge acknowledge-retired-landed <published-retired-receipt>
+  --expected-receipt-sha256 <sha256> --expected-claim-sha256 <task=sha256>
+  --expected-landing <sha> [--apply --actor <identity> --reason <reason>]
 wb worktree merge seal-validation-failed <validation-failed-receipt>
   [--apply --actor <identity> --reason <reason>]
 wb worktree merge supersede-validation-failed <validation-failed-receipt>
@@ -117,6 +120,12 @@ file with that name is preserved unchanged.
   candidate in the replacement DAG for receipt-gated cleanup, and writes a
   separate append-only rebatch acknowledgement; it never edits the old receipt
   or candidate.
+- A historical published land receipt may be acknowledged only after all
+  receipted candidate/source worktrees have supported removed-terminal Work Log
+  evidence, their immutable claim bytes are hash-pinned, every claim base and
+  recorded source reaches the candidate, and the merged pull-request landing
+  reaches the freshly fetched target. The acknowledgement is separate,
+  create-if-absent, and never changes the receipt or Work Logs.
 - Merge, revert, validation, policy, authentication, target-drift, CI, and
   canonical synchronization failures are typed non-terminal states with an
   exact resume command.
@@ -236,7 +245,11 @@ a newly created worktree's ignored `.worktree.md` repeats the completion path.
 
 ## Open Questions
 
-None at this time.
+1. How should the WB main lane safely bootstrap a historical prepared-rebatch
+   acknowledgement whose current-target identity has advanced, before a
+   dependent retired-landed receipt can be admitted? This recovery does not
+   implement that prerequisite; it must preserve the original receipt and all
+   immutable claim evidence while defining a separately audited transition.
 
 ---
 *This document follows the https://specscore.md/feature-specification*

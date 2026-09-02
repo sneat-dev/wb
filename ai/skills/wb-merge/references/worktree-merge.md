@@ -11,6 +11,7 @@ wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress -
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-retired-landed <merge-receipt> --expected-receipt-sha256 <sha256> --expected-claim-sha256 <task=sha256> --expected-landing <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 ```

@@ -1,11 +1,11 @@
 ---
 format: https://specscore.md/idea-specification
-status: Implemented
+status: Specified
 ---
 
 # Idea: Mechanical worktree merge
 
-**Status:** Implemented
+**Status:** Specified
 **Date:** 2026-08-27
 **Owner:** alex
 **Promotes To:** mechanical-worktree-merge

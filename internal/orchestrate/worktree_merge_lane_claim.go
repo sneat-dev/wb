@@ -59,6 +59,7 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 			continue
 		}
 		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeRetiredLandedAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) {
 			continue
@@ -81,6 +82,13 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 			return nil, ackErr
 		}
 		if acknowledged {
+			continue
+		}
+		retired, retiredErr := hasRetiredLandedAcknowledgement(projectsRoot, receipt)
+		if retiredErr != nil {
+			return nil, retiredErr
+		}
+		if retired {
 			continue
 		}
 		superseded, supersessionErr := hasValidationFailureSupersession(receipt)

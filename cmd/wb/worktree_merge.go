@@ -82,7 +82,53 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeRetiredLandedCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	return command
+}
+
+func newWorktreeMergeAcknowledgeRetiredLandedCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format, receiptSHA, landingSHA string
+	var claimSHAs []string
+	command := &cobra.Command{
+		Use:   "acknowledge-retired-landed <merge-receipt>",
+		Short: "Append audited evidence for one retired published landing",
+		Long: `Acknowledge only a published pull-request candidate whose exact candidate
+and sources have already been terminally removed by WB cleanup. WB re-reads the
+receipt, immutable terminal claims, canonical origin, merged pull-request
+receipt, and current remote target under the lane lock. Every claim base,
+receipt target, source, and candidate must have the recorded ancestry. It never
+rewrites a receipt or Work Log. Dry-run is the default; --apply needs an actor,
+reason, and pinned receipt, claim, and server-landing SHA256/SHA evidence.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, release, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer release()
+			ack, err := orchestrate.AcknowledgeRetiredLandedWorktreeMerge(command.Context(), orchestrate.WorktreeMergeRetiredLandedAcknowledgementOptions{ProjectsRoot: projectsRoot, Receipt: args[0], ExpectedReceiptSHA256: receiptSHA, ExpectedLandingSHA: landingSHA, ExpectedClaimSHA256: claimSHAs, Apply: apply, Actor: actor, Reason: reason})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				return json.NewEncoder(command.OutOrStdout()).Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nacknowledgement: %s\nlanding: %s\n", ack.Status, ack.ReceiptPath, ack.AcknowledgementPath, ack.LandingSHA)
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the append-only acknowledgement")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&receiptSHA, "expected-receipt-sha256", "", "required SHA256 of the immutable receipt")
+	command.Flags().StringVar(&landingSHA, "expected-landing", "", "required exact server pull-request merge SHA")
+	command.Flags().StringSliceVar(&claimSHAs, "expected-claim-sha256", nil, "required task=SHA256 for every retired immutable claim")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
 	return command
 }
 

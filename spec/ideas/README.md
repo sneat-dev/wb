@@ -13,7 +13,7 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 | [dependency-policy-check](dependency-policy-check.md) | Approved | 2026-08-21 | alex | — |
 | [developer-lifecycle-metrics](developer-lifecycle-metrics.md) | Draft | 2026-07-20 | alex | — |
 | [fleet-liveness-audit](fleet-liveness-audit.md) | Draft | 2026-07-25 | alex | — |
-| [mechanical-worktree-merge](mechanical-worktree-merge.md) | Implemented | 2026-08-27 | alex | mechanical-worktree-merge |
+| [mechanical-worktree-merge](mechanical-worktree-merge.md) | Specified | 2026-08-27 | alex | mechanical-worktree-merge |
 | [migration-release-handoff](migration-release-handoff.md) | Draft | 2026-07-21 | alex | — |
 | [quality-diff-and-thresholds](quality-diff-and-thresholds.md) | Draft | 2026-07-21 | alex | — |
 | [secret-vault-injection](secret-vault-injection.md) | Draft | 2026-08-27 | alex | — |

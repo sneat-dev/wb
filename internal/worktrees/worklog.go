@@ -243,6 +243,16 @@ type TerminalWorkLogExpectation struct {
 	FinalCommit string
 }
 
+// TerminalWorkLogClaimDigest binds one removed-worktree expectation to the
+// exact immutable claim bytes that its terminal record corroborates.
+type TerminalWorkLogClaimDigest struct {
+	Task           string `json:"task"`
+	BaseSHA        string `json:"base_sha"`
+	FinalCommit    string `json:"terminal_final_sha"`
+	SHA256         string `json:"claim_sha256"`
+	TerminalSHA256 string `json:"terminal_sha256"`
+}
+
 // ValidateRemovedTerminalWorkLogs proves that every supplied worktree was
 // terminalized by WB cleanup without trusting a deleted checkout or a mutable
 // cleanup report. For each exact receipt identity it requires one immutable
@@ -252,28 +262,55 @@ type TerminalWorkLogExpectation struct {
 //
 // It fails closed for missing, duplicated, malformed, or mismatched evidence.
 func ValidateRemovedTerminalWorkLogs(projectsRoot string, expectations []TerminalWorkLogExpectation) error {
+	_, err := RemovedTerminalWorkLogClaimDigests(projectsRoot, expectations)
+	return err
+}
+
+// RemovedTerminalWorkLogClaimDigests performs the same fail-closed terminal
+// validation as ValidateRemovedTerminalWorkLogs and returns one digest for each
+// exact immutable active claim. Recovery callers can persist those digests in
+// an append-only acknowledgement without trusting a retired checkout path.
+func RemovedTerminalWorkLogClaimDigests(projectsRoot string, expectations []TerminalWorkLogExpectation) ([]TerminalWorkLogClaimDigest, error) {
+	return removedTerminalWorkLogClaimDigests(projectsRoot, expectations, true)
+}
+
+// RemovedTerminalWorkLogClaimDigestsAllowingAdvancedFinalCommit preserves all
+// claim and terminal identity checks but returns a terminal's sealed final
+// commit instead of requiring it to equal the receipted commit. It exists only
+// for a retired published-landing acknowledgement, which must separately prove
+// that an advanced source final is contained in that exact server landing.
+// Ordinary cleanup recovery must continue to use RemovedTerminalWorkLogClaimDigests.
+func RemovedTerminalWorkLogClaimDigestsAllowingAdvancedFinalCommit(projectsRoot string, expectations []TerminalWorkLogExpectation) ([]TerminalWorkLogClaimDigest, error) {
+	return removedTerminalWorkLogClaimDigests(projectsRoot, expectations, false)
+}
+
+func removedTerminalWorkLogClaimDigests(projectsRoot string, expectations []TerminalWorkLogExpectation, requireExactFinal bool) ([]TerminalWorkLogClaimDigest, error) {
 	if len(expectations) == 0 {
-		return errors.New("no terminal Work Log expectations supplied")
+		return nil, errors.New("no terminal Work Log expectations supplied")
 	}
 	home, err := wbhome.Root(projectsRoot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	seen := make(map[string]bool, len(expectations))
+	digests := make([]TerminalWorkLogClaimDigest, 0, len(expectations))
 	for _, expectation := range expectations {
 		if err := validateRemovedTerminalExpectation(expectation); err != nil {
-			return err
+			return nil, err
 		}
 		key := strings.Join([]string{expectation.Task, expectation.Repository, filepath.Clean(expectation.Worktree), expectation.Branch, expectation.Base}, "\x00")
 		if seen[key] {
-			return fmt.Errorf("duplicate terminal Work Log expectation for task %s", expectation.Task)
+			return nil, fmt.Errorf("duplicate terminal Work Log expectation for task %s", expectation.Task)
 		}
 		seen[key] = true
-		if err := validateRemovedTerminalWorkLog(home, expectation); err != nil {
-			return err
+		digest, err := removedTerminalWorkLogClaimDigest(home, expectation, requireExactFinal)
+		if err != nil {
+			return nil, err
 		}
+		digests = append(digests, digest)
 	}
-	return nil
+	sort.Slice(digests, func(i, j int) bool { return digests[i].Task < digests[j].Task })
+	return digests, nil
 }
 
 func validateRemovedTerminalExpectation(expectation TerminalWorkLogExpectation) error {
@@ -285,86 +322,98 @@ func validateRemovedTerminalExpectation(expectation TerminalWorkLogExpectation) 
 	return nil
 }
 
-func validateRemovedTerminalWorkLog(home string, expectation TerminalWorkLogExpectation) error {
+func removedTerminalWorkLogClaimDigest(home string, expectation TerminalWorkLogExpectation, requireExactFinal bool) (TerminalWorkLogClaimDigest, error) {
 	homeDir, err := openAbsoluteDirectoryNoFollow(home, false)
 	if err != nil {
-		return fmt.Errorf("open terminal Work Log home: %w", err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Log home: %w", err)
 	}
 	defer func() { _ = homeDir.Close() }()
 	worklogs, err := openPrivateChild(homeDir, "worklogs", false)
 	if err != nil {
-		return fmt.Errorf("open terminal Work Logs: %w", err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Logs: %w", err)
 	}
 	defer func() { _ = worklogs.Close() }()
 	effort, err := openPrivateChild(worklogs, expectation.Task, false)
 	if err != nil {
-		return fmt.Errorf("open terminal Work Log task %s: %w", expectation.Task, err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Log task %s: %w", expectation.Task, err)
 	}
 	defer func() { _ = effort.Close() }()
 	runs, err := openPrivateChild(effort, "runs", false)
 	if err != nil {
-		return fmt.Errorf("open terminal Work Log runs for task %s: %w", expectation.Task, err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Log runs for task %s: %w", expectation.Task, err)
 	}
 	defer func() { _ = runs.Close() }()
 	runNames, err := runs.Readdirnames(-1)
 	if err != nil {
-		return fmt.Errorf("read terminal Work Log runs for task %s: %w", expectation.Task, err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("read terminal Work Log runs for task %s: %w", expectation.Task, err)
 	}
 	sort.Strings(runNames)
 	matches := 0
+	var result TerminalWorkLogClaimDigest
 	for _, run := range runNames {
 		if !validSafeSegment(run) {
-			return fmt.Errorf("unsafe terminal Work Log run %q for task %s", run, expectation.Task)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("unsafe terminal Work Log run %q for task %s", run, expectation.Task)
 		}
-		if err := validateRemovedTerminalWorkLogRun(home, expectation, run, &matches); err != nil {
-			return err
+		digest, err := validateRemovedTerminalWorkLogRun(home, expectation, run, &matches, requireExactFinal)
+		if err != nil {
+			return TerminalWorkLogClaimDigest{}, err
+		}
+		if digest.SHA256 != "" {
+			if result.SHA256 != "" {
+				return TerminalWorkLogClaimDigest{}, fmt.Errorf("ambiguous removed terminal Work Log evidence for task %s", expectation.Task)
+			}
+			result = digest
 		}
 	}
 	if matches == 0 {
-		return fmt.Errorf("missing exact removed terminal Work Log for task %s", expectation.Task)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("missing exact removed terminal Work Log for task %s", expectation.Task)
 	}
 	if matches != 1 {
-		return fmt.Errorf("ambiguous removed terminal Work Log evidence for task %s", expectation.Task)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("ambiguous removed terminal Work Log evidence for task %s", expectation.Task)
 	}
-	return nil
+	return result, nil
 }
 
-func validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, run string, matches *int) error {
+func validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogExpectation, run string, matches *int, requireExactFinal bool) (TerminalWorkLogClaimDigest, error) {
 	runDir, _, err := openWorkLogRun(home, expectation.Task, run, false)
 	if err != nil {
-		return fmt.Errorf("open terminal Work Log run %s for task %s: %w", run, expectation.Task, err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Log run %s for task %s: %w", run, expectation.Task, err)
 	}
 	defer func() { _ = runDir.Close() }()
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
-		return fmt.Errorf("open terminal Work Log claims for task %s: %w", expectation.Task, err)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Log claims for task %s: %w", expectation.Task, err)
 	}
 	claimNames, readErr := claims.Readdirnames(-1)
 	_ = claims.Close()
 	if readErr != nil {
-		return fmt.Errorf("read terminal Work Log claims for task %s: %w", expectation.Task, readErr)
+		return TerminalWorkLogClaimDigest{}, fmt.Errorf("read terminal Work Log claims for task %s: %w", expectation.Task, readErr)
 	}
 	sort.Strings(claimNames)
+	var result TerminalWorkLogClaimDigest
 	for _, name := range claimNames {
 		claimID := strings.TrimSuffix(name, ".json")
 		if name != claimID+".json" || !validClaimID(claimID) {
-			return fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("unsafe terminal Work Log claim entry %q for task %s", name, expectation.Task)
 		}
 		claims, err = openPrivateChild(runDir, "claims", false)
 		if err != nil {
-			return fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("reopen terminal Work Log claims for task %s: %w", expectation.Task, err)
+		}
+		claimBytes, byteErr := readBytesAt(claims, name)
+		_ = claims.Close()
+		if byteErr != nil {
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("read immutable terminal Work Log claim %s: %w", claimID, byteErr)
 		}
 		var claim workLogClaim
-		readErr = readJSONAt(claims, name, &claim)
-		_ = claims.Close()
-		if readErr != nil {
-			return fmt.Errorf("read immutable terminal Work Log claim %s: %w", claimID, readErr)
+		if err := json.Unmarshal(claimBytes, &claim); err != nil {
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("decode immutable terminal Work Log claim %s: %w", claimID, err)
 		}
 		if !matchesRemovedTerminalExpectation(claim, expectation) {
 			continue
 		}
 		if err := validateStaticWorkLogClaim(claim, expectation.Task, run); err != nil {
-			return fmt.Errorf("validate immutable terminal Work Log claim %s: %w", claimID, err)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("validate immutable terminal Work Log claim %s: %w", claimID, err)
 		}
 		*matches++
 		if *matches > 1 {
@@ -372,27 +421,33 @@ func validateRemovedTerminalWorkLogRun(home string, expectation TerminalWorkLogE
 		}
 		terminals, err := openPrivateChild(runDir, "terminals", false)
 		if err != nil {
-			return fmt.Errorf("open terminal Work Log terminals for task %s: %w", expectation.Task, err)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("open terminal Work Log terminals for task %s: %w", expectation.Task, err)
+		}
+		terminalBytes, terminalErr := readBytesAt(terminals, claimID+".json")
+		_ = terminals.Close()
+		if terminalErr != nil {
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("read removed terminal Work Log for task %s: %w", expectation.Task, terminalErr)
 		}
 		var terminal workLogTerminalRecord
-		readErr = readJSONAt(terminals, claimID+".json", &terminal)
-		_ = terminals.Close()
-		if readErr != nil {
-			return fmt.Errorf("read removed terminal Work Log for task %s: %w", expectation.Task, readErr)
+		if err := json.Unmarshal(terminalBytes, &terminal); err != nil {
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("decode removed terminal Work Log for task %s: %w", expectation.Task, err)
 		}
 		expectedClaim := claim
 		expectedClaim.Lifecycle = "terminal"
-		if !reflect.DeepEqual(terminal.workLogClaim, expectedClaim) || terminal.FinalCommit != expectation.FinalCommit ||
+		if !reflect.DeepEqual(terminal.workLogClaim, expectedClaim) || (requireExactFinal && terminal.FinalCommit != expectation.FinalCommit) || !isGitObjectID(terminal.FinalCommit) ||
 			terminal.Disposition != "removed" || terminal.SealedAt.IsZero() || terminal.SuccessorClaimID != "" ||
 			terminal.SuccessorAgentID != "" || terminal.ExternalHandoff != nil || terminal.Orphaned != nil ||
 			terminal.DirtyCapture != nil || terminal.Supersession != nil {
-			return fmt.Errorf("removed terminal Work Log does not exactly corroborate task %s", expectation.Task)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("removed terminal Work Log does not exactly corroborate task %s", expectation.Task)
 		}
 		if err := validateRemovedTerminalOutbox(home, claim, terminal); err != nil {
-			return fmt.Errorf("validate removed terminal Work Log outbox for task %s: %w", expectation.Task, err)
+			return TerminalWorkLogClaimDigest{}, fmt.Errorf("validate removed terminal Work Log outbox for task %s: %w", expectation.Task, err)
 		}
+		claimDigest := sha256.Sum256(claimBytes)
+		terminalDigest := sha256.Sum256(terminalBytes)
+		result = TerminalWorkLogClaimDigest{Task: expectation.Task, BaseSHA: claim.BaseSHA, FinalCommit: terminal.FinalCommit, SHA256: hex.EncodeToString(claimDigest[:]), TerminalSHA256: hex.EncodeToString(terminalDigest[:])}
 	}
-	return nil
+	return result, nil
 }
 
 func matchesRemovedTerminalExpectation(claim workLogClaim, expectation TerminalWorkLogExpectation) bool {
