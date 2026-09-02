@@ -135,9 +135,14 @@ wb worktree cleanup <task-a> <task-b> --apply --remote --parallel 2
 wb worktree cleanup task-a task-b --apply --remote --parallel 2
 ```
 
-For a named terminal task or batch, `--apply` refuses without `--remote`. WB removes the
-linked worktree and exact local branch, then retires an existing remote source
-branch with force-with-lease against the previously observed SHA. It rechecks
+For a named terminal task or batch, `--apply` refuses without `--remote` while
+WB can still see the source branch on origin — definition of done includes
+retiring it, and a surviving branch is invisible backlog. The observed branch,
+not the flag shape, decides: a task whose origin branch is already gone (the
+merge that landed it deleted it, or an earlier cleanup did) is cleaned without
+`--remote`. WB removes the linked worktree and exact local branch, then retires
+an existing remote source branch with force-with-lease against the previously
+observed SHA. It rechecks
 safety immediately before mutation and writes an audit report below the
 authoritative WB home, normally `~/.wb/reports/worktree-cleanup/`. If another
 actor still needs the source branch, the effort is not done; hand it off rather

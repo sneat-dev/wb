@@ -88,8 +88,10 @@ Four traps decide whether a sweep finds anything at all:
    WB accepts — it cannot tell landed from landed-then-reverted.
 3. **`--base` defaults to `main`.** A task branched from a feature branch stays
    `awaiting_push` until you pass `--base <feature-branch>`.
-4. **Dry run is the default.** `--apply` is required to act, and for a named
-   task `--apply` refuses without `--remote`.
+4. **Dry run is the default.** `--apply` is required to act. For a named task
+   `--apply` refuses without `--remote` *while the origin branch still exists*
+   — a task whose origin branch is already gone has nothing left to retire and
+   cleans without it.
 
 Flags on `wb worktree cleanup`: `--base`, `--all-merged`, `--parallel`,
 `--verbose`, `--apply`,

@@ -267,6 +267,19 @@ operation for the exact local branch ref.
 Remote deletion MUST require both `--apply` and `--remote`. It MUST use
 force-with-lease against the observed head so an advanced branch is preserved.
 
+#### REQ: evidence-gated-remote-retirement
+
+Finishing a named task MUST NOT leave its source branch on origin, because a
+surviving branch is backlog nobody can see. WB MUST decide that from the branch
+it actually observed, never from the invocation's flag shape alone: a candidate
+whose origin branch is still present MUST be refused with a reason naming that
+branch and `--remote`, and a candidate whose origin branch is already gone —
+deleted by the merge that landed it, or by an earlier cleanup — MUST be
+retired without `--remote`, because there is nothing left to retire. Ordinary
+cleanup safety MUST be evaluated before this policy, so a refusal always states
+the most specific condition WB observed rather than sending an operator to the
+wrong fix.
+
 #### REQ: durable-audit
 
 An apply attempt MUST write a machine-readable plan before its first
@@ -408,7 +421,7 @@ task checkouts.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -422,7 +435,10 @@ remain compatible without persisting an ephemeral executable; an exact rescue
 branch passes the real managed pre-push hook while any differently named ref
 using the same attestation refuses; dry runs preserve state; exact merged heads can be cleaned;
 dirty or advanced branches survive; a fleet sweep writes incremental per-repository progress to stderr before its report and leaves stdout parseable as JSON; local and optional remote refs are removed
-with comparison guards; interruption after worktree removal is resumed from a
+with comparison guards; a named terminal apply without `--remote` is refused
+while the observed origin branch still exists and completes when that branch is
+already gone, with ordinary safety reasons reported ahead of the
+remote-retirement guidance; interruption after worktree removal is resumed from a
 durable exact-ref backlog; a removal Git unregisters but cannot finish deleting
 is completed by WB and the task still reaches its branch deletion, while a
 removal Git refused still fails; exact empty internal stages are archived while

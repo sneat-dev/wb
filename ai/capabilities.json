@@ -6698,7 +6698,7 @@
                 "Exact fetched origin target proves integration with or without a merged PR",
                 "Work absorbed into a differently named integration branch is proved by a merged pull-request receipt for the immutable source commit plus local merge-tree containment in both the landing commit and the fetched target",
                 "--absorbed-by names which landing receipt to verify for a cherry-picked absorption and additionally requires the named commit to be exactly where the work entered the target",
-                "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement",
+                "Named terminal cleanup defaults to immediate eligibility and requires explicit lease-safe remote branch retirement whenever the observed origin branch still exists; a candidate whose origin branch is already gone has nothing left to retire and is cleaned without --remote",
                 "One or more exact named tasks may be cleaned as a bounded-parallel batch without widening to --all-merged",
                 "Coordinated task preflight and durable seal precede every deletion",
                 "A matching immutable landed terminal and sealed outbox from wb worktree log finalize --apply authorize cleanup without either record being rewritten",
@@ -6823,6 +6823,16 @@
             {
               "path": "cmd/wb/worktree_test.go",
               "name": "TestNamedCleanupApplyReturnsFindingsForNonEmptyArtifactOnlyBacklog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/cleanup_remote_retirement_test.go",
+              "name": "TestNamedCleanupRefusesWhileTheOriginBranchStillExists",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/cleanup_remote_retirement_test.go",
+              "name": "TestNamedCleanupProceedsWhenTheOriginBranchIsAlreadyGone",
               "kind": "integration"
             },
             {

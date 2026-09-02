@@ -371,9 +371,17 @@ type CleanupOptions struct {
 	// It is deliberately unavailable to fleet cleanup.
 	ResumeInterrupted bool
 	DeleteRemote      bool
-	OlderThan         time.Duration
-	ReportDir         string
-	Now               func() time.Time
+	// RequireRemoteRetirement asserts that this transaction must not finish a
+	// named task while its source branch is still present on origin, because
+	// the branch would survive as invisible backlog. It is an *evidence*
+	// gate, not a flag-shape one: a candidate whose origin branch is already
+	// gone has nothing left to retire and is cleaned without --remote. Only
+	// the user-facing cleanup command sets it; orchestrators such as worktree
+	// merge own their own remote-retirement sequencing.
+	RequireRemoteRetirement bool
+	OlderThan               time.Duration
+	ReportDir               string
+	Now                     func() time.Time
 	// beforeCleanupLocks is a test-only seam before cleanup opens and locks
 	// task directories. It exercises substituted task hierarchy rejection.
 	beforeCleanupLocks func()
@@ -1424,7 +1432,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 
 	results := make([]CleanupResult, len(listed.Results))
 	for index, entry := range listed.Results {
-		eligible, reason := cleanupEligibility(entry, normalized.OlderThan, now)
+		eligible, reason := cleanupEligibility(entry, normalized, now)
 		if eligible {
 			if err := preflightWorkLogClaimReadOnly(resolution.Write.Home, entry.WorktreeDir, entry.HeadSHA); err != nil {
 				eligible = false
@@ -1630,7 +1638,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				worktree.close()
 				return err
 			}
-			eligible, reason := cleanupEligibility(refreshed, normalized.OlderThan, now)
+			eligible, reason := cleanupEligibility(refreshed, normalized, now)
 			if !eligible {
 				worktree.close()
 				return fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason)
@@ -2977,7 +2985,22 @@ func commitTree(ctx context.Context, repository, revision string) (string, error
 	return tree, nil
 }
 
-func cleanupEligibility(entry ListResult, olderThan time.Duration, now time.Time) (bool, string) {
+// cleanupEligibility answers whether one candidate may be retired now. Safety
+// is decided first and independently; the caller's remote-retirement policy is
+// applied only to a candidate that is otherwise eligible, so a refusal always
+// names the most specific reason WB actually observed.
+func cleanupEligibility(entry ListResult, options CleanupOptions, now time.Time) (bool, string) {
+	if eligible, reason := cleanupSafetyEligibility(entry, options.OlderThan, now); !eligible {
+		return false, reason
+	}
+	if options.RequireRemoteRetirement && !options.DeleteRemote && entry.RemoteHeadSHA != "" {
+		return false, "origin/" + entry.Branch + " still exists at " + shortSHA(entry.RemoteHeadSHA) +
+			"; rerun with --remote so the retired source branch cannot remain as backlog"
+	}
+	return true, ""
+}
+
+func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now time.Time) (bool, string) {
 	switch {
 	case entry.Locked:
 		return false, lockedReason(entry, resumeInterruptedCommand(entry.Task))
@@ -3269,7 +3292,7 @@ func preflightCleanupRepository(
 	if err := worktree.validate(); err != nil {
 		return ListResult{}, err
 	}
-	if eligible, reason := cleanupEligibility(refreshed, options.OlderThan, now); !eligible {
+	if eligible, reason := cleanupEligibility(refreshed, options, now); !eligible {
 		return ListResult{}, fmt.Errorf("cleanup safety changed for %s: %s", refreshed.Repository, reason)
 	}
 	if refreshed.HeadSHA != entry.HeadSHA {
