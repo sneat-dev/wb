@@ -1153,7 +1153,7 @@ func refreshManagedHooksBeforeWorktreeCreate(repositories []string) error {
 
 func newWorktreeGuardCmd() *cobra.Command {
 	var base, format, admission string
-	var quiet bool
+	var quiet, published bool
 	command := &cobra.Command{
 		Use:   "guard [repository-path]",
 		Short: "Reject unsafe canonical clones and misplaced worktrees",
@@ -1177,7 +1177,18 @@ origin target and includes an exact freshness receipt. A stale, ahead, or
 diverged clone is reported as a warning with left/right commit counts. If the
 remote cannot be reached, or the target moves while it is being checked, the
 warning says so explicitly; the checkout is never fast-forwarded or otherwise
-changed by guard.`,
+changed by guard.
+
+--published is the post-push verification Git itself cannot give you. Git runs
+no post-push hook, and it runs pre-push only when it has refs to update — so
+the most dangerous push is the one that does nothing. A detached HEAD, or a
+branch other than the one HEAD is on, makes "git push" print "Everything
+up-to-date" while the commit sits on the remote nowhere at all.
+
+--published fetches this worktree's own branch and compares it to HEAD, exiting
+1 with the exact remedy unless HEAD is provably at origin/<branch>. Anything WB
+could not observe — offline, a failed fetch, a ref that moved mid-check — is
+unverified, never assumed published. Run it after every push.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
@@ -1191,10 +1202,11 @@ changed by guard.`,
 				path = args[0]
 			}
 			result, err := worktrees.Guard(command.Context(), path, worktrees.GuardOptions{
-				ProjectsRoot:   projectsRoot,
-				Base:           base,
-				Admission:      worktrees.AdmissionMode(admission),
-				CheckFreshness: true,
+				ProjectsRoot:     projectsRoot,
+				Base:             base,
+				Admission:        worktrees.AdmissionMode(admission),
+				CheckFreshness:   true,
+				CheckPublication: published,
 			})
 			if err != nil {
 				return err
@@ -1207,38 +1219,62 @@ changed by guard.`,
 			if result.Freshness != nil && result.Freshness.Status != worktrees.CanonicalFreshnessCurrent {
 				_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: canonical freshness for %s: %s\n", result.Path, formatCanonicalFreshness(result.Freshness))
 			}
-			if quiet {
-				return nil
+			// The publication finding is a finding, not a warning: an
+			// unpublished HEAD is exactly the state an operator already
+			// believed was fine, so it must change the exit code and not
+			// merely add a line above an "ok:".
+			publicationFinding := ""
+			if published {
+				publicationFinding = worktrees.PublicationFinding(result.Publication, result.Branch)
+				if publicationFinding != "" {
+					_, _ = fmt.Fprintf(command.ErrOrStderr(), "unpublished: %s\n", publicationFinding)
+				}
 			}
-			switch format {
-			case "text":
-				checkout := result.Branch
-				if result.Transient {
-					checkout = "detached HEAD (active " + result.TransientOperation + ")"
+			if !quiet {
+				switch format {
+				case "text":
+					checkout := result.Branch
+					if result.Transient {
+						checkout = "detached HEAD (active " + result.TransientOperation + ")"
+					}
+					kind := result.Kind
+					if result.External {
+						kind += " (adopted)"
+					}
+					suffix := ""
+					if result.Freshness != nil && result.Freshness.Status == worktrees.CanonicalFreshnessCurrent {
+						suffix = fmt.Sprintf(" (fresh against %s at %s)", result.Freshness.RemoteRef, result.Freshness.RemoteSHA)
+					}
+					if worktrees.PublicationVerified(result.Publication) {
+						suffix += fmt.Sprintf(" (published at %s %s)", result.Publication.RemoteRef, result.Publication.RemoteSHA)
+					}
+					if _, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s%s\n", kind, result.Path, checkout, suffix); err != nil {
+						return err
+					}
+				case "json":
+					encoder := json.NewEncoder(command.OutOrStdout())
+					encoder.SetIndent("", "  ")
+					if err := encoder.Encode(result); err != nil {
+						return err
+					}
+				default:
+					return fmt.Errorf("unsupported format %q; use text or json", format)
 				}
-				kind := result.Kind
-				if result.External {
-					kind += " (adopted)"
-				}
-				suffix := ""
-				if result.Freshness != nil && result.Freshness.Status == worktrees.CanonicalFreshnessCurrent {
-					suffix = fmt.Sprintf(" (fresh against %s at %s)", result.Freshness.RemoteRef, result.Freshness.RemoteSHA)
-				}
-				_, err = fmt.Fprintf(command.OutOrStdout(), "ok: %s checkout %s on %s%s\n", kind, result.Path, checkout, suffix)
-				return err
-			case "json":
-				encoder := json.NewEncoder(command.OutOrStdout())
-				encoder.SetIndent("", "  ")
-				return encoder.Encode(result)
-			default:
-				return fmt.Errorf("unsupported format %q; use text or json", format)
 			}
+			if publicationFinding != "" {
+				return &exitError{
+					code:    exitFindings,
+					message: "HEAD is not verified as published on origin; see the finding above",
+				}
+			}
+			return nil
 		},
 	}
 	command.Flags().StringVar(&base, "base", "main", "protected canonical base branch")
 	command.Flags().BoolVar(&quiet, "quiet", false, "write nothing when the checkout is valid")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&admission, "admission", "off", "require a worktree record before committing: off, warn, or enforce (managed hooks default to enforce)")
+	command.Flags().BoolVar(&published, "published", false, "verify after a push that HEAD is exactly origin/<this worktree's branch>; exit 1 with the remedy otherwise")
 	return command
 }
 

@@ -219,6 +219,12 @@ type GuardOptions struct {
 	// off unless a caller opts in, so guard's existing layout checks keep their
 	// current meaning everywhere else.
 	Admission AdmissionMode
+
+	// CheckPublication fetches a linked worktree's own branch and compares it
+	// to HEAD, answering the question no Git hook can: after a push, is the
+	// commit I am on actually on the remote? Like CheckFreshness it needs the
+	// network, so it stays opt-in and no hook depends on it.
+	CheckPublication bool
 }
 
 // GuardResult describes a checkout that satisfies the worktree policy.
@@ -241,6 +247,11 @@ type GuardResult struct {
 	// A failed fetch is an explicit receipt status, not a reason to weaken the
 	// existing checkout safety decision.
 	Freshness *CanonicalFreshness `json:"freshness,omitempty"`
+	// Publication is populated for linked worktrees when CheckPublication is
+	// true: the exact comparison of HEAD with origin/<this worktree's branch>.
+	// It reuses the freshness receipt shape because it is the same
+	// fetch-and-compare aimed at a different ref.
+	Publication *CanonicalFreshness `json:"publication,omitempty"`
 }
 
 // managedWorktreeLocation is the shared, boundary-aware interpretation of a
@@ -814,7 +825,10 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	}
 	if gitDir == commonDir {
 		if branch == "" {
-			return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
+			return GuardResult{}, fmt.Errorf(
+				"detached HEAD is not allowed for development at %s: a commit made here is reachable from no branch, so `git push` can report \"Everything up-to-date\" while the work is orphaned. Check out the branch first",
+				root,
+			)
 		}
 		result := GuardResult{Path: root, Branch: branch, Kind: "canonical"}
 		result.CanonicalDir = root
@@ -884,7 +898,10 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if branch == "" {
 		operation := transientHistoryOperation(ctx, root, gitDir)
 		if operation == "" {
-			return GuardResult{}, fmt.Errorf("detached HEAD is not allowed for development at %s", root)
+			return GuardResult{}, fmt.Errorf(
+				"detached HEAD is not allowed for development at %s: a commit made here is reachable from no branch, so `git push` can report \"Everything up-to-date\" while the work is orphaned. Check out the branch first",
+				root,
+			)
 		}
 		result.Transient = true
 		result.TransientOperation = operation
@@ -899,6 +916,13 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		if !admission.Admitted {
 			return GuardResult{}, fmt.Errorf("%s\n  %s", admission.Reason, admission.Remedy)
 		}
+	}
+	// Publication is checked last and only on request: it is the one part of
+	// guard that needs the network, and a commit or push hook must never
+	// depend on reaching origin. The caller that asks for it is verifying a
+	// push that has already happened.
+	if options.CheckPublication {
+		result.Publication = inspectPublication(ctx, root, branch)
 	}
 	return result, nil
 }
