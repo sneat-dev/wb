@@ -175,8 +175,14 @@ func PreparePublishedValidationFailureForwardRepair(ctx context.Context, options
 	if err != nil {
 		return WorktreeMergePublishedForwardRepair{}, err
 	}
-	if currentTarget != options.ExpectedCurrentTargetSHA || currentTarget != supersession.CurrentTargetSHA {
+	if currentTarget != options.ExpectedCurrentTargetSHA {
 		return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("current target %s does not match pinned repair and self-supersession target evidence", currentTarget)
+	}
+	if currentTarget != supersession.CurrentTargetSHA {
+		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
+		if ancestorErr != nil || !contains {
+			return WorktreeMergePublishedForwardRepair{}, fmt.Errorf("current target %s does not descend from self-supersession target %s", currentTarget, supersession.CurrentTargetSHA)
+		}
 	}
 	roots := publishedForwardRepairRoots(originalClaim.BaseSHA, receipt, supersession, currentTarget, sources)
 	if correctionHash != "" {
