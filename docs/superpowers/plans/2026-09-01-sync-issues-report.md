@@ -1351,3 +1351,31 @@ git push -u origin sync-issues-report
 **Known deviation from the spec:** the spec's `RunMeta` example showed the header with a `Machine:` field; it is omitted because `RunMeta` has no machine identity and adding one would pull `internal/remotestate` config into a pure renderer. The spec's own output sample already omits it.
 
 **Extension beyond the spec's literal text:** the spec's failed-run example shows only the `syncOwners` path. Task 5 also reports a `fleet()` discovery failure through the same `RunErr` field — both are "a run that failed before scanning", which is how the spec frames the case.
+
+---
+
+## Corrections after adversarial review
+
+This plan was red-teamed after execution. It was factually accurate about the
+codebase — every API, line number, flag and test name checked out — but it was
+never validated **against itself**. Three defect classes resulted:
+
+1. **Prescribed test assertions that its own prescribed code cannot satisfy.**
+   Task 2 asserted the substring `"git push -u origin fix/auth"` against code
+   emitting `git -C <path> push -u origin <branch>`; and `"unarchive"` against
+   prose beginning `"Unarchive"`. Both are unsatisfiable. The cheapest fix
+   available at the keyboard was the unsafe one — deleting `-C <path>`, turning
+   a repo-anchored command into one acting on the reader's current repository —
+   and that is what shipped until review caught it.
+2. **Reachable states never fed through the prescribed renderers.** A detached
+   HEAD (`Tracking.Branch == ""`), a failed clone (`Repo.Path == ""`), and
+   `Failed` combined with `ArchivedNotPruned` are all producible by
+   `fleetsync.Sync`, and all three rendered nonsense.
+3. **A test-hygiene pattern copied on the production side only.** Task 4 took
+   its atomic writer from `internal/checkoutmarker` but not that file's
+   permissive-filesystem skip guard, and Task 5 repeated the omission.
+
+**For future plans of this shape:** after writing, replay every prescribed
+assertion against the prescribed code in the same task, and feed every state
+the target package can produce through every prescribed renderer. Both are
+mechanical and would have caught all of the above before any code was written.

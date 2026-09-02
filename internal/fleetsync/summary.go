@@ -72,7 +72,15 @@ func needsAttention(result Result) bool {
 		// pruning was not requested still deserves a visible line: otherwise
 		// turning pruning off would also make archived repositories
 		// disappear from the report entirely.
-		return result.ArchivedNotPruned
+		//
+		// Only when it is otherwise fine, though. ArchivedNotPruned is set on
+		// whatever syncArchivedWithoutPruning's inner sync returned, so a
+		// failed or dirty archived clone carries it too — and selecting those
+		// here put them in this group AND in Errors, double-counting one
+		// repository and letting a renderer describe a failure as merely
+		// "archived, not pruned". A repository that failed is reported as a
+		// failure; only a benign one is reported as archived-not-pruned.
+		return result.ArchivedNotPruned && isBenignStatus(result.Status)
 	}
 }
 
