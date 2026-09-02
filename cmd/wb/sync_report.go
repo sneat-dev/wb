@@ -51,7 +51,11 @@ func writeSyncIssuesReport(
 		_, _ = fmt.Fprintln(errOut, "sync issues report not written:", err)
 		return
 	}
-	_, _ = fmt.Fprintf(out, "Issues report: %s\n", path)
+	groups := fleetsync.Summary(results)
+	attention, _ := fleetsync.SummaryGroupByLabel(groups, "Needs attention")
+	errors, _ := fleetsync.SummaryGroupByLabel(groups, "Errors")
+	_, _ = fmt.Fprintf(out, "Sync issues: %d records — errors on %d repos and %d repos require attention; details in %s\n",
+		len(errors.Results)+len(attention.Results), len(errors.Results), len(attention.Results), path)
 }
 
 // writeSyncIssuesFile replaces the report through a temporary file in the same
