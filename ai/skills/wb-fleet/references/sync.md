@@ -92,3 +92,30 @@ commit and may no longer hold — re-run `wb sync` rather than acting on it. Thi
 matters most for the destructive options (resetting a clone to its upstream,
 discarding commits): those are unrecoverable if the repository changed after
 the report was written.
+
+## Deletion receipts for --prune-archived
+
+`wb sync --prune-archived` is the only WB operation that removes a canonical
+clone. Every removal writes a receipt under
+`~/.wb/reports/sync-prune-archived/` before anything is deleted:
+
+```json
+{
+  "phase": "removed",
+  "repository": "owner/old-repo",
+  "clone_path": "/home/you/projects/owner/old-repo",
+  "head_sha": "9f1c2ab7…",
+  "reason": "archived on GitHub, clean, nothing unpushed",
+  "created_at": "…",
+  "removed_at": "…"
+}
+```
+
+The archived repository still exists on GitHub — read-only, but intact — so
+`repository` plus `head_sha` is what makes a deletion undoable: re-clone and
+check out that commit.
+
+A receipt that cannot be written **blocks the deletion**; sync reports the
+repository as failed and leaves the clone alone. A receipt still at phase
+`planned` means a run stopped mid-deletion — check whether the clone is
+actually gone.
