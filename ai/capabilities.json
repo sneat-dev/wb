@@ -5704,7 +5704,8 @@
               "modes": [
                 "Clones missing repositories and fast-forwards clean ones; an archived repository is treated like any other by default (pulled, never deleted).",
                 "--prune-archived deletes a local clone confirmed archived on GitHub only when it passes the exact internal/archiveprune.Evaluate safety predicate that 'wb archive clean' uses (shared code, not a reimplementation); without it, an archived repository's clone is still reported so it is never silently indistinguishable from an ordinary one.",
-                "--publish runs wb remote publish after a clean sync; a publish failure is reported and does not change the sync exit code."
+                "--publish runs wb remote publish after a clean sync; a publish failure is reported and does not change the sync exit code.",
+                "Every run writes ~/.wb/last-sync-issues.md (honouring $WB_HOME): a Markdown report of only the repositories needing attention plus errors, with read-only inspection commands and remediation options. It is written even on a clean run (stating no issues), on --dry-run (stamped so the reader knows the fleet was not modified), and when the run fails before scanning; a report that cannot be written is warned about on stderr and never changes the sync exit code."
               ]
             }
           ],
@@ -5749,6 +5750,11 @@
               "kind": "integration"
             },
             {
+              "path": "cmd/wb/sync_report_test.go",
+              "name": "TestFinishSyncWritesReportEvenWhenARepositoryFailed",
+              "kind": "integration"
+            },
+            {
               "path": "internal/fleetsync/fleetsync_test.go",
               "name": "TestSyncArchivedDefaultDoesNotPrune",
               "kind": "integration"
@@ -5772,12 +5778,17 @@
               "path": "internal/fleetsync/fleetsync_test.go",
               "name": "TestSyncSkipDirty",
               "kind": "integration"
+            },
+            {
+              "path": "internal/fleetsync/issues_test.go",
+              "name": "TestIssuesMarkdownRendersDivergedEntry",
+              "kind": "unit"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Canonical clones are always resolved under the deterministic owner/repository layout; dirty or unpushed clones are preserved. Archived-repository deletion is opt-in via --prune-archived and always defers to internal/archiveprune's predicate."
+      "notes": "Canonical clones are always resolved under the deterministic owner/repository layout; dirty or unpushed clones are preserved. Archived-repository deletion is opt-in via --prune-archived and always defers to internal/archiveprune's predicate. The issues report at ~/.wb/last-sync-issues.md is the stable path to hand an agent; it is overwritten every run and never accumulates history."
     },
     {
       "id": "wb.verify",

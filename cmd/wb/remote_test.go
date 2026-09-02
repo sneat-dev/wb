@@ -500,7 +500,7 @@ func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 		return nil, errors.New("store unreachable")
 	}
 	var out, errOut bytes.Buffer
-	if code := finishSync(nil, true, false, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(fleetsync.RunMeta{}, nil, true, false, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(errOut.String(), "remote publish failed (sync itself succeeded): store unreachable") {
@@ -511,7 +511,7 @@ func TestFinishSyncPublishFailureIsReportedButExitStaysZero(t *testing.T) {
 func TestFinishSyncPublishesAfterCleanSync(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out, errOut bytes.Buffer
-	if code := finishSync(nil, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(fleetsync.RunMeta{}, nil, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0 (stderr %q)", code, errOut.String())
 	}
 	if !strings.Contains(out.String(), "published alice/laptop") {
@@ -523,7 +523,7 @@ func TestFinishSyncSkipsPublishWhenSyncFailed(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	var out, errOut bytes.Buffer
 	failed := []fleetsync.Result{{Status: fleetsync.Failed}}
-	if code := finishSync(failed, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
+	if code := finishSync(fleetsync.RunMeta{}, failed, true, false, f.deps("alice", time.Now().UTC()), f.projectsRoot, "", 1, &out, &errOut); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
 	if strings.Contains(out.String(), "published") || strings.Contains(errOut.String(), "publish") {
@@ -542,7 +542,7 @@ func TestFinishSyncDryRunSkipsPublish(t *testing.T) {
 		return nil, errors.New("must not be called")
 	}
 	var out, errOut bytes.Buffer
-	if code := finishSync(nil, true, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
+	if code := finishSync(fleetsync.RunMeta{}, nil, true, true, deps, f.projectsRoot, "", 1, &out, &errOut); code != 0 {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if !strings.Contains(out.String(), "skipping remote publish") {

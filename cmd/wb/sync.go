@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
@@ -120,14 +121,30 @@ func resolveSyncOwners(
 }
 
 func runSync(ctx context.Context, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps) int {
+	startedAt := time.Now().UTC()
+	meta := func(scanned int, runErr error) fleetsync.RunMeta {
+		return fleetsync.RunMeta{
+			StartedAt:     startedAt,
+			ProjectsRoot:  projectsRoot,
+			Scanned:       scanned,
+			DryRun:        dryRun,
+			PruneArchived: pruneArchived,
+			RunErr:        runErr,
+		}
+	}
+
 	owners, err := syncOwners(only)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wb: %v\nRe-authenticate with: gh auth login -h github.com\n", err)
+		// Broken authentication leaves every clone unmanaged. That is a
+		// finding worth handing to an agent, not something to leave on stderr.
+		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, os.Stdout, os.Stderr)
 		return exitFindings
 	}
 	repos, err := fleet(projectsRoot, filter, func() []string { return owners })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discovery error:", err)
+		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, os.Stdout, os.Stderr)
 		return 1
 	}
 
@@ -159,15 +176,22 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 		}
 	}
 
-	return finishSync(results, publish, dryRun, deps, projectsRoot, filter, workers, os.Stdout, os.Stderr)
+	return finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, os.Stdout, os.Stderr)
 }
 
-// finishSync maps sync results to an exit code and, when asked, publishes
-// this machine's state. A publish failure is reported to errOut and never
-// changes the sync exit code. dryRun short-circuits publish entirely: a
-// `--dry-run --publish` sync changed nothing, so publishing its (unreal)
-// outcome would be a lie.
-func finishSync(results []fleetsync.Result, publish, dryRun bool, deps remoteDeps, projectsRoot, filter string, workers int, out, errOut io.Writer) int {
+// finishSync maps sync results to an exit code, writes the issues report, and,
+// when asked, publishes this machine's state. A publish failure is reported to
+// errOut and never changes the sync exit code. dryRun short-circuits publish
+// entirely: a `--dry-run --publish` sync changed nothing, so publishing its
+// (unreal) outcome would be a lie.
+func finishSync(meta fleetsync.RunMeta, results []fleetsync.Result, publish, dryRun bool, deps remoteDeps, projectsRoot, filter string, workers int, out, errOut io.Writer) int {
+	// Written before the error short-circuit below, because a run WITH errors
+	// is exactly the run whose report matters most. Unlike the checkout
+	// markers, this also runs for a dry run: dry-run detection is read-only
+	// and identical, so its findings are real — IssuesMarkdown stamps the
+	// report so the reader knows the fleet was not actually pulled.
+	writeSyncIssuesReport(meta, results, projectsRoot, out, errOut)
+
 	hasErrors := false
 	for _, res := range results {
 		if res.Status == fleetsync.Failed {
