@@ -43,6 +43,7 @@ wb deps set <kind> <dep>@<v> # set existing dependency references to an exact ve
 wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves (--latest/--scope, --exclude/--hold)
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
 wb deps drift [path] [flags] # report go/npm dependency convergence, replaces, splits, behind-latest
+wb deps peers <pkg> --against <path> # judge a published npm package's peerDependencies against one checkout
 wb deps policy <verb> [flags] # enforce which dependencies and import directions are allowed
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
@@ -1104,6 +1105,46 @@ wb deps drift --fleet --online --dependency example.com/sdk
 # "is the fleet on the latest of our own npm packages?"
 wb deps drift --fleet --ecosystem npm --online --scope '@sneat/*' --fail-on-behind
 ```
+
+### `wb deps peers` — can I reuse this package here?
+
+`deps drift` asks whether checkouts agree with each other. `deps peers` asks a
+different question about one checkout: does this published npm package's
+contract fit it?
+
+That question is normally answered by running the install and reading whatever
+the package manager says about peer conflicts — which mutates the checkout to
+find out, and whose warnings do not distinguish "you are two majors behind"
+from "the publisher marked this peer optional". `deps peers` reads the
+published package's own `peerDependencies` and `peerDependenciesMeta`, reads
+what the target checkout actually resolves for each of them, and prints the
+answer:
+
+```sh
+wb deps peers @sneat/core --against ../renewon
+wb deps peers @sneat/core@0.31.0 --against ../renewon --format json
+```
+
+Each peer is judged against the version the governing `pnpm-lock.yaml` or
+`package-lock.json` installs, not the caret range a manifest declares — a range
+cannot be judged against another range. Where no lockfile governs the manifest,
+the row's source says so rather than presenting a range as an installed
+version.
+
+| verdict | meaning |
+|---|---|
+| `satisfied` | the target's resolved version is admitted by the peer range |
+| `unsatisfied` | the target has it, at a version the range rejects |
+| `missing` | the target does not have it at all |
+| `optional_missing` | the publisher marked it optional; the target omits it |
+| `unevaluated` | WB will not guess this specifier shape, and says so |
+
+`unevaluated` is never a pass — WB evaluates the specifier subset the fleet's
+manifests actually use and declines to judge a union, a hyphen range, or a
+`workspace:`/`catalog:` protocol rather than reporting it as compatible. The
+command exits `1` when any required peer is `unsatisfied` or `missing`, and
+nothing is installed or written, so it is safe to run against a checkout
+someone else is working in.
 
 ### `wb deps graph` — one scan, three dependency views
 

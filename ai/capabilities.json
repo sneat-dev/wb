@@ -1795,6 +1795,93 @@
       "notes": "Strict discovery errors remain visible rather than producing a silently incomplete rollout graph."
     },
     {
+      "id": "wb.deps.peers",
+      "feature_refs": [
+        "spec/features/npm-peer-compatibility/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb deps peers",
+              "flags": [
+                "--against",
+                "--format",
+                "--retry",
+                "--timeout"
+              ],
+              "modes": [
+                "Reads the published package's own peerDependencies and peerDependenciesMeta from the registry, optionally at an exact pinned version, and judges each one against the target checkout named by --against. Nothing is installed and nothing is written.",
+                "Each peer is judged against the version the governing pnpm-lock.yaml or package-lock.json actually resolves, not the range a manifest declares; when no lockfile governs the manifest the row's source says so instead of presenting a range as an installed version.",
+                "Five verdicts: satisfied, unsatisfied, missing, optional_missing (the publisher marked the peer optional), and unevaluated (a specifier shape outside WB's evaluated subset, reported with its reason and never counted as a pass).",
+                "Exits 1 when any required peer is unsatisfied or missing; optional_missing and unevaluated rows do not by themselves fail the run."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb deps peers --help",
+              "contains": [
+                "--against",
+                "--format",
+                "unsatisfied",
+                "optional_missing",
+                "unevaluated"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-deps/references/peers.md",
+              "marker": "# Answer \"can I reuse this package here\"",
+              "examples": [
+                "wb deps peers @sneat/core --against ../renewon",
+                "wb deps peers @sneat/core@0.31.0 --against ../renewon"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/deps/peers_test.go",
+              "name": "TestInspectPeersJudgesEveryPublishedRequirementAgainstTheLockedVersion",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/deps/peers_test.go",
+              "name": "TestPeersFailedIgnoresUnevaluatedButTheReportRefusesToCallItAPass",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/deps/peers_test.go",
+              "name": "TestInspectPeersLabelsADeclaredSpecifierWithNoLockfileEvidence",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/deps_peers_test.go",
+              "name": "TestDepsPeersExitsWithFindingsAndPrintsTheVerdictTable",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The command answers a reuse question with evidence instead of an install attempt, so it never mutates the target checkout. An unevaluated verdict is deliberate: WB evaluates the npm specifier subset the fleet's manifests actually use and refuses to guess a union, hyphen range, or non-registry protocol rather than reporting it as compatible."
+    },
+    {
       "id": "wb.deps.policy.check",
       "feature_refs": [
         "spec/features/dependency-policy/README.md"

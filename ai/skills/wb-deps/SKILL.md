@@ -11,6 +11,7 @@ Choose the narrowest operation:
 |---|---|---|
 | Understand consumers, versions, or release order | `wb deps graph` | [graph.md](references/graph.md) |
 | Find version divergence, replaces, or major-path splits | `wb deps drift` | [drift.md](references/drift.md) |
+| Decide whether a published npm package can be reused in one checkout | `wb deps peers` | [peers.md](references/peers.md) |
 | Set one known version in existing references | `wb deps set` | [set.md](references/set.md) |
 | Propagate published Go or npm releases through consumers | `wb deps bump` | [bump.md](references/bump.md) |
 | Publish approved npm packages, verify the registry, and propagate consumers | `wb deps publish npm` | [publish-npm.md](references/publish-npm.md) |
