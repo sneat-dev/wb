@@ -40,6 +40,18 @@ campaign. That explicit authority is persisted in the campaign report, so a
 `--resume` that omits `--parallel` restores it rather than regaining the
 read-only floor.
 
+Add `--fetch-cache` (opt-in) to stop later waves from re-fetching repositories
+this run never wrote to: a repository fetched during one wave's discovery is
+not fetched again by that wave's engine or by later waves' discovery. Any
+repository the run ever pushed to, opened a PR for, or merged is permanently
+excluded from the cache for the rest of the run — WB merges server-side, so
+the landed default-branch commits are invisible to local-push accounting and
+only an unconditional re-fetch observes them. The cache is process-local and
+never persisted; a fresh invocation (including `--resume`) always starts with
+full fetches. Honest expectation: at the default read-only pool of 4, this
+saves roughly a minute of discovery per wave on a ~450-repository fleet —
+worthwhile across a many-wave campaign, not a silver bullet.
+
 Leave `--refresh-after` unset to use the `5m` default. If a release event has
 waited longer than that, WB checks for a newer semantic version immediately
 before a downstream build and uses it when available. This avoids paying for a

@@ -108,6 +108,11 @@ type Options struct {
 	Checks           []quality.Check
 	Timeout          time.Duration
 	Retry            int
+	// CheckPollInterval overrides the GitHub-check polling delay of orchestrated
+	// CI waits. A zero value uses the production default. It is primarily
+	// useful for deterministic lifecycle tests (see
+	// orchestrate.Options.CheckPollInterval).
+	CheckPollInterval time.Duration
 	// GoPrivate supplies comma-separated Go module path patterns that must not
 	// be looked up through a public module proxy or checksum database. The
 	// patterns are merged with the caller's GOPRIVATE/GONOPROXY/GONOSUMDB only

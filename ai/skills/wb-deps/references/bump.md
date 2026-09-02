@@ -43,6 +43,15 @@ When `--parallel` is left at its default, read-only pools — per-wave graph
 discovery fetches and registry release observations — widen to a floor of 4
 workers; an explicit `--parallel` bounds every pool in both directions.
 
+`--fetch-cache` (opt-in) memoizes origin fetches within one invocation:
+repositories this run never pushed to, opened a PR for, or merged are fetched
+once instead of once per wave. A repository the run ever touched is re-fetched
+on every later discovery — WB merges server-side, so its default-branch
+commits appear with no local push and only a real fetch can observe them. The
+cache is process-local; a fresh invocation (including `--resume`) always
+fetches. Expect roughly a minute saved per wave on a ~450-repository fleet at
+the default read-only pool of 4.
+
 `--refresh-after` defaults to `5m`. Before starting a downstream build from an
 older event, WB checks for a newer semantic version and substitutes it. This
 avoids spending CI on a version already superseded during a long provider

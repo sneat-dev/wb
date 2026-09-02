@@ -67,6 +67,16 @@ type Options struct {
 	// DependencyCampaign marks worktrees created by dependency set/bump
 	// campaigns. Their supersession receipts require exact dependency proof.
 	DependencyCampaign bool
+	// FetchMemo, when non-nil, lets EnsureCanonical skip re-fetching a
+	// repository this run has already fetched and never pushed to, opened a
+	// pull request for, or merged (see FetchMemo). Only a campaign loop that
+	// alternates fleet-wide discovery and mutation over the same repositories
+	// within one process — wb deps bump with --fetch-cache — threads one memo
+	// through every discovery and wave lifecycle it runs. Every other caller
+	// leaves it nil and keeps the unconditional engine fetch: for deps set
+	// --fleet there is no prior discovery, so that fetch is the operation's
+	// only origin read and must never be skipped.
+	FetchMemo *FetchMemo
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.
