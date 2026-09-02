@@ -11,6 +11,7 @@ wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress -
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 ```
@@ -70,6 +71,23 @@ repair without changing the historical receipt or Work Log. A candidate or
 landing that is not an ancestor of the current target, a missing active claim,
 or any dirty/drifted receipt/source identity refuses closed; branch names,
 patch similarity, and PR state are never substitutes for the ancestry proof.
+
+When a land `conflict` receipt is stuck because its own landing-result read
+failed on I/O or environment error -- most commonly because the candidate
+worktree was already removed before a resume could confirm the server
+landing -- use `acknowledge-stranded-landing` instead. It never reads or
+requires the candidate or any receipted source worktree. It proves, using
+only GitHub's own remote state, that the receipted pull request reports
+MERGED at the exact receipted candidate head, that the server merge commit
+and the receipted candidate are both contained in the freshly fetched current
+remote target, and that the receipted candidate still contains its own
+recorded pre-merge target. It accepts only a conflict receipt that never
+recorded a landing SHA but did publish an exact candidate in a pull request; a
+receipt that already has a landing SHA is `acknowledge-landed-failed`'s
+territory instead. It writes a separate audited acknowledgement and frees the
+merger lane without changing the historical receipt or Work Log. A pull
+request that is not proved MERGED, or a merge commit or candidate not proved
+contained in the current remote target, refuses closed.
 
 When an old prepare `validation_failed` candidate did not land and its source
 was later squash-landed, `seal-validation-failed` can prepare the narrow
