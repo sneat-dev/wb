@@ -48,3 +48,26 @@ them for attention. Never clean or reset them merely to make sync pass.
 
 Canonical clones should remain on their default branch. Make feature changes
 through `$wb-worktrees`.
+
+# Read the issues report
+
+Every `wb sync` writes `~/.wb/last-sync-issues.md` (or
+`$WB_HOME/last-sync-issues.md`). It lists only the repositories that need
+attention plus the errors — never the successful ones — with the local clone
+path, the exact state, read-only inspection commands, and the resolution
+options for each.
+
+```sh
+cat ~/.wb/last-sync-issues.md
+```
+
+The path is stable and the file is overwritten every run, so it always
+describes the most recent sync and never a stale one. A clean run still writes
+it, saying explicitly that there are no issues; a run that failed before
+scanning reports that failure instead, because broken GitHub authentication
+leaves every clone unmanaged.
+
+Read it before deciding what to fix. Run the inspection commands before any
+resolution command: the inspect commands are read-only and safe as-is, while
+the resolution options are choices to make after reading their output, not a
+script to run top to bottom.
