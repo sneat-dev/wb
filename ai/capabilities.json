@@ -1324,7 +1324,7 @@
                 "Propagates published Go or npm release events through dependency-ordered consumer waves.",
                 "--validation=full runs local lint, test, and build checks before publication; --validation=fast retains repository push hooks and is accepted only with --merge, which requires passing exact PR-head GitHub checks.",
                 "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered. When --parallel is left at its default, read-only pools (per-wave graph discovery fetches and registry release observations) widen to a floor of 4 workers; an explicit --parallel bounds every pool in both directions.",
-                "--fetch-cache (opt-in) memoizes origin fetches within one invocation for repositories the campaign never pushed to, opened a PR for, or merged; a repository the run ever touched is re-fetched on every later discovery because WB merges server-side and those default-branch commits are invisible to local-push accounting. State is process-local only: a fresh invocation (including --resume) always fetches."
+                "--fetch-cache (opt-in) memoizes DISCOVERY fetches for up to 15 minutes within one invocation for repositories the campaign never pushed to, opened a PR for, or merged; touched repositories always re-fetch (WB merges server-side, invisibly to local-push accounting) and the wave engine's pre-mutation fetch is never skipped. Process-local: a fresh invocation (including --resume) always fetches. Avoid when others may land on main mid-campaign."
               ]
             }
           ],
@@ -1394,6 +1394,21 @@
             {
               "path": "internal/orchestrate/fetch_memo_test.go",
               "name": "TestEnsureCanonicalSkipsRefetchOnlyForMemoizedUntouchedRepository",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestEnsureCanonicalMutationLifecycleAlwaysFetchesDespiteMemo",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestRunWithSharedFetchMemoInvalidatesPullRequestRepository",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestRunMarksRepositoryTouchedEvenWhenPushFails",
               "kind": "integration"
             }
           ],

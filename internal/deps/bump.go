@@ -48,6 +48,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, ValidationMode: options.ValidationMode, Parallel: lifecycle.Parallel,
 		ParallelExplicit:       options.ParallelExplicit,
 		RegistryLookupsSkipped: options.NoRegistry,
+		FetchCacheEnabled:      options.FetchCache,
 	}
 	if lifecycle.Verify {
 		report.Verification = append(report.Verification, lifecycle.Checks...)
@@ -67,6 +68,10 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	}
 	report.ValidationMode = options.ValidationMode
 	report.Verification = currentVerification(lifecycle)
+	// A resumed report reflects THIS invocation's fetch-cache policy: the
+	// memo is process-local, so a previous run's setting attributes nothing
+	// about the discovery passes this run performs.
+	report.FetchCacheEnabled = options.FetchCache
 	if err := persistBumpReport(options, report); err != nil {
 		return report, err
 	}
@@ -101,6 +106,11 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		// default (--parallel 1) campaign.
 		discoveryLifecycle := lifecycle
 		discoveryLifecycle.Parallel = readOnlyWorkerCount(lifecycle.Parallel, options.ParallelExplicit, len(repositories))
+		// Only this read-only pass may consume the fetch memo; the wave engine
+		// below inherits lifecycle with FetchMemoDiscovery false, so mutation
+		// bases are always freshly fetched (see orchestrate.Options).
+		discoveryLifecycle.FetchMemoDiscovery = true
+		skipsBeforeDiscovery := lifecycle.FetchMemo.Skips()
 		var graph bumpFleetGraph
 		var err error
 		if options.Ecosystem == EcosystemNPM {
@@ -138,6 +148,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
 		}
+		discoveryFetchesSkipped := lifecycle.FetchMemo.Skips() - skipsBeforeDiscovery
 		report.Phase = BumpPhasePlanningWave
 		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "plan_wave", State: progresspkg.Running, Wave: waveIndex})
 		if err := persistBumpReport(options, report); err != nil {
@@ -159,6 +170,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			wave := BumpWaveReport{
 				Index: waveIndex, Status: "awaiting_release", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 				Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
+				DiscoveryFetchesSkipped: discoveryFetchesSkipped,
 			}
 			if lifecycle.DryRun {
 				wave.Status = "planned"
@@ -191,6 +203,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				report.Waves = append(report.Waves, BumpWaveReport{
 					Index: waveIndex, Status: "completed", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 					Refreshes: refreshes, Releases: carriers,
+					DiscoveryFetchesSkipped: discoveryFetchesSkipped,
 				})
 			}
 			report.Status = "completed"
@@ -203,6 +216,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		wave := BumpWaveReport{
 			Index: waveIndex, Status: "running", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 			Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
+			DiscoveryFetchesSkipped: discoveryFetchesSkipped,
 		}
 		affectedRepositories := selectWaveRepositories(repositories, targetsByRepository)
 		affectedModules := graph.affectedModules(targetsByRepository)

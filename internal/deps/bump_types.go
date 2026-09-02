@@ -37,13 +37,17 @@ type BumpOptions struct {
 	NoRegistry bool
 	// FetchCache (the opt-in --fetch-cache flag) shares one process-local
 	// orchestrate.FetchMemo across every graph-discovery and wave lifecycle of
-	// this invocation: a repository fetched during one wave's discovery is not
-	// re-fetched by the same wave's engine or by later waves' discovery UNLESS
-	// this run has ever pushed to, opened a PR for, or merged into it — such a
-	// repository is permanently un-memoizable for the rest of the run, because
-	// WB merges server-side and the resulting default-branch commits are
-	// invisible to any local-push accounting. Nothing is persisted: a fresh
-	// invocation (including --resume) always starts with an empty memo.
+	// this invocation. Only read-only DISCOVERY passes consume it: a
+	// repository fetched during one wave's discovery is not re-fetched by
+	// later waves' discovery while the memoized fetch is younger than
+	// orchestrate.FetchMemoMaxAge, UNLESS this run has ever pushed to, opened
+	// a PR for, or merged into it — such a repository is permanently
+	// un-memoizable for the rest of the run, because WB merges server-side
+	// and the resulting default-branch commits are invisible to any
+	// local-push accounting. The wave engine's own pre-mutation fetch is
+	// never skipped, so branch bases are always freshly fetched. Nothing is
+	// persisted: a fresh invocation (including --resume) always starts with
+	// an empty memo.
 	FetchCache bool
 
 	// Now is injectable for deterministic event-refresh tests.
@@ -91,7 +95,12 @@ type BumpReport struct {
 	ParallelExplicit bool `yaml:"parallel_explicit,omitempty"`
 	// RegistryLookupsSkipped records that this plan intentionally omitted
 	// registry-derived carrier and stale-event evidence.
-	RegistryLookupsSkipped bool                          `yaml:"registry_lookups_skipped,omitempty"`
+	RegistryLookupsSkipped bool `yaml:"registry_lookups_skipped,omitempty"`
+	// FetchCacheEnabled records whether THIS invocation ran with the opt-in
+	// --fetch-cache discovery memo, so a post-mortem (duplicate PR, stale
+	// base, spun waves) can attribute or rule out memoized discovery reads.
+	// It always reflects the live invocation, never a resumed report's past.
+	FetchCacheEnabled      bool                          `yaml:"fetch_cache_enabled,omitempty"`
 	DiscoverySkips         []GraphDiscoverySkip          `yaml:"discovery_skips,omitempty"`
 	DefaultBranchFallbacks []GraphDefaultBranchFallback  `yaml:"default_branch_fallbacks,omitempty"`
 	ManifestWarnings       []GraphManifestWarning        `yaml:"manifest_warnings,omitempty"`
@@ -135,6 +144,10 @@ type BumpWaveReport struct {
 	DeferredRepositories []string              `yaml:"deferred_repositories,omitempty"`
 	Repositories         []RepositoryReport    `yaml:"repositories"`
 	Releases             []ReleaseObservation  `yaml:"releases,omitempty"`
+	// DiscoveryFetchesSkipped counts the origin fetches this wave's graph
+	// discovery reused from the run's fetch memo (always zero without
+	// --fetch-cache), attributing exactly how much the cache saved per wave.
+	DiscoveryFetchesSkipped int `yaml:"discovery_fetches_skipped,omitempty"`
 }
 
 // ReleaseEventRefresh records the inexpensive registry check WB performs

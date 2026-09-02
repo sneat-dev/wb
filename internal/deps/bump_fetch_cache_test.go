@@ -353,6 +353,9 @@ func runFetchCacheCampaign(t *testing.T, fixture fetchCacheFixture, fetchCache b
 	if landed, err := fixture.remoteMainSelects("acme/app", "@acme/lib", "1.1.0"); err != nil || !landed {
 		t.Fatalf("acme/app main must select @acme/lib 1.1.0 after the server-side merge (landed=%v err=%v)", landed, err)
 	}
+	if report.FetchCacheEnabled != fetchCache {
+		t.Fatalf("report.FetchCacheEnabled = %v, want %v — post-mortems must be able to attribute discovery policy", report.FetchCacheEnabled, fetchCache)
+	}
 	return report
 }
 
@@ -362,27 +365,28 @@ func runFetchCacheCampaign(t *testing.T, fixture fetchCacheFixture, fetchCache b
 // counts:
 //
 //   - repositories the campaign never touched (provider, bystander) are
-//     fetched exactly once for the whole run instead of once per
-//     EnsureCanonical;
+//     fetched exactly once for the whole run instead of once per wave
+//     discovery;
+//   - the wave engine's own pre-mutation fetch is NEVER skipped (lib and app
+//     each pay it), so a branch base is always freshly fetched;
 //   - a repository the run merged is re-fetched by EVERY later discovery
 //     (permanently un-memoizable), which is precisely what lets wave 2 observe
 //     acme/lib's server-side-merged manifest and terminate in 3 waves instead
 //     of spinning to --max-waves or cutting duplicate PRs from a stale base.
 func TestRunBumpFetchCacheMemoizesUntouchedRepositoriesAndInvalidatesMergedOnes(t *testing.T) {
 	fixture := newFetchCacheFixture(t)
-	runFetchCacheCampaign(t, fixture, true)
+	report := runFetchCacheCampaign(t, fixture, true)
 	counts := fixture.fetchCounts(t)
 	want := map[string]int{
-		// wave-1 discovery only; memoized for wave-1 engine and waves 2-3.
+		// wave-1 discovery only; memoized for waves 2-3 discovery.
 		"acme/provider":  1,
 		"acme/bystander": 1,
-		// wave-1 discovery, then merged in wave 1: waves 2 and 3 must refetch.
-		// The wave-1 engine hit (no second intra-wave fetch) is what keeps this
-		// at 3 rather than 4.
-		"acme/lib": 3,
-		// wave-1 discovery (memoized through wave-2 discovery AND the wave-2
-		// engine), then merged in wave 2: wave 3 must refetch.
-		"acme/app": 2,
+		// wave-1 discovery + wave-1 engine (mutation bases never skip), then
+		// merged in wave 1: waves 2 and 3 discovery must refetch.
+		"acme/lib": 4,
+		// wave-1 discovery (memoized through wave-2 discovery) + wave-2 engine,
+		// then merged in wave 2: wave 3 discovery must refetch.
+		"acme/app": 3,
 	}
 	for repository, wanted := range want {
 		if counts[repository] != wanted {
@@ -392,6 +396,16 @@ func TestRunBumpFetchCacheMemoizesUntouchedRepositoriesAndInvalidatesMergedOnes(
 	if total := len(counts); total != len(want) {
 		t.Errorf("fetches touched %d repositories, want %d: %v", total, len(want), counts)
 	}
+	// Per-wave attribution in the persisted report: wave 1 skips nothing (cold
+	// memo), wave-2 discovery reuses provider+bystander+app, wave-3 discovery
+	// reuses provider+bystander.
+	skipped := make([]int, 0, len(report.Waves))
+	for _, wave := range report.Waves {
+		skipped = append(skipped, wave.DiscoveryFetchesSkipped)
+	}
+	if len(skipped) != 3 || skipped[0] != 0 || skipped[1] != 3 || skipped[2] != 2 {
+		t.Errorf("per-wave discovery skips = %v, want [0 3 2]", skipped)
+	}
 }
 
 // TestRunBumpWithoutFetchCacheRefetchesEveryWave pins the opt-out default:
@@ -400,7 +414,7 @@ func TestRunBumpFetchCacheMemoizesUntouchedRepositoriesAndInvalidatesMergedOnes(
 // wave-engine repository — today's behavior, unchanged.
 func TestRunBumpWithoutFetchCacheRefetchesEveryWave(t *testing.T) {
 	fixture := newFetchCacheFixture(t)
-	runFetchCacheCampaign(t, fixture, false)
+	report := runFetchCacheCampaign(t, fixture, false)
 	counts := fixture.fetchCounts(t)
 	want := map[string]int{
 		"acme/provider":  3, // 3 wave discoveries
@@ -411,6 +425,11 @@ func TestRunBumpWithoutFetchCacheRefetchesEveryWave(t *testing.T) {
 	for repository, wanted := range want {
 		if counts[repository] != wanted {
 			t.Errorf("%s fetched %d times, want %d (all counts: %v)", repository, counts[repository], wanted, counts)
+		}
+	}
+	for _, wave := range report.Waves {
+		if wave.DiscoveryFetchesSkipped != 0 {
+			t.Errorf("wave %d reports %d skipped discovery fetches without --fetch-cache, want 0", wave.Index, wave.DiscoveryFetchesSkipped)
 		}
 	}
 }
