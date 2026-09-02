@@ -65,6 +65,13 @@ func TestProgressModelSyncDoneQuits(t *testing.T) {
 	}
 }
 
+func TestProgressModelUsesAlternateScreen(t *testing.T) {
+	model := NewProgressModel(map[string]int{"sneat-dev": 1}, 1)
+	if !model.View().AltScreen {
+		t.Fatal("sync progress view must use the alternate screen")
+	}
+}
+
 func TestProgressModelCtrlCQuits(t *testing.T) {
 	m := NewProgressModel(nil, 4)
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})

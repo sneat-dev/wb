@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -258,56 +257,4 @@ func TestWriteSyncIssuesReportFileModeIsPrivate(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("report mode = %o, want 0600: it carries verbatim git output that can include a credentialed URL", perm)
 	}
-}
-
-// TestShowResultsBrowserWritesReportBeforeInvokingBrowser guards against a
-// regression to the original ordering (printSyncSummary, then the blocking
-// browser, then the report only in finishSync on return): under that
-// ordering, walking away from the browser — or the terminal dying there —
-// left last-sync-issues.md describing the previous run, or never updated at
-// all. browser is swapped for a fake here because the real one is a
-// bubbletea program that requires a TTY and would hang under `go test`.
-func TestShowResultsBrowserWritesReportBeforeInvokingBrowser(t *testing.T) {
-	home := syncReportHome(t)
-	var out, errOut bytes.Buffer
-	path := filepath.Join(home, "last-sync-issues.md")
-
-	results := []fleetsync.Result{{
-		Repo:   discover.Repo{Org: "o", Name: "broken", Path: "/p/o/broken"},
-		Status: fleetsync.Failed,
-		Err:    errors.New("git pull: transport failure"),
-	}}
-
-	browserCalled := false
-	browserSawReport := false
-	browser := func(got []fleetsync.Result) error {
-		browserCalled = true
-		if !reflect.DeepEqual(got, results) {
-			t.Errorf("browser received %v, want %v", got, results)
-		}
-		contents, err := os.ReadFile(path)
-		browserSawReport = err == nil && strings.Contains(string(contents), "transport failure")
-		return nil
-	}
-
-	showResultsBrowser(syncReportMetaForTest(), results, "/home/ai/projects", true, browser, &out, &errOut)
-
-	if !browserCalled {
-		t.Fatal("browser was not invoked when interactive")
-	}
-	if !browserSawReport {
-		t.Fatal("report was not written (with this run's findings) before the browser ran")
-	}
-}
-
-func TestShowResultsBrowserSkipsBrowserWhenNotInteractive(t *testing.T) {
-	syncReportHome(t)
-	var out, errOut bytes.Buffer
-
-	browser := func([]fleetsync.Result) error {
-		t.Fatal("browser must not run when not interactive")
-		return nil
-	}
-
-	showResultsBrowser(syncReportMetaForTest(), nil, "/home/ai/projects", false, browser, &out, &errOut)
 }

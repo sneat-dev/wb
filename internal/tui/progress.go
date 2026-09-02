@@ -1,5 +1,4 @@
-// Package tui holds the bubbletea models for `wb sync`'s progress display
-// and its post-run interactive results browser.
+// Package tui holds the bubbletea models for `wb sync`'s progress display.
 package tui
 
 import (
@@ -131,5 +130,7 @@ func (m ProgressModel) View() tea.View {
 	for _, f := range shown {
 		fmt.Fprintf(&b, "%s\n", dimStyle.Render("  … "+f.org+"/"+f.name))
 	}
-	return tea.NewView(b.String())
+	view := tea.NewView(b.String())
+	view.AltScreen = true
+	return view
 }

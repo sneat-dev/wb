@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"time"
 
@@ -27,7 +26,7 @@ func newSyncCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Clone/pull/prune local clones to match GitHub (parallel, with a live progress UI)",
+		Short: "Clone/pull/prune local clones to match GitHub (parallel, with a full-screen progress UI)",
 		Long: `Clone missing repositories, fast-forward existing ones, and — only with
 --prune-archived — delete a local clone whose repository is confirmed archived
 on GitHub, exactly when it passes the same safety predicate 'wb archive clean'
@@ -39,7 +38,11 @@ wb.skip-sync).
 Without --prune-archived, an archived repository is never deleted: sync pulls
 its local clone exactly like any other repository's, and the report still
 names it as archived so it is never silently indistinguishable from an
-ordinary clone.`,
+ordinary clone.
+
+When stdout is a terminal, progress uses the full terminal and the final text
+report is written to stderr after the terminal is restored. Piped, CI, and
+--non-interactive runs keep their report on stdout.`,
 		Example: `# Preview fleet reconciliation without changing repositories
 wb sync --dry-run
 
@@ -47,7 +50,7 @@ wb sync --dry-run
 wb sync --org owner-a --org owner-b --parallel 4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			owners := requestedSyncOwners(cmd, only)
-			if code := runSync(cmd.Context(), projectsRoot, filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps()); code != 0 {
+			if code := runSync(cmd.Context(), projectsRoot, filterFlag, owners, workers, dryRun, publish, pruneArchived, defaultRemoteDeps(), cmd.OutOrStdout(), cmd.ErrOrStderr()); code != 0 {
 				return &exitError{
 					code:    code,
 					message: "sync did not complete; see diagnostics above",
@@ -120,7 +123,7 @@ func resolveSyncOwners(
 	return append([]string{user}, orgs...), nil
 }
 
-func runSync(ctx context.Context, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps) int {
+func runSync(ctx context.Context, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps, out, errOut io.Writer) int {
 	startedAt := time.Now().UTC()
 	// discovered is filled in once the fleet is known. Until then a report can
 	// only describe a run that never got that far.
@@ -141,81 +144,58 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 			Discovered: discovered,
 		}
 	}
+	interactive := console.Interactive(out, nonInteractive)
+	reportOut := syncReportWriter(interactive, out, errOut)
 
 	owners, err := syncOwners(only)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "wb: %v\nRe-authenticate with: gh auth login -h github.com\n", err)
+		_, _ = fmt.Fprintf(errOut, "wb: %v\nRe-authenticate with: gh auth login -h github.com\n", err)
 		// Broken authentication leaves every clone unmanaged. That is a
 		// finding worth handing to an agent, not something to leave on stderr.
-		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, os.Stdout, os.Stderr)
+		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, reportOut, errOut)
 		return exitFindings
 	}
 	repos, err := fleet(projectsRoot, filter, func() []string { return owners })
 	discovered = len(repos)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "discovery error:", err)
-		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, os.Stdout, os.Stderr)
+		_, _ = fmt.Fprintln(errOut, "discovery error:", err)
+		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, reportOut, errOut)
 		return 1
 	}
 
 	var results []fleetsync.Result
 	if len(repos) == 0 {
-		fmt.Println("no repos found")
+		_, _ = fmt.Fprintln(out, "no repos found")
 	} else {
 		orgTotal := map[string]int{}
 		for _, r := range repos {
 			orgTotal[r.Org]++
 		}
 
-		// The live progress UI and the results browser both take over the terminal
-		// and wait for keystrokes, so they run only when there is a human at one.
-		interactive := console.Interactive(os.Stdout, nonInteractive)
-
+		// The live progress UI takes over the full terminal, so it runs only when
+		// there is a human at one. Its final text report goes to stderr after the
+		// alternate screen has been restored; non-interactive output stays on
+		// stdout for scripts.
 		if interactive {
-			results = runSyncTUI(ctx, repos, orgTotal, projectsRoot, workers, dryRun, pruneArchived)
+			results = runSyncTUI(ctx, repos, orgTotal, projectsRoot, workers, dryRun, pruneArchived, errOut)
 		} else {
 			results = runSyncPlain(ctx, repos, projectsRoot, workers, dryRun, pruneArchived)
 		}
 
-		printSyncSummary(os.Stdout, results, pruneArchived)
-
-		// Written here, before runResultsBrowser — not only inside finishSync
-		// below. runResultsBrowser blocks on a keystroke, so without this an
-		// operator who walks away with it open (or whose terminal dies there)
-		// is left with a report describing the previous run, with a plausible
-		// timestamp and no sign a newer sync ever finished. finishSync writes
-		// again on the way out; that second write is harmless, since it
-		// renders these same results and meta to the same path.
-		showResultsBrowser(meta(len(results), nil), results, projectsRoot, interactive, runResultsBrowser, os.Stdout, os.Stderr)
+		printSyncSummary(reportOut, results, pruneArchived)
 	}
 
-	return finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, os.Stdout, os.Stderr)
+	return finishSync(meta(len(results), nil), results, publish, dryRun, deps, projectsRoot, filter, workers, reportOut, errOut)
 }
 
-// showResultsBrowser writes the issues report and then, only when interactive,
-// hands off to the (blocking) results browser. browser is a parameter — not a
-// direct call to runResultsBrowser — purely so a test can assert the report
-// exists before the browser runs: the real browser is a bubbletea program
-// that needs a TTY and cannot run under `go test`.
-func showResultsBrowser(
-	meta fleetsync.RunMeta,
-	results []fleetsync.Result,
-	projectsRoot string,
-	interactive bool,
-	browser func([]fleetsync.Result) error,
-	out, errOut io.Writer,
-) {
-	if !interactive {
-		// finishSync writes the report on every path. The early write below
-		// exists only to beat runResultsBrowser, which blocks on a keystroke —
-		// with no browser there is nothing to beat, and writing here as well
-		// would write the file twice and print its path twice.
-		return
+// syncReportWriter keeps an interactive run's completion report visible after
+// Bubble Tea restores the terminal, without changing the stdout contract for
+// pipes, CI, or --non-interactive.
+func syncReportWriter(interactive bool, out, errOut io.Writer) io.Writer {
+	if interactive {
+		return errOut
 	}
-	writeSyncIssuesReport(meta, results, projectsRoot, out, errOut)
-	if err := browser(results); err != nil {
-		_, _ = fmt.Fprintln(errOut, "results browser error:", err)
-	}
+	return out
 }
 
 // finishSync maps sync results to an exit code, writes the issues report, and,
@@ -297,7 +277,7 @@ func runSyncPlain(ctx context.Context, repos []discover.Repo, projectsRoot strin
 
 // runSyncTUI runs the worker pool while a bubbletea progress program renders
 // overall + per-org bars and a live tail of in-flight repos.
-func runSyncTUI(ctx context.Context, repos []discover.Repo, orgTotal map[string]int, projectsRoot string, workers int, dryRun, pruneArchived bool) []fleetsync.Result {
+func runSyncTUI(ctx context.Context, repos []discover.Repo, orgTotal map[string]int, projectsRoot string, workers int, dryRun, pruneArchived bool, errOut io.Writer) []fleetsync.Result {
 	p := tea.NewProgram(tui.NewProgressModel(orgTotal, workers))
 
 	go func() {
@@ -326,16 +306,10 @@ func runSyncTUI(ctx context.Context, repos []discover.Repo, orgTotal map[string]
 
 	final, err := p.Run()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "tui error:", err)
+		_, _ = fmt.Fprintln(errOut, "tui error:", err)
 	}
 	pm, _ := final.(tui.ProgressModel)
 	return pm.Results
-}
-
-func runResultsBrowser(results []fleetsync.Result) error {
-	p := tea.NewProgram(tui.NewResultsModel(results))
-	_, err := p.Run()
-	return err
 }
 
 func printSyncSummary(out io.Writer, results []fleetsync.Result, pruneArchived bool) {
