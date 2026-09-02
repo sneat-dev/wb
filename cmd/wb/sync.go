@@ -122,6 +122,9 @@ func resolveSyncOwners(
 
 func runSync(ctx context.Context, projectsRoot, filter string, only []string, workers int, dryRun, publish, pruneArchived bool, deps remoteDeps) int {
 	startedAt := time.Now().UTC()
+	// discovered is filled in once the fleet is known. Until then a report can
+	// only describe a run that never got that far.
+	discovered := 0
 	meta := func(scanned int, runErr error) fleetsync.RunMeta {
 		return fleetsync.RunMeta{
 			StartedAt:     startedAt,
@@ -130,6 +133,12 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 			DryRun:        dryRun,
 			PruneArchived: pruneArchived,
 			RunErr:        runErr,
+			// The selection is recorded, not just its size: every run
+			// overwrites the same report, so a reader must be able to tell a
+			// fleet-wide all-clear from a two-repository one.
+			Owners:     only,
+			Filter:     filter,
+			Discovered: discovered,
 		}
 	}
 
@@ -142,6 +151,7 @@ func runSync(ctx context.Context, projectsRoot, filter string, only []string, wo
 		return exitFindings
 	}
 	repos, err := fleet(projectsRoot, filter, func() []string { return owners })
+	discovered = len(repos)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "discovery error:", err)
 		writeSyncIssuesReport(meta(0, err), nil, projectsRoot, os.Stdout, os.Stderr)

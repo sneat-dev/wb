@@ -23,6 +23,47 @@ type RunMeta struct {
 	// authentication or discovery failure. Results is empty in that case, and
 	// the failure is itself the issue worth reporting.
 	RunErr error
+
+	// Owners and Filter record how the run was scoped. Without them the
+	// report cannot distinguish "the fleet is clean" from "the two
+	// repositories I looked at are clean" — and because every run overwrites
+	// the same file, a scoped run would otherwise silently replace a
+	// fleet-wide finding set with a false all-clear.
+	Owners []string
+	Filter string
+	// Discovered is how many repositories the run selected; Scanned is how
+	// many it finished. Fewer scanned than discovered means the run did not
+	// complete, which no report may describe as health.
+	Discovered int
+}
+
+// Scoped reports whether the run looked at less than the whole fleet.
+func (m RunMeta) Scoped() bool { return len(m.Owners) > 0 || m.Filter != "" }
+
+// Interrupted reports whether the run stopped before finishing every
+// repository it selected — the shape a Ctrl-C in the progress UI leaves, which
+// returns the results collected so far.
+func (m RunMeta) Interrupted() bool { return m.Discovered > 0 && m.Scanned < m.Discovered }
+
+// Complete reports whether this run may speak for the whole fleet. Only a
+// complete, unscoped, non-dry run can honestly say everything is in sync.
+func (m RunMeta) Complete() bool { return !m.Scoped() && !m.Interrupted() && !m.DryRun }
+
+// scopeLine describes the run's selection in one line, always rendered so a
+// reader never has to assume the report covered everything.
+func (m RunMeta) scopeLine() string {
+	var parts []string
+	if len(m.Owners) > 0 {
+		parts = append(parts, "owners "+strings.Join(m.Owners, ", "))
+	}
+	if m.Filter != "" {
+		parts = append(parts, "filter "+m.Filter)
+	}
+	if len(parts) == 0 {
+		return "**Scope:** every owner and organization this account can see"
+	}
+	return "**Scope:** restricted to " + strings.Join(parts, "; ") +
+		" — this report says nothing about any repository outside that selection"
 }
 
 // IssuesMarkdown renders the attention and error groups as Markdown for a
@@ -65,6 +106,21 @@ func IssuesMarkdown(meta RunMeta, results []Result) string {
 			// this line only has to refuse the health claim itself.
 			out.WriteString("Nothing needed attention among what a dry run can detect. " +
 				"That is not a clean bill of health — see the dry-run note above.\n")
+		case meta.Interrupted():
+			// A Ctrl-C in the progress UI returns the results collected so
+			// far, so the repositories never reached are indistinguishable
+			// from clean ones unless the shortfall is stated.
+			// The Incomplete banner above already gives the counts, so this
+			// line only has to refuse the health claim.
+			out.WriteString("Nothing needed attention among the repositories this run reached. " +
+				"That is not a clean bill of health — see the incomplete note above. " +
+				"Re-run to finish.\n")
+		case meta.Scoped():
+			// The file is overwritten every run, so a scoped run that says
+			// "all repositories are in sync" replaces a fleet-wide finding
+			// set with a claim it has no standing to make.
+			out.WriteString("Nothing needed attention within this run's scope. That scope was " +
+				"restricted (see above), so this is not a statement about the rest of the fleet.\n")
 		default:
 			out.WriteString("All repositories are in sync. Nothing requires attention.\n")
 		}
@@ -167,6 +223,12 @@ func writeIssuesHeader(out *strings.Builder, meta RunMeta, defects, informationa
 			"**Scanned:** %d repositories · **Needs attention:** %d · **Archived, not pruned:** %d · **Errors:** %d\n\n",
 			meta.Scanned, defects, informational, failures)
 	}
+	out.WriteString(meta.scopeLine() + "\n\n")
+	if meta.Interrupted() {
+		fmt.Fprintf(out, "**Incomplete:** this run finished %d of %d selected repositories. "+
+			"The rest were never checked and are absent from this report — their absence is not "+
+			"evidence they are healthy.\n\n", meta.Scanned, meta.Discovered)
+	}
 	if meta.DryRun {
 		out.WriteString("**Dry run:** the fleet was not modified. Diverged and Unpushed are only " +
 			"detected after a real pull, so this run cannot classify either — their absence below is " +
@@ -202,8 +264,12 @@ func writeAttentionEntry(out *strings.Builder, result Result) {
 	if result.Reason != "" {
 		fmt.Fprintf(out, "- **Detail:** %s\n", oneLine(result.Reason))
 	}
+	writeHead(out, result)
 
 	out.WriteString("\n**Inspect**\n\n```sh\n")
+	if check := driftCheck(result); check != "" {
+		out.WriteString(check + "\n")
+	}
 	for _, command := range inspectCommands(result) {
 		out.WriteString(command + "\n")
 	}
@@ -212,6 +278,29 @@ func writeAttentionEntry(out *strings.Builder, result Result) {
 		out.WriteString("- " + option + "\n")
 	}
 	out.WriteString("\n")
+}
+
+// writeHead records the commit this finding was made against. Everything else
+// in the entry describes the repository as it was at that commit; if HEAD has
+// moved since, the finding may no longer be true and a destructive remedy —
+// resetting to upstream, discarding commits — can take work that did not exist
+// when the report was written.
+func writeHead(out *strings.Builder, result Result) {
+	if result.HeadSHA == "" {
+		return
+	}
+	fmt.Fprintf(out, "- **HEAD when reported:** `%s`\n", result.HeadSHA)
+}
+
+// driftCheck is the first thing a reader should run: it proves the repository
+// still sits where the report says before anything is changed. Empty when
+// there is no clone or no recorded commit to compare against.
+func driftCheck(result Result) string {
+	if result.Repo.Path == "" || result.HeadSHA == "" {
+		return ""
+	}
+	return fmt.Sprintf("git -C %s rev-parse HEAD   # must equal %s, or this entry is stale",
+		shellQuote(result.Repo.Path), result.HeadSHA)
 }
 
 func writeClone(out *strings.Builder, result Result) {
