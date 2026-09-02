@@ -92,10 +92,17 @@ When an online run has observed a published latest version, the report MUST
 mark a group as behind and name every repository whose evidence provably lags
 it: a selected version lower than latest, or a declared specifier that
 provably cannot admit latest. WB MUST evaluate only specifier shapes it can
-decide exactly — an exact version, `^`, `~`, `*`, and the `>`, `>=`, `<`, and
-`<=` comparators. Every other shape, including unions, hyphen ranges,
-wildcards, and the `workspace:`, `catalog:`, `npm:`, and `file:` protocols,
-MUST be reported as unevaluated and MUST NOT be counted as behind.
+decide exactly — an exact version, `^`, `~`, `*`, the `>`, `>=`, `<`, and `<=`
+comparators, a space-separated conjunction of those comparators, and a `||`
+union of those. Every other shape, including hyphen ranges, wildcards, comma
+lists, and the `workspace:`, `catalog:`, `npm:`, and `file:` protocols, MUST be
+reported as unevaluated and MUST NOT be counted as behind.
+
+A compound range MUST be decided only where one readable part settles it: a
+conjunction whose readable comparator rejects the candidate is decided, and a
+union whose readable branch admits it is decided. In every other partially
+readable case the range MUST be reported as unevaluated, so WB never converts
+"this part could not be read" into either verdict.
 
 #### REQ: bounded-online-scope
 
@@ -230,9 +237,10 @@ attempt and timestamp, exposes no credential, and makes no repository change.
   inspection seam rather than through a registry abstraction.
 - Should `--fail-on-drift` accept classifications, for example
   `--fail-on-drift=replaced,divergent`, in its first release?
-- Should an npm specifier shape WB currently reports as unevaluated (unions,
-  hyphen ranges, wildcards) be evaluated by adopting a full npm range library,
-  or does the fleet's own manifest vocabulary make that unnecessary?
+- Should the npm specifier shapes still reported as unevaluated (hyphen ranges
+  and wildcards) be evaluated by adopting a full npm range library, or does the
+  fleet's own manifest vocabulary make that unnecessary now that conjunctions
+  and unions are decided natively?
 
 ---
 *This document follows the https://specscore.md/feature-specification*

@@ -1108,10 +1108,12 @@ with "never inspected".
 A dependency is only reported as behind when the evidence proves it: a locked
 version below latest, or a specifier that provably cannot admit latest (an
 exact pin such as `"0.14.0"` against a published `0.14.3`, or `^0.24.1` against
-`0.25.0` — npm's caret does not cross a `0.x` minor). Specifier shapes WB does
-not evaluate exactly — unions, hyphen ranges, wildcards, and the `workspace:`,
-`catalog:`, `npm:`, and `file:` protocols — are reported as unevaluated and are
-never counted as behind.
+`0.25.0` — npm's caret does not cross a `0.x` minor). WB reads exact pins,
+carets, tildes, comparison operators, space-separated conjunctions such as
+`>=22.0.0 <23.0.0`, and `||` unions of those. Shapes it does not evaluate —
+hyphen ranges, wildcards, comma lists, and the `workspace:`, `catalog:`,
+`npm:`, and `file:` protocols — are reported as unevaluated and are never
+counted as behind.
 
 Fleet and single-repository drift and graph scans show live selection and
 per-repository progress on an interactive terminal. The elapsed time keeps
@@ -1163,8 +1165,10 @@ version.
 | `unevaluated` | WB will not guess this specifier shape, and says so |
 
 `unevaluated` is never a pass — WB evaluates the specifier subset the fleet's
-manifests actually use and declines to judge a union, a hyphen range, or a
-`workspace:`/`catalog:` protocol rather than reporting it as compatible. The
+manifests actually use (including the `>=22.0.0 <23.0.0` conjunction every
+Angular and Ionic peer uses, and `||` unions of supported comparators) and
+declines to judge a hyphen range or a `workspace:`/`catalog:` protocol rather
+than reporting it as compatible. The
 command exits `1` when any required peer is `unsatisfied` or `missing`, and
 nothing is installed or written, so it is safe to run against a checkout
 someone else is working in.

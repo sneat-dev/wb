@@ -58,10 +58,96 @@ func npmRangeAdmits(specifier, version string) npmRangeVerdict {
 			return npmRangeVerdict{Reason: "specifier uses the " + protocol + ": protocol, which does not name a registry version range"}
 		}
 	}
-	if strings.Contains(specifier, "||") || strings.Contains(specifier, " - ") || strings.ContainsAny(specifier, " ,") {
-		return npmRangeVerdict{Reason: "compound specifier " + quoteForReason(specifier) + " is not evaluated"}
+	// A hyphen range and a comma list are still declined: the first is a
+	// distinct grammar rather than a conjunction of comparators, and npm
+	// ranges do not use commas at all, so a comma is more likely a manifest
+	// written for a different ecosystem than a range WB should interpret.
+	if strings.Contains(specifier, " - ") {
+		return npmRangeVerdict{Reason: "hyphen range " + quoteForReason(specifier) + " is not evaluated"}
 	}
+	if strings.Contains(specifier, ",") {
+		return npmRangeVerdict{Reason: "comma-separated specifier " + quoteForReason(specifier) + " is not evaluated"}
+	}
+	if strings.Contains(specifier, "||") {
+		return npmRangeUnionAdmits(specifier, version)
+	}
+	if strings.ContainsAny(specifier, " \t") {
+		return npmRangeConjunctionAdmits(specifier, version)
+	}
+	return npmRangeComparatorAdmits(specifier, version)
+}
 
+// npmRangeUnionAdmits evaluates `A || B`: the version is admitted when any
+// branch admits it.
+//
+// The interesting case is a union WB can only partly read. One branch that
+// provably admits settles the question no matter what the others say, so it is
+// answered. Otherwise an unreadable branch could still have admitted, so the
+// union is unevaluated rather than rejected — WB never converts "I could not
+// read this" into "this does not match".
+func npmRangeUnionAdmits(specifier, version string) npmRangeVerdict {
+	unevaluated := ""
+	for _, branch := range strings.Split(specifier, "||") {
+		branch = strings.TrimSpace(branch)
+		if branch == "" {
+			continue
+		}
+		verdict := npmRangeConjunctionAdmits(branch, version)
+		if verdict.Evaluated && verdict.Admits {
+			return npmRangeVerdict{Evaluated: true, Admits: true}
+		}
+		if !verdict.Evaluated && unevaluated == "" {
+			unevaluated = verdict.Reason
+		}
+	}
+	if unevaluated != "" {
+		return npmRangeVerdict{Reason: "union specifier " + quoteForReason(specifier) + " has a branch WB does not evaluate: " + unevaluated}
+	}
+	return npmRangeVerdict{Evaluated: true}
+}
+
+// npmRangeConjunctionAdmits evaluates space-separated comparators, which npm
+// reads as AND: `>=22.0.0 <23.0.0` is how a major line is pinned, and it is by
+// far the most common peerDependencies shape in this fleet — every Angular and
+// Ionic peer uses it. Declining it left `wb deps peers` reporting five of eight
+// real rows unevaluated on its first live run.
+//
+// A single comparator that provably rejects settles the question, so it is
+// answered even when a sibling comparator is unreadable. Otherwise an
+// unreadable comparator could still have rejected, so the conjunction is
+// unevaluated rather than admitted — the asymmetry mirrors the union's, and
+// both keep WB from ever guessing in the direction that hides a conflict.
+func npmRangeConjunctionAdmits(specifier, version string) npmRangeVerdict {
+	unevaluated := ""
+	evaluated := 0
+	for _, comparator := range strings.Fields(specifier) {
+		verdict := npmRangeComparatorAdmits(comparator, version)
+		if verdict.Evaluated && !verdict.Admits {
+			return npmRangeVerdict{Evaluated: true}
+		}
+		if !verdict.Evaluated {
+			if unevaluated == "" {
+				unevaluated = verdict.Reason
+			}
+			continue
+		}
+		evaluated++
+	}
+	if unevaluated != "" {
+		return npmRangeVerdict{Reason: unevaluated}
+	}
+	if evaluated == 0 {
+		return npmRangeVerdict{Reason: "specifier " + quoteForReason(specifier) + " names no comparator"}
+	}
+	return npmRangeVerdict{Evaluated: true, Admits: true}
+}
+
+// npmRangeComparatorAdmits evaluates exactly one comparator.
+func npmRangeComparatorAdmits(specifier, version string) npmRangeVerdict {
+	switch specifier {
+	case "", "*", "x", "X", "latest":
+		return npmRangeVerdict{Evaluated: true, Admits: true}
+	}
 	operator, literal := splitNpmRangeOperator(specifier)
 	if strings.HasSuffix(literal, ".x") || strings.HasSuffix(literal, ".X") || strings.HasSuffix(literal, ".*") {
 		return npmRangeVerdict{Reason: "wildcard specifier " + quoteForReason(specifier) + " is not evaluated"}

@@ -366,8 +366,10 @@ Nothing is installed and nothing is written. Each row's verdict is one of:
   unevaluated       WB will not guess this specifier shape, and says so
 
 The last one is deliberate. WB evaluates the specifier subset a Sneat manifest
-actually uses; a union, a hyphen range, or a workspace:/catalog: protocol is
-reported unevaluated with its reason rather than silently counted as compatible.
+actually uses — exact pins, carets, tildes, comparison operators,
+space-separated conjunctions such as ">=22.0.0 <23.0.0", and || unions of
+those. A hyphen range or a workspace:/catalog: protocol is reported unevaluated
+with its reason rather than silently counted as compatible.
 An unevaluated row is therefore never a pass.
 
 Exit code 1 when any required peer is unsatisfied or missing, 0 otherwise.`,
