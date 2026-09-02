@@ -97,7 +97,8 @@ correction above, and keeps its real classification.
 - Any change to sync's exit codes, statuses, or classification logic
 - The successful categories (Cloned, Pulled, Skipped, …) — this is an issues
   report, not a run log
-- A JSON variant. Nothing consumes one yet; add it when something does.
+- A JSON variant — see the rationale below, which replaces this document's
+  original and incorrect one.
 - A `--report` / `--no-report` flag. The report is free to produce and the
   whole point is not having to remember it.
 - Report history or rotation
@@ -309,6 +310,35 @@ CI enforces these; the change is not complete without them.
   involved
 - `~/.wb/README.md` already states the directory holds "command reports"; no
   change needed
+
+### Why no JSON variant
+
+The original justification — *"Nothing consumes one yet; add it when something
+does"* — was false the day it was written: the same change added
+`ai/skills/wb-fleet/references/sync.md`, instructing agents to read this
+report. A consumer existed immediately.
+
+The real reasons, recorded so the decision can be re-argued honestly:
+
+- **The consumer reads prose better than structure.** The report's value is not
+  its fields but its judgment — inspect before you act, here are the options
+  and what each costs. An LLM agent parses that from Markdown at least as well
+  as from JSON, and a `resolve_options` array would lose the reasoning that
+  makes the options safe to choose between.
+- **A second artifact is a second thing to keep true.** The dry-run decision
+  already rejected a second path on the grounds that the wrong one is silently
+  incomplete; a JSON sibling has the same failure mode.
+- **The injection argument no longer stands alone.** Structure would have
+  eliminated the forged-entry class by construction, which was the strongest
+  argument for it. That class is now closed directly: untrusted values render
+  inside a fence longer than any backtick run they contain, refs are
+  shell-quoted, and a table test asserts every Inspect command is read-only and
+  correctly targeted.
+
+Revisit this if a *program* rather than an agent becomes a consumer — a
+dashboard, or another WB command reading the findings. At that point structure
+earns its keep, and the Markdown should be rendered from it rather than
+duplicated beside it.
 
 ## Corrections after adversarial review
 
