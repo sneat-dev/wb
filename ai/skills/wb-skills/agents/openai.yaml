@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Skills"
+  short_description: "Install and keep WB's Agent Skills current in this harness"
+  default_prompt: "Use $wb-skills to install WB's Agent Skills into this harness and keep them current."

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/strongo/selfupdate"
 )
 
@@ -295,6 +299,155 @@ func TestSelfUpdateErrorsUpdateAvailableMapsToExitFindings(t *testing.T) {
 			}
 			if !strings.Contains(coded.Error(), result.Current) || !strings.Contains(coded.Error(), result.Latest) {
 				t.Errorf("message %q does not name both current (%q) and latest (%q)", coded.Error(), result.Current, result.Latest)
+			}
+		})
+	}
+}
+
+// TestSelfUpdateShouldSyncSkillsSkipsCheckAndDryRun pins REQ:
+// skills-sync-on-self-update's own boundary: neither a read-only --check nor
+// a --dry-run plan can have changed the on-disk binary, so neither may
+// trigger the post-update skills sync.
+func TestSelfUpdateShouldSyncSkillsSkipsCheckAndDryRun(t *testing.T) {
+	tests := []struct {
+		name     string
+		check    bool
+		dryRun   bool
+		wantSync bool
+	}{
+		{"plain update", false, false, true},
+		{"check only", true, false, false},
+		{"dry run", false, true, false},
+		{"check and dry run", true, true, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "self-update"}
+			cmd.Flags().Bool("check", false, "")
+			cmd.Flags().Bool("dry-run", false, "")
+			if err := cmd.Flags().Set("check", boolFlagValue(test.check)); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Flags().Set("dry-run", boolFlagValue(test.dryRun)); err != nil {
+				t.Fatal(err)
+			}
+			if got := selfUpdateShouldSyncSkills(cmd); got != test.wantSync {
+				t.Errorf("selfUpdateShouldSyncSkills() = %v, want %v", got, test.wantSync)
+			}
+		})
+	}
+}
+
+func boolFlagValue(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+// fakeSelfUpdateBinary writes an executable POSIX shell script standing in
+// for a detected installed wb binary and returns its path. It ignores its
+// arguments (syncSkillsAfterSelfUpdate always calls it with "skills sync"),
+// so the fixture only needs to control stdout/stderr/exit code.
+func fakeSelfUpdateBinary(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-wb")
+	script := "#!/bin/sh\n" + body + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// withSelfUpdateDetect overrides selfUpdateDetect for the duration of one
+// test, exactly like cobracmd's own detectFunc seam, and restores it
+// afterward so later tests are unaffected.
+func withSelfUpdateDetect(t *testing.T, detect func(selfupdate.Config) (selfupdate.Detection, error)) {
+	t.Helper()
+	original := selfUpdateDetect
+	selfUpdateDetect = detect
+	t.Cleanup(func() { selfUpdateDetect = original })
+}
+
+// TestSyncSkillsAfterSelfUpdateForwardsDetectedBinaryStdout proves the
+// process re-exec actually happens against the path selfUpdateDetect names,
+// not this test process itself, and that its stdout reaches the caller.
+func TestSyncSkillsAfterSelfUpdateForwardsDetectedBinaryStdout(t *testing.T) {
+	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
+	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
+		return selfupdate.Detection{Path: binary}, nil
+	})
+
+	cmd := &cobra.Command{Use: "self-update"}
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	syncSkillsAfterSelfUpdate(cmd, selfupdate.Config{})
+
+	if got := stdout.String(); got != "synced: skills sync\n" {
+		t.Errorf("stdout = %q, want the detected binary's own output forwarded", got)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("stderr = %q, want empty on success", stderr.String())
+	}
+}
+
+// TestSyncSkillsAfterSelfUpdateReportsFailureWithoutFailingSelfUpdate proves
+// a failed sync degrades to a warning: syncSkillsAfterSelfUpdate returns
+// nothing for its caller to fail on, so a sync problem never turns a
+// successful self-update into a reported failure.
+func TestSyncSkillsAfterSelfUpdateReportsFailureWithoutFailingSelfUpdate(t *testing.T) {
+	binary := fakeSelfUpdateBinary(t, `echo "boom" 1>&2; exit 1`)
+	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
+		return selfupdate.Detection{Path: binary}, nil
+	})
+
+	cmd := &cobra.Command{Use: "self-update"}
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	syncSkillsAfterSelfUpdate(cmd, selfupdate.Config{})
+
+	if !strings.Contains(stderr.String(), "self-update: skills sync failed") {
+		t.Errorf("stderr = %q, want a skills-sync failure warning", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "wb skills sync") {
+		t.Errorf("stderr = %q, want the manual fallback command named", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "boom") {
+		t.Errorf("stderr = %q, want the child's own stderr surfaced", stderr.String())
+	}
+}
+
+// TestSyncSkillsAfterSelfUpdateNoOpWhenDetectionFails covers both ways
+// selfUpdateDetect can fail to name a binary: an error, and a zero-value
+// Detection with an empty Path. Neither may write anything or panic.
+func TestSyncSkillsAfterSelfUpdateNoOpWhenDetectionFails(t *testing.T) {
+	tests := []struct {
+		name   string
+		detect func(selfupdate.Config) (selfupdate.Detection, error)
+	}{
+		{"detection error", func(selfupdate.Config) (selfupdate.Detection, error) {
+			return selfupdate.Detection{}, errors.New("cannot resolve executable")
+		}},
+		{"empty path", func(selfupdate.Config) (selfupdate.Detection, error) {
+			return selfupdate.Detection{}, nil
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			withSelfUpdateDetect(t, test.detect)
+			cmd := &cobra.Command{Use: "self-update"}
+			var stdout, stderr bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+
+			syncSkillsAfterSelfUpdate(cmd, selfupdate.Config{})
+
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("stdout=%q stderr=%q, want both empty when detection cannot name a binary", stdout.String(), stderr.String())
 			}
 		})
 	}

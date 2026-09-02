@@ -5608,6 +5608,210 @@
       "notes": "A receipt means the target durably recorded and pasted the exact message into the verified pane. It deliberately does not claim that the successor agent processed it."
     },
     {
+      "id": "wb.skills.hook.install",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb skills hook install",
+              "flags": [
+                "--dry-run",
+                "--settings"
+              ],
+              "modes": [
+                "Merges one SessionStart entry into a Claude Code settings file, preserving every other key and hook, the same merge 'wb hooks agent install' uses for PreToolUse.",
+                "Idempotent: a second run reports the hook is already registered and rewrites nothing.",
+                "wb never edits the settings file outside this explicit subcommand."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb skills hook install --help",
+              "contains": [
+                "--settings",
+                "--dry-run",
+                "SessionStart"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-skills/SKILL.md",
+              "marker": "## Session-start automation (Claude Code)",
+              "examples": [
+                "wb skills hook install"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/skills_hook_test.go",
+              "name": "TestMergeSkillsHookSettingsIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/skills_hook_test.go",
+              "name": "TestNewSkillsHookInstallCmdWritesThenReportsAlreadyRegistered",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Registers 'wb skills hook run 2>/dev/null; exit 0' as a SessionStart command, the same fail-open shape as the PreToolUse guard: a wb too old to know the subcommand degrades to silence rather than printing cobra's usage error into a new session's context."
+    },
+    {
+      "id": "wb.skills.hook.print",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb skills hook print",
+              "flags": [],
+              "modes": [
+                "Prints the same SessionStart hook snippet 'wb skills hook install' would merge, for a caller who wants to paste it in by hand instead."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb skills hook print --help",
+              "contains": [
+                "SessionStart",
+                "wb skills hook install"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-skills/SKILL.md",
+              "marker": "## Session-start automation (Claude Code)",
+              "examples": [
+                "wb skills hook print"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/skills_hook_test.go",
+              "name": "TestNewSkillsHookPrintCmdPrintsAPasteableSnippet",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "wb never edits ~/.claude/settings.json on its own; print is the read-only half of the installer, for a caller who wants to review or merge the snippet by hand."
+    },
+    {
+      "id": "wb.skills.sync",
+      "feature_refs": [],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb skills sync",
+              "flags": [
+                "--dir",
+                "--dry-run",
+                "--format"
+              ],
+              "modes": [
+                "Installs every Agent Skill embedded in this wb build into a harness skills directory (default ~/.claude/skills), reading nothing from a source checkout.",
+                "Idempotent: unchanged skills are reported and left untouched; a skill this build no longer ships, previously installed by an earlier sync, is removed.",
+                "A directory occupying a shipped skill's name that was never installed by wb is reported as a conflict (exit code 1) and left untouched rather than overwritten.",
+                "Records the wb version that performed the sync in a marker file next to the installed skills, which the running wb compares against on every invocation."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb skills sync --help",
+              "contains": [
+                "--dir",
+                "--dry-run",
+                "--format",
+                "harness skills directory"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-skills/SKILL.md",
+              "marker": "## Keep this session's skills current",
+              "examples": [
+                "wb skills sync"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncCmdInstallsIntoAnExplicitDirAndIsIdempotent",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncCmdReportsConflictsAsFindings",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/skills/sync_test.go",
+              "name": "TestSyncNeverOverwritesAPreExistingUnmanagedDirectory",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This is the fix for an orchestrator session missing a wb skill entirely: wb installed globally has no source checkout for a harness to auto-discover ai/skills/ from, so this command embeds and installs them directly. 'wb self-update' runs it automatically after a successful update."
+    },
+    {
       "id": "wb.status",
       "feature_refs": [
         "spec/features/fleet-status/README.md"
