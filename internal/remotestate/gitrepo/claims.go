@@ -170,8 +170,15 @@ func (p *Provider) mutateStore(claimPath string, mutate func() (message string, 
 // the now-current store state before it can reach a caller.
 var errStorePathFreed = errors.New("gitrepo: claim path freed by a concurrent operation")
 
-// Claim acquires or refreshes a claim on a task.
+// Claim acquires or refreshes a claim on a task. It runs under cloneLock —
+// see clonelock.go — for the whole Fetch-through-push critical section, not
+// just the network half of it.
 func (p *Provider) Claim(ctx context.Context, claim remotestate.Claim, mode remotestate.ClaimMode, expectedHolder string) (remotestate.ClaimOutcome, error) {
+	lock, err := acquireCloneLock(p.opts.ClonePath)
+	if err != nil {
+		return remotestate.ClaimOutcome{}, err
+	}
+	defer func() { _ = lock.release() }()
 	return p.claim(ctx, claim, mode, expectedHolder, false)
 }
 
@@ -294,8 +301,16 @@ func (p *Provider) claim(ctx context.Context, claim remotestate.Claim, mode remo
 	return remotestate.ClaimOutcome{Kind: kind, Current: claim, Previous: previous, Location: sha}, nil
 }
 
-// Release removes a claim.
+// Release removes a claim. It runs under cloneLock — see clonelock.go —
+// for the whole Fetch-through-push critical section: this is exactly the
+// call wb#321 traced two concurrent WB processes' git commands colliding
+// in, so it must never run against the shared clone unserialized.
 func (p *Provider) Release(ctx context.Context, task, login, machine string, force bool) (remotestate.ReleaseOutcome, error) {
+	lock, err := acquireCloneLock(p.opts.ClonePath)
+	if err != nil {
+		return remotestate.ReleaseOutcome{}, err
+	}
+	defer func() { _ = lock.release() }()
 	return p.release(ctx, task, login, machine, force, false)
 }
 
@@ -382,8 +397,14 @@ func (p *Provider) release(ctx context.Context, task, login, machine string, for
 // Claims returns every claim currently in the store, sorted by task name.
 // Only files directly under claims/*.yaml are claims; a directory or a file
 // at any other depth/extension becomes an error entry, the same philosophy
-// List uses for machines/*.
+// List uses for machines/*. It runs under cloneLock like List, for the same
+// read-during-a-concurrent-write reason.
 func (p *Provider) Claims(ctx context.Context) ([]remotestate.ClaimEntry, error) {
+	lock, err := acquireCloneLock(p.opts.ClonePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.release() }()
 	if err := p.Fetch(ctx); err != nil {
 		return nil, err
 	}

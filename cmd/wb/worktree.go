@@ -879,16 +879,28 @@ The default is a dry-run plan.`,
 			// so the remote claim must not be released either.
 			disp := worktrees.AbortDisposition(disposition)
 			releasable := disp == worktrees.AbortDiscarded || disp == worktrees.AbortHandoff
+			// releaseLeaked is wb#321's exit-code seam: see
+			// exitNonZeroOnReleaseLeak in remote_autoclaim.go for why it is
+			// false today, and flip that one constant, not this line, to
+			// change it.
+			var releaseLeaked bool
 			switch {
 			case apply && releasable && remaining == 0:
-				tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], remoteClaimWriter(command))
+				result := tryAutoRelease(defaultRemoteDeps(), projectsRoot, args[0], remoteClaimWriter(command))
+				releaseLeaked = exitNonZeroOnReleaseLeak && result.Leaked()
 			case apply && releasable && remaining > 0:
 				skippedAutoRelease(remoteClaimWriter(command), fmt.Sprintf("%d repositories excluded by --filter still remain", remaining))
 			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(results)
+				if err := encoder.Encode(results); err != nil {
+					return err
+				}
+				if releaseLeaked {
+					return fmt.Errorf("task %q worktree sealed but its remote claim release failed (see wb#321)", args[0])
+				}
+				return nil
 			}
 			for _, result := range results {
 				if result.Excluded {
@@ -917,6 +929,9 @@ The default is a dry-run plan.`,
 				if _, err := fmt.Fprintf(command.OutOrStdout(), "%d repositories excluded by --filter remain unresolved for task %q\n", remaining, args[0]); err != nil {
 					return err
 				}
+			}
+			if releaseLeaked {
+				return fmt.Errorf("task %q worktree sealed but its remote claim release failed (see wb#321)", args[0])
 			}
 			return nil
 		},
@@ -2061,13 +2076,24 @@ required to remove anything.`,
 						appliedTasks[artifact.Task] = true
 					}
 				}
+				// leakedReleases is wb#321's exit-code seam: see
+				// exitNonZeroOnReleaseLeak in remote_autoclaim.go for why it
+				// is false today, and flip that one constant, not this
+				// loop, to change it.
+				var leakedReleases []string
 				for _, task := range tasks {
 					if appliedTasks[task] {
-						tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
+						result := tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
+						if result.Leaked() {
+							leakedReleases = append(leakedReleases, task)
+						}
 					}
 				}
 				if len(tasks) == 1 && !appliedTasks[tasks[0]] {
 					return fmt.Errorf("task %q was not removed because it did not satisfy cleanup safety", tasks[0])
+				}
+				if exitNonZeroOnReleaseLeak && len(leakedReleases) > 0 {
+					return fmt.Errorf("worktree removed but remote claim release failed for: %s (see wb#321)", strings.Join(leakedReleases, ", "))
 				}
 			}
 			return nil

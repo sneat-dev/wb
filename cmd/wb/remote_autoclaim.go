@@ -116,52 +116,113 @@ func skippedAutoClaim(out io.Writer, task, detail string) autoClaimResult {
 	return autoClaimResult{Outcome: "skipped", Detail: detail}
 }
 
+// autoReleaseResult reports what tryAutoRelease actually did, mirroring
+// autoClaimResult. Outcome is one of: disabled, skipped, released, noop,
+// held, failed.
+//
+// Every outcome except "failed" keeps tryAutoRelease's original contract:
+// best-effort, silently (or advisory-)swallowed, never touching the host
+// command's exit code. "failed" is the one wb#321 carved out — see Leaked.
+type autoReleaseResult struct {
+	Outcome string `json:"outcome"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// Leaked reports whether this release attempt could have left task's claim
+// standing in the store after its worktree was already removed — the exact
+// defect wb#321 reports. It is true only for "failed": provider.Release
+// returned a transport/store error after gitrepo.Provider.Fetch's own
+// bounded retries (see fetchRetryAttempts) were exhausted, which means the
+// claim really was this login/machine's own and the store still could not
+// be told to drop it. It is false for every advisory outcome — "disabled"
+// and "skipped" (config/login trouble, so ownership was never even
+// established) and "noop"/"held" (nothing was ours, or it is someone
+// else's, and both are correctly left alone) — because none of those can
+// strand a claim that was genuinely this machine's.
+func (r autoReleaseResult) Leaked() bool { return r.Outcome == "failed" }
+
 // tryAutoRelease best-effort releases this login/machine's own claim on
 // task after a worktree is retired (cleanup --apply, or abort --apply with
-// disposition discarded/handoff). It is entirely best-effort: no config,
-// a login/store failure, or a claim held by someone else are all printed as
-// "remote claim release skipped: <why>" and swallowed. force is never used
-// — an auto-release must never remove a claim it does not own. It never
-// returns an error and never changes the host command's exit code.
-func tryAutoRelease(deps remoteDeps, projectsRoot, task string, out io.Writer) {
+// disposition discarded/handoff). No config, a login failure, and a claim
+// held by someone else are all printed as "remote claim release skipped:
+// <why>" and swallowed, exactly as before. force is never used — an
+// auto-release must never remove a claim it does not own.
+//
+// A provider.Release error is different: gitrepo.Provider already retries
+// the transient git failures wb#321 traced to two WB processes racing on
+// the shared clone (see fetchRetryAttempts in internal/remotestate/gitrepo)
+// and now also serializes the clone with cloneLock, so an error reaching
+// here means those retries were exhausted, not merely lost a single race.
+// The worktree this claim belonged to is already gone by the time this
+// runs, so the claim genuinely was ours and now outlives it — that is a
+// leak, not something to fold into the same "skipped" bucket as an
+// unconfigured remote or someone else's claim. failedAutoRelease reports it
+// distinctly (Outcome "failed", Leaked() true) so a caller can tell the two
+// apart; see exitNonZeroOnReleaseLeak for what a caller does with that.
+func tryAutoRelease(deps remoteDeps, projectsRoot, task string, out io.Writer) autoReleaseResult {
 	cfg, provider, err := loadRemote(deps, projectsRoot)
 	if err != nil {
 		// Unconfigured: silent, matching tryAutoClaim's own "disabled" path.
-		return
+		return autoReleaseResult{Outcome: "disabled"}
 	}
 	login, err := deps.login()
 	if err != nil {
-		skippedAutoRelease(out, "determine GitHub login: "+err.Error())
-		return
+		return skippedAutoRelease(out, "determine GitHub login: "+err.Error())
 	}
 	if login == "" {
-		skippedAutoRelease(out, "determine GitHub login: empty login")
-		return
+		return skippedAutoRelease(out, "determine GitHub login: empty login")
 	}
 	outcome, err := provider.Release(context.Background(), task, login, cfg.Machine, false)
 	if err != nil {
-		skippedAutoRelease(out, err.Error())
-		return
+		return failedAutoRelease(out, task, err.Error())
 	}
 	switch outcome.Kind {
 	case remotestate.Released:
 		_, _ = fmt.Fprintf(out, "remote claim: released %s\n", task)
+		return autoReleaseResult{Outcome: "released"}
 	case remotestate.ReleaseNoop:
 		// Nothing was ours to release; there is nothing worth telling the
 		// operator about, so this stays silent like the "disabled" case.
+		return autoReleaseResult{Outcome: "noop"}
 	default: // remotestate.ReleaseHeldByOther
 		if outcome.Current == nil {
-			skippedAutoRelease(out, "held by another machine")
-		} else {
-			mine := remotestate.Claim{Login: login, Machine: cfg.Machine}
-			skippedAutoRelease(out, "held by "+holderDesc(mine, *outcome.Current))
+			return skippedAutoRelease(out, "held by another machine")
 		}
+		mine := remotestate.Claim{Login: login, Machine: cfg.Machine}
+		return skippedAutoRelease(out, "held by "+holderDesc(mine, *outcome.Current))
 	}
 }
 
-func skippedAutoRelease(out io.Writer, detail string) {
+func skippedAutoRelease(out io.Writer, detail string) autoReleaseResult {
 	_, _ = fmt.Fprintf(out, "remote claim release skipped: %s\n", detail)
+	return autoReleaseResult{Outcome: "skipped", Detail: detail}
 }
+
+// failedAutoRelease reports the one outcome tryAutoRelease's doc comment
+// used to promise never happened: a claim that really was this
+// login/machine's own, on a worktree that is already gone, left standing
+// because the store still could not be written after retries. "FAILED" (not
+// "skipped") and the task name up front are deliberate: this is the wb#321
+// leak, and it must read differently under grep/log scanning from the
+// merely advisory "remote claim release skipped:" lines above it.
+func failedAutoRelease(out io.Writer, task, detail string) autoReleaseResult {
+	_, _ = fmt.Fprintf(out, "remote claim release FAILED: %s claim was not released (its worktree is already gone): %s\n", task, detail)
+	return autoReleaseResult{Outcome: "failed", Detail: detail}
+}
+
+// exitNonZeroOnReleaseLeak is wb#321's open decision, deliberately left
+// unflipped by this change. The issue asks for a non-zero exit when a
+// worktree removal succeeds but its claim release then fails — but
+// tryAutoRelease's own doc comment (above, and historically) promises the
+// opposite: release is best-effort and never changes the host command's
+// exit code. That is a real contract change for `wb worktree cleanup` and
+// `wb worktree abort`'s callers (e.g. a batch driver that currently treats
+// exit 0 as "fully done"), so it is the repo owner's call, not this
+// patch's. Flip this to true to make cleanup/abort return a non-zero exit
+// for any task whose autoReleaseResult.Leaked() is true; the "remote claim
+// release FAILED: <task> ..." line plus the leaked task name already let an
+// operator (or `wb remote claims`) find and clear it either way.
+const exitNonZeroOnReleaseLeak = false
 
 // worktreeCreateAutoClaim is `worktree create`'s auto-claim hook, extracted
 // so tests can call it directly with a fixture deps value instead of

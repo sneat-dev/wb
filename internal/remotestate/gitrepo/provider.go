@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/remotestate"
@@ -154,6 +155,29 @@ func abortDetailIfRebasing(clonePath string) (detail string, wasRebasing bool) {
 	return "rebase aborted, local commits kept", true
 }
 
+// fetchRetryAttempts and fetchRetryBackoff bound Fetch's recovery from the
+// transient git failures wb#321 observed: "cannot rebase: Your index
+// contains uncommitted changes" and "cannot lock ref ... is at ... but
+// expected ..." — both symptoms of a second process's git command touching
+// this same working directory mid-operation. cloneLock (see clonelock.go)
+// is the real fix for that when the second process is another WB
+// invocation; this retry is defense in depth for anything else transient —
+// a stray non-WB git command, a lock momentarily held by the OS closing a
+// just-finished process, etc. abortDetailIfRebasing already clears a
+// left-behind rebase between attempts, so a retry after a dirty-index
+// failure gets a clean tree to work with, not a repeat of the same error.
+var (
+	fetchRetryAttempts = 3
+	fetchRetryBackoff  = 100 * time.Millisecond
+)
+
+// onFetchRetry, when non-nil, runs immediately after a failed attempt (and
+// any rebase-abort recovery) but before Fetch sleeps and retries. It exists
+// only so tests can deterministically fix the transient condition between
+// attempts instead of racing a timer against a background goroutine; it is
+// never set outside tests.
+var onFetchRetry func()
+
 // Fetch clones if needed and rebases local state onto origin.
 //
 // A store with no branches yet (a freshly created, genuinely empty
@@ -172,13 +196,25 @@ func (p *Provider) Fetch(_ context.Context) error {
 	if !has {
 		return nil
 	}
-	if err := gitops.PullRebase(p.opts.ClonePath); err != nil {
-		if detail, wasRebasing := abortDetailIfRebasing(p.opts.ClonePath); wasRebasing {
-			return fmt.Errorf("pull --rebase failed (%s): %w", detail, err)
+	var lastErr error
+	for attempt := 1; attempt <= fetchRetryAttempts; attempt++ {
+		if err := gitops.PullRebase(p.opts.ClonePath); err != nil {
+			if detail, wasRebasing := abortDetailIfRebasing(p.opts.ClonePath); wasRebasing {
+				lastErr = fmt.Errorf("pull --rebase failed (%s): %w", detail, err)
+			} else {
+				lastErr = fmt.Errorf("pull --rebase failed: %w", err)
+			}
+			if attempt < fetchRetryAttempts {
+				if onFetchRetry != nil {
+					onFetchRetry()
+				}
+				time.Sleep(fetchRetryBackoff)
+			}
+			continue
 		}
-		return fmt.Errorf("pull --rebase failed: %w", err)
+		return nil
 	}
-	return nil
+	return lastErr
 }
 
 // push publishes the clone's current branch. A branch with an upstream
@@ -204,7 +240,16 @@ func (p *Provider) push() error {
 // Publish writes the snapshot, commits, and pushes, rebasing once on a
 // rejected push. An unchanged snapshot returns the current HEAD without a
 // new commit.
+//
+// The whole method runs under cloneLock: Fetch plus the write/commit/push
+// that follows it is one critical section against the shared clone
+// directory, not just the Fetch half of it — see clonelock.go.
 func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (remotestate.PublishResult, error) {
+	lock, err := acquireCloneLock(p.opts.ClonePath)
+	if err != nil {
+		return remotestate.PublishResult{}, err
+	}
+	defer func() { _ = lock.release() }()
 	if err := p.Fetch(ctx); err != nil {
 		return remotestate.PublishResult{}, err
 	}
@@ -253,13 +298,21 @@ func (p *Provider) Publish(ctx context.Context, snapshot remotestate.Snapshot) (
 }
 
 // List fetches and then reads every machines/<login>/<machine>/snapshot.yaml.
+// It runs under cloneLock like Publish, even though it never writes: a read
+// concurrent with another process's in-flight Fetch/rebase can otherwise
+// observe a half-updated working tree.
 func (p *Provider) List(ctx context.Context) ([]remotestate.Entry, error) {
+	lock, err := acquireCloneLock(p.opts.ClonePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = lock.release() }()
 	if err := p.Fetch(ctx); err != nil {
 		return nil, err
 	}
 	root := filepath.Join(p.opts.ClonePath, "machines")
 	var entries []remotestate.Entry
-	err := filepath.WalkDir(root, func(file string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(file string, d os.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && file == root {
 				return nil
