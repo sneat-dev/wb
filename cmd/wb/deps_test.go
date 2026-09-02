@@ -162,6 +162,50 @@ func TestExecuteDepsBumpResumeHonorsExplicitParallelAndRetainsPersistedParallel(
 	}
 }
 
+func TestResolveDepsBumpResumeParallelRestoresExplicitAuthority(t *testing.T) {
+	t.Parallel()
+	// A campaign started with an explicit --parallel 1 and resumed without the
+	// flag must keep serial authority: the read-only worker floor stays off.
+	lifecycle, report, err := resolveDepsBumpResumeParallel(
+		deps.Options{Parallel: 1},
+		deps.BumpReport{Parallel: 1, ParallelExplicit: true},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.Parallel != 1 || !lifecycle.ParallelExplicit || !report.ParallelExplicit {
+		t.Fatalf("non-explicit resume lost the original explicit authority: lifecycle=%+v report=%+v", lifecycle, report)
+	}
+
+	// A default campaign resumed without the flag keeps the floor available.
+	lifecycle, report, err = resolveDepsBumpResumeParallel(
+		deps.Options{Parallel: 1},
+		deps.BumpReport{Parallel: 1},
+		false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.ParallelExplicit || report.ParallelExplicit {
+		t.Fatalf("default resume must stay non-explicit: lifecycle=%+v report=%+v", lifecycle, report)
+	}
+
+	// An explicit override while resuming records the new authority on the
+	// report so the next resume restores it too.
+	lifecycle, report, err = resolveDepsBumpResumeParallel(
+		deps.Options{Parallel: 2, ParallelExplicit: true},
+		deps.BumpReport{Parallel: 1},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle.Parallel != 2 || !lifecycle.ParallelExplicit || report.Parallel != 2 || !report.ParallelExplicit {
+		t.Fatalf("explicit resume override was not recorded: lifecycle=%+v report=%+v", lifecycle, report)
+	}
+}
+
 func TestDepsPublishCommandExposesExplicitPublicationAndPropagationFlags(t *testing.T) {
 	t.Parallel()
 	command := newDepsCmd()

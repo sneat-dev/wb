@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sneat-dev/wb/internal/hooks"
+	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -151,17 +152,65 @@ as one JSON document on stdout.`,
 			if err != nil {
 				return err
 			}
+			laneClaim, err := activeMergeLaneClaimForWorktreeInfo(projectsRoot, view)
+			if err != nil {
+				return err
+			}
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
-				return encoder.Encode(view)
+				return encoder.Encode(worktreeInfoDocument{WorkLogView: view, MergerLaneClaim: laneClaim})
 			}
-			_, err = io.WriteString(command.OutOrStdout(), worktrees.FormatWorktreeInfoText(view))
+			text := worktrees.FormatWorktreeInfoText(view) + formatMergerLaneClaimText(laneClaim)
+			_, err = io.WriteString(command.OutOrStdout(), text)
 			return err
 		},
 	}
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	return command
+}
+
+// worktreeInfoDocument extends the redacted Work Log view with whether an
+// active merger lane already claims this worktree's branch (lesson
+// merger-lane-branch-race). WorkLogView stays orchestrate-free; the join
+// happens here so an agent sitting in the worktree can see "is anyone
+// draining this?" before pushing instead of only after a merge.
+type worktreeInfoDocument struct {
+	worktrees.WorkLogView
+	MergerLaneClaim *orchestrate.MergeLaneClaim `json:"merger_lane_claim,omitempty"`
+}
+
+// activeMergeLaneClaimForWorktreeInfo resolves the exact repository and
+// branch this worktree carries and asks whether a merger lane already
+// claimed that branch. It prefers the durable manifest identity and falls
+// back to the live Git branch when no manifest was recorded (an adopted or
+// unmanaged checkout).
+func activeMergeLaneClaimForWorktreeInfo(projectsRoot string, view worktrees.WorkLogView) (*orchestrate.MergeLaneClaim, error) {
+	repository, branch := "", view.Git.Branch
+	if view.Manifest != nil {
+		repository = view.Manifest.Repository
+		if view.Manifest.Branch != "" {
+			branch = view.Manifest.Branch
+		}
+	}
+	return orchestrate.ActiveMergeLaneClaim(projectsRoot, repository, branch)
+}
+
+func formatMergerLaneClaimText(claim *orchestrate.MergeLaneClaim) string {
+	if claim == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Merger lane\n")
+	fmt.Fprintf(&b, "claimed: true\n")
+	fmt.Fprintf(&b, "lane: %s\n", claim.Lane)
+	fmt.Fprintf(&b, "target: %s\n", claim.Target)
+	fmt.Fprintf(&b, "status: %s\n", claim.Status)
+	fmt.Fprintf(&b, "receipt: %s\n", claim.ReceiptPath)
+	b.WriteString("A merger lane already selected this branch for a batch it may land at any\n")
+	b.WriteString("time. Hand any change (a revert included) to the lane instead of pushing\n")
+	b.WriteString("directly to this branch.\n\n")
+	return b.String()
 }
 
 func newWorktreeWorkLogCmd() *cobra.Command {

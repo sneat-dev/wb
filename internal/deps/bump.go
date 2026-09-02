@@ -29,6 +29,12 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	if err != nil {
 		return BumpReport{}, err
 	}
+	if options.FetchCache {
+		// One memo for the whole invocation: discoveryLifecycle and
+		// waveLifecycle below are value copies of lifecycle, so they share this
+		// pointer across every wave (see BumpOptions.FetchCache).
+		lifecycle.FetchMemo = orchestrate.NewFetchMemo()
+	}
 	if !lifecycle.DryRun {
 		lock, lockErr := orchestrate.AcquireOperationLock(lifecycle.GitHubDir, lifecycle.Operation, lifecycle.Resume)
 		if lockErr != nil {
@@ -40,7 +46,9 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		SchemaVersion: 1, Operation: lifecycle.Operation, Status: "running", Phase: BumpPhasePreparing,
 		Ecosystem: options.Ecosystem, SeedEvents: append([]ReleaseEvent(nil), events...),
 		GitHubDir: lifecycle.GitHubDir, BaseRef: lifecycle.Ref, ValidationMode: options.ValidationMode, Parallel: lifecycle.Parallel,
+		ParallelExplicit:       options.ParallelExplicit,
 		RegistryLookupsSkipped: options.NoRegistry,
+		FetchCacheEnabled:      options.FetchCache,
 	}
 	if lifecycle.Verify {
 		report.Verification = append(report.Verification, lifecycle.Checks...)
@@ -60,6 +68,10 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	}
 	report.ValidationMode = options.ValidationMode
 	report.Verification = currentVerification(lifecycle)
+	// A resumed report reflects THIS invocation's fetch-cache policy: the
+	// memo is process-local, so a previous run's setting attributes nothing
+	// about the discovery passes this run performs.
+	report.FetchCacheEnabled = options.FetchCache
 	if err := persistBumpReport(options, report); err != nil {
 		return report, err
 	}
@@ -88,15 +100,26 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			progressMu.Unlock()
 			progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "discover_graph", Repository: progress.LastRepository, State: progresspkg.Completed, Completed: progress.RepositoriesCompleted, Total: progress.RepositoriesTotal, Wave: waveIndex})
 		}
+		// Graph discovery only fetches origin and reads manifests, so it runs
+		// on the wider read-only worker bound: one serial `git fetch` per
+		// fleet repository per wave is otherwise the dominant cost of a
+		// default (--parallel 1) campaign.
+		discoveryLifecycle := lifecycle
+		discoveryLifecycle.Parallel = readOnlyWorkerCount(lifecycle.Parallel, options.ParallelExplicit, len(repositories))
+		// Only this read-only pass may consume the fetch memo; the wave engine
+		// below inherits lifecycle with FetchMemoDiscovery false, so mutation
+		// bases are always freshly fetched (see orchestrate.Options).
+		discoveryLifecycle.FetchMemoDiscovery = true
+		skipsBeforeDiscovery := lifecycle.FetchMemo.Skips()
 		var graph bumpFleetGraph
 		var err error
 		if options.Ecosystem == EcosystemNPM {
 			var npmGraph npmFleetGraph
-			npmGraph, err = discoverNpmFleetGraph(ctx, repositories, lifecycle, npmGraphDiscoveryPolicy{SkipFailedNonNPM: true}, onProgress)
+			npmGraph, err = discoverNpmFleetGraph(ctx, repositories, discoveryLifecycle, npmGraphDiscoveryPolicy{SkipFailedNonNPM: true}, onProgress)
 			graph = npmGraph
 		} else {
 			var goGraph goFleetGraph
-			goGraph, err = discoverGoFleetGraph(ctx, repositories, lifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, onProgress)
+			goGraph, err = discoverGoFleetGraph(ctx, repositories, discoveryLifecycle, goGraphDiscoveryPolicy{SkipFailedNonGo: true}, onProgress)
 			graph = goGraph
 		}
 		report.DiscoverySkips = mergeGraphDiscoverySkips(report.DiscoverySkips, graph.Skips())
@@ -125,6 +148,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			report.Status = "failed"
 			return report, persistBumpFailure(options, report, err)
 		}
+		discoveryFetchesSkipped := lifecycle.FetchMemo.Skips() - skipsBeforeDiscovery
 		report.Phase = BumpPhasePlanningWave
 		progresspkg.Report(options.Progress, progresspkg.Event{Operation: report.Operation, Phase: "plan_wave", State: progresspkg.Running, Wave: waveIndex})
 		if err := persistBumpReport(options, report); err != nil {
@@ -146,6 +170,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 			wave := BumpWaveReport{
 				Index: waveIndex, Status: "awaiting_release", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 				Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
+				DiscoveryFetchesSkipped: discoveryFetchesSkipped,
 			}
 			if lifecycle.DryRun {
 				wave.Status = "planned"
@@ -178,6 +203,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 				report.Waves = append(report.Waves, BumpWaveReport{
 					Index: waveIndex, Status: "completed", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 					Refreshes: refreshes, Releases: carriers,
+					DiscoveryFetchesSkipped: discoveryFetchesSkipped,
 				})
 			}
 			report.Status = "completed"
@@ -190,6 +216,7 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		wave := BumpWaveReport{
 			Index: waveIndex, Status: "running", ValidationMode: options.ValidationMode, Events: append([]ReleaseEvent(nil), events...),
 			Refreshes: refreshes, DeferredRepositories: deferred, Releases: carriers,
+			DiscoveryFetchesSkipped: discoveryFetchesSkipped,
 		}
 		affectedRepositories := selectWaveRepositories(repositories, targetsByRepository)
 		affectedModules := graph.affectedModules(targetsByRepository)
@@ -366,7 +393,7 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 		return events, nil, nil
 	}
 	now := bumpNow(options)
-	var refreshes []ReleaseEventRefresh
+	var stale []int
 	for index := range events {
 		event := &events[index]
 		if event.CheckedAt.IsZero() {
@@ -376,12 +403,71 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 		if now.Sub(event.CheckedAt) < options.RefreshAfter {
 			continue
 		}
-		latest, err := latestReleaseVersion(ctx, event.Dependency, options)
-		if err != nil {
-			return events, refreshes, fmt.Errorf("refresh stale release event %s@%s: %w", event.Dependency, event.Version, err)
+		stale = append(stale, index)
+	}
+	// The registry rechecks are independent read-only lookups, so they run on
+	// the read-only worker bound instead of one serial round-trip per stale
+	// event. Results apply below in event order, keeping refresh reporting
+	// deterministic regardless of lookup completion order. Any recorded
+	// failure is fatal upstream, so the first one cancels every outstanding
+	// lookup instead of letting each of them run to its own timeout while the
+	// operation lock stays held.
+	lookupCtx, cancelLookups := context.WithCancel(ctx)
+	defer cancelLookups()
+	latestByIndex := make([]string, len(stale))
+	errorsByIndex := make([]error, len(stale))
+	workers := readOnlyWorkerCount(options.Parallel, options.ParallelExplicit, len(stale))
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for position := range jobs {
+				if lookupCtx.Err() != nil {
+					continue
+				}
+				event := events[stale[position]]
+				latest, err := latestReleaseVersion(lookupCtx, event.Dependency, options)
+				if err != nil {
+					// A lookup that failed only because a sibling's failure
+					// already cancelled it is not its own finding; the
+					// sibling's recorded error fails the wave. Cancellation of
+					// the whole campaign context is still recorded so the
+					// caller sees why nothing was refreshed.
+					if lookupCtx.Err() == nil || ctx.Err() != nil {
+						errorsByIndex[position] = fmt.Errorf("refresh stale release event %s@%s: %w", event.Dependency, event.Version, err)
+					}
+					cancelLookups()
+					continue
+				}
+				if !universalSemverValid(latest) {
+					errorsByIndex[position] = fmt.Errorf("refresh stale release event %s@%s: registry returned invalid version %q", event.Dependency, event.Version, latest)
+					cancelLookups()
+					continue
+				}
+				latestByIndex[position] = latest
+			}
+		}()
+	}
+	for position := range stale {
+		jobs <- position
+	}
+	close(jobs)
+	group.Wait()
+	var refreshes []ReleaseEventRefresh
+	var refreshErrors []error
+	for position, index := range stale {
+		if err := errorsByIndex[position]; err != nil {
+			refreshErrors = append(refreshErrors, err)
+			continue
 		}
-		if !universalSemverValid(latest) {
-			return events, refreshes, fmt.Errorf("refresh stale release event %s@%s: registry returned invalid version %q", event.Dependency, event.Version, latest)
+		event := &events[index]
+		latest := latestByIndex[position]
+		if latest == "" {
+			// This lookup was cancelled before it completed; the joined error
+			// below already fails the wave, so the event stays unrefreshed.
+			continue
 		}
 		refresh := ReleaseEventRefresh{
 			Dependency: event.Dependency, Before: event.Version, After: event.Version, CheckedAt: now,
@@ -395,6 +481,9 @@ func refreshStaleReleaseEvents(ctx context.Context, events []ReleaseEvent, optio
 		}
 		event.CheckedAt = now
 		refreshes = append(refreshes, refresh)
+	}
+	if err := errors.Join(refreshErrors...); err != nil {
+		return events, refreshes, err
 	}
 	return mergeReleaseEvents(events), refreshes, nil
 }
@@ -468,13 +557,11 @@ func mergeGraphAmbiguousModules(groups ...[]GraphAmbiguousModuleWarning) []Graph
 func resumeReleaseObservations(ctx context.Context, previous []ReleaseObservation, options BumpOptions) ([]ReleaseObservation, error) {
 	observations := append([]ReleaseObservation(nil), previous...)
 	errorsByObservation := make([]error, len(observations))
-	workers := options.Parallel
-	if workers > len(observations) {
-		workers = len(observations)
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	// Release observation is a read-only registry poll, and every pending
+	// provider release advances on GitHub concurrently regardless of this
+	// pool: waiting on them serially turns the sum of independent release
+	// latencies into wall-clock time, so the pool takes the read-only floor.
+	workers := readOnlyWorkerCount(options.Parallel, options.ParallelExplicit, len(observations))
 	jobs := make(chan int)
 	var group sync.WaitGroup
 	for range workers {
@@ -782,26 +869,63 @@ func (handler waveHandler) PullRequest(repository orchestrate.Repository) (strin
 }
 
 func captureReleaseBaselines(ctx context.Context, graph bumpFleetGraph, affected map[string]map[string]bool, options BumpOptions) (map[string]ReleaseObservation, error) {
-	observations := map[string]ReleaseObservation{}
-	var observationErrors []error
+	type baselineTarget struct{ module, repository string }
+	var targets []baselineTarget
 	for repository, modules := range affected {
 		for module := range modules {
 			if !graph.hasExternalConsumers(module, repository) {
 				continue
 			}
-			version, err := latestReleaseVersion(ctx, module, options)
-			observation := ReleaseObservation{
-				Module: module, Repository: repository, Before: version, Source: latestVersionCommandDescription(options.Ecosystem, module),
-				Status: "baseline", RequireNewer: true, CheckedAt: bumpNow(options),
+			targets = append(targets, baselineTarget{module: module, repository: repository})
+		}
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].module == targets[j].module {
+			return targets[i].repository < targets[j].repository
+		}
+		return targets[i].module < targets[j].module
+	})
+	// Baseline capture is an independent read-only registry lookup per
+	// module, so it runs on the read-only worker bound instead of one serial
+	// round-trip per module.
+	results := make([]ReleaseObservation, len(targets))
+	errorsByTarget := make([]error, len(targets))
+	workers := readOnlyWorkerCount(options.Parallel, options.ParallelExplicit, len(targets))
+	jobs := make(chan int)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for index := range jobs {
+				target := targets[index]
+				version, err := latestReleaseVersion(ctx, target.module, options)
+				observation := ReleaseObservation{
+					Module: target.module, Repository: target.repository, Before: version, Source: latestVersionCommandDescription(options.Ecosystem, target.module),
+					Status: "baseline", RequireNewer: true, CheckedAt: bumpNow(options),
+				}
+				if err != nil {
+					observation.Status = "failed"
+					observation.Reason = err.Error()
+					errorsByTarget[index] = fmt.Errorf("observe baseline release for %s: %w", target.module, err)
+				} else {
+					observation.Reason = "latest published version captured before wave merge"
+				}
+				results[index] = observation
 			}
-			if err != nil {
-				observation.Status = "failed"
-				observation.Reason = err.Error()
-				observationErrors = append(observationErrors, fmt.Errorf("observe baseline release for %s: %w", module, err))
-			} else {
-				observation.Reason = "latest published version captured before wave merge"
-			}
-			observations[module] = observation
+		}()
+	}
+	for index := range targets {
+		jobs <- index
+	}
+	close(jobs)
+	group.Wait()
+	observations := make(map[string]ReleaseObservation, len(targets))
+	var observationErrors []error
+	for index := range targets {
+		observations[targets[index].module] = results[index]
+		if errorsByTarget[index] != nil {
+			observationErrors = append(observationErrors, errorsByTarget[index])
 		}
 	}
 	return observations, errors.Join(observationErrors...)
@@ -856,13 +980,7 @@ func discoverExistingReleaseCarriers(ctx context.Context, graph bumpFleetGraph, 
 	sort.Strings(modules)
 	observations := make([]ReleaseObservation, len(modules))
 	errorsByModule := make([]error, len(modules))
-	workers := options.Parallel
-	if workers > len(modules) {
-		workers = len(modules)
-	}
-	if workers < 1 {
-		workers = 1
-	}
+	workers := readOnlyWorkerCount(options.Parallel, options.ParallelExplicit, len(modules))
 	jobs := make(chan int)
 	var group sync.WaitGroup
 	for range workers {

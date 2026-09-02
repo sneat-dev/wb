@@ -482,11 +482,11 @@
               ],
               "modes": [
                 "Waits one terminating foreground slice for all observed checks on an exact head SHA",
-                "A direct target with an enumerated empty policy and complete empty check/status receipts may pass only after an unchanged reread",
+                "A direct target with an enumerated empty policy and complete empty check/status receipts may pass only after an unchanged reread that always waits the full poll interval (registration latency is that receipt's only time-based guard)",
                 "Enumerates classic protection and paginated active branch rules; every mode binds pinned required contexts to the exact-head check-run producer App",
                 "PR mode proves the candidate contains the exact current target and requires a nonempty strict required-status-check policy",
                 "PR mode never gates on current-target CI health and rejects target advance before merge",
-                "Requires an unchanged terminal reread; pending and failed observations exit 1 and pending includes exact resume arguments"
+                "Requires an unchanged terminal reread; a checks-bearing terminal set confirms it on a shortened delay (15s default, tunable, at most one shortened reread per terminal episode with churn falling back to the poll cadence), and pending and failed observations exit 1 with pending including exact resume arguments"
               ]
             }
           ],
@@ -1299,6 +1299,7 @@
                 "--checks",
                 "--commit",
                 "--dry-run",
+                "--fetch-cache",
                 "--fleet",
                 "--format",
                 "--go-private",
@@ -1322,7 +1323,8 @@
               "modes": [
                 "Propagates published Go or npm release events through dependency-ordered consumer waves.",
                 "--validation=full runs local lint, test, and build checks before publication; --validation=fast retains repository push hooks and is accepted only with --merge, which requires passing exact PR-head GitHub checks.",
-                "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered."
+                "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered. When --parallel is left at its default, read-only pools (per-wave graph discovery fetches and registry release observations) widen to a floor of 4 workers; an explicit --parallel bounds every pool in both directions.",
+                "--fetch-cache (opt-in) memoizes DISCOVERY fetches for up to 15 minutes within one invocation for repositories the campaign never pushed to, opened a PR for, or merged; touched repositories always re-fetch (WB merges server-side, invisibly to local-push accounting) and the wave engine's pre-mutation fetch is never skipped. Process-local: a fresh invocation (including --resume) always fetches. Avoid when others may land on main mid-campaign."
               ]
             }
           ],
@@ -1378,6 +1380,36 @@
               "path": "internal/deps/runner_integration_test.go",
               "name": "TestDependencyPullRequestBodiesReportValidationAuthorityTruthfully",
               "kind": "unit"
+            },
+            {
+              "path": "internal/deps/bump_fetch_cache_test.go",
+              "name": "TestRunBumpFetchCacheMemoizesUntouchedRepositoriesAndInvalidatesMergedOnes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/deps/bump_fetch_cache_test.go",
+              "name": "TestRunBumpWithoutFetchCacheRefetchesEveryWave",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestEnsureCanonicalSkipsRefetchOnlyForMemoizedUntouchedRepository",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestEnsureCanonicalMutationLifecycleAlwaysFetchesDespiteMemo",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestRunWithSharedFetchMemoInvalidatesPullRequestRepository",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestRunMarksRepositoryTouchedEvenWhenPushFails",
+              "kind": "integration"
             }
           ],
           "limitation": "Core wave ordering and refresh behavior are covered; live GitHub release and merge behavior remains adapter-dependent."
@@ -2372,6 +2404,7 @@
               "modes": [
                 "Plans explicit repository/workflow/package/version tuples by default and dispatches only with --apply.",
                 "Waits for an exact workflow run at the resolved provider head, verifies exact npm registry evidence, and hands confirmed events to the shared recalculated dependency-wave engine.",
+                "In that shared wave engine, leaving --parallel at its default widens read-only pools (per-wave graph discovery fetches and registry release observations) to a floor of 4 workers; an explicit --parallel bounds every pool in both directions.",
                 "Supports tuple-scoped workflow inputs and resumable receipts without handling npm credentials."
               ]
             }
@@ -2493,7 +2526,8 @@
               ],
               "modes": [
                 "Sets an exact existing Go, npm, or GitHub Actions reference in isolated operation worktrees.",
-                "--validation=full runs local lint, test, and build checks before publication; --validation=fast retains repository push hooks and is accepted only with --merge, which requires passing exact PR-head GitHub checks."
+                "--validation=full runs local lint, test, and build checks before publication; --validation=fast retains repository push hooks and is accepted only with --merge, which requires passing exact PR-head GitHub checks.",
+                "--propagate delegates to the shared dependency-wave engine, where leaving --parallel at its default widens read-only pools (per-wave graph discovery fetches and registry release observations) to a floor of 4 workers; an explicit --parallel bounds every pool in both directions."
               ]
             }
           ],

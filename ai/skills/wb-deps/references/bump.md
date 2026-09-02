@@ -39,6 +39,22 @@ WB opens independent eligible PRs in the ready wave concurrently up to
 providers, observes releases, recalculates ready consumers, and never merges a
 checkless, failing, cancelled, conflicted, stale-head, or timed-out PR.
 Dependency layers remain ordered even when PRs inside one layer are parallel.
+When `--parallel` is left at its default, read-only pools — per-wave graph
+discovery fetches and registry release observations — widen to a floor of 4
+workers; an explicit `--parallel` bounds every pool in both directions.
+
+`--fetch-cache` (opt-in) memoizes DISCOVERY fetches within one invocation:
+repositories this run never pushed to, opened a PR for, or merged are fetched
+once per 15 minutes instead of once per wave, while the wave engine still
+re-fetches before every mutation so branch bases stay fresh. A repository the
+run ever touched is re-fetched on every later discovery — WB merges
+server-side, so its default-branch commits appear with no local push and only
+a real fetch can observe them. The cache is process-local; a fresh invocation
+(including `--resume`) always fetches. Do NOT use it when anything other than
+this run may land on `main` mid-campaign (a teammate, a sibling campaign,
+dependabot): memoized reads of untouched repositories can be up to 15 minutes
+stale. Expect roughly a minute saved per wave on a ~450-repository fleet at
+the default read-only pool of 4.
 
 `--refresh-after` defaults to `5m`. Before starting a downstream build from an
 older event, WB checks for a newer semantic version and substitutes it. This
@@ -48,5 +64,8 @@ wait. Use `--refresh-after=0` only when the exact older event must be preserved.
 After interruption or a failed check, fix the existing branch/PR and use the
 same inputs with `--resume`; `--parallel` and `--validation` may be changed for
 the next incomplete wave, while completed waves retain their recorded mode.
+A resume that omits `--parallel` restores the original run's value and its
+explicit/default authority, so an explicitly serial `--parallel 1` campaign
+stays fully serial across resumes.
 Restarting without resume risks duplicate work and unnecessary CI. Keep the
 report directory stable when overriding it.

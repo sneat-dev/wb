@@ -67,6 +67,26 @@ type Options struct {
 	// DependencyCampaign marks worktrees created by dependency set/bump
 	// campaigns. Their supersession receipts require exact dependency proof.
 	DependencyCampaign bool
+	// FetchMemo, when non-nil, memoizes this run's completed origin fetches
+	// and receives touch-invalidation from the push, PR-open, and merge
+	// stages (see FetchMemo). Only a campaign loop that alternates fleet-wide
+	// discovery and mutation over the same repositories within one process —
+	// wb deps bump with --fetch-cache — threads one memo through every
+	// discovery and wave lifecycle it runs. Every other caller leaves it nil
+	// and keeps the unconditional engine fetch: for deps set --fleet there is
+	// no prior discovery, so that fetch is the operation's only origin read
+	// and must never be skipped.
+	FetchMemo *FetchMemo
+	// FetchMemoDiscovery marks this lifecycle as read-only graph discovery,
+	// which is the ONLY context allowed to consume the memo: EnsureCanonical
+	// may then skip a fresh, untouched memoized fetch. The mutation engine
+	// leaves it false even when FetchMemo is threaded, so a wave's branch
+	// base is always cut from a fetch completed moments before — never from a
+	// snapshot up to one full discovery pass old, which would interact badly
+	// with strict up-to-date branch protection and exact-head merges. The
+	// engine's own fetches still refresh the memo, and its publication
+	// stages still invalidate through it.
+	FetchMemoDiscovery bool
 }
 
 // Assessment is adapter-owned planning metadata plus an execution decision.
@@ -122,6 +142,12 @@ type PullRequestWaitOptions struct {
 	AllowUnfenced     bool
 	Slice             time.Duration
 	CheckPollInterval time.Duration
+	// StableRereadDelay overrides the shortened wait before the confirming
+	// reread of a checks-bearing terminal observation. A zero value uses
+	// DefaultStableRereadDelay, and the delay never exceeds
+	// CheckPollInterval. The no-applicable-checks receipt and any reread
+	// after fingerprint churn always wait the full CheckPollInterval.
+	StableRereadDelay time.Duration
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
 	Progress func(PullRequestWaitProgress)

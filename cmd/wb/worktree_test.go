@@ -591,6 +591,72 @@ func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
 	}
 }
 
+// TestWorktreeInfoCLIReportsAnActiveMergerLaneClaim covers the lesson
+// merger-lane-branch-race: once a merger lane has prepared a batch that
+// includes this worktree's branch, 'wb worktree info' must surface that
+// claim so an agent decides whether to push (a revert included) with the
+// same information the lane already has, instead of finding out only after
+// a merge landed something else.
+func TestWorktreeInfoCLIReportsAnActiveMergerLaneClaim(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "claim fixture original prompt")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-claimed", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-claimed", "acme", "app")
+	if err := os.WriteFile(filepath.Join(worktree, "claimed.txt"), []byte("claimed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	runGit("add", "claimed.txt")
+	runGit("commit", "-m", "feat: add claimed file")
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "merge", "prepare", worktree, "--target", "main", "--model", "unknown", "--agent-runtime", "test"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("merge prepare failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("info failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"## Merger lane", "claimed: true", "target: main"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("info text missing %q; stdout=%s stderr=%s", want, out, stderr.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree, "--format", "json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("info json failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("info json: %v\n%s", err, stdout.String())
+	}
+	claim, ok := document["merger_lane_claim"].(map[string]any)
+	if !ok {
+		t.Fatalf("info json missing merger_lane_claim: %#v", document)
+	}
+	if claim["target"] != "main" || claim["lane"] == "" || claim["receipt_path"] == "" {
+		t.Fatalf("merger_lane_claim = %#v", claim)
+	}
+}
+
 func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 	projects := setUpRenameCLIFixture(t)
 	prompt := writeOriginalPromptFixture(t, "agent needs the original request")

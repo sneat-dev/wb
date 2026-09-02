@@ -27,10 +27,19 @@ type depsSetOptions struct {
 	commit, push, pr, merge, order                                  bool
 	match, regex, ref, checks, validation, format, reportDir, layer string
 	parallel, retry, maxWaves                                       int
-	timeout, releasePoll, refreshAfter                              time.Duration
-	goPrivate                                                       []string
-	layers                                                          deps.LayerSelection
-	campaign                                                        *campaignProgress
+	// parallelExplicit records whether the operator set --parallel themselves;
+	// see deps.Options.ParallelExplicit for how the wave engine widens only
+	// read-only pools when the flag is left at its default.
+	parallelExplicit bool
+	// fetchCache is deps bump's opt-in per-run fetch memoization; see
+	// deps.BumpOptions.FetchCache. It is registered only on `wb deps bump` —
+	// deps set has no prior discovery whose fetch could stand in for the
+	// engine's own.
+	fetchCache                         bool
+	timeout, releasePoll, refreshAfter time.Duration
+	goPrivate                          []string
+	layers                             deps.LayerSelection
+	campaign                           *campaignProgress
 }
 
 func newDepsCmd() *cobra.Command {
@@ -292,6 +301,7 @@ func newDepsSetCmd() *cobra.Command {
 				return err
 			}
 			options.validation = string(validationMode)
+			options.parallelExplicit = depsBumpParallelExplicit(command)
 			if command.Flags().Changed("layer") && !options.order {
 				return fmt.Errorf("--layer requires --dependency-order")
 			}
@@ -405,6 +415,7 @@ func newDepsBumpCmd() *cobra.Command {
 				return err
 			}
 			options.validation = string(validationMode)
+			options.parallelExplicit = depsBumpParallelExplicit(command)
 			events, err := parseReleaseEvents(ecosystem, changed)
 			if err != nil {
 				return err
@@ -429,6 +440,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 30*time.Second, "interval between provider release observations")
 	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before starting a downstream build (0 disables)")
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect the first wave without creating worktrees or changing dependency files")
+	command.Flags().BoolVar(&options.fetchCache, "fetch-cache", false, "memoize DISCOVERY fetches for up to 15m within this run for repositories the campaign never pushed to, opened a PR for, or merged (opt-in; wave mutation bases always re-fetch; nothing persists across invocations; avoid when others may land on main mid-campaign)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse existing wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
@@ -454,7 +466,7 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 		validationMode = deps.ValidationModeFull
 	}
 	return deps.Options{
-		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
+		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel, ParallelExplicit: options.parallelExplicit,
 		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
 		ValidationMode: validationMode, Verify: validationMode == deps.ValidationModeFull, Checks: checks, Timeout: options.timeout, Retry: options.retry,
 		GoPrivate: options.goPrivate,
@@ -574,7 +586,7 @@ func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ec
 	}
 	bumpOptions := deps.BumpOptions{
 		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
-		Previous: previous, NoRegistry: noRegistry,
+		Previous: previous, NoRegistry: noRegistry, FetchCache: options.fetchCache,
 		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	report, runErr := deps.RunBump(commandExecutionContext(command), events, repositories, bumpOptions)
@@ -606,12 +618,17 @@ func resolveDepsBumpResumeParallel(lifecycle deps.Options, report deps.BumpRepor
 		// repositories nor changes the campaign's identity, so an operator may
 		// safely raise or lower it while resuming.
 		report.Parallel = lifecycle.Parallel
+		report.ParallelExplicit = true
 		return lifecycle, report, nil
 	}
 	if report.Parallel < 1 {
 		return deps.Options{}, deps.BumpReport{}, fmt.Errorf("resume report has invalid parallelism %d", report.Parallel)
 	}
 	lifecycle.Parallel = report.Parallel
+	// Restore the original run's explicit-parallel authority too: a resumed
+	// `--parallel 1` campaign must not regain the read-only worker floor
+	// merely because the resume invocation itself omitted the flag.
+	lifecycle.ParallelExplicit = report.ParallelExplicit
 	return lifecycle, report, nil
 }
 
