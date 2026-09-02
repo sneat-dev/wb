@@ -720,17 +720,84 @@ func TestSupersedeValidationFailedWorktreeMergeAcceptsOnlyRecordedSourceDescenda
 		source := receipt.Sources[0]
 		sibling := createMergeSource(t, fixture, "supersession-source-sibling", "feature/supersession-source-sibling", "sibling.txt", "sibling\n")
 		runEngineGit(t, sibling.WorktreeDir, "merge", "--no-edit", source.SHA)
-		originalClaim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
-		if err != nil {
-			t.Fatal(err)
-		}
 		impersonating := source
 		impersonating.Worktree = sibling.WorktreeDir
 		impersonating.Branch = sibling.Branch
-		if _, err := validateValidationFailedSupersessionSource(context.Background(), fixture.githubDir, receipt, impersonating, originalClaim.BaseSHA); err == nil || !strings.Contains(err.Error(), "no matching active Work Log claim") {
+		if _, _, err := validateValidationFailedSupersessionSource(context.Background(), fixture.githubDir, receipt, impersonating); err == nil || !strings.Contains(err.Error(), "no matching active Work Log claim") {
 			t.Fatalf("sibling source identity error = %v", err)
 		}
 	})
+
+	t.Run("distinct source and candidate claim bases are retained as roots", func(t *testing.T) {
+		fixture := newEngineFixture(t)
+		source := createMergeSource(t, fixture, "two-base-source", "feature/two-base-source", "source.txt", "source\n")
+		sourceClaim, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{ProjectsRoot: fixture.githubDir, Worktree: source.WorktreeDir})
+		if err != nil || sourceClaim.Claim == nil {
+			t.Fatalf("load source claim: %+v err=%v", sourceClaim, err)
+		}
+		writeEngineFile(t, filepath.Join(fixture.canonical, "receipt-target.txt"), "receipt target\n")
+		runEngineGit(t, fixture.canonical, "add", "receipt-target.txt")
+		runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance receipt target")
+		runEngineGit(t, fixture.canonical, "push", "origin", "main")
+		receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		receipt.Status = WorktreeMergeValidationFailed
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			t.Fatal(err)
+		}
+		runEngineGit(t, source.WorktreeDir, "push", "origin", "feature/two-base-source")
+		sourceHead := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+		writeEngineFile(t, filepath.Join(fixture.canonical, "current-target.txt"), "current target\n")
+		runEngineGit(t, fixture.canonical, "add", "current-target.txt")
+		runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance current target")
+		runEngineGit(t, fixture.canonical, "push", "origin", "main")
+		currentTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+		replacement := createMergeSource(t, fixture, "two-base-replacement", "feature/two-base-replacement", "replacement.txt", "replacement\n")
+		runEngineGit(t, replacement.WorktreeDir, "fetch", "origin")
+		runEngineGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/feature/two-base-source")
+		unrelated := createMergeSource(t, fixture, "two-base-unrelated", "feature/two-base-unrelated", "unrelated.txt", "unrelated\n")
+		unrelatedHead := strings.TrimSpace(runEngineGit(t, unrelated.WorktreeDir, "rev-parse", "HEAD"))
+		claimContents, err := os.ReadFile(sourceClaim.Claim.ClaimPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(sourceClaim.Claim.ClaimPath, []byte(strings.Replace(string(claimContents), sourceClaim.Claim.BaseSHA, unrelatedHead, 1)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err = SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+			Apply: true, Actor: "reviewer", Reason: "altered source claim evidence must refuse",
+		})
+		if err == nil || !strings.Contains(err.Error(), "no matching active Work Log claim") {
+			t.Fatalf("altered source claim evidence error = %v", err)
+		}
+		if _, statErr := os.Stat(validationFailureSupersessionPath(receipt.ReceiptPath)); !os.IsNotExist(statErr) {
+			t.Fatalf("altered source claim evidence wrote supersession: %v", statErr)
+		}
+		if err := os.WriteFile(sourceClaim.Claim.ClaimPath, claimContents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		ack, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+			Apply: true, Actor: "reviewer", Reason: "source claim predates the failed candidate but every root is retained",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalCandidateClaim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, root := range []string{sourceClaim.Claim.BaseSHA, sourceHead, receipt.TargetSHA, originalCandidateClaim.BaseSHA, currentTarget} {
+			if contains, ancestorErr := isMergeAncestor(context.Background(), replacement.WorktreeDir, root, ack.Replacement.SHA); ancestorErr != nil || !contains {
+				t.Fatalf("replacement root %s retained=%t err=%v", root, contains, ancestorErr)
+			}
+		}
+	})
+
 }
 
 func TestSupersedeValidationFailedWorktreeMergeRoundTripsToNextPrepare(t *testing.T) {
