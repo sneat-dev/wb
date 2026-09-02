@@ -66,7 +66,10 @@ jobs:
   coverage:
     name: Sharded coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The merged package set uses real repositories and worktrees. Keep the
+    # command below bounded, but leave enough room for runner variance as the
+    # integration suite grows.
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -84,7 +87,7 @@ jobs:
           --minimum=58
           --format json
           --non-interactive
-          --timeout 4m30s
+          --timeout 7m30s
       - name: Upload coverage profile
         uses: actions/upload-artifact@v7
         with:
