@@ -831,7 +831,10 @@ func TestTryAutoReleaseOnlyOwnClaim(t *testing.T) {
 	}
 
 	out.Reset()
-	tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-7", &out)
+	result := tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-7", &out)
+	if result.Outcome != "released" || result.Leaked() {
+		t.Fatalf("result = %+v, want Outcome \"released\" and Leaked() false", result)
+	}
 	if !strings.Contains(out.String(), "remote claim: released task-7") {
 		t.Fatalf("out = %q, want 'remote claim: released task-7'", out.String())
 	}
@@ -840,7 +843,8 @@ func TestTryAutoReleaseOnlyOwnClaim(t *testing.T) {
 	}
 
 	// bob holds task-9 on another machine: alice's auto-release must refuse
-	// it and leave the claim file untouched.
+	// it and leave the claim file untouched. This is ReleaseHeldByOther —
+	// nothing genuinely leaked, so it stays "held"/advisory, not "failed".
 	g := secondMachine(t, f, "vm")
 	out.Reset()
 	if err := runRemoteClaim(g.deps("bob", at), g.projectsRoot, "task-9", "", false, false, false, 24*time.Hour, &out); err != nil {
@@ -848,7 +852,10 @@ func TestTryAutoReleaseOnlyOwnClaim(t *testing.T) {
 	}
 
 	out.Reset()
-	tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-9", &out)
+	result = tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-9", &out)
+	if result.Outcome != "skipped" || result.Leaked() {
+		t.Fatalf("result = %+v, want Outcome \"skipped\" and Leaked() false", result)
+	}
 	if !strings.Contains(out.String(), "remote claim release skipped: held by bob/vm") {
 		t.Fatalf("out = %q, want 'remote claim release skipped: held by bob/vm'", out.String())
 	}
@@ -862,7 +869,10 @@ func TestTryAutoReleaseNoopIsSilent(t *testing.T) {
 	f := newRemoteFixture(t, "laptop")
 	at := time.Date(2026, 8, 23, 9, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
-	tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-7", &out)
+	result := tryAutoRelease(f.deps("alice", at), f.projectsRoot, "task-7", &out)
+	if result.Outcome != "noop" || result.Leaked() {
+		t.Fatalf("result = %+v, want Outcome \"noop\" and Leaked() false", result)
+	}
 	if out.String() != "" {
 		t.Fatalf("out = %q, want silence when there was nothing of ours to release", out.String())
 	}
@@ -872,18 +882,33 @@ func TestTryAutoReleaseDisabledWithoutConfig(t *testing.T) {
 	deps := defaultRemoteDeps()
 	deps.configPath = filepath.Join(t.TempDir(), "none.yaml")
 	var out bytes.Buffer
-	tryAutoRelease(deps, t.TempDir(), "task-7", &out)
+	result := tryAutoRelease(deps, t.TempDir(), "task-7", &out)
+	if result.Outcome != "disabled" || result.Leaked() {
+		t.Fatalf("result = %+v, want Outcome \"disabled\" and Leaked() false", result)
+	}
 	if out.String() != "" {
 		t.Fatalf("out = %q, want silence when unconfigured", out.String())
 	}
 }
 
-func TestTryAutoReleaseSkippedWhenUnreachable(t *testing.T) {
+// TestTryAutoReleaseFailedWhenUnreachable is wb#321's leak path: a store the
+// provider genuinely cannot write to (here, a clone URL that does not
+// exist, so ensureClone fails before it ever learns whether the claim was
+// ours) must be reported distinctly from the advisory "skipped" outcomes —
+// disabled, login trouble, noop, held by another machine — none of which
+// can leave a real claim standing. Outcome must be "failed", Leaked() must
+// be true, and the printed line must name the task and say "FAILED", not
+// "skipped", so an operator (or a batch driver) can tell this apart from
+// ordinary advisory output by grepping.
+func TestTryAutoReleaseFailedWhenUnreachable(t *testing.T) {
 	deps := unreachableRemoteDeps(t, "laptop")
 	var out bytes.Buffer
-	tryAutoRelease(deps, t.TempDir(), "task-7", &out)
-	if !strings.Contains(out.String(), "remote claim release skipped:") {
-		t.Fatalf("out = %q, want a 'remote claim release skipped:' line", out.String())
+	result := tryAutoRelease(deps, t.TempDir(), "task-7", &out)
+	if result.Outcome != "failed" || !result.Leaked() {
+		t.Fatalf("result = %+v, want Outcome \"failed\" and Leaked() true", result)
+	}
+	if !strings.Contains(out.String(), "remote claim release FAILED: task-7") {
+		t.Fatalf("out = %q, want a 'remote claim release FAILED: task-7' line", out.String())
 	}
 }
 
