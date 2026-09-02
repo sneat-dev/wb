@@ -50,6 +50,9 @@
     "session": [
       "wb-worktrees"
     ],
+    "skills": [
+      "wb-skills"
+    ],
     "status": [
       "wb-fleet"
     ],

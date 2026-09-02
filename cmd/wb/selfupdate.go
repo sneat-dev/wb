@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/strongo/selfupdate"
@@ -99,12 +103,92 @@ func newSelfUpdateConfig() selfupdate.Config {
 // function's only job is to describe wb to that library and to translate
 // its outcomes onto wb's own three-code exit contract, via selfUpdateErrors.
 func newSelfUpdateCmd() *cobra.Command {
-	return cobracmd.New(newSelfUpdateConfig(), cobracmd.CommandOptions{
+	cfg := newSelfUpdateConfig()
+	command := cobracmd.New(cfg, cobracmd.CommandOptions{
 		Short:      "Update the installed wb binary to the latest release",
 		Aliases:    []string{"update"},
 		JSONFormat: true,
 		Errors:     selfUpdateErrors{},
 	})
+
+	// Re-sync Agent Skills after every successful self-update invocation
+	// that could have changed the on-disk binary (REQ: skills-sync-on-
+	// self-update). --check and --dry-run never write anything themselves,
+	// so neither runs the sync either.
+	originalRunE := command.RunE
+	command.RunE = func(cmd *cobra.Command, args []string) error {
+		if err := originalRunE(cmd, args); err != nil {
+			return err
+		}
+		if selfUpdateShouldSyncSkills(cmd) {
+			syncSkillsAfterSelfUpdate(cmd, cfg)
+		}
+		return nil
+	}
+	return command
+}
+
+// selfUpdateShouldSyncSkills reports whether this invocation is the kind
+// that can have changed the on-disk binary: neither --check (read-only) nor
+// --dry-run (plans without writing) ever does, so neither runs the sync.
+func selfUpdateShouldSyncSkills(cmd *cobra.Command) bool {
+	if checkOnly, _ := cmd.Flags().GetBool("check"); checkOnly {
+		return false
+	}
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		return false
+	}
+	return true
+}
+
+// selfUpdateDetect is a seam over selfupdate.Config.DetectSelf, exactly like
+// cobracmd's own unexported detectFunc, so a test can supply a fake install
+// path without needing a real installed binary at a resolvable
+// os.Executable() location.
+var selfUpdateDetect = func(cfg selfupdate.Config) (selfupdate.Detection, error) {
+	return cfg.DetectSelf()
+}
+
+// syncSkillsAfterSelfUpdate runs `skills sync` against the on-disk wb binary
+// immediately after self-update reports success.
+//
+// It re-execs the installed binary rather than calling internal/skills in
+// this process: when self-update actually swapped the executable, this
+// process is still running the OLD build in memory (replacing the file on
+// disk does not reload an already-running process), so only a fresh child
+// process sees the newly embedded skills. For every other outcome —
+// ActionAlreadyCurrent, ActionRedirected, ActionAborted — the detected path
+// is this same binary, and the sync is simply the ordinary idempotent no-op.
+//
+// A failure here is never fatal to self-update: the update itself already
+// succeeded (or there was nothing to do), so a sync that cannot run --
+// offline, a permissions issue, no harness present yet -- is reported as a
+// warning on stderr rather than turned into a self-update failure.
+func syncSkillsAfterSelfUpdate(cmd *cobra.Command, cfg selfupdate.Config) {
+	detection, err := selfUpdateDetect(cfg)
+	if err != nil || detection.Path == "" {
+		return
+	}
+	// cmd.Context() is nil for any *cobra.Command that was never run through
+	// Execute/ExecuteContext — every real invocation sets one, but a unit
+	// test constructing a bare command, or a future caller of this function
+	// outside cobra's own dispatch, must not panic on a nil parent context.
+	parent := cmd.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, detection.Path, "skills", "sync") //nolint:gosec // detection.Path is the resolved installed wb binary itself
+	var stdout, stderr bytes.Buffer
+	child.Stdout = &stdout
+	child.Stderr = &stderr
+	if err := child.Run(); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), //nolint:errcheck
+			"self-update: skills sync failed (%v); run `wb skills sync` to install/update WB's Agent Skills manually\n%s", err, stderr.String())
+		return
+	}
+	_, _ = cmd.OutOrStdout().Write(stdout.Bytes())
 }
 
 // selfUpdateErrors maps github.com/strongo/selfupdate's outcomes onto wb's

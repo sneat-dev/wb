@@ -61,6 +61,8 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `worktree set` | rejected | rejected | rejected | yes |
 | `branch list`, `cleanup` | yes | yes | rejected | yes |
 | `version`, `self-update` | rejected | rejected | rejected | yes |
+| `skills sync`, `skills hook print`, `skills hook install` | rejected | rejected | rejected | yes |
+| hidden `skills hook run` | rejected | rejected | rejected | yes |
 | `commands` | rejected | rejected | rejected | yes |
 
 ## `archive clean` command flags

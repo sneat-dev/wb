@@ -71,6 +71,8 @@ wb worktree cleanup <task...> # plan or apply safe merged-task cleanup
 wb worktree rename <old> <new> # plan or apply explicit audited worktree recycle
 wb worktree abort <task>     # hand off, retain, or discard an interrupted claim
 wb self-update [flags]       # update the installed wb binary (alias: wb update)
+wb skills sync [flags]       # install/update WB's Agent Skills in a harness skills dir
+wb skills hook print|install # print or merge a Claude Code SessionStart hook
 ```
 
 ### Persistent flags
@@ -1926,6 +1928,43 @@ blocking on input when no terminal is attached and `--yes` was not given, so
 scripts and agents driving wb never hang. wb publishes no Windows build, so
 the self-replace path is macOS/Linux only; a Windows host reaching it refuses
 with a clear message instead of attempting a swap it has no asset for.
+
+### `wb skills` — install WB's Agent Skills into a harness
+
+`ai/skills/*` (this repository's own Agent Skills — `wb-worktrees`,
+`wb-merge`, `wb-hooks`, and the rest) auto-discovers for a session working
+*inside* a checkout of `sneat-dev/wb`, through `.claude-plugin/plugin.json`.
+A session orchestrating any other repository, with `wb` installed globally,
+never had them at all: there was no checkout for a harness to discover them
+from. `wb skills sync` closes that gap. The skills are embedded in the `wb`
+binary itself (`go:embed`), so it installs them from any installed `wb`, in
+any project, without a source checkout:
+
+```sh
+wb skills sync                        # install/update into ~/.claude/skills
+wb skills sync --dir <path>           # target a different harness skills dir
+wb skills sync --dry-run              # preview added/updated/removed/conflicts
+wb skills sync --format json          # machine-readable report
+```
+
+It is idempotent — a repeat run with nothing new to ship reports every skill
+`unchanged` and writes nothing — and it never overwrites a directory it did
+not itself install: a name collision with something already there is
+reported as a `conflict` (exit code 1) and left untouched. A marker file
+next to the installed skills records which `wb` version performed the last
+sync. `wb self-update` runs `wb skills sync` automatically right after a
+successful update; every other `wb` command prints a single line on stderr
+when the installed skills and the running `wb` version disagree:
+
+```
+wb: Agent Skills in ~/.claude/skills were synced by wb 0.74.0, this is wb 0.75.1 -- run `wb skills sync`
+```
+
+`wb skills hook print` prints a Claude Code `SessionStart` hook snippet that
+reminds a new session to register itself (`wb session register`) and repeats
+the drift warning above in its opening context; `wb skills hook install`
+merges that hook into `~/.claude/settings.json` (`--dry-run` to preview).
+`wb` never edits that file on its own outside this explicit subcommand.
 
 ## Build from source
 

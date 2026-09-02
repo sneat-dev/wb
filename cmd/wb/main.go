@@ -95,6 +95,7 @@ func newRootCmd() *cobra.Command {
 			// worktree records what touched it, without each call site having
 			// to thread the name through.
 			worktrees.SetInvokedCommand(persistentCommandID(cmd))
+			maybeWarnSkillsDrift(cmd)
 			return nil
 		},
 	}
@@ -128,6 +129,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
 		groupedRootCommand(newSelfUpdateCmd(), rootGroupLearn),
+		groupedRootCommand(newSkillsCmd(), rootGroupLearn),
 		groupedRootCommand(newVersionCmd(), rootGroupLearn),
 		groupedRootCommand(newCommandsCmd(), rootGroupLearn),
 	)
