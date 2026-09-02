@@ -42,7 +42,7 @@ wb migrate <spec> <roots...> # plan or apply a declarative source migration
 wb deps set <kind> <dep>@<v> # set existing dependency references to an exact version
 wb deps bump <kind> --changed M@V # propagate published go or npm releases through dependency waves
 wb deps graph [path] [flags] # inspect dependency topology and open an SVG report
-wb deps drift [path] [flags] # report Go dependency convergence / replaces / major-path splits
+wb deps drift [path] [flags] # report go/npm dependency convergence, replaces, splits, behind-latest
 wb deps policy <verb> [flags] # enforce which dependencies and import directions are allowed
 wb ci audit [path] [flags]   # validate coverage gates and artifact promotion
 wb coverage [path] [flags]   # measure Go test coverage for one repo or a local fleet
@@ -999,13 +999,38 @@ for the machine-readable receipt and resume contract.
 
 ### `wb deps drift` — dependency convergence
 
-Use drift when the question is whether selected checkouts agree on Go module
-versions. It is read-only and offline by default: declared and selected versions
-come from local manifests / `go list -m`; pass `--online` only when latest
-registry versions are required. Fleet reports group each module path and
-classify `converged`, `divergent`, `replaced`, and `major_path_split` states.
-`--fail-on-drift` turns those drift classes into an exit gate after the complete
-report is written.
+Use drift when the question is whether selected checkouts agree on dependency
+versions. It is read-only and offline by default, and covers two ecosystems:
+
+- `--ecosystem go` (default) reads every `go.mod` and resolves the selected
+  version with `go list -m`.
+- `--ecosystem npm` reads every `package.json` dependency field and every
+  `pnpm-workspace.yaml` override/catalog entry, and resolves the selected
+  version from the governing `pnpm-lock.yaml` or `package-lock.json`. That
+  distinction is the point: `^0.30.0` says what a fresh resolve *could* pick,
+  the committed lockfile says what CI *will* install.
+
+Fleet reports group each dependency and classify `converged`, `divergent`,
+`replaced`, `major_path_split`, and `behind_latest` states. `--fail-on-drift`
+turns the first four into an exit gate after the complete report is written;
+`--fail-on-behind` gates the last one separately, because a fleet that has not
+yet adopted a release is a different finding from one that disagrees with
+itself.
+
+Pass `--online` when latest registry versions are required. An online run costs
+one registry query per retained dependency, so bound the question with
+`--scope` (a `path.Match` glob over dependency names, repeatable) or
+`--dependency` (exact, repeatable). `--exclude` drops whole repositories by
+`owner/name` glob and lists them in the report, so "clean" is never confused
+with "never inspected".
+
+A dependency is only reported as behind when the evidence proves it: a locked
+version below latest, or a specifier that provably cannot admit latest (an
+exact pin such as `"0.14.0"` against a published `0.14.3`, or `^0.24.1` against
+`0.25.0` — npm's caret does not cross a `0.x` minor). Specifier shapes WB does
+not evaluate exactly — unions, hyphen ranges, wildcards, and the `workspace:`,
+`catalog:`, `npm:`, and `file:` protocols — are reported as unevaluated and are
+never counted as behind.
 
 Fleet and single-repository drift and graph scans show live selection and
 per-repository progress on an interactive terminal. The elapsed time keeps
@@ -1018,6 +1043,9 @@ wb deps drift .
 wb deps drift --fleet --match 'sneat-co/*' --format json
 wb deps drift --fleet --fail-on-drift
 wb deps drift --fleet --online --dependency example.com/sdk
+
+# "is the fleet on the latest of our own npm packages?"
+wb deps drift --fleet --ecosystem npm --online --scope '@sneat/*' --fail-on-behind
 ```
 
 ### `wb deps graph` — one scan, three dependency views

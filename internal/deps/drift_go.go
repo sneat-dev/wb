@@ -20,7 +20,7 @@ func inspectGoDriftRepository(ctx context.Context, repository Repository, option
 		Path:       repository.Path,
 		Status:     "ok",
 	}
-	filter := dependencyFilterSet(options.Dependencies)
+	selector := newDriftDependencySelector(options)
 	err := filepath.WalkDir(repository.Path, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -63,7 +63,7 @@ func inspectGoDriftRepository(ctx context.Context, repository Repository, option
 		}
 		moduleDir := joinModuleDir(repository.Path, relative)
 		for _, requirement := range parsed.Require {
-			if !matchesDriftDependency(requirement.Mod.Path, filter) {
+			if !selector.matches(requirement.Mod.Path) {
 				continue
 			}
 			dependency := DriftDependency{
@@ -101,7 +101,7 @@ func inspectGoDriftRepository(ctx context.Context, repository Repository, option
 		}
 		// Replacements without a matching require still matter for gates.
 		for modulePath, replacement := range replacements {
-			if !matchesDriftDependency(modulePath, filter) {
+			if !selector.matches(modulePath) {
 				continue
 			}
 			found := false

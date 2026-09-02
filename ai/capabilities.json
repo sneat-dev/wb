@@ -1432,6 +1432,8 @@
               "flags": [
                 "--dependency",
                 "--ecosystem",
+                "--exclude",
+                "--fail-on-behind",
                 "--fail-on-drift",
                 "--fleet",
                 "--format",
@@ -1443,11 +1445,14 @@
                 "--regex",
                 "--report-dir",
                 "--retry",
+                "--scope",
                 "--timeout"
               ],
               "modes": [
-                "Reports declared, selected, replaced, and optionally latest Go dependency versions for one repository or a selected fleet.",
-                "Offline by default; --online queries the module proxy; --fail-on-drift gates divergent, replaced, and major-path-split groups after the complete report."
+                "Reports declared, selected, replaced, and optionally latest dependency versions for one repository or a selected fleet, in the go or npm ecosystem.",
+                "npm runs read every package.json and pnpm-workspace.yaml and resolve the selected version from the governing pnpm-lock.yaml or package-lock.json.",
+                "Offline by default; --online queries the module proxy or npm registry; --scope bounds which dependencies are retained and therefore queried; --exclude removes whole repositories and lists them in the report.",
+                "--fail-on-drift gates divergent, replaced, and major-path-split groups; --fail-on-behind gates repositories that provably lag a published latest version."
               ]
             }
           ],
@@ -1459,7 +1464,10 @@
             {
               "command": "wb deps drift --help",
               "contains": [
+                "--fail-on-behind",
                 "--fail-on-drift",
+                "--scope",
+                "--exclude",
                 "--online",
                 "--fleet"
               ]
@@ -1475,7 +1483,8 @@
               "marker": "# Dependency drift",
               "examples": [
                 "wb deps drift . --format json",
-                "wb deps drift --fleet --fail-on-drift"
+                "wb deps drift --fleet --fail-on-drift",
+                "wb deps drift --fleet --ecosystem npm --online --scope '@sneat/*' --fail-on-behind"
               ]
             }
           ],
@@ -1498,12 +1507,22 @@
               "path": "internal/deps/drift_test.go",
               "name": "TestAnalyzeDriftReportsMajorPathSplit",
               "kind": "integration"
+            },
+            {
+              "path": "internal/deps/drift_npm_test.go",
+              "name": "TestAnalyzeNpmDriftPrefersTheLockedVersionOverTheDeclaredRange",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/deps/drift_npm_test.go",
+              "name": "TestAnalyzeNpmDriftReportsRepositoriesBehindTheRegistryLatest",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "v1 is Go-only and offline-first. Latest versions are never claimed without --online. Forcing edges are direct require rows, not full MVS why-paths."
+      "notes": "Covers the go and npm ecosystems, offline-first. Latest versions are never claimed without --online, and an npm specifier outside WB's evaluated subset is reported unevaluated rather than guessed. Forcing edges are direct require rows, not full MVS why-paths."
     },
     {
       "id": "wb.deps.go-directive.check",

@@ -156,13 +156,15 @@ func newDepsGraphCmd() *cobra.Command {
 }
 
 type depsDriftOptions struct {
-	fleet, online, failOnDrift           bool
-	match, regex, ref, format, reportDir string
-	ecosystem                            string
-	parallel, retry                      int
-	timeout                              time.Duration
-	dependencies                         []string
-	goPrivate                            []string
+	fleet, online, failOnDrift, failOnBehind bool
+	match, regex, ref, format, reportDir     string
+	ecosystem                                string
+	parallel, retry                          int
+	timeout                                  time.Duration
+	dependencies                             []string
+	scopes                                   []string
+	exclude                                  []string
+	goPrivate                                []string
 }
 
 func newDepsDriftCmd() *cobra.Command {
@@ -170,17 +172,36 @@ func newDepsDriftCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "drift [repository-path]",
 		Short: "Report dependency version convergence for one repository or a fleet",
-		Long: `Produce a read-only Go dependency convergence report.
+		Long: `Produce a read-only dependency convergence report for the go or npm ecosystem.
 
 For each dependency the report distinguishes declared, selected, replaced, and
 (optionally) latest-known versions. Fleet runs group each module path by the
 versions found across repositories and classify the state as converged,
-divergent, replaced, major-path split, unavailable, or error.
+divergent, replaced, major-path split, behind latest, unavailable, or error.
+
+--ecosystem=go reads every go.mod and resolves the selected version with
+` + "`go list -m`" + `. --ecosystem=npm reads every package.json and
+pnpm-workspace.yaml and resolves the selected version from the governing
+pnpm-lock.yaml or package-lock.json — the number a build actually installs,
+which a caret range on its own does not tell you.
 
 By default the command stays offline and never labels an unqueried version as
-latest. Pass --online to consult the module proxy. Pass --fail-on-drift to exit
-non-zero after the complete report when divergent, replaced, or major-path-split
-groups are present. Inspection errors always exit non-zero after the report.`,
+latest. Pass --online to consult the module proxy or the npm registry. Because
+an online fleet run makes one registry query per retained dependency, restrict
+the question with --scope (glob, repeatable) so a run costs what it should:
+
+    wb deps drift --fleet --ecosystem npm --online --scope '@sneat/*'
+
+--scope uses path.Match semantics, so "*" never crosses a "/". A dependency is
+retained when --scope matches it or --dependency names it exactly; with neither
+flag every dependency is retained. --exclude removes whole repositories from
+the run by "owner/name" glob, and the excluded slugs are listed in the report so
+"clean" is never confused with "never inspected".
+
+Pass --fail-on-drift to exit non-zero after the complete report when divergent,
+replaced, or major-path-split groups are present, and --fail-on-behind to exit
+non-zero when any repository provably lags a published latest version.
+Inspection errors always exit non-zero after the report.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			campaign := newCampaignProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive), "deps drift")
@@ -191,8 +212,10 @@ groups are present. Inspection errors always exit non-zero after the report.`,
 			if ecosystem == "" {
 				ecosystem = deps.EcosystemGo
 			}
-			if ecosystem != deps.EcosystemGo {
-				return fmt.Errorf("dependency drift currently supports only the go ecosystem")
+			switch ecosystem {
+			case deps.EcosystemGo, deps.EcosystemNPM:
+			default:
+				return fmt.Errorf("dependency drift currently supports only the go and npm ecosystems")
 			}
 			repositoryArgs := []string{string(ecosystem), "drift"}
 			if len(args) == 1 {
@@ -208,16 +231,18 @@ groups are present. Inspection errors always exit non-zero after the report.`,
 				return err
 			}
 			report, err := deps.AnalyzeDrift(command.Context(), repositories, deps.DriftOptions{
+				Ecosystem: ecosystem,
 				GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel,
 				Timeout: options.timeout, Retry: options.retry, GoPrivate: options.goPrivate,
-				Dependencies: options.dependencies, Online: options.online, FailOnDrift: options.failOnDrift,
+				Dependencies: options.dependencies, Scopes: options.scopes, ExcludeRepositories: options.exclude,
+				Online: options.online, FailOnDrift: options.failOnDrift, FailOnBehind: options.failOnBehind,
 				Progress: campaign.reporter(),
 			})
 			if err != nil {
 				campaign.finish("failed")
 				return err
 			}
-			if deps.DriftFailed(report, options.failOnDrift) {
+			if deps.DriftFailedWith(report, options.failOnDrift, options.failOnBehind) {
 				campaign.finish("completed with findings")
 			} else {
 				campaign.finish("completed")
@@ -236,7 +261,7 @@ groups are present. Inspection errors always exit non-zero after the report.`,
 			if err := writeDepsDriftReport(command, report, options.format); err != nil {
 				return err
 			}
-			if deps.DriftFailed(report, options.failOnDrift) {
+			if deps.DriftFailedWith(report, options.failOnDrift, options.failOnBehind) {
 				return &exitError{
 					code:    exitFindings,
 					message: "dependency drift or inspection errors were reported; see the index above",
@@ -245,7 +270,7 @@ groups are present. Inspection errors always exit non-zero after the report.`,
 			return nil
 		},
 	}
-	command.Flags().StringVar(&options.ecosystem, "ecosystem", string(deps.EcosystemGo), "manifest ecosystem: go")
+	command.Flags().StringVar(&options.ecosystem, "ecosystem", string(deps.EcosystemGo), "manifest ecosystem: go or npm")
 	command.Flags().BoolVar(&options.fleet, "fleet", false, "inspect selected local and owned GitHub repositories under --projects-root")
 	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. sneat-co/*")
 	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
@@ -254,8 +279,11 @@ groups are present. Inspection errors always exit non-zero after the report.`,
 	command.Flags().DurationVar(&options.timeout, "timeout", 5*time.Minute, "maximum duration per external Go command (0 disables)")
 	command.Flags().IntVar(&options.retry, "retry", 0, "additional attempts for failed external commands")
 	command.Flags().StringArrayVar(&options.dependencies, "dependency", nil, "exact dependency module to retain (repeatable)")
-	command.Flags().BoolVar(&options.online, "online", false, "query the module proxy for latest versions")
+	command.Flags().StringArrayVar(&options.scopes, "scope", nil, "glob matched against a dependency path or package name, e.g. @sneat/* (repeatable)")
+	command.Flags().StringArrayVar(&options.exclude, "exclude", nil, "glob matched against org/repo; matching repositories are never inspected and are listed as excluded (repeatable)")
+	command.Flags().BoolVar(&options.online, "online", false, "query the module proxy or npm registry for latest versions")
 	command.Flags().BoolVar(&options.failOnDrift, "fail-on-drift", false, "exit non-zero after the report when divergent, replaced, or major-path-split groups are present")
+	command.Flags().BoolVar(&options.failOnBehind, "fail-on-behind", false, "exit non-zero after the report when any repository provably lags a published latest version (requires --online)")
 	command.Flags().StringVar(&options.format, "format", "markdown", "stdout format: markdown, yaml, or json")
 	command.Flags().StringVar(&options.reportDir, "report-dir", "", "write deps-drift.md, deps-drift.yaml, and deps-drift.json here")
 	command.Flags().StringArrayVar(&options.goPrivate, "go-private", nil, "private Go module path pattern excluded from public proxy and checksum lookup (repeatable)")
