@@ -1299,6 +1299,7 @@
                 "--checks",
                 "--commit",
                 "--dry-run",
+                "--fetch-cache",
                 "--fleet",
                 "--format",
                 "--go-private",
@@ -1322,7 +1323,8 @@
               "modes": [
                 "Propagates published Go or npm release events through dependency-ordered consumer waves.",
                 "--validation=full runs local lint, test, and build checks before publication; --validation=fast retains repository push hooks and is accepted only with --merge, which requires passing exact PR-head GitHub checks.",
-                "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered. When --parallel is left at its default, read-only pools (per-wave graph discovery fetches and registry release observations) widen to a floor of 4 workers; an explicit --parallel bounds every pool in both directions."
+                "--parallel bounds concurrent independent PR creation and CI waits inside one ready wave; dependency layers remain ordered. When --parallel is left at its default, read-only pools (per-wave graph discovery fetches and registry release observations) widen to a floor of 4 workers; an explicit --parallel bounds every pool in both directions.",
+                "--fetch-cache (opt-in) memoizes origin fetches within one invocation for repositories the campaign never pushed to, opened a PR for, or merged; a repository the run ever touched is re-fetched on every later discovery because WB merges server-side and those default-branch commits are invisible to local-push accounting. State is process-local only: a fresh invocation (including --resume) always fetches."
               ]
             }
           ],
@@ -1378,6 +1380,21 @@
               "path": "internal/deps/runner_integration_test.go",
               "name": "TestDependencyPullRequestBodiesReportValidationAuthorityTruthfully",
               "kind": "unit"
+            },
+            {
+              "path": "internal/deps/bump_fetch_cache_test.go",
+              "name": "TestRunBumpFetchCacheMemoizesUntouchedRepositoriesAndInvalidatesMergedOnes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/deps/bump_fetch_cache_test.go",
+              "name": "TestRunBumpWithoutFetchCacheRefetchesEveryWave",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/fetch_memo_test.go",
+              "name": "TestEnsureCanonicalSkipsRefetchOnlyForMemoizedUntouchedRepository",
+              "kind": "integration"
             }
           ],
           "limitation": "Core wave ordering and refresh behavior are covered; live GitHub release and merge behavior remains adapter-dependent."

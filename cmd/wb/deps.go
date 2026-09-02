@@ -30,7 +30,12 @@ type depsSetOptions struct {
 	// parallelExplicit records whether the operator set --parallel themselves;
 	// see deps.Options.ParallelExplicit for how the wave engine widens only
 	// read-only pools when the flag is left at its default.
-	parallelExplicit                   bool
+	parallelExplicit bool
+	// fetchCache is deps bump's opt-in per-run fetch memoization; see
+	// deps.BumpOptions.FetchCache. It is registered only on `wb deps bump` —
+	// deps set has no prior discovery whose fetch could stand in for the
+	// engine's own.
+	fetchCache                         bool
 	timeout, releasePoll, refreshAfter time.Duration
 	goPrivate                          []string
 	layers                             deps.LayerSelection
@@ -435,6 +440,7 @@ func newDepsBumpCmd() *cobra.Command {
 	command.Flags().DurationVar(&options.releasePoll, "release-poll", 30*time.Second, "interval between provider release observations")
 	command.Flags().DurationVar(&options.refreshAfter, "refresh-after", 5*time.Minute, "recheck release events older than this before starting a downstream build (0 disables)")
 	command.Flags().BoolVar(&options.dryRun, "dry-run", false, "inspect the first wave without creating worktrees or changing dependency files")
+	command.Flags().BoolVar(&options.fetchCache, "fetch-cache", false, "memoize discovery fetches within this run for repositories the campaign never pushed to, opened a PR for, or merged (opt-in; nothing persists across invocations)")
 	command.Flags().BoolVar(&options.resume, "resume", false, "reuse existing wave worktrees, branches, PRs, and report state")
 	command.Flags().BoolVar(&options.allowDowngrade, "allow-downgrade", false, "permit a release event lower than an observed semantic version")
 	command.Flags().StringVar(&options.checks, "checks", "", "comma-separated checks: lint,test,build (default all)")
@@ -580,7 +586,7 @@ func executeDepsBumpWithRegistryPolicy(command *cobra.Command, ecosystem deps.Ec
 	}
 	bumpOptions := deps.BumpOptions{
 		Options: lifecycle, Ecosystem: ecosystem, MaxWaves: options.maxWaves, PollInterval: options.releasePoll, RefreshAfter: options.refreshAfter,
-		Previous: previous, NoRegistry: noRegistry,
+		Previous: previous, NoRegistry: noRegistry, FetchCache: options.fetchCache,
 		Persist: func(report deps.BumpReport) error { return deps.WriteBumpReports(reportDirectory, report) },
 	}
 	report, runErr := deps.RunBump(commandExecutionContext(command), events, repositories, bumpOptions)

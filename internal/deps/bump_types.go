@@ -35,6 +35,16 @@ type BumpOptions struct {
 	// fleet-graph and wave-planning algorithm. Composite publication plans use
 	// it before a provider workflow has published the proposed version.
 	NoRegistry bool
+	// FetchCache (the opt-in --fetch-cache flag) shares one process-local
+	// orchestrate.FetchMemo across every graph-discovery and wave lifecycle of
+	// this invocation: a repository fetched during one wave's discovery is not
+	// re-fetched by the same wave's engine or by later waves' discovery UNLESS
+	// this run has ever pushed to, opened a PR for, or merged into it — such a
+	// repository is permanently un-memoizable for the rest of the run, because
+	// WB merges server-side and the resulting default-branch commits are
+	// invisible to any local-push accounting. Nothing is persisted: a fresh
+	// invocation (including --resume) always starts with an empty memo.
+	FetchCache bool
 
 	// Now is injectable for deterministic event-refresh tests.
 	Now func() time.Time

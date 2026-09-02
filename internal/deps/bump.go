@@ -29,6 +29,12 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 	if err != nil {
 		return BumpReport{}, err
 	}
+	if options.FetchCache {
+		// One memo for the whole invocation: discoveryLifecycle and
+		// waveLifecycle below are value copies of lifecycle, so they share this
+		// pointer across every wave (see BumpOptions.FetchCache).
+		lifecycle.FetchMemo = orchestrate.NewFetchMemo()
+	}
 	if !lifecycle.DryRun {
 		lock, lockErr := orchestrate.AcquireOperationLock(lifecycle.GitHubDir, lifecycle.Operation, lifecycle.Resume)
 		if lockErr != nil {
