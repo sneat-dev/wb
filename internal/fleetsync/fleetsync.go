@@ -7,8 +7,10 @@ package fleetsync
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/archiveprune"
 	"github.com/sneat-dev/wb/internal/discover"
@@ -127,6 +129,11 @@ type Result struct {
 	// commit the finding was made against lets a reader prove the state it
 	// describes still holds before mutating anything.
 	HeadSHA string
+	// ReceiptPath is where the deletion receipt for this clone was written,
+	// set only when --prune-archived actually removed (or tried to remove)
+	// it. A removal with no path here is a removal with no evidence, which
+	// this package refuses to perform.
+	ReceiptPath string
 }
 
 // PullSummary renders the pull action independently of the final repository
@@ -271,12 +278,52 @@ func syncArchived(ctx context.Context, repo discover.Repo, projectsRoot string, 
 		res.Status = RemovedArchived
 		return res
 	}
-	if err := os.RemoveAll(repo.Path); err != nil {
+
+	// The commit is read before the clone is destroyed, because afterwards
+	// there is nothing left to ask. The repository still exists on GitHub —
+	// archived and read-only, but intact — so slug plus SHA is what makes the
+	// deletion undoable.
+	head, _ := gitops.HeadSHA(repo.Path)
+	receipt := RemovalReceipt{
+		SchemaVersion: removalReceiptSchemaVersion,
+		Phase:         PhasePlanned,
+		Repository:    repo.Slug(),
+		ClonePath:     repo.Path,
+		HeadSHA:       head,
+		Reason:        evaluation.Reason,
+		CreatedAt:     time.Now().UTC(),
+	}
+	receiptPath, err := writeRemovalReceipt(projectsRoot, receipt)
+	if err != nil {
+		// Refusing to delete is the whole point. A clone removed without a
+		// receipt is removed without a record, and this is the one WB
+		// operation that cannot be undone from local state — so an
+		// unwritable receipt blocks the deletion rather than being warned
+		// about and stepped over.
 		res.Status = Failed
-		res.Err = err
+		res.Err = fmt.Errorf("refusing to remove %s: its deletion receipt could not be written: %w", repo.Slug(), err)
+		res.HeadSHA = head
 		return res
 	}
+	res.ReceiptPath = receiptPath
+
+	if err := os.RemoveAll(repo.Path); err != nil {
+		receipt.Phase = PhaseFailed
+		receipt.Error = err.Error()
+		_ = overwriteRemovalReceipt(receiptPath, receipt)
+		res.Status = Failed
+		res.Err = err
+		res.HeadSHA = head
+		return res
+	}
+	removedAt := time.Now().UTC()
+	receipt.Phase = PhaseRemoved
+	receipt.RemovedAt = &removedAt
+	// The clone is already gone; a failed phase update leaves the receipt at
+	// "planned", which still records what was removed and from where.
+	_ = overwriteRemovalReceipt(receiptPath, receipt)
 	res.Status = RemovedArchived
+	res.HeadSHA = head
 	return res
 }
 

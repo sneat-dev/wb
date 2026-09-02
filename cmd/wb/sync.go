@@ -205,10 +205,14 @@ func showResultsBrowser(
 	browser func([]fleetsync.Result) error,
 	out, errOut io.Writer,
 ) {
-	writeSyncIssuesReport(meta, results, projectsRoot, out, errOut)
 	if !interactive {
+		// finishSync writes the report on every path. The early write below
+		// exists only to beat runResultsBrowser, which blocks on a keystroke —
+		// with no browser there is nothing to beat, and writing here as well
+		// would write the file twice and print its path twice.
 		return
 	}
+	writeSyncIssuesReport(meta, results, projectsRoot, out, errOut)
 	if err := browser(results); err != nil {
 		_, _ = fmt.Fprintln(errOut, "results browser error:", err)
 	}
@@ -387,7 +391,14 @@ func printArchivedPruning(out io.Writer, results []fleetsync.Result) {
 	for _, r := range archived {
 		switch r.Status {
 		case fleetsync.RemovedArchived:
-			_, _ = fmt.Fprintf(out, "  deleted      %s — %s\n", r.Repo.Slug(), r.Reason)
+			// The receipt path is printed, not just written: a deletion the
+			// operator can see but not later account for is the gap this
+			// receipt exists to close.
+			if r.ReceiptPath != "" {
+				_, _ = fmt.Fprintf(out, "  deleted      %s — %s (receipt: %s)\n", r.Repo.Slug(), r.Reason, r.ReceiptPath)
+			} else {
+				_, _ = fmt.Fprintf(out, "  deleted      %s — %s\n", r.Repo.Slug(), r.Reason)
+			}
 		case fleetsync.KeptArchived, fleetsync.ArchivedUnlandable:
 			_, _ = fmt.Fprintf(out, "  skipped      %s — %s\n", r.Repo.Slug(), r.Reason)
 		case fleetsync.AbsentArchived:
