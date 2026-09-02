@@ -48,6 +48,30 @@ The initial CLI form MUST be
 `deps set --propagate` MUST invoke the same planner and report format rather
 than implementing a parallel wave loop.
 
+#### REQ: registry-derived-release-input
+
+`wb deps bump` MUST be able to derive its seed release events from the registry
+instead of requiring every `<dependency>@<version>` on the command line. When
+that derivation is requested, WB MUST read the modules the selected
+repositories declare, retain those matching at least one supplied scope glob,
+and record each retained module's published latest version from the
+ecosystem's registry.
+
+Scope globs MUST use the same `owner/name`-style `path.Match` semantics as the
+drift command's scope filter, where `*` never crosses a `/`. Derivation MUST
+require at least one scope, and MUST refuse — rather than run an empty
+campaign — when the scopes match no declared module or when no matched module
+has a readable published version.
+
+Every matched module MUST be recorded in the report, including matched modules
+that produced no event and the reason they did not, so a reader can distinguish
+the modules a scope covers from the modules WB could read. A version MUST NEVER
+be invented for a module whose registry lookup failed.
+
+Derived events MUST compose with explicitly supplied events under the same
+newest-version-wins rule the wave engine already applies, and a repository
+excluded from the campaign MUST NOT seed it.
+
 #### REQ: scoped-repository-discovery
 
 The command MUST operate only on repositories selected below the configured
@@ -332,6 +356,19 @@ consumer that depends on both
 **Then** WB recalculates the graph after each release, gives the consumer one
 aggregate PR with the newest checked provider versions, and reaches a fixpoint
 without a temporary replace or duplicate consumer CI build.
+
+### AC: a-scope-derives-the-seed-events-it-can-prove
+
+**Requirements:** dependency-bump-waves#req:registry-derived-release-input, dependency-bump-waves#req:changed-release-input, dependency-bump-waves#req:excluded-and-held-repository-selection
+
+**Given** a fictional fleet publishing two modules under one scope and a third
+outside it, where only one of the two has a published version
+**When** a campaign is seeded from that scope instead of explicit events
+**Then** the published module becomes a release event carrying its registry
+provenance, the unpublished module is reported with the registry's own reason
+and seeds nothing, the out-of-scope module is neither queried nor seeded, a
+scope matching nothing is refused rather than run, and an excluded
+repository's module is never derived from.
 
 ### AC: excluded-and-held-repositories-are-distinct
 

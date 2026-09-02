@@ -1305,6 +1305,7 @@
                 "--format",
                 "--go-private",
                 "--hold",
+                "--latest",
                 "--match",
                 "--max-waves",
                 "--merge",
@@ -1319,6 +1320,7 @@
                 "--report-dir",
                 "--resume",
                 "--retry",
+                "--scope",
                 "--timeout",
                 "--validation"
               ],
@@ -1344,6 +1346,8 @@
                 "--validation",
                 "--exclude",
                 "--hold",
+                "--latest",
+                "--scope",
                 "awaiting_hold_release"
               ]
             }
@@ -1358,7 +1362,8 @@
               "marker": "# Propagate release events",
               "examples": [
                 "wb deps bump go --fleet --changed example.com/lib@v1.2.3 --dry-run",
-                "wb deps bump npm --fleet --changed @sneat/core@0.31.0 --merge --hold sneat-co/sneat-go --hold sneat-co/sneat-apps"
+                "wb deps bump npm --fleet --changed @sneat/core@0.31.0 --merge --hold sneat-co/sneat-go --hold sneat-co/sneat-apps",
+                "wb deps bump npm --fleet --latest --scope '@sneat/*' --dry-run"
               ]
             }
           ],
@@ -1375,6 +1380,11 @@
             {
               "path": "internal/deps/bump_exclude_hold_test.go",
               "name": "TestRunBumpExcludeRemovesTheRepositoryFromWaveComputation",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/deps/latest_scope_test.go",
+              "name": "TestDeriveLatestReleaseEventsSeedsEveryPublishedModuleInScope",
               "kind": "integration"
             },
             {

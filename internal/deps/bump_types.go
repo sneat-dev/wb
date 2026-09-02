@@ -63,6 +63,14 @@ type BumpOptions struct {
 	// reuses PublishedGoRelease's shape (version, requirements, source) since
 	// nothing about that shape is actually Go-specific.
 	LatestNpmRelease func(context.Context, string) (PublishedGoRelease, error)
+
+	// Scopes and ScopeResolutions carry a --latest run's derivation evidence
+	// into the persisted report. They are set by the caller that ran
+	// DeriveLatestReleaseEvents, because derivation happens before the wave
+	// engine so that the derived events can be refused, printed, or reused
+	// exactly like the hand-typed ones.
+	Scopes           []string
+	ScopeResolutions []LatestScopeResolution
 }
 
 // PublishedGoRelease is immutable registry evidence used to carry an event
@@ -108,7 +116,14 @@ type BumpReport struct {
 	// HeldRepositories lists every repository whose passing pull request this
 	// campaign deliberately left open for its owner to merge, across all
 	// waves.
-	HeldRepositories       []HeldRepository              `yaml:"held_repositories,omitempty"`
+	HeldRepositories []HeldRepository `yaml:"held_repositories,omitempty"`
+	// Scopes records the --scope globs a --latest run derived its seed events
+	// from, and ScopeResolutions every module those globs matched — including
+	// the ones with no readable published version, which produced no event.
+	// Without both, a report cannot distinguish "this scope publishes four
+	// modules" from "four of this scope's modules could be read".
+	Scopes                 []string                      `yaml:"scopes,omitempty"`
+	ScopeResolutions       []LatestScopeResolution       `yaml:"scope_resolutions,omitempty"`
 	DiscoverySkips         []GraphDiscoverySkip          `yaml:"discovery_skips,omitempty"`
 	DefaultBranchFallbacks []GraphDefaultBranchFallback  `yaml:"default_branch_fallbacks,omitempty"`
 	ManifestWarnings       []GraphManifestWarning        `yaml:"manifest_warnings,omitempty"`

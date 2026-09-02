@@ -56,6 +56,8 @@ func RunBump(ctx context.Context, events []ReleaseEvent, repositories []Reposito
 		ParallelExplicit:       options.ParallelExplicit,
 		RegistryLookupsSkipped: options.NoRegistry,
 		FetchCacheEnabled:      options.FetchCache,
+		Scopes:                 append([]string(nil), options.Scopes...),
+		ScopeResolutions:       append([]LatestScopeResolution(nil), options.ScopeResolutions...),
 	}
 	if lifecycle.Verify {
 		report.Verification = append(report.Verification, lifecycle.Checks...)
@@ -1376,6 +1378,16 @@ func releaseEventsFromObservations(observations []ReleaseObservation) []ReleaseE
 		}
 	}
 	return mergeReleaseEvents(events)
+}
+
+// MergeReleaseEvents deduplicates release events by dependency, keeping the
+// newest version observed for each. It is exported so a caller assembling seed
+// events from more than one source — hand-typed `--changed` events and
+// registry-derived `--latest` ones — reconciles them by exactly the rule the
+// wave engine already applies internally, rather than a second, subtly
+// different one.
+func MergeReleaseEvents(groups ...[]ReleaseEvent) []ReleaseEvent {
+	return mergeReleaseEvents(groups...)
 }
 
 func mergeReleaseEvents(groups ...[]ReleaseEvent) []ReleaseEvent {

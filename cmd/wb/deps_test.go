@@ -788,3 +788,33 @@ func TestDepsGraphAndBumpAcceptNpmEcosystem(t *testing.T) {
 		t.Fatalf("deps bump cobol error = %v, want a go/npm ecosystem rejection", err)
 	}
 }
+
+// `--scope` only means something to `--latest`. Accepting it silently would
+// let an operator believe a campaign was narrowed to one scope when it was
+// seeded from whatever `--changed` happened to say, so the flag combination is
+// refused with the two ways out named.
+func TestDepsBumpRefusesAScopeWithoutLatest(t *testing.T) {
+	bump := newDepsBumpCmd()
+	bump.SetArgs([]string{"npm", "--fleet", "--changed", "@acme/core@0.1.0", "--scope", "@acme/*"})
+	bump.SetOut(io.Discard)
+	bump.SetErr(io.Discard)
+	bump.SilenceUsage = true
+	err := bump.Execute()
+	if err == nil || !strings.Contains(err.Error(), "--latest") || !strings.Contains(err.Error(), "--changed") {
+		t.Fatalf("deps bump --scope without --latest error = %v, want a refusal naming both ways out", err)
+	}
+}
+
+// The complement: --latest with no scope is refused too, before any repository
+// is discovered. A registry sweep with no selection is not a default anyone
+// wants applied to a whole fleet.
+func TestDepsBumpRefusesLatestWithoutAScope(t *testing.T) {
+	bump := newDepsBumpCmd()
+	bump.SetArgs([]string{"npm", "--fleet", "--latest", "--dry-run"})
+	bump.SetOut(io.Discard)
+	bump.SetErr(io.Discard)
+	bump.SilenceUsage = true
+	if err := bump.Execute(); err == nil || !strings.Contains(err.Error(), "--scope") {
+		t.Fatalf("deps bump --latest without --scope error = %v, want a refusal naming --scope", err)
+	}
+}
