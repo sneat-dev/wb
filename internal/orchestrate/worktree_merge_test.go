@@ -206,6 +206,61 @@ func TestPrepareWorktreeMergeRejectsChangedCandidateFailureBeyondTargetBaseline(
 	}
 }
 
+func TestPrepareWorktreeMergeRefusesValidationFailedReceiptAfterSourceAdvanceWithoutMutation(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	source := createMergeSource(t, fixture, "failed-receipt-source", "feature/failed-receipt", "candidate.go", "package app\n\nfunc Candidate() { missingCandidate }\n")
+
+	failed, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || failed.Status != WorktreeMergeValidationFailed || failed.Candidate.SHA == "" {
+		t.Fatalf("initial validation failure = receipt %+v err %v", failed, err)
+	}
+	receiptBefore, err := os.ReadFile(failed.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateView, err := worktrees.LoadWorkLogView(context.Background(), worktrees.LoadWorkLogOptions{
+		ProjectsRoot: fixture.githubDir, Worktree: failed.Candidate.Worktree,
+	})
+	if err != nil || candidateView.Claim == nil {
+		t.Fatalf("load candidate Work Log: view=%+v err=%v", candidateView, err)
+	}
+	claimBefore, err := os.ReadFile(candidateView.Claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidateHeadBefore := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "rev-parse", "HEAD"))
+	candidateStatusBefore := runEngineGit(t, failed.Candidate.Worktree, "status", "--porcelain")
+
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "advance.txt"), "advance\n")
+	runEngineGit(t, source.WorktreeDir, "add", "advance.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "test: advance failed source")
+
+	blocked, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "only an exact preparing receipt may resume") {
+		t.Fatalf("advanced source prepare = receipt %+v err %v", blocked, err)
+	}
+	if current, readErr := os.ReadFile(failed.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
+		t.Fatalf("validation-failed receipt changed after refusal: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(candidateView.Claim.ClaimPath); readErr != nil || !bytes.Equal(current, claimBefore) {
+		t.Fatalf("candidate Work Log changed after refusal: err=%v", readErr)
+	}
+	if current := strings.TrimSpace(runEngineGit(t, failed.Candidate.Worktree, "rev-parse", "HEAD")); current != candidateHeadBefore {
+		t.Fatalf("candidate head changed from %s to %s", candidateHeadBefore, current)
+	}
+	if current := runEngineGit(t, failed.Candidate.Worktree, "status", "--porcelain"); current != candidateStatusBefore {
+		t.Fatalf("candidate status changed from %q to %q", candidateStatusBefore, current)
+	}
+}
+
 func TestLandWorktreeMergeAllowsUnchangedFailingAdvancedTargetValidation(t *testing.T) {
 	fixture := newEngineFixture(t)
 	writeEngineGoModule(t, fixture.canonical, "package app\n\nfunc Value() int { return 1 }\n")
@@ -1886,7 +1941,7 @@ func TestPrepareWorktreeMergeRebatchesPreparedReceiptAdditivelyAndPreservesOldEv
 	if err != nil || ack.ReplacementReceiptPath != replacement.ReceiptPath || ack.Replacement != replacement.Candidate {
 		t.Fatalf("rebatch acknowledgement = %+v err=%v", ack, err)
 	}
-	active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(first.ReceiptPath), first.Lane)
+	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(first.ReceiptPath), first.Lane)
 	if err != nil || active == nil || active.ReceiptPath != replacement.ReceiptPath {
 		t.Fatalf("active lane after rebatch = %+v err=%v", active, err)
 	}
@@ -2033,7 +2088,7 @@ func TestPrepareWorktreeMergeRebatchRetryCompletesAcknowledgementAfterPostReceip
 	if _, err := readPreparedWorktreeMergeRebatch(rebatchPath(first.ReceiptPath), first); err != nil {
 		t.Fatalf("recovered acknowledgement = %v", err)
 	}
-	active, err := activeWorktreeMergeLaneReceipt(filepath.Dir(first.ReceiptPath), first.Lane)
+	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(first.ReceiptPath), first.Lane)
 	if err != nil || active == nil || active.ReceiptPath != recovered.ReceiptPath {
 		t.Fatalf("active lane after acknowledgement recovery = %+v err=%v", active, err)
 	}

@@ -66,7 +66,10 @@ jobs:
   coverage:
     name: Sharded coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The merged package set uses real repositories and worktrees. Keep the
+    # command below bounded, but leave enough room for runner variance as the
+    # integration suite grows.
+    timeout-minutes: 8
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -84,7 +87,7 @@ jobs:
           --minimum=58
           --format json
           --non-interactive
-          --timeout 4m30s
+          --timeout 7m30s
       - name: Upload coverage profile
         uses: actions/upload-artifact@v7
         with:
@@ -110,9 +113,12 @@ jobs:
       # data-race gate. It is scoped to the packages that run in-process
       # worker pools and shared observers rather than the whole module, so
       # the gate stays fast enough to sit in the required aggregate below.
+      # Orchestration tests create real repositories and worktrees; under the
+      # race detector their package can legitimately exceed Go's default 10m
+      # timeout while remaining within this job's 20m bound.
       - name: go test -race (concurrency-bearing packages)
         run: >-
-          go test -race
+          go test -race -timeout 15m
           ./internal/deps/...
           ./internal/orchestrate/...
           ./internal/githubobserver/...

@@ -8486,8 +8486,101 @@
       "notes": "The acknowledgement is not a landing receipt and never rewrites the historical merge receipt or Work Log; exact source and candidate claims/cleanliness, ancestry, and freshly fetched current-target evidence are mandatory."
     },
     {
+      "id": "wb.worktree.merge.acknowledge-receipt-collision",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge acknowledge-receipt-collision",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--expected-candidate",
+                "--expected-current-source",
+                "--expected-historical-refresh-source",
+                "--expected-immutable-claim-sha256",
+                "--expected-receipt-sha256",
+                "--expected-target",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Requires explicit digests and revisions for one known historical preparing-receipt collision, then re-reads every proof under the lane lock",
+                "Writes only a separate append-only acknowledgement; the historical validation_failed state is an explicit operator assertion because no pre-mutation receipt digest exists"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge acknowledge-receipt-collision --help",
+              "contains": [
+                "current receipt SHA256",
+                "historical validation_failed",
+                "--apply",
+                "--expected-target",
+                "--expected-candidate",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Partial",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeReceiptCollisionCommandRequiresExpectedEvidence",
+              "kind": "integration"
+            }
+          ],
+          "limitation": "CLI coverage proves required evidence flags and missing-evidence refusal; the production proof sequence is exercised through the orchestration integration tests."
+        }
+      },
+      "notes": "This incident-specific recovery never edits the receipt or Work Log, and rebatch/cleanup re-read the acknowledgement before using its historical candidate evidence."
+    },
+    {
       "id": "wb.worktree.merge.acknowledge-stranded-landing",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -8495,7 +8588,14 @@
           "commands": [
             {
               "path": "wb worktree merge acknowledge-stranded-landing",
-              "flags": ["--actor", "--apply", "--format", "--initiator", "--mode", "--reason"],
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
               "modes": [
                 "Proves, using only GitHub's own remote state, that a land conflict receipt's exact published pull request reports MERGED and that its server merge commit and preserved candidate are both contained in the freshly fetched current remote target",
                 "Accepts only a land-phase conflict receipt with a published candidate and no recorded landing SHA, and never reads or requires the candidate or any receipted source worktree"
@@ -8509,7 +8609,14 @@
           "anchors": [
             {
               "command": "wb worktree merge acknowledge-stranded-landing --help",
-              "contains": ["only GitHub's own remote state", "--apply", "--actor", "--initiator", "--mode", "--reason"]
+              "contains": [
+                "only GitHub's own remote state",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
             }
           ],
           "limitation": null
@@ -8520,7 +8627,9 @@
             {
               "path": "ai/skills/wb-merge/references/worktree-merge.md",
               "marker": "# Mechanical worktree merge",
-              "examples": ["wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>"]
+              "examples": [
+                "wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
             }
           ],
           "limitation": null
@@ -8545,6 +8654,92 @@
       "notes": "This recovers a land/conflict receipt whose own landing-result read failed on I/O or environment error, typically because the candidate worktree was already removed before a resume could confirm the server landing. Unlike acknowledge-landed-failed it depends on no local worktree at all; containment is proved purely against GitHub's remote state and rechecked live under the lane lock at apply time."
     },
     {
+      "id": "wb.worktree.merge.correct-self-supersession",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge correct-self-supersession",
+              "flags": [
+                "--actor",
+                "--apply",
+                "--expected-immutable-claim-sha256",
+                "--expected-supersession-sha256",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
+              "modes": [
+                "Admits only an existing hash-pinned self-supersession and one distinct clean active-claim replacement after rechecking every immutable root",
+                "Writes one separate create-if-absent correction without editing the receipt, immutable claim, or historical supersession acknowledgement"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge correct-self-supersession --help",
+              "contains": [
+                "self-supersession",
+                "--expected-supersession-sha256",
+                "--expected-immutable-claim-sha256",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestCorrectValidationFailedSelfSupersessionIsAppendOnlyAndReplaySafe",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestSupersedeValidationFailedWorktreeMergeRefusesSelfReplacementWithoutMutation",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This narrow recovery makes a historical self-supersession effective only through a separate hash-pinned correction with a distinct replacement; all source, target, claim, and immutable-record boundaries remain fail-closed."
+    },
+    {
       "id": "wb.worktree.merge.land",
       "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
       "since": "unreleased",
@@ -8567,6 +8762,18 @@
         "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure", "kind": "integration"}], "limitation": null}
       },
       "notes": "Prepared means local and validated, not remotely landed."
+    },
+    {
+      "id": "wb.worktree.merge.prepare-published-forward-repair",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare-published-forward-repair", "flags": ["--actor", "--agent-id", "--agent-runtime", "--apply", "--cli", "--expected-current-target", "--expected-immutable-claim-sha256", "--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256", "--format", "--initiator", "--mode", "--model", "--provider", "--reason", "--retry", "--timeout"], "modes": ["Dry-runs pinned immutable receipt/claim/self-supersession historical roots and exact active current-source proof without creating a worktree", "Creates one distinct clean WB-managed candidate with immutable historical receipt/refresh roots and pinned current sources as ancestors, without requiring historical worktrees to remain live or changing any historical record"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare-published-forward-repair --help", "contains": ["self-supersession", "historical worktrees need not remain live", "--expected-receipt-sha256", "--expected-immutable-claim-sha256", "--expected-supersession-sha256", "--expected-current-target", "--expected-source-sha", "--apply", "--actor", "--initiator", "--mode", "--reason"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate", "kind": "integration"}, {"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence", "kind": "integration"}], "limitation": null}
+      },
+      "notes": "This explicit recovery-only candidate constructor does not relax normal prepare or rebatch. Historical source tuples are immutable receipt/refresh ancestry evidence, while only explicitly supplied current sources require live managed identities. It creates no merge receipt and only a distinct candidate later consumable by the append-only self-supersession correction."
     },
     {
       "id": "wb.worktree.merge.resume",

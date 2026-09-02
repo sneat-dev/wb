@@ -89,7 +89,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd())
 	return command
 }
 
@@ -350,6 +350,67 @@ refuses closed.`,
 	return command
 }
 
+func newWorktreeMergeAcknowledgeReceiptCollisionCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	var receiptSHA, claimSHA, targetSHA, candidateSHA, currentSourceSHA, historicalSourceSHA string
+	command := &cobra.Command{
+		Use:   "acknowledge-receipt-collision <merge-receipt>",
+		Short: "Append an audited acknowledgement for one historical receipt collision",
+		Long: `Record the narrowly scoped recovery evidence for a known prepare receipt
+collision without rewriting its receipt or Work Log. The caller must explicitly
+pin the current receipt SHA256, immutable claim SHA256, current target,
+candidate, current source, and historical refresh source. WB re-reads all
+evidence under the lane lock, requires an unlanded clean unpublished preparing
+candidate, and writes only <receipt>.receipt-collision.ack.json. The historical validation_failed
+status is recorded as an operator assertion because no pre-mutation
+receipt digest exists. This is a dry-run by default; --apply also requires
+--actor and --reason.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeWorktreeMergeReceiptCollision(command.Context(), orchestrate.WorktreeMergeReceiptCollisionAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+				ExpectedReceiptSHA256: receiptSHA, ExpectedImmutableClaimSHA256: claimSHA, ExpectedTargetSHA: targetSHA,
+				ExpectedCandidateSHA: candidateSHA, ExpectedCurrentSourceSHA: currentSourceSHA, ExpectedHistoricalRefreshSourceSHA: historicalSourceSHA,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nacknowledgement: %s\ncandidate: %s\ncurrent-target: %s\n",
+				ack.Status, ack.ReceiptPath, ack.AcknowledgementPath, ack.Candidate.SHA, ack.ExpectedTargetSHA)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&receiptSHA, "expected-receipt-sha256", "", "required SHA256 of the current mutated receipt")
+	command.Flags().StringVar(&claimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable candidate Work Log claim")
+	command.Flags().StringVar(&targetSHA, "expected-target", "", "required exact current remote target SHA")
+	command.Flags().StringVar(&candidateSHA, "expected-candidate", "", "required exact collision candidate SHA")
+	command.Flags().StringVar(&currentSourceSHA, "expected-current-source", "", "required exact current source SHA in the receipt")
+	command.Flags().StringVar(&historicalSourceSHA, "expected-historical-refresh-source", "", "required exact historical source SHA from source_refreshes")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
 func newWorktreeMergeSupersedeValidationFailedCmd() *cobra.Command {
 	var apply bool
 	var actor, reason, format string
@@ -397,6 +458,146 @@ refuses closed.`,
 	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited supersession acknowledgement artifact")
 	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
 	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited supersession reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeCorrectSelfSupersessionCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format, expectedSupersessionSHA, expectedClaimSHA string
+	command := &cobra.Command{
+		Use:   "correct-self-supersession <merge-receipt> <replacement-worktree>",
+		Short: "Append a correction for one historical self-supersession",
+		Long: `Correct only an existing validation_failed supersession acknowledgement
+that incorrectly bound the failed candidate as its own replacement. The caller
+must pin the exact existing acknowledgement SHA256 and immutable claim SHA256.
+WB re-reads the receipt, claim, corrupt acknowledgement, target, sources, and a
+distinct clean active-claim replacement under the lane lock. It writes only a
+separate create-if-absent correction artifact; neither the receipt, claim, nor
+self-supersession acknowledgement is ever changed. This is dry-run by default;
+--apply requires --actor and --reason.`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			correction, err := orchestrate.CorrectValidationFailedSelfSupersession(command.Context(), orchestrate.WorktreeMergeSelfSupersessionCorrectionOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], ReplacementWorktree: args[1], ExpectedSupersessionSHA256: expectedSupersessionSHA, ExpectedImmutableClaimSHA256: expectedClaimSHA,
+				Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(correction)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\nreplacement: %s\ncorrection: %s\n", correction.Status, correction.ReceiptPath, correction.CorrectedReplacement.SHA, correction.CorrectionPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate append-only correction artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited correction reason")
+	command.Flags().StringVar(&expectedSupersessionSHA, "expected-supersession-sha256", "", "required SHA256 of the existing self-supersession acknowledgement")
+	command.Flags().StringVar(&expectedClaimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable failed candidate Work Log claim")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergePreparePublishedForwardRepairCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format, receiptSHA, claimSHA, supersessionSHA, targetSHA string
+	var expectedSourceSHAs []string
+	var model, runtime, agentID, cli, provider string
+	var timeout time.Duration
+	var retry int
+	command := &cobra.Command{
+		Use:   "prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...>",
+		Short: "Create one evidence-pinned candidate to correct a historical self-supersession",
+		Long: `Construct one distinct WB-managed candidate only for an existing historical
+validation_failed self-supersession that cannot be corrected until a replacement
+exists. This is not ordinary prepare or rebatch: it never changes the failed
+receipt, its Work Log, the corrupt self-supersession acknowledgement, a receipt
+collision acknowledgement, or any published record, and it does not write a
+new merge receipt. The caller pins the failed receipt, immutable claim,
+self-supersession acknowledgement, current target, and each supplied source.
+WB reads every receipted and source-refresh tuple only from the immutable
+receipt as a historical ancestry root; those historical worktrees need not remain live. Each
+supplied source is instead a current WB-managed worktree and
+must have an exact active claim, path, branch, clean HEAD, and pinned SHA.
+Every historical root, claim base, receipt target, historical
+self-supersession target, current target, and current repair source must be an
+ancestor of the resulting clean candidate. The candidate can then be passed to
+correct-self-supersession. Dry-run writes nothing; --apply requires --actor
+and --reason and creates only the new WB candidate and Work Log.`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			identity, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			if strings.TrimSpace(model) == "" {
+				model = identity.Model
+			}
+			if strings.TrimSpace(runtime) == "" {
+				runtime = identity.Runtime
+			}
+			if strings.TrimSpace(agentID) == "" {
+				agentID = identity.AgentID
+			}
+			repair, err := orchestrate.PreparePublishedValidationFailureForwardRepair(command.Context(), orchestrate.WorktreeMergePublishedForwardRepairOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Sources: args[1:], Apply: apply, Actor: actor, Reason: reason,
+				ExpectedReceiptSHA256: receiptSHA, ExpectedImmutableClaimSHA256: claimSHA, ExpectedSupersessionSHA256: supersessionSHA,
+				ExpectedCurrentTargetSHA: targetSHA, ExpectedSourceSHAs: expectedSourceSHAs,
+				Model: model, AgentRuntime: runtime, AgentID: agentID, Initiator: mutationInitiator(command), CLI: cli, Provider: provider,
+				SessionRequired: identity.Registered, Timeout: timeout, Retry: retry,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(repair)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nfailed-receipt: %s\ncandidate: %s\ncurrent-target: %s\n", repair.Status, repair.ReceiptPath, repair.Candidate.Worktree, repair.CurrentTargetSHA)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to create the distinct forward-repair candidate")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "create the distinct WB-managed forward-repair candidate")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&receiptSHA, "expected-receipt-sha256", "", "required SHA256 of the immutable failed receipt")
+	command.Flags().StringVar(&claimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable failed candidate Work Log claim")
+	command.Flags().StringVar(&supersessionSHA, "expected-supersession-sha256", "", "required SHA256 of the historical self-supersession acknowledgement")
+	command.Flags().StringVar(&targetSHA, "expected-current-target", "", "required exact current remote target SHA")
+	command.Flags().StringSliceVar(&expectedSourceSHAs, "expected-source-sha", nil, "required expected SHA for each current source, in argument order")
+	command.Flags().StringVar(&model, "model", "", "model identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "agent runtime recorded in the new candidate Work Log")
+	command.Flags().StringVar(&agentID, "agent-id", "", "agent identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&cli, "cli", "wb", "CLI identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&provider, "provider", "", "routing or billing provider identity, never a credential")
+	command.Flags().DurationVar(&timeout, "timeout", 8*time.Minute, "bounded Git operation timeout")
+	command.Flags().IntVar(&retry, "retry", 0, "retry transient Git command failures")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	addMutationAdmissionFlags(command)
 	return command
