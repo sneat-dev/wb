@@ -110,9 +110,12 @@ jobs:
       # data-race gate. It is scoped to the packages that run in-process
       # worker pools and shared observers rather than the whole module, so
       # the gate stays fast enough to sit in the required aggregate below.
+      # Orchestration tests create real repositories and worktrees; under the
+      # race detector their package can legitimately exceed Go's default 10m
+      # timeout while remaining within this job's 20m bound.
       - name: go test -race (concurrency-bearing packages)
         run: >-
-          go test -race
+          go test -race -timeout 15m
           ./internal/deps/...
           ./internal/orchestrate/...
           ./internal/githubobserver/...
