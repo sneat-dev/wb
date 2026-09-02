@@ -270,6 +270,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		} else if rebatched {
 			return existing, fmt.Errorf("merge receipt %s was rebatched into an audited replacement candidate; prepare the replacement receipt", receiptPath)
 		}
+		if strandedAcknowledged, strandedErr := hasStrandedLandingAcknowledgement(existing); strandedErr != nil {
+			return existing, strandedErr
+		} else if strandedAcknowledged {
+			return existing, fmt.Errorf("merge receipt %s was acknowledged as a proved stranded landing; prepare a new source candidate", receiptPath)
+		}
 		if rebatch != nil && existing.RebatchOf == rebatch.ReceiptPath && existing.Status == WorktreeMergePrepared {
 			lock, lockErr := AcquireOperationLock(projectsRoot, lane, true)
 			if lockErr != nil {
@@ -1686,7 +1691,11 @@ func shortMergeRevision(revision string) string {
 }
 
 func mergeExactPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (string, error) {
-	output, err := githubGet(ctx, receipt.Candidate.Worktree, receipt.Repository, receipt.Target, receipt.Candidate.SHA, "repos/"+receipt.Repository)
+	// The repository is fully qualified in the endpoint itself, so this read
+	// needs no working directory; an empty dir matches the same GitHub-only
+	// pattern already used by targetHead and candidateContainsTarget and
+	// never depends on a candidate worktree that later cleanup may remove.
+	output, err := githubGet(ctx, "", receipt.Repository, receipt.Target, receipt.Candidate.SHA, "repos/"+receipt.Repository)
 	if err != nil {
 		return "", fmt.Errorf("read repository merge methods: %w", err)
 	}
@@ -1724,7 +1733,11 @@ func mergeExactPullRequest(ctx context.Context, receipt WorktreeMergeReceipt, op
 }
 
 func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) (string, bool, error) {
-	viewOutput, err := githubRead(ctx, receipt.Candidate.Worktree, "pr", "view", receipt.PullRequest,
+	// The pull request URL and --repo already fully qualify this read; an
+	// empty dir avoids depending on the candidate worktree, exactly like
+	// pullRequestIdentity in ciwait.go. A resume whose worktree was already
+	// cleaned up must still be able to observe the server landing result.
+	viewOutput, err := githubRead(ctx, "", "pr", "view", receipt.PullRequest,
 		"--repo", receipt.Repository, "--json", "state,mergedAt,mergeCommit,headRefOid,baseRefName")
 	if err != nil {
 		return "", false, fmt.Errorf("read pull-request landing receipt: %w", err)
@@ -1773,7 +1786,7 @@ func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt Worktr
 	if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
 		return fmt.Errorf("published candidate %s does not match preserved candidate %s", receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
 	}
-	viewOutput, err := githubRead(ctx, receipt.Candidate.Worktree, "pr", "view", receipt.PullRequest,
+	viewOutput, err := githubRead(ctx, "", "pr", "view", receipt.PullRequest,
 		"--repo", receipt.Repository, "--json", "state,headRefOid,baseRefName")
 	if err != nil {
 		return fmt.Errorf("read published pull-request identity: %w", err)
@@ -2525,7 +2538,8 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (
 		}
 		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
-			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) {
+			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) {
 			continue
 		}
 		if entry.Name() != lane+".json" && !strings.HasPrefix(entry.Name(), lane+"-") {
@@ -2570,6 +2584,13 @@ func activeWorktreeMergeLaneReceipt(reportsDir, lane string, except ...string) (
 				return nil, rebatchErr
 			}
 			if rebatched {
+				continue
+			}
+			strandedAcknowledged, strandedErr := hasStrandedLandingAcknowledgement(receipt)
+			if strandedErr != nil {
+				return nil, strandedErr
+			}
+			if strandedAcknowledged {
 				continue
 			}
 			return &receipt, nil

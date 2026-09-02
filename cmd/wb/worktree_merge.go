@@ -46,7 +46,11 @@ Use acknowledge-landed-failed only for an audited historical
 validation_failed or landed_post_target_ci_failed receipt whose exact candidate
 is already contained in the current remote target; it writes a separate
 acknowledgement rather than rewriting the failed receipt. Use
-seal-validation-failed to prepare a target-tree-identical ancestry-only
+acknowledge-stranded-landing only for a land conflict receipt whose published
+pull request is proved MERGED and still contained in the current remote target
+using only GitHub's own state -- for exactly the case where the candidate
+worktree that acknowledge-landed-failed would otherwise need is already gone.
+Use seal-validation-failed to prepare a target-tree-identical ancestry-only
 replacement when an audited squash landing broke the historical graph. Use
 supersede-validation-failed only for a prepare failure that did not land: it
 binds a separately proved replacement candidate without rewriting history.`,
@@ -59,6 +63,9 @@ wb worktree merge land /path/to/landing-receipt --cleanup
 
 # Free a stale lane only after proving the failed candidate already landed
 wb worktree merge acknowledge-landed-failed /path/to/merge-receipt --apply --actor operator --reason "audited landed validation failure"
+
+# Free a stale lane after proving a stranded published PR landed, using only GitHub's remote state
+wb worktree merge acknowledge-stranded-landing /path/to/merge-receipt --apply --actor operator --reason "audited stranded landing"
 
 # Prepare an ancestry-only replacement without changing the target tree
 wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor operator --reason "audited squash recovery"
@@ -82,7 +89,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd())
 	return command
 }
 
@@ -271,6 +278,64 @@ proof refuses closed.`,
 			}
 			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\ncurrent-target: %s\nacknowledgement: %s\n",
 				ack.Status, ack.ReceiptPath, ack.CandidateSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "write the separate audited acknowledgement artifact")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited acknowledgement reason")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergeAcknowledgeStrandedLandingCmd() *cobra.Command {
+	var apply bool
+	var actor, reason, format string
+	command := &cobra.Command{
+		Use:   "acknowledge-stranded-landing <merge-receipt>",
+		Short: "Acknowledge a proved stranded pull-request landing without rewriting its receipt",
+		Long: `Prove, using only GitHub's own remote state, that a land conflict
+receipt's exact published pull request reports MERGED and that its server
+merge commit and preserved candidate are both contained in the freshly
+fetched current remote target, then record a separate audited acknowledgement
+so a fresh candidate can own the lane. This accepts only a land-phase conflict
+receipt that never recorded a landing SHA but did publish an exact candidate
+in a pull request: the case where a resume's own landing-result read failed
+on pure I/O or environment error, typically because the candidate worktree
+was already removed. Unlike acknowledge-landed-failed, this proof never reads
+or requires the candidate or any receipted source worktree. The immutable
+Work Log and historical merge receipt are never rewritten. This is a dry-run
+by default; --apply requires --actor and --reason and writes only the new
+acknowledgement artifact. A pull request that is not proved MERGED, or a
+merge commit or candidate not proved contained in the current remote target,
+refuses closed.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			_, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			ack, err := orchestrate.AcknowledgeStrandedPullRequestLanding(command.Context(), orchestrate.WorktreeMergeStrandedLandingAcknowledgementOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Apply: apply, Actor: actor, Reason: reason,
+			})
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(ack)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "status: %s\nreceipt: %s\ncandidate: %s\nproved-landing: %s\ncurrent-target: %s\nacknowledgement: %s\n",
+				ack.Status, ack.ReceiptPath, ack.CandidateSHA, ack.ProvedLandingSHA, ack.CurrentTargetSHA, ack.AcknowledgementPath)
 			if !apply {
 				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to write")
 			}
