@@ -10,6 +10,8 @@ Pre-spec one-pagers that can later promote into one or more WB features.
 
 | Idea | Status | Date | Owner | Promotes To |
 |------|--------|------|-------|-------------|
+| [agent-lane-verbs](agent-lane-verbs.md) | Draft | 2026-09-02 | alex | — |
+| [claim-at-push-visibility](claim-at-push-visibility.md) | Draft | 2026-09-02 | alex | — |
 | [dependency-policy-check](dependency-policy-check.md) | Approved | 2026-08-21 | alex | — |
 | [developer-lifecycle-metrics](developer-lifecycle-metrics.md) | Draft | 2026-07-20 | alex | — |
 | [fleet-liveness-audit](fleet-liveness-audit.md) | Draft | 2026-07-25 | alex | — |
