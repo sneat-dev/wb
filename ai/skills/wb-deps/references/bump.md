@@ -56,6 +56,30 @@ dependabot): memoized reads of untouched repositories can be up to 15 minutes
 stale. Expect roughly a minute saved per wave on a ~450-repository fleet at
 the default read-only pool of 4.
 
+## Choosing which repositories the campaign touches
+
+Two flags narrow a campaign, and they mean different things:
+
+```sh
+# The repository is removed from the campaign entirely: no graph entry, no
+# wave, no worktree, no PR. For an archived or irrelevant repository.
+wb deps bump npm --fleet --changed @sneat/core@0.31.0 --exclude 'sneat-co/legacy-*'
+
+# The repository IS bumped, verified, pushed, gets a PR and a CI wait — and is
+# then left OPEN, even under --merge. For a repository whose merge is a human
+# decision, such as a gated deploy repository.
+wb deps bump npm --fleet --changed @sneat/core@0.31.0 --merge --hold sneat-co/sneat-go --hold sneat-co/sneat-apps
+```
+
+Both accept `path.Match` globs (`*` never crosses a `/`), and an exact
+`owner/name` always matches itself. Excluded slugs are listed in the report, so
+"needed nothing" is never confused with "never looked at".
+
+A release that needs a human merge cannot be waited for, so a wave containing a
+held repository stops the campaign with status `awaiting_hold_release` and
+names the pull requests the remaining waves are waiting on. That is a stopping
+point, not a failure: merge the held PRs, then `--resume`.
+
 `--refresh-after` defaults to `5m`. Before starting a downstream build from an
 older event, WB checks for a newer semantic version and substitutes it. This
 avoids spending CI on a version already superseded during a long provider

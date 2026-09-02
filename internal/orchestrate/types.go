@@ -4,6 +4,8 @@ package orchestrate
 
 import (
 	"context"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/progress"
@@ -43,7 +45,16 @@ type Options struct {
 	// request, but deliberately does not merge it. It is only valid with PR
 	// publication and is intended for validation-only campaigns.
 	WaitForPRChecks bool
-	Progress        progress.Reporter
+	// Hold is a set of "owner/name" glob patterns naming repositories whose
+	// merge is a human decision. A held repository is changed, verified,
+	// pushed, has its pull request opened, and has its exact PR-head checks
+	// waited on exactly like any other — and is then left OPEN, even under
+	// Merge. It is not a way to skip a repository (that is the caller's own
+	// exclusion, applied before this engine sees the repository); it is a way
+	// to do all the mechanical work and stop at the one step that needs an
+	// owner's judgement, such as a deploy repository the founder gates.
+	Hold     []string
+	Progress progress.Reporter
 
 	// Prompt is recorded as the originating instruction in the WB manifest
 	// journal of every worktree this operation creates, satisfying wb's own
@@ -207,4 +218,30 @@ type Result[T any] struct {
 	PR            string
 	Checks        []RemoteCheck
 	Merged        bool
+	// Held records that Options.Hold matched this repository, so its pull
+	// request was deliberately left open for a human decision rather than
+	// merged. It is never inferred from a failure.
+	Held bool
+}
+
+// MatchesHold reports whether an "owner/name" repository slug matches any
+// hold pattern. Patterns use path.Match semantics, where "*" never crosses a
+// "/", so "sneat-co/*" holds every repository in one owner and
+// "sneat-co/sneat-go" holds exactly one. An exact string equal to the slug
+// always matches, so a caller never has to think about glob metacharacters in
+// a literal repository name.
+func MatchesHold(slug string, patterns []string) bool {
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if pattern == slug {
+			return true
+		}
+		if matched, err := path.Match(pattern, slug); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }

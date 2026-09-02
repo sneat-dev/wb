@@ -100,7 +100,15 @@ type BumpReport struct {
 	// --fetch-cache discovery memo, so a post-mortem (duplicate PR, stale
 	// base, spun waves) can attribute or rule out memoized discovery reads.
 	// It always reflects the live invocation, never a resumed report's past.
-	FetchCacheEnabled      bool                          `yaml:"fetch_cache_enabled,omitempty"`
+	FetchCacheEnabled bool `yaml:"fetch_cache_enabled,omitempty"`
+	// ExcludedRepositories lists repositories --exclude removed before any
+	// discovery ran, so a reader can tell "needed nothing" from "never looked
+	// at".
+	ExcludedRepositories []string `yaml:"excluded_repositories,omitempty"`
+	// HeldRepositories lists every repository whose passing pull request this
+	// campaign deliberately left open for its owner to merge, across all
+	// waves.
+	HeldRepositories       []HeldRepository              `yaml:"held_repositories,omitempty"`
 	DiscoverySkips         []GraphDiscoverySkip          `yaml:"discovery_skips,omitempty"`
 	DefaultBranchFallbacks []GraphDefaultBranchFallback  `yaml:"default_branch_fallbacks,omitempty"`
 	ManifestWarnings       []GraphManifestWarning        `yaml:"manifest_warnings,omitempty"`
@@ -144,6 +152,10 @@ type BumpWaveReport struct {
 	DeferredRepositories []string              `yaml:"deferred_repositories,omitempty"`
 	Repositories         []RepositoryReport    `yaml:"repositories"`
 	Releases             []ReleaseObservation  `yaml:"releases,omitempty"`
+	// HeldRepositories are this wave's pull requests left open for a human.
+	// A wave with any of them stops the campaign: a release that needs a
+	// human merge cannot be waited for.
+	HeldRepositories []HeldRepository `yaml:"held_repositories,omitempty"`
 	// DiscoveryFetchesSkipped counts the origin fetches this wave's graph
 	// discovery reused from the run's fetch memo (always zero without
 	// --fetch-cache), attributing exactly how much the cache saved per wave.

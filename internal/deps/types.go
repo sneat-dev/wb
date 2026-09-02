@@ -129,7 +129,18 @@ type Options struct {
 	Order bool
 	// Layers restricts an ordered run to one layer or a contiguous range so an
 	// operator can land one layer before starting the next.
-	Layers   LayerSelection
+	Layers LayerSelection
+	// ExcludeRepositories are "owner/name" globs removed from the run before
+	// anything is discovered: no graph entry, no wave membership, no
+	// worktree, no pull request. Use it for a repository the campaign has no
+	// business touching at all.
+	ExcludeRepositories []string
+	// Hold are "owner/name" globs whose merge is a human decision. A held
+	// repository is bumped, verified, pushed, has its pull request opened and
+	// its exact PR-head checks waited on — and is then left OPEN even under
+	// --merge. It is the opposite of exclusion: the mechanical work is done,
+	// only the irreversible step waits for its owner.
+	Hold     []string
 	Progress progress.Reporter
 
 	// ResolveGitHubRef is injectable for hermetic adapter tests.
@@ -187,6 +198,9 @@ type RepositoryReport struct {
 	PR               string                      `yaml:"pr,omitempty"`
 	Checks           []RemoteCheck               `yaml:"checks,omitempty"`
 	Merged           bool                        `yaml:"merged,omitempty"`
+	// Held records that --hold matched this repository, so its passing pull
+	// request was deliberately left open for its owner to merge.
+	Held bool `yaml:"held,omitempty"`
 }
 
 // Decision explains one existing dependency reference before and after update.

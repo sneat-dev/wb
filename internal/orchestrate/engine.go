@@ -64,6 +64,23 @@ func Run[T any](ctx context.Context, repositories []Repository, handler Handler[
 			if errorsByRepository[index] != nil || results[index].PR == "" {
 				return
 			}
+			// A held repository still earns its exact PR-head check evidence —
+			// the only step it does not take is the merge itself, which its
+			// owner decides. Waiting here means the human is handed a pull
+			// request already known to be green, not one they must babysit.
+			if MatchesHold(repositories[index].Slug, options.Hold) {
+				results[index].Held = true
+				progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "wait_for_pr_checks", Repository: repositories[index].Slug, State: progress.Waiting})
+				if err := waitForPRChecks(ctx, options, &results[index]); err != nil {
+					results[index].Status = "failed"
+					results[index].Reason = err.Error()
+					errorsByRepository[index] = fmt.Errorf("%s: %w", repositories[index].Slug, err)
+					return
+				}
+				results[index].Status = "pr_open_held"
+				results[index].Reason = "exact PR-head GitHub checks passed; merge is held for a human decision because this repository matches --hold"
+				return
+			}
 			progress.Report(options.Progress, progress.Event{Operation: options.Operation, Phase: "wait_and_merge", Repository: repositories[index].Slug, State: progress.Waiting})
 			if err := waitAndMerge(ctx, options, &results[index]); err != nil {
 				results[index].Status = "failed"

@@ -38,8 +38,11 @@ type depsSetOptions struct {
 	fetchCache                         bool
 	timeout, releasePoll, refreshAfter time.Duration
 	goPrivate                          []string
-	layers                             deps.LayerSelection
-	campaign                           *campaignProgress
+	// exclude removes repositories from the run entirely; hold keeps them in
+	// the run but never merges their pull request. See the flag help.
+	exclude, hold []string
+	layers        deps.LayerSelection
+	campaign      *campaignProgress
 }
 
 func newDepsCmd() *cobra.Command {
@@ -427,7 +430,33 @@ func newDepsBumpCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "bump <ecosystem>",
 		Short: "Propagate published dependency versions through recalculated waves",
-		Args:  cobra.ExactArgs(1),
+		Long: `Propagate published dependency versions through recalculated consumer waves.
+
+Two flags shape which repositories the campaign touches, and they mean
+different things:
+
+  --exclude <org/repo glob>   The repository is removed from the campaign
+                              entirely, before anything is discovered: no graph
+                              entry, no wave membership, no worktree, no pull
+                              request. Use it for an archived or irrelevant
+                              repository. Excluded slugs are listed in the
+                              report, so "needed nothing" is never confused
+                              with "never looked at".
+
+  --hold <org/repo glob>      The repository IS bumped, verified, pushed, and
+                              has its pull request opened and its exact PR-head
+                              GitHub checks waited on — and is then left OPEN,
+                              even under --merge. Use it for a repository whose
+                              merge is a human decision, such as a gated deploy
+                              repository. Because a release that needs a human
+                              merge cannot be waited for, a wave containing a
+                              held repository stops the campaign with status
+                              awaiting_hold_release and names the pull requests
+                              the remaining waves are waiting on.
+
+Both accept path.Match globs, where "*" never crosses a "/", and an exact
+"owner/name" always matches itself.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			ecosystem := deps.Ecosystem(args[0])
 			switch ecosystem {
@@ -459,6 +488,8 @@ func newDepsBumpCmd() *cobra.Command {
 		},
 	}
 	command.Flags().StringArrayVar(&changed, "changed", nil, "published module@version release event (repeatable)")
+	command.Flags().StringArrayVar(&options.exclude, "exclude", nil, "org/repo glob removed from the campaign entirely: no graph entry, no wave, no worktree, no PR (repeatable)")
+	command.Flags().StringArrayVar(&options.hold, "hold", nil, "org/repo glob whose PR is opened and CI-waited but never merged, even under --merge; downstream waves stop and name the held PRs (repeatable)")
 	command.Flags().BoolVar(&options.fleet, "fleet", false, "reconcile and process selected local and owned GitHub repositories")
 	command.Flags().StringVar(&options.match, "match", "", "glob matched against org/repo, e.g. sneat-co/*")
 	command.Flags().StringVar(&options.regex, "regex", "", "regular expression matched against org/repo")
@@ -497,8 +528,9 @@ func dependencyOptions(options depsSetOptions, checks []quality.Check) deps.Opti
 		GitHubDir: projectsRoot, Ref: options.ref, Parallel: options.parallel, ParallelExplicit: options.parallelExplicit,
 		DryRun: options.dryRun, Resume: options.resume, AllowDowngrade: options.allowDowngrade,
 		ValidationMode: validationMode, Verify: validationMode == deps.ValidationModeFull, Checks: checks, Timeout: options.timeout, Retry: options.retry,
-		GoPrivate: options.goPrivate,
-		Commit:    options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
+		GoPrivate:           options.goPrivate,
+		ExcludeRepositories: options.exclude, Hold: options.hold,
+		Commit: options.commit, Push: options.push, PR: options.pr, Merge: options.merge,
 		ReportDir: options.reportDir,
 		Order:     options.order, Layers: options.layers,
 	}
