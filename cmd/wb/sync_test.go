@@ -45,6 +45,28 @@ func TestPrintSyncSummaryReportsFreshRemoteUpdates(t *testing.T) {
 	}
 }
 
+func TestSyncReportWriterUsesStderrForInteractiveRuns(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_, _ = syncReportWriter(true, &stdout, &stderr).Write([]byte("interactive report"))
+	if stdout.Len() != 0 {
+		t.Fatalf("interactive report was written to stdout: %q", stdout.String())
+	}
+	if got, want := stderr.String(), "interactive report"; got != want {
+		t.Fatalf("interactive report on stderr = %q, want %q", got, want)
+	}
+}
+
+func TestSyncReportWriterKeepsNonInteractiveReportsOnStdout(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	_, _ = syncReportWriter(false, &stdout, &stderr).Write([]byte("plain report"))
+	if got, want := stdout.String(), "plain report"; got != want {
+		t.Fatalf("non-interactive report on stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("non-interactive report was written to stderr: %q", stderr.String())
+	}
+}
+
 func TestResolveSyncOwnersRequiresAuthentication(t *testing.T) {
 	_, err := resolveSyncOwners(nil,
 		func() (string, error) { return "", fmt.Errorf("invalid token") },
