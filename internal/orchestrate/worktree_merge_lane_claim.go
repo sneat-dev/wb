@@ -1,6 +1,7 @@
 package orchestrate
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -83,7 +84,7 @@ func ActiveMergeLaneClaim(projectsRoot, repository, branch string) (*MergeLaneCl
 		if acknowledged {
 			continue
 		}
-		superseded, supersessionErr := hasValidationFailureSupersession(receipt)
+		superseded, supersessionErr := hasValidationFailureSupersession(context.Background(), projectsRoot, receipt)
 		if supersessionErr != nil {
 			return nil, supersessionErr
 		}
