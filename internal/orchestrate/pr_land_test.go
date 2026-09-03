@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/streams"
 )
 
 // landFixture is a real repository plus a scripted GitHub. Every GitHub call
@@ -105,7 +107,15 @@ func (fixture *landFixture) installGH(t *testing.T, branch string, files []strin
 	t.Helper()
 	filesJSON := make([]map[string]string, 0, len(files))
 	for _, file := range files {
-		filesJSON = append(filesJSON, map[string]string{"filename": file})
+		// The classification reads the diff, so the fixture must carry one.
+		// A manifest edit that only changes a version is what a mechanical
+		// bump looks like on the wire.
+		patch := "@@ -1,3 +1,3 @@\n \"dependencies\": {\n-    \"@acme/lib\": \"1.0.0\"\n+    \"@acme/lib\": \"2.0.0\"\n }"
+		if !strings.HasSuffix(file, ".json") && !strings.HasSuffix(file, ".yaml") &&
+			file != "go.mod" && file != "go.sum" {
+			patch = "@@ -1,2 +1,3 @@\n package app\n+// changed\n"
+		}
+		filesJSON = append(filesJSON, map[string]string{"filename": file, "status": "modified", "patch": patch})
 	}
 	encodedFiles, err := json.Marshal(filesJSON)
 	if err != nil {
@@ -378,19 +388,44 @@ func TestPlanKeptCommitsPreservesOrderAroundOneAggregate(t *testing.T) {
 	if refusal != nil {
 		t.Fatalf("refusal = %#v", refusal)
 	}
-	// Five commits, two kept: three commits land — the aggregate in the
-	// position of the first commit it absorbs, then each kept commit in order.
+	// Five commits, two kept: three commits land. The kept ones keep their
+	// order, and the aggregate lands AFTER the kept commits that precede its
+	// last member ("five" comes after "four"), never hoisted to the front —
+	// everything it absorbs has to be in place before a later kept commit can
+	// replay.
 	if len(plan.steps) != 3 {
 		t.Fatalf("steps = %#v", plan.steps)
 	}
-	if !plan.steps[0].aggregate || len(plan.steps[0].sources) != 3 {
-		t.Fatalf("the aggregate must absorb the three unkept commits: %#v", plan.steps[0])
+	if plan.steps[0].aggregate || plan.steps[0].sources[0].Subject != "two" {
+		t.Fatalf("step 0 = %#v, want the first kept commit", plan.steps[0])
 	}
-	if plan.steps[1].aggregate || plan.steps[1].sources[0].Subject != "two" {
-		t.Fatalf("step 1 = %#v", plan.steps[1])
+	if plan.steps[1].aggregate || plan.steps[1].sources[0].Subject != "four" {
+		t.Fatalf("step 1 = %#v, want the second kept commit", plan.steps[1])
 	}
-	if plan.steps[2].aggregate || plan.steps[2].sources[0].Subject != "four" {
-		t.Fatalf("step 2 = %#v", plan.steps[2])
+	if !plan.steps[2].aggregate || len(plan.steps[2].sources) != 3 {
+		t.Fatalf("step 2 = %#v, want the aggregate absorbing one, three and five", plan.steps[2])
+	}
+	for index, subject := range []string{"one", "three", "five"} {
+		if plan.steps[2].sources[index].Subject != subject {
+			t.Fatalf("the aggregate must keep its members in branch order: %#v", plan.steps[2].sources)
+		}
+	}
+}
+
+// When every unkept commit precedes the kept ones, the aggregate lands first —
+// which is the same rule, not a special case.
+func TestPlanKeptCommitsPutsTheAggregateFirstWhenItsMembersComeFirst(t *testing.T) {
+	commits := []SourceCommit{
+		{SHA: "1111111111111111111111111111111111111111", Subject: "one"},
+		{SHA: "2222222222222222222222222222222222222222", Subject: "two"},
+		{SHA: "3333333333333333333333333333333333333333", Subject: "three"},
+	}
+	plan, refusal := planKeptCommits(commits, []string{"3333333"})
+	if refusal != nil {
+		t.Fatalf("refusal = %#v", refusal)
+	}
+	if len(plan.steps) != 2 || !plan.steps[0].aggregate || plan.steps[1].sources[0].Subject != "three" {
+		t.Fatalf("steps = %#v", plan.steps)
 	}
 }
 
@@ -409,5 +444,153 @@ func TestSavingsCountEveryAbsorbedCallAndLabelTheEstimate(t *testing.T) {
 	}
 	if !strings.Contains(saved.FooterLine(), "estimate") {
 		t.Fatalf("footer = %q, want the figure labelled an estimate", saved.FooterLine())
+	}
+}
+
+// M1: the aggregate has to name the pull request, so a reader of `git log` can
+// find it. It used to interpolate the base branch, which named nothing.
+func TestAggregatedBodyNamesTheRepositoryAndNumber(t *testing.T) {
+	view := PullRequestView{Number: 41, Title: "feat: the change", Body: "Summary."}
+	view.Base.Ref = "main"
+	view.Base.Repo = &struct {
+		FullName string `json:"full_name"`
+	}{FullName: "acme/app"}
+	body := aggregatedCommitMessage(view, []SourceCommit{{SHA: strings.Repeat("a", 40), Subject: "one"}}, "review.md", "")
+	if !strings.Contains(body, "Pull request: acme/app#41") {
+		t.Fatalf("body must name the pull request, not the base branch:\n%s", body)
+	}
+	if strings.Contains(body, "main#41") {
+		t.Fatalf("the base branch is not a pull-request identity:\n%s", body)
+	}
+}
+
+// M2: the classification reads the diff, not the filename. A `package.json`
+// holds the scripts CI runs and the overrides that rewrite the whole graph.
+func TestMechanicalIsDecidedFromContent(t *testing.T) {
+	versionOnly := `@@ -5,7 +5,7 @@
+   "dependencies": {
+-    "lodash": "^4.17.20"
++    "lodash": "^4.17.21"
+   }`
+	scriptsOnly := `@@ -2,7 +2,7 @@
+   "scripts": {
+-    "build": "tsc"
++    "build": "tsc && node scripts/postbuild.js"
+   }`
+	overrides := `@@ -9,7 +9,7 @@
+   "pnpm": {
+     "overrides": {
+-      "semver": "7.5.4"
++      "semver": "7.6.0"
+     }`
+	for _, testCase := range []struct {
+		name  string
+		files []ChangedFile
+		want  bool
+	}{
+		{"a version-only manifest edit", []ChangedFile{{Filename: "package.json", Patch: versionOnly}}, true},
+		{"go.mod and go.sum alone", []ChangedFile{
+			{Filename: "go.mod", Patch: "@@\n-require x v1\n+require x v2\n"},
+			{Filename: "go.sum", Patch: "@@\n-x v1 h1:a=\n+x v2 h1:b=\n"},
+		}, true},
+		{"a scripts edit inside a manifest", []ChangedFile{{Filename: "package.json", Patch: scriptsOnly}}, false},
+		{"a pnpm override", []ChangedFile{{Filename: "package.json", Patch: overrides}}, false},
+		{"a manifest under testdata", []ChangedFile{{Filename: "internal/x/testdata/package.json", Patch: versionOnly}}, false},
+		{"a manifest beside a source file", []ChangedFile{
+			{Filename: "go.mod", Patch: "@@\n-require x v1\n+require x v2\n"},
+			{Filename: "main.go", Patch: "@@\n-a\n+b\n"},
+		}, false},
+		{"a manifest GitHub could not diff", []ChangedFile{{Filename: "pnpm-lock.yaml", Patch: ""}}, false},
+		{"no files at all", nil, false},
+	} {
+		verdict := ClassifyMechanical(testCase.files)
+		if verdict.Mechanical != testCase.want {
+			t.Errorf("%s: mechanical = %t, want %t (%s)", testCase.name, verdict.Mechanical, testCase.want, verdict.Summary())
+		}
+	}
+}
+
+// M6 and M7: every invocation leaves exactly one event, including a refusal —
+// and a refusal saved the caller nothing, so it records zero.
+func TestEveryLandingLeavesOneEventAndARefusalSavesNothing(t *testing.T) {
+	fixture := newLandFixture(t, "bump/events", "go.mod", "main.go")
+	recorder := &recordingEvents{}
+	options := landOptions(fixture)
+	options.Events = recorder
+	options.Stream = "night-shift"
+
+	refused, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refused.Outcome != LandRefused {
+		t.Fatalf("outcome = %s", refused.Outcome)
+	}
+	if refused.SavedToolCalls != 0 || refused.SavedTokensEstimate != 0 {
+		t.Fatalf("a refusal saved the caller nothing: %d calls, %d tokens",
+			refused.SavedToolCalls, refused.SavedTokensEstimate)
+	}
+	if len(recorder.events) != 1 {
+		t.Fatalf("events = %#v, want exactly one", recorder.events)
+	}
+	event := recorder.events[0]
+	if event.Verb != "pr land" || event.Outcome != "refused" || event.RefusalCode != LandRefusalUnapprovedPatch {
+		t.Fatalf("event = %#v", event)
+	}
+	if event.Stream != "night-shift" || event.Repository != "acme/app" {
+		t.Fatalf("event identity = %#v", event)
+	}
+	if event.Evidence["pull_request"] != "acme/app#7" || event.Evidence["saved_tool_calls"] != "0" {
+		t.Fatalf("event evidence = %#v", event.Evidence)
+	}
+
+	// The same is true of a success, and of --keep.
+	approved := options
+	approved.ApprovedBy = "review.md"
+	landed, err := LandPullRequest(context.Background(), approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if landed.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", landed.Outcome, landed.Reason)
+	}
+	if len(recorder.events) != 2 {
+		t.Fatalf("events = %d, want one per invocation", len(recorder.events))
+	}
+	success := recorder.events[1]
+	if success.Outcome != "success" || success.Evidence["approved_by"] != "review.md" || success.Evidence["kept"] != "true" {
+		t.Fatalf("success event = %#v", success)
+	}
+	if success.Evidence["merge_commit"] == "" {
+		t.Fatal("a landing event must record the commit it produced")
+	}
+}
+
+type recordingEvents struct{ events []streams.Event }
+
+func (recorder *recordingEvents) Append(event streams.Event) error {
+	recorder.events = append(recorder.events, event)
+	return nil
+}
+
+// Cleanup is the default, and a landing with no WB worktree says so rather than
+// leaving the reader to assume one was retired.
+func TestLandWithoutKeepSaysWhenNoWorktreeMatched(t *testing.T) {
+	fixture := newLandFixture(t, "bump/no-worktree", "go.mod")
+	options := landOptions(fixture)
+	options.Keep = false
+
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s: %s", result.Outcome, result.Reason)
+	}
+	if result.Kept {
+		t.Fatal("cleanup is the default")
+	}
+	if !strings.Contains(result.Evidence["cleanup"], "nothing to retire") {
+		t.Fatalf("evidence = %#v, want it to say no worktree matched", result.Evidence)
 	}
 }

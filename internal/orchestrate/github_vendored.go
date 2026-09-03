@@ -52,8 +52,11 @@ type PullRequestView struct {
 		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"base"`
 }
 
@@ -184,7 +187,39 @@ func PullRequestHeadChecks(ctx context.Context, repository, selector string) ([]
 			green = false
 		}
 	}
+	// An empty observation is not a pass. The `--required` path this replaced
+	// asked GitHub which checks the target requires, and a head with none of
+	// them reported is a head CI has not run on yet — reading that as green
+	// would merge on the strength of nothing having happened.
+	required, _, reason := targetBranchRequiredChecks(ctx, repository, view.Base.Ref, false)
+	if reason != "" {
+		return checks, false, fmt.Errorf("read required checks for %s: %s", view.Base.Ref, reason)
+	}
+	for _, expectation := range required {
+		if !observedSatisfies(observed, expectation) {
+			return checks, false, nil
+		}
+	}
+	if len(observed) == 0 {
+		green = len(required) == 0
+	}
 	return checks, green, nil
+}
+
+// observedSatisfies reports whether one required expectation has a passing
+// observation on this head.
+func observedSatisfies(observed []RemoteCheck, expectation RequiredRemoteCheck) bool {
+	for _, check := range observed {
+		name := strings.TrimPrefix(strings.TrimPrefix(check.Name, "check-run:"), "status:")
+		if name != expectation.Name {
+			continue
+		}
+		if expectation.IntegrationID != 0 && check.AppID != expectation.IntegrationID {
+			continue
+		}
+		return check.Bucket == "pass" || check.Bucket == "skipping"
+	}
+	return false
 }
 
 // RepositoryFromPullRequestURL extracts owner/repository from a pull request

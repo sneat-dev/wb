@@ -8,6 +8,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/spf13/cobra"
 )
 
@@ -91,6 +92,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
+			events, streamName := landingEventLog(repository)
 			progress := newCIWaitProgress(command.ErrOrStderr(), !nonInteractive)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:        repository,
@@ -106,6 +108,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				Slice:             slice,
 				CheckPollInterval: pollInterval,
 				Progress:          progress.report,
+				Events:            events,
+				Stream:            streamName,
 			})
 			if err != nil {
 				return err
@@ -252,3 +256,28 @@ func shortSHAForDisplay(sha string) string {
 	}
 	return sha
 }
+
+// landingEventLog resolves where this landing's event belongs.
+//
+// A landing inside a stream belongs to that stream's log, which is what makes
+// `wb report stream` able to show the landing beside the work that produced it.
+// A landing outside every stream still writes an event — the analytics exist to
+// measure verbs, not only streams — into the fleet log.
+func landingEventLog(repository string) (streams.EventAppender, string) {
+	store, err := streams.Open(projectsRoot)
+	if err != nil {
+		return streams.DiscardEvents{}, ""
+	}
+	if stream, found, streamErr := store.RepositoryStream(repository); streamErr == nil && found {
+		return store.EventLog(stream.Name), stream.Name
+	}
+	// Outside every stream the event still belongs somewhere: the analytics
+	// exist to measure verbs, not only streams, and a landing that leaves no
+	// record is a landing the report cannot count.
+	return store.EventLog(fleetEventLogName), ""
+}
+
+// fleetEventLogName is the log for verbs that ran outside any stream. It is a
+// name no stream can take: stream names are validated as path segments and
+// cannot contain a dot.
+const fleetEventLogName = ".fleet"
