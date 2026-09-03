@@ -393,3 +393,95 @@ func TestStatusReadsOnlyTheLibraryModulesTags(t *testing.T) {
 		t.Fatalf("tag patterns = %v, want the library's own module glob", git.tagPatterns)
 	}
 }
+
+// A preflight fetch that fails is reported, never discarded: the readiness
+// checks then ran against a possibly stale clone, and the operator has to know
+// that before trusting a green start.
+func TestAFailedPreflightFetchIsReportedNotDiscarded(t *testing.T) {
+	engine, git, _, _ := newTestEngine(t)
+	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
+		".github/workflows/ci.yml": cancellingWorkflow,
+	})
+	git.fetchErr[canonicalPath(engine.ProjectsRoot, "acme/library")] = errors.New("could not resolve host github.com")
+
+	result, err := engine.Start(context.Background(), StartOptions{
+		Name: "stale-clone", Repositories: []string{"acme/library"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("an unreachable remote must not refuse the start: %v", err)
+	}
+	finding, ok := findingFor(result.Reported, "acme/library", "origin-refresh")
+	if !ok {
+		t.Fatalf("reported = %#v, want the failed fetch reported", result.Reported)
+	}
+	if finding.Status != PreflightUnknown || !strings.Contains(finding.Detail, "possibly stale") {
+		t.Errorf("finding = %#v, want an unknown saying the checks may be stale", finding)
+	}
+}
+
+// A member left without a draft pull request is a FINDING, so the verb exits 1
+// rather than reporting success while that member's pushes run no CI.
+func TestAMemberWithoutADraftPullRequestIsAReportedFinding(t *testing.T) {
+	engine, _, hub, worktrees := newTestEngine(t)
+	for _, repository := range []string{"acme/library", "acme/app"} {
+		writeCanonical(t, engine.ProjectsRoot, repository, map[string]string{
+			".github/workflows/ci.yml": cancellingWorkflow,
+		})
+	}
+	failing := filepath.Join(worktrees.root, "worktrees", "no-pr", "acme", "app")
+	hub.createErr[failing] = errors.New("gh: no default remote")
+
+	result, err := engine.Start(context.Background(), StartOptions{
+		Name: "no-pr", Repositories: []string{"acme/library", "acme/app"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	finding, ok := findingFor(result.Reported, "acme/app", "draft-pull-request")
+	if !ok {
+		t.Fatalf("reported = %#v, want the missing pull request reported", result.Reported)
+	}
+	if finding.Status != PreflightFail {
+		t.Errorf("status = %q, want a failing finding so the verb exits 1", finding.Status)
+	}
+	if !strings.Contains(finding.Detail, "run no CI") {
+		t.Errorf("finding does not say what is lost: %s", finding.Detail)
+	}
+	if !strings.Contains(finding.Detail, "wb stream join no-pr acme/app") {
+		t.Errorf("finding does not name the retry: %s", finding.Detail)
+	}
+	// The healthy member is not reported.
+	if _, reported := findingFor(result.Reported, "acme/library", "draft-pull-request"); reported {
+		t.Error("a member with a draft pull request was reported as missing one")
+	}
+}
+
+// The one-open-stream guard reports records it could not read, so a "no stream
+// holds this repository" answer never looks more certain than it is.
+func TestStartReportsStreamRecordsItCouldNotRead(t *testing.T) {
+	engine, _, _, _ := newTestEngine(t)
+	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
+		".github/workflows/ci.yml": cancellingWorkflow,
+	})
+	if err := os.MkdirAll(engine.Store.Dir("broken"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(engine.Store.Dir("broken"), "stream.json"), []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.Start(context.Background(), StartOptions{
+		Name: "reports-unreadable", Repositories: []string{"acme/library"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("one truncated record must not refuse an unrelated start: %v", err)
+	}
+	found := false
+	for _, finding := range result.Reported {
+		if finding.Check == "stream-state-readable" && strings.Contains(finding.Detail, "broken") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reported = %#v, want the unreadable record surfaced", result.Reported)
+	}
+}

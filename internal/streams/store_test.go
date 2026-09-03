@@ -112,7 +112,7 @@ func TestRepositoryStreamIgnoresEndedStreams(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, held, err := store.RepositoryStream("acme/app"); err != nil || held {
+	if _, held, _, err := store.RepositoryStream("acme/app"); err != nil || held {
 		t.Fatalf("held = %t (err %v), want an ended stream to release its repositories", held, err)
 	}
 }
@@ -164,5 +164,31 @@ func TestIsStreamBranchRecognizesBothSpellings(t *testing.T) {
 	}
 	if IsStreamBranch("feature/stream-thing") {
 		t.Error("a branch merely mentioning stream was recognized")
+	}
+}
+
+// The one-open-stream guard must hand back the records it could not read: "no
+// stream holds this repository" is only as good as the records WB could read,
+// and a truncated file could be the very stream that holds it.
+func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if _, err := store.Create(Stream{Name: "healthy", Phase: PhaseOpen}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(store.Dir("broken"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Dir("broken"), "stream.json"), []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, held, unreadable, err := store.RepositoryStream("acme/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held {
+		t.Fatal("no readable stream holds acme/app")
+	}
+	if len(unreadable) != 1 || unreadable[0].Name != "broken" {
+		t.Fatalf("unreadable = %#v, want the truncated record surfaced to the caller", unreadable)
 	}
 }

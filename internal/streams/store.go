@@ -394,20 +394,24 @@ func (store *Store) lockStore() (func(), error) {
 // RepositoryStream answers the one-open-stream-per-repository question:
 // which open stream, if any, already holds this repository. It is what
 // `stream start` refuses on, and what names the holder in that refusal.
-func (store *Store) RepositoryStream(repository string) (Stream, bool, error) {
-	all, _, err := store.List()
+func (store *Store) RepositoryStream(repository string) (Stream, bool, []Unreadable, error) {
+	all, unreadable, err := store.List()
 	if err != nil {
-		return Stream{}, false, err
+		return Stream{}, false, nil, err
 	}
 	for _, stream := range all {
 		if !stream.Open() {
 			continue
 		}
 		if _, ok := stream.Member(repository); ok {
-			return stream, true, nil
+			return stream, true, unreadable, nil
 		}
 	}
-	return Stream{}, false, nil
+	// "No stream holds this repository" is only true of the streams WB could
+	// read. An unreadable record may be the one that holds it, so the caller
+	// is handed the list rather than a bare false — the guard decides what to
+	// do about an answer it cannot fully stand behind.
+	return Stream{}, false, unreadable, nil
 }
 
 // LiveLinksForWorktree returns every live link recorded against one consumer

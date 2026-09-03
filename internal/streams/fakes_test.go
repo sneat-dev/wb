@@ -23,6 +23,7 @@ type fakeGit struct {
 	notInErr      map[string]error
 	deleted       []string
 	deleteErr     map[string]error
+	fetchErr      map[string]error
 	dirty         map[string][]string
 	tags          map[string][]string
 	log           map[string][]string
@@ -45,6 +46,7 @@ func newFakeGit() *fakeGit {
 		notIn:         map[string][]Commit{},
 		notInErr:      map[string]error{},
 		deleteErr:     map[string]error{},
+		fetchErr:      map[string]error{},
 		dirty:         map[string][]string{},
 		tags:          map[string][]string{},
 		log:           map[string][]string{},
@@ -63,6 +65,9 @@ func (git *fakeGit) DefaultBranch(_ context.Context, dir string) (string, error)
 }
 
 func (git *fakeGit) Fetch(_ context.Context, dir string) error {
+	if err := git.fetchErr[dir]; err != nil {
+		return err
+	}
 	git.calls = append(git.calls, "fetch "+dir)
 	git.fetched = append(git.fetched, dir)
 	return nil
