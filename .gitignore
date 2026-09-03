@@ -7,3 +7,8 @@ dist/
 
 # Generated per-checkout marker; see AGENTS.md. Never commit it.
 /.worktree.md
+
+# The CLI binary `go build ./cmd/...` drops in the repository root. It is 30 MB
+# and `git add -A` will stage it, so ignoring it is the only thing that keeps a
+# routine build out of a commit.
+/wb
