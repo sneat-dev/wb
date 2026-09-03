@@ -75,9 +75,23 @@ verification with no review ledger entry.
 Anything else needs `--approved-by <review-file-or-comment-url>`, which is
 recorded on the receipt and in the aggregated commit body.
 
-The classification is made **from the diff**, never from the title, author or
-labels. A pull request titled as a Renovate bump whose diff also edits a `.go`
-or `.ts` file is not mechanical, and is refused until a review is recorded.
+The classification is made **from the diff's content**, never from filenames and
+never from the title, author or labels:
+
+- `package.json` counts only when **every changed line** is a dependency entry
+  inside `dependencies`, `devDependencies`, `peerDependencies` or
+  `optionalDependencies`. A `scripts` edit is a change to what CI runs; a
+  `pnpm.overrides` edit rewrites the resolved graph for every package in the
+  workspace. Neither is a version bump, and neither lands unreviewed.
+- a manifest under `testdata/`, `docs/`, `examples/` or `fixtures/` is a
+  fixture, so it is code.
+- `go.mod`, `go.sum` and the lockfiles are mechanical **only when they are the
+  only files changed**.
+- a file GitHub could not diff cannot be classified, so it is not mechanical.
+  Absence of evidence is not evidence that a change is safe to land unreviewed.
+
+A pull request titled as a Renovate bump whose diff also edits a `.go` or `.ts`
+file is not mechanical, and is refused until a review is recorded.
 
 ## Refusals and what resolves each
 
@@ -93,8 +107,20 @@ or `.ts` file is not mechanical, and is refused until a review is recorded.
 | `keep-commit-not-on-branch` | a named commit is not on this branch | name a commit of the branch being landed |
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
 | `checks-pending` / `checks-failed` | exit 1, not a refusal: the work is not ready | fix the failure, or rerun to keep waiting |
+| `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |
+| `cleanup-blocked-live-link` | that worktree still holds a live local dependency link | `wb deps propagate local --undo <task>`, or land with `--keep` |
+
+Both of those are checked **before** the merge, while refusing is still free.
+Discovering afterwards that the checkout cannot be retired leaves the landing
+done and the tidy-up impossible — which is the shape that produced sixty
+abandoned checkouts.
 
 ## What it records
+
+Every invocation writes **one stream event** — success, findings or refusal, and
+including `--keep` — carrying the pull request, the head, the mechanical
+verdict, the approval reference, the kept commits and `saved_tool_calls`. A
+refused invocation records **zero** saved calls: it did none of your work.
 
 `--format json` emits the envelope: `outcome`, `refusal_code`,
 `sanctioned_command`, the evidence it relied on, the changed files and the

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -87,22 +88,32 @@ func planKeptCommits(commits []SourceCommit, keep []string) (keepPlan, *landRefu
 		}
 		wanted[matched] = true
 	}
+	// Walk the branch in order. Kept commits become their own steps as they
+	// appear; everything else accumulates into one aggregate, whose position is
+	// decided at the end.
 	plan := keepPlan{}
-	aggregateIndex := -1
+	aggregated := make([]SourceCommit, 0, len(commits))
+	keptBeforeLastAggregated := 0
 	for _, commit := range commits {
 		if wanted[commit.SHA] {
 			plan.steps = append(plan.steps, keepStep{sources: []SourceCommit{commit}})
 			plan.kept = append(plan.kept, commit.SHA)
 			continue
 		}
-		if aggregateIndex < 0 {
-			// The aggregate takes the position of the first commit it absorbs,
-			// so the branch's own ordering is preserved as closely as one
-			// aggregated commit allows.
-			aggregateIndex = len(plan.steps)
-			plan.steps = append(plan.steps, keepStep{aggregate: true})
-		}
-		plan.steps[aggregateIndex].sources = append(plan.steps[aggregateIndex].sources, commit)
+		aggregated = append(aggregated, commit)
+		// Everything the aggregate absorbs has to be in place before a kept
+		// commit that came after it can replay, so the aggregate belongs after
+		// every kept commit that precedes its LAST member — never hoisted to
+		// the front, which would reorder the branch under the reader's feet.
+		keptBeforeLastAggregated = len(plan.steps)
+	}
+	if len(aggregated) > 0 {
+		aggregate := keepStep{aggregate: true, sources: aggregated}
+		steps := make([]keepStep, 0, len(plan.steps)+1)
+		steps = append(steps, plan.steps[:keptBeforeLastAggregated]...)
+		steps = append(steps, aggregate)
+		steps = append(steps, plan.steps[keptBeforeLastAggregated:]...)
+		plan.steps = steps
 	}
 	sort.Strings(plan.kept)
 	return plan, nil
@@ -126,7 +137,13 @@ func rewriteBranchForKeptCommits(
 	}
 	worktree := filepath.Join(scratch, "rewrite")
 	defer func() {
-		_, _ = runGit(ctx, canonical, "worktree", "remove", "--force", worktree)
+		// A cancelled context would make this cleanup a no-op and leave a
+		// registered worktree behind — the exact debris this whole feature
+		// exists to stop producing — so the removal gets its own bounded
+		// context that the cancellation cannot reach.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, _ = runGit(cleanupCtx, canonical, "worktree", "remove", "--force", worktree)
 		_ = os.RemoveAll(scratch)
 	}()
 	if _, err := runGit(ctx, canonical, "worktree", "add", "--detach", worktree, baseSHA); err != nil {
@@ -167,11 +184,12 @@ func rewriteBranchForKeptCommits(
 		if refusal := buildAt(ctx, worktree, source, buildCommand); refusal != nil {
 			return nil, "", refusal, nil
 		}
-		head, err := runGit(ctx, worktree, "rev-parse", "HEAD")
-		if err != nil {
-			return nil, "", nil, err
-		}
-		landed = append(landed, LandedCommit{SourceSHA: source.SHA, LandedSHA: head, Subject: source.Subject, Kept: true})
+		// The SHA this scratch worktree produced is not the SHA that will land:
+		// GitHub's rebase merge replays every commit with new committer
+		// metadata. Recording it here would put a commit id in the ledger that
+		// exists nowhere afterwards, so the pairing is read back from the base
+		// after the merge — see MapLandedCommits.
+		landed = append(landed, LandedCommit{SourceSHA: source.SHA, Subject: source.Subject, Kept: true})
 	}
 
 	head, err := runGit(ctx, worktree, "rev-parse", "HEAD")
@@ -198,7 +216,16 @@ func buildAt(ctx context.Context, worktree string, source SourceCommit, buildCom
 		command = defaultBuildCommand(worktree)
 	}
 	if len(command) == 0 {
-		return nil
+		// The guard exists because a commit that does not build is not a state
+		// anyone can bisect to. Skipping it where WB cannot infer the build
+		// would keep the promise only for Go repositories while appearing to
+		// keep it everywhere, which is worse than not making it.
+		return &landRefusal{
+			code: LandRefusalKeepDoesNotBuild,
+			reason: "WB cannot infer this repository's build, so it cannot prove kept commit " +
+				shortMergeRevision(source.SHA) + " builds on its own",
+			command: "wb pr land … --keep-commits … --reason \"…\" --build-command \"<the repository's build>\"",
+		}
 	}
 	run := exec.CommandContext(ctx, command[0], command[1:]...)
 	run.Dir = worktree
@@ -301,4 +328,94 @@ func landKeepingCommits(
 	}
 	return rewriteBranchForKeptCommits(ctx, canonical, options.Repository, view.Head.Ref, baseSHA,
 		plan, view, commits, approvedBy, options.Reason, options.BuildCommand)
+}
+
+// MapLandedCommits pairs each source commit with the commit that carried it
+// onto the base, by patch identity.
+//
+// GitHub's rebase merge replays every commit with new committer metadata and
+// new SHAs, so the only durable link back to a source commit is the content it
+// carried. `git patch-id --stable` is that link: it hashes the diff, ignoring
+// whitespace-insensitive noise and every piece of metadata a replay rewrites.
+//
+// The aggregated sources all map to the one commit that absorbed them, which is
+// found by elimination: it is the landed commit no kept source claims.
+func MapLandedCommits(ctx context.Context, canonical, base, mergeBase string, landed []LandedCommit) ([]LandedCommit, error) {
+	newCommits, err := commitsBetween(ctx, canonical, mergeBase, base)
+	if err != nil {
+		return landed, err
+	}
+	byPatch := map[string]string{}
+	for _, commit := range newCommits {
+		identity, identityErr := patchIdentity(ctx, canonical, commit)
+		if identityErr != nil || identity == "" {
+			continue
+		}
+		byPatch[identity] = commit
+	}
+	claimed := map[string]bool{}
+	for index := range landed {
+		if !landed[index].Kept {
+			continue
+		}
+		identity, identityErr := patchIdentity(ctx, canonical, landed[index].SourceSHA)
+		if identityErr != nil || identity == "" {
+			continue
+		}
+		if match, found := byPatch[identity]; found {
+			landed[index].LandedSHA = match
+			claimed[match] = true
+		}
+	}
+	// Whatever is left carried the aggregate.
+	aggregate := ""
+	for _, commit := range newCommits {
+		if !claimed[commit] {
+			aggregate = commit
+			break
+		}
+	}
+	if aggregate == "" {
+		return landed, nil
+	}
+	for index := range landed {
+		if !landed[index].Kept {
+			landed[index].LandedSHA = aggregate
+		}
+	}
+	return landed, nil
+}
+
+func commitsBetween(ctx context.Context, canonical, from, to string) ([]string, error) {
+	output, err := runGit(ctx, canonical, "rev-list", "--reverse", from+".."+to)
+	if err != nil {
+		return nil, err
+	}
+	commits := make([]string, 0, 8)
+	for _, line := range strings.Split(output, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			commits = append(commits, trimmed)
+		}
+	}
+	return commits, nil
+}
+
+// patchIdentity is the content fingerprint of one commit.
+func patchIdentity(ctx context.Context, canonical, commit string) (string, error) {
+	command := exec.CommandContext(ctx, "sh", "-c",
+		"git -C "+shellQuote(canonical)+" diff-tree -p --no-color "+shellQuote(commit)+" | git patch-id --stable")
+	command.Env = console.Env()
+	output, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("patch identity of %s: %w", shortMergeRevision(commit), err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return fields[0], nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

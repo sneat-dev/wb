@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -52,19 +53,6 @@ const (
 	LandRefused  LandOutcome = "refused"
 )
 
-// mechanicalPaths are the only files a mechanical dependency bump may touch.
-// The classification is decided from the diff and never from the pull
-// request's title, author, or labels: a bot-titled bump that also edits a
-// source file is not mechanical, whatever it is called.
-var mechanicalBases = map[string]bool{
-	"go.mod":              true,
-	"go.sum":              true,
-	"package.json":        true,
-	"pnpm-lock.yaml":      true,
-	"pnpm-workspace.yaml": true,
-	"package-lock.json":   true,
-}
-
 // PullRequestLandOptions identifies one pull request to land.
 type PullRequestLandOptions struct {
 	Repository   string
@@ -101,7 +89,14 @@ type PullRequestLandOptions struct {
 	Slice             time.Duration
 	CheckPollInterval time.Duration
 	Progress          func(PullRequestWaitProgress)
-	Now               func() time.Time
+	// Events receives one structured record per invocation, whatever the
+	// outcome. A refusal is the most useful event of all — it is the one that
+	// says a verb was reached and declined — so `--keep` and every refusal
+	// write one too. A nil appender discards.
+	Events streams.EventAppender
+	// Stream names the stream this landing belongs to, when it belongs to one.
+	Stream string
+	Now    func() time.Time
 	// mergeAttempted is a test seam recording that the merge write was issued.
 	beforeMerge func()
 }
@@ -181,7 +176,18 @@ func (result PullRequestLandResult) ExitCode() int {
 const perCallTokenOverhead = 400
 
 // LandPullRequest verifies, merges, and tidies up after one pull request.
-func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullRequestLandResult, error) {
+func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (result PullRequestLandResult, err error) {
+	started := time.Now()
+	defer func() {
+		// Every outcome leaves exactly one event, including the error paths:
+		// a verb that only records its successes produces a log in which
+		// nothing ever goes wrong.
+		appendLandEvent(options, result, started, err)
+	}()
+	return landPullRequest(ctx, options)
+}
+
+func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullRequestLandResult, error) {
 	number, err := PullRequestNumber(options.PullRequest)
 	if err != nil {
 		return PullRequestLandResult{}, err
@@ -234,6 +240,20 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	if refusal := landPreflightRefusal(view, options.Repository, number); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
 	}
+	if len(options.KeepCommits) > 0 && !options.AllowUnfenced && !targetHasRequiredChecks(ctx, options.Repository, view.Base.Ref) {
+		// Rewriting the branch means the checks that were observed no longer
+		// describe what will land. Without a server-enforced required check on
+		// the target, nothing will re-observe the rewritten head either, so the
+		// landing would be authorized by a receipt for content that no longer
+		// exists.
+		return mergeRefusal(result, landRefusal{
+			code: LandRefusalUnfencedTarget,
+			reason: "keeping commits separate rewrites the branch, and " + view.Base.Ref +
+				" has no required status check to re-observe the rewritten head against",
+			command: "wb pr land " + options.Repository + "#" + number + " --keep-commits " +
+				strings.Join(options.KeepCommits, ",") + " --reason \"…\" --allow-unfenced",
+		}), nil
+	}
 	if len(options.KeepCommits) > 0 && strings.TrimSpace(options.Reason) == "" {
 		return mergeRefusal(result, landRefusal{
 			code: LandRefusalKeepReasonMissing,
@@ -248,17 +268,22 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	if err != nil {
 		return result, err
 	}
-	result.ChangedFiles = files
-	result.Mechanical, result.NonManifest = classifyMechanical(files)
-	result.Evidence["classification"] = "from-diff"
+	for _, file := range files {
+		result.ChangedFiles = append(result.ChangedFiles, file.Filename)
+	}
+	verdict := ClassifyMechanical(files)
+	result.Mechanical, result.NonManifest = verdict.Mechanical, verdict.NonManifest
+	result.Evidence["classification"] = "from-diff-content"
+	if !verdict.Mechanical {
+		result.Evidence["not_mechanical_because"] = verdict.Summary()
+	}
 
 	result.ApprovedBy = strings.TrimSpace(options.ApprovedBy)
 	if !result.Mechanical && result.ApprovedBy == "" {
 		return mergeRefusal(result, landRefusal{
 			code: LandRefusalUnapprovedPatch,
-			reason: "this change is not a mechanical dependency bump — it touches " +
-				strings.Join(limitStrings(result.NonManifest, 5), ", ") +
-				" — so it needs a recorded review approval before it can land",
+			reason: "this change is not a mechanical dependency bump (" + verdict.Summary() +
+				"), so it needs a recorded review approval before it can land",
 			command: "wb pr land " + options.Repository + "#" + number + " --approved-by <review-file-or-comment-url>",
 		}), nil
 	}
@@ -306,6 +331,16 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.Evidence["fence"] = "none; landed on observed checks under --allow-unfenced"
 	}
 
+	// Pre-flight the cleanup now, while refusing is still free. Discovering
+	// after the merge that the worktree cannot be retired leaves the landing
+	// done and the tidy-up impossible, which is the shape that produced sixty
+	// abandoned checkouts in the first place.
+	if !options.Keep {
+		if refusal := preflightLandingCleanup(ctx, options, view, number); refusal != nil {
+			return mergeRefusal(result, *refusal), nil
+		}
+	}
+
 	subject := strings.TrimSpace(options.Subject)
 	if subject == "" {
 		// GitHub takes the branch's first commit subject when none is given, so
@@ -344,6 +379,30 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		mergeMethod = "rebase"
 		result.HeadSHA = keptHead
 		result.Evidence["rewritten_head"] = shortMergeRevision(keptHead)
+
+		// The checks observed above were the OLD head's. The rewritten branch
+		// is different content in a different order, and merging it on the
+		// strength of a receipt for something else is exactly the substitution
+		// the head-SHA lease exists to prevent. Wait for its own.
+		rewritten := waitOptions
+		rewritten.Head = keptHead
+		reobserved, waitErr := WaitForPullRequestChecks(ctx, rewritten)
+		if waitErr != nil {
+			return result, waitErr
+		}
+		result.Checks = &reobserved
+		result.AbsorbedPolls += reobserved.StableObservations
+		if reobserved.Status != PullRequestWaitPassed {
+			result.Outcome = LandFindings
+			result.RefusalCode = LandRefusalChecksPending
+			if reobserved.Status == PullRequestWaitFailed {
+				result.RefusalCode = LandRefusalChecksFailed
+			}
+			result.Reason = "the rewritten branch's own checks are not green: " + reobserved.Reason
+			result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number +
+				" --keep-commits " + strings.Join(options.KeepCommits, ",") + " --reason " + strconv.Quote(options.Reason)
+			return withSavings(result), nil
+		}
 	}
 
 	if options.beforeMerge != nil {
@@ -373,6 +432,18 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 	result.MergeSHA = landed.MergeCommitSHA
 	result.Evidence["merge_commit"] = shortMergeRevision(landed.MergeCommitSHA)
+	if len(result.Commits) > 0 {
+		// The landed SHAs exist only now: a rebase merge replays every commit.
+		canonical, _, _, locateErr := locateBranchCheckout(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref)
+		if locateErr == nil && canonical != "" {
+			if _, fetchErr := runGit(ctx, canonical, "fetch", "origin", view.Base.Ref); fetchErr == nil {
+				mapped, mapErr := MapLandedCommits(ctx, canonical, "refs/remotes/origin/"+view.Base.Ref, view.Base.SHA, result.Commits)
+				if mapErr == nil {
+					result.Commits = mapped
+				}
+			}
+		}
+	}
 
 	onBase, err := commitIsOnBranch(ctx, options.Repository, landed.MergeCommitSHA, view.Base.Ref)
 	if err != nil {
@@ -397,6 +468,12 @@ func LandPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		tasks, reports, cleanupErr := cleanupLandedWorktrees(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref, landed.MergeCommitSHA)
 		result.CleanedTasks = tasks
 		result.CleanupReports = reports
+		if cleanupErr == nil && len(tasks) == 0 {
+			// Silence here reads as "the worktree was retired". Say instead
+			// that there was none, so a caller who expected one knows to look.
+			result.Evidence["cleanup"] = "no WB worktree for " + options.Repository + " on " + view.Head.Ref +
+				"; nothing to retire"
+		}
 		if cleanupErr != nil {
 			// The landing itself succeeded and must be reported as such; a
 			// checkout that could not be retired is a finding, with the verb
@@ -463,27 +540,7 @@ func landPreflightRefusal(view PullRequestView, repository, number string) *land
 	return nil
 }
 
-// classifyMechanical decides from the diff alone. Any source, test, workflow,
-// or configuration file in the change makes it something that needs a review,
-// whatever the pull request is titled.
-func classifyMechanical(files []string) (bool, []string) {
-	if len(files) == 0 {
-		return false, nil
-	}
-	other := make([]string, 0, len(files))
-	for _, file := range files {
-		if !mechanicalBases[path.Base(file)] {
-			other = append(other, file)
-		}
-	}
-	return len(other) == 0, other
-}
-
-type pullRequestFile struct {
-	Filename string `json:"filename"`
-}
-
-func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]string, error) {
+func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]ChangedFile, error) {
 	responses, err := githubobserver.GetPages(ctx, githubobserver.GetRequest{
 		Repository: repository,
 		Endpoint:   "repos/" + repository + "/pulls/" + url.PathEscape(number) + "/files?per_page=100",
@@ -492,9 +549,9 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 		return nil, fmt.Errorf("read changed files for %s#%s: %w", repository, number, err)
 	}
 	seen := map[string]bool{}
-	files := make([]string, 0, 16)
+	files := make([]ChangedFile, 0, 16)
 	for _, response := range responses {
-		var page []pullRequestFile
+		var page []ChangedFile
 		if err := json.Unmarshal(response.Body, &page); err != nil {
 			return nil, fmt.Errorf("decode changed files for %s#%s: %w", repository, number, err)
 		}
@@ -504,10 +561,11 @@ func pullRequestChangedFiles(ctx context.Context, repository, number string) ([]
 				continue
 			}
 			seen[name] = true
-			files = append(files, name)
+			file.Filename = name
+			files = append(files, file)
 		}
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool { return files[i].Filename < files[j].Filename })
 	return files, nil
 }
 
@@ -678,6 +736,14 @@ func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headR
 // withSavings records what the caller did not have to do. The estimate is
 // labelled an estimate everywhere it is displayed.
 func withSavings(result PullRequestLandResult) PullRequestLandResult {
+	if result.Outcome == LandRefused {
+		// A refused invocation did not do the caller's work, so it saved them
+		// nothing. Counting the calls it happened to make before refusing would
+		// inflate every savings total with the runs that achieved nothing.
+		result.SavedToolCalls = 0
+		result.SavedTokensEstimate = 0
+		return result
+	}
 	calls := len(result.ManualEquivalent)
 	if result.AbsorbedPolls > 1 {
 		// Each absorbed poll is a call the caller would have made; absorbing a
@@ -780,6 +846,20 @@ func pullRequestCommits(ctx context.Context, repository, number string) ([]Sourc
 // `fix typo` message lands on the default branch verbatim — and correcting it
 // afterwards means rewriting history on a protected branch, which is to say it
 // cannot be corrected at all.
+// repositoryOf names the repository a pull request belongs to. The head's own
+// repository is authoritative for a same-repository pull request and is what a
+// reader needs to find it again; a fork's head names the fork, so the caller
+// supplies the base repository through the view it read.
+func repositoryOf(view PullRequestView) string {
+	if view.Base.Repo != nil && strings.TrimSpace(view.Base.Repo.FullName) != "" {
+		return view.Base.Repo.FullName
+	}
+	if view.Head.Repo != nil && strings.TrimSpace(view.Head.Repo.FullName) != "" {
+		return view.Head.Repo.FullName
+	}
+	return ""
+}
+
 func aggregatedCommitMessage(view PullRequestView, commits []SourceCommit, approvedBy, reason string) string {
 	var builder strings.Builder
 	if summary := pullRequestBodySummary(view.Body); summary != "" {
@@ -799,7 +879,7 @@ func aggregatedCommitMessage(view PullRequestView, commits []SourceCommit, appro
 	if strings.TrimSpace(reason) != "" {
 		builder.WriteString("Commits kept separate because: " + strings.TrimSpace(reason) + "\n\n")
 	}
-	fmt.Fprintf(&builder, "Pull request: %s#%d\n", view.Base.Ref, view.Number)
+	fmt.Fprintf(&builder, "Pull request: %s#%d\n", repositoryOf(view), view.Number)
 	if strings.TrimSpace(approvedBy) != "" {
 		builder.WriteString("Review: " + strings.TrimSpace(approvedBy) + "\n")
 	} else {
@@ -850,4 +930,127 @@ func isCommitTrailer(line string) bool {
 		}
 	}
 	return false
+}
+
+// targetHasRequiredChecks reports whether the target branch carries a
+// server-enforced required status check. It is read from the same
+// branch-protection and ruleset sources the waiter uses, so the answer is the
+// one the merge will actually be judged by.
+func targetHasRequiredChecks(ctx context.Context, repository, target string) bool {
+	checks, _, reason := targetBranchRequiredChecks(ctx, repository, target, false)
+	return reason == "" && len(checks) > 0
+}
+
+// appendLandEvent records one invocation. It never fails the landing: an event
+// that cannot be written is a lost record, and refusing a completed merge
+// because of one would be a far worse outcome than the gap.
+func appendLandEvent(options PullRequestLandOptions, result PullRequestLandResult, started time.Time, landErr error) {
+	if options.Events == nil {
+		return
+	}
+	outcome := string(result.Outcome)
+	if landErr != nil {
+		outcome = string(LandFindings)
+	}
+	if outcome == "" {
+		outcome = string(LandFindings)
+	}
+	evidence := map[string]string{
+		"pull_request":     options.Repository + "#" + strings.TrimSpace(options.PullRequest),
+		"head":             result.HeadSHA,
+		"mechanical":       strconv.FormatBool(result.Mechanical),
+		"saved_tool_calls": strconv.Itoa(result.SavedToolCalls),
+		"kept":             strconv.FormatBool(result.Kept),
+	}
+	if result.MergeSHA != "" {
+		evidence["merge_commit"] = result.MergeSHA
+	}
+	if result.ApprovedBy != "" {
+		evidence["approved_by"] = result.ApprovedBy
+	}
+	if len(result.KeptCommits) > 0 {
+		evidence["kept_commits"] = strings.Join(result.KeptCommits, ",")
+	}
+	if len(result.CleanedTasks) > 0 {
+		evidence["cleaned_tasks"] = strings.Join(result.CleanedTasks, ",")
+	}
+	detail := result.Reason
+	if landErr != nil {
+		detail = landErr.Error()
+	}
+	_ = options.Events.Append(streams.Event{
+		Stream:      options.Stream,
+		Verb:        "pr land",
+		Repository:  options.Repository,
+		Outcome:     outcome,
+		RefusalCode: result.RefusalCode,
+		Detail:      detail,
+		DurationMS:  time.Since(started).Milliseconds(),
+		Evidence:    evidence,
+	})
+}
+
+// preflightLandingCleanup refuses a landing whose tidy-up would fail, before
+// the merge makes the landing irreversible.
+//
+// A dirty worktree cannot be retired without losing the changes in it, and a
+// worktree holding a live dependency link cannot be retired without breaking
+// what it is linked to. Both are ordinary states for a lane mid-work, and both
+// are far better said before the merge than after.
+func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view PullRequestView, number string) *landRefusal {
+	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
+		ProjectsRoot: options.ProjectsRoot,
+		Base:         view.Base.Ref,
+	})
+	if err != nil {
+		// The inventory is unreadable, which is not the same as clean. Refuse
+		// rather than merge into an unknown tidy-up.
+		return &landRefusal{
+			code:    "cleanup-unverifiable",
+			reason:  "the worktree inventory could not be read, so this landing's cleanup cannot be pre-flighted: " + err.Error(),
+			command: "wb pr land " + options.Repository + "#" + number + " --keep",
+		}
+	}
+	for _, entry := range listed.Results {
+		if entry.Repository != options.Repository || entry.Branch != view.Head.Ref {
+			continue
+		}
+		if !entry.Clean {
+			return &landRefusal{
+				code: "cleanup-blocked-dirty",
+				reason: "the worktree for task " + entry.Task + " has uncommitted changes, so landing now would " +
+					"merge the work and then be unable to retire the checkout that produced it",
+				command: "wb worktree end " + entry.Task + ", or land with --keep",
+			}
+		}
+		if refusal := refuseLinkedWorktree(options.ProjectsRoot, entry); refusal != nil {
+			return refusal
+		}
+	}
+	return nil
+}
+
+// refuseLinkedWorktree refuses a checkout that still holds a live local
+// dependency link. Retiring one silently restores every consumer of that link
+// to a published version nobody chose.
+func refuseLinkedWorktree(projectsRoot string, entry worktrees.ListResult) *landRefusal {
+	store, err := streams.Open(projectsRoot)
+	if err != nil {
+		// No stream state at all is the ordinary case outside a stream.
+		return nil
+	}
+	links, err := store.LiveLinksForWorktree(entry.WorktreeDir)
+	if err != nil || len(links) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(links))
+	for _, link := range links {
+		names = append(names, link.Link.Identity)
+	}
+	return &landRefusal{
+		code: "cleanup-blocked-live-link",
+		reason: "the worktree for task " + entry.Task + " still holds a live local dependency link (" +
+			strings.Join(names, ", ") + "), so retiring it would restore consumers to a published version",
+		command: "wb deps propagate local --undo " + entry.Task + ", or land with --keep",
+	}
 }
