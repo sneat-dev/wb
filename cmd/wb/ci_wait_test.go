@@ -73,32 +73,18 @@ if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"feature/integration"}'
   exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"feature/integration","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/feature/integration'; then
   echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
   echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
-if [ "$1" = pr ] && [ "$2" = checks ]; then
-	case " $* " in
-	  *" --required "*) echo '[{"name":"CI","bucket":"pending"}]'; exit 8;;
-	esac
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   count=0
   if [ -f "$WB_CI_WAIT_STATE" ]; then count=$(cat "$WB_CI_WAIT_STATE"); fi
   count=$((count + 1))
   printf '%s' "$count" > "$WB_CI_WAIT_STATE"
-	if [ "${WB_CI_WAIT_INVOCATION:-0}" -lt 2 ]; then
-    echo '[{"name":"CI","bucket":"pending"}]'
-	# gh pr checks exits 8 while a JSON receipt contains pending checks.
-	# WB must parse this receipt and return a resumable pending result.
-    exit 8
-  else
-    echo '[{"name":"CI","bucket":"pass"}]'
-  fi
-  exit 0
-fi
-if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
-if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   if [ "${WB_CI_WAIT_INVOCATION:-0}" -lt 2 ]; then
     echo '{"total_count":1,"check_runs":[{"name":"CI","status":"in_progress","app":{"id":42}}]}'
   else
@@ -168,34 +154,40 @@ exit 30
 	}
 }
 
-func TestCIWaitPullRequestJSONFailureOverridesGHExitCode(t *testing.T) {
+// A failing check is a failed receipt whatever the transport did. This used to
+// be expressed against `gh pr checks`, which exits non-zero while still
+// printing its JSON; the waiter no longer speaks that dialect — the installed
+// gh 2.45 does not support it — so the property is now expressed against the
+// head commit's own check runs, which is where the fact actually lives.
+func TestCIWaitFailedCheckRunProducesAFailedReceipt(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	script := `#!/bin/sh
-if [ "$1" = pr ] && [ "$2" = view ]; then
-  echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'
-  exit 0
-fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then
   echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
-if [ "$1" = pr ] && [ "$2" = checks ]; then
-  echo '[{"name":"CI","bucket":"fail"}]'
-  exit 1
-fi
-if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
-  echo '{"total_count":0,"check_runs":[]}'
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","app":{"id":42}}]}'
   exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
   echo '{"total_count":0,"statuses":[]}'
   exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '^repos/acme/app/branches/main$'; then
+  echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'; exit 0
+fi
+if [ "$1" = api ] && echo "$2" | grep -q '^repos/acme/app/branches/main/protection/required_status_checks$'; then
+  echo '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}'; exit 0
+fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
+  echo '[]'; exit 0
 fi
 echo "unexpected gh args: $*" >&2
 exit 30
@@ -208,11 +200,11 @@ exit 30
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
 	}
-	if code != exitFindings || output.Status != "failed" || len(output.Checks) != 1 || output.Checks[0].Bucket != "fail" || strings.Contains(output.Reason, "exit status 1") {
-		t.Fatalf("JSON failure receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	if code != exitFindings || output.Status != "failed" || len(output.Checks) != 1 ||
+		output.Checks[0].Bucket != "fail" || output.Checks[0].Name != "check-run:CI" {
+		t.Fatalf("failed-check receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
 	}
 }
-
 func TestCIWaitResumesDirectTargetSlicesUntilExactHeadPasses(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
@@ -629,6 +621,7 @@ func TestCIWaitPullRequestHonorsPinnedRequiredCheckIntegration(t *testing.T) {
 if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
@@ -691,6 +684,7 @@ func TestCIWaitFreshPullRequestDoesNotWaitForRedTargetCI(t *testing.T) {
 if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then
   echo '[{"name":"CI","bucket":"pass"}]'; exit 0
 fi
@@ -743,6 +737,7 @@ func TestCIWaitRejectsStalePullRequestBeforeChecks(t *testing.T) {
 if [ "$1" = pr ] && [ "$2" = view ]; then
   echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
@@ -774,6 +769,7 @@ func TestCIWaitRejectsPullRequestWithoutServerFreshnessFence(t *testing.T) {
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
@@ -805,6 +801,7 @@ func TestCIWaitRejectsClassicFreshnessPolicyWithoutStrictReceipt(t *testing.T) {
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
@@ -836,6 +833,7 @@ func TestCIWaitRejectsEmptyStrictFreshnessPolicy(t *testing.T) {
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then case " $* " in *" --required "*) echo '[]';; *) echo '[{"name":"Optional","bucket":"pass"}]';; esac; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
@@ -867,6 +865,7 @@ func TestCIWaitPassesWithEmptyClassic404AndStrictRuleset(t *testing.T) {
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
@@ -898,6 +897,7 @@ func TestCIWaitRejectsEmptyClassic404WithoutRuleset(t *testing.T) {
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
@@ -929,6 +929,7 @@ func TestCIWaitDoesNotTreatMergeQueueRuleAsSourceHeadFreshness(t *testing.T) {
 	}
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
@@ -960,6 +961,7 @@ func TestCIWaitRejectsTargetAdvanceAfterStablePullRequestChecks(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "target-reads")
 	script := `#!/bin/sh
 if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then
   count=0; if [ -f "$WB_TARGET_STATE" ]; then count=$(cat "$WB_TARGET_STATE"); fi

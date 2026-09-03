@@ -175,7 +175,7 @@ fi
 if [ "$1" = api ]; then
   case " $* " in
     *"/rules/branches/main?per_page=100"*)
-      printf '%s\n' '[[]]'
+      printf '%s\n' '[]'
       exit 0
       ;;
   esac
@@ -200,6 +200,12 @@ if [ "$1" = api ]; then
         if [ "$mergeBase" = "$target" ]; then status=ahead; else status=diverged; fi
       fi
       printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$target" "$mergeBase"
+      exit 0
+      ;;
+    repos/*/pulls/*)
+      branch=$(cat "$WB_FAKE_GH_STATE/$(printf '%s' "$slug" | tr / -).branch") || exit 2
+      head=$(git --git-dir="$remote" rev-parse "refs/heads/$branch") || exit 2
+      printf '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"%s","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"main","sha":""}}\n' "$branch" "$head" "$slug"
       exit 0
       ;;
     repos/*/commits/*/check-runs*)
