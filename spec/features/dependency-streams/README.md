@@ -333,10 +333,8 @@ use `wb deps propagate local` links instead, so an unpublished library never
 produces a version-bump commit.
 
 WB MUST NOT open Renovate-style pull requests against `main` for a dependency
-that is inside an open stream. Renovate's own-library pull requests continue to
-land on `main` as the safety net for repositories and dependencies outside any
-stream; `wb stream sync` picks those up automatically, because it rebases the
-stream branch onto the updated `origin/main`.
+that is inside an open stream. Renovate itself keeps running unchanged — see
+`renovate-bumps-daily-and-independently-of-streams` below.
 
 #### REQ: sync-rebases-and-never-merges
 
@@ -427,7 +425,34 @@ report the failing library and the break, and MUST NOT attempt to adapt the code
 That becomes an **agent task on the stream** with its own worktree and a pull
 request into the stream branch, exactly like any other reviewed change.
 
-Repositories outside any stream keep the Renovate safety net unchanged.
+Repositories outside any stream are covered entirely by Renovate's independent
+daily path, unchanged.
+
+#### REQ: renovate-bumps-daily-and-independently-of-streams
+
+Renovate remains the fleet's **independent daily mechanism** for own-library
+versions, and this Feature does not displace it. Founder decision, 2026-09-03:
+*"Yes, renovate should bump deps daily independently."*
+
+- Own-library groups keep **creating pull requests immediately** on a release, as
+  today, and **auto-merge them in a daily window** — `automergeSchedule` in the
+  `cicd` / `sneat-renovate-*` presets, early morning `Europe/Dublin`. Immediate
+  creation keeps the drift visible; the window is what stops Renovate and a
+  stream racing in the minutes after a publish.
+- `wb deps propagate remote` is for **planned waves** — the members a stream
+  verified together — not for routine version currency.
+- A consumer **inside an active stream** still receives Renovate's bump **on
+  `main`**, never on the stream branch. `wb stream sync` then carries it into the
+  stream by rebasing onto the updated `origin/main`, which is why sync rebases
+  rather than merges.
+- A consumer in **no** stream is covered entirely by Renovate, with no human
+  action and no wb involvement.
+
+This resolves the earlier open question. The alternative — making
+`propagate remote` the only path — would leave every consumer outside a stream
+silently behind, which is a failure this fleet has already had. wb MUST NOT
+change these presets (see Not Doing); it depends on them and reports when a
+member's configuration does not match.
 
 #### REQ: stream-backlog-is-counted-by-patch-identity
 
@@ -757,7 +782,7 @@ Consumer selection MUST come from the stream's recorded links, not from a fleet
 scan. WB MUST NOT bump a repository that was not linked in the stream, even when
 `wb deps graph` shows it depends on the library. A repository that depends on
 the library but was never linked was never verified against these changes, and
-belongs to the Renovate safety net rather than to this wave.
+belongs to Renovate's independent daily path rather than to this wave.
 
 #### REQ: remote-propagation-reports-per-consumer
 
@@ -1427,6 +1452,21 @@ one containing five intermediate commits, and one tagged upstream library releas
 **Then** the stream branch gains exactly three commits — one per reviewed agent
 change and one for the bump — and contains no merge commit.
 
+### AC: a-release-reaches-a-stream-less-consumer-without-a-human
+
+**Requirements:** dependency-streams#req:renovate-bumps-daily-and-independently-of-streams
+
+**Given** a library tag cut at 02:00 `Europe/Dublin`, one consumer in **no**
+stream and one consumer **inside an active stream**
+**When** the next daily `automergeSchedule` window passes and the stream is then
+synced
+**Then** the stream-less consumer's Renovate pull request was created promptly on
+the release and **auto-merged in that window with no human action**; the
+in-stream consumer received its bump on `main` and **not** on the stream branch;
+and the following `wb stream sync` carries that landed bump into the stream by
+rebasing onto the updated `origin/main`, without wb having opened a competing
+pull request for the same version.
+
 ### AC: sync-rebases-and-reports-conflicts-per-agent
 
 **Requirements:** dependency-streams#req:sync-rebases-and-never-merges
@@ -2092,21 +2132,11 @@ commits, giving finer prefix-scan resolution at the cost of a noisier `main`. Th
 recorded as an assumption because it is reversible: it changes only how agent
 pull requests are landed, not the stream's shape.
 
-**4. Should own-library consumer bumps keep flowing through Renovate once
-`wb deps propagate remote` exists?** Renovate's own-library automerge is
-currently the mechanism that keeps every consumer on the latest release, and it
-is the only thing that covers repositories nobody put in a stream. But once a
-stream publishes and bumps its members deliberately, Renovate becomes a second
-writer for the same edges, and the two can open competing pull requests for the
-same version.
-
-Recommendation: keep Renovate as the **safety net**, not the primary path, and
-give own-library groups a daily `automergeSchedule` window. Streams then own the
-fast path for work that is in flight, Renovate closes the gap for everything
-else within a day, and the two cannot race in the minutes after a publish. The
-alternative — making `propagate remote` the only path — would leave any consumer
-outside a stream silently behind, which is the failure this fleet has already
-had once.
+*(The former question 4 — whether own-library bumps keep flowing through
+Renovate — is **resolved**. Founder, 2026-09-03: "Yes, renovate should bump deps
+daily independently." It is now
+`renovate-bumps-daily-and-independently-of-streams` with its own acceptance
+criterion.)*
 
 Related policy item, deliberately **not** part of this feature: auto-tagging
 currently cuts a release tag for commits that touch only tests or documentation,
