@@ -11,6 +11,7 @@ import (
 const (
 	BuiltinGoPreCommit   = "builtin:go-pre-commit"
 	BuiltinGoPrePush     = "builtin:go-pre-push"
+	BuiltinNodePreCommit = "builtin:node-pre-commit"
 	BuiltinNodePrePush   = "builtin:node-pre-push"
 	BuiltinWorktreeGuard = "builtin:worktree-guard"
 	defaultProfileOrder  = 200
@@ -75,7 +76,8 @@ func builtinProfileDefinitions() map[string]ProfileDefinition {
 			Order:     100,
 			Detection: ProfileDetection{AllFiles: []string{"package.json"}},
 			Hooks: map[string]ResolvedHook{
-				"pre-push": builtinProfileHook("pre-push", BuiltinNodePrePush, "node"),
+				"pre-commit": builtinProfileHook("pre-commit", BuiltinNodePreCommit, "node"),
+				"pre-push":   builtinProfileHook("pre-push", BuiltinNodePrePush, "node"),
 			},
 		},
 		"worktree": {

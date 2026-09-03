@@ -27,6 +27,7 @@ func newHooksCmd() *cobra.Command {
 	cmd.AddCommand(newHooksRunCmd())
 	cmd.AddCommand(newHooksAgentCmd())
 	cmd.AddCommand(newHooksMetricsCmd())
+	cmd.AddCommand(newHooksMeasureCmd())
 	cmd.AddCommand(newHooksPushTierCmd())
 	return cmd
 }
@@ -450,6 +451,119 @@ func newHooksMetricsCmd() *cobra.Command {
 	cmd.Flags().IntVar(&days, "days", 14, "number of calendar days to chart")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable summary JSON")
 	return cmd
+}
+
+func newHooksMeasureCmd() *cobra.Command {
+	var (
+		configPath  string
+		metricsFile string
+		repository  string
+		days        int
+		jsonOut     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "measure [repository-path]",
+		Short: "Price the hook profiles and show what deferring to CI on a stream branch saved",
+		Long: `Report what each WB-managed hook profile actually costs, from the recorded
+events rather than from an estimate.
+
+  commit       formatting and static checks over the files changed in that
+               commit; it never runs a test suite
+  stream push  a push to a stream/<name> branch, which runs NO local
+               verification because CI on the stream pull request is the gate
+  other push   every other push, which runs the current full profile unchanged
+
+Each profile carries its measured budget: the slowest run actually observed, not
+a guess. The stream saving is the number of stream-branch pushes priced at the
+measured average cost of a non-stream push, and the basis is printed beside it
+so the arithmetic can be checked.
+
+Anything this window could not price is listed under "not measured", so a zero
+saving is never readable as "the stream profile saved nothing".
+
+Use 'wb hooks metrics' for the day-by-day chart; both views are built from the
+same recording.`,
+		Example: `wb hooks measure .
+wb hooks measure . --days 30 --json`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			policy, err := hooks.LoadPolicy(argumentOrCurrent(args), configPath)
+			if err != nil {
+				return err
+			}
+			if metricsFile == "" {
+				if _, err := hooks.ReplayPendingMetrics(argumentOrCurrent(args), configPath, projectsRoot); err != nil {
+					return err
+				}
+				metricsFile = policy.Metrics.Path
+			}
+			events, err := hooks.ReadEvents(metricsFile)
+			if err != nil {
+				return err
+			}
+			delta := hooks.Measure(events, days, repository, time.Now())
+			if jsonOut {
+				encoder := json.NewEncoder(cmd.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(delta)
+			}
+			return printHookProfileDelta(cmd, delta, metricsFile)
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "explicit hooks policy")
+	cmd.Flags().StringVar(&metricsFile, "file", "", "hook events JSONL file")
+	cmd.Flags().StringVar(&repository, "repo", "", "only repositories containing this text")
+	cmd.Flags().IntVar(&days, "days", 14, "number of calendar days to price")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the machine-readable profile delta")
+	setDiscoveryTerms(cmd, "hooks measure profile delta cost budget stream branch saving commit push duration")
+	return cmd
+}
+
+func printHookProfileDelta(cmd *cobra.Command, delta hooks.ProfileDelta, metricsFile string) error {
+	out := cmd.OutOrStdout()
+	if err := writeFormat(out, "Hook profile cost · %s through %s\n\n", delta.From, delta.Through); err != nil {
+		return err
+	}
+	if err := writeFormat(out, "%-14s %6s %9s %9s %9s %9s\n", "profile", "runs", "failures", "total ms", "avg ms", "budget ms"); err != nil {
+		return err
+	}
+	rows := []struct {
+		name string
+		cost hooks.ProfileCost
+	}{
+		{"commit", delta.Commit},
+		{"stream push", delta.StreamPush},
+		{"other push", delta.OtherPush},
+	}
+	for _, row := range rows {
+		if err := writeFormat(out, "%-14s %6d %9d %9d %9d %9d\n",
+			row.name, row.cost.Runs, row.cost.Failures, row.cost.TotalDurationMS,
+			row.cost.AverageDurationMS, row.cost.MaxDurationMS); err != nil {
+			return err
+		}
+	}
+	if err := writeFormat(out,
+		"\n%d push(es) to a stream branch ran no local verification, saving about %d ms at the measured %d ms average of a non-stream push.\n",
+		delta.SavedRuns, delta.SavedDurationMS, delta.SavedBasisMS); err != nil {
+		return err
+	}
+	if len(delta.Blocks) > 0 {
+		if err := writeLine(out, "\nper-block cost:"); err != nil {
+			return err
+		}
+		for _, block := range delta.Blocks {
+			if err := writeFormat(out, "  %-28s runs %4d  avg %6d ms  failures %d\n",
+				block.ID, block.Runs, block.AverageDurationMS, block.Failures); err != nil {
+				return err
+			}
+		}
+	}
+	for _, unmeasured := range delta.Unmeasured {
+		if err := writeFormat(out, "  ? not measured: %s\n", unmeasured); err != nil {
+			return err
+		}
+	}
+	return writeFormat(out, "\nsource: %s\n", metricsFile)
 }
 
 func printHookMetrics(cmd *cobra.Command, summary hooks.MetricsSummary, metricsFile string) error {

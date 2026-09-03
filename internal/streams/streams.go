@@ -25,6 +25,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/streambranch"
 )
 
 // SchemaVersion is the stream-state format this binary writes and the newest
@@ -35,8 +37,8 @@ const SchemaVersion = 1
 
 // BranchPrefix is the namespace every stream branch lives in. It is also what
 // the push hook keys its "CI on the stream pull request is the gate" decision
-// on, so it is exported rather than spelled out at each call site.
-const BranchPrefix = "stream/"
+// on, so the definition lives in the shared leaf package both sides import.
+const BranchPrefix = streambranch.Prefix
 
 // Phase is a stream's lifecycle position. It exists because a stream has a
 // state between "does not exist" and "usable": PhaseCreating names the window
@@ -275,13 +277,11 @@ type MemberLink struct {
 }
 
 // Branch renders the stream branch name for one stream name.
-func Branch(name string) string { return BranchPrefix + name }
+func Branch(name string) string { return streambranch.Name(name) }
 
 // IsStreamBranch reports whether a branch name — or a full `refs/heads/…` ref
 // — is inside the stream namespace.
-func IsStreamBranch(ref string) bool {
-	return strings.HasPrefix(strings.TrimPrefix(ref, "refs/heads/"), BranchPrefix)
-}
+func IsStreamBranch(ref string) bool { return streambranch.Is(ref) }
 
 // validName is the stream-name rule. It is deliberately the same shape as the
 // worktree task and remote-claim name rule, because a stream name is a task

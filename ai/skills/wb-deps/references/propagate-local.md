@@ -129,7 +129,7 @@ untracked link artefacts are gone.
 | what fired | do this |
 |---|---|
 | `link-not-recordable` — no open stream has **the consumer** as a member | `wb stream join <name> <owner/repository>` the consumer first, or pass `--stream <name>`. Membership is checked per consumer, not from the library: a stream holding the library does not make a link into some other worktree recordable. A link WB cannot record cannot be undone and is invisible to the merge guard, so it is refused **before** anything is written, and one unrecordable consumer stops the whole invocation. |
-| `wb worktree merge` / `wb pr land` refuses a linked worktree | run the exact `wb deps propagate local <library> --to <consumer> --undo` the refusal names |
+| one of the landing verbs refuses a linked worktree | run the exact `wb deps propagate local <library> --to <consumer> --undo` the refusal names |
 | the library publishes no discoverable identity | fix the library's `backend/go.mod` or `libs/**/package.json`; WB will not accept a supplied name as a substitute |
 | the frozen install failed | fix the consumer's lockfile (`pnpm install`, commit the lockfile) and re-run |
 | linking changed a tracked file | that is a defect — report it; a local link must never change tracked config |
