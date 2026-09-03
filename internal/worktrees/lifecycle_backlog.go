@@ -229,40 +229,76 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	return nil
 }
 
-func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string) ([]lifecycleBacklogRecord, error) {
+// LifecycleBacklogQuarantine is one durable cleanup record WB declined to act
+// on, and why. It is reported rather than swallowed: a record WB cannot read is
+// a record nobody will ever look at again unless something says it exists.
+type LifecycleBacklogQuarantine struct {
+	Path       string `json:"path"`
+	Task       string `json:"task,omitempty"`
+	Repository string `json:"repository,omitempty"`
+	Reason     string `json:"reason"`
+}
+
+func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot string, worktreesRoots []string, tasks map[string]bool, filter, disposition string) ([]lifecycleBacklogRecord, []LifecycleBacklogQuarantine, error) {
 	directory, err := openLifecycleBacklogDirectory(home, false)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ENOENT) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
+		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
 	defer func() { _ = directory.Close() }()
 	entries, err := directory.ReadDir(-1)
 	if err != nil {
-		return nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
+		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
 	allowedRoots := make(map[string]bool, len(worktreesRoots))
 	for _, root := range worktreesRoots {
 		allowedRoots[filepath.Clean(root)] = true
 	}
 	var records []lifecycleBacklogRecord
+	var quarantined []LifecycleBacklogQuarantine
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		var record lifecycleBacklogRecord
 		if err := readJSONAt(directory, entry.Name(), &record); err != nil {
-			return nil, fmt.Errorf("decode lifecycle backlog %s: %w", entry.Name(), err)
+			// A record this run will never act on must not be able to stop it.
+			// This directory is shared by every task on the machine — 292
+			// records on the workstation where this was found — and one
+			// unreadable file belonging to somebody else is not a reason to
+			// refuse a lane's own cleanup.
+			quarantined = append(quarantined, LifecycleBacklogQuarantine{
+				Path:   filepath.Join(lifecycleBacklogDirectory(home), entry.Name()),
+				Reason: fmt.Sprintf("decode: %v", err),
+			})
+			continue
 		}
-		if err := validateLifecycleBacklog(record); err != nil {
-			return nil, fmt.Errorf("validate lifecycle backlog %s: %w", entry.Name(), err)
-		}
+		// Selection before validation, deliberately. Validating every record in
+		// a shared directory made one invalid record — written for a different
+		// task, already complete, owing nothing — refuse every lane's cleanup
+		// on this machine. A record is this run's business only if it names
+		// this run's projects root, worktrees root, disposition, task and
+		// repository, and is not already finished.
 		if entry.Name() != record.ID+".json" || record.Stage == lifecycleStageComplete || record.Disposition != disposition ||
 			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) || !allowedRoots[filepath.Clean(record.WorktreesRoot)] {
 			continue
 		}
 		if !taskSelectionMatches(tasks, record.Task) || !filterMatches(filter, record.Repository) {
+			continue
+		}
+		if err := validateLifecycleBacklog(record); err != nil {
+			// Selected and invalid: this one IS this run's business, so it is
+			// named rather than silently skipped. It still does not abort the
+			// run — a record WB cannot validate is a record WB must not act on,
+			// and refusing everything else achieves nothing but a blocked fleet.
+			quarantined = append(quarantined, LifecycleBacklogQuarantine{
+				Path:       filepath.Join(lifecycleBacklogDirectory(home), entry.Name()),
+				Task:       record.Task,
+				Repository: record.Repository,
+				Reason:     err.Error(),
+			})
 			continue
 		}
 		switch record.Stage {
@@ -286,13 +322,13 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 					continue
 				}
 			} else if !errors.Is(statErr, os.ErrNotExist) {
-				return nil, fmt.Errorf("inspect lifecycle backlog worktree %s: %w", record.WorktreeDir, statErr)
+				return nil, nil, fmt.Errorf("inspect lifecycle backlog worktree %s: %w", record.WorktreeDir, statErr)
 			}
 			records = append(records, record)
 		}
 	}
 	sort.Slice(records, func(left, right int) bool { return records[left].ID < records[right].ID })
-	return records, nil
+	return records, quarantined, nil
 }
 
 // resumeLifecycleBacklog finishes the exact residual checkout and local-ref

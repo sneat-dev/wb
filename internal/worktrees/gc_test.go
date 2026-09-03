@@ -119,7 +119,10 @@ func TestGCClassifiesASquashMergedWorktreeRemovable(t *testing.T) {
 	})
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-squash-merged"},
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-squash-merged"},
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
 	if err != nil {
@@ -151,7 +154,10 @@ func TestGCApplyRetiresTheSquashMergedWorktreeAndKeepsTheWorkLog(t *testing.T) {
 	worklogs := filepath.Join(fixture.home, "worklogs")
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-apply-squash"}, Apply: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-apply-squash"}, Apply: true,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
 	if err != nil {
@@ -205,7 +211,10 @@ func TestGCKeepsDirtyAndOpenPullRequestCheckoutsWithOwnerAgeAndSanctionedCommand
 	// A TTL is what tells an abandoned worktree from a paused one, so the
 	// report must carry it beside the owner and the age.
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, TTL: time.Hour, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, TTL: time.Hour, SkipSizes: true,
 		Now: func() time.Time { return time.Now().Add(48 * time.Hour) },
 	})
 	if err != nil {
@@ -243,7 +252,10 @@ func TestGCInventoriesAndRetiresADetachedReviewCheckout(t *testing.T) {
 	})
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{reviewTask}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{reviewTask}, SkipSizes: true,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
 	if err != nil {
@@ -259,7 +271,8 @@ func TestGCInventoriesAndRetiresADetachedReviewCheckout(t *testing.T) {
 	_ = result
 
 	applied, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{reviewTask}, Apply: true, SkipSizes: true,
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{reviewTask}, Apply: true, SkipSizes: true,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
 	if err != nil {
@@ -288,7 +301,10 @@ func TestGCRefusesADetachedCheckoutWithNoLanding(t *testing.T) {
 	installPerCommitPullRequestFixture(t, nil, detachedHead)
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-detached-unknown"}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-detached-unknown"}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -321,7 +337,10 @@ func TestGCReportsLandedWithResidueAndRetiresItOnlyWithAllowResidue(t *testing.T
 	}, residualHead)
 
 	plan, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-residue"}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-residue"}, SkipSizes: true,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
 	if err != nil {
@@ -342,7 +361,8 @@ func TestGCReportsLandedWithResidueAndRetiresItOnlyWithAllowResidue(t *testing.T
 	}
 
 	widened, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-residue"},
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-residue"},
 		AllowResidue: true, Apply: true, SkipSizes: true,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
@@ -377,7 +397,10 @@ func TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath(t *testing.T) {
 	installPerCommitPullRequestFixture(t, nil, gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD"))
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-artefacts"}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-artefacts"}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -435,7 +458,10 @@ func TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape(t *testing.T
 	installPerCommitPullRequestFixture(t, nil, detachedHead)
 
 	plan, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -473,7 +499,8 @@ func TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape(t *testing.T
 		t.Fatal(err)
 	}
 	managedPlan, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-managed-abort"}, SkipSizes: true,
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-managed-abort"}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -509,7 +536,10 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 	installPerCommitPullRequestFixture(t, nil, head)
 
 	plan, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -552,7 +582,8 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 	// The checkout is clean now, so the next sweep classifies it on its own
 	// evidence and names a removal that Git itself would refuse if it were not.
 	clean, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -564,7 +595,8 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 	if cleanEntry.Eligible {
 		// Nothing left to name: gc itself retires it.
 		applied, applyErr := GC(context.Background(), GCOptions{
-			ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, Apply: true, SkipSizes: true,
+			SessionFreshness: DisableSessionFreshness,
+			ProjectsRoot:     fixture.projectsRoot, Tasks: []string{task}, Apply: true, SkipSizes: true,
 		})
 		if applyErr != nil {
 			t.Fatal(applyErr)
@@ -591,7 +623,8 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	managedPlan, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-dirty-managed"}, SkipSizes: true,
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-dirty-managed"}, SkipSizes: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -744,7 +777,10 @@ func TestGCNamesARepositoryHeldBackByTheGraceWindow(t *testing.T) {
 	})
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-grace"}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-grace"}, SkipSizes: true,
 		OlderThan: 24 * time.Hour,
 		Now:       func() time.Time { return mergedAt.Add(time.Hour) },
 	})
@@ -774,7 +810,10 @@ func TestGCDetachedReviewRowNamesTheEvidenceThatDecidedIt(t *testing.T) {
 	})
 
 	outcome, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
 		Now: func() time.Time { return mergedAt.Add(time.Hour) },
 	})
 	if err != nil {
@@ -798,4 +837,373 @@ func runGitTestOutput(t *testing.T, dir string, args ...string) string {
 		return ""
 	}
 	return string(output)
+}
+
+// S10: absence of a manifest and a manifest that will not read are different
+// facts, and only the second is a claim that the checkout is foreign.
+func TestWorktreeManagementSeparatesAbsentFromInvalid(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "management",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := worktreeManagement(created[0].WorktreeDir); got != ManagementManaged {
+		t.Fatalf("a WB-created checkout = %q, want managed", got)
+	}
+	bare := filepath.Join(t.TempDir(), "bare")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := worktreeManagement(bare); got != ManagementUnknown {
+		t.Fatalf("a checkout with no manifest = %q, want unknown", got)
+	}
+	manifest := filepath.Join(created[0].WorktreeDir, journalRootDirectory, journalLocalDirectory, manifestName)
+	if _, statErr := os.Stat(manifest); statErr != nil {
+		t.Fatalf("a created worktree must carry its manifest: %v", statErr)
+	}
+	if err := os.WriteFile(manifest, []byte("this: [is not: yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := worktreeManagement(created[0].WorktreeDir); got != ManagementUnmanaged {
+		t.Fatalf("a manifest that will not read = %q, want unmanaged", got)
+	}
+}
+
+// S11 and S12: the shell sweep is scoped to the tasks the run selected, and a
+// dry run says what an apply would do.
+func TestGCPlansEmptyShellsAndScopesThemToTheNamedTask(t *testing.T) {
+	fixture := newGitFixture(t)
+	worktreesRoot := filepath.Join(fixture.home, "worktrees")
+	for _, task := range []string{"gc-shell-named", "gc-shell-other"} {
+		if err := os.MkdirAll(filepath.Join(worktreesRoot, task, "acme", "app"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installPerCommitPullRequestFixture(t, nil)
+
+	plan, err := GC(context.Background(), GCOptions{
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-shell-named"}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Totals["eligible_shells"] != 1 {
+		t.Fatalf("a dry run must state the shells an apply would retire: %#v", plan.Totals)
+	}
+	for _, shell := range plan.Shells {
+		if shell.Task != "gc-shell-named" {
+			t.Fatalf("the shell sweep reached outside the named task: %#v", shell)
+		}
+		if shell.Applied {
+			t.Fatalf("a dry run retired a shell: %#v", shell)
+		}
+	}
+
+	applied, err := GC(context.Background(), GCOptions{
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-shell-named"}, Apply: true, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Totals["retired_shells"] != 1 {
+		t.Fatalf("apply did not retire the planned shell: %#v", applied.Totals)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktreesRoot, "gc-shell-named")); !os.IsNotExist(statErr) {
+		t.Fatalf("named task shell survived: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktreesRoot, "gc-shell-other")); statErr != nil {
+		t.Fatalf("a task the run did not select was swept anyway: %v", statErr)
+	}
+}
+
+// A live process id is not a heartbeat, and neither is the owner registration:
+// RecordCustody deduplicates on identity, so a lane can run four verbs and
+// advance nothing. Both mistakes were made in turn, and the second one nearly
+// deleted a working lane's checkout. Freshness is measured from what the lane
+// actually did.
+func TestGCMeasuresFreshnessFromActivityNotFromAProcessId(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-activity")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	if err := RecordCustody(result.WorktreeDir, "gc-activity", "test", AgentIdentity{
+		AgentID: "lane-a", Model: "unknown", PID: os.Getpid(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A lane that only READS — no commit, no edit, no Work Log write — stays
+	// live, because every wb invocation inside the checkout refreshes its
+	// heartbeat. This is the case the previous rule got wrong: it saw four
+	// verbs, one deduplicated owner record, and called a working lane recycled.
+	TouchHeartbeat(result.WorktreeDir, "wb worktree summary")
+	reading, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-activity"}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(3 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := entryFor(t, reading, "gc-activity"); entry.Class != GCClassClaimedLive || entry.Eligible {
+		t.Fatalf("a lane three hours into its work = %#v, want it kept", entry)
+	}
+
+	// Seven hours with no activity of any kind: the process id means nothing,
+	// the landing evidence decides, and the stale owner is named.
+	stale, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-activity"}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(7 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, stale, "gc-activity")
+	if entry.Class != GCClassLandedClean || !entry.Eligible {
+		t.Fatalf("a landed checkout untouched for seven hours = %#v", entry)
+	}
+	if len(entry.Warnings) == 0 || !strings.Contains(strings.Join(entry.Warnings, " "), "recycled") {
+		t.Fatalf("warnings = %#v, want the stale owner named", entry.Warnings)
+	}
+}
+
+// A lane that only edits files — no commits, no wb verbs — is working, and
+// removing its checkout would take that work away.
+func TestGCSeesAnEditedFileAsActivity(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-editing")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	// Age every other signal out of the window, then edit one file.
+	backdateTree(t, filepath.Join(result.WorktreeDir, journalRootDirectory), -9*time.Hour)
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "edited.go"), []byte("package app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "gc-editing", Activity: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Results) != 1 {
+		t.Fatalf("inventory = %#v", listed.Results)
+	}
+	if since := time.Since(listed.Results[0].LastActivityAt); since > time.Minute {
+		t.Fatalf("an edited file must register as activity: last activity was %s ago", since)
+	}
+	if !checkoutIsInUse(listed.Results[0], GCOptions{}, time.Now().Add(time.Minute)) {
+		t.Fatal("a checkout someone is editing is in use")
+	}
+	if checkoutIsInUse(listed.Results[0], GCOptions{}, time.Now().Add(9*time.Hour)) {
+		t.Fatal("nine hours after the last edit it is not")
+	}
+}
+
+// Zero disables the rule, exactly like --older-than 0.
+func TestGCSessionFreshnessZeroDisablesTheInUseRule(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-freshness-off")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	if err := RecordCustody(result.WorktreeDir, "gc-freshness-off", "test", AgentIdentity{
+		AgentID: "lane-a", Model: "unknown", PID: os.Getpid(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	TouchHeartbeat(result.WorktreeDir, "wb worktree summary")
+
+	outcome, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-freshness-off"}, SkipSizes: true,
+		SessionFreshness: DisableSessionFreshness,
+		Now:              func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := entryFor(t, outcome, "gc-freshness-off"); entry.Class == GCClassClaimedLive {
+		t.Fatalf("--session-freshness 0 must disable the rule: %#v", entry)
+	}
+}
+
+// The heartbeat is keyed to the directory the command ran in, so a lane's own
+// commands keep its checkout alive and a sweep run from elsewhere keeps nothing
+// alive.
+func TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "heartbeat-scope",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(created[0].WorktreeDir, "internal", "deep")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := worktreeRootOf(nested)
+	if err != nil || root != created[0].WorktreeDir {
+		t.Fatalf("worktreeRootOf(%s) = %q, %v", nested, root, err)
+	}
+	outside, err := worktreeRootOf(t.TempDir())
+	if err != nil || outside != "" {
+		t.Fatalf("a directory outside every worktree resolves to %q, %v", outside, err)
+	}
+
+	if before := HeartbeatAt(created[0].WorktreeDir); !before.IsZero() {
+		t.Fatalf("a fresh checkout has no heartbeat yet: %s", before)
+	}
+	TouchHeartbeat(created[0].WorktreeDir, "wb worktree info")
+	if at := HeartbeatAt(created[0].WorktreeDir); time.Since(at) > time.Minute {
+		t.Fatalf("heartbeat = %s", at)
+	}
+}
+
+func backdateTree(t *testing.T, path string, offset time.Duration) {
+	t.Helper()
+	at := time.Now().Add(offset)
+	if err := filepath.Walk(path, func(entry string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		_ = os.Chtimes(entry, at, at)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The first real sweep this verb ran found nine review checkouts it had proved
+// landed and then refused to retire, because the Work Log claim recorded the
+// branch the worktree was created on and a detached checkout has none. The
+// refusal told the operator to `git branch -m` a HEAD that is not on a branch.
+func TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-claimed-detached")
+	// Detach the worktree at its own head, the way a review checkout is left.
+	gitTest(t, result.WorktreeDir, "checkout", "--detach", head)
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+
+	outcome, err := GC(context.Background(), GCOptions{
+		// This test is about classification, not about the in-use rule: the
+		// fixture created its checkout moments ago, which is genuinely in use.
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-claimed-detached"}, Apply: true, SkipSizes: true,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, outcome, "gc-claimed-detached")
+	if entry.Class != GCClassDetachedReview || !entry.Applied {
+		t.Fatalf("entry = %#v, want a detached review checkout retired on its landing evidence", entry)
+	}
+	if entry.Error != "" {
+		t.Fatalf("a claim naming the branch the worktree was created on must not refuse a detached checkout: %s", entry.Error)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout survived: %v", statErr)
+	}
+}
+
+// The incident, as a test. A detached review checkout at a merged head, clean
+// tree, someone working in it right now: the round-1 sweep removed exactly this
+// while the reviewer was between rounds, and the round-2 guard did not cover it
+// because the checkout carries no owner registration for a guard keyed to one.
+func TestGCKeepsADetachedReviewCheckoutSomeoneIsUsing(t *testing.T) {
+	fixture, _, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-incident-source")
+	const task = "gc-incident-review"
+	reviewDir := filepath.Join(fixture.home, "worktrees", task, "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "--detach", reviewDir, head)
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 332, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	// Nobody registered an owner — a review checkout never does — and the
+	// reviewer is working in it right now.
+	TouchHeartbeat(reviewDir, "wb worktree list")
+
+	inUse, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, inUse, task)
+	if entry.Eligible || entry.Class != GCClassClaimedLive {
+		t.Fatalf("a checkout someone is using = %#v, want it kept whatever its landing evidence says", entry)
+	}
+	if entry.OwnerState == "active" {
+		t.Fatal("the fixture must have no live owner registration, or it does not reproduce the incident")
+	}
+
+	// Seven hours later nobody has touched it, and it retires normally.
+	abandoned, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(7 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if abandoned := entryFor(t, abandoned, task); !abandoned.Eligible || abandoned.Class != GCClassDetachedReview {
+		t.Fatalf("an untouched review checkout of a merged pull request = %#v, want it eligible", abandoned)
+	}
+}
+
+// A clock skew or a restored archive must not pin a checkout open forever while
+// reporting that it was used no time ago at all.
+func TestActivityIgnoresATimestampInTheFuture(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "future-mtime",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(72 * time.Hour)
+	path := filepath.Join(created[0].WorktreeDir, "from-the-future.txt")
+	if err := os.WriteFile(path, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+	backdateTree(t, filepath.Join(created[0].WorktreeDir, journalRootDirectory), -9*time.Hour)
+
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "future-mtime", Activity: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Results) != 1 {
+		t.Fatalf("inventory = %#v", listed.Results)
+	}
+	if listed.Results[0].LastActivityAt.After(time.Now().Add(2 * time.Minute)) {
+		t.Fatalf("a future timestamp was taken as activity: %s", listed.Results[0].LastActivityAt)
+	}
+}
+
+// A negative window is a mistake, and a silently inverted safety rule is the
+// worst possible response to one.
+func TestNegativeSessionFreshnessDisablesRatherThanInverts(t *testing.T) {
+	result := ListResult{LastActivityAt: time.Now()}
+	if checkoutIsInUse(result, GCOptions{SessionFreshness: -time.Hour}, time.Now()) {
+		t.Fatal("a negative window must disable the rule, not invert it")
+	}
+	if checkoutIsInUse(result, GCOptions{SessionFreshness: DisableSessionFreshness}, time.Now()) {
+		t.Fatal("the disable sentinel must disable the rule")
+	}
+	if !checkoutIsInUse(result, GCOptions{}, time.Now()) {
+		t.Fatal("an unset window keeps the safe default")
+	}
 }

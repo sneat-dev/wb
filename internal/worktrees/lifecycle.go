@@ -77,6 +77,9 @@ type ListOptions struct {
 	// pure reporting: nothing acts on it, and its purpose is that "this task
 	// has been finished for six days" is visible before the disk fills.
 	TTL time.Duration
+	// Activity asks the inventory to record LastActivityAt. Only a verb that
+	// decides whether a checkout may be removed needs it.
+	Activity bool
 	// ResidueEvidence asks the inventory to look for a landed ancestor when the
 	// head itself is not integrated. It costs up to ResidueDepth extra reads of
 	// GitHub's commit index per candidate, so it is opt-in: a fleet-wide sweep
@@ -304,6 +307,11 @@ type ListResult struct {
 	// HeadUnknownToRemote records that GitHub's commit index has never seen
 	// this head: the checkout holds work that was never pushed anywhere.
 	HeadUnknownToRemote bool `json:"head_unknown_to_remote,omitempty"`
+	// LastActivityAt is the newest sign that anyone is using this checkout:
+	// a heartbeat, an edited file, a Work Log event, or a commit. It is what
+	// "in use" is decided from, because a live process id is evidence about a
+	// process and the question is about a worktree.
+	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
 	// Landing is the commit-identity landing evidence for a head that is not
 	// itself contained in the target: the merged pull request of an ancestor,
 	// plus the local commits stacked on top of it. A squash merge produces
@@ -451,6 +459,9 @@ type CleanupOptions struct {
 	TTL time.Duration
 	// ResidueDepth bounds the commit-to-pull-request walk. See ListOptions.
 	ResidueDepth int
+	// Activity threads ListOptions.Activity, so a re-verification under the
+	// task lock asks the same question the plan asked.
+	Activity bool
 	// beforeCleanupLocks is a test-only seam before cleanup opens and locks
 	// task directories. It exercises substituted task hierarchy rejection.
 	beforeCleanupLocks func()
@@ -539,8 +550,13 @@ type CleanupOutcome struct {
 	// here. They are never part of the plan an operator approves: an empty
 	// retired stage and an inert retired lock are WB's own debris, and their
 	// removal is maintenance rather than a cleanup decision.
-	Purged   []PurgedArtefact         `json:"purged,omitempty"`
-	Recovery *InterruptedLockRecovery `json:"recovery,omitempty"`
+	Purged []PurgedArtefact `json:"purged,omitempty"`
+	// Quarantined names the durable cleanup records this run declined to act
+	// on. They are reported rather than swallowed, and they never abort the
+	// run: the backlog directory is shared by every task on the machine, and
+	// one record WB cannot validate must not refuse everybody else's cleanup.
+	Quarantined []LifecycleBacklogQuarantine `json:"quarantined,omitempty"`
+	Recovery    *InterruptedLockRecovery     `json:"recovery,omitempty"`
 }
 
 // InterruptedLockRecovery is durable operator-visible evidence for the one
@@ -957,6 +973,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		ttl:             options.TTL,
 		residueEvidence: options.ResidueEvidence,
 		residueDepth:    options.ResidueDepth,
+		activity:        options.Activity,
 		now:             options.Now,
 	}
 	for _, layout := range resolution.Read {
@@ -1009,6 +1026,7 @@ func cleanupInspectPolicy(options CleanupOptions) inspectPolicy {
 		ttl:             options.TTL,
 		residueEvidence: cleanupWantsResidueEvidence(options),
 		residueDepth:    options.ResidueDepth,
+		activity:        options.Activity,
 		now:             options.Now,
 	}
 }
@@ -1477,6 +1495,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		Workers:         normalized.Workers,
 		IncludeDetached: normalized.IncludeDetached,
 		TTL:             normalized.TTL,
+		Activity:        normalized.Activity,
 		ResidueEvidence: cleanupWantsResidueEvidence(normalized),
 		ResidueDepth:    normalized.ResidueDepth,
 		Now:             normalized.Now,
@@ -1512,7 +1531,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	for _, layout := range resolution.Read {
 		recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 	}
-	backlog, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, taskSelectionSet(normalized.Tasks), normalized.Filter, "removed")
+	backlog, backlogQuarantine, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, taskSelectionSet(normalized.Tasks), normalized.Filter, "removed")
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -1581,7 +1600,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
-	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts, Purged: listed.Purged, Recovery: recovery}
+	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts,
+		Purged: listed.Purged, Quarantined: backlogQuarantine, Recovery: recovery}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.
@@ -2498,6 +2518,10 @@ type inspectPolicy struct {
 	ttl time.Duration
 	// residueEvidence enables the commit-to-pull-request walk over ancestors.
 	residueEvidence bool
+	// activity asks the inventory to read the four in-use signals. It costs one
+	// extra local Git call per candidate, so only the verbs that decide whether
+	// a checkout may be removed ask for it.
+	activity bool
 	// residueDepth bounds that walk.
 	residueDepth int
 	now          func() time.Time
@@ -2615,6 +2639,9 @@ func inspectLifecycleWorktree(
 	}
 	result.Owners, result.OwnerState = owners, worktreeOwnerState(owners)
 	applyWorktreeAge(&result, worktree, policy)
+	if policy.activity {
+		result.LastActivityAt = LastActivity(ctx, result)
+	}
 	// The owner event is an append-only projection and may be absent after an
 	// interrupted creation. Prefer the immutable claim's session link when it
 	// exists so park can identify the intended member before attempting custody

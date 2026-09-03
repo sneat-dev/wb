@@ -7493,6 +7493,7 @@
                 "A matching immutable landed terminal and sealed outbox from wb worktree log finalize --apply authorize cleanup without either record being rewritten",
                 "Apply is bounded-parallel by canonical repository under --parallel; one Git writer per clone is preserved, a selected task failure is isolated, and the report stays in walk order regardless of completion order",
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
+                "The durable backlog directory is shared by every task on the machine, so a record is selected before it is validated: one unreadable or unvalidatable record belonging to another task can no longer refuse every lane's cleanup. A record this run IS responsible for and cannot validate is quarantined and named on the report rather than acted on or silently skipped",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
                 "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
                 "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
@@ -7592,6 +7593,16 @@
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
               "name": "TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_backlog_quarantine_test.go",
+              "name": "TestCleanupSurvivesAnInvalidBacklogRecordBelongingToAnotherTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/lifecycle_backlog_quarantine_test.go",
+              "name": "TestCleanupQuarantinesAnInvalidRecordItIsResponsibleFor",
               "kind": "integration"
             },
             {
@@ -8011,6 +8022,7 @@
                 "--parallel",
                 "--remote",
                 "--residue-depth",
+                "--session-freshness",
                 "--skip-detached",
                 "--skip-sizes",
                 "--superseded-by",
@@ -8028,8 +8040,9 @@
                 "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
                 "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
-                "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported, and an applying sweep retires the husks, so the debris gc's own advice creates is seen on the next sweep instead of accumulating",
-                "A live session outranks a landed head: a checkout whose owner is alive is kept and names wb worktree end, because landed work is more likely to be mid-next-round, not less",
+                "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
+                "The in-use guard applies to every checkout, including one with no owner registration at all — a review checkout, a git worktree add checkout, or one whose registering process exited — because those are exactly the checkouts a sweep removed while they were in use",
+                "In use is decided from four activity signals — a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit — and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
                 "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
                 "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
@@ -8138,6 +8151,56 @@
               "path": "internal/worktrees/gc_test.go",
               "name": "TestGCNamesARepositoryHeldBackByTheGraceWindow",
               "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCMeasuresFreshnessFromActivityNotFromAProcessId",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCKeepsADetachedReviewCheckoutSomeoneIsUsing",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestActivityIgnoresATimestampInTheFuture",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestNegativeSessionFreshnessDisablesRatherThanInverts",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCSeesAnEditedFileAsActivity",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCSessionFreshnessZeroDisablesTheInUseRule",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCPlansEmptyShellsAndScopesThemToTheNamedTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestWorktreeManagementSeparatesAbsentFromInvalid",
+              "kind": "unit"
             },
             {
               "path": "internal/diskusage/diskusage_test.go",
