@@ -471,8 +471,10 @@ claims and recorded membership, so the operator MUST NOT have to name them.
 Conflicts MUST be reported **per agent branch**, naming the branch, the agent
 that claimed it, and the conflicting paths; a conflict in one agent's branch
 MUST NOT abort the rebase of the others. Sync MUST refuse by default while an
-agent pull request is mid-review, and MUST offer an explicit flag to proceed
-with a warning, because rebasing a branch under review invalidates the review.
+agent branch is **mid-review** — an approval recorded for a patch-identity set
+that has not yet been absorbed — and MUST offer an explicit flag to proceed with
+a warning, because rebasing invalidates the review whenever it changes the
+patch-identity set.
 
 #### REQ: sync-is-idempotent-against-landed-bumps
 
@@ -794,7 +796,7 @@ tree.
 
 A batch **element** is exactly one of: one dependency-bump commit; one
 lockstep-versioned family applied together (Angular, Nx, Ionic, Capacitor,
-`@sneat/*`); or one agent pull request's squashed commit. The rebase onto a moved
+`@sneat/*`); or one absorbed agent branch's squashed commit. The rebase onto a moved
 `origin/main` is **not** an element — it cannot be reverted independently — and
 is instead the batch's *base*.
 
@@ -1094,11 +1096,19 @@ Four exceptions MUST be first-class rather than worked around:
 #### REQ: mechanical-bumps-are-not-reviewed
 
 A **mechanical bump** is a change whose diff touches **only** dependency
-manifests and lockfiles — `go.mod`, `go.sum`, `package.json` dependency fields,
-`pnpm-lock.yaml`, `pnpm-workspace.yaml`. A mechanical bump MUST NOT be reviewed:
-its gate is the batch verification, where green lands and red is resolved by
-prefix re-apply, and
-`wb pr land` MUST skip the review-ledger check for it.
+manifests and lockfiles, and whose changed lines are all dependency edits.
+Presence in a manifest is necessary and never sufficient: `package.json` also
+carries the `scripts` CI runs and the `overrides`/`resolutions` that rewrite what
+the resolver produces for every other package, and `go.mod` carries `replace`
+and the `go` directive. The classification MUST read the diff's **content**, and
+anything that rewrites the graph or changes how the module is built is NOT
+mechanical however much the line resembles a version.
+
+A mechanical bump MUST NOT be reviewed: its gate is the batch verification,
+where green lands and red is resolved by prefix re-apply. **Both** landing gates
+skip the review-ledger check for it — `wb stream absorb`, which is where stream
+work is gated (`review-pins-a-local-head`), and `wb pr land`, which gates pull
+requests whose base is `main`.
 
 The classification MUST be decided **from the diff**, by wb, and never from the
 pull request's title, author or labels. Any source, test or configuration file in
@@ -1713,7 +1723,7 @@ with `--keep-commits` and no `--reason` is refused with the refusal naming
 
 ### AC: agent-work-lands-as-one-commit-each
 
-**Requirements:** dependency-streams#req:agent-branches-squash-into-the-stream, dependency-streams#req:upstream-bumps-are-one-commit-each
+**Requirements:** dependency-streams#req:agent-work-is-absorbed-locally, dependency-streams#req:upstream-bumps-are-one-commit-each
 
 **Given** two agents each with a reviewed pull request against `stream/<name>`,
 one containing five intermediate commits and neither using `--keep-commits`, and
@@ -1777,26 +1787,28 @@ second
 (wait, or join it); and the push refuses on a failed `--force-with-lease` naming
 the recorded and actual heads, without discarding the other agent's commit.
 
-### AC: sync-refuses-while-a-pr-is-mid-review
+### AC: sync-refuses-while-a-review-is-outstanding
 
-**Requirements:** dependency-streams#req:sync-rebases-and-never-merges
+**Requirements:** dependency-streams#req:sync-rebases-and-never-merges, dependency-streams#req:review-pins-a-local-head
 
-**Given** an agent pull request against the stream branch that is under review
+**Given** an agent branch with a recorded `APPROVE` for a patch-identity set
+that has not been absorbed yet
 **When** the operator runs `wb stream sync`
-**Then** WB refuses by default, names the pull request and its reviewer state,
-and proceeds only under an explicit flag, emitting a warning that the review was
-invalidated.
+**Then** WB refuses by default, names the branch, its reviewer and the
+outstanding approval, and proceeds only under an explicit flag, emitting a
+warning that the review is invalidated if the rebase changes the patch-identity
+set.
 
-### AC: misrouted-agent-pr-is-reported-not-merged
+### AC: a-stream-worktree-is-absorbed-not-pull-requested
 
-**Requirements:** dependency-streams#req:never-merge-commit-a-stream-branch
+**Requirements:** dependency-streams#req:never-merge-commit-a-stream-branch, dependency-streams#req:agent-work-is-absorbed-locally
 
-**Given** an agent worktree of an open stream whose pull request was opened
-against `main` by mistake
-**When** the operator runs `wb worktree merge --route auto`
-**Then** WB routes stream agent worktrees to the stream branch, reports the
-misrouted pull request and the stream branch it belongs to, and does not merge
-it as part of stream work.
+**Given** an agent worktree of an open stream, and separately one whose pull
+request was opened against `main` by mistake before the local model applied
+**When** the operator runs `wb worktree merge --route auto` on each
+**Then** the first is absorbed into the stream branch locally with no pull
+request opened; the second is reported as misrouted, naming the stream it
+belongs to, and is not merged as part of stream work.
 
 ### AC: landing-is-linear-and-granular-with-one-deploy
 
@@ -1932,7 +1944,7 @@ refuses to report success while any link remains.
 
 **Requirements:** dependency-streams#req:every-verb-appends-a-structured-event
 
-**Given** a stream in which sync, a local link, an agent PR landing and a
+**Given** a stream in which sync, a local link, an agent branch absorption and a
 release have all run
 **When** the operator inspects the stream's event log
 **Then** each verb has appended exactly one JSONL event carrying its `ts`,

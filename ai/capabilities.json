@@ -3951,7 +3951,9 @@
                 "The head SHA is sent as a merge lease, so a branch that moved after its checks were observed is refused by GitHub itself rather than landed unverified",
                 "Squash is the default and the message is built: the subject is the pull request title, and the body carries the summary, one line per source commit, the pull request number and the review reference",
                 "--keep-commits with a mandatory --reason rebuilds the branch so the named commits land as their own, in order, with the rest aggregated; each kept commit must build on its own or the landing is refused naming a smaller set",
-                "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, pnpm.overrides never counts, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
+                "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
+                "Nothing that rewrites the resolved graph is ever mechanical, in any manifest: overrides, resolutions, packageExtensions, patchedDependencies and catalogs in package.json or pnpm-workspace.yaml, and replace, exclude, go or toolchain in go.mod. The enclosing section is read from the hunk's context lines AND from the @@ header, where Git puts it when the hunk shows no section line of its own",
+                "The live-link refusal runs whatever --keep says — --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed — and a stream WB cannot read stops the landing rather than being reported as no link",
                 "On the declared landing surface with the wb.dev/landing-guard annotation, addressed by pull request: every open stream worktree of the repository is checked for a live local link BEFORE any GitHub call, because a refusal that has to reach the network first fails differently when the network does",
                 "Cleanup is pre-flighted before the merge: a dirty worktree or one holding a live local dependency link refuses the landing while refusing is still free, naming wb worktree end or --keep, because discovering it afterwards leaves the landing done and the tidy-up impossible",
                 "Every invocation writes exactly one stream event — success, findings or refusal, and including --keep — carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
@@ -4046,6 +4048,16 @@
             {
               "path": "internal/orchestrate/pr_land_test.go",
               "name": "TestLandWithoutKeepSaysWhenNoWorktreeMatched",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRetiresTheWorktreeThatProducedTheBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandReportsAFindingWhenTheWorktreeCannotBeRetired",
               "kind": "integration"
             },
             {

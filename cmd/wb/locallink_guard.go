@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
 )
 
@@ -170,12 +173,29 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 	if err != nil {
 		return err
 	}
-	stream, found, _, err := store.RepositoryStream(repository)
+	stream, found, unreadable, err := store.RepositoryStream(repository)
 	if err != nil {
 		return err
 	}
+	if len(unreadable) > 0 {
+		// A stream WB cannot read might be the one holding a live link to this
+		// repository. "I could not tell" must not be spelled the same way as
+		// "there is no link", so the guard says what it could not read and
+		// stops — the same rule refuseLinkedWorktrees applies to a store it
+		// cannot open.
+		names := make([]string, 0, len(unreadable))
+		for _, entry := range unreadable {
+			names = append(names, entry.Name+" ("+entry.Reason+")")
+		}
+		return &exitError{code: exitUsage, message: "cannot tell whether " + repository +
+			" holds a live local link: these streams are unreadable — " + strings.Join(names, "; ") +
+			"; fix or remove them, then rerun"}
+	}
 	if !found {
-		return nil
+		// Outside every stream a hand-written go.work is still a live link, and
+		// it is the signal stream state cannot see. Guard every WB worktree of
+		// this repository directly.
+		return refuseLinkedWorktreesOfRepository(repository)
 	}
 	worktrees := make([]string, 0, len(stream.Members))
 	for _, member := range stream.Members {
@@ -184,4 +204,29 @@ func refuseLinkedRepositoryWorktrees(repository string) error {
 		}
 	}
 	return refuseLinkedWorktrees(worktrees)
+}
+
+// refuseLinkedWorktreesOfRepository guards a repository that belongs to no
+// stream.
+//
+// The two link signals are independent: stream state would miss a hand-written
+// `go.work`, and `go.work` would miss an npm link. A repository outside every
+// stream has no stream state at all, so the second signal is the only one
+// there is — and skipping the guard because the first is empty is exactly the
+// "I could not tell" spelled as "there is no link" that this file opens by
+// forbidding.
+func refuseLinkedWorktreesOfRepository(repository string) error {
+	listed, err := worktrees.ListWithDiagnostics(context.Background(), worktrees.ListOptions{
+		ProjectsRoot: projectsRoot,
+	})
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, 4)
+	for _, entry := range listed.Results {
+		if entry.Repository == repository {
+			paths = append(paths, entry.WorktreeDir)
+		}
+	}
+	return refuseLinkedWorktrees(paths)
 }

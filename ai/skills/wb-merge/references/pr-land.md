@@ -80,9 +80,14 @@ never from the title, author or labels:
 
 - `package.json` counts only when **every changed line** is a dependency entry
   inside `dependencies`, `devDependencies`, `peerDependencies` or
-  `optionalDependencies`. A `scripts` edit is a change to what CI runs; a
-  `pnpm.overrides` edit rewrites the resolved graph for every package in the
-  workspace. Neither is a version bump, and neither lands unreviewed.
+  `optionalDependencies`. A `scripts` edit is a change to what CI runs.
+- **Nothing that rewrites the graph is ever mechanical**, however much the line
+  looks like a version: `overrides`, `resolutions`, `packageExtensions`,
+  `patchedDependencies`, `catalog`/`catalogs` in `package.json` or
+  `pnpm-workspace.yaml`, and `replace`, `exclude`, `go` or `toolchain` in
+  `go.mod`. `"semver": "7.6.0"` inside `overrides` reads exactly like the same
+  line inside `dependencies` and means something entirely different: every
+  package in the workspace that asked for any other semver now gets this one.
 - a manifest under `testdata/`, `docs/`, `examples/` or `fixtures/` is a
   fixture, so it is code.
 - `go.mod`, `go.sum` and the lockfiles are mechanical **only when they are the
@@ -114,6 +119,12 @@ file is not mechanical, and is refused until a review is recorded.
 when an open stream worktree of the repository still builds against an
 unpublished tree. Landing then would publish a commit whose CI ran against
 something the registry never carried.
+
+The live-link check runs **whatever `--keep` says**: `--keep` opts out of
+retiring the worktree, not out of the rule that a worktree building against an
+unpublished tree must not be landed. And when WB cannot read a stream at all, it
+says so and stops rather than reporting no link — "I could not tell" must never
+be spelled the same way as "there is none".
 
 Both of those are checked **before** the merge, while refusing is still free.
 Discovering afterwards that the checkout cannot be retired leaves the landing
