@@ -120,6 +120,13 @@ const landingGuardAnnotation = "wb.dev/landing-guard"
 const (
 	landingGuardByWorktree = "worktree"
 	landingGuardByReceipt  = "receipt"
+	// landingGuardByPullRequest addresses a landing by `owner/repository#N`.
+	// The worktrees to guard are every open stream member of that repository:
+	// landing a pull request while the stream's checkout still builds against
+	// an unpublished tree publishes a commit whose CI ran against something the
+	// registry never carried, which is the same defect the other two modes
+	// guard, arriving through a different door.
+	landingGuardByPullRequest = "pull-request"
 )
 
 // markLandingGuard declares that a command must refuse a live local link.
@@ -149,4 +156,32 @@ var landingSurface = map[string]string{
 	"wb worktree merge prepare": landingGuardByWorktree,
 	"wb worktree merge land":    landingGuardByReceipt,
 	"wb worktree merge resume":  landingGuardByReceipt,
+	"wb pr land":                landingGuardByPullRequest,
+}
+
+// refuseLinkedRepositoryWorktrees is the pull-request entry point.
+//
+// A landing addressed by `owner/repository#N` names no worktree, so the guard
+// resolves them from the open streams that hold this repository. It runs before
+// any GitHub call: a refusal that has to reach the network first is a refusal
+// that fails differently when the network does.
+func refuseLinkedRepositoryWorktrees(repository string) error {
+	store, err := streams.Open(projectsRoot)
+	if err != nil {
+		return err
+	}
+	stream, found, _, err := store.RepositoryStream(repository)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	worktrees := make([]string, 0, len(stream.Members))
+	for _, member := range stream.Members {
+		if member.Repository == repository && member.Worktree != "" {
+			worktrees = append(worktrees, member.Worktree)
+		}
+	}
+	return refuseLinkedWorktrees(worktrees)
 }

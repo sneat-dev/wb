@@ -3952,6 +3952,7 @@
                 "Squash is the default and the message is built: the subject is the pull request title, and the body carries the summary, one line per source commit, the pull request number and the review reference",
                 "--keep-commits with a mandatory --reason rebuilds the branch so the named commits land as their own, in order, with the rest aggregated; each kept commit must build on its own or the landing is refused naming a smaller set",
                 "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, pnpm.overrides never counts, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
+                "On the declared landing surface with the wb.dev/landing-guard annotation, addressed by pull request: every open stream worktree of the repository is checked for a live local link BEFORE any GitHub call, because a refusal that has to reach the network first fails differently when the network does",
                 "Cleanup is pre-flighted before the merge: a dirty worktree or one holding a live local dependency link refuses the landing while refusing is still free, naming wb worktree end or --keep, because discovering it afterwards leaves the landing done and the tidy-up impossible",
                 "Every invocation writes exactly one stream event — success, findings or refusal, and including --keep — carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
                 "Keeping commits separate re-observes the REWRITTEN head's own checks before merging, and is refused on a target with no required status check unless --allow-unfenced is explicit, because the checks observed before the rewrite describe content that no longer exists",
@@ -4061,6 +4062,11 @@
               "path": "cmd/wb/pr_test.go",
               "name": "TestPRLandSelectorAcceptsEveryFormAnOperatorHolds",
               "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/deps_propagate_test.go",
+              "name": "TestEveryLandingVerbRefusesALiveLink",
+              "kind": "integration"
             }
           ],
           "limitation": null

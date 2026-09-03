@@ -290,8 +290,16 @@ func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
 	}
 	for path, addressing := range guarded {
 		argument := worktree
-		if addressing == landingGuardByReceipt {
+		switch addressing {
+		case landingGuardByReceipt:
 			argument = receipt
+		case landingGuardByPullRequest:
+			// A pull-request landing names no worktree, so the guard resolves
+			// them from the open stream that holds the repository. The stream
+			// created above holds acme/app, so this refuses without any
+			// network call — which is the point: a guard that has to reach
+			// GitHub first fails differently when GitHub does.
+			argument = "acme/app#1"
 		}
 		invocation := append(strings.Fields(strings.TrimPrefix(path, "wb ")), argument, "--non-interactive")
 		var stdout, stderr bytes.Buffer
