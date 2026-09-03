@@ -65,7 +65,9 @@ func TestEndRefusesWhileALinkIsLive(t *testing.T) {
 func TestEndRefusesUnabsorbedWork(t *testing.T) {
 	engine, git, _, worktrees, stream := startedStream(t, "unabsorbed", "acme/library")
 	member := stream.Members[0]
-	git.notIn[member.Worktree+" stream/unabsorbed origin/main"] = []string{"feat: not landed anywhere"}
+	git.notIn[member.Worktree+" stream/unabsorbed origin/main"] = []Commit{
+		{SHA: "35c480ed6e1e718a910d8aa617c4da94dd47557a", Subject: "feat: not landed anywhere", PatchID: "aa11"},
+	}
 	_, err := engine.End(context.Background(), EndOptions{Name: "unabsorbed", Apply: true})
 	refusal, refused := Refused(err)
 	if !refused || refusal.Code != RefusalUnabsorbedWork {

@@ -18,6 +18,18 @@ type EndOptions struct {
 	// silent retarget is the hazard this verb exists to prevent and doing it
 	// deliberately must be an explicit choice.
 	Retarget bool
+	// ForceUnabsorbed proceeds past the absorption guard. It is not a bypass
+	// that hides anything: it requires Reason, records both in the event log,
+	// and names every commit it is stepping over. Without it, an absorption
+	// check WB could not run refuses — a check that cannot answer must not
+	// pass.
+	ForceUnabsorbed bool
+	// Reason is mandatory with ForceUnabsorbed and is recorded verbatim.
+	Reason string
+	// KeepRemoteBranch leaves origin/stream/<name> in place. By default end
+	// deletes it, because leaving it is scaffolding the verb claims to
+	// remove.
+	KeepRemoteBranch bool
 }
 
 // EndResult is what `stream end` did, or would do.
@@ -29,12 +41,19 @@ type EndResult struct {
 	// request that targeted a stream branch.
 	AgentPullRequests []AgentPullRequestOutcome `json:"agent_pull_requests"`
 	Errors            []string                  `json:"errors,omitempty"`
+	// Forced names every finding `--force-unabsorbed` stepped over, and
+	// ForcedReason the operator's recorded justification. Both are also
+	// written to the event log, so the decision is auditable after the fact.
+	Forced       []string `json:"forced,omitempty"`
+	ForcedReason string   `json:"forced_reason,omitempty"`
 }
 
 // EndMemberResult is one member's retirement.
 type EndMemberResult struct {
 	Repository string `json:"repository"`
 	Worktree   string `json:"worktree"`
+	// RemoteBranchDeleted records that origin/stream/<name> is gone.
+	RemoteBranchDeleted bool `json:"remote_branch_deleted"`
 	// WorktreeRemoved is true when the existing cleanup path retired it.
 	WorktreeRemoved bool `json:"worktree_removed"`
 	// LeaseReleased is true when the stream lease record was cleared.
@@ -70,9 +89,18 @@ type AgentPullRequestOutcome struct {
 //
 // Ending publishes, bumps and merges nothing.
 //
-// Implements: dependency-streams#req:stream-end-restores-published-state,
-// dependency-streams#req:stream-end-proves-absorption-and-removes-its-own-scaffolding,
+// Implements: dependency-streams#req:stream-end-proves-absorption-and-removes-its-own-scaffolding,
 // dependency-streams#req:stream-end-removes-every-stream-worktree.
+//
+// `stream-end-restores-published-state` is only PARTLY implemented here. The
+// REQ says end must remove every live link before delegating worktree removal;
+// this verb refuses while one remains and names the exact command per link,
+// which is a guard rather than the removal. Removing them inside `end` needs
+// the local-link verb that lands in the propagate-local row — calling it from
+// here would be a forward dependency on code this row does not contain. Until
+// then, `one-verb-per-operation` is satisfied only for the refusal, and the
+// operator still chains the undos by hand. That gap is deliberate and tracked,
+// not an oversight.
 func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, error) {
 	stream, err := engine.Store.Load(options.Name)
 	if err != nil {
@@ -94,25 +122,75 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 		}
 	}
 
-	var unabsorbed []string
+	// The absorption guard FAILS CLOSED. A comparison that could not run —
+	// a stale or missing origin/<base>, a removed worktree, a timeout — is an
+	// unknown, and an unknown must refuse rather than pass. This is the same
+	// rule preflight already applies; before this fix an error here fell
+	// through and the member's agent pull requests were closed and its
+	// worktree removed on the strength of a check that never answered.
+	var unabsorbed, unknown []string
 	for _, member := range stream.Members {
-		subjects, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", member.Repository, err))
+		if member.Worktree == "" {
+			// A member reserved but never published has nothing to absorb.
 			continue
 		}
-		if len(subjects) == 0 {
+		// Re-read origin first: a day-old clone would report work as
+		// unabsorbed that the base already carries, and would refuse an end
+		// that should succeed.
+		if fetchErr := engine.Git.Fetch(ctx, member.Worktree); fetchErr != nil {
+			unknown = append(unknown, fmt.Sprintf("%s: could not re-read origin: %s", member.Repository, RedactString(fetchErr.Error())))
+			continue
+		}
+		commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
+		if err != nil {
+			unknown = append(unknown, fmt.Sprintf("%s: %s", member.Repository, RedactString(err.Error())))
+			continue
+		}
+		if len(commits) == 0 {
 			continue
 		}
 		unabsorbed = append(unabsorbed, fmt.Sprintf("%s has %d commit(s) origin/%s has not absorbed: %s",
-			member.Repository, len(subjects), member.Base, strings.Join(collapsePatchIdenticalSubjects(subjects), "; ")))
+			member.Repository, len(commits), member.Base, strings.Join(collapsePatchIdentical(commits), "; ")))
 	}
-	if len(unabsorbed) > 0 {
+	if len(unknown) > 0 && !options.ForceUnabsorbed {
 		return result, &Refusal{
-			Code:       RefusalUnabsorbedWork,
-			Message:    "stream " + stream.Name + " carries work the base has not absorbed: " + strings.Join(unabsorbed, " | "),
-			Sanctioned: []string{"wb stream status " + stream.Name, "wb worktree merge <worktree> --route auto"},
+			Code: RefusalUnabsorbedWork,
+			Message: "the absorption check could not run for every member, so `end` cannot prove their work landed: " +
+				strings.Join(unknown, " | "),
+			Sanctioned: []string{
+				"wb stream status " + stream.Name,
+				"wb stream end " + stream.Name + " --apply (retry once origin is reachable)",
+				"wb stream end " + stream.Name + " --apply --force-unabsorbed --reason \"<why>\"",
+			},
 		}
+	}
+	if len(unabsorbed) > 0 && !options.ForceUnabsorbed {
+		return result, &Refusal{
+			Code:    RefusalUnabsorbedWork,
+			Message: "stream " + stream.Name + " carries work the base has not absorbed: " + strings.Join(unabsorbed, " | "),
+			Sanctioned: []string{
+				"wb stream status " + stream.Name,
+				"wb worktree merge <worktree> --route auto",
+				"wb stream end " + stream.Name + " --apply --force-unabsorbed --reason \"<why>\"",
+			},
+		}
+	}
+	if options.ForceUnabsorbed && (len(unabsorbed) > 0 || len(unknown) > 0) {
+		if strings.TrimSpace(options.Reason) == "" {
+			return result, &Refusal{
+				Code:       RefusalUsage,
+				Message:    "--force-unabsorbed requires --reason so stepping over the absorption guard is auditable",
+				Sanctioned: []string{"wb stream end " + stream.Name + " --apply --force-unabsorbed --reason \"<why>\""},
+			}
+		}
+		result.Forced = append(append([]string(nil), unabsorbed...), unknown...)
+		result.ForcedReason = options.Reason
+		engine.record(stream.Name, Event{
+			Stream: stream.Name, Verb: "stream end", Phase: "absorption", Outcome: "findings",
+			RefusalCode: RefusalUnabsorbedWork,
+			Detail:      "forced past the absorption guard: " + options.Reason,
+			Evidence:    map[string]string{"stepped_over": strings.Join(result.Forced, " | ")},
+		})
 	}
 
 	for _, member := range stream.Members {
@@ -124,10 +202,22 @@ func (engine *Engine) End(ctx context.Context, options EndOptions) (EndResult, e
 		return result, nil
 	}
 	ended := engine.now()
+	// The lease is cleared only for members whose retirement actually
+	// completed. Clearing every lease unconditionally made the report's
+	// LeaseReleased:false contradict the state it described.
+	released := map[string]bool{}
+	for _, member := range result.Members {
+		if member.LeaseReleased {
+			released[strings.ToLower(member.Repository)] = true
+		}
+	}
 	if _, err := engine.Store.Update(stream.Name, func(current *Stream) error {
 		current.EndedAt = &ended
+		current.Phase = PhaseEnded
 		for index := range current.Members {
-			current.Members[index].Lease = Lease{}
+			if released[strings.ToLower(current.Members[index].Repository)] {
+				current.Members[index].Lease = Lease{}
+			}
 		}
 		return nil
 	}); err != nil {
@@ -147,7 +237,7 @@ func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOp
 	if err != nil {
 		return []AgentPullRequestOutcome{{
 			Repository: member.Repository, Action: "unknown",
-			Detail: "could not enumerate pull requests targeting " + member.Branch + ": " + err.Error(),
+			Detail: "could not enumerate pull requests targeting " + member.Branch + ": " + RedactString(err.Error()),
 		}}
 	}
 	outcomes := make([]AgentPullRequestOutcome, 0, len(pullRequests))
@@ -162,17 +252,21 @@ func (engine *Engine) retireAgentPullRequests(ctx context.Context, options EndOp
 		case !options.Apply:
 			outcome.Action = "would-close"
 		case options.Retarget:
-			outcome.Action = "retargeted"
-			outcome.Detail = "onto " + member.Base
+			// The action is written only after the port has re-read the pull
+			// request and confirmed the new base. An exit code is not
+			// evidence the effect landed.
 			if err := engine.GitHub.RetargetPullRequest(ctx, member.Worktree, pullRequest.Number, member.Base); err != nil {
-				outcome.Action, outcome.Detail = "failed", err.Error()
+				outcome.Action, outcome.Detail = "failed", RedactString(err.Error())
+			} else {
+				outcome.Action, outcome.Detail = "retargeted", "onto "+member.Base
 			}
 		default:
-			outcome.Action = "closed"
 			comment := "Closed by `wb stream end " + member.Branch + "`: the stream branch is being retired. " +
 				"Reopen against " + member.Base + " if this work is still wanted."
 			if err := engine.GitHub.ClosePullRequest(ctx, member.Worktree, pullRequest.Number, comment); err != nil {
-				outcome.Action, outcome.Detail = "failed", err.Error()
+				outcome.Action, outcome.Detail = "failed", RedactString(err.Error())
+			} else {
+				outcome.Action = "closed"
 			}
 		}
 		outcomes = append(outcomes, outcome)
@@ -191,17 +285,38 @@ func (engine *Engine) retireMember(ctx context.Context, options EndOptions, name
 	case !options.Apply:
 		result.DraftAction = "would-close"
 	default:
-		result.DraftAction = "closed"
 		comment := "Closed by `wb stream end " + name + "`: the stream is ending. Ending a stream publishes, bumps and merges nothing."
 		if err := engine.GitHub.ClosePullRequest(ctx, member.Worktree, member.PullRequest, comment); err != nil {
-			result.DraftAction, result.Detail = "failed", err.Error()
+			result.DraftAction, result.Detail = "failed", RedactString(err.Error())
+		} else {
+			result.DraftAction = "closed"
 		}
 	}
 	if !options.Apply {
 		return result
 	}
+	if member.Worktree == "" {
+		// A member reserved but never published has no checkout to retire;
+		// its lease is still released, which is the whole point of being able
+		// to end a `creating` stream.
+		result.LeaseReleased = true
+		return result
+	}
+	// The remote stream branch goes before the local checkout: once the
+	// worktree is gone there is no directory left to run the deletion from.
+	// Deleting it is what makes "removes its own scaffolding" true of the
+	// remote as well — and it is why the agent pull requests above had to be
+	// closed or retargeted first, since GitHub silently retargets any that
+	// are still open onto the base.
+	if !options.KeepRemoteBranch {
+		if err := engine.Git.DeleteRemoteBranch(ctx, member.Worktree, member.Branch); err != nil {
+			result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))
+		} else {
+			result.RemoteBranchDeleted = true
+		}
+	}
 	if err := engine.Worktrees.Remove(ctx, name, member.Repository, member.Worktree); err != nil {
-		result.Detail = strings.TrimSpace(result.Detail + " " + err.Error())
+		result.Detail = strings.TrimSpace(result.Detail + " " + RedactString(err.Error()))
 		return result
 	}
 	result.WorktreeRemoved = true

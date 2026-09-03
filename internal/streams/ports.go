@@ -25,11 +25,12 @@ type Git interface {
 	RemoteHead(ctx context.Context, dir, branch string) (sha string, ok bool, err error)
 	// LocalHead resolves the worktree's HEAD.
 	LocalHead(ctx context.Context, dir string) (string, error)
-	// CommitsNotIn lists the subjects of commits on branch that are not
-	// reachable from base, by patch identity rather than by SHA — a rebase
-	// landing rewrites SHAs, so an ancestry test would refuse every landed
-	// stream forever.
-	CommitsNotIn(ctx context.Context, dir, branch, base string) ([]string, error)
+	// CommitsNotIn lists the commits on branch whose patch base does not
+	// already carry, by patch identity rather than by SHA — a rebase landing
+	// rewrites SHAs, so an ancestry test would refuse every landed stream
+	// forever. Each commit carries its `git patch-id --stable`, which is what
+	// clusters N branches carrying one body of work into one item.
+	CommitsNotIn(ctx context.Context, dir, branch, base string) ([]Commit, error)
 	// DirtyPaths lists modified or untracked paths in a worktree.
 	DirtyPaths(ctx context.Context, dir string) ([]string, error)
 	// Tags lists tags matching a glob pattern, newest version first.
@@ -37,6 +38,10 @@ type Git interface {
 	// LogSubjects lists the subjects of commits in the exclusive range
 	// from..to. An empty from means "every commit reachable from to".
 	LogSubjects(ctx context.Context, dir, from, to string) ([]string, error)
+	// DeleteRemoteBranch removes a branch from origin and verifies it is
+	// gone, so "removes its own scaffolding" covers the remote as well as the
+	// local checkout.
+	DeleteRemoteBranch(ctx context.Context, dir, branch string) error
 }
 
 // PullRequest is the subset of a pull request stream verbs read.
@@ -67,6 +72,10 @@ type GitHub interface {
 	ClosePullRequest(ctx context.Context, dir string, number int, comment string) error
 	// RetargetPullRequest moves one pull request onto a new base.
 	RetargetPullRequest(ctx context.Context, dir string, number int, base string) error
+	// PullRequest re-reads one pull request by number, reporting found=false
+	// when it does not resolve. It is what makes a close or a retarget an
+	// asserted effect rather than a trusted exit code.
+	PullRequest(ctx context.Context, dir string, number int) (PullRequest, bool, error)
 	// DefaultBranchStatus reports the conclusion of the most recent
 	// completed CI run on the repository's default branch: "success",
 	// "failure", or "" when it cannot be established.

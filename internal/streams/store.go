@@ -94,18 +94,31 @@ func decodeStream(path string, contents []byte) (Stream, error) {
 	return stream, nil
 }
 
-// List returns every stream in the store, newest first. An unreadable stream
-// is reported as an error rather than skipped: silently omitting a stream that
-// may hold live links would hide exactly the state `status` exists to show.
-func (store *Store) List() ([]Stream, error) {
+// Unreadable names one stream whose record could not be parsed.
+//
+// It is reported rather than returned as an error for the whole store: a
+// single truncated file must not refuse every `wb stream start` on the
+// machine. It is also never silently dropped — a stream WB cannot read may
+// hold live links, and pretending it is absent is the failure mode
+// `status` exists to prevent.
+type Unreadable struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// List returns every readable stream in the store, newest first, alongside
+// every stream whose record could not be parsed.
+func (store *Store) List() ([]Stream, []Unreadable, error) {
 	entries, err := os.ReadDir(store.Root)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, nil, nil
 		}
-		return nil, fmt.Errorf("read stream store %s: %w", store.Root, err)
+		return nil, nil, fmt.Errorf("read stream store %s: %w", store.Root, err)
 	}
 	streams := make([]Stream, 0, len(entries))
+	var unreadable []Unreadable
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -115,26 +128,49 @@ func (store *Store) List() ([]Stream, error) {
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
-			return nil, err
+			unreadable = append(unreadable, Unreadable{
+				Name: entry.Name(), Path: store.statePath(entry.Name()), Reason: RedactString(err.Error()),
+			})
+			continue
 		}
 		streams = append(streams, stream)
 	}
 	sort.SliceStable(streams, func(i, j int) bool {
 		return streams[i].CreatedAt.After(streams[j].CreatedAt)
 	})
-	return streams, nil
+	sort.Slice(unreadable, func(i, j int) bool { return unreadable[i].Name < unreadable[j].Name })
+	return streams, unreadable, nil
 }
 
-// Create writes a stream that must not already exist. It is how `stream start`
-// reserves the name: two concurrent starts on one name cannot both win,
-// because the exclusive create is the arbiter rather than a prior existence
-// check.
+// Create reserves a stream name and writes its record.
+//
+// It is the arbiter for two concurrent `stream start` calls on one name: the
+// exclusive create happens under the store-wide lock and BEFORE either call
+// publishes anything, so the loser refuses with no side effects on the remote.
+// The earlier design let both calls create worktrees, push branches and open
+// pull requests and only then arbitrated the file — which left the loser's
+// effects stranded.
+//
+// The record is written through the same temp-file-and-rename path Update
+// uses, so an interrupted create can never leave a truncated file that would
+// then refuse every later `stream start` on the machine.
 func (store *Store) Create(stream Stream) (Stream, error) {
 	if err := ValidateName(stream.Name); err != nil {
 		return Stream{}, err
 	}
-	if err := os.MkdirAll(store.Dir(stream.Name), 0o700); err != nil {
-		return Stream{}, fmt.Errorf("create stream directory: %w", err)
+	release, err := store.lockStore()
+	if err != nil {
+		return Stream{}, err
+	}
+	defer release()
+	return store.createLocked(stream)
+}
+
+func (store *Store) createLocked(stream Stream) (Stream, error) {
+	if _, err := os.Stat(store.statePath(stream.Name)); err == nil {
+		return Stream{}, fmt.Errorf("stream %q already exists at %s", stream.Name, store.statePath(stream.Name))
+	} else if !os.IsNotExist(err) {
+		return Stream{}, fmt.Errorf("inspect stream state: %w", err)
 	}
 	stream.SchemaVersion = SchemaVersion
 	now := store.now()
@@ -142,25 +178,111 @@ func (store *Store) Create(stream Stream) (Stream, error) {
 		stream.CreatedAt = now
 	}
 	stream.UpdatedAt = now
-	contents, err := json.MarshalIndent(stream, "", "  ")
-	if err != nil {
+	if stream.Phase == "" {
+		// A record handed in already ended keeps that meaning; only a genuinely
+		// new stream starts in the creating phase.
+		stream.Phase = PhaseCreating
+		if stream.EndedAt != nil {
+			stream.Phase = PhaseEnded
+		}
+	}
+	if err := store.writeAtomically(stream.Name, stream); err != nil {
 		return Stream{}, err
 	}
-	file, err := os.OpenFile(store.statePath(stream.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		if os.IsExist(err) {
-			return Stream{}, fmt.Errorf("stream %q already exists at %s", stream.Name, store.statePath(stream.Name))
-		}
-		return Stream{}, fmt.Errorf("create stream state: %w", err)
-	}
-	if _, err := file.Write(append(contents, '\n')); err != nil {
-		_ = file.Close()
-		return Stream{}, fmt.Errorf("write stream state: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return Stream{}, fmt.Errorf("close stream state: %w", err)
-	}
 	return stream, nil
+}
+
+// WithStoreLock runs body while holding the store-wide lock, so a caller can
+// make "no repository is in another open stream" and "reserve this name" one
+// indivisible decision. Without it the guard is a check with a gap after it.
+func (store *Store) WithStoreLock(body func() error) error {
+	release, err := store.lockStore()
+	if err != nil {
+		return err
+	}
+	defer release()
+	return body()
+}
+
+// CreateLocked is Create for a caller already holding the store lock through
+// WithStoreLock. Calling it without that lock is a defect, not a deadlock:
+// the lock is not reentrant.
+func (store *Store) CreateLocked(stream Stream) (Stream, error) {
+	if err := ValidateName(stream.Name); err != nil {
+		return Stream{}, err
+	}
+	return store.createLocked(stream)
+}
+
+// Archive renames an ended stream so its name can be used again, keeping the
+// record and its event log intact.
+//
+// `work-and-event-logs-are-never-pruned` forbids discarding the evidence, but
+// keeping it must not burn the name forever: before this, `start` refused an
+// existing name and `join` refused an ended stream, and the two refusals
+// pointed at each other with no way out.
+func (store *Store) Archive(name string) (string, error) {
+	release, err := store.lockStore()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return store.archiveLocked(name)
+}
+
+// ArchiveLocked is Archive for a caller already holding the store lock.
+func (store *Store) ArchiveLocked(name string) (string, error) { return store.archiveLocked(name) }
+
+func (store *Store) archiveLocked(name string) (string, error) {
+	stream, err := store.Load(name)
+	if err != nil {
+		return "", err
+	}
+	if stream.Open() {
+		return "", fmt.Errorf("stream %q is still open; end it before its name can be reused", name)
+	}
+	archived := name + ".ended-" + store.now().Format("20060102T150405Z")
+	for suffix := 1; ; suffix++ {
+		if _, err := os.Stat(store.Dir(archived)); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return "", fmt.Errorf("inspect archive destination: %w", err)
+		}
+		archived = fmt.Sprintf("%s.ended-%s.%d", name, store.now().Format("20060102T150405Z"), suffix)
+	}
+	if err := os.Rename(store.Dir(name), store.Dir(archived)); err != nil {
+		return "", fmt.Errorf("archive stream %q: %w", name, err)
+	}
+	// The record's own name follows the directory, so a later List does not
+	// report a stream whose stored name disagrees with where it lives.
+	stream.ArchivedFrom = name
+	stream.Name = archived
+	if err := store.writeAtomically(archived, stream); err != nil {
+		return "", err
+	}
+	return archived, nil
+}
+
+// Delete removes an ended stream and its event log. It refuses an open stream:
+// deleting one would strand its worktrees, branches and pull requests with no
+// record any verb could reach.
+func (store *Store) Delete(name string) error {
+	release, err := store.lockStore()
+	if err != nil {
+		return err
+	}
+	defer release()
+	stream, err := store.Load(name)
+	if err != nil {
+		return err
+	}
+	if stream.Open() {
+		return fmt.Errorf("stream %q is still open", name)
+	}
+	if err := os.RemoveAll(store.Dir(name)); err != nil {
+		return fmt.Errorf("delete stream %q: %w", name, err)
+	}
+	return nil
 }
 
 // Update applies mutate to the freshly re-read stream under an exclusive lock
@@ -248,11 +370,32 @@ func (store *Store) lock(name string) (func(), error) {
 	}, nil
 }
 
+// lockStore takes the store-wide exclusive lock. It is held only across
+// bookkeeping — never across a network call — so one stalled `gh` can never
+// freeze every stream verb on the machine.
+func (store *Store) lockStore() (func(), error) {
+	if err := os.MkdirAll(store.Root, 0o700); err != nil {
+		return nil, fmt.Errorf("create stream store: %w", err)
+	}
+	file, err := os.OpenFile(filepath.Join(store.Root, ".store.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open stream store lock: %w", err)
+	}
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock stream store: %w", err)
+	}
+	return func() {
+		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+		_ = file.Close()
+	}, nil
+}
+
 // RepositoryStream answers the one-open-stream-per-repository question:
 // which open stream, if any, already holds this repository. It is what
 // `stream start` refuses on, and what names the holder in that refusal.
 func (store *Store) RepositoryStream(repository string) (Stream, bool, error) {
-	all, err := store.List()
+	all, _, err := store.List()
 	if err != nil {
 		return Stream{}, false, err
 	}
@@ -275,7 +418,7 @@ func (store *Store) RepositoryStream(repository string) (Stream, bool, error) {
 // must be able to ask the question without importing a stream verb.
 func (store *Store) LiveLinksForWorktree(worktree string) ([]StreamLink, error) {
 	resolved := normalizePath(worktree)
-	all, err := store.List()
+	all, _, err := store.List()
 	if err != nil {
 		return nil, err
 	}

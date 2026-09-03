@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -17,8 +18,12 @@ import (
 // Implements: dependency-streams#req:stream-status-reports-the-three-gaps,
 // dependency-streams#req:stream-backlog-is-counted-by-patch-identity.
 type Status struct {
-	Stream  string         `json:"stream"`
-	Open    bool           `json:"open"`
+	Stream string `json:"stream"`
+	Open   bool   `json:"open"`
+	// Phase distinguishes a stream still being created from a usable one, so
+	// an interrupted start is visible rather than looking like a healthy
+	// stream with missing pull requests.
+	Phase   Phase          `json:"phase"`
 	Library string         `json:"library,omitempty"`
 	Branch  string         `json:"branch"`
 	Members []MemberStatus `json:"members"`
@@ -55,8 +60,11 @@ type MemberStatus struct {
 	// does not carry by patch identity.
 	Unabsorbed int `json:"unabsorbed"`
 	// UnabsorbedClusters names each cluster of patch-identical work, so N
-	// branches carrying one body of work read as one item rather than N.
-	UnabsorbedSubjects []string `json:"unabsorbed_subjects,omitempty"`
+	// branches carrying one body of work read as one item rather than N. The
+	// label is the commit subject; the IDENTITY is the patch id, so two
+	// commits sharing a message are not collapsed and one change re-applied
+	// with an edited message still is.
+	UnabsorbedClusters []string `json:"unabsorbed_clusters,omitempty"`
 	LeaseHolder        string   `json:"lease_holder,omitempty"`
 	RecordedHead       string   `json:"recorded_head,omitempty"`
 	LiveLinks          int      `json:"live_links"`
@@ -106,11 +114,22 @@ func (engine *Engine) Status(ctx context.Context, name string) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Stream: stream.Name, Open: stream.Open(), Branch: Branch(stream.Name)}
+	status := Status{Stream: stream.Name, Open: stream.Open(), Phase: stream.Lifecycle(), Branch: Branch(stream.Name)}
 	if library, ok := stream.Library(); ok {
 		status.Library = library.Repository
 	}
 	for _, member := range stream.Members {
+		// `stream-verbs-re-read-state-before-mutating` covers origin as well
+		// as WB state: a day-old clone would make gap 2 and gap 3 report
+		// against a stale published version, and would show work as
+		// unabsorbed that the base already carries.
+		if member.Worktree != "" {
+			if fetchErr := engine.Git.Fetch(ctx, member.Worktree); fetchErr != nil {
+				status.Unknowns = append(status.Unknowns, fmt.Sprintf(
+					"%s: could not re-read origin, so everything below is from a possibly stale local clone: %v",
+					member.Repository, RedactString(fetchErr.Error())))
+			}
+		}
 		status.Members = append(status.Members, engine.memberStatus(ctx, &status, member))
 		for _, link := range member.Links {
 			status.LinkedConsumers = append(status.LinkedConsumers, LinkedConsumer{
@@ -148,36 +167,46 @@ func (engine *Engine) memberStatus(ctx context.Context, status *Status, member M
 		RecordedHead:       member.Lease.RecordedHead,
 		LiveLinks:          len(member.Links),
 	}
-	subjects, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
+	commits, err := engine.Git.CommitsNotIn(ctx, member.Worktree, member.Branch, "origin/"+member.Base)
 	if err != nil {
-		status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s: unabsorbed commits: %v", member.Repository, err))
+		status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s: unabsorbed commits: %v", member.Repository, RedactString(err.Error())))
 		return row
 	}
-	row.UnabsorbedSubjects = collapsePatchIdenticalSubjects(subjects)
-	row.Unabsorbed = len(subjects)
+	row.UnabsorbedClusters = collapsePatchIdentical(commits)
+	row.Unabsorbed = len(commits)
 	return row
 }
 
-// collapsePatchIdenticalSubjects names a cluster of N branches carrying one
-// body of work once, with its cardinality, rather than N times. `git cherry`
-// already removes patches the base carries; what remains can still repeat
-// within the stream when the same change was re-applied.
-func collapsePatchIdenticalSubjects(subjects []string) []string {
+// collapsePatchIdentical names a cluster of commits carrying one body of work
+// once, with its cardinality, rather than once per commit.
+//
+// Clustering is on Git's own `patch-id --stable`, never on subject text: two
+// unrelated commits can share a message, and one change re-applied on another
+// branch can carry an edited one. A commit with no patch id falls back to its
+// SHA, so two commits WB could not compare never collapse by accident.
+func collapsePatchIdentical(commits []Commit) []string {
 	counts := map[string]int{}
-	order := make([]string, 0, len(subjects))
-	for _, subject := range subjects {
-		if counts[subject] == 0 {
-			order = append(order, subject)
+	labels := map[string]string{}
+	var order []string
+	for _, commit := range commits {
+		identity := commit.Identity()
+		if counts[identity] == 0 {
+			order = append(order, identity)
+			label := commit.Subject
+			if label == "" {
+				label = commit.SHA
+			}
+			labels[identity] = label
 		}
-		counts[subject]++
+		counts[identity]++
 	}
 	collapsed := make([]string, 0, len(order))
-	for _, subject := range order {
-		if counts[subject] == 1 {
-			collapsed = append(collapsed, subject)
+	for _, identity := range order {
+		if counts[identity] == 1 {
+			collapsed = append(collapsed, labels[identity])
 			continue
 		}
-		collapsed = append(collapsed, fmt.Sprintf("%s (×%d patch-identical)", subject, counts[subject]))
+		collapsed = append(collapsed, fmt.Sprintf("%s (×%d patch-identical)", labels[identity], counts[identity]))
 	}
 	return collapsed
 }
@@ -197,9 +226,13 @@ func (engine *Engine) libraryGaps(ctx context.Context, stream Stream, status *St
 		status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s publishes no discoverable Go module or npm package", library.Repository))
 		return
 	}
-	tags, err := engine.Git.Tags(ctx, library.Worktree, "")
+	// A repository carrying tags for several modules (`backend/v…` alongside
+	// `cli/v…`) would otherwise report "the library's newest published
+	// version" from an unrelated module and mis-report gap 3.
+	pattern := libraryTagPattern(identities)
+	tags, err := engine.Git.Tags(ctx, library.Worktree, pattern)
 	if err != nil {
-		status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s: tags: %v", library.Repository, err))
+		status.Unknowns = append(status.Unknowns, fmt.Sprintf("%s: tags: %v", library.Repository, RedactString(err.Error())))
 		return
 	}
 	latest := newestTag(tags)
@@ -241,6 +274,22 @@ func (engine *Engine) libraryGaps(ctx context.Context, stream Stream, status *St
 		}
 		return status.ConsumersBehind[i].Identity < status.ConsumersBehind[j].Identity
 	})
+}
+
+// libraryTagPattern narrows the tag list to the library's own module. A Go
+// module under `backend/` is tagged `backend/vX.Y.Z`; a module at the root is
+// tagged `vX.Y.Z`.
+func libraryTagPattern(identities []Identity) string {
+	for _, identity := range identities {
+		if identity.Ecosystem != EcosystemGo {
+			continue
+		}
+		if identity.Directory == "." || identity.Directory == "" {
+			return "v*"
+		}
+		return identity.Directory + "/v*"
+	}
+	return "v*"
 }
 
 // newestTag picks the first tag Git's version ordering returned. Tags are
@@ -301,8 +350,10 @@ func semverParts(value string) ([3]int, bool) {
 	}
 	var parts [3]int
 	for index := 0; index < 3; index++ {
-		number := 0
-		if _, err := fmt.Sscanf(fields[index], "%d", &number); err != nil {
+		// strconv.Atoi rejects trailing junk that fmt.Sscanf("%d") would
+		// silently accept, so "1.2.3junk" is unreadable rather than 1.2.3.
+		number, err := strconv.Atoi(fields[index])
+		if err != nil || number < 0 {
 			return [3]int{}, false
 		}
 		parts[index] = number

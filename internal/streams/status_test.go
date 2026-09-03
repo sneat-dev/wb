@@ -109,8 +109,14 @@ func TestStatusCollapsesPatchIdenticalBacklog(t *testing.T) {
 		t.Fatal(err)
 	}
 	member := started.Stream.Members[0]
-	git.notIn[member.Worktree+" stream/backlog origin/main"] = []string{
-		"feat: one body of work", "feat: one body of work", "fix: something else",
+	// Real `git cherry -v` emits a distinct SHA per commit; two commits
+	// carrying one body of work differ in SHA by construction and agree only
+	// on their patch id. Feeding bare subjects — as this test used to — made
+	// the assertion pass against a shape ExecGit never produces.
+	git.notIn[member.Worktree+" stream/backlog origin/main"] = []Commit{
+		{SHA: "35c480ed6e1e718a910d8aa617c4da94dd47557a", Subject: "feat: one body of work", PatchID: "9f1c2d"},
+		{SHA: "430cff73657583ec4c18a0b2b94e738b50c5e04b", Subject: "feat: one body of work", PatchID: "9f1c2d"},
+		{SHA: "5a1f0d2c9b8e7a6d5c4b3a2918f7e6d5c4b3a291", Subject: "fix: something else", PatchID: "7b3e10"},
 	}
 	status, err := engine.Status(context.Background(), "backlog")
 	if err != nil {
@@ -120,11 +126,11 @@ func TestStatusCollapsesPatchIdenticalBacklog(t *testing.T) {
 	if row.Unabsorbed != 3 {
 		t.Errorf("unabsorbed = %d, want 3", row.Unabsorbed)
 	}
-	if len(row.UnabsorbedSubjects) != 2 {
-		t.Fatalf("subjects = %v, want two clusters", row.UnabsorbedSubjects)
+	if len(row.UnabsorbedClusters) != 2 {
+		t.Fatalf("subjects = %v, want two clusters", row.UnabsorbedClusters)
 	}
-	if !strings.Contains(row.UnabsorbedSubjects[0], "×2 patch-identical") {
-		t.Errorf("cluster is not named with its cardinality: %q", row.UnabsorbedSubjects[0])
+	if !strings.Contains(row.UnabsorbedClusters[0], "×2 patch-identical") {
+		t.Errorf("cluster is not named with its cardinality: %q", row.UnabsorbedClusters[0])
 	}
 }
 

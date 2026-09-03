@@ -86,14 +86,19 @@ func TestStreamStatusListsStreamsFromWBOwnedState(t *testing.T) {
 	var envelope struct {
 		Verb     string `json:"verb"`
 		Outcome  string `json:"outcome"`
-		Evidence []struct {
-			Name string `json:"name"`
+		Evidence struct {
+			Streams []struct {
+				Name string `json:"name"`
+			} `json:"streams"`
+			Unreadable []struct {
+				Name string `json:"name"`
+			} `json:"unreadable"`
 		} `json:"evidence"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
 		t.Fatalf("parse envelope from %q: %v", stdout.String(), err)
 	}
-	if envelope.Outcome != "success" || len(envelope.Evidence) != 1 || envelope.Evidence[0].Name != "listed" {
+	if envelope.Outcome != "success" || len(envelope.Evidence.Streams) != 1 || envelope.Evidence.Streams[0].Name != "listed" {
 		t.Fatalf("envelope = %#v", envelope)
 	}
 	var textOut, textErr bytes.Buffer
@@ -117,13 +122,87 @@ func TestStreamStartRejectsAnInvalidName(t *testing.T) {
 	code := run([]string{
 		"stream", "start", "not a name", "acme/app",
 		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
-		"--original-prompt-file", prompt, "--non-interactive",
+		"--original-prompt-file", prompt, "--format", "json", "--non-interactive",
 	}, &stdout, &stderr)
-	if code == exitOK {
-		t.Fatalf("an invalid stream name succeeded; stdout=%s", stdout.String())
+	// An ambiguous invocation is exit 2, not exit 1: 1 means "the work is
+	// broken", and a caller that branches on the contract must be able to
+	// tell a bad invocation from a real failure.
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want %d (usage); stderr=%s", code, exitUsage, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "must start with a letter or digit") {
 		t.Errorf("stderr = %q, want the name rule", stderr.String())
+	}
+	// A caller that asked for JSON must never get an empty stdout.
+	var envelope struct {
+		Verb        string `json:"verb"`
+		Outcome     string `json:"outcome"`
+		RefusalCode string `json:"refusal_code"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("parse envelope from %q: %v", stdout.String(), err)
+	}
+	if envelope.Outcome != "refused" || envelope.RefusalCode != streams.RefusalUsage {
+		t.Fatalf("envelope = %#v, want a usage refusal", envelope)
+	}
+}
+
+// An unsupported --role is the same contract: exit 2 with an envelope naming
+// the sanctioned invocation.
+func TestStreamJoinRejectsAnUnsupportedRoleWithTheUsageEnvelope(t *testing.T) {
+	t.Setenv("WB_HOME", t.TempDir())
+	prompt := filepath.Join(t.TempDir(), "prompt.txt")
+	if err := os.WriteFile(prompt, []byte("request\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{
+		"stream", "join", "somename", "acme/app", "--role", "bogus",
+		"--mode", "manual", "--initiator", "me@example.com", "--model", "unknown",
+		"--original-prompt-file", prompt, "--format", "json", "--non-interactive",
+	}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	var envelope struct {
+		RefusalCode        string   `json:"refusal_code"`
+		SanctionedCommand  string   `json:"sanctioned_command"`
+		SanctionedCommands []string `json:"sanctioned_commands"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatalf("parse envelope from %q: %v", stdout.String(), err)
+	}
+	if envelope.RefusalCode != streams.RefusalUsage {
+		t.Fatalf("refusal_code = %q", envelope.RefusalCode)
+	}
+	// The singular field must be one runnable command, not a joined string.
+	if !strings.HasPrefix(envelope.SanctionedCommand, "wb stream join") || strings.Contains(envelope.SanctionedCommand, "||") {
+		t.Errorf("sanctioned_command = %q, want one runnable command", envelope.SanctionedCommand)
+	}
+	if len(envelope.SanctionedCommands) == 0 {
+		t.Error("sanctioned_commands is empty")
+	}
+}
+
+// `wb stream delete` refuses an open stream and names the command that makes
+// it deletable.
+func TestStreamDeleteRefusesAnOpenStream(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_HOME", home)
+	store := streams.OpenAt(filepath.Join(home, "streams"))
+	if _, err := store.Create(streams.Stream{
+		Name: "held", Phase: streams.PhaseOpen,
+		Members: []streams.Member{{Repository: "acme/app", Role: streams.RoleConsumer}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"stream", "delete", "held", "--format", "json", "--non-interactive"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "wb stream end held --apply") {
+		t.Errorf("envelope does not name the sanctioned command: %s", stdout.String())
 	}
 }
 

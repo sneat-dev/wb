@@ -27,6 +27,25 @@ type streamWorktrees struct {
 	base         string
 }
 
+// PlannedWorktree is where Create will publish one repository's checkout,
+// derived from WB's own layout without touching the filesystem.
+//
+// The stream record needs each member's intended path BEFORE anything is
+// created, so an interrupted start leaves coordinates `wb stream end` can act
+// on. Deriving it here — rather than guessing later — keeps that promise
+// truthful even when creation never ran.
+func (adapter *streamWorktrees) PlannedWorktree(task, repository string) string {
+	home, err := wbhome.Root(adapter.projectsRoot)
+	if err != nil {
+		return ""
+	}
+	owner, name, found := strings.Cut(repository, "/")
+	if !found {
+		return filepath.Join(home, "worktrees", task, repository)
+	}
+	return filepath.Join(home, "worktrees", task, owner, name)
+}
+
 func (adapter *streamWorktrees) Create(ctx context.Context, task, branch string, repositories []string) ([]streams.CreatedWorktree, error) {
 	// Resume is on because `wb stream join` adds a repository to a task that
 	// already exists. Creation still refuses to reuse an existing branch or

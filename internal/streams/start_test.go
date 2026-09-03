@@ -345,8 +345,11 @@ func TestJoinRefusesASecondLibrary(t *testing.T) {
 		Name: "one-library", Repository: "acme/other", Role: RoleLibrary,
 	})
 	refusal, refused := Refused(err)
-	if !refused || refusal.Code != RefusalNoLibrary {
-		t.Fatalf("error = %v, want a %s refusal", err, RefusalNoLibrary)
+	// The code says what happened: the stream ALREADY HAS a library. It used
+	// to reuse RefusalNoLibrary, which stated the opposite condition, and
+	// refusal codes are contract that skills branch on.
+	if !refused || refusal.Code != RefusalLibraryExists {
+		t.Fatalf("error = %v, want a %s refusal", err, RefusalLibraryExists)
 	}
 }
 

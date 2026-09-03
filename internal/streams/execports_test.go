@@ -65,12 +65,18 @@ func TestExecGitReadsBranchesTagsAndUnabsorbedCommits(t *testing.T) {
 	if err != nil || len(tags) != 2 || tags[0] != "backend/v0.5.0" {
 		t.Fatalf("Tags = %v, %v; want newest first", tags, err)
 	}
-	subjects, err := git.CommitsNotIn(ctx, root, "stream/fixture", "main")
+	commits, err := git.CommitsNotIn(ctx, root, "stream/fixture", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(subjects) != 1 || !strings.Contains(subjects[0], "the stream commit") {
-		t.Fatalf("CommitsNotIn = %v; want the one unabsorbed commit", subjects)
+	if len(commits) != 1 || commits[0].Subject != "feat: the stream commit" {
+		t.Fatalf("CommitsNotIn = %#v; want the one unabsorbed commit", commits)
+	}
+	if len(commits[0].SHA) != 40 {
+		t.Errorf("commit SHA = %q, want a full object name", commits[0].SHA)
+	}
+	if commits[0].PatchID == "" {
+		t.Error("commit carries no patch id, so patch-identity clustering cannot work")
 	}
 	absorbed, err := git.CommitsNotIn(ctx, root, "main", "stream/fixture")
 	if err != nil || len(absorbed) != 0 {
@@ -155,5 +161,89 @@ func TestOpenResolvesTheStoreBelowWBHome(t *testing.T) {
 	}
 	if store.Root != filepath.Join(home, "streams") {
 		t.Fatalf("store root = %q, want %q", store.Root, filepath.Join(home, "streams"))
+	}
+}
+
+// REQ: push-verifies-the-ref-it-pushed — the push exit code is not evidence
+// the intended commit landed, so PushBranch compares the local SHA with
+// origin's after pushing. Exercised against a real local bare remote.
+func TestPushBranchVerifiesTheRefItPushed(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	base := t.TempDir()
+	remote := filepath.Join(base, "origin.git")
+	if output, err := exec.Command("git", "init", "--bare", "--initial-branch=main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("init bare remote: %v: %s", err, output)
+	}
+	work := filepath.Join(base, "work")
+	runIn := func(dir string, args ...string) string {
+		t.Helper()
+		command := exec.Command("git", args...)
+		command.Dir = dir
+		command.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=wb", "GIT_AUTHOR_EMAIL=wb@example.test",
+			"GIT_COMMITTER_NAME=wb", "GIT_COMMITTER_EMAIL=wb@example.test",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, output)
+		}
+		return string(output)
+	}
+	if output, err := exec.Command("git", "clone", remote, work).CombinedOutput(); err != nil {
+		t.Fatalf("clone: %v: %s", err, output)
+	}
+	if err := os.WriteFile(filepath.Join(work, "one.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runIn(work, "add", ".")
+	runIn(work, "commit", "-m", "feat: the stream commit")
+	runIn(work, "checkout", "-b", "stream/pushed")
+
+	git := ExecGit{Timeout: 60 * time.Second}
+	ctx := context.Background()
+	pushed, err := git.PushBranch(ctx, work, "stream/pushed")
+	if err != nil {
+		t.Fatalf("PushBranch: %v", err)
+	}
+	local := strings.TrimSpace(runIn(work, "rev-parse", "HEAD"))
+	if pushed != local {
+		t.Fatalf("PushBranch reported %s, local HEAD is %s", pushed, local)
+	}
+	// The verification is against origin, not against the local ref it just
+	// wrote: the remote must actually carry the commit.
+	onRemote := strings.TrimSpace(runIn(remote, "rev-parse", "refs/heads/stream/pushed"))
+	if onRemote != local {
+		t.Fatalf("origin carries %s, want %s", onRemote, local)
+	}
+	head, present, err := git.RemoteHead(ctx, work, "stream/pushed")
+	if err != nil || !present || head != local {
+		t.Fatalf("RemoteHead = %q present=%t err=%v", head, present, err)
+	}
+}
+
+// A push that cannot reach the remote is a failure, not a silently reported
+// success — and the error carries no credential.
+func TestPushBranchFailsWhenTheRemoteIsUnreachable(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	root, git := gitFixture(t)
+	secret := "ghp_0123456789abcdefghijklmnopqrstuvwx"
+	command := exec.Command("git", "remote", "add", "origin",
+		"https://x-access-token:"+secret+"@127.0.0.1:1/acme/library.git")
+	command.Dir = root
+	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("add remote: %v: %s", err, output)
+	}
+	_, err := git.PushBranch(context.Background(), root, "stream/fixture")
+	if err == nil {
+		t.Fatal("pushing to an unreachable remote reported success")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("the push error carries the credential: %s", err)
 	}
 }

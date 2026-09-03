@@ -252,3 +252,38 @@ the rescue commit and the branch is on the remote. `--push` traverses managed
 hooks only through an attested rescue route that proves the exact single
 rescue ref, canonical parent, and complete captured tree; never replace it
 with `--no-verify` or a hand-written push.
+
+## Ending a task — `wb worktree end`
+
+`wb worktree end <task>` is the closing half of `wb worktree create`, and the
+last line of every lane contract. It is how an agent finishes.
+
+```sh
+wb worktree end improve-login            # dry-run plan
+wb worktree end improve-login --apply    # close it
+```
+
+In order, and the order is the contract:
+
+1. **refuse** while any worktree holds a live local link — a checkout that
+   builds against an unpublished library working tree must never be retired
+   silently. The refusal names the exact
+   `wb deps propagate local <library> --to <consumer> --undo` that clears it.
+2. **capture** uncommitted work and print where it went, **before** anything is
+   removed. A dirty worktree is *not* a refusal: refusing one would leave
+   exactly the choice this verb exists to remove — hand-roll the removal, or
+   leave residue. The work is captured as a git stash commit in the repository
+   the worktree was cut from, so it survives the removal, and the exact SHA is
+   printed. Recover it with `git stash apply <sha>`.
+3. **seal** a closing note into the Work Log (`--note` supplies the text).
+4. **retire** each worktree through the existing `wb worktree cleanup`
+   transaction — so cleanup's own guards still apply. An unmerged branch is
+   refused by cleanup with its reason, not deleted by some other route here.
+5. **release** the fleet-wide claim, but only once every worktree is gone. A
+   claim released while a checkout survives would advertise the task as free.
+
+Flags: `--apply`, `--repo` (narrow a coordinated task), `--note`, `--no-capture`
+(only when the work is already preserved elsewhere), `--format`.
+
+If a capture fails, **nothing is removed** — retiring a checkout whose work
+could not be preserved is the one outcome that loses data irrecoverably.

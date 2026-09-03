@@ -86,13 +86,39 @@ With no name, every stream is listed. Flags: `--format`.
 ### `wb stream end <name>`
 
 Closes or retargets every still-open pull request against the stream branches,
-closes each member's own draft pull request, releases the leases, and retires
-every stream worktree through `wb worktree cleanup`.
+closes each member's own draft pull request, deletes `origin/stream/<name>`,
+releases the leases, and retires every stream worktree through
+`wb worktree cleanup`.
 
 **Ending publishes, bumps and merges nothing.**
 
 Without `--apply` it reports exactly what it would do and changes nothing.
-Flags: `--apply`, `--retarget`, `--format`.
+Flags: `--apply`, `--retarget`, `--keep-remote-branch`, `--force-unabsorbed`,
+`--reason`, `--format`.
+
+The absorption guard **fails closed**: if the patch-identity comparison could
+not run at all — a stale or missing `origin/<base>`, an unreachable remote — the
+end is refused. A check that cannot answer must not pass.
+`--force-unabsorbed --reason "<why>"` steps over it; the reason is mandatory and
+both the reason and every finding stepped over are written to the event log.
+
+`end` also retires a stream that was interrupted while it was being created:
+the record carries every member's intended coordinates from before the first
+side effect, so nothing published is unreachable.
+
+### `wb stream delete <name>`
+
+Removes an ended stream's record and event log. Refuses an **open** stream —
+deleting one would strand its worktrees, branches and pull requests with no
+record any verb could reach.
+
+Deleting is rarely necessary: `wb stream start` on the name of an ended stream
+archives the old record as `<name>.ended-<timestamp>` and proceeds, so a name is
+never burned by its first use.
+
+```sh
+wb stream delete checkout-rewrite.ended-20260903T101500Z
+```
 
 ## Exit codes
 
@@ -100,7 +126,12 @@ Flags: `--apply`, `--retarget`, `--format`.
 |---|---|
 | `0` | success |
 | `1` | findings — the verb ran and reported something that needs attention |
-| `2` | refusal or usage error — a guard fired |
+| `2` | refusal **or usage error** — a guard fired, or the invocation was ambiguous |
+
+Under `--format json` a refusal and a usage error both emit the envelope on
+stdout, carrying `refusal_code`, a single runnable `sanctioned_command`, and
+every alternative in `sanctioned_commands`. A caller that asked for JSON never
+gets an empty stdout.
 
 A findings exit from `start` does **not** mean the stream was not created. The
 stream exists; a member was reported rather than refused. Read the report, or
@@ -113,10 +144,13 @@ the `outcome` field of `--format json`.
 | `stream-exists` | the stream name is taken | `wb stream status <name>`, or pick another name |
 | `repository-in-stream` | the repository already carries an open stream | `wb stream join <holder> <owner/repository>`, or wait and `wb stream end <holder>` |
 | `preflight-failed` | `wb hooks check` findings, or two members publishing the same npm package name | `wb hooks repair <path>`; for an ambiguous package name, fix the duplicate declaration before starting |
-| `no-library` | the stream already has a library | `wb stream join <name> <owner/repository> --role consumer` |
+| `library-exists` | the stream already has a library | `wb stream join <name> <owner/repository> --role consumer` |
+| `no-library` | the stream has no library member at all | `wb stream join <name> <owner/repository> --role library` |
+| `usage` | the invocation was ambiguous — a bad name, an unknown `--role`, a missing `--reason` | fix the invocation; the envelope names the correct form |
 | `stream-ended` | the stream has ended | `wb stream start <new-name> …` |
 | `live-link` | `end` found a consumer still resolving an unpublished working tree | run the exact `wb deps propagate local <library> --to <consumer> --undo` the refusal names, then re-run `end` |
-| `unabsorbed-work` | a stream branch carries commits the base has not absorbed | `wb stream status <name>`, then land the work (`wb worktree merge <worktree> --route auto`) before ending |
+| `unabsorbed-work` | a stream branch carries commits the base has not absorbed, **or** the absorption check could not run | `wb stream status <name>`, then land the work (`wb worktree merge <worktree> --route auto`); if the check could not run, retry once origin is reachable, or `wb stream end <name> --apply --force-unabsorbed --reason "<why>"` |
+| `stream-exists` on an **ended** stream | does not happen — `start` archives it and proceeds | nothing to do |
 
 Never work around a refusal by hand-chaining `git` or `gh`. Every refusal names
 the command that satisfies it; if the named command does not resolve it, that is

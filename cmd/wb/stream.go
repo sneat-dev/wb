@@ -21,12 +21,18 @@ import (
 // is stable from the first release; adopting the shared implementation is a
 // type swap, not an output change.
 type streamEnvelope struct {
-	Version           int    `json:"v"`
-	Verb              string `json:"verb"`
-	Outcome           string `json:"outcome"`
-	RefusalCode       string `json:"refusal_code,omitempty"`
+	Version     int    `json:"v"`
+	Verb        string `json:"verb"`
+	Outcome     string `json:"outcome"`
+	RefusalCode string `json:"refusal_code,omitempty"`
+	// SanctionedCommand is the first command that satisfies the guard — a
+	// single runnable string, as the spec's envelope field is singular.
 	SanctionedCommand string `json:"sanctioned_command,omitempty"`
-	Evidence          any    `json:"evidence,omitempty"`
+	// SanctionedCommands carries every alternative, since more than one
+	// command can satisfy a guard and joining them into one string produces a
+	// value that is not runnable.
+	SanctionedCommands []string `json:"sanctioned_commands,omitempty"`
+	Evidence           any      `json:"evidence,omitempty"`
 }
 
 const (
@@ -69,6 +75,7 @@ not created; read the report or the JSON envelope.`,
 		newStreamJoinCmd(),
 		newStreamStatusCmd(),
 		newStreamEndCmd(),
+		newStreamDeleteCmd(),
 	)
 	setDiscoveryTerms(command, "stream library consumer cross-repository propagate link draft pull request lease")
 	return command
@@ -152,7 +159,7 @@ wb stream start checkout-rewrite acme/app acme/library --library acme/library \
 			// an unusable stream name is refused with the stream's own rule
 			// rather than with a Work Log path-segment error.
 			if err := streams.ValidateName(args[0]); err != nil {
-				return err
+				return streamUsage(command, "stream start", shared.format, err.Error())
 			}
 			workLog, sessionMode, err := streamWorkLog(command, args[0], workLogFlags{
 				mode: mode, effortID: effortID, runID: runID, initiator: initiator,
@@ -160,7 +167,7 @@ wb stream start checkout-rewrite acme/app acme/library --library acme/library \
 				cli: cli, provider: provider, originalPrompt: originalPrompt,
 			})
 			if err != nil {
-				return err
+				return streamUsage(command, "stream start", shared.format, err.Error())
 			}
 			engine, err := newStreamEngine(command, workLog, sessionMode, base)
 			if err != nil {
@@ -217,10 +224,15 @@ need re-rebasing.
 
 Joining a repository that is already a member is a no-op.
 
+Re-running join for a member whose draft pull request never opened retries
+exactly that effect, rather than no-opping: it is the recovery path a failed
+publication leaves behind.
+
 Refusals (exit 2):
   repository-in-stream   the repository is a member of a different open stream
-  no-library             the stream already has a library — join as a consumer
-  stream-ended           the stream has ended — start a new one`,
+  library-exists         the stream already has a library — join as a consumer
+  stream-ended           the stream has ended — start a new one
+  usage                  an ambiguous invocation (an unknown --role, a bad name)`,
 		Example: `wb stream join checkout-rewrite acme/reports \
   --original-prompt-file ./prompt.txt --mode manual --initiator me@example.com --model unknown`,
 		Args: cobra.ExactArgs(2),
@@ -229,7 +241,7 @@ Refusals (exit 2):
 				return err
 			}
 			if err := streams.ValidateName(args[0]); err != nil {
-				return err
+				return streamUsage(command, "stream join", shared.format, err.Error())
 			}
 			memberRole := streams.RoleConsumer
 			switch role {
@@ -237,7 +249,9 @@ Refusals (exit 2):
 			case "library":
 				memberRole = streams.RoleLibrary
 			default:
-				return fmt.Errorf("unsupported role %q; use library or consumer", role)
+				return streamUsage(command, "stream join", shared.format,
+					fmt.Sprintf("unsupported role %q; use library or consumer", role),
+					"wb stream join "+args[0]+" "+args[1]+" --role consumer")
 			}
 			workLog, sessionMode, err := streamWorkLog(command, args[0], workLogFlags{
 				mode: mode, effortID: effortID, runID: runID, initiator: initiator,
@@ -245,7 +259,7 @@ Refusals (exit 2):
 				cli: cli, provider: provider, originalPrompt: originalPrompt,
 			})
 			if err != nil {
-				return err
+				return streamUsage(command, "stream join", shared.format, err.Error())
 			}
 			engine, err := newStreamEngine(command, workLog, sessionMode, base)
 			if err != nil {
@@ -319,9 +333,12 @@ wb stream status checkout-rewrite --format json`,
 
 func newStreamEndCmd() *cobra.Command {
 	var (
-		shared   streamEngineOptions
-		apply    bool
-		retarget bool
+		shared           streamEngineOptions
+		apply            bool
+		retarget         bool
+		forceUnabsorbed  bool
+		reason           string
+		keepRemoteBranch bool
 	)
 	command := &cobra.Command{
 		Use:   "end <name>",
@@ -341,12 +358,25 @@ Refusals (exit 2):
                      the refusal names the exact 'wb deps propagate local
                      ... --undo' per link
   unabsorbed-work    a member's stream branch carries commits the base has not
-                     absorbed, named at the content level by patch identity
+                     absorbed, named at the content level by patch identity —
+                     or the absorption check could not run at all, which
+                     refuses too: a check that cannot answer must not pass.
+                     --force-unabsorbed --reason "<why>" steps over it and
+                     records both in the event log
 
 Still-open pull requests against the stream branch are closed by default. GitHub
 auto-retargets such a pull request onto the base when its base branch is
 deleted, which silently converts leftover agent work into a pull request against
-main; --retarget makes that move deliberate instead.`,
+main; --retarget makes that move deliberate instead.
+
+After the pull requests are settled, end deletes origin/stream/<name> as well as
+the local checkout, because leaving the remote branch is scaffolding the verb
+claims to remove. --keep-remote-branch leaves it in place.
+
+A stream interrupted while it was being created is retired the same way: its
+record carries every member's intended coordinates from before the first side
+effect, so end can reach worktrees, branches and pull requests a crash left
+behind.`,
 		Example: `# See what ending would do
 wb stream end checkout-rewrite
 
@@ -363,6 +393,8 @@ wb stream end checkout-rewrite --apply`,
 			}
 			result, err := engine.End(command.Context(), streams.EndOptions{
 				Name: args[0], Apply: apply, Retarget: retarget,
+				ForceUnabsorbed: forceUnabsorbed, Reason: reason,
+				KeepRemoteBranch: keepRemoteBranch,
 			})
 			if err != nil {
 				return streamFailure(command, "stream end", shared.format, err)
@@ -373,7 +405,56 @@ wb stream end checkout-rewrite --apply`,
 	command.Flags().StringVar(&shared.format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&apply, "apply", false, "perform the retirement; without it nothing is changed")
 	command.Flags().BoolVar(&retarget, "retarget", false, "retarget still-open agent pull requests onto the base instead of closing them")
-	setDiscoveryTerms(command, "stream end finish retire cleanup close draft pull request lease worktree")
+	command.Flags().BoolVar(&forceUnabsorbed, "force-unabsorbed", false, "proceed past the absorption guard; requires --reason, and both are recorded in the event log")
+	command.Flags().StringVar(&reason, "reason", "", "why the absorption guard is being stepped over (required by --force-unabsorbed)")
+	command.Flags().BoolVar(&keepRemoteBranch, "keep-remote-branch", false, "leave origin/stream/<name> in place instead of deleting it")
+	setDiscoveryTerms(command, "stream end finish retire cleanup close draft pull request lease worktree remote branch")
+	return command
+}
+
+func newStreamDeleteCmd() *cobra.Command {
+	var shared streamEngineOptions
+	command := &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Remove an ended stream's record and event log",
+		Long: `Delete an ended stream's record and its event log.
+
+It refuses an OPEN stream: deleting one would strand its worktrees, branches and
+pull requests with no record any verb could reach. End it first.
+
+Deleting is rarely necessary. 'wb stream start' on the name of an ended stream
+archives the old record as '<name>.ended-<timestamp>' and proceeds, so a name is
+never burned by its first use. Use delete when the archived record itself is no
+longer wanted.`,
+		Example: `wb stream delete checkout-rewrite.ended-20260903T101500Z`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(shared.format, "text", "json"); err != nil {
+				return err
+			}
+			store, err := streams.Open(projectsRoot)
+			if err != nil {
+				return err
+			}
+			if err := store.Delete(args[0]); err != nil {
+				if strings.Contains(err.Error(), "still open") {
+					return streamUsage(command, "stream delete", shared.format, err.Error(),
+						"wb stream end "+args[0]+" --apply")
+				}
+				return streamFailure(command, "stream delete", shared.format, err)
+			}
+			if shared.format == "json" {
+				return writeStreamJSON(command.OutOrStdout(), streamEnvelope{
+					Version: 1, Verb: "stream delete", Outcome: outcomeSuccess,
+					Evidence: map[string]string{"stream": args[0]},
+				})
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "deleted stream %s\n", args[0])
+			return err
+		},
+	}
+	command.Flags().StringVar(&shared.format, "format", "text", "stdout format: text or json")
+	setDiscoveryTerms(command, "stream delete remove purge ended archived record event log")
 	return command
 }
 
@@ -388,10 +469,13 @@ func streamFailure(command *cobra.Command, verb, format string, err error) error
 		if refused {
 			envelope.Outcome = outcomeRefused
 			envelope.RefusalCode = refusal.Code
-			envelope.SanctionedCommand = strings.Join(refusal.Sanctioned, " || ")
-			envelope.Evidence = map[string]string{"message": refusal.Message}
+			if len(refusal.Sanctioned) > 0 {
+				envelope.SanctionedCommand = refusal.Sanctioned[0]
+				envelope.SanctionedCommands = refusal.Sanctioned
+			}
+			envelope.Evidence = map[string]string{"message": streams.RedactString(refusal.Message)}
 		} else {
-			envelope.Evidence = map[string]string{"message": err.Error()}
+			envelope.Evidence = map[string]string{"message": streams.RedactString(err.Error())}
 		}
 		if encodeErr := writeStreamJSON(command.OutOrStdout(), envelope); encodeErr != nil {
 			return encodeErr
@@ -400,7 +484,19 @@ func streamFailure(command *cobra.Command, verb, format string, err error) error
 	if refused {
 		return &exitError{code: exitUsage, message: refusal.Error()}
 	}
-	return err
+	// Every other failure still reaches stderr through cobra, so it is
+	// redacted here rather than at the point it is printed.
+	return errors.New(streams.RedactString(err.Error()))
+}
+
+// streamUsage turns an invocation WB rejected into the same envelope and exit
+// code a guard produces. A caller that asked for --format json must never get
+// an empty stdout, and an ambiguous invocation must not be reported with the
+// code that means "the work is broken".
+func streamUsage(command *cobra.Command, verb, format, message string, sanctioned ...string) error {
+	return streamFailure(command, verb, format, &streams.Refusal{
+		Code: streams.RefusalUsage, Message: message, Sanctioned: sanctioned,
+	})
 }
 
 func streamStartOutput(command *cobra.Command, verb, format string, result streams.StartResult) error {
@@ -463,11 +559,7 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 		})
 	}
 	out := command.OutOrStdout()
-	state := "open"
-	if !status.Open {
-		state = "ended"
-	}
-	if _, err := fmt.Fprintf(out, "stream %s (%s) on %s\n", status.Stream, state, status.Branch); err != nil {
+	if _, err := fmt.Fprintf(out, "stream %s (%s) on %s\n", status.Stream, status.Phase, status.Branch); err != nil {
 		return err
 	}
 	for _, member := range status.Members {
@@ -542,29 +634,32 @@ func streamStatusOutput(command *cobra.Command, format string, status streams.St
 }
 
 func streamListOutput(command *cobra.Command, format string, engine *streams.Engine) error {
-	all, err := engine.Store.List()
+	all, unreadable, err := engine.Store.List()
 	if err != nil {
 		return err
 	}
 	if format == "json" {
 		return writeStreamJSON(command.OutOrStdout(), streamEnvelope{
-			Version: 1, Verb: "stream status", Outcome: outcomeSuccess, Evidence: all,
+			Version: 1, Verb: "stream status", Outcome: outcomeSuccess,
+			Evidence: map[string]any{"streams": all, "unreadable": unreadable},
 		})
 	}
-	if len(all) == 0 {
+	if len(all) == 0 && len(unreadable) == 0 {
 		_, err := fmt.Fprintln(command.OutOrStdout(), "no streams")
 		return err
 	}
 	for _, stream := range all {
-		state := "open"
-		if !stream.Open() {
-			state = "ended"
-		}
+		state := string(stream.Lifecycle())
 		repositories := make([]string, 0, len(stream.Members))
 		for _, member := range stream.Members {
 			repositories = append(repositories, member.Repository)
 		}
-		if _, err := fmt.Fprintf(command.OutOrStdout(), "%-24s %-6s %s\n", stream.Name, state, strings.Join(repositories, " ")); err != nil {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "%-24s %-9s %s\n", stream.Name, state, strings.Join(repositories, " ")); err != nil {
+			return err
+		}
+	}
+	for _, broken := range unreadable {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "%-24s %-9s unreadable: %s\n", broken.Name, "?", broken.Reason); err != nil {
 			return err
 		}
 	}

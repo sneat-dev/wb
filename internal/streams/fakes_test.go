@@ -19,12 +19,20 @@ type fakeGit struct {
 	pushErr       map[string]error
 	remoteHeads   map[string]string
 	localHeads    map[string]string
-	notIn         map[string][]string
+	notIn         map[string][]Commit
 	notInErr      map[string]error
+	deleted       []string
+	deleteErr     map[string]error
 	dirty         map[string][]string
 	tags          map[string][]string
 	log           map[string][]string
 	fetched       []string
+	// calls records the order of origin-touching operations so a test can
+	// prove a fetch preceded a read.
+	calls []string
+	// tagPatterns records the glob each Tags call used, so a test can prove
+	// the tag read is scoped to the library's own module.
+	tagPatterns []string
 }
 
 func newFakeGit() *fakeGit {
@@ -34,8 +42,9 @@ func newFakeGit() *fakeGit {
 		pushErr:       map[string]error{},
 		remoteHeads:   map[string]string{},
 		localHeads:    map[string]string{},
-		notIn:         map[string][]string{},
+		notIn:         map[string][]Commit{},
 		notInErr:      map[string]error{},
+		deleteErr:     map[string]error{},
 		dirty:         map[string][]string{},
 		tags:          map[string][]string{},
 		log:           map[string][]string{},
@@ -54,8 +63,40 @@ func (git *fakeGit) DefaultBranch(_ context.Context, dir string) (string, error)
 }
 
 func (git *fakeGit) Fetch(_ context.Context, dir string) error {
+	git.calls = append(git.calls, "fetch "+dir)
 	git.fetched = append(git.fetched, dir)
 	return nil
+}
+
+// fetchedBefore proves a read of origin actually happened AND was preceded by
+// a fetch of the same worktree.
+//
+// It deliberately reports false when the read never happened at all: an
+// assertion that passes because the operation under test was skipped is the
+// vacuous-test failure mode, not evidence of freshness.
+func (git *fakeGit) fetchedBefore(read string) bool {
+	fetched := false
+	for _, call := range git.calls {
+		if strings.HasPrefix(call, "fetch ") && strings.TrimPrefix(call, "fetch ") == strings.Fields(read)[1] {
+			fetched = true
+			continue
+		}
+		if call == read {
+			return fetched
+		}
+	}
+	return false
+}
+
+// pushedBranches renders what was pushed, for a test that needs to prove the
+// publication window was actually entered.
+func (git *fakeGit) pushedBranches() []string {
+	branches := make([]string, 0, len(git.pushed))
+	for dir, branch := range git.pushed {
+		branches = append(branches, dir+" "+branch)
+	}
+	sort.Strings(branches)
+	return branches
 }
 
 func (git *fakeGit) PushBranch(_ context.Context, dir, branch string) (string, error) {
@@ -80,7 +121,8 @@ func (git *fakeGit) LocalHead(_ context.Context, dir string) (string, error) {
 	return git.localHeads[dir], nil
 }
 
-func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([]string, error) {
+func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([]Commit, error) {
+	git.calls = append(git.calls, "commits "+dir)
 	key := dir + " " + branch + " " + base
 	if err := git.notInErr[key]; err != nil {
 		return nil, err
@@ -88,11 +130,21 @@ func (git *fakeGit) CommitsNotIn(_ context.Context, dir, branch, base string) ([
 	return git.notIn[key], nil
 }
 
+func (git *fakeGit) DeleteRemoteBranch(_ context.Context, dir, branch string) error {
+	if err := git.deleteErr[dir+" "+branch]; err != nil {
+		return err
+	}
+	git.deleted = append(git.deleted, dir+" "+branch)
+	return nil
+}
+
 func (git *fakeGit) DirtyPaths(_ context.Context, dir string) ([]string, error) {
 	return git.dirty[dir], nil
 }
 
-func (git *fakeGit) Tags(_ context.Context, dir, _ string) ([]string, error) {
+func (git *fakeGit) Tags(_ context.Context, dir, pattern string) ([]string, error) {
+	git.calls = append(git.calls, "tags "+dir)
+	git.tagPatterns = append(git.tagPatterns, pattern)
 	return git.tags[dir], nil
 }
 
@@ -112,6 +164,7 @@ type fakeHub struct {
 	closed       []int
 	closeErr     map[int]error
 	retargeted   map[int]string
+	byNumber     map[int]PullRequest
 	mainStatus   map[string]string
 	mainErr      map[string]error
 }
@@ -125,6 +178,7 @@ func newFakeHub() *fakeHub {
 		targetingErr: map[string]error{},
 		closeErr:     map[int]error{},
 		retargeted:   map[int]string{},
+		byNumber:     map[int]PullRequest{},
 		mainStatus:   map[string]string{},
 		mainErr:      map[string]error{},
 	}
@@ -142,7 +196,13 @@ func (hub *fakeHub) CreateDraftPullRequest(_ context.Context, dir, base, head, t
 	}
 	hub.created = append(hub.created, pullRequest)
 	hub.byBranch[dir+" "+head] = pullRequest
+	hub.byNumber[pullRequest.Number] = pullRequest
 	return pullRequest, nil
+}
+
+func (hub *fakeHub) PullRequest(_ context.Context, _ string, number int) (PullRequest, bool, error) {
+	pullRequest, ok := hub.byNumber[number]
+	return pullRequest, ok, nil
 }
 
 func (hub *fakeHub) PullRequestForBranch(_ context.Context, dir, branch string) (PullRequest, bool, error) {
@@ -154,7 +214,13 @@ func (hub *fakeHub) OpenPullRequestsTargeting(_ context.Context, dir, base strin
 	if err := hub.targetingErr[dir+" "+base]; err != nil {
 		return nil, err
 	}
-	return hub.targeting[dir+" "+base], nil
+	found := hub.targeting[dir+" "+base]
+	for _, pullRequest := range found {
+		if _, ok := hub.byNumber[pullRequest.Number]; !ok {
+			hub.byNumber[pullRequest.Number] = pullRequest
+		}
+	}
+	return found, nil
 }
 
 func (hub *fakeHub) ClosePullRequest(_ context.Context, _ string, number int, _ string) error {
@@ -162,11 +228,19 @@ func (hub *fakeHub) ClosePullRequest(_ context.Context, _ string, number int, _ 
 		return err
 	}
 	hub.closed = append(hub.closed, number)
+	if pullRequest, ok := hub.byNumber[number]; ok {
+		pullRequest.State = "CLOSED"
+		hub.byNumber[number] = pullRequest
+	}
 	return nil
 }
 
 func (hub *fakeHub) RetargetPullRequest(_ context.Context, _ string, number int, base string) error {
 	hub.retargeted[number] = base
+	if pullRequest, ok := hub.byNumber[number]; ok {
+		pullRequest.Base = base
+		hub.byNumber[number] = pullRequest
+	}
 	return nil
 }
 
@@ -184,6 +258,11 @@ type fakeWorktrees struct {
 	created   []CreatedWorktree
 	removed   []string
 	removeErr map[string]error
+}
+
+func (worktrees *fakeWorktrees) PlannedWorktree(task, repository string) string {
+	owner, name, _ := strings.Cut(repository, "/")
+	return filepath.Join(worktrees.root, "worktrees", task, owner, name)
 }
 
 func (worktrees *fakeWorktrees) Create(_ context.Context, task, branch string, repositories []string) ([]CreatedWorktree, error) {

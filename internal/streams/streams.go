@@ -38,6 +38,27 @@ const SchemaVersion = 1
 // on, so it is exported rather than spelled out at each call site.
 const BranchPrefix = "stream/"
 
+// Phase is a stream's lifecycle position. It exists because a stream has a
+// state between "does not exist" and "usable": PhaseCreating names the window
+// in which worktrees, branches and draft pull requests are being published.
+//
+// Recording that window is what makes an interrupted `stream start`
+// recoverable: a half-created stream is a state a verb can see, so
+// `wb stream end` can retire exactly what was published. Without it, a crash
+// after the first push strands branches and pull requests no verb can reach.
+type Phase string
+
+const (
+	// PhaseCreating means the stream record exists and its side effects are
+	// being published. Every member carries its intended coordinates from the
+	// moment the record is written.
+	PhaseCreating Phase = "creating"
+	// PhaseOpen means every member was published successfully.
+	PhaseOpen Phase = "open"
+	// PhaseEnded means `wb stream end` retired it.
+	PhaseEnded Phase = "ended"
+)
+
 // Role separates the one repository whose published artifacts the others
 // resolve from the repositories that resolve them. Propagation direction is
 // not symmetric, so the distinction is part of the state rather than something
@@ -69,6 +90,12 @@ type Stream struct {
 	Name          string    `json:"name"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// Phase is the lifecycle position. An empty value reads as PhaseOpen so a
+	// record written by an older binary stays usable.
+	Phase Phase `json:"phase,omitempty"`
+	// ArchivedFrom is set when a stream was archived to free its name for a
+	// new stream. It records the name the record used to carry.
+	ArchivedFrom string `json:"archived_from,omitempty"`
 	// EndedAt is set by `wb stream end`. An ended stream is kept, not
 	// deleted: its event log and link history are the evidence a later
 	// report is built from, and `work-and-event-logs-are-never-pruned`
@@ -185,8 +212,22 @@ func (stream Stream) Member(repository string) (Member, bool) {
 	return Member{}, false
 }
 
-// Open reports whether the stream has not been ended.
-func (stream Stream) Open() bool { return stream.EndedAt == nil }
+// Open reports whether the stream still holds its repositories — which is true
+// while it is being created as well as once it is usable. A repository is only
+// released by ending the stream.
+func (stream Stream) Open() bool { return stream.Lifecycle() != PhaseEnded }
+
+// Lifecycle resolves the phase, treating an empty value as PhaseOpen so a
+// record written before phases existed keeps its meaning.
+func (stream Stream) Lifecycle() Phase {
+	if stream.Phase != "" {
+		return stream.Phase
+	}
+	if stream.EndedAt != nil {
+		return PhaseEnded
+	}
+	return PhaseOpen
+}
 
 // LiveLinks returns every live link the stream currently records, paired with
 // the consumer repository holding it.
@@ -198,6 +239,33 @@ func (stream Stream) LiveLinks() []MemberLink {
 		}
 	}
 	return live
+}
+
+// Commit is one commit on a stream branch, identified by its patch rather than
+// only by its SHA.
+//
+// A rebase-and-merge landing rewrites SHAs by construction, and one body of
+// work re-applied on two branches has two SHAs and one patch. Clustering by
+// patch identity — Git's own `patch-id --stable` — is what lets
+// `stream-backlog-is-counted-by-patch-identity` name N branches carrying one
+// change as one item. Subject text is a label, never the identity.
+type Commit struct {
+	SHA     string `json:"sha"`
+	Subject string `json:"subject"`
+	// PatchID is `git patch-id --stable` over the commit's diff. It is empty
+	// only when Git could not produce one (an empty commit, for example), and
+	// an empty value is never treated as equal to another empty value.
+	PatchID string `json:"patch_id,omitempty"`
+}
+
+// Identity is what two commits are compared on. It falls back to the SHA when
+// no patch id exists, so two commits WB could not compare never collapse into
+// one cluster by accident.
+func (commit Commit) Identity() string {
+	if commit.PatchID != "" {
+		return "patch:" + commit.PatchID
+	}
+	return "sha:" + commit.SHA
 }
 
 // MemberLink pairs a link with the member that holds it.
