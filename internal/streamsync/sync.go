@@ -2,7 +2,9 @@ package streamsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,16 +43,38 @@ type Options struct {
 	AllowMidReview bool
 	// PushTrigger and PushReason justify a push. Empty means no push, which
 	// is the normal outcome: sync's whole point is that bumps stay local.
+	// A justified trigger performs a REAL push, verified against the remote.
 	PushTrigger PushTrigger
 	PushReason  string
+	// RecordedRemoteHead is the stream head WB last recorded, used as the
+	// --force-with-lease expectation.
+	RecordedRemoteHead string
 	// Timeout bounds each verification run.
 	Timeout time.Duration
 }
 
+// Bump actions are contract: the report and the exit code branch on them.
+const (
+	// BumpApplied means one commit was written.
+	BumpApplied = "bumped"
+	// BumpAtTarget means the consumer already requires the target — the
+	// normal outcome when Renovate landed it first.
+	BumpAtTarget = "already-at-target"
+	// BumpNotRequired means the consumer does not declare the library.
+	BumpNotRequired = "not-required"
+	// BumpUnreadableVersion means WB could not compare the declared version.
+	// It is deliberately NOT "already-at-target": no commit is written either
+	// way, but claiming the consumer is at target is an assertion WB cannot
+	// support, and a false assurance is worse than no answer.
+	BumpUnreadableVersion = "version-unreadable"
+	// BumpFailed means the manifest edit or the lockfile refresh failed.
+	BumpFailed = "failed"
+)
+
 // BumpResult is one library's outcome.
 type BumpResult struct {
 	Library Library `json:"library"`
-	// Action is "bumped", "already-at-target", "not-required" or "failed".
+	// Action is one of the Bump* constants.
 	Action string `json:"action"`
 	// Required is the version the consumer required after the rebase.
 	Required string `json:"required,omitempty"`
@@ -84,7 +108,8 @@ type Result struct {
 	Batch *BatchResult `json:"batch,omitempty"`
 	// Unpushed is what the operator sees accumulating locally.
 	Unpushed UnpushedReport `json:"unpushed"`
-	// Push is set only when a trigger justified one.
+	// Push is set only when a trigger justified one AND the push landed. It
+	// carries the SHA the remote actually holds.
 	Push *PushDecision `json:"push,omitempty"`
 	// PushSkipped states, in words, that the remote was left untouched.
 	PushSkipped string   `json:"push_skipped,omitempty"`
@@ -95,6 +120,14 @@ type Result struct {
 func (result Result) Failed() bool {
 	if len(result.Errors) > 0 {
 		return true
+	}
+	for _, bump := range result.Bumps {
+		// A bump whose manifest edit or lockfile refresh failed is a failure.
+		// Reporting exit 0 told the operator all was well while the tree
+		// carried a half-applied manifest.
+		if bump.Action == BumpFailed {
+			return true
+		}
 	}
 	if result.Batch != nil && !result.Batch.Passed {
 		return true
@@ -131,6 +164,15 @@ type Engine struct {
 // required version is already at target and no commit is written. Comparing
 // first would write a duplicate bump on top of one that already landed.
 func (engine *Engine) Sync(ctx context.Context, options Options) (Result, error) {
+	result, err := engine.sync(ctx, options)
+	// ONE event per invocation, on EVERY exit. Writing events only on the
+	// success paths left a timeline in which syncs simply stopped happening,
+	// with no record of the conflict or refusal that stopped them.
+	engine.recordOutcome(options, result, err)
+	return result, err
+}
+
+func (engine *Engine) sync(ctx context.Context, options Options) (Result, error) {
 	result := Result{Stream: options.Stream, Repository: options.Repository}
 
 	// Fences before side effects: a branch under review must not be rebased
@@ -254,9 +296,20 @@ func (engine *Engine) Sync(ctx context.Context, options Options) (Result, error)
 	if err != nil {
 		return result, err
 	}
+	// The push HAPPENS. Setting result.Push and writing a success event
+	// without pushing reported an effect that did not exist.
+	sha, pushErr := engine.Git.PushWithLease(ctx, options.Worktree, options.Branch, options.RecordedRemoteHead)
+	if pushErr != nil {
+		result.Errors = append(result.Errors, "push refused or failed: "+pushErr.Error())
+		engine.record(options, "push", "findings", pushErr.Error(), map[string]string{
+			"trigger": string(decision.Trigger), "reason": decision.Reason,
+		})
+		return result, nil
+	}
+	decision.SHA = sha
 	result.Push = &decision
-	engine.record(options, "push", "success", "push justified", map[string]string{
-		"trigger": string(decision.Trigger), "reason": decision.Reason,
+	engine.record(options, "push", "success", "pushed "+options.Branch, map[string]string{
+		"trigger": string(decision.Trigger), "reason": decision.Reason, "sha": sha,
 	})
 	return result, nil
 }
@@ -271,32 +324,46 @@ func (engine *Engine) bump(ctx context.Context, options Options, library Library
 	}
 	outcome.Required = required
 	if !found {
-		outcome.Action = "not-required"
+		outcome.Action = BumpNotRequired
+		return outcome
+	}
+	if !comparable(required, library.Target) {
+		outcome.Action = BumpUnreadableVersion
+		outcome.Detail = fmt.Sprintf(
+			"cannot compare declared %q against target %q, so no bump was written; WB will not rewrite a manifest on a comparison it could not make",
+			required, library.Target)
 		return outcome
 	}
 	// The comparison that makes sync idempotent: a version already at or above
 	// the target gets no commit, so a bump Renovate landed is neither
 	// rewritten nor reverted, and a second sync writes nothing at all.
 	if !below(required, library.Target) {
-		outcome.Action = "already-at-target"
+		outcome.Action = BumpAtTarget
 		return outcome
 	}
+	// The pre-apply head is captured so a failed apply can be undone. A
+	// half-applied manifest left on disk makes the NEXT sync refuse as
+	// dirty and tell the operator to commit a bump whose lockfile never
+	// refreshed — the poisoned commit the batch model exists to prevent.
+	before, headErr := engine.Git.Head(ctx, options.Worktree, "HEAD")
 	if err := engine.Bumper.Apply(ctx, options.Worktree, library); err != nil {
-		outcome.Action, outcome.Detail = "failed", err.Error()
+		outcome.Action, outcome.Detail = BumpFailed, err.Error()
+		engine.restoreAfterFailedBump(ctx, options, &outcome, before, headErr)
 		return outcome
 	}
 	sha, committed, err := engine.Git.CommitAll(ctx, options.Worktree, BumpMessage(library, required))
 	if err != nil {
-		outcome.Action, outcome.Detail = "failed", err.Error()
+		outcome.Action, outcome.Detail = BumpFailed, err.Error()
+		engine.restoreAfterFailedBump(ctx, options, &outcome, before, headErr)
 		return outcome
 	}
 	if !committed {
 		// Apply changed nothing, so there is nothing to record. Writing an
 		// empty commit here would make a re-run non-idempotent.
-		outcome.Action = "already-at-target"
+		outcome.Action = BumpAtTarget
 		return outcome
 	}
-	outcome.Action, outcome.Commit = "bumped", sha
+	outcome.Action, outcome.Commit = BumpApplied, sha
 	engine.record(options, "bump", "success", BumpMessage(library, required), map[string]string{
 		"library": library.Name, "from": required, "to": library.Target, "commit": sha,
 	})
@@ -308,10 +375,26 @@ func BumpMessage(library Library, from string) string {
 	return fmt.Sprintf("fix(deps): %s %s → %s", library.Name, from, library.Target)
 }
 
+// restoreAfterFailedBump returns the worktree to the state sync found it in.
+//
+// Leaving the partial edit behind is worse than the failed bump: the next sync
+// refuses as dirty and its sanctioned command tells the operator to commit it.
+func (engine *Engine) restoreAfterFailedBump(ctx context.Context, options Options, outcome *BumpResult, before string, headErr error) {
+	if headErr != nil || before == "" {
+		outcome.Detail += "; the pre-bump head could not be read, so the worktree was NOT restored — inspect it before re-running"
+		return
+	}
+	if err := engine.Git.RestoreTo(ctx, options.Worktree, before); err != nil {
+		outcome.Detail += "; the worktree could not be restored to " + before + ": " + err.Error()
+		return
+	}
+	outcome.Detail += "; the worktree was restored to " + before
+}
+
 func (engine *Engine) bumpCommits(result Result) []Element {
 	elements := make([]Element, 0, len(result.Bumps))
 	for _, bump := range result.Bumps {
-		if bump.Action != "bumped" || bump.Commit == "" {
+		if bump.Action != BumpApplied || bump.Commit == "" {
 			continue
 		}
 		elements = append(elements, Element{
@@ -320,6 +403,54 @@ func (engine *Engine) bumpCommits(result Result) []Element {
 		})
 	}
 	return elements
+}
+
+// recordOutcome writes the invocation's single terminal event.
+func (engine *Engine) recordOutcome(options Options, result Result, err error) {
+	outcome, detail := "success", ""
+	evidence := map[string]string{}
+	var refusal *Refusal
+	switch {
+	case errors.As(err, &refusal):
+		outcome, detail = "refused", refusal.Message
+		evidence["refusal_code"] = refusal.Code
+	case err != nil:
+		outcome, detail = "findings", err.Error()
+	case result.Failed():
+		outcome = "findings"
+		detail = strings.Join(result.failureSummary(), "; ")
+	default:
+		detail = fmt.Sprintf("%d bump(s), %d agent branch(es)", len(result.Bumps), len(result.AgentRebases))
+	}
+	evidence["unpushed"] = strconv.Itoa(result.Unpushed.Commits)
+	if result.Push != nil {
+		evidence["pushed"] = result.Push.SHA
+	}
+	engine.record(options, "complete", outcome, detail, evidence)
+}
+
+// failureSummary names every reason the invocation needs attention, so the
+// terminal event says which of them fired rather than only that one did.
+func (result Result) failureSummary() []string {
+	var reasons []string
+	reasons = append(reasons, result.Errors...)
+	for _, rebase := range result.AgentRebases {
+		if len(rebase.Conflicts) > 0 {
+			reasons = append(reasons, rebase.Branch+" conflicts: "+strings.Join(rebase.Conflicts, ", "))
+		}
+	}
+	for _, bump := range result.Bumps {
+		if bump.Action == BumpFailed {
+			reasons = append(reasons, bump.Library.Name+" bump failed: "+bump.Detail)
+		}
+	}
+	if result.Batch != nil && !result.Batch.Passed {
+		reasons = append(reasons, "batch verification failed")
+	}
+	if !result.StreamRebase.Rebased {
+		reasons = append(reasons, "the stream branch was not rebased")
+	}
+	return reasons
 }
 
 func (engine *Engine) record(options Options, phase, outcome, detail string, evidence map[string]string) {

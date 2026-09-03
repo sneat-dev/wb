@@ -171,9 +171,9 @@ func TestSkippedMechanismsAreOnlyClaimedWhenCIProvablyRunsThem(t *testing.T) {
 	}
 }
 
-// With no way to read CI, nothing may be claimed as covered: an unverified
-// "CI owns it" is worse than no gate.
-func TestWithoutCIEvidenceNothingIsClaimedAsCovered(t *testing.T) {
+// With no way to read CI, nothing may be claimed as covered — and nothing may
+// be claimed as ABSENT either. "I could not tell" is its own answer.
+func TestWithoutCIEvidenceNothingIsClaimedEitherWay(t *testing.T) {
 	engine, _, _, verifier, _ := newTestEngine()
 	engine.CI = nil
 	verifier.runs = []VerificationRun{{Passed: true, Skipped: []string{"-race"}}}
@@ -185,8 +185,72 @@ func TestWithoutCIEvidenceNothingIsClaimedAsCovered(t *testing.T) {
 	if len(result.Skipped) != 0 {
 		t.Fatalf("skipped = %v; nothing may be claimed without evidence", result.Skipped)
 	}
-	if len(result.Unguarded) != 1 {
-		t.Fatalf("unguarded = %v, want the mechanism reported as unguarded", result.Unguarded)
+	if len(result.Unguarded) != 0 {
+		t.Fatalf("unguarded = %v; WB does not know CI lacks it", result.Unguarded)
+	}
+	if len(result.Unverified) != 1 {
+		t.Fatalf("unverified = %v, want the mechanism reported as undecidable", result.Unverified)
+	}
+}
+
+// SF-2. A reusable workflow's body lives in another repository, so a mechanism
+// it might run is UNVERIFIED — reporting it unguarded asserts something WB
+// does not know.
+func TestAReusableWorkflowMakesAMechanismUnverifiedNotUnguarded(t *testing.T) {
+	engine, _, _, verifier, _ := newTestEngine()
+	engine.CI = fakeCI{present: map[string]bool{}, opaque: true}
+	verifier.runs = []VerificationRun{{Passed: true, Skipped: []string{"-race"}}}
+
+	result, err := engine.VerifyBatch(context.Background(), baseOptions(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Unguarded) != 0 {
+		t.Fatalf("unguarded = %v; an opaque callee is not evidence of absence", result.Unguarded)
+	}
+	if len(result.Unverified) != 1 || !strings.Contains(result.Unverified[0], "reusable workflow") {
+		t.Fatalf("unverified = %v, want the reusable workflow named", result.Unverified)
+	}
+}
+
+// SF-3. The batch base is the first element's PARENT, not head~N: absorbed
+// agent commits will not be the topmost N commits, and this type is shared
+// with absorb.
+func TestTheBatchBaseComesFromTheFirstElementsParent(t *testing.T) {
+	engine, git, _, verifier, _ := newTestEngine()
+	git.heads["sha-1^"] = "real-base-sha"
+	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"boom"}}, {Passed: false, Details: []string{"boom"}}}
+
+	result, err := engine.VerifyBatch(context.Background(), baseOptions(), tenElements())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Culprit == nil {
+		t.Fatal("expected a culprit")
+	}
+	found := false
+	for _, call := range git.calls {
+		if strings.Contains(call, "create-branch") && strings.Contains(call, "real-base-sha") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("calls = %v; the scratch branch must start at the first element's parent", git.calls)
+	}
+}
+
+// SF-4. The scan stops at the first failing prefix by design, so the report
+// says how many elements it never examined.
+func TestTheReportSaysHowManyElementsWereNeverExamined(t *testing.T) {
+	engine, _, _, verifier, _ := newTestEngine()
+	verifier.runs = []VerificationRun{{Passed: false, Details: []string{"boom"}}, {Passed: false, Details: []string{"boom"}}}
+
+	result, err := engine.VerifyBatch(context.Background(), baseOptions(), tenElements())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.UnexaminedElements != 9 {
+		t.Fatalf("unexamined = %d, want the nine after the culprit", result.UnexaminedElements)
 	}
 }
 

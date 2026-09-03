@@ -113,10 +113,27 @@ A mechanism the local run skips (`-race`, by design) is only ever printed as
 "CI owns it" **after WB reads the member's stream-PR workflows and proves CI
 runs it**. Anything neither side carries is reported as **UNGUARDED**.
 
+#### `wb stream sync` refusals
+
+| refusal | what fired | do this |
+|---|---|---|
+| `review-in-progress` | a branch under review would be rebased, invalidating the review that pinned its patch set | wait for the verdict, or `wb stream sync <name> --allow-mid-review` |
+| `dirty-worktree` | sync rebases and commits, so it will not run over uncommitted work | commit or stash, then re-run |
+| `unjustified-push` | `--push` without `--reason`, or a trigger WB does not recognise | `--push --reason "<text>"`, or use the verb that owns the trigger |
+
+A **failed bump** fails the run (exit 1) and the worktree is **restored** to the
+state sync found it in — a half-applied manifest would make the next sync refuse
+as dirty and tell you to commit a bump whose lockfile never refreshed.
+
+A version WB cannot compare is reported as `version-unreadable`, not as
+"already at target": no commit is written either way, but only one of those is
+a claim WB can support.
+
 ### Pushes are justified and counted
 
-**`wb stream sync` never pushes.** A push costs agent time, tokens, CI minutes
-and money, and ten bumps pushed one at a time cost ten of each for one landing.
+**`wb stream sync` does not push unless you give it a trigger.** A push costs
+agent time, tokens, CI minutes and money, and ten bumps pushed one at a time
+cost ten of each for one landing.
 
 A push happens only on one of exactly **four triggers**:
 
@@ -127,10 +144,14 @@ A push happens only on one of exactly **four triggers**:
 | `park` | `wb worktree end`, a session park, any hand-off that would lose work |
 | `explicit` | `--push --reason "<text>"` — the only escape hatch, reason **mandatory** |
 
-A push with no recognised trigger is **refused**, listing all four. Every push
-writes an event carrying its trigger and reason. A sync with no trigger leaves
-the remote untouched **and says so**; `wb stream status` shows the local commits
-accumulating.
+A push with no recognised trigger is **refused**, listing all four. When a
+trigger IS given, `wb stream sync --push --reason "<text>"` performs a **real**
+push — `--force-with-lease` against the head WB recorded, then re-reading the
+ref to prove the intended commit landed — and the event follows the real
+outcome. A push that fails is reported as a failure, never as a success.
+
+A sync with no trigger leaves the remote untouched **and says so**;
+`wb stream status` shows the local commits accumulating.
 
 ### `wb stream status [name]`
 

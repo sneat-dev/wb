@@ -58,7 +58,13 @@ happens only on one of four named triggers: landing after a green batch, the
 draft stream pull request being made ready for review, park, or an explicit
 --push --reason "<text>". A dependency bump is not a trigger. Without one, the
 remote is left untouched and the report says so, and 'wb stream status' shows
-the local commits accumulating.
+the local commits accumulating. With a trigger the push is real: --force-with-lease
+against the head WB recorded, then the ref is re-read to prove the intended
+commit landed.
+
+A failed bump fails the run and the worktree is restored to the state sync found
+it in; a version WB cannot compare is reported as version-unreadable rather than
+as already-at-target.
 
 Refusals (exit 2):
   review-in-progress  a branch under review would be rebased, invalidating it —
@@ -104,7 +110,11 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 			}
 
 			results := make([]streamsync.Result, 0, len(stream.Members))
-			for _, member := range stream.Consumers() {
+			// Every MEMBER, not only the consumers: the library has its own
+			// stream/<name> branch and its base moves too. The bumps are
+			// consumer-only, but the rebase is not — an empty Libraries set
+			// makes the library's bump phase a no-op by itself.
+			for _, member := range stream.Members {
 				if member.Worktree == "" {
 					continue
 				}
@@ -112,10 +122,16 @@ wb stream sync checkout-rewrite --push --reason "handing off to the release lane
 				if base != "" {
 					memberBase = base
 				}
+				memberLibraries := parsed
+				if member.Role == streams.RoleLibrary {
+					// A library does not bump itself to its own version.
+					memberLibraries = nil
+				}
 				result, syncErr := engine.Sync(command.Context(), streamsync.Options{
 					Stream: stream.Name, Worktree: member.Worktree, Repository: member.Repository,
-					Branch: member.Branch, Base: memberBase, Libraries: parsed,
-					Verify: verify, AllowMidReview: allowMidReview,
+					Branch: member.Branch, Base: memberBase, Libraries: memberLibraries,
+					RecordedRemoteHead: member.Lease.RecordedHead,
+					Verify:             verify, AllowMidReview: allowMidReview,
 					PushTrigger: trigger, PushReason: reason, Timeout: timeout,
 				})
 				if syncErr != nil {
@@ -212,7 +228,7 @@ func printStreamSync(command *cobra.Command, format string, results []streamsync
 				}
 			}
 			if result.Push != nil {
-				if _, err := fmt.Fprintf(out, "  push: trigger=%s reason=%s\n", result.Push.Trigger, result.Push.Reason); err != nil {
+				if _, err := fmt.Fprintf(out, "  pushed %s: trigger=%s reason=%s\n", result.Push.SHA, result.Push.Trigger, result.Push.Reason); err != nil {
 					return err
 				}
 			}
@@ -260,6 +276,18 @@ func printBatch(out interface{ Write([]byte) (int, error) }, batch streamsync.Ba
 			return err
 		}
 	}
+	for _, unverified := range batch.Unverified {
+		if _, err := fmt.Fprintf(out, "    ? UNVERIFIED: %s — WB could not tell whether CI runs it\n", unverified); err != nil {
+			return err
+		}
+	}
+	if batch.UnexaminedElements > 0 {
+		if _, err := fmt.Fprintf(out,
+			"    the scan stops at the first failing prefix, so %d element(s) after the culprit were never examined\n",
+			batch.UnexaminedElements); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -300,25 +328,31 @@ func (verifier batchVerifier) Verify(ctx context.Context, dir string) (streamsyn
 // actually carry, so "CI owns it" is evidence rather than an assumption.
 type workflowMechanisms struct{}
 
-func (workflowMechanisms) Present(dir string) (map[string]bool, error) {
+func (workflowMechanisms) Present(dir string) (map[string]bool, bool, error) {
 	workflows, err := ciaudit.StreamConcurrency(dir)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	present := map[string]bool{}
+	opaque := false
 	for _, workflow := range workflows {
 		if !workflow.PullRequest {
 			continue
 		}
-		mechanisms, err := ciaudit.WorkflowMechanisms(dir, workflow.Workflow)
+		mechanisms, reusable, err := ciaudit.WorkflowMechanismsWithReuse(dir, workflow.Workflow)
 		if err != nil {
-			return nil, err
+			return nil, false, err
+		}
+		if reusable {
+			// A reusable workflow's body is in another repository, so WB
+			// cannot prove what it runs.
+			opaque = true
 		}
 		for mechanism := range mechanisms {
 			present[mechanism] = true
 		}
 	}
-	return present, nil
+	return present, opaque, nil
 }
 
 // streamEventSink adapts the stream event log to the sync engine.

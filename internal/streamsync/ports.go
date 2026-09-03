@@ -10,9 +10,11 @@
 //     and on failure find the culprit by cumulative prefix re-apply on a local
 //     scratch branch that is never pushed.
 //
-// Nothing here pushes. Under `pushes-are-justified-and-counted` a push happens
-// only on one of four named triggers, and a dependency bump is never one of
-// them: bumps are local commits on the stream branch, verified once as a batch.
+// Sync pushes ONLY on a justified trigger. Under
+// `pushes-are-justified-and-counted` a dependency bump is never one: bumps are
+// local commits on the stream branch, verified once as a batch. When a trigger
+// IS given, the push really happens and is verified — reporting a push that did
+// not occur is the failure `verbs-assert-effects-not-exit-codes` forbids.
 //
 // Implements: dependency-streams#req:sync-rebases-and-never-merges,
 // dependency-streams#req:sync-is-idempotent-against-landed-bumps,
@@ -68,6 +70,14 @@ type Git interface {
 	DeleteBranch(ctx context.Context, dir, branch string) error
 	// IsClean reports whether the worktree has no uncommitted change.
 	IsClean(ctx context.Context, dir string) (bool, error)
+	// RestoreTo discards every change and returns the worktree to a revision.
+	// A bump whose lockfile refresh failed must not be left half-applied.
+	RestoreTo(ctx context.Context, dir, revision string) error
+	// PushWithLease publishes branch using --force-with-lease against the head
+	// WB last recorded, and verifies the ref it pushed. A rebase of a shared
+	// branch is a force-push, and a bare force discards whatever another agent
+	// pushed in between.
+	PushWithLease(ctx context.Context, dir, branch, expectedRemoteHead string) (sha string, err error)
 }
 
 // Bumper applies one library's version bump inside the stream worktree.
@@ -123,7 +133,10 @@ type Verifier interface {
 // only after proving CI actually runs it. An unverified "CI owns it" is worse
 // than no gate, so this is a read of the workflows rather than an assumption.
 type CIMechanisms interface {
-	Present(dir string) (mechanisms map[string]bool, err error)
+	// Present reports which mechanisms the stream-PR workflows carry, and
+	// whether any of them calls a REUSABLE workflow whose body WB cannot
+	// read. An opaque callee makes a mechanism unverified, never absent.
+	Present(dir string) (mechanisms map[string]bool, opaque bool, err error)
 }
 
 // Events records what a verb did.
