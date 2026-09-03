@@ -69,6 +69,9 @@ type ConsumerResult struct {
 	Reason  string `json:"reason,omitempty"`
 	// Links are the links created (or removed, under --undo).
 	Links []streams.Link `json:"links,omitempty"`
+	// SkippedChecks name guarantees that could not be evaluated at all, so a
+	// silent pass is never mistaken for a proven one.
+	SkippedChecks []string `json:"skipped_checks,omitempty"`
 	// Verification is the single-worker run against the linked copy.
 	Verification *Verification `json:"verification,omitempty"`
 	// Errors are per-consumer failures. One consumer's failure never stops
@@ -165,30 +168,40 @@ func (engine *Engine) link(ctx context.Context, options Options) (Result, error)
 		Library: library, ContentHash: hash, Dirty: dirty, Identities: identities,
 		Plan: linkPlan(identities, options.Verify),
 	}
-	stream, member, found, err := engine.resolveStream(options)
+	// Membership is resolved PER CONSUMER. Resolving it from the library was
+	// the defect: a stream holding the library made every link look
+	// recordable, including one into a worktree no member names — which then
+	// wrote go.work, recorded nothing, and exited 0.
+	libraryRepository, err := engine.libraryRepository(options, library)
 	if err != nil {
 		return result, err
 	}
-	if found {
-		result.Stream = stream
-		result.LibraryRepository = member
+	result.LibraryRepository = libraryRepository
+
+	consumerStreams, unrecordable, err := engine.resolveConsumerStreams(options)
+	if err != nil {
+		return result, err
 	}
-	// A link WB cannot record is a link `--undo` can never reverse and the
-	// merge guard's state signal can never see. Refusing before anything
-	// touches the filesystem is the only outcome that leaves nothing behind;
-	// writing it and reporting success would strand an un-undoable link.
-	if !found {
+	// Every fence runs before the first side effect: if ANY consumer cannot be
+	// recorded, nothing is linked at all. A link WB cannot record is one
+	// `--undo` can never reverse and the merge guard's state signal can never
+	// see.
+	if len(unrecordable) > 0 {
 		return result, &Refusal{
 			Code: RefusalNotRecordable,
 			Message: fmt.Sprintf(
-				"no open stream holds %s, so a link to it could not be recorded — and an unrecorded link cannot be undone",
-				strings.Join(options.Consumers, ", ")),
+				"no open stream has %s as a member, so a link into it could not be recorded — and an unrecorded link cannot be undone",
+				strings.Join(unrecordable, ", ")),
 			Sanctioned: []string{
-				"wb stream start <name> <owner/repository>...",
 				"wb stream join <name> <owner/repository>",
+				"wb stream start <name> <owner/repository>...",
 				"wb deps propagate local " + library + " --to <consumer> --stream <name>",
 			},
 		}
+	}
+	for _, name := range consumerStreams {
+		result.Stream = name
+		break
 	}
 
 	for _, consumerPath := range options.Consumers {
@@ -197,7 +210,7 @@ func (engine *Engine) link(ctx context.Context, options Options) (Result, error)
 			result.Consumers = append(result.Consumers, ConsumerResult{Consumer: consumerPath, Errors: []string{err.Error()}})
 			continue
 		}
-		result.Consumers = append(result.Consumers, engine.linkConsumer(ctx, options, result, library, consumer, identities, hash))
+		result.Consumers = append(result.Consumers, engine.linkConsumer(ctx, options, result, consumerStreams[consumer], library, consumer, identities, hash))
 	}
 	if options.Verify {
 		engine.verifyConsumers(ctx, options, &result)
@@ -244,6 +257,7 @@ func (engine *Engine) linkConsumer(
 	ctx context.Context,
 	options Options,
 	result Result,
+	stream string,
 	library, consumer string,
 	identities []streams.Identity,
 	hash string,
@@ -278,9 +292,17 @@ func (engine *Engine) linkConsumer(
 			return outcome
 		}
 		if err := engine.Node.FrozenInstall(ctx, consumer); err != nil {
-			outcome.Errors = append(outcome.Errors, fmt.Sprintf(
-				"prove a clean frozen install of %s before linking: %v", consumer, err))
-			return outcome
+			// A check that could not run is reported as skipped, not as a
+			// pass and not as a failure: the consumer has no lockfile, so
+			// there is no baseline to prove, and the operator has to see that
+			// rather than infer it from silence.
+			if skipped, wasSkipped := Skipped(err); wasSkipped {
+				outcome.SkippedChecks = append(outcome.SkippedChecks, skipped.Error())
+			} else {
+				outcome.Errors = append(outcome.Errors, fmt.Sprintf(
+					"prove a clean frozen install of %s before linking: %v", consumer, err))
+				return outcome
+			}
 		}
 	}
 
@@ -291,7 +313,7 @@ func (engine *Engine) linkConsumer(
 	// disk with nothing recorded: the guard fired on the file, `--undo`
 	// reported "nothing to undo", and the worktree could never be landed.
 	intended := intendedLinks(library, result.LibraryRepository, hash, goDeclarations, npmDeclarations, engine.now())
-	if err := engine.recordLinks(result.Stream, consumer, intended); err != nil {
+	if err := engine.recordLinks(stream, consumer, intended); err != nil {
 		outcome.Errors = append(outcome.Errors, err.Error())
 		return outcome
 	}
@@ -317,7 +339,7 @@ func (engine *Engine) linkConsumer(
 	// the guard must stay closed until the filesystem is provably clean, and
 	// `--undo` is what proves it.
 	if len(applied) > 0 {
-		if err := engine.recordLinks(result.Stream, consumer, applied); err != nil {
+		if err := engine.recordLinks(stream, consumer, applied); err != nil {
 			outcome.Errors = append(outcome.Errors, err.Error())
 		}
 	}
@@ -400,32 +422,28 @@ func newPaths(before, after []string) []string {
 	return introduced
 }
 
-// resolveStream finds the stream that owns the first consumer worktree, so the
-// links are recorded where `status`, `end` and the merge refusal already look.
-func (engine *Engine) resolveStream(options Options) (stream, libraryRepository string, found bool, err error) {
+// openStreams returns every open stream, refusing while any record is
+// unreadable: a stream WB cannot read may be the one that holds a consumer, so
+// resolving membership against a partial view would record a link in the wrong
+// place — or, worse, conclude there is nowhere to record it.
+func (engine *Engine) openStreams(options Options) ([]streams.Stream, error) {
 	if engine.Store == nil {
-		return "", "", false, nil
+		return nil, nil
 	}
 	all, unreadable, err := engine.Store.List()
 	if err != nil {
-		return "", "", false, err
+		return nil, err
 	}
 	if len(unreadable) > 0 {
-		// A stream WB could not read may hold the link this call is about to
-		// create, so resolving "which stream records this" against a partial
-		// view would silently record the link in the wrong place.
 		names := make([]string, 0, len(unreadable))
 		for _, broken := range unreadable {
 			names = append(names, broken.Name+" ("+broken.Reason+")")
 		}
-		return "", "", false, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"stream state is unreadable for %s; fix or remove it before linking, so the link is recorded against the right stream",
 			strings.Join(names, ", "))
 	}
-	library, err := filepath.Abs(options.Library)
-	if err != nil {
-		return "", "", false, err
-	}
+	open := make([]streams.Stream, 0, len(all))
 	for _, candidate := range all {
 		if !candidate.Open() {
 			continue
@@ -433,34 +451,66 @@ func (engine *Engine) resolveStream(options Options) (stream, libraryRepository 
 		if options.Stream != "" && candidate.Name != options.Stream {
 			continue
 		}
+		open = append(open, candidate)
+	}
+	return open, nil
+}
+
+// libraryRepository names the library's owner/repository when a stream happens
+// to hold it. It is provenance only — a library outside every stream is legal,
+// and it never decides whether a CONSUMER can be recorded.
+func (engine *Engine) libraryRepository(options Options, library string) (string, error) {
+	open, err := engine.openStreams(options)
+	if err != nil {
+		return "", err
+	}
+	for _, candidate := range open {
 		for _, member := range candidate.Members {
 			if sameWorktree(member.Worktree, library) {
-				return candidate.Name, member.Repository, true, nil
+				return member.Repository, nil
 			}
 		}
 	}
-	// The library may not be a member — a link into a repository outside the
-	// stream is legal — so fall back to the stream holding a consumer.
-	for _, candidate := range all {
-		if !candidate.Open() {
-			continue
+	return "", nil
+}
+
+// resolveConsumerStreams maps each consumer worktree to the open stream that
+// has it as a MEMBER, and names the consumers no stream holds.
+//
+// Membership is per consumer because that is where the link is recorded. An
+// earlier version answered from the library alone, so a stream holding the
+// library made every link look recordable — including a link into a worktree no
+// member named, which wrote go.work, recorded nothing, and exited 0.
+func (engine *Engine) resolveConsumerStreams(options Options) (map[string]string, []string, error) {
+	open, err := engine.openStreams(options)
+	if err != nil {
+		return nil, nil, err
+	}
+	resolved := map[string]string{}
+	var unrecordable []string
+	for _, consumerPath := range options.Consumers {
+		consumer, absErr := filepath.Abs(consumerPath)
+		if absErr != nil {
+			return nil, nil, absErr
 		}
-		if options.Stream != "" && candidate.Name != options.Stream {
-			continue
-		}
-		for _, consumer := range options.Consumers {
-			absolute, absErr := filepath.Abs(consumer)
-			if absErr != nil {
-				continue
-			}
+		found := false
+		for _, candidate := range open {
 			for _, member := range candidate.Members {
-				if sameWorktree(member.Worktree, absolute) {
-					return candidate.Name, "", true, nil
+				if sameWorktree(member.Worktree, consumer) {
+					resolved[consumer] = candidate.Name
+					found = true
+					break
 				}
 			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			unrecordable = append(unrecordable, consumer)
 		}
 	}
-	return "", "", false, nil
+	return resolved, unrecordable, nil
 }
 
 // recordLinks writes one consumer's links into stream state.
@@ -470,19 +520,33 @@ func (engine *Engine) resolveStream(options Options) (stream, libraryRepository 
 // signal will never see. It is called before the filesystem changes and again
 // after, so the record never lags the disk in either direction.
 func (engine *Engine) recordLinks(stream, consumer string, links []streams.Link) error {
-	if engine.Store == nil || stream == "" || len(links) == 0 {
+	if engine.Store == nil || len(links) == 0 {
 		return nil
 	}
+	if stream == "" {
+		return fmt.Errorf(
+			"no stream was resolved for %s, so its link could not be recorded; refusing rather than writing a link nothing can undo", consumer)
+	}
+	matched := false
 	if _, err := engine.Store.Update(stream, func(current *streams.Stream) error {
 		for index := range current.Members {
 			if !sameWorktree(current.Members[index].Worktree, consumer) {
 				continue
 			}
+			matched = true
 			current.Members[index].Links = mergeLinks(current.Members[index].Links, links)
 		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("record links in stream %s: %w", stream, err)
+	}
+	// An update that matched no member wrote nothing. Reporting success here
+	// is what let an unrecorded link reach the filesystem, so it is an error
+	// rather than a silent no-op.
+	if !matched {
+		return fmt.Errorf(
+			"stream %s has no member at %s, so the link could not be recorded; refusing rather than writing a link nothing can undo",
+			stream, consumer)
 	}
 	return nil
 }

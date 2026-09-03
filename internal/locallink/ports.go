@@ -1,6 +1,9 @@
 package locallink
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Git is the local Git surface local propagation needs. Every method is
 // read-only except ExcludePaths, which writes only to the worktree's own
@@ -55,4 +58,28 @@ type VerificationRun struct {
 	Passed  bool     `json:"passed"`
 	Command string   `json:"command,omitempty"`
 	Details []string `json:"details,omitempty"`
+}
+
+// SkippedCheck reports a guarantee that could not be evaluated, as distinct
+// from one that passed.
+//
+// A check that silently returns nil is indistinguishable from a check that
+// succeeded, which is how the frozen-install baseline came to look proven on
+// consumers that have no lockfile at all.
+type SkippedCheck struct {
+	Check  string
+	Reason string
+}
+
+func (skipped *SkippedCheck) Error() string {
+	return skipped.Check + " could not be evaluated: " + skipped.Reason
+}
+
+// Skipped reports whether err is a check that could not run.
+func Skipped(err error) (*SkippedCheck, bool) {
+	var skipped *SkippedCheck
+	if errors.As(err, &skipped) {
+		return skipped, true
+	}
+	return nil, false
 }

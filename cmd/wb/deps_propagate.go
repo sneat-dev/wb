@@ -217,6 +217,11 @@ func printPropagateLocal(command *cobra.Command, format string, result locallink
 				return err
 			}
 		}
+		for _, skipped := range consumer.SkippedChecks {
+			if _, err := fmt.Fprintf(out, "  ? not checked: %s\n", skipped); err != nil {
+				return err
+			}
+		}
 		if consumer.Verification != nil {
 			if _, err := fmt.Fprintf(out, "  %s\n", consumer.Verification.Statement); err != nil {
 				return err

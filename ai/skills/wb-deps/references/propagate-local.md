@@ -70,6 +70,9 @@ graph sets `GOWORK=off` itself.
    there is preserved: pnpm's isolated store makes `node_modules/<pkg>` a
    **symlink** into `.pnpm/…`, and its target is recorded so `--undo` re-creates
    it exactly; npm's flat layout leaves a real directory, which is moved aside.
+   If the recorded target was pruned while the link was live, `--undo` restores
+   the link and then **reports it as dangling** — the published package is not
+   actually back until you re-install.
 
 **No `pnpm` override, alias, or `workspace:` entry is ever written**, and no
 tracked file changes. `pnpm-workspace.yaml` and every `package.json` stay
@@ -125,7 +128,7 @@ untracked link artefacts are gone.
 
 | what fired | do this |
 |---|---|
-| `link-not-recordable` — no open stream holds the consumer | `wb stream start` or `wb stream join` the consumer first, or pass `--stream <name>`. A link WB cannot record cannot be undone and is invisible to the merge guard, so it is refused **before** anything is written. |
+| `link-not-recordable` — no open stream has **the consumer** as a member | `wb stream join <name> <owner/repository>` the consumer first, or pass `--stream <name>`. Membership is checked per consumer, not from the library: a stream holding the library does not make a link into some other worktree recordable. A link WB cannot record cannot be undone and is invisible to the merge guard, so it is refused **before** anything is written, and one unrecordable consumer stops the whole invocation. |
 | `wb worktree merge` / `wb pr land` refuses a linked worktree | run the exact `wb deps propagate local <library> --to <consumer> --undo` the refusal names |
 | the library publishes no discoverable identity | fix the library's `backend/go.mod` or `libs/**/package.json`; WB will not accept a supplied name as a substitute |
 | the frozen install failed | fix the consumer's lockfile (`pnpm install`, commit the lockfile) and re-run |

@@ -130,3 +130,23 @@ func markLandingGuard(command *cobra.Command, addressing string) *cobra.Command 
 	command.Annotations[landingGuardAnnotation] = addressing
 	return command
 }
+
+// landingSurface is the fixed list of verbs that push, land or absorb work.
+//
+// It is maintained INDEPENDENTLY of the annotation on purpose. Deriving the
+// expected set from the annotation makes the check circular: a landing verb
+// that simply never declares the annotation passes, which is exactly how
+// `merge land` and `merge resume` sat on the landing surface unguarded. This
+// list is the claim; the annotation is the implementation; the test compares
+// them and fails on either a verb missing its annotation or an annotation on a
+// verb not listed here.
+//
+// A new landing or absorb verb — `wb stream absorb` in the local-integration
+// rows — is added here FIRST, and the test then fails until it declares the
+// guard.
+var landingSurface = map[string]string{
+	"wb worktree merge":         landingGuardByWorktree,
+	"wb worktree merge prepare": landingGuardByWorktree,
+	"wb worktree merge land":    landingGuardByReceipt,
+	"wb worktree merge resume":  landingGuardByReceipt,
+}

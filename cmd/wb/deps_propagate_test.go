@@ -269,8 +269,24 @@ func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
 	}
 
 	guarded := landingGuardedCommands(newRootCmd())
-	if len(guarded) < 4 {
-		t.Fatalf("landing-guarded commands = %v; the merge surface alone should declare four", guarded)
+
+	// The declared surface and the annotated surface must agree exactly. A
+	// count-based backstop would pass an undeclared landing verb, which is the
+	// hole `merge land`/`merge resume` fell through.
+	for path, addressing := range landingSurface {
+		declared, annotated := guarded[path]
+		if !annotated {
+			t.Errorf("%s is on the landing surface but does not declare %s, so it will never run the live-link guard", path, landingGuardAnnotation)
+			continue
+		}
+		if declared != addressing {
+			t.Errorf("%s declares addressing %q, want %q", path, declared, addressing)
+		}
+	}
+	for path := range guarded {
+		if _, listed := landingSurface[path]; !listed {
+			t.Errorf("%s declares the landing guard but is not on the declared landing surface; add it to landingSurface", path)
+		}
 	}
 	for path, addressing := range guarded {
 		argument := worktree

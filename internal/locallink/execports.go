@@ -182,7 +182,15 @@ type ExecNode struct {
 func (node ExecNode) FrozenInstall(ctx context.Context, dir string) error {
 	manager, install := frozenInstallCommand(dir)
 	if manager == "" {
-		return nil
+		// No lockfile means there is no frozen baseline to prove. Passing
+		// silently made the guarantee look satisfied when it was never
+		// checked, so the skip is stated instead — the caller decides whether
+		// an unlocked consumer is acceptable, and the report says which it
+		// was.
+		return &SkippedCheck{
+			Check:  "frozen-install",
+			Reason: "no pnpm-lock.yaml, yarn.lock or package-lock.json in " + dir + ", so there is no lockfile baseline to prove",
+		}
 	}
 	if _, err := exec.LookPath(manager); err != nil {
 		return fmt.Errorf("%s is required to prove a frozen install of %s: %w", manager, dir, err)
@@ -375,6 +383,16 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		}
 		if err := os.Remove(symlinkBackup); err != nil {
 			return fmt.Errorf("clear the link record for %s: %w", packageName, err)
+		}
+		// The link is restored byte-for-byte, but the store entry it points at
+		// may have been pruned while the link was live (a `pnpm install`
+		// during the stream is enough). Reporting success on a dangling link
+		// would tell the operator the published package is back when it is
+		// not.
+		if _, statErr := os.Stat(target); statErr != nil {
+			return fmt.Errorf(
+				"restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w",
+				packageName, original, statErr)
 		}
 		return nil
 	} else if !os.IsNotExist(readErr) {

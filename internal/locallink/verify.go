@@ -37,6 +37,12 @@ type Verification struct {
 func (engine *Engine) verifyConsumers(ctx context.Context, options Options, result *Result) {
 	if engine.Verifier == nil {
 		for index := range result.Consumers {
+			// A consumer that was skipped or never linked was not part of the
+			// run, so telling it a verifier was unavailable reports a failure
+			// for work that was never attempted.
+			if result.Consumers[index].Skipped || len(result.Consumers[index].Links) == 0 {
+				continue
+			}
 			result.Consumers[index].Errors = append(result.Consumers[index].Errors, "no verifier available")
 		}
 		return

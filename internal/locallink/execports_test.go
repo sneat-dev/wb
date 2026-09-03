@@ -361,3 +361,57 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 		t.Error("the link record survived undo")
 	}
 }
+
+// SHOULD-FIX (b). A consumer with no lockfile has no frozen baseline to prove,
+// so the check reports that it could not run rather than passing silently.
+func TestFrozenInstallWithNoLockfileIsReportedAsSkippedNotPassed(t *testing.T) {
+	node := ExecNode{Timeout: 30 * time.Second}
+	err := node.FrozenInstall(context.Background(), t.TempDir())
+	skipped, wasSkipped := Skipped(err)
+	if !wasSkipped {
+		t.Fatalf("err = %v, want an explicit skipped check — a silent nil is indistinguishable from a pass", err)
+	}
+	if skipped.Check != "frozen-install" || !strings.Contains(skipped.Reason, "no lockfile baseline") {
+		t.Fatalf("skipped = %#v, want it to name the check and why it could not run", skipped)
+	}
+}
+
+// SHOULD-FIX (c). Restoring a symlink whose target was pruned while the link
+// was live must be flagged: reporting success would say the published package
+// is back when it is not.
+func TestUnlinkFlagsARestoredSymlinkThatDangles(t *testing.T) {
+	consumer := t.TempDir()
+	store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	relative, err := filepath.Rel(filepath.Dir(target), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, target); err != nil {
+		t.Fatal(err)
+	}
+	dist := t.TempDir()
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	ctx := context.Background()
+	if _, err := node.Link(ctx, consumer, "@acme/core", dist); err != nil {
+		t.Fatal(err)
+	}
+	// The store entry is pruned while the link is live — one `pnpm install`
+	// during a stream is enough.
+	if err := os.RemoveAll(filepath.Join(consumer, "node_modules", ".pnpm")); err != nil {
+		t.Fatal(err)
+	}
+	err = node.Unlink(ctx, consumer, "@acme/core")
+	if err == nil {
+		t.Fatal("undo reported success while the restored link dangles")
+	}
+	if !strings.Contains(err.Error(), "dangling") || !strings.Contains(err.Error(), "re-install") {
+		t.Fatalf("error = %v, want it to say the link dangles and how to recover", err)
+	}
+}

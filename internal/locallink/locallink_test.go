@@ -722,3 +722,96 @@ func TestALinkThatCannotBeRecordedIsRefusedBeforeAnythingIsWritten(t *testing.T)
 		t.Fatalf("a refused link still wrote go.work: %v", statErr)
 	}
 }
+
+// MF (round 2). Membership is resolved per CONSUMER, not from the library.
+//
+// The reviewer's probe R2-F inverted: a stream holds the library and one app,
+// and a THIRD worktree no member names is linked. Resolving from the library
+// made this look recordable, so go.work was written, nothing was recorded, and
+// the verb exited 0 — the same un-undoable link round 1 rejected.
+func TestAConsumerOutsideTheStreamIsRefusedEvenWhenTheStreamHoldsTheLibrary(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
+
+	// A third worktree that is a real consumer but no stream member.
+	outsider := writeTree(t, filepath.Join(t.TempDir(), "outsider"), map[string]string{
+		"backend/go.mod": "module github.com/acme/outsider/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n",
+	})
+
+	_, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{outsider},
+	})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalNotRecordable {
+		t.Fatalf("error = %v, want a %s refusal even though the stream holds the library", err, RefusalNotRecordable)
+	}
+	if !strings.Contains(refusal.Message, outsider) {
+		t.Errorf("refusal does not name the unrecordable consumer: %s", refusal.Message)
+	}
+	if _, statErr := os.Stat(filepath.Join(outsider, "go.work")); !os.IsNotExist(statErr) {
+		t.Fatalf("go.work was written into a worktree no stream records: %v", statErr)
+	}
+}
+
+// All fences run before the first side effect: one unrecordable consumer stops
+// the whole invocation, so a recordable sibling is not half-linked.
+func TestOneUnrecordableConsumerLinksNothingAtAll(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
+	outsider := writeTree(t, filepath.Join(t.TempDir(), "outsider"), map[string]string{
+		"backend/go.mod": "module github.com/acme/outsider/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n",
+	})
+
+	_, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer, outsider},
+	})
+	if _, refused := Refused(err); !refused {
+		t.Fatalf("error = %v, want a refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.consumer, "go.work")); !os.IsNotExist(statErr) {
+		t.Fatalf("the recordable consumer was linked despite the refusal: %v", statErr)
+	}
+}
+
+// recordLinks refuses rather than silently writing nothing when its update
+// matches no member — the second half of the same defect.
+func TestRecordLinksFailsWhenItMatchesNoMember(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
+	err := fixture.engine.recordLinks("fixture", filepath.Join(t.TempDir(), "not-a-member"), []streams.Link{
+		{Library: fixture.library, Mechanism: streams.MechanismGoWork, Identity: "github.com/acme/library/backend"},
+	})
+	if err == nil {
+		t.Fatal("recording against a path no member names reported success")
+	}
+	if !strings.Contains(err.Error(), "no member at") {
+		t.Errorf("error = %v, want it to say the stream has no such member", err)
+	}
+	if err := fixture.engine.recordLinks("", fixture.consumer, []streams.Link{{Identity: "x"}}); err == nil {
+		t.Fatal("recording with no stream reported success")
+	}
+}
+
+// SHOULD-FIX (d). A consumer that was skipped is not verified, so it must not
+// be told a verifier was unavailable for a run it was never part of.
+func TestSkippedConsumersAreNotToldTheVerifierWasUnavailable(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
+	fixture.engine.Verifier = nil
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer}, Verify: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Consumers) != 1 || !result.Consumers[0].Skipped {
+		t.Fatalf("consumers = %#v, want the one consumer skipped", result.Consumers)
+	}
+	if len(result.Consumers[0].Errors) != 0 {
+		t.Fatalf("a skipped consumer was given verification errors: %v", result.Consumers[0].Errors)
+	}
+}
