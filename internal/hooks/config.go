@@ -324,7 +324,10 @@ run_tool() {
     shift
     case "$runner" in
         pnpm) pnpm exec "$tool" "$@" ;;
-        yarn) yarn "$tool" "$@" ;;
+        # yarn <tool> resolves a package SCRIPT before a binary, so a
+        # repository with a script named "eslint" would run that instead.
+        # yarn exec (Berry) addresses the binary; fall back to yarn run.
+        yarn) yarn exec "$tool" "$@" 2>/dev/null || yarn run "$tool" "$@" ;;
         bun)  bun x "$tool" "$@" ;;
         *)    npx --no-install "$tool" "$@" ;;
     esac
@@ -335,7 +338,7 @@ run_tool() {
 if [ -f .prettierrc ] || [ -f .prettierrc.json ] || [ -f .prettierrc.js ] || \
    [ -f .prettierrc.cjs ] || [ -f .prettierrc.yaml ] || [ -f .prettierrc.yml ] || \
    [ -f prettier.config.js ] || [ -f prettier.config.cjs ]; then
-    if ! printf '%s\n' "$changed" | xargs -r run_tool prettier --check; then
+    if ! printf '%s\n' "$changed" | xargs run_tool prettier --check; then
         echo "WB hook: formatting failed on the files in this commit. Run your formatter and re-stage." >&2
         exit 1
     fi
@@ -345,7 +348,7 @@ if [ -f eslint.config.js ] || [ -f eslint.config.mjs ] || [ -f eslint.config.cjs
    [ -f .eslintrc.json ] || [ -f .eslintrc.yaml ] || [ -f .eslintrc.yml ]; then
     lintable="$(printf '%s\n' "$changed" | grep -E '\.(js|jsx|mjs|cjs|ts|tsx)$' || true)"
     if [ -n "$lintable" ]; then
-        if ! printf '%s\n' "$lintable" | xargs -r run_tool eslint --no-error-on-unmatched-pattern; then
+        if ! printf '%s\n' "$lintable" | xargs run_tool eslint --no-error-on-unmatched-pattern; then
             echo "WB hook: static checks failed on the files in this commit." >&2
             exit 1
         fi
@@ -353,9 +356,17 @@ if [ -f eslint.config.js ] || [ -f eslint.config.mjs ] || [ -f eslint.config.cjs
 fi
 `, true
 	case BuiltinGoPreCommit:
+		// Format AND static checks, both scoped to the files in THIS commit.
+		// gofmt alone met only half the requirement; `go vet` is the static
+		// half, and it is run over the changed PACKAGES rather than the whole
+		// module so a commit stays a save point measured in seconds.
 		return `#!/bin/sh
 set -eu
-unformatted="$(git diff --cached --name-only --diff-filter=ACMR -- '*.go' | while IFS= read -r file; do
+changed="$(git diff --cached --name-only --diff-filter=ACMR -- '*.go')"
+if [ -z "$changed" ]; then
+    exit 0
+fi
+unformatted="$(printf '%s\n' "$changed" | while IFS= read -r file; do
     if [ -f "$file" ]; then
         gofmt -l "$file"
     fi
@@ -363,6 +374,40 @@ done)"
 if [ -n "$unformatted" ]; then
     echo "Go files need gofmt:" >&2
     echo "$unformatted" >&2
+    exit 1
+fi
+if [ ! -f go.mod ]; then
+    exit 0
+fi
+if ! command -v go >/dev/null 2>&1; then
+    exit 0
+fi
+# Vet only the packages the commit touches. Vetting ./... would compile the
+# whole module and turn a save point into a release gate.
+packages="$(printf '%s\n' "$changed" | while IFS= read -r file; do
+    dir="$(dirname "$file")"
+    case "$dir" in
+        .) printf '%s\n' "." ;;
+        *) printf './%s\n' "$dir" ;;
+    esac
+done | sort -u)"
+if [ -z "$packages" ]; then
+    exit 0
+fi
+# A deleted or moved package no longer resolves; vet reports that as an error,
+# which is not what this commit did wrong. Only vet packages that still exist.
+existing=""
+for package in $packages; do
+    if [ -d "$package" ]; then
+        existing="$existing $package"
+    fi
+done
+if [ -z "$existing" ]; then
+    exit 0
+fi
+# shellcheck disable=SC2086
+if ! go vet $existing; then
+    echo "WB hook: go vet failed on the packages in this commit." >&2
     exit 1
 fi
 `, true

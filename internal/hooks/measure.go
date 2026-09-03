@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -81,6 +82,15 @@ type ProfileDelta struct {
 
 // Measure computes the profile delta over the same events `wb hooks metrics`
 // charts, so both views are built from one recording rather than two.
+// isStreamPush reports whether one push-attempt event was a push to a stream
+// branch, preferring the recorded ref over the checked-out branch.
+func isStreamPush(event Event) bool {
+	if event.Ref != "" {
+		return streambranch.Is(event.Ref)
+	}
+	return streambranch.Is(event.Branch)
+}
+
 func Measure(events []Event, days int, repositoryFilter string, now time.Time) ProfileDelta {
 	if days < 1 {
 		days = 1
@@ -119,7 +129,13 @@ func Measure(events []Event, days int, repositoryFilter string, now time.Time) P
 		case "commit-check":
 			delta.Commit.observe(event)
 		case "push-attempt":
-			if streambranch.Is(event.Branch) {
+			// The PUSHED ref decides, not the checked-out branch: a push can
+			// target a ref other than HEAD, and keying on Branch reported
+			// zero stream pushes after real ones. A recorded tier of 0 is the
+			// second signal — that is the skip the stream profile produces —
+			// and Branch remains the fallback for events written before the
+			// ref was recorded.
+			if isStreamPush(event) {
 				delta.StreamPush.observe(event)
 				continue
 			}
@@ -145,6 +161,11 @@ func Measure(events []Event, days int, repositoryFilter string, now time.Time) P
 		delta.Unmeasured = append(delta.Unmeasured,
 			"no push to a stream branch was recorded in this window; the deferred-to-CI profile has not been exercised")
 	}
+	if delta.StreamPush.Runs > 0 && delta.StreamPush.MaxDurationMS > streamPushBudgetMS {
+		delta.Unmeasured = append(delta.Unmeasured, fmt.Sprintf(
+			"a stream-branch push took %d ms, which is more than a hook that runs no verification should cost; check that the tier-0 classification is reaching the template",
+			delta.StreamPush.MaxDurationMS))
+	}
 
 	ids := make([]string, 0, len(byBlock))
 	for id := range byBlock {
@@ -160,3 +181,8 @@ func Measure(events []Event, days int, repositoryFilter string, now time.Time) P
 	}
 	return delta
 }
+
+// streamPushBudgetMS is the ceiling a push that runs NO verification should
+// ever reach. Exceeding it means the tier-0 decision is not reaching the hook
+// template, which would make the reported saving fictional.
+const streamPushBudgetMS = 2000

@@ -177,9 +177,46 @@ func originSlug(repoRoot string) string {
 	if i := strings.Index(remote, "github.com/"); i >= 0 {
 		return strings.TrimPrefix(remote[i+len("github.com/"):], "/")
 	}
-	parts := strings.Split(remote, "/")
-	if len(parts) >= 2 {
-		return strings.Join(parts[len(parts)-2:], "/")
+	// Only a HOSTED remote's path can be read as owner/repository. Applying
+	// the last-two-segments rule to a local path remote produced slugs like
+	// "hr2/origin" — the directory holding a bare clone — and every hook
+	// event was then attributed to a repository that does not exist, so
+	// per-repository metrics were wrong wherever a remote was a filesystem
+	// path (a local bare remote, a test fixture, a mirror).
+	if hostedRemote(remote) {
+		parts := strings.Split(remote, "/")
+		if len(parts) >= 2 {
+			return strings.Join(parts[len(parts)-2:], "/")
+		}
 	}
-	return filepath.Base(repoRoot)
+	return checkoutSlug(repoRoot)
+}
+
+// hostedRemote reports whether a remote names a hosting service rather than a
+// local path. A scheme, or an scp-style host:path, means the trailing segments
+// are owner/repository; a bare filesystem path means they are directories.
+func hostedRemote(remote string) bool {
+	if strings.Contains(remote, "://") {
+		return true
+	}
+	host, path, found := strings.Cut(remote, ":")
+	if !found || path == "" || strings.HasPrefix(remote, "/") || strings.HasPrefix(remote, ".") {
+		return false
+	}
+	// git@github.com:owner/repo — the host side carries a dot and no slash.
+	return strings.Contains(host, ".") && !strings.Contains(host, "/")
+}
+
+// checkoutSlug derives owner/repository from WB's own layout, which is
+// <root>/<owner>/<repository> for a canonical clone and
+// <worktrees>/<task>/<owner>/<repository> for a worktree. It is the truthful
+// answer when the remote cannot supply one.
+func checkoutSlug(repoRoot string) string {
+	cleaned := filepath.Clean(repoRoot)
+	parent := filepath.Base(filepath.Dir(cleaned))
+	name := filepath.Base(cleaned)
+	if parent == "" || parent == "." || parent == string(filepath.Separator) {
+		return name
+	}
+	return parent + "/" + name
 }

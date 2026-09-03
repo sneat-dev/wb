@@ -16,20 +16,28 @@ import (
 const EventSchemaVersion = 1
 
 type Event struct {
-	SchemaVersion int               `json:"schema_version"`
-	Timestamp     time.Time         `json:"timestamp"`
-	Repository    string            `json:"repository"`
-	Hook          string            `json:"hook"`
-	Profile       string            `json:"profile,omitempty"`
-	Block         string            `json:"block,omitempty"`
-	Action        string            `json:"action"`
-	Outcome       string            `json:"outcome"`
-	DurationMS    int64             `json:"duration_ms"`
-	Commit        string            `json:"commit,omitempty"`
-	Branch        string            `json:"branch,omitempty"`
-	OS            string            `json:"os"`
-	Arch          string            `json:"arch"`
-	Labels        map[string]string `json:"labels,omitempty"`
+	SchemaVersion int       `json:"schema_version"`
+	Timestamp     time.Time `json:"timestamp"`
+	Repository    string    `json:"repository"`
+	Hook          string    `json:"hook"`
+	Profile       string    `json:"profile,omitempty"`
+	Block         string    `json:"block,omitempty"`
+	Action        string    `json:"action"`
+	Outcome       string    `json:"outcome"`
+	DurationMS    int64     `json:"duration_ms"`
+	Commit        string    `json:"commit,omitempty"`
+	Branch        string    `json:"branch,omitempty"`
+	// Ref is the REMOTE ref a push targeted. It is what a stream push must be
+	// attributed to: the checked-out branch is not necessarily the pushed
+	// one, so keying on Branch reported zero stream pushes after real ones.
+	Ref string `json:"ref,omitempty"`
+	// Tier is the classification the push hook acted on: 0 skip, 1 lint,
+	// 2 lint and test. It is recorded so the saving is measured from what
+	// actually ran rather than inferred from a branch name.
+	Tier   *int              `json:"tier,omitempty"`
+	OS     string            `json:"os"`
+	Arch   string            `json:"arch"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 type eventContext struct {

@@ -101,7 +101,14 @@ func Run(options RunOptions) (RunResult, error) {
 
 	blocks := hookBlocks(policy, options.Hook)
 	var replicatedInput []byte
-	if shouldReplicateStdin(options.Hook, len(blocks), console.IsTerminal(options.Stdin)) {
+	// A pre-push with metrics on always drains stdin, even for a single
+	// block: the pushed-ref list is the only place the REMOTE ref and the
+	// tier can be read, and without them a stream push cannot be attributed.
+	replicate := shouldReplicateStdin(options.Hook, len(blocks), console.IsTerminal(options.Stdin))
+	if options.Hook == "pre-push" && policy.Metrics.Enabled && !console.IsTerminal(options.Stdin) {
+		replicate = true
+	}
+	if replicate {
 		replicatedInput, err = io.ReadAll(options.Stdin)
 		if err != nil {
 			return RunResult{ExitCode: 2}, fmt.Errorf("read pre-push input for composed hook blocks: %w", err)
@@ -136,7 +143,9 @@ func Run(options RunOptions) (RunResult, error) {
 	result.ExitCode = exitCode
 	result.Duration = duration
 	if policy.Metrics.Enabled {
-		metricEvents = append(metricEvents, executionContext.newEvent(options.Hook, exitCode == 0, duration, options.Now()))
+		terminal := executionContext.newEvent(options.Hook, exitCode == 0, duration, options.Now())
+		annotatePushEvent(&terminal, options, policy, replicatedInput)
+		metricEvents = append(metricEvents, terminal)
 		result.MetricsError = recordMetrics(policy, layout, metricEvents, options.Now())
 	}
 	return result, runErr
@@ -263,4 +272,40 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+// annotatePushEvent records which ref a push targeted and which tier the hook
+// acted on.
+//
+// Without them `wb hooks measure` had to key stream pushes on the checked-out
+// branch, which is not necessarily the pushed one — so real stream pushes were
+// reported as "0 runs … not measured" and the saving the profile exists to
+// deliver could not be evidenced at all.
+func annotatePushEvent(event *Event, options RunOptions, policy Policy, pushedRefs []byte) {
+	if options.Hook != "pre-push" || len(pushedRefs) == 0 {
+		return
+	}
+	updates, err := ParseRefUpdates(bytes.NewReader(pushedRefs))
+	if err != nil || len(updates) == 0 {
+		return
+	}
+	// The ref recorded is the one that decided the tier: the highest-tier
+	// update in this push, so a mixed push is attributed to the ref that made
+	// it a publication push rather than to whichever came first.
+	classification := ClassifyPushTier(updates, detectDefaultBranch(policy.RepoRoot), NewCachedGHPRLookup(policy.RepoRoot))
+	tier := int(classification.Tier)
+	event.Tier = &tier
+	event.Ref = decidingRef(updates, classification, policy.RepoRoot)
+}
+
+// decidingRef names the pushed ref the classification came from.
+func decidingRef(updates []RefUpdate, classification Classification, repoRoot string) string {
+	defaultBranch := detectDefaultBranch(repoRoot)
+	lookup := NewCachedGHPRLookup(repoRoot)
+	for _, update := range updates {
+		if tier, _ := classifyOneRef(update, defaultBranch, lookup); tier == classification.Tier {
+			return update.RemoteRef
+		}
+	}
+	return updates[0].RemoteRef
 }
