@@ -23,7 +23,9 @@ repositories the stream linked.
 
 There are no merge commits and no single opaque squash at the end. Verification
 is batched: a stream applies a whole batch and runs the suite once, bisecting
-only when that run fails.
+only when that run fails. Every verb appends a structured event to the stream's
+own log, which is the single source for an animated timeline and the metrics
+that make the stream's cost and waits measurable rather than remembered.
 
 ## Problem
 
@@ -361,6 +363,106 @@ the others.
 live, and MUST name them. Publishing a library whose consumers are still
 resolving it from a working tree would verify nothing.
 
+### Event log and analytics
+
+#### REQ: every-verb-appends-a-structured-event
+
+Every wb verb that acts inside a stream MUST append one structured JSONL event
+to that stream's event log. The log MUST live with the stream's WB-owned state,
+never inside a member repository, and MUST be append-only: a verb MUST NOT
+rewrite or delete earlier events, because the log's value is that it records
+what actually happened rather than what the current state implies.
+
+Each event MUST carry, where applicable: `ts`, `stream`, `agent` and `session`,
+`verb`, `repo`, `worktree`, `branch`, `pr`, `outcome`, and `start`/`end`. Where
+the harness supplies them, it MUST also carry `tokens`, `tool_uses` and
+`duration_ms`.
+
+This log MUST be the single source for every report below. A report MUST NOT
+re-derive history by querying GitHub, because a verb's own outcome is evidence
+the API cannot reconstruct — an agent's token spend and a review verdict leave
+no trace in a merged commit.
+
+#### REQ: harness-usage-is-ingested-through-the-session-hook
+
+Token, tool-use and duration figures MUST be ingested from the harness through
+the installed session hook (`wb hooks agent`), not estimated by wb. Where the
+harness reports **cumulative** context tokens for an agent rather than a
+per-task delta — as today's does — the log MUST record the value as cumulative
+and label it as such, and any per-task figure MUST be derived by differencing
+consecutive reports of the same agent. A report MUST NOT present a cumulative
+value as if it were the cost of one task.
+
+Events for which the harness supplied no usage MUST be recorded with those
+fields absent rather than zero, so a report can distinguish "free" from
+"unmeasured".
+
+#### REQ: report-stream-renders-an-animated-timeline
+
+`wb report stream <name> [--html|--json]` MUST render an animated timeline of
+the stream from its event log:
+
+- one **swimlane per agent**, with task segments from dispatch to report,
+  coloured by kind (author, reviewer, orchestrator, and so on);
+- **cumulative tokens and tool calls per lane** on the same time axis, so spend
+  and elapsed time are read together rather than in separate reports;
+- a **delivery track**: PR opened, review verdict, merge, tag, publish, deploy;
+- a **founder-directive track**, so a change of instruction is visible against
+  the work it redirected;
+- **VM load against the concurrency cap**, so overload and idleness are visible
+  as periods rather than as a single average;
+- a **playhead animation** over the whole span.
+
+`--json` MUST emit the same model the HTML renders, so the visualization is one
+projection of the data and not a second implementation of it.
+
+The prototype dataset at
+`/home/ai/claude-parking/2026-09-02/stream-analytics/lane-reports.json` is the
+reference shape: `agents[]` (`id`, `kind`, `label`), `reports[]` (`agent`,
+`start`, `end`, `tokens`, `tool_uses`, `duration_ms`, `task`, `outcome`),
+`deliveries[]` (`t`, `repo`, `event`, `ref`), `load_samples[]` (`t`, `load1`),
+and `founder_directives[]` (`t`, `text`). Its `source` field records that
+`tokens` is cumulative per agent context — exactly the case the previous
+requirement forbids reporting raw.
+
+#### REQ: report-stream-emits-a-metrics-table
+
+The same command MUST emit a metrics table alongside the timeline:
+
+- **lead time per pull request**, split into author, review, CI wait, external
+  service wait (for example a bot's queue), and orchestrator wait — an
+  undifferentiated lead time hides which of those is the bottleneck, and they
+  have different owners;
+- **review rounds and reject rate**;
+- **tokens and tool calls per merged change**;
+- **CI minutes per merged change**, and **redundant runs** — runs whose inputs
+  were identical to an earlier run in the same stream, which is the measurement
+  that makes `verbs-state-and-deduplicate-their-work` and batch verification
+  falsifiable;
+- **idle slot minutes against overload minutes**, measured against the
+  concurrency cap;
+- **rework**: pull requests reverted or superseded.
+
+Every figure MUST be traceable to the events it came from, and a figure that
+cannot be computed from the log MUST be reported as unavailable rather than
+estimated.
+
+#### REQ: report-fleet-compares-streams
+
+`wb report fleet` MUST aggregate completed streams over a period, defaulting to
+a week, and compare them on the same metrics so a trend is visible across
+streams rather than only within one.
+
+#### REQ: metric-regression-proposes-a-lesson
+
+When a metric regresses against the trailing comparison, wb MUST **propose** a
+backstage lesson naming the metric, the streams compared, and the events behind
+the change. It MUST propose only: wb MUST NOT write to the lessons corpus
+itself, because a lesson is a human judgement about cause, and a metric change
+is only evidence. The proposal MUST link to the lessons corpus and follow its
+entry shape; the lessons-mining lane supplies `lessons-for-wb.md` as the
+integration point.
+
 ## Architecture & Dependencies
 
 ```mermaid
@@ -602,6 +704,68 @@ request, the check outcome, and the deploy evidence.
 the operator instead runs `wb stream end`, every link is undone and the command
 refuses to report success while any link remains.
 
+### AC: every-verb-leaves-one-event
+
+**Requirements:** dependency-streams#req:every-verb-appends-a-structured-event
+
+**Given** a stream in which sync, a local link, an agent PR landing and a
+release have all run
+**When** the operator inspects the stream's event log
+**Then** each verb has appended exactly one JSONL event carrying its `ts`,
+`stream`, `agent`, `verb`, `repo`, `outcome` and timing; no earlier event has
+been rewritten or removed; and no file inside any member repository was created
+or modified.
+
+### AC: cumulative-tokens-are-never-reported-as-per-task
+
+**Requirements:** dependency-streams#req:harness-usage-is-ingested-through-the-session-hook
+
+**Given** a harness that reports cumulative context tokens, and one agent with
+three consecutive reports of 100k, 250k and 286k tokens
+**When** `wb report stream` presents per-task cost
+**Then** the three tasks are shown as 100k, 150k and 36k derived by differencing,
+the stored values remain labelled cumulative, and a fourth event whose usage the
+harness did not supply is shown as unmeasured rather than zero.
+
+### AC: timeline-and-json-are-one-model
+
+**Requirements:** dependency-streams#req:report-stream-renders-an-animated-timeline
+
+**Given** a completed stream whose log matches the reference shape of the
+prototype dataset
+**When** the operator runs `wb report stream <name> --html` and again with
+`--json`
+**Then** the HTML shows a swimlane per agent with segments coloured by kind,
+cumulative tokens and tool calls on the same axis, the delivery and
+founder-directive tracks, VM load against the cap, and a playhead; the `--json`
+output contains the same model the HTML renders; and both are produced from the
+event log without querying GitHub.
+
+### AC: metrics-separate-the-waits-and-count-redundant-runs
+
+**Requirements:** dependency-streams#req:report-stream-emits-a-metrics-table, dependency-streams#req:verbs-state-and-deduplicate-their-work
+
+**Given** a stream containing a pull request that waited on review, on CI, and
+on an external bot's queue, and a batch that verified once plus one identical
+re-run
+**When** the metrics table is produced
+**Then** lead time is split into author, review, CI wait, external wait and
+orchestrator wait rather than reported as one number; the identical re-run is
+counted as a redundant run; idle and overload minutes are reported against the
+concurrency cap; and any metric not computable from the log is marked
+unavailable rather than estimated.
+
+### AC: regression-proposes-a-lesson-without-writing-one
+
+**Requirements:** dependency-streams#req:report-fleet-compares-streams, dependency-streams#req:metric-regression-proposes-a-lesson
+
+**Given** two completed streams where the later one has a materially worse
+tokens-per-merged-change figure
+**When** the operator runs `wb report fleet`
+**Then** the comparison names the regressed metric and the events behind it, a
+lesson is **proposed** with a link to the lessons corpus, and the corpus itself
+is unchanged on disk.
+
 ## Rehearse Integration
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, or process
@@ -631,6 +795,11 @@ suite runs, which is the property that matters.
 - Landing a stream with a merge commit or a single squash of the whole stream.
 - Implementing the deterministic follow-up verbs listed above; this Feature only
   names them.
+- Writing to the backstage lessons corpus. wb proposes; a human decides.
+- Estimating token or duration figures the harness did not report, or presenting
+  a cumulative context total as the cost of one task.
+- Reconstructing stream history from the GitHub API. The event log is the record;
+  an absent event is a gap to fix in the verb, not to paper over in the report.
 
 ## Open Questions
 
