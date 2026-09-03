@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
+
+	"github.com/sneat-dev/wb/internal/npmrange"
 )
 
 // npmRangeVerdict is the deterministic outcome of asking whether one npm
@@ -48,30 +50,26 @@ func npmRangeAdmits(specifier, version string) npmRangeVerdict {
 	if semver.Prerelease(normalizeSemverPrefix(version)) != "" {
 		return npmRangeVerdict{Reason: "candidate version " + quoteForReason(version) + " is a prerelease; npm prerelease admission is specifier-scoped and is not evaluated"}
 	}
-	switch specifier {
-	case "", "*", "x", "X", "latest":
+	if npmrange.Wildcard(specifier) {
 		return npmRangeVerdict{Evaluated: true, Admits: true}
 	}
-	if protocol, _, found := strings.Cut(specifier, ":"); found {
-		switch protocol {
-		case "workspace", "catalog", "npm", "file", "link", "git", "git+ssh", "git+https", "portal", "patch":
-			return npmRangeVerdict{Reason: "specifier uses the " + protocol + ": protocol, which does not name a registry version range"}
-		}
+	if protocol, ok := npmrange.Protocol(specifier); ok {
+		return npmRangeVerdict{Reason: "specifier uses the " + protocol + ": protocol, which does not name a registry version range"}
 	}
 	// A hyphen range and a comma list are still declined: the first is a
 	// distinct grammar rather than a conjunction of comparators, and npm
 	// ranges do not use commas at all, so a comma is more likely a manifest
 	// written for a different ecosystem than a range WB should interpret.
-	if strings.Contains(specifier, " - ") {
+	if npmrange.HyphenRange(specifier) {
 		return npmRangeVerdict{Reason: "hyphen range " + quoteForReason(specifier) + " is not evaluated"}
 	}
-	if strings.Contains(specifier, ",") {
+	if npmrange.CommaSeparated(specifier) {
 		return npmRangeVerdict{Reason: "comma-separated specifier " + quoteForReason(specifier) + " is not evaluated"}
 	}
-	if strings.Contains(specifier, "||") {
+	if npmrange.Union(specifier) {
 		return npmRangeUnionAdmits(specifier, version)
 	}
-	if strings.ContainsAny(specifier, " \t") {
+	if npmrange.Conjunction(specifier) {
 		return npmRangeConjunctionAdmits(specifier, version)
 	}
 	return npmRangeComparatorAdmits(specifier, version)
@@ -87,11 +85,7 @@ func npmRangeAdmits(specifier, version string) npmRangeVerdict {
 // read this" into "this does not match".
 func npmRangeUnionAdmits(specifier, version string) npmRangeVerdict {
 	unevaluated := ""
-	for _, branch := range strings.Split(specifier, "||") {
-		branch = strings.TrimSpace(branch)
-		if branch == "" {
-			continue
-		}
+	for _, branch := range npmrange.UnionBranches(specifier) {
 		verdict := npmRangeConjunctionAdmits(branch, version)
 		if verdict.Evaluated && verdict.Admits {
 			return npmRangeVerdict{Evaluated: true, Admits: true}
@@ -120,7 +114,7 @@ func npmRangeUnionAdmits(specifier, version string) npmRangeVerdict {
 func npmRangeConjunctionAdmits(specifier, version string) npmRangeVerdict {
 	unevaluated := ""
 	evaluated := 0
-	for _, comparator := range strings.Fields(specifier) {
+	for _, comparator := range npmrange.Comparators(specifier) {
 		verdict := npmRangeComparatorAdmits(comparator, version)
 		if verdict.Evaluated && !verdict.Admits {
 			return npmRangeVerdict{Evaluated: true}
@@ -144,11 +138,10 @@ func npmRangeConjunctionAdmits(specifier, version string) npmRangeVerdict {
 
 // npmRangeComparatorAdmits evaluates exactly one comparator.
 func npmRangeComparatorAdmits(specifier, version string) npmRangeVerdict {
-	switch specifier {
-	case "", "*", "x", "X", "latest":
+	if npmrange.Wildcard(specifier) {
 		return npmRangeVerdict{Evaluated: true, Admits: true}
 	}
-	operator, literal := splitNpmRangeOperator(specifier)
+	operator, literal := npmrange.SplitOperator(specifier)
 	if strings.HasSuffix(literal, ".x") || strings.HasSuffix(literal, ".X") || strings.HasSuffix(literal, ".*") {
 		return npmRangeVerdict{Reason: "wildcard specifier " + quoteForReason(specifier) + " is not evaluated"}
 	}
@@ -177,18 +170,6 @@ func npmRangeComparatorAdmits(specifier, version string) npmRangeVerdict {
 		return npmRangeVerdict{Evaluated: true, Admits: compared >= 0 && universalSemverCompare(version, npmTildeCeiling(literal)) < 0}
 	}
 	return npmRangeVerdict{Reason: "specifier operator " + quoteForReason(operator) + " is not evaluated"}
-}
-
-// splitNpmRangeOperator separates a leading comparison operator from the
-// version literal that follows it. Two-character operators are matched first
-// so ">=1.2.3" never degrades into ">" plus "=1.2.3".
-func splitNpmRangeOperator(specifier string) (operator, literal string) {
-	for _, candidate := range []string{">=", "<=", "^", "~", ">", "<", "="} {
-		if strings.HasPrefix(specifier, candidate) {
-			return candidate, strings.TrimSpace(strings.TrimPrefix(specifier, candidate))
-		}
-	}
-	return "", specifier
 }
 
 // npmCaretCeiling is the exclusive upper bound of `^literal` under npm's own
