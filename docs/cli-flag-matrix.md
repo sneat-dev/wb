@@ -50,7 +50,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `remote publish`, `remote status`, `remote machines` | yes | `remote publish` only | rejected | yes |
 | `remote claim`, `remote release`, `remote claims` | yes | rejected | rejected | yes |
 | `session register`, `list`, `prune`, `move`, `receive`, `park`, `resume` | yes | rejected | rejected | yes |
-| `stream start`, `stream join`, `stream status`, `stream end`, `stream delete` | yes | rejected | rejected | yes |
+| `stream start`, `stream join`, `stream status`, `stream end`, `stream delete`, `stream sync` | yes | rejected | rejected | yes |
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |

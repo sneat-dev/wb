@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -184,4 +185,80 @@ func groupIsRefKeyed(group string) bool {
 		}
 	}
 	return false
+}
+
+// WorkflowMechanisms reports which verification mechanisms one workflow
+// actually runs.
+//
+// `batch-verification-runs-what-ci-runs` allows a local run to name a mechanism
+// as skipped only after proving CI carries it. That proof has to be a read of
+// the workflow, not an assumption: an unverified "CI owns it" is the
+// 17-occurrence lesson reintroduced as a false assurance, which is worse than
+// no gate at all.
+//
+// The mechanism names match what a verification run reports as skipped.
+func WorkflowMechanisms(root, workflow string) (map[string]bool, error) {
+	contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(workflow)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read workflow %s: %w", workflow, err)
+	}
+	// Comments are stripped first. A workflow saying "we should add -race one
+	// day" is the opposite of evidence that CI runs it, and matching the word
+	// rather than the invocation is exactly how a false "CI owns it" gets
+	// printed.
+	text := stripYAMLComments(string(contents))
+	mechanisms := map[string]bool{}
+	for mechanism, pattern := range workflowMechanismPatterns {
+		if pattern.MatchString(text) {
+			mechanisms[mechanism] = true
+		}
+	}
+	return mechanisms, nil
+}
+
+// workflowMechanismPatterns maps a mechanism to the evidence that it runs.
+//
+// Each pattern matches the invocation rather than the word: `-race` appearing
+// in a comment or a job name is not evidence that the race detector runs.
+var workflowMechanismPatterns = map[string]*regexp.Regexp{
+	"-race":    regexp.MustCompile(`(?m)\bgo\s+test\b[^\n]*\s-race\b`),
+	"go vet":   regexp.MustCompile(`(?m)\bgo\s+vet\b`),
+	"-count=1": regexp.MustCompile(`(?m)\bgo\s+test\b[^\n]*-count=1\b`),
+	"CI=1":     regexp.MustCompile(`(?mi)^\s*CI\s*:\s*["']?(?:1|true)`),
+}
+
+// stripYAMLComments removes each line's comment. It only treats a `#` at the
+// start of a line or after whitespace as a comment opener, so a `#` inside a
+// value (a colour, a fragment) is left alone.
+func stripYAMLComments(text string) string {
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		inSingle, inDouble := false, false
+		for position, character := range line {
+			switch character {
+			case '\'':
+				if !inDouble {
+					inSingle = !inSingle
+				}
+			case '"':
+				if !inSingle {
+					inDouble = !inDouble
+				}
+			case '#':
+				if inSingle || inDouble {
+					continue
+				}
+				if position == 0 || line[position-1] == ' ' || line[position-1] == '\t' {
+					lines[index] = line[:position]
+				}
+			}
+			if len(lines[index]) <= position {
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }

@@ -6958,6 +6958,131 @@
       "notes": "A merged-but-untagged library is not the same problem as a consumer left behind, so the three gaps are reported separately rather than collapsed into one incomplete flag."
     },
     {
+      "id": "wb.stream.sync",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb stream sync",
+              "flags": [
+                "--allow-mid-review",
+                "--base",
+                "--format",
+                "--library",
+                "--push",
+                "--reason",
+                "--timeout",
+                "--verify"
+              ],
+              "modes": [
+                "Fetches, rebases stream/<name> onto origin/<base> and never merges, then rebases every open agent branch onto the new stream head",
+                "Compares each library's required version against the target AFTER the rebase, which is what makes it idempotent against a bump Renovate already landed",
+                "Writes one local commit per library, only where the required version is still below target; a second run with nothing changed produces no new commits",
+                "Reports conflicts per agent branch with the branch, its claiming agent and the conflicting paths; a conflict in one never aborts the others",
+                "Refuses by default while a branch is under review, because rebasing it invalidates the review that pinned its patch set",
+                "--verify applies the whole batch and runs the suite once, then finds the culprit by cumulative prefix re-apply on a local scratch branch that is never pushed",
+                "Costs one run when the batch passes and 1+k when the culprit is element k \u2014 a linear prefix scan, not a bisection",
+                "A lockstep family is one element and is never split during prefix re-apply",
+                "Reports an interaction failure, blaming no element, when every prefix passes",
+                "Names a skipped CI mechanism only after reading the member's stream-PR workflows and proving CI runs it; anything neither side carries is reported as unguarded",
+                "NEVER pushes: a push happens only on landing, review, park or --push --reason, and a dependency bump is not a trigger",
+                "Without a trigger the remote is left untouched and the report says so, with the local commit count"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream sync --help",
+              "contains": [
+                "never a merge",
+                "idempotent",
+                "NEVER PUSHES",
+                "not a bisection",
+                "interaction failure",
+                "review-in-progress",
+                "unjustified-push"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "### `wb stream sync <name>`",
+              "examples": [
+                "wb stream sync checkout-rewrite --verify"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestSyncWritesNoBumpRenovateAlreadyLanded",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestSyncReportsConflictsPerAgentBranch",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestTenBumpsAreTenLocalCommitsAndZeroPushes",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestPushWithoutAReasonIsRefusedNamingTheFourTriggers",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestABatchVerifiesOnceThenFindsTheCulpritByPrefixReApply",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestAPassingBatchCostsExactlyOneRun",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestEveryPrefixPassingIsReportedAsAnInteractionFailure",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestALockstepFamilyIsOneElementAndIsNeverSplit",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestSkippedMechanismsAreOnlyClaimedWhenCIProvablyRunsThem",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Ten bumps pushed one at a time cost ten CI runs for one landing, so bumps are local commits verified once as a batch and the remote is touched only on one of four named triggers."
+    },
+    {
       "id": "wb.sync",
       "feature_refs": [],
       "since": "existing",
@@ -8302,8 +8427,8 @@
                 "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
                 "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
-                "The in-use guard applies to every checkout, including one with no owner registration at all — a review checkout, a git worktree add checkout, or one whose registering process exited — because those are exactly the checkouts a sweep removed while they were in use",
-                "In use is decided from four activity signals — a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit — and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
+                "The in-use guard applies to every checkout, including one with no owner registration at all \u2014 a review checkout, a git worktree add checkout, or one whose registering process exited \u2014 because those are exactly the checkouts a sweep removed while they were in use",
+                "In use is decided from four activity signals \u2014 a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit \u2014 and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
                 "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
                 "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",

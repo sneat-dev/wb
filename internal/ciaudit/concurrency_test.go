@@ -155,3 +155,55 @@ func TestStreamConcurrencyAcceptsAScalarConcurrencyDeclaration(t *testing.T) {
 		t.Errorf("scalar concurrency = %#v; declared but never cancelling", reports[0])
 	}
 }
+
+// The evidence behind "CI owns it" must be the invocation, not the word: a
+// mechanism named in a comment or a job name is not proof that it runs.
+func TestWorkflowMechanismsMatchInvocationsNotMentions(t *testing.T) {
+	root := t.TempDir()
+	writeWorkflow(t, root, "ci.yml", `name: CI
+on: [pull_request]
+env:
+  CI: "1"
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test -race -count=1 ./...
+      - run: go vet ./...
+`)
+	mechanisms, err := WorkflowMechanisms(root, ".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"-race", "go vet", "-count=1", "CI=1"} {
+		if !mechanisms[want] {
+			t.Errorf("mechanism %q not detected in %#v", want, mechanisms)
+		}
+	}
+
+	// A workflow that only mentions the words carries none of them.
+	mentions := t.TempDir()
+	writeWorkflow(t, mentions, "ci.yml", `name: race and vet notes
+on: [pull_request]
+jobs:
+  build:
+    # we should add -race and go vet here one day
+    runs-on: ubuntu-latest
+    steps:
+      - run: go build ./...
+`)
+	none, err := WorkflowMechanisms(mentions, ".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none["-race"] || none["go vet"] {
+		t.Fatalf("mechanisms = %#v; a mention is not evidence that CI runs it", none)
+	}
+}
+
+func TestWorkflowMechanismsOnAMissingWorkflowIsEmpty(t *testing.T) {
+	mechanisms, err := WorkflowMechanisms(t.TempDir(), ".github/workflows/absent.yml")
+	if err != nil || len(mechanisms) != 0 {
+		t.Fatalf("mechanisms = %#v, err = %v", mechanisms, err)
+	}
+}

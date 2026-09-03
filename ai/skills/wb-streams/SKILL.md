@@ -64,6 +64,74 @@ the same Work Log provenance flags as `start`.
 wb stream join checkout-rewrite acme/reports --role consumer --mode manual --initiator me@example.com --model unknown --original-prompt-file ./prompt.txt
 ```
 
+### `wb stream sync <name>`
+
+Brings the stream current and applies its batch — **without pushing**.
+
+```sh
+wb stream sync checkout-rewrite --verify
+```
+
+The order is the mechanism:
+
+1. fetch, so the base is live rather than a session-start snapshot
+2. rebase `stream/<name>` onto `origin/<base>` — **never a merge**
+3. rebase every open agent branch onto the new stream head, **per branch**
+4. **then** compare each library's required version against the target
+
+Step 4 after step 2 is what makes sync **idempotent against Renovate**: a bump
+Renovate already landed is in the tree after the rebase, so the required version
+is already at target and no commit is written. Two syncs with nothing else
+changed produce no new commits the second time.
+
+Bumps are **local commits, one per library**, on the stream branch. A bump never
+gets its own worktree, its own pull request or an agent. A conflict is reported
+per agent branch — naming the branch, its claiming agent and the conflicting
+paths — and never aborts the other branches.
+
+Flags: `--verify`, `--library <name>@<version>` (repeatable), `--base`,
+`--allow-mid-review`, `--push`, `--reason`, `--timeout`, `--format`.
+
+#### `--verify`: one run, then a linear prefix scan
+
+The whole batch is applied and the suite runs **once** over the result. On
+failure WB reverts, then re-applies **cumulative** prefixes (1, 1+2, 1+2+3 …) on
+a **local scratch branch that is never pushed**, stopping at the first failing
+prefix and naming its last element the culprit, with the elements before it
+listed as proven good.
+
+The cost is honest: **one run when the batch passes, `1 + k` when the culprit is
+element k**, worst case `1 + N`. It is a linear prefix scan, **not a bisection**.
+If every prefix passes, the failure came from the base or a rebased change and
+is reported as an **interaction failure** — no element is blamed.
+
+A lockstep family (Angular, Nx, Ionic, Capacitor, `@sneat/*`) is **one** element
+and is never split; a prefix carrying half of Angular cannot build by
+construction and would blame the wrong element.
+
+A mechanism the local run skips (`-race`, by design) is only ever printed as
+"CI owns it" **after WB reads the member's stream-PR workflows and proves CI
+runs it**. Anything neither side carries is reported as **UNGUARDED**.
+
+### Pushes are justified and counted
+
+**`wb stream sync` never pushes.** A push costs agent time, tokens, CI minutes
+and money, and ten bumps pushed one at a time cost ten of each for one landing.
+
+A push happens only on one of exactly **four triggers**:
+
+| trigger | what does it |
+|---|---|
+| `landing` | `wb deps propagate remote` or the stream landing, after a green batch |
+| `review` | the draft stream pull request being made ready |
+| `park` | `wb worktree end`, a session park, any hand-off that would lose work |
+| `explicit` | `--push --reason "<text>"` — the only escape hatch, reason **mandatory** |
+
+A push with no recognised trigger is **refused**, listing all four. Every push
+writes an event carrying its trigger and reason. A sync with no trigger leaves
+the remote untouched **and says so**; `wb stream status` shows the local commits
+accumulating.
+
 ### `wb stream status [name]`
 
 Reports the three states in which a stream is incomplete, **separately** and
