@@ -198,12 +198,24 @@ func groupIsRefKeyed(group string) bool {
 //
 // The mechanism names match what a verification run reports as skipped.
 func WorkflowMechanisms(root, workflow string) (map[string]bool, error) {
+	mechanisms, _, err := WorkflowMechanismsWithReuse(root, workflow)
+	return mechanisms, err
+}
+
+// WorkflowMechanismsWithReuse additionally reports whether the workflow calls a
+// REUSABLE workflow whose body WB cannot see.
+//
+// A `uses:` callee lives in another repository, so WB cannot tell whether it
+// runs a mechanism. That is "unverified", never "absent": reporting a
+// mechanism as unguarded because the callee is opaque asserts something WB does
+// not know, which is the same false-assurance failure in the other direction.
+func WorkflowMechanismsWithReuse(root, workflow string) (map[string]bool, bool, error) {
 	contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(workflow)))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("read workflow %s: %w", workflow, err)
+		return nil, false, fmt.Errorf("read workflow %s: %w", workflow, err)
 	}
 	// Comments are stripped first. A workflow saying "we should add -race one
 	// day" is the opposite of evidence that CI runs it, and matching the word
@@ -216,8 +228,12 @@ func WorkflowMechanisms(root, workflow string) (map[string]bool, error) {
 			mechanisms[mechanism] = true
 		}
 	}
-	return mechanisms, nil
+	return mechanisms, reusableWorkflowCall.MatchString(text), nil
 }
+
+// reusableWorkflowCall matches a job-level `uses:` — a call into a workflow
+// defined in another repository, whose body WB cannot read.
+var reusableWorkflowCall = regexp.MustCompile(`(?m)^\s{2,}uses\s*:\s*\S+/\S+/\.github/workflows/\S+`)
 
 // workflowMechanismPatterns maps a mechanism to the evidence that it runs.
 //

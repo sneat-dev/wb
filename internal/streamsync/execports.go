@@ -145,6 +145,50 @@ func (git ExecGit) DeleteBranch(ctx context.Context, dir, branch string) error {
 	return err
 }
 
+// RestoreTo implements Git.
+func (git ExecGit) RestoreTo(ctx context.Context, dir, revision string) error {
+	if _, err := git.run(ctx, dir, "reset", "--hard", revision); err != nil {
+		return err
+	}
+	// A failed bump can leave untracked lockfile fragments; a reset alone
+	// would leave them for the next run to trip over.
+	_, err := git.run(ctx, dir, "clean", "-fd")
+	return err
+}
+
+// PushWithLease implements Git.
+//
+// `--force-with-lease` against the head WB recorded is required because a
+// rebase of a shared branch is a force-push, and a bare force discards whatever
+// another agent pushed in between. The pushed ref is then re-read: a push exit
+// code is not evidence the intended commit landed.
+func (git ExecGit) PushWithLease(ctx context.Context, dir, branch, expectedRemoteHead string) (string, error) {
+	local, err := git.Head(ctx, dir, branch)
+	if err != nil {
+		return "", err
+	}
+	args := []string{"push", "--set-upstream"}
+	if strings.TrimSpace(expectedRemoteHead) != "" {
+		args = append(args, "--force-with-lease="+branch+":"+expectedRemoteHead)
+	}
+	args = append(args, "origin", branch)
+	if _, err := git.run(ctx, dir, args...); err != nil {
+		return "", fmt.Errorf("push %s: %w", branch, err)
+	}
+	if _, err := git.run(ctx, dir, "fetch", "--quiet", "origin", branch); err != nil {
+		return "", fmt.Errorf("re-read origin/%s after pushing: %w", branch, err)
+	}
+	remote, err := git.Head(ctx, dir, "refs/remotes/origin/"+branch)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(remote) != strings.TrimSpace(local) {
+		return "", fmt.Errorf("pushed %s at %s but origin/%s is %s; the push did not land the intended commit",
+			branch, local, branch, remote)
+	}
+	return strings.TrimSpace(local), nil
+}
+
 // IsClean implements Git.
 func (git ExecGit) IsClean(ctx context.Context, dir string) (bool, error) {
 	out, err := git.run(ctx, dir, "status", "--porcelain")

@@ -46,6 +46,14 @@ type BatchResult struct {
 	Skipped []string `json:"skipped,omitempty"`
 	// Unguarded names mechanisms neither this run nor CI carries.
 	Unguarded []string `json:"unguarded,omitempty"`
+	// Unverified names mechanisms WB could not decide about, because the
+	// stream-PR workflow calls a reusable workflow in another repository.
+	// "I could not tell" is not the same claim as "CI does not run it".
+	Unverified []string `json:"unverified,omitempty"`
+	// UnexaminedElements is how many elements the prefix scan never reached.
+	// The scan stops at the FIRST failing prefix by design, so a green re-run
+	// after fixing the culprit is expected rather than surprising.
+	UnexaminedElements int `json:"unexamined_elements,omitempty"`
 	// ScratchBranch is the local branch prefix re-apply ran on. It is never
 	// pushed, which is what keeps the whole search to zero CI runs.
 	ScratchBranch string `json:"scratch_branch,omitempty"`
@@ -74,8 +82,8 @@ func (engine *Engine) VerifyBatch(ctx context.Context, options Options, elements
 		return result, err
 	}
 	result.Runs = 1
-	skipped, unguarded := engine.classifySkipped(options, first)
-	result.Skipped, result.Unguarded = skipped, unguarded
+	skipped, unguarded, unverified := engine.classifySkipped(options, first)
+	result.Skipped, result.Unguarded, result.Unverified = skipped, unguarded, unverified
 	if first.Passed {
 		result.Passed = true
 		engine.record(options, "batch", "success",
@@ -95,7 +103,10 @@ func (engine *Engine) VerifyBatch(ctx context.Context, options Options, elements
 	}
 	scratch := "wb/batch-" + options.Stream
 	result.ScratchBranch = scratch
-	base := result.baseRevision(head, grouped)
+	base, err := engine.batchBase(ctx, options, grouped, head)
+	if err != nil {
+		return result, err
+	}
 	if err := engine.Git.CreateBranch(ctx, options.Worktree, scratch, base); err != nil {
 		return result, err
 	}
@@ -133,6 +144,7 @@ func (engine *Engine) VerifyBatch(ctx context.Context, options Options, elements
 		culprit := grouped[index]
 		result.Culprit = &culprit
 		result.ProvenGood = grouped[:index]
+		result.UnexaminedElements = len(grouped) - index - 1
 		result.FailingCheck = strings.Join(run.Details, "; ")
 		engine.record(options, "batch", "findings",
 			fmt.Sprintf("prefix 1..%d failed; %s is the culprit", index+1, culprit.Name),
@@ -149,17 +161,26 @@ func (engine *Engine) VerifyBatch(ctx context.Context, options Options, elements
 	return result, nil
 }
 
-// baseRevision is the commit the batch was applied on top of: head minus every
-// element commit.
-func (result BatchResult) baseRevision(head string, elements []Element) string {
-	count := 0
+// batchBase is the commit the batch was applied on top of.
+//
+// It is the FIRST element's parent, not `head~<count>`. Counting back from the
+// head assumes the elements are the topmost N commits, which holds while bumps
+// are the only thing sync adds but breaks the moment absorbed agent commits
+// are elements too — and this type is shared with absorb.
+func (engine *Engine) batchBase(ctx context.Context, options Options, elements []Element, head string) (string, error) {
 	for _, element := range elements {
-		count += len(element.shas())
+		for _, sha := range element.shas() {
+			if sha == "" {
+				continue
+			}
+			parent, err := engine.Git.Head(ctx, options.Worktree, sha+"^")
+			if err != nil {
+				return "", fmt.Errorf("resolve the parent of the first batch element %s: %w", sha, err)
+			}
+			return parent, nil
+		}
 	}
-	if count == 0 {
-		return head
-	}
-	return fmt.Sprintf("%s~%d", head, count)
+	return head, nil
 }
 
 // shas returns the commits one element carries. A lockstep family carries
@@ -201,23 +222,30 @@ func groupLockstepFamilies(elements []Element) []Element {
 // workflows are read and proved to carry it. Anything neither this run nor CI
 // carries is reported as UNGUARDED — an unverified assurance is worse than no
 // gate.
-func (engine *Engine) classifySkipped(options Options, run VerificationRun) (skipped, unguarded []string) {
+func (engine *Engine) classifySkipped(options Options, run VerificationRun) (skipped, unguarded, unverified []string) {
 	if len(run.Skipped) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if engine.CI == nil {
-		return nil, run.Skipped
+		// No way to read CI at all: every skipped mechanism is unverified,
+		// not unguarded. WB does not know that CI lacks them.
+		return nil, nil, run.Skipped
 	}
-	present, err := engine.CI.Present(options.Worktree)
+	present, opaque, err := engine.CI.Present(options.Worktree)
 	if err != nil {
-		return nil, run.Skipped
+		return nil, nil, run.Skipped
 	}
 	for _, mechanism := range run.Skipped {
-		if present[mechanism] {
+		switch {
+		case present[mechanism]:
 			skipped = append(skipped, mechanism+" (CI on the stream pull request runs it)")
-			continue
+		case opaque:
+			// The workflow calls a reusable workflow whose body is in
+			// another repository, so WB cannot say the mechanism is absent.
+			unverified = append(unverified, mechanism+" (a reusable workflow WB cannot read may run it)")
+		default:
+			unguarded = append(unguarded, mechanism)
 		}
-		unguarded = append(unguarded, mechanism)
 	}
-	return skipped, unguarded
+	return skipped, unguarded, unverified
 }

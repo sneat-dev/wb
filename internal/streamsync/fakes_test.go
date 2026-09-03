@@ -23,6 +23,10 @@ type fakeGit struct {
 	deletedBranches []string
 	checkedOut      []string
 	resets          []string
+	restored        []string
+	restoreErr      error
+	pushErr         error
+	pushes          []string
 }
 
 func newFakeGit() *fakeGit {
@@ -111,6 +115,21 @@ func (git *fakeGit) DeleteBranch(_ context.Context, _, branch string) error {
 
 func (git *fakeGit) IsClean(context.Context, string) (bool, error) { return git.clean, nil }
 
+func (git *fakeGit) RestoreTo(_ context.Context, _, revision string) error {
+	git.calls = append(git.calls, "restore "+revision)
+	git.restored = append(git.restored, revision)
+	return git.restoreErr
+}
+
+func (git *fakeGit) PushWithLease(_ context.Context, _, branch, expected string) (string, error) {
+	git.calls = append(git.calls, "push "+branch+" lease="+expected)
+	if git.pushErr != nil {
+		return "", git.pushErr
+	}
+	git.pushes = append(git.pushes, branch)
+	return "pushed-sha", nil
+}
+
 // pushed reports whether anything in this fake could have reached the remote.
 // It is deliberately exhaustive: the whole point of the local model is that
 // sync never pushes, so the test asserts on the absence of ANY push verb.
@@ -175,9 +194,12 @@ func (verifier *fakeVerifier) Verify(context.Context, string) (VerificationRun, 
 	return VerificationRun{Passed: true}, nil
 }
 
-type fakeCI struct{ present map[string]bool }
+type fakeCI struct {
+	present map[string]bool
+	opaque  bool
+}
 
-func (ci fakeCI) Present(string) (map[string]bool, error) { return ci.present, nil }
+func (ci fakeCI) Present(string) (map[string]bool, bool, error) { return ci.present, ci.opaque, nil }
 
 type fakeEvents struct{ events []Event }
 
