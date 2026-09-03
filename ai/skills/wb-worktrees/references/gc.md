@@ -68,9 +68,10 @@ hand-written workaround, and a named command that fails on the shape it was
 named for is worse than no name at all.
 
 Two of these depend on whether WB created the checkout, which the row reports as
-`management`: **managed** (WB wrote its manifest), **unmanaged** (the manifest is
-there and does not validate), or **unknown** (no manifest at all — a checkout
-made with `git worktree add` or `gh pr checkout`). Absence of evidence is
+`management`: **managed** (WB wrote its manifest and it reads), **unmanaged**
+(a manifest is there and does not read or does not name its repository and
+worktree), or **unknown** (no manifest at all — a checkout made with
+`git worktree add` or `gh pr checkout`). Absence of evidence is
 `unknown`, never `unmanaged`, and an unknown checkout gets the same care as one
 WB owns: not knowing must never widen what the tool is willing to suggest.
 
@@ -85,7 +86,7 @@ evidence.
 | `dirty`, managed | `wb worktree abort <task> --apply` — seals the Work Log and captures the dirty bytes into a private archive before deleting anything |
 | `dirty`, unmanaged or unknown | the exact `git -C <path> stash push --include-untracked -m "wb gc <task>"` the row prints. That is the whole instruction: **no removal is named**, and the row's warning states that removing the checkout without the capture destroys the changes and nothing in WB can bring them back |
 | `claimed-live` — a live operation holds the task lock | `wb worktree cleanup <task> --resume-interrupted` once the operation is really dead |
-| `claimed-live` — a live session still owns it | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round |
+| `claimed-live` — the checkout was used inside `--session-freshness` (default 6 h) | `wb worktree end <task>` when you are done with it. This outranks **every** landed class, and it applies to every checkout — including a detached review checkout with no owner registration at all, which is exactly the population a sweep once removed out from under a reviewer |
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
 | `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
@@ -135,6 +136,44 @@ The footer is **one accounting unit over the whole sweep**, not a sum of the
 rows. Two worktrees that link the same store file would otherwise have it
 counted twice in the apparent total and dropped from the unshared one, even
 though removing both does return its blocks.
+
+## What counts as "in use"
+
+Four signals, and the newest of them wins, because a lane may be doing only one
+kind of work:
+
+- a **heartbeat** every `wb` command run *inside* the checkout refreshes — this
+  is what keeps a lane that is only reading alive. It is keyed to the working
+  directory, so a fleet sweep run from somewhere else refreshes nothing;
+- the newest **modification time among the files Git reports as changed** — a
+  lane that is only editing;
+- the newest **Work Log event**;
+- the newest **commit** on the branch.
+
+This guard applies to **every** checkout, not only to ones carrying a live
+owner registration. A review checkout has none, a `git worktree add` checkout
+has none, and a checkout whose registering process has exited has none — and
+those are precisely the checkouts a sweep once removed while they were in use.
+
+A live process id counts for **nothing** on its own. Process ids are recycled,
+and the question is whether a worktree is in use, not whether some process
+exists. Two earlier versions of this rule got it wrong in both directions: one
+kept ten finished checkouts open for seventeen hours on a recycled id, and the
+next reported a lane three hours into its work as recycled because the owner
+record is written once at creation and deduplicated thereafter.
+
+`--session-freshness 0` disables the rule, the same spelling as
+`--older-than 0`. A negative value is refused. A timestamp in the future is
+ignored rather than treated as activity: a clock skew must not pin a checkout
+open forever while reporting that it was used no time ago.
+
+## Empty task husks
+
+Removing a checkout leaves an empty `<task>/<owner>/<repository>` namespace
+behind, including when the removal was one gc's own advice named. gc reports
+those in the dry run and retires them under `--apply`, scoped to the tasks the
+run selected — a named-task sweep never retires shells across the fleet on your
+behalf.
 
 ## Terminal artefacts
 

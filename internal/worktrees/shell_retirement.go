@@ -30,6 +30,11 @@ type RetireShellsOptions struct {
 	ProjectsRoot string
 	Filter       string
 	Apply        bool
+	// Tasks limits the sweep to these exact task names. Empty sweeps every
+	// task, which is what `wb worktree cleanup --retire-shells` wants; a caller
+	// acting on one named task must not quietly retire shells across the fleet
+	// on its behalf.
+	Tasks []string
 }
 
 // RetiredShell is one task directory's shell-retirement plan and, under
@@ -75,9 +80,13 @@ func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireS
 		if readErr != nil {
 			return RetireShellsOutcome{}, fmt.Errorf("read worktrees root %s: %w", root, readErr)
 		}
+		selected := taskSelectionSet(options.Tasks)
 		for _, entry := range entries {
 			task := entry.Name()
 			if options.Filter != "" && !strings.Contains(task, options.Filter) {
+				continue
+			}
+			if !taskSelectionMatches(selected, task) {
 				continue
 			}
 			info, infoErr := entry.Info()

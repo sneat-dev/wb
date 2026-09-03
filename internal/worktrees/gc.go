@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -73,6 +74,16 @@ type GCOptions struct {
 	OlderThan time.Duration
 	// TTL marks checkouts older than this expired in the report. Reporting only.
 	TTL time.Duration
+	// SessionFreshness is how recently a checkout must have been used for it to
+	// count as in use. Beyond it a live process id is presumed recycled and the
+	// checkout is classified on its own evidence, with the stale owner named in
+	// a warning.
+	//
+	// Unset means DefaultSessionFreshness, because the failure mode of
+	// forgetting this field is deleting a working lane's checkout.
+	// DisableSessionFreshness turns the rule off, which is what the CLI's
+	// `--session-freshness 0` means — the same spelling as `--older-than 0`.
+	SessionFreshness time.Duration
 	// ResidueDepth bounds the commit-to-pull-request walk.
 	ResidueDepth int
 	Workers      int
@@ -139,8 +150,9 @@ type GCOutcome struct {
 	// husk a removal outside WB leaves behind. Omitting it made gc blind to
 	// exactly the debris its own advice creates.
 	Artifacts []LifecycleArtifact `json:"artifacts,omitempty"`
-	// RetiredShells records the empty task shells an applying sweep swept.
-	RetiredShells []RetiredShell `json:"retired_shells,omitempty"`
+	// Shells records the empty task shells this sweep found, planned in a dry
+	// run and retired under --apply.
+	Shells []RetiredShell `json:"shells,omitempty"`
 	// Reclaimable and Reclaimed are always both figures. An apparent size
 	// counts hard-linked bytes a deletion will not return; over one measured
 	// sweep that was 11.7 GB apparent against 5.9 GB unshared.
@@ -193,6 +205,7 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		Progress:        options.Progress,
 		IncludeDetached: !options.SkipDetached,
 		TTL:             options.TTL,
+		Activity:        true,
 		ResidueEvidence: true,
 		ResidueDepth:    options.ResidueDepth,
 		Now:             options.Now,
@@ -246,6 +259,14 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	if len(eligibleRoots) > 0 {
 		outcome.Reclaimable = walk.Total(eligibleRoots...)
 	}
+	// The husk a removal leaves — an empty <task>/<owner>/<repository> namespace
+	// with no checkout under it — is invisible to the inventory and would
+	// otherwise accumulate one directory per sweep, including the sweeps gc's
+	// own advice produces. It is reported in a dry run for the same reason
+	// everything else is: a plan that omits work the apply will do is not a plan.
+	if err := sweepTaskShells(ctx, options, &outcome); err != nil {
+		return outcome, err
+	}
 	if options.Apply {
 		if err := applyGC(ctx, options, &outcome); err != nil {
 			return outcome, err
@@ -258,20 +279,6 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		}
 		if len(appliedRoots) > 0 {
 			outcome.Reclaimed = walk.Total(appliedRoots...)
-		}
-		// The husk a removal leaves — an empty <task>/<owner>/<repository>
-		// namespace with no checkout under it — is invisible to the inventory
-		// and would otherwise accumulate one directory per sweep, including
-		// the sweeps gc's own advice produces.
-		shells, shellErr := RetireTaskShells(ctx, RetireShellsOptions{
-			ProjectsRoot: options.ProjectsRoot, Filter: options.Filter, Apply: true,
-		})
-		if shellErr == nil {
-			for _, shell := range shells.Results {
-				if shell.Applied {
-					outcome.RetiredShells = append(outcome.RetiredShells, shell)
-				}
-			}
 		}
 	}
 	summarizeGC(&outcome)
@@ -299,6 +306,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	if warning := renamedBranchWarning(result); warning != "" {
 		entry.Warnings = append(entry.Warnings, warning)
 	}
+
 	entry.Management = worktreeManagement(result.WorktreeDir)
 	switch {
 	case !result.Clean:
@@ -309,13 +317,21 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassClaimedLive
 		entry.Reason = lockedReason(result, resumeInterruptedCommand(result.Task))
 		entry.SanctionedCommand = resumeInterruptedCommand(result.Task)
-	case result.OwnerState == "active":
+	case checkoutIsInUse(result, options, now):
 		// Deliberately before every landed class: a checkout whose owning
 		// session is alive is being used right now, and the fact that its work
 		// already landed makes it more likely to be mid-next-round, not less.
 		// The session ends its own worktree; a sweep must not do it underneath.
+		//
+		// It applies to EVERY checkout, not only to one carrying a live owner
+		// registration. A detached review checkout has no registration at all,
+		// and neither does a `git worktree add` one, and neither does a
+		// checkout whose registering process has exited — which is precisely
+		// the population of the incident this rule exists to prevent: the
+		// reviewer's worktree was removed while it was in use, and it had no
+		// live owner to speak for it.
 		entry.Class = GCClassClaimedLive
-		entry.Reason = "a live session (" + result.Owner + ") still holds this checkout"
+		entry.Reason = inUseReason(result, now)
 		entry.SanctionedCommand = "wb worktree end " + result.Task
 	case result.OpenPullRequest != nil:
 		entry.Class = GCClassOpenPR
@@ -377,6 +393,9 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Eligible = false
 		entry.Reason = "merged pull request is newer than the safety window"
 		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --older-than 0 --apply"
+	}
+	if warning := staleOwnerWarning(result, options, now, entry.Class); warning != "" {
+		entry.Warnings = append(entry.Warnings, warning)
 	}
 	entry.Evidence = gcEvidence(result)
 	return entry
@@ -455,6 +474,7 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 			AllowResidue:    options.AllowResidue,
 			SupersededBy:    options.SupersededBy,
 			IncludeDetached: !options.SkipDetached,
+			Activity:        true,
 			OlderThan:       options.OlderThan,
 			TTL:             options.TTL,
 			ResidueDepth:    options.ResidueDepth,
@@ -527,7 +547,13 @@ func summarizeGC(outcome *GCOutcome) {
 		}
 	}
 	outcome.Totals["purged_artefacts"] = len(outcome.Purged)
-	outcome.Totals["retired_shells"] = len(outcome.RetiredShells)
+	for _, shell := range outcome.Shells {
+		if shell.Applied {
+			outcome.Totals["retired_shells"]++
+			continue
+		}
+		outcome.Totals["eligible_shells"]++
+	}
 	outcome.Totals["artifacts"] = len(outcome.Artifacts)
 }
 
@@ -604,8 +630,15 @@ const (
 func worktreeManagement(worktree string) string {
 	manifest, err := ReadManifest(worktree)
 	switch {
-	case err != nil:
+	case errors.Is(err, errManifestNotFound):
+		// Nothing there at all: WB has no claim about this checkout, and the
+		// absence of a claim is not a claim that it is foreign.
 		return ManagementUnknown
+	case err != nil:
+		// A manifest that exists and will not read is positively wrong — a
+		// truncated write, a hand-edit, a replaced file — and that is a
+		// different fact from its absence.
+		return ManagementUnmanaged
 	case strings.TrimSpace(manifest.Repository) == "" || strings.TrimSpace(manifest.Worktree) == "":
 		return ManagementUnmanaged
 	default:
@@ -659,4 +692,106 @@ func detachedUnknownResolution(result ListResult, management string, warnings []
 		return "wb worktree adopt " + result.WorktreeDir, warnings
 	}
 	return "git -C " + result.CanonicalDir + " worktree remove " + result.WorktreeDir, warnings
+}
+
+// sweepTaskShells reports, and under --apply retires, the empty task
+// namespaces a removal leaves behind. It is scoped to the same tasks the sweep
+// itself selected: a caller acting on one named task must not have shells
+// retired across the fleet on its behalf, and an error here is a finding rather
+// than something to swallow.
+func sweepTaskShells(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
+	shells, err := RetireTaskShells(ctx, RetireShellsOptions{
+		ProjectsRoot: options.ProjectsRoot,
+		Filter:       options.Filter,
+		Tasks:        options.Tasks,
+		Apply:        options.Apply,
+	})
+	if err != nil {
+		return fmt.Errorf("sweep empty task shells: %w", err)
+	}
+	for _, shell := range shells.Results {
+		if !shell.Eligible && shell.Error == "" {
+			continue
+		}
+		outcome.Shells = append(outcome.Shells, shell)
+	}
+	return nil
+}
+
+// DisableSessionFreshness turns the in-use rule off. It is a distinct value
+// from the zero one so that an unset option means "protect me", not "do not".
+const DisableSessionFreshness = -1
+
+// checkoutIsInUse reports whether anything has used this checkout recently
+// enough that removing it would take work out from under someone.
+//
+// It asks about the checkout, not about a process. A live process id is
+// evidence about a process — and process ids are recycled — while what matters
+// is whether a lane is working here. See LastActivity for the four signals, any
+// one of which is enough.
+//
+// A window of zero disables the rule entirely, matching --older-than 0.
+func checkoutIsInUse(result ListResult, options GCOptions, now time.Time) bool {
+	window := options.SessionFreshness
+	if window < 0 {
+		// Any negative window disables the rule. Treating one as a window
+		// would invert the comparison and make every checkout look in use, or
+		// none of them — a silent inversion of a safety rule is worse than an
+		// explicit off switch.
+		return false
+	}
+	if window == 0 {
+		// An unset window is the safe one. A caller that forgets this field
+		// must not thereby switch off the guard that keeps a working lane's
+		// checkout from being deleted; switching it off is explicit.
+		window = DefaultSessionFreshness
+	}
+	seen := result.LastActivityAt
+	if seen.IsZero() {
+		// Nothing to judge by. An unknown age is not a licence to remove
+		// someone's work, so the checkout is treated as in use.
+		return true
+	}
+	return now.Sub(seen) <= window
+}
+
+// inUseReason says what was seen, because "someone is using it" is only
+// actionable if the operator can tell which signal said so.
+func inUseReason(result ListResult, now time.Time) string {
+	who := result.Owner
+	if who == "" || who == "unknown" {
+		who = "no registered owner"
+	}
+	return "this checkout was used " + humanAge(activityAgeSeconds(result, now)) +
+		" ago (" + who + "); a checkout in use is not a checkout to remove"
+}
+
+func activityAgeSeconds(result ListResult, now time.Time) int64 {
+	if result.LastActivityAt.IsZero() {
+		return 0
+	}
+	if age := now.Sub(result.LastActivityAt); age > 0 {
+		return int64(age / time.Second)
+	}
+	return 0
+}
+
+// staleOwnerWarning names an owner whose process is alive but whose checkout
+// shows no recent activity, so a real session is never silently ignored. It is
+// attached only to a row the rule actually changed: a checkout that is
+// classified some other way was not affected, and warning about it there is
+// noise that trains a reader to skip warnings.
+func staleOwnerWarning(result ListResult, options GCOptions, now time.Time, class string) string {
+	if result.OwnerState != "active" || checkoutIsInUse(result, options, now) {
+		return ""
+	}
+	switch class {
+	case GCClassDirty, GCClassOpenPR, GCClassUnpushed:
+		// These are kept for their own reasons; the freshness rule changed
+		// nothing about them.
+		return ""
+	}
+	return "owner " + result.Owner + " has a live process id but this checkout shows no activity for " +
+		humanAge(activityAgeSeconds(result, now)) +
+		" (no heartbeat, no edited file, no Work Log event, no commit); treating the process id as recycled"
 }

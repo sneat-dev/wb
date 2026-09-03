@@ -13,7 +13,7 @@ import (
 func newWorktreeGCCmd() *cobra.Command {
 	var base, format, supersededBy string
 	var apply, allowResidue, skipDetached, skipSizes, deleteRemote, verbose bool
-	var olderThan, ttl time.Duration
+	var olderThan, ttl, sessionFreshness time.Duration
 	var residueDepth, parallel int
 	command := &cobra.Command{
 		Use:   "gc [task...]",
@@ -41,7 +41,14 @@ Classes, each decided by evidence and printed with it:
   detached-unknown  detached with no landing association: refused
   open-pr           a pull request is still awaiting a decision: refused
   dirty             uncommitted changes: refused
-  claimed-live      a live operation or session holds it: refused
+  claimed-live      a live operation holds it, or the checkout was used inside
+                    --session-freshness: refused. "Used" means any of four
+                    signals — a heartbeat every wb command inside the checkout
+                    refreshes, a file Git reports as changed, a Work Log event,
+                    or a commit — because a lane may be doing only one kind of
+                    work. A live process id alone counts for nothing: ids are
+                    recycled, and the question is about the worktree, not about
+                    a process. --session-freshness 0 disables the rule
   unpushed          a head GitHub has never seen. This is the only class that
                     can lose work, so nothing ever retires it
   unmerged          pushed, not landed, no open pull request: refused
@@ -86,6 +93,9 @@ wb worktree gc --format json`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			if sessionFreshness < 0 {
+				return &exitError{code: exitUsage, message: "--session-freshness cannot be negative; use 0 to disable the in-use rule"}
+			}
 			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{
@@ -99,11 +109,14 @@ wb worktree gc --format json`,
 				SkipDetached: skipDetached,
 				OlderThan:    olderThan,
 				TTL:          ttl,
-				ResidueDepth: residueDepth,
-				Workers:      parallel,
-				SkipSizes:    skipSizes,
-				DeleteRemote: deleteRemote,
-				Progress:     progress.report,
+				// `--session-freshness 0` reads as "do not apply this rule",
+				// the same spelling as `--older-than 0`.
+				SessionFreshness: disabledWhenZero(sessionFreshness),
+				ResidueDepth:     residueDepth,
+				Workers:          parallel,
+				SkipSizes:        skipSizes,
+				DeleteRemote:     deleteRemote,
+				Progress:         progress.report,
 			})
 			if err != nil {
 				return err
@@ -137,6 +150,8 @@ wb worktree gc --format json`,
 	command.Flags().StringVar(&base, "base", "main", "fallback origin target branch for candidates without a recorded one")
 	command.Flags().DurationVar(&olderThan, "older-than", 0, "keep a checkout whose pull request merged less than this ago")
 	command.Flags().DurationVar(&ttl, "ttl", 7*24*time.Hour, "report a checkout older than this as expired")
+	command.Flags().DurationVar(&sessionFreshness, "session-freshness", worktrees.DefaultSessionFreshness,
+		"how recently a checkout must have been used to count as in use; 0 disables the rule")
 	command.Flags().IntVar(&residueDepth, "residue-depth", worktrees.DefaultResidueDepth, "how many commits back from HEAD to consult the commit-to-pull-request index")
 	command.Flags().IntVar(&parallel, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -201,10 +216,33 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 			return err
 		}
 	}
+	shells := outcome.Totals["retired_shells"]
+	shellLabel := "empty shells retired"
+	if !outcome.Apply {
+		shells, shellLabel = outcome.Totals["eligible_shells"], "empty shells to retire"
+	}
+	for _, shell := range outcome.Shells {
+		if shell.Error == "" {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "shell %s %s: %s\n", shell.Task, shell.Path, shell.Error); err != nil {
+			return err
+		}
+	}
 	_, err := fmt.Fprintf(out,
-		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d empty shells retired; %s %s apparent / %s unshared\n",
+		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d %s; %s %s apparent / %s unshared\n",
 		outcome.Totals["retired"], outcome.Totals["eligible"], outcome.Totals["refused"],
-		outcome.Totals["purged_artefacts"], outcome.Totals["retired_shells"], label,
+		outcome.Totals["purged_artefacts"], shells, shellLabel, label,
 		diskusage.Human(usage.ApparentBytes), diskusage.Human(usage.UnsharedBytes))
 	return err
+}
+
+// disabledWhenZero maps the CLI's "0 means off" onto the library's explicit
+// disable value, so an option a caller simply forgot cannot silently turn a
+// safety rule off.
+func disabledWhenZero(window time.Duration) time.Duration {
+	if window == 0 {
+		return worktrees.DisableSessionFreshness
+	}
+	return window
 }

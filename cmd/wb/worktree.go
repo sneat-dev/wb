@@ -2049,6 +2049,13 @@ required to remove anything.`,
 					return err
 				}
 			}
+			for _, quarantined := range outcome.Quarantined {
+				if _, err := fmt.Fprintf(command.ErrOrStderr(),
+					"warning: cleanup skipped an unusable durable record %s (task %s): %s\n",
+					quarantined.Path, quarantined.Task, quarantined.Reason); err != nil {
+					return err
+				}
+			}
 			for _, artifact := range outcome.Artifacts {
 				if _, err := fmt.Fprintf(command.ErrOrStderr(), "info: cleanup WB internal %s %s: disposition=%s eligible=%t applied=%t reason=%s\n",
 					artifact.Kind, artifact.Path, artifact.Disposition, artifact.Eligible, artifact.Applied, artifact.Reason); err != nil {
