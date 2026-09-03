@@ -336,10 +336,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// after the merge that the worktree cannot be retired leaves the landing
 	// done and the tidy-up impossible, which is the shape that produced sixty
 	// abandoned checkouts in the first place.
-	if !options.Keep {
-		if refusal := preflightLandingCleanup(ctx, options, view, number); refusal != nil {
-			return mergeRefusal(result, *refusal), nil
-		}
+	// The live-link half of this runs whatever --keep says. --keep opts out of
+	// retiring the worktree; it does not opt out of the rule that a worktree
+	// building against an unpublished tree must not be landed, and reading it
+	// as a bypass would make the guard optional by accident.
+	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep); refusal != nil {
+		return mergeRefusal(result, *refusal), nil
 	}
 
 	subject := strings.TrimSpace(options.Subject)
@@ -994,11 +996,10 @@ func appendLandEvent(options PullRequestLandOptions, result PullRequestLandResul
 // preflightLandingCleanup refuses a landing whose tidy-up would fail, before
 // the merge makes the landing irreversible.
 //
-// A dirty worktree cannot be retired without losing the changes in it, and a
-// worktree holding a live dependency link cannot be retired without breaking
-// what it is linked to. Both are ordinary states for a lane mid-work, and both
-// are far better said before the merge than after.
-func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view PullRequestView, number string) *landRefusal {
+// linksOnly is set when the caller passed --keep: the dirty-worktree check is
+// about retiring a checkout and does not apply, while the live-link check is
+// about what is being landed and always does.
+func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions, view PullRequestView, number string, linksOnly bool) *landRefusal {
 	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
 		ProjectsRoot: options.ProjectsRoot,
 		Base:         view.Base.Ref,
@@ -1016,7 +1017,7 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 		if entry.Repository != options.Repository || entry.Branch != view.Head.Ref {
 			continue
 		}
-		if !entry.Clean {
+		if !entry.Clean && !linksOnly {
 			return &landRefusal{
 				code: "cleanup-blocked-dirty",
 				reason: "the worktree for task " + entry.Task + " has uncommitted changes, so landing now would " +

@@ -36,14 +36,111 @@ var mechanicalManifests = map[string]bool{
 var codeDirectories = []string{"testdata/", "docs/", "examples/", "fixtures/"}
 
 // mechanicalDependencySections are the `package.json` keys a dependency bump
-// may touch. `pnpm.overrides` is deliberately absent: an override rewrites the
-// resolved graph for every package in the workspace, which is a decision about
-// the software rather than a version bump.
+// may touch.
 var mechanicalDependencySections = map[string]bool{
 	"dependencies":         true,
 	"devDependencies":      true,
 	"peerDependencies":     true,
 	"optionalDependencies": true,
+}
+
+// graphRewritingKeys change what the resolver produces for packages other than
+// the one being edited, so they are never a version bump however much the line
+// looks like one.
+//
+// `"semver": "7.6.0"` inside `overrides` reads exactly like the same line
+// inside `dependencies`, and it means something entirely different: every
+// package in the workspace that asked for any other semver now gets this one.
+// A `replace` in `go.mod` is the same move in the other ecosystem, pointing a
+// module path at something the registry never served.
+var graphRewritingKeys = map[string]bool{
+	"overrides":           true,
+	"resolutions":         true,
+	"packageExtensions":   true,
+	"patchedDependencies": true,
+	"peerDependencyRules": true,
+	"catalog":             true,
+	"catalogs":            true,
+}
+
+// sectionFromHunkHeader reads the enclosing context Git appends to a hunk
+// header, so a hunk that shows no `"section": {` line of its own is still
+// placed correctly.
+func sectionFromHunkHeader(line string) []string {
+	index := strings.Index(line[2:], "@@")
+	if index < 0 {
+		return nil
+	}
+	context := strings.TrimSpace(line[2+index+2:])
+	if context == "" {
+		return nil
+	}
+	key, _, ok := jsonLineKey(context)
+	if !ok || !strings.HasSuffix(strings.TrimSpace(context), "{") {
+		return nil
+	}
+	return []string{key}
+}
+
+// nonMechanicalGoModule refuses the `go.mod` directives that are decisions
+// rather than versions.
+//
+// `require` is a version bump. `replace` and `exclude` rewrite what the module
+// graph resolves to, and `go`/`toolchain` change the language and compiler the
+// whole module is built with — none of which a batch verification can stand in
+// for a reviewer on.
+func nonMechanicalGoModule(name, patch string) string {
+	for _, line := range changedPatchLines(patch) {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "replace", "exclude":
+			return name + " changes a " + fields[0] + " directive, which rewrites what the module graph resolves to"
+		case "go", "toolchain":
+			return name + " changes the " + fields[0] + " directive, which changes how the whole module is built"
+		}
+	}
+	return ""
+}
+
+// nonMechanicalWorkspace refuses the pnpm workspace keys that rewrite the
+// graph. The file is in the manifest list because a bump can add a catalogued
+// version, but the same file carries overrides and package extensions.
+func nonMechanicalWorkspace(name, patch string) string {
+	// Every line of the hunk, context included. A change under `overrides:`
+	// shows the key as CONTEXT and only the version as changed — reading the
+	// changed lines alone sees `semver: 7.6.0` and cannot tell it from a
+	// catalogued version bump. If a graph-rewriting key is anywhere in the
+	// hunk, the hunk is in or beside one, and that is enough to want a reader.
+	for _, line := range strings.Split(patch, "\n") {
+		if strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		body := strings.TrimSpace(strings.TrimLeft(line, "+- "))
+		key := strings.Trim(strings.TrimSpace(strings.SplitN(body, ":", 2)[0]), `"'`)
+		if graphRewritingKeys[key] {
+			return name + " touches " + key + ", which rewrites what the workspace resolves for every package"
+		}
+	}
+	return ""
+}
+
+// changedPatchLines yields the added and removed lines of a patch, without
+// their diff marker.
+func changedPatchLines(patch string) []string {
+	lines := make([]string, 0, 8)
+	for _, line := range strings.Split(patch, "\n") {
+		if len(line) == 0 || line[0] != '+' && line[0] != '-' {
+			continue
+		}
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		lines = append(lines, strings.TrimSpace(line[1:]))
+	}
+	return lines
 }
 
 // ChangedFile is one file of a pull request's diff, with the patch GitHub
@@ -114,9 +211,17 @@ func nonMechanicalContent(name, patch string) string {
 	if strings.TrimSpace(patch) == "" {
 		return name + " has no diff GitHub could show, so its content cannot be classified"
 	}
-	if path.Base(name) != "package.json" {
-		// go.mod, go.sum and the lockfiles carry only resolved dependency
-		// data; there is no non-dependency region inside them to protect.
+	switch path.Base(name) {
+	case "package.json":
+		// Checked line by line below.
+	case "go.mod":
+		return nonMechanicalGoModule(name, patch)
+	case "pnpm-workspace.yaml":
+		return nonMechanicalWorkspace(name, patch)
+	default:
+		// go.sum and the lockfiles carry only resolved dependency data, and a
+		// lockfile is a *consequence* of a manifest edit rather than a decision
+		// of its own. There is no non-dependency region inside them to protect.
 		return ""
 	}
 	// Track the object the diff is inside. A version bump and a `pnpm.overrides`
@@ -125,7 +230,20 @@ func nonMechanicalContent(name, patch string) string {
 	// carry that section, which is why they are read rather than skipped.
 	section := make([]string, 0, 4)
 	for _, line := range strings.Split(patch, "\n") {
-		if strings.HasPrefix(line, "@@") || strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+		if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
+			continue
+		}
+		if strings.HasPrefix(line, "@@") {
+			// Git puts the enclosing context after the second `@@` — for a
+			// manifest that is usually the very section the hunk is inside:
+			//
+			//   @@ -12,7 +12,7 @@   "dependencies": {
+			//
+			// Skipping it left the stack empty for every hunk whose only
+			// context is in the header, so a real dependency bump read as
+			// "outside any dependency section" and was refused. Seed the stack
+			// from it instead.
+			section = sectionFromHunkHeader(line)
 			continue
 		}
 		changed := len(line) > 0 && (line[0] == '+' || line[0] == '-')
@@ -160,6 +278,14 @@ func nonMechanicalContent(name, patch string) string {
 		enclosing := ""
 		if len(section) > 0 {
 			enclosing = section[len(section)-1]
+		}
+		if graphRewritingKeys[enclosing] || graphRewritingKeys[key] {
+			rewriting := enclosing
+			if graphRewritingKeys[key] {
+				rewriting = key
+			}
+			return name + " changes " + rewriting + ", which rewrites what the resolver produces for " +
+				"packages other than the one being edited"
 		}
 		if !mechanicalDependencySections[enclosing] {
 			where := "outside any dependency section"

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 // landFixture is a real repository plus a scripted GitHub. Every GitHub call
@@ -157,6 +158,20 @@ case "$*" in
       "$state" "$merged" "$merge_sha" "$WB_LAND_BRANCH" "$head" ;;
   'api repos/acme/app/pulls/7/files?per_page=100 --include'|'api repos/acme/app/pulls/7/files?per_page=100') cat "$S/files" ;;
   'api repos/acme/app/pulls/7/commits?per_page=100 --include'|'api repos/acme/app/pulls/7/commits?per_page=100') cat "$S/commits" ;;
+  'api --paginate repos/acme/app/commits/'*'/pulls')
+    # The worktree inventory asks GitHub's commit-to-pull-request index while
+    # deciding whether a checkout's work landed. Without this the inspection
+    # fails, the candidate becomes a diagnostic, and the cleanup that is the
+    # whole point of the default path silently has nothing to clean.
+    sha=$(basename "$(dirname "$3")")
+    merged=$(cat "$S/merged")
+    if [ "$merged" = true ]; then
+      merge_sha=$(git --git-dir="$WB_LAND_REMOTE" rev-parse refs/heads/main)
+      printf '[{"number":7,"html_url":"https://github.com/acme/app/pull/7","state":"closed","merged_at":"2026-09-01T00:00:00Z","merge_commit_sha":"%s","head":{"ref":"%s","sha":"%s"},"base":{"ref":"main","sha":""}}]\n' \
+        "$merge_sha" "$WB_LAND_BRANCH" "$sha"
+    else
+      printf '[]'
+    fi ;;
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main')
     printf '%s\n' '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}' ;;
   'api repos/acme/app/branches/main/protection/required_status_checks --include'|'api repos/acme/app/branches/main/protection/required_status_checks')
@@ -502,6 +517,41 @@ func TestMechanicalIsDecidedFromContent(t *testing.T) {
 		}, false},
 		{"a manifest GitHub could not diff", []ChangedFile{{Filename: "pnpm-lock.yaml", Patch: ""}}, false},
 		{"no files at all", nil, false},
+		// The sneat-apps#3494 shape: the only context is in the hunk header, so
+		// skipping it left the section stack empty and a real bump was refused.
+		{"a bump whose section is only in the hunk header", []ChangedFile{{
+			Filename: "package.json",
+			Patch: "@@ -12,7 +12,7 @@   \"dependencies\": {\n" +
+				"     \"@sneat/core\": \"0.68.0\",\n" +
+				"-    \"@sneat/extensions\": \"0.38.3\",\n" +
+				"+    \"@sneat/extensions\": \"0.38.4\",\n" +
+				"     \"rxjs\": \"7.8.1\"",
+		}}, true},
+		// Graph rewrites are never a version bump, in any manifest.
+		{"an npm overrides block", []ChangedFile{{
+			Filename: "package.json",
+			Patch:    "@@ -20,7 +20,7 @@   \"overrides\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
+		}}, false},
+		{"a yarn resolutions block", []ChangedFile{{
+			Filename: "package.json",
+			Patch:    "@@ -20,7 +20,7 @@   \"resolutions\": {\n-    \"semver\": \"7.5.4\"\n+    \"semver\": \"7.6.0\"",
+		}}, false},
+		{"a go.mod replace directive", []ChangedFile{{
+			Filename: "go.mod",
+			Patch:    "@@ -8,3 +8,3 @@\n-require github.com/acme/lib v1.2.0\n+require github.com/acme/lib v1.3.0\n+replace github.com/acme/lib => ../lib",
+		}}, false},
+		{"a go directive bump", []ChangedFile{{
+			Filename: "go.mod",
+			Patch:    "@@ -3,1 +3,1 @@\n-go 1.24\n+go 1.25",
+		}}, false},
+		{"a pnpm-workspace overrides block", []ChangedFile{{
+			Filename: "pnpm-workspace.yaml",
+			Patch:    "@@ -1,4 +1,4 @@\n overrides:\n-  semver: 7.5.4\n+  semver: 7.6.0",
+		}}, false},
+		{"a plain go.mod require bump", []ChangedFile{{
+			Filename: "go.mod",
+			Patch:    "@@ -8,1 +8,1 @@\n-\tgithub.com/acme/lib v1.2.0\n+\tgithub.com/acme/lib v1.3.0",
+		}}, true},
 	} {
 		verdict := ClassifyMechanical(testCase.files)
 		if verdict.Mechanical != testCase.want {
@@ -592,5 +642,95 @@ func TestLandWithoutKeepSaysWhenNoWorktreeMatched(t *testing.T) {
 	}
 	if !strings.Contains(result.Evidence["cleanup"], "nothing to retire") {
 		t.Fatalf("evidence = %#v, want it to say no worktree matched", result.Evidence)
+	}
+}
+
+// Cleanup is the default, and the default has to be exercised end to end: a
+// real WB worktree on the branch being landed, retired by the landing, with its
+// Work Log sealed. The measured failure was an opt-in cleanup nobody passed, so
+// a test that never lets the cleanup run proves nothing about it.
+func TestLandRetiresTheWorktreeThatProducedTheBranch(t *testing.T) {
+	fixture := newLandFixture(t, "bump/retire-me", "go.mod")
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "bump-retire",
+		Branch: "bump/retire-me", BranchChosen: true, Resume: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("created = %#v", created)
+	}
+
+	options := landOptions(fixture)
+	options.Keep = false
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandSuccess {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if len(result.CleanedTasks) != 1 || result.CleanedTasks[0] != "bump-retire" {
+		t.Fatalf("cleaned tasks = %#v, want the worktree that produced the branch", result.CleanedTasks)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("the worktree survived a landing whose cleanup is the default: %v", statErr)
+	}
+	if len(result.CleanupReports) == 0 {
+		t.Fatal("retiring a worktree must leave its durable receipt")
+	}
+}
+
+// A landing whose worktree cannot be retired must say so rather than report a
+// clean success. The landing itself is done and irreversible; the finding is
+// what tells the operator there is still something on their disk.
+func TestLandReportsAFindingWhenTheWorktreeCannotBeRetired(t *testing.T) {
+	fixture := newLandFixture(t, "bump/blocked", "go.mod")
+	created, err := worktrees.Create(context.Background(), []string{"acme/app"}, worktrees.CreateOptions{
+		ProjectsRoot: fixture.projects, Operation: "bump-blocked",
+		Branch: "bump/blocked", BranchChosen: true, Resume: true,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Dirty after the pre-flight would be a race; dirty before it is the
+	// ordinary case, and the refusal is the point: it happens while refusing is
+	// still free.
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "wip.txt"), []byte("in progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	options := landOptions(fixture)
+	options.Keep = false
+	result, err := LandPullRequest(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != LandRefused || result.RefusalCode != "cleanup-blocked-dirty" {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if !strings.Contains(result.SanctionedCommand, "bump-blocked") || !strings.Contains(result.SanctionedCommand, "--keep") {
+		t.Fatalf("the refusal must name both ways forward: %q", result.SanctionedCommand)
+	}
+	if fixture.readState(t, "merged") != "false" {
+		t.Fatal("the refusal must happen before the merge, while refusing is still free")
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("a refused landing must leave the worktree alone: %v", statErr)
+	}
+
+	// --keep lands it and says the worktree was kept, because --keep opts out
+	// of retiring the checkout rather than out of the landing.
+	kept := options
+	kept.Keep = true
+	keptResult, err := LandPullRequest(context.Background(), kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keptResult.Outcome != LandSuccess || !keptResult.Kept {
+		t.Fatalf("--keep result = %#v", keptResult)
 	}
 }
