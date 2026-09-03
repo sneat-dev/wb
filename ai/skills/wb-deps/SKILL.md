@@ -1,14 +1,30 @@
 ---
 name: wb-deps
-description: Inspect dependency topology and convergence, then set or propagate dependency versions with WB. Use to find consumers, detect version drift or replaces, pin an exact GitHub Actions or Go version, plan release order, or update dependent repositories in verified waves.
+description: Inspect dependency topology and convergence, then link consumers to a library's working tree or propagate published versions with WB. Use to find consumers, detect version drift or replaces, pin an exact GitHub Actions or Go version, plan release order, or update dependent repositories in verified waves.
 ---
 
 # WB dependencies
+
+Dependency propagation has two halves, and the local one comes first.
+
+**Local propagation is the normal path inside a stream**: a consumer builds
+against the library's *working tree* through an untracked link, so a change is
+proven across every affected repository before anything is published. Remote
+propagation — publish, then bump exactly the repositories the stream linked — is
+the end-of-stream wave, run once by the orchestrator.
+
+The lane contract for an agent working inside a stream: *consume the library
+through `wb deps propagate local`; the orchestrator runs `remote` at the end.*
+End with `wb worktree end`.
+
+A worktree holding a live local link is **refused** by `wb worktree merge`; the
+refusal names the exact `--undo` that clears it.
 
 Choose the narrowest operation:
 
 | Intent | Command | Reference |
 |---|---|---|
+| Build consumers against a library's WORKING TREE before anything is published | `wb deps propagate local` | [propagate-local.md](references/propagate-local.md) |
 | Understand consumers, versions, or release order | `wb deps graph` | [graph.md](references/graph.md) |
 | Find version divergence, replaces, or major-path splits | `wb deps drift` | [drift.md](references/drift.md) |
 | Decide whether a published npm package can be reused in one checkout | `wb deps peers` | [peers.md](references/peers.md) |

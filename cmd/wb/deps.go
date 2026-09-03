@@ -70,6 +70,7 @@ func newDepsCmd() *cobra.Command {
 	command.AddCommand(newDepsGraphCmd())
 	command.AddCommand(newDepsDriftCmd())
 	command.AddCommand(newDepsPeersCmd())
+	command.AddCommand(newDepsPropagateCmd())
 	command.AddCommand(newDepsPolicyCmd())
 	command.AddCommand(newDepsGoDirectiveCmd())
 	return command

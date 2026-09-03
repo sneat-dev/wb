@@ -32,6 +32,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `run` | yes | yes | yes | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
+| `deps propagate local` | yes | rejected | rejected | yes |
 | `deps bump` | yes | yes | yes (`--fleet` is mandatory) | yes |
 | `deps peers` | rejected | rejected | rejected | yes |
 | `deps publish npm` | yes | yes | yes (`--fleet` is mandatory) | yes |

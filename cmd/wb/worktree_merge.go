@@ -77,6 +77,12 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
+			// A live local link builds this worktree against an unpublished
+			// working tree, so it must never be pushed or landed. The guard
+			// runs before any candidate is prepared.
+			if err := refuseLinkedWorktrees(args); err != nil {
+				return err
+			}
 			campaign := newWorktreeMergeProgress(command, flags)
 			receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter()), landMergeOptions(flags, "", campaign.reporter()))
 			finishWorktreeMergeProgress(campaign, receipt, err)
@@ -173,6 +179,9 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
+				return err
+			}
+			if err := refuseLinkedWorktrees(args); err != nil {
 				return err
 			}
 			campaign := newWorktreeMergeProgress(command, flags)

@@ -146,8 +146,9 @@ var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
 		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
-		"ci audit":      true,
-		"hooks install": true, "hooks check": true, "hooks repair": true, "hooks run": true,
+		"deps propagate local": true,
+		"ci audit":             true,
+		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,
 		"hooks agent pre-tool-use": true, "hooks agent install": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"verify receipt": true,
@@ -173,8 +174,9 @@ var persistentFlagSupport = map[string]map[string]bool{
 	"filter": {
 		"sync": true, "run": true,
 		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
-		"ci audit":      true,
-		"hooks install": true, "hooks check": true, "hooks repair": true,
+		"deps propagate local": true,
+		"ci audit":             true,
+		"hooks install":        true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
 		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree rename": true,
