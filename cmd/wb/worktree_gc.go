@@ -41,12 +41,14 @@ Classes, each decided by evidence and printed with it:
   detached-unknown  detached with no landing association: refused
   open-pr           a pull request is still awaiting a decision: refused
   dirty             uncommitted changes: refused
-  claimed-live      a live operation, or a session that touched it inside
-                    --session-freshness, holds it: refused. A live process id
-                    alone is not a heartbeat — ids are recycled — so an owner
-                    that has not touched the checkout inside that window is
-                    reported as stale and the checkout is classified on its own
-                    evidence
+  claimed-live      a live operation holds it, or the checkout was used inside
+                    --session-freshness: refused. "Used" means any of four
+                    signals — a heartbeat every wb command inside the checkout
+                    refreshes, a file Git reports as changed, a Work Log event,
+                    or a commit — because a lane may be doing only one kind of
+                    work. A live process id alone counts for nothing: ids are
+                    recycled, and the question is about the worktree, not about
+                    a process. --session-freshness 0 disables the rule
   unpushed          a head GitHub has never seen. This is the only class that
                     can lose work, so nothing ever retires it
   unmerged          pushed, not landed, no open pull request: refused
@@ -94,17 +96,19 @@ wb worktree gc --format json`,
 			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{
-				ProjectsRoot:     projectsRoot,
-				Tasks:            args,
-				Filter:           filterFlag,
-				Base:             base,
-				Apply:            apply,
-				AllowResidue:     allowResidue,
-				SupersededBy:     supersededBy,
-				SkipDetached:     skipDetached,
-				OlderThan:        olderThan,
-				TTL:              ttl,
-				SessionFreshness: sessionFreshness,
+				ProjectsRoot: projectsRoot,
+				Tasks:        args,
+				Filter:       filterFlag,
+				Base:         base,
+				Apply:        apply,
+				AllowResidue: allowResidue,
+				SupersededBy: supersededBy,
+				SkipDetached: skipDetached,
+				OlderThan:    olderThan,
+				TTL:          ttl,
+				// `--session-freshness 0` reads as "do not apply this rule",
+				// the same spelling as `--older-than 0`.
+				SessionFreshness: disabledWhenZero(sessionFreshness),
 				ResidueDepth:     residueDepth,
 				Workers:          parallel,
 				SkipSizes:        skipSizes,
@@ -144,7 +148,7 @@ wb worktree gc --format json`,
 	command.Flags().DurationVar(&olderThan, "older-than", 0, "keep a checkout whose pull request merged less than this ago")
 	command.Flags().DurationVar(&ttl, "ttl", 7*24*time.Hour, "report a checkout older than this as expired")
 	command.Flags().DurationVar(&sessionFreshness, "session-freshness", worktrees.DefaultSessionFreshness,
-		"how recently an owning session must have touched a checkout for its live process id to still mean it is in use")
+		"how recently a checkout must have been used to count as in use; 0 disables the rule")
 	command.Flags().IntVar(&residueDepth, "residue-depth", worktrees.DefaultResidueDepth, "how many commits back from HEAD to consult the commit-to-pull-request index")
 	command.Flags().IntVar(&parallel, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -228,4 +232,14 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 		outcome.Totals["purged_artefacts"], shells, shellLabel, label,
 		diskusage.Human(usage.ApparentBytes), diskusage.Human(usage.UnsharedBytes))
 	return err
+}
+
+// disabledWhenZero maps the CLI's "0 means off" onto the library's explicit
+// disable value, so an option a caller simply forgot cannot silently turn a
+// safety rule off.
+func disabledWhenZero(window time.Duration) time.Duration {
+	if window == 0 {
+		return worktrees.DisableSessionFreshness
+	}
+	return window
 }

@@ -7858,7 +7858,7 @@
                 "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
                 "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
-                "A live session outranks a landed head: a checkout whose owner is alive AND touched it inside --session-freshness is kept and names wb worktree end. A live process id alone is not a heartbeat — ids are recycled — so an older owner is reported as stale in a warning and the checkout is classified on its own evidence rather than pinned open forever",
+                "In use is decided from four activity signals — a heartbeat every wb command run inside the checkout refreshes, a file Git reports as changed, a Work Log event, or a commit — and the newest wins, because a lane may be doing only one kind of work. A live process id counts for nothing on its own: ids are recycled, and the question is about the worktree. --session-freshness 0 disables the rule, the same spelling as --older-than 0, while an unset window keeps the safe default",
                 "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
                 "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
@@ -7970,7 +7970,22 @@
             },
             {
               "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCTreatsAStaleOwnerAsRecycledRatherThanAsAHeartbeat",
+              "name": "TestGCMeasuresFreshnessFromActivityNotFromAProcessId",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCSeesAnEditedFileAsActivity",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCSessionFreshnessZeroDisablesTheInUseRule",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn",
               "kind": "integration"
             },
             {

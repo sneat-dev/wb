@@ -74,11 +74,15 @@ type GCOptions struct {
 	OlderThan time.Duration
 	// TTL marks checkouts older than this expired in the report. Reporting only.
 	TTL time.Duration
-	// SessionFreshness is how recently an owning session must have touched a
-	// checkout for its live process id to still mean "in use". Beyond it the
-	// process id is presumed recycled and the checkout is classified on its own
-	// evidence, with the stale owner named in a warning. Zero uses
-	// DefaultSessionFreshness.
+	// SessionFreshness is how recently a checkout must have been used for it to
+	// count as in use. Beyond it a live process id is presumed recycled and the
+	// checkout is classified on its own evidence, with the stale owner named in
+	// a warning.
+	//
+	// Unset means DefaultSessionFreshness, because the failure mode of
+	// forgetting this field is deleting a working lane's checkout.
+	// DisableSessionFreshness turns the rule off, which is what the CLI's
+	// `--session-freshness 0` means — the same spelling as `--older-than 0`.
 	SessionFreshness time.Duration
 	// ResidueDepth bounds the commit-to-pull-request walk.
 	ResidueDepth int
@@ -201,6 +205,7 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		Progress:        options.Progress,
 		IncludeDetached: !options.SkipDetached,
 		TTL:             options.TTL,
+		Activity:        true,
 		ResidueEvidence: true,
 		ResidueDepth:    options.ResidueDepth,
 		Now:             options.Now,
@@ -301,9 +306,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	if warning := renamedBranchWarning(result); warning != "" {
 		entry.Warnings = append(entry.Warnings, warning)
 	}
-	if warning := staleOwnerWarning(result, options, now); warning != "" {
-		entry.Warnings = append(entry.Warnings, warning)
-	}
+
 	entry.Management = worktreeManagement(result.WorktreeDir)
 	switch {
 	case !result.Clean:
@@ -314,7 +317,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassClaimedLive
 		entry.Reason = lockedReason(result, resumeInterruptedCommand(result.Task))
 		entry.SanctionedCommand = resumeInterruptedCommand(result.Task)
-	case sessionIsFresh(result, options, now):
+	case checkoutIsInUse(result, options, now) && result.OwnerState == "active":
 		// Deliberately before every landed class: a checkout whose owning
 		// session is alive is being used right now, and the fact that its work
 		// already landed makes it more likely to be mid-next-round, not less.
@@ -327,7 +330,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		// A stale owner must not be able to pin a checkout forever.
 		entry.Class = GCClassClaimedLive
 		entry.Reason = "a live session (" + result.Owner + ") still holds this checkout, " +
-			"last seen " + humanAge(sessionAgeSeconds(result, now)) + " ago"
+			"last active " + humanAge(activityAgeSeconds(result, now)) + " ago"
 		entry.SanctionedCommand = "wb worktree end " + result.Task
 	case result.OpenPullRequest != nil:
 		entry.Class = GCClassOpenPR
@@ -389,6 +392,9 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Eligible = false
 		entry.Reason = "merged pull request is newer than the safety window"
 		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --older-than 0 --apply"
+	}
+	if warning := staleOwnerWarning(result, options, now, entry.Class); warning != "" {
+		entry.Warnings = append(entry.Warnings, warning)
 	}
 	entry.Evidence = gcEvidence(result)
 	return entry
@@ -467,6 +473,7 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 			AllowResidue:    options.AllowResidue,
 			SupersededBy:    options.SupersededBy,
 			IncludeDetached: !options.SkipDetached,
+			Activity:        true,
 			OlderThan:       options.OlderThan,
 			TTL:             options.TTL,
 			ResidueDepth:    options.ResidueDepth,
@@ -710,64 +717,65 @@ func sweepTaskShells(ctx context.Context, options GCOptions, outcome *GCOutcome)
 	return nil
 }
 
-// DefaultSessionFreshness is how long an owner registration keeps meaning "this
-// session is using the checkout". It is deliberately generous relative to a
-// lane's working rhythm and deliberately finite: an owner that has not touched
-// a worktree within it cannot be distinguished from a recycled process id, and
-// treating the two the same is how ten finished review checkouts pinned
-// themselves open for seventeen hours.
-const DefaultSessionFreshness = 90 * time.Minute
+// DisableSessionFreshness turns the in-use rule off. It is a distinct value
+// from the zero one so that an unset option means "protect me", not "do not".
+const DisableSessionFreshness = -1
 
-// sessionIsFresh reports whether an owning session is both alive and recent.
-func sessionIsFresh(result ListResult, options GCOptions, now time.Time) bool {
-	if result.OwnerState != "active" {
-		return false
-	}
+// checkoutIsInUse reports whether anything has used this checkout recently
+// enough that removing it would take work out from under someone.
+//
+// It asks about the checkout, not about a process. A live process id is
+// evidence about a process — and process ids are recycled — while what matters
+// is whether a lane is working here. See LastActivity for the four signals, any
+// one of which is enough.
+//
+// A window of zero disables the rule entirely, matching --older-than 0.
+func checkoutIsInUse(result ListResult, options GCOptions, now time.Time) bool {
 	window := options.SessionFreshness
-	if window <= 0 {
+	if window == 0 {
+		// An unset window is the safe one. A caller that forgets this field
+		// must not thereby switch off the guard that keeps a working lane's
+		// checkout from being deleted; switching it off is explicit.
 		window = DefaultSessionFreshness
 	}
-	seen := lastOwnerActivity(result)
+	if window == DisableSessionFreshness {
+		return false
+	}
+	seen := result.LastActivityAt
 	if seen.IsZero() {
-		// No timestamp to judge by: keep the checkout. An unknown age is not a
-		// licence to remove someone's work.
+		// Nothing to judge by. An unknown age is not a licence to remove
+		// someone's work, so the checkout is treated as in use.
 		return true
 	}
 	return now.Sub(seen) <= window
 }
 
-// lastOwnerActivity is when a live owner last recorded custody.
-func lastOwnerActivity(result ListResult) time.Time {
-	latest := time.Time{}
-	for _, owner := range result.Owners {
-		if owner.PIDStatus != "active" {
-			continue
-		}
-		if owner.At.After(latest) {
-			latest = owner.At
-		}
-	}
-	return latest
-}
-
-func sessionAgeSeconds(result ListResult, now time.Time) int64 {
-	seen := lastOwnerActivity(result)
-	if seen.IsZero() {
+func activityAgeSeconds(result ListResult, now time.Time) int64 {
+	if result.LastActivityAt.IsZero() {
 		return 0
 	}
-	if age := now.Sub(seen); age > 0 {
+	if age := now.Sub(result.LastActivityAt); age > 0 {
 		return int64(age / time.Second)
 	}
 	return 0
 }
 
-// staleOwnerWarning names an owner whose process is alive but which has not
-// touched the checkout inside the freshness window, so a real session is never
-// silently ignored.
-func staleOwnerWarning(result ListResult, options GCOptions, now time.Time) string {
-	if result.OwnerState != "active" || sessionIsFresh(result, options, now) {
+// staleOwnerWarning names an owner whose process is alive but whose checkout
+// shows no recent activity, so a real session is never silently ignored. It is
+// attached only to a row the rule actually changed: a checkout that is
+// classified some other way was not affected, and warning about it there is
+// noise that trains a reader to skip warnings.
+func staleOwnerWarning(result ListResult, options GCOptions, now time.Time, class string) string {
+	if result.OwnerState != "active" || checkoutIsInUse(result, options, now) {
 		return ""
 	}
-	return "owner " + result.Owner + " has a live process id but has not touched this checkout for " +
-		humanAge(sessionAgeSeconds(result, now)) + "; treating the process id as recycled rather than as a heartbeat"
+	switch class {
+	case GCClassDirty, GCClassOpenPR, GCClassUnpushed:
+		// These are kept for their own reasons; the freshness rule changed
+		// nothing about them.
+		return ""
+	}
+	return "owner " + result.Owner + " has a live process id but this checkout shows no activity for " +
+		humanAge(activityAgeSeconds(result, now)) +
+		" (no heartbeat, no edited file, no Work Log event, no commit); treating the process id as recycled"
 }

@@ -880,48 +880,160 @@ func TestGCPlansEmptyShellsAndScopesThemToTheNamedTask(t *testing.T) {
 	}
 }
 
-// A live process id is not a heartbeat: ids are recycled, and the first real
-// sweep this verb ran found ten finished review checkouts, four to seventeen
-// hours old, every one reporting owner=active and therefore refusing forever.
-func TestGCTreatsAStaleOwnerAsRecycledRatherThanAsAHeartbeat(t *testing.T) {
-	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-stale-owner")
+// A live process id is not a heartbeat, and neither is the owner registration:
+// RecordCustody deduplicates on identity, so a lane can run four verbs and
+// advance nothing. Both mistakes were made in turn, and the second one nearly
+// deleted a working lane's checkout. Freshness is measured from what the lane
+// actually did.
+func TestGCMeasuresFreshnessFromActivityNotFromAProcessId(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-activity")
 	installPerCommitPullRequestFixture(t, map[string]string{
 		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
 	})
-	if err := RecordCustody(result.WorktreeDir, "gc-stale-owner", "test", AgentIdentity{
+	if err := RecordCustody(result.WorktreeDir, "gc-activity", "test", AgentIdentity{
 		AgentID: "lane-a", Model: "unknown", PID: os.Getpid(),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Inside the freshness window the session owns it, landed or not.
-	fresh, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-stale-owner"}, SkipSizes: true,
-		Now: func() time.Time { return time.Now().Add(time.Minute) },
+	// A lane that only READS — no commit, no edit, no Work Log write — stays
+	// live, because every wb invocation inside the checkout refreshes its
+	// heartbeat. This is the case the previous rule got wrong: it saw four
+	// verbs, one deduplicated owner record, and called a working lane recycled.
+	TouchHeartbeat(result.WorktreeDir, "wb worktree summary")
+	reading, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-activity"}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(3 * time.Hour) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry := entryFor(t, fresh, "gc-stale-owner"); entry.Class != GCClassClaimedLive || entry.Eligible {
-		t.Fatalf("a checkout its session just touched = %#v, want it kept", entry)
+	if entry := entryFor(t, reading, "gc-activity"); entry.Class != GCClassClaimedLive || entry.Eligible {
+		t.Fatalf("a lane three hours into its work = %#v, want it kept", entry)
 	}
 
-	// Past it, the same live process id means nothing, the landing evidence
-	// decides, and the stale owner is named rather than silently dropped.
+	// Seven hours with no activity of any kind: the process id means nothing,
+	// the landing evidence decides, and the stale owner is named.
 	stale, err := GC(context.Background(), GCOptions{
-		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-stale-owner"}, SkipSizes: true,
-		SessionFreshness: time.Minute,
-		Now:              func() time.Time { return time.Now().Add(4 * time.Hour) },
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-activity"}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(7 * time.Hour) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry := entryFor(t, stale, "gc-stale-owner")
+	entry := entryFor(t, stale, "gc-activity")
 	if entry.Class != GCClassLandedClean || !entry.Eligible {
-		t.Fatalf("a landed checkout with a stale owner = %#v, want it classified on its own evidence", entry)
+		t.Fatalf("a landed checkout untouched for seven hours = %#v", entry)
 	}
 	if len(entry.Warnings) == 0 || !strings.Contains(strings.Join(entry.Warnings, " "), "recycled") {
 		t.Fatalf("warnings = %#v, want the stale owner named", entry.Warnings)
+	}
+}
+
+// A lane that only edits files — no commits, no wb verbs — is working, and
+// removing its checkout would take that work away.
+func TestGCSeesAnEditedFileAsActivity(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-editing")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	// Age every other signal out of the window, then edit one file.
+	backdateTree(t, filepath.Join(result.WorktreeDir, journalRootDirectory), -9*time.Hour)
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "edited.go"), []byte("package app\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "gc-editing", Activity: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Results) != 1 {
+		t.Fatalf("inventory = %#v", listed.Results)
+	}
+	if since := time.Since(listed.Results[0].LastActivityAt); since > time.Minute {
+		t.Fatalf("an edited file must register as activity: last activity was %s ago", since)
+	}
+	if !checkoutIsInUse(listed.Results[0], GCOptions{}, time.Now().Add(time.Minute)) {
+		t.Fatal("a checkout someone is editing is in use")
+	}
+	if checkoutIsInUse(listed.Results[0], GCOptions{}, time.Now().Add(9*time.Hour)) {
+		t.Fatal("nine hours after the last edit it is not")
+	}
+}
+
+// Zero disables the rule, exactly like --older-than 0.
+func TestGCSessionFreshnessZeroDisablesTheInUseRule(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-freshness-off")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	if err := RecordCustody(result.WorktreeDir, "gc-freshness-off", "test", AgentIdentity{
+		AgentID: "lane-a", Model: "unknown", PID: os.Getpid(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	TouchHeartbeat(result.WorktreeDir, "wb worktree summary")
+
+	outcome, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-freshness-off"}, SkipSizes: true,
+		SessionFreshness: DisableSessionFreshness,
+		Now:              func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := entryFor(t, outcome, "gc-freshness-off"); entry.Class == GCClassClaimedLive {
+		t.Fatalf("--session-freshness 0 must disable the rule: %#v", entry)
+	}
+}
+
+// The heartbeat is keyed to the directory the command ran in, so a lane's own
+// commands keep its checkout alive and a sweep run from elsewhere keeps nothing
+// alive.
+func TestHeartbeatIsScopedToTheDirectoryTheCommandRanIn(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "heartbeat-scope",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(created[0].WorktreeDir, "internal", "deep")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := worktreeRootOf(nested)
+	if err != nil || root != created[0].WorktreeDir {
+		t.Fatalf("worktreeRootOf(%s) = %q, %v", nested, root, err)
+	}
+	outside, err := worktreeRootOf(t.TempDir())
+	if err != nil || outside != "" {
+		t.Fatalf("a directory outside every worktree resolves to %q, %v", outside, err)
+	}
+
+	if before := HeartbeatAt(created[0].WorktreeDir); !before.IsZero() {
+		t.Fatalf("a fresh checkout has no heartbeat yet: %s", before)
+	}
+	TouchHeartbeat(created[0].WorktreeDir, "wb worktree info")
+	if at := HeartbeatAt(created[0].WorktreeDir); time.Since(at) > time.Minute {
+		t.Fatalf("heartbeat = %s", at)
+	}
+}
+
+func backdateTree(t *testing.T, path string, offset time.Duration) {
+	t.Helper()
+	at := time.Now().Add(offset)
+	if err := filepath.Walk(path, func(entry string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		_ = os.Chtimes(entry, at, at)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

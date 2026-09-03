@@ -95,6 +95,14 @@ func newRootCmd() *cobra.Command {
 			// worktree records what touched it, without each call site having
 			// to thread the name through.
 			worktrees.SetInvokedCommand(persistentCommandID(cmd))
+			// A lane working in a worktree is using it, whatever it happens to
+			// be running. Recording that here — once, from the working
+			// directory the command was run in — is what lets WB tell a
+			// checkout someone is sitting in from one nobody has touched for a
+			// day, without every verb having to remember to say so. It is
+			// deliberately keyed to the current directory: a fleet-wide sweep
+			// run from somewhere else must not make every lane look busy.
+			worktrees.TouchHeartbeatForCurrentDirectory(persistentCommandID(cmd))
 			maybeWarnSkillsDrift(cmd)
 			return nil
 		},

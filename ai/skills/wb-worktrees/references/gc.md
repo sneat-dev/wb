@@ -86,7 +86,7 @@ evidence.
 | `dirty`, managed | `wb worktree abort <task> --apply` — seals the Work Log and captures the dirty bytes into a private archive before deleting anything |
 | `dirty`, unmanaged or unknown | the exact `git -C <path> stash push --include-untracked -m "wb gc <task>"` the row prints. That is the whole instruction: **no removal is named**, and the row's warning states that removing the checkout without the capture destroys the changes and nothing in WB can bring them back |
 | `claimed-live` — a live operation holds the task lock | `wb worktree cleanup <task> --resume-interrupted` once the operation is really dead |
-| `claimed-live` — a session that touched it inside `--session-freshness` still owns it | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round. A live process id **alone** is not a heartbeat — ids are recycled — so an owner that has not touched the checkout inside the window is reported as stale in a warning and the checkout is classified on its own evidence |
+| `claimed-live` — the checkout was used inside `--session-freshness` (default 6 h) | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round |
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
 | `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
@@ -136,6 +136,29 @@ The footer is **one accounting unit over the whole sweep**, not a sum of the
 rows. Two worktrees that link the same store file would otherwise have it
 counted twice in the apparent total and dropped from the unshared one, even
 though removing both does return its blocks.
+
+## What counts as "in use"
+
+Four signals, and the newest of them wins, because a lane may be doing only one
+kind of work:
+
+- a **heartbeat** every `wb` command run *inside* the checkout refreshes — this
+  is what keeps a lane that is only reading alive. It is keyed to the working
+  directory, so a fleet sweep run from somewhere else refreshes nothing;
+- the newest **modification time among the files Git reports as changed** — a
+  lane that is only editing;
+- the newest **Work Log event**;
+- the newest **commit** on the branch.
+
+A live process id counts for **nothing** on its own. Process ids are recycled,
+and the question is whether a worktree is in use, not whether some process
+exists. Two earlier versions of this rule got it wrong in both directions: one
+kept ten finished checkouts open for seventeen hours on a recycled id, and the
+next reported a lane three hours into its work as recycled because the owner
+record is written once at creation and deduplicated thereafter.
+
+`--session-freshness 0` disables the rule, the same spelling as
+`--older-than 0`.
 
 ## Empty task husks
 

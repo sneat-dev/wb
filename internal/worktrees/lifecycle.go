@@ -77,6 +77,9 @@ type ListOptions struct {
 	// pure reporting: nothing acts on it, and its purpose is that "this task
 	// has been finished for six days" is visible before the disk fills.
 	TTL time.Duration
+	// Activity asks the inventory to record LastActivityAt. Only a verb that
+	// decides whether a checkout may be removed needs it.
+	Activity bool
 	// ResidueEvidence asks the inventory to look for a landed ancestor when the
 	// head itself is not integrated. It costs up to ResidueDepth extra reads of
 	// GitHub's commit index per candidate, so it is opt-in: a fleet-wide sweep
@@ -304,6 +307,11 @@ type ListResult struct {
 	// HeadUnknownToRemote records that GitHub's commit index has never seen
 	// this head: the checkout holds work that was never pushed anywhere.
 	HeadUnknownToRemote bool `json:"head_unknown_to_remote,omitempty"`
+	// LastActivityAt is the newest sign that anyone is using this checkout:
+	// a heartbeat, an edited file, a Work Log event, or a commit. It is what
+	// "in use" is decided from, because a live process id is evidence about a
+	// process and the question is about a worktree.
+	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
 	// Landing is the commit-identity landing evidence for a head that is not
 	// itself contained in the target: the merged pull request of an ancestor,
 	// plus the local commits stacked on top of it. A squash merge produces
@@ -451,6 +459,9 @@ type CleanupOptions struct {
 	TTL time.Duration
 	// ResidueDepth bounds the commit-to-pull-request walk. See ListOptions.
 	ResidueDepth int
+	// Activity threads ListOptions.Activity, so a re-verification under the
+	// task lock asks the same question the plan asked.
+	Activity bool
 	// beforeCleanupLocks is a test-only seam before cleanup opens and locks
 	// task directories. It exercises substituted task hierarchy rejection.
 	beforeCleanupLocks func()
@@ -957,6 +968,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		ttl:             options.TTL,
 		residueEvidence: options.ResidueEvidence,
 		residueDepth:    options.ResidueDepth,
+		activity:        options.Activity,
 		now:             options.Now,
 	}
 	for _, layout := range resolution.Read {
@@ -1009,6 +1021,7 @@ func cleanupInspectPolicy(options CleanupOptions) inspectPolicy {
 		ttl:             options.TTL,
 		residueEvidence: cleanupWantsResidueEvidence(options),
 		residueDepth:    options.ResidueDepth,
+		activity:        options.Activity,
 		now:             options.Now,
 	}
 }
@@ -1477,6 +1490,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		Workers:         normalized.Workers,
 		IncludeDetached: normalized.IncludeDetached,
 		TTL:             normalized.TTL,
+		Activity:        normalized.Activity,
 		ResidueEvidence: cleanupWantsResidueEvidence(normalized),
 		ResidueDepth:    normalized.ResidueDepth,
 		Now:             normalized.Now,
@@ -2498,6 +2512,10 @@ type inspectPolicy struct {
 	ttl time.Duration
 	// residueEvidence enables the commit-to-pull-request walk over ancestors.
 	residueEvidence bool
+	// activity asks the inventory to read the four in-use signals. It costs one
+	// extra local Git call per candidate, so only the verbs that decide whether
+	// a checkout may be removed ask for it.
+	activity bool
 	// residueDepth bounds that walk.
 	residueDepth int
 	now          func() time.Time
@@ -2615,6 +2633,9 @@ func inspectLifecycleWorktree(
 	}
 	result.Owners, result.OwnerState = owners, worktreeOwnerState(owners)
 	applyWorktreeAge(&result, worktree, policy)
+	if policy.activity {
+		result.LastActivityAt = LastActivity(ctx, result)
+	}
 	// The owner event is an append-only projection and may be absent after an
 	// interrupted creation. Prefer the immutable claim's session link when it
 	// exists so park can identify the intended member before attempting custody
