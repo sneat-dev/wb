@@ -50,6 +50,8 @@ func (git *fakeGit) ExcludedPatterns(_ context.Context, dir string) ([]string, e
 // the lockfile-baseline requirement is provable.
 type fakeNode struct {
 	installErr   map[string]error
+	unlinkErr    map[string]error
+	order        []string
 	installed    []string
 	builds       int
 	buildErr     error
@@ -68,6 +70,7 @@ func (node *fakeNode) FrozenInstall(_ context.Context, dir string) error {
 		return err
 	}
 	node.installed = append(node.installed, dir)
+	node.order = append(node.order, "install "+dir)
 	return nil
 }
 
@@ -81,10 +84,14 @@ func (node *fakeNode) Build(_ context.Context, libraryDir, packageDir string) (s
 
 func (node *fakeNode) Link(_ context.Context, consumerDir, packageName, dist string) (string, error) {
 	node.linked[consumerDir+" "+packageName] = dist
+	node.order = append(node.order, "link "+consumerDir+" "+packageName)
 	return node.previousReal, nil
 }
 
 func (node *fakeNode) Unlink(_ context.Context, consumerDir, packageName string) error {
+	if err := node.unlinkErr[consumerDir+" "+packageName]; err != nil {
+		return err
+	}
 	node.unlinked = append(node.unlinked, consumerDir+" "+packageName)
 	return nil
 }
@@ -551,4 +558,167 @@ func containsAll(values []string, wanted ...string) bool {
 		}
 	}
 	return true
+}
+
+// MF-1. The record is written BEFORE the filesystem changes, so a record that
+// cannot be written leaves nothing on disk to strand the worktree.
+//
+// Derived from the reviewer's probe A, which showed `go.work` written with
+// zero links recorded and `--undo` reporting "nothing to undo".
+func TestNoLinkIsWrittenWhenTheRecordCannotBe(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n"})
+
+	directory := fixture.store.Dir("fixture")
+	if err := os.Chmod(directory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(directory, 0o700) })
+
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer},
+	})
+	if err == nil && !result.Failed() {
+		t.Fatal("an unwritable record reported success")
+	}
+	if _, statErr := os.Stat(filepath.Join(fixture.consumer, "go.work")); !os.IsNotExist(statErr) {
+		t.Fatalf("go.work was written even though the link could not be recorded: %v", statErr)
+	}
+}
+
+// MF-2. `--undo` clears a `go.work` that stream state has no record of, so the
+// command the merge guard names can actually satisfy the guard.
+func TestUndoRemovesAnUnrecordedGoWork(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"backend/go.mod": goLibraryModule},
+		map[string]string{"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n"})
+	workspace := filepath.Join(fixture.consumer, "go.work")
+	if err := os.WriteFile(workspace, []byte("go 1.27\n\nuse (\n\t./backend\n\t/elsewhere/library\n)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The guard fires and names exactly this command.
+	links, err := HasLiveLink(fixture.store, fixture.consumer)
+	if err != nil || len(links) != 1 {
+		t.Fatalf("links = %#v, err = %v; want the go.work signal", links, err)
+	}
+
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Consumers: []string{fixture.consumer}, Undo: true,
+	})
+	if err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	if result.Failed() {
+		t.Fatalf("undo reported errors: %#v", result.Consumers)
+	}
+	if _, statErr := os.Stat(workspace); !os.IsNotExist(statErr) {
+		t.Fatalf("the unrecorded go.work survived --undo: %v", statErr)
+	}
+	// The guard is now satisfied — which is what makes the refusal's named
+	// command a real next step rather than a dead end.
+	after, err := HasLiveLink(fixture.store, fixture.consumer)
+	if err != nil || len(after) != 0 {
+		t.Fatalf("the guard still fires after --undo: %#v (err %v)", after, err)
+	}
+}
+
+// MF-3. A failed removal KEEPS its record, so the guard stays closed and
+// `stream end` keeps refusing while the artefact is still on disk.
+func TestUndoKeepsTheRecordWhenRemovalFails(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`},
+		map[string]string{
+			"package.json":   `{"name":"app","dependencies":{"@acme/core":"^1.0.0"}}`,
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+		})
+	if _, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fixture.node.unlinkErr = map[string]error{
+		fixture.consumer + " @acme/core": errors.New("EACCES: node_modules is read-only"),
+	}
+
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Consumers: []string{fixture.consumer}, Undo: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Failed() {
+		t.Fatal("a failed removal was reported as a successful undo")
+	}
+	stream, err := fixture.store.Load("fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, _ := stream.Member("acme/app")
+	if len(member.Links) != 1 {
+		t.Fatalf("links = %#v; a failed removal must keep its record so the guard stays closed", member.Links)
+	}
+	// The merge guard must still refuse.
+	links, err := HasLiveLink(fixture.store, fixture.consumer)
+	if err != nil || len(links) == 0 {
+		t.Fatalf("the guard stopped firing while the link is still live: %#v (err %v)", links, err)
+	}
+}
+
+// MF-5. The frozen install proves the UNLINKED tree, so it runs once per
+// consumer regardless of how many identities that consumer declares.
+func TestFrozenInstallRunsOncePerConsumerNotPerIdentity(t *testing.T) {
+	fixture := newFixture(t,
+		map[string]string{
+			"libs/core/package.json": `{"name":"@acme/core","version":"1.0.0"}`,
+			"libs/ui/package.json":   `{"name":"@acme/ui","version":"1.0.0"}`,
+		},
+		map[string]string{
+			"package.json":   `{"name":"app","dependencies":{"@acme/core":"^1.0.0","@acme/ui":"^1.0.0"}}`,
+			"pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+		})
+	result, err := fixture.engine.Run(context.Background(), Options{
+		Library: fixture.library, Consumers: []string{fixture.consumer},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Failed() {
+		t.Fatalf("result = %#v", result.Consumers)
+	}
+	if len(fixture.node.installed) != 1 {
+		t.Fatalf("frozen installs = %v, want exactly one against the unlinked tree", fixture.node.installed)
+	}
+	if len(fixture.node.linked) != 2 {
+		t.Fatalf("linked = %v, want both identities linked", fixture.node.linked)
+	}
+	// The single install must precede every link.
+	if fixture.node.order[0] != "install "+fixture.consumer {
+		t.Fatalf("order = %v, want the frozen install first", fixture.node.order)
+	}
+}
+
+// MF-7. A consumer no open stream holds is REFUSED before anything is written:
+// an unrecorded link cannot be undone and the guard's state signal cannot see
+// it.
+func TestALinkThatCannotBeRecordedIsRefusedBeforeAnythingIsWritten(t *testing.T) {
+	base := t.TempDir()
+	library := writeTree(t, filepath.Join(base, "library"), map[string]string{"backend/go.mod": goLibraryModule})
+	consumer := writeTree(t, filepath.Join(base, "consumer"), map[string]string{
+		"backend/go.mod": "module github.com/acme/app/backend\n\ngo 1.27\n\nrequire github.com/acme/library/backend v0.4.0\n",
+	})
+	store := streams.OpenAt(filepath.Join(base, "wb-home", "streams"))
+	engine := &Engine{Store: store, Git: newFakeGit(), Node: newFakeNode(), CacheRoot: filepath.Join(base, "cache")}
+
+	_, err := engine.Run(context.Background(), Options{Library: library, Consumers: []string{consumer}})
+	refusal, refused := Refused(err)
+	if !refused || refusal.Code != RefusalNotRecordable {
+		t.Fatalf("error = %v, want a %s refusal", err, RefusalNotRecordable)
+	}
+	if !strings.Contains(strings.Join(refusal.Sanctioned, " "), "wb stream join") {
+		t.Errorf("refusal does not name how to make the consumer recordable: %v", refusal.Sanctioned)
+	}
+	if _, statErr := os.Stat(filepath.Join(consumer, "go.work")); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused link still wrote go.work: %v", statErr)
+	}
 }

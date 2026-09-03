@@ -1,6 +1,7 @@
 package locallink
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -90,3 +91,35 @@ func RefusalMessage(worktree string, links []LiveLink) string {
 		"%s has a live local link, so it builds against an unpublished working tree and must not be pushed or landed — %s; clear it with: %s",
 		worktree, strings.Join(details, "; "), strings.Join(dedupe(commands), " && "))
 }
+
+// Refusal is a guard that fired, carrying the stable code a caller branches on
+// and the exact commands that satisfy it.
+type Refusal struct {
+	Code       string
+	Message    string
+	Sanctioned []string
+}
+
+func (refusal *Refusal) Error() string {
+	if len(refusal.Sanctioned) == 0 {
+		return refusal.Message
+	}
+	return refusal.Message + "; run: " + strings.Join(refusal.Sanctioned, " or ")
+}
+
+// Refused reports whether err is a guard refusal rather than a failure.
+func Refused(err error) (*Refusal, bool) {
+	var refusal *Refusal
+	if errors.As(err, &refusal) {
+		return refusal, true
+	}
+	return nil, false
+}
+
+// Refusal codes are contract: skills and the JSON envelope branch on them.
+const (
+	// RefusalNotRecordable fires when no open stream holds the consumer, so
+	// the link could not be recorded. An unrecorded link is un-undoable and
+	// invisible to the merge guard's state signal.
+	RefusalNotRecordable = "link-not-recordable"
+)

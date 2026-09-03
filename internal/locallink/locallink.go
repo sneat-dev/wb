@@ -173,6 +173,23 @@ func (engine *Engine) link(ctx context.Context, options Options) (Result, error)
 		result.Stream = stream
 		result.LibraryRepository = member
 	}
+	// A link WB cannot record is a link `--undo` can never reverse and the
+	// merge guard's state signal can never see. Refusing before anything
+	// touches the filesystem is the only outcome that leaves nothing behind;
+	// writing it and reporting success would strand an un-undoable link.
+	if !found {
+		return result, &Refusal{
+			Code: RefusalNotRecordable,
+			Message: fmt.Sprintf(
+				"no open stream holds %s, so a link to it could not be recorded — and an unrecorded link cannot be undone",
+				strings.Join(options.Consumers, ", ")),
+			Sanctioned: []string{
+				"wb stream start <name> <owner/repository>...",
+				"wb stream join <name> <owner/repository>",
+				"wb deps propagate local " + library + " --to <consumer> --stream <name>",
+			},
+		}
+	}
 
 	for _, consumerPath := range options.Consumers {
 		consumer, err := filepath.Abs(consumerPath)
@@ -181,9 +198,6 @@ func (engine *Engine) link(ctx context.Context, options Options) (Result, error)
 			continue
 		}
 		result.Consumers = append(result.Consumers, engine.linkConsumer(ctx, options, result, library, consumer, identities, hash))
-	}
-	if err := engine.recordLinks(result); err != nil {
-		return result, err
 	}
 	if options.Verify {
 		engine.verifyConsumers(ctx, options, &result)
@@ -250,14 +264,45 @@ func (engine *Engine) linkConsumer(
 		outcome.Errors = append(outcome.Errors, err.Error())
 		return outcome
 	}
-
 	goDeclarations, npmDeclarations := splitDeclarations(declarations)
+
+	// The frozen install proves a clean install of the UNLINKED tree, so it
+	// runs once, before any mechanism touches node_modules. Running it per
+	// identity meant every install after the first ran against a tree that
+	// already carried a link — and a real `pnpm install --frozen-lockfile`
+	// reconciles node_modules against the lockfile, so it would typically
+	// remove that link again.
+	if len(npmDeclarations) > 0 {
+		if engine.Node == nil {
+			outcome.Errors = append(outcome.Errors, "no Node toolchain available to link an npm package")
+			return outcome
+		}
+		if err := engine.Node.FrozenInstall(ctx, consumer); err != nil {
+			outcome.Errors = append(outcome.Errors, fmt.Sprintf(
+				"prove a clean frozen install of %s before linking: %v", consumer, err))
+			return outcome
+		}
+	}
+
+	// RECORD THEN ACT. Every link is written to stream state BEFORE the
+	// filesystem is touched, so the merge guard is already closed while the
+	// change is being applied and a crash mid-apply leaves a record `--undo`
+	// can act on. Recording afterwards left a window in which `go.work` was on
+	// disk with nothing recorded: the guard fired on the file, `--undo`
+	// reported "nothing to undo", and the worktree could never be landed.
+	intended := intendedLinks(library, result.LibraryRepository, hash, goDeclarations, npmDeclarations, engine.now())
+	if err := engine.recordLinks(result.Stream, consumer, intended); err != nil {
+		outcome.Errors = append(outcome.Errors, err.Error())
+		return outcome
+	}
+
+	var applied []streams.Link
 	if len(goDeclarations) > 0 {
 		links, err := engine.linkGo(ctx, library, consumer, goDeclarations, result.LibraryRepository, hash)
 		if err != nil {
 			outcome.Errors = append(outcome.Errors, err.Error())
 		}
-		outcome.Links = append(outcome.Links, links...)
+		applied = append(applied, links...)
 	}
 	for _, declaration := range npmDeclarations {
 		link, err := engine.linkNpm(ctx, options, library, consumer, declaration, result.LibraryRepository, hash)
@@ -265,7 +310,20 @@ func (engine *Engine) linkConsumer(
 			outcome.Errors = append(outcome.Errors, err.Error())
 			continue
 		}
-		outcome.Links = append(outcome.Links, link)
+		applied = append(applied, link)
+	}
+	// Re-record with the exact artefacts each mechanism produced. A link that
+	// failed to apply keeps its intended record rather than being removed:
+	// the guard must stay closed until the filesystem is provably clean, and
+	// `--undo` is what proves it.
+	if len(applied) > 0 {
+		if err := engine.recordLinks(result.Stream, consumer, applied); err != nil {
+			outcome.Errors = append(outcome.Errors, err.Error())
+		}
+	}
+	outcome.Links = applied
+	if len(applied) == 0 {
+		outcome.Links = intended
 	}
 
 	after, err := engine.Git.TrackedChanges(ctx, consumer)
@@ -278,6 +336,34 @@ func (engine *Engine) linkConsumer(
 			"linking changed tracked files, which a local link must never do: %s", strings.Join(introduced, ", ")))
 	}
 	return outcome
+}
+
+// intendedLinks is what the consumer is about to carry. It is recorded before
+// the filesystem changes, so the record never lags the disk.
+func intendedLinks(
+	library, libraryRepository, hash string,
+	goDeclarations, npmDeclarations []streams.Declaration,
+	now time.Time,
+) []streams.Link {
+	links := make([]streams.Link, 0, len(goDeclarations)+len(npmDeclarations))
+	for _, declaration := range goDeclarations {
+		links = append(links, streams.Link{
+			Library: library, LibraryRepository: libraryRepository,
+			Mechanism: streams.MechanismGoWork, Identity: declaration.Identity.Name,
+			PreviousVersion: declaration.Version, ContentHash: hash,
+			Artifacts: []string{streams.GoWorkFile, streams.GoWorkSum}, CreatedAt: now,
+		})
+	}
+	for _, declaration := range npmDeclarations {
+		links = append(links, streams.Link{
+			Library: library, LibraryRepository: libraryRepository,
+			Mechanism: streams.MechanismPnpmLink, Identity: declaration.Identity.Name,
+			PreviousVersion: declaration.Version, ContentHash: hash,
+			Artifacts: []string{filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(declaration.Identity.Name)))},
+			CreatedAt: now,
+		})
+	}
+	return links
 }
 
 func splitDeclarations(declarations []streams.Declaration) (goDeclarations, npmDeclarations []streams.Declaration) {
@@ -377,30 +463,26 @@ func (engine *Engine) resolveStream(options Options) (stream, libraryRepository 
 	return "", "", false, nil
 }
 
-// recordLinks writes every link into stream state at the moment it is created.
+// recordLinks writes one consumer's links into stream state.
+//
 // A link that cannot be recorded is a failure, not a warning: an unrecorded
-// link is one `--undo` can never reverse and one the merge refusal will never
-// see.
-func (engine *Engine) recordLinks(result Result) error {
-	if engine.Store == nil || result.Stream == "" {
+// link is one `--undo` can never reverse and one the merge guard's state
+// signal will never see. It is called before the filesystem changes and again
+// after, so the record never lags the disk in either direction.
+func (engine *Engine) recordLinks(stream, consumer string, links []streams.Link) error {
+	if engine.Store == nil || stream == "" || len(links) == 0 {
 		return nil
 	}
-	_, err := engine.Store.Update(result.Stream, func(stream *streams.Stream) error {
-		for _, consumer := range result.Consumers {
-			if len(consumer.Links) == 0 {
+	if _, err := engine.Store.Update(stream, func(current *streams.Stream) error {
+		for index := range current.Members {
+			if !sameWorktree(current.Members[index].Worktree, consumer) {
 				continue
 			}
-			for index := range stream.Members {
-				if !sameWorktree(stream.Members[index].Worktree, consumer.Consumer) {
-					continue
-				}
-				stream.Members[index].Links = mergeLinks(stream.Members[index].Links, consumer.Links)
-			}
+			current.Members[index].Links = mergeLinks(current.Members[index].Links, links)
 		}
 		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("record links in stream %s: %w", result.Stream, err)
+	}); err != nil {
+		return fmt.Errorf("record links in stream %s: %w", stream, err)
 	}
 	return nil
 }

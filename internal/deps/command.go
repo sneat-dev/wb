@@ -23,7 +23,37 @@ func runCommand(ctx context.Context, timeout time.Duration, retry int, dir, name
 }
 
 func runGoCommand(ctx context.Context, options Options, dir string, args ...string) (string, int, error) {
-	return runCommandWithEnv(ctx, options.Timeout, options.Retry, dir, goCommandEnvironment(os.Environ(), options.GoPrivate), "go", args...)
+	environment := goCommandEnvironment(os.Environ(), options.GoPrivate)
+	if mutatesModuleGraph(args) {
+		// GOWORK=off is set BY THE VERB, never left to the caller.
+		//
+		// `go mod tidy` and `go get` resolve against the workspace, so running
+		// either while a `wb deps propagate local` link is live writes a
+		// go.sum describing an UNPUBLISHED library tree. Catching that at the
+		// merge guard would be too late: the poisoned commit already exists
+		// and CI has already run on it. Turning the workspace off here makes
+		// the resolution always the published one.
+		//
+		// Implements: dependency-streams#req:no-module-graph-mutation-under-a-live-link.
+		environment = append(environment, "GOWORK=off")
+	}
+	return runCommandWithEnv(ctx, options.Timeout, options.Retry, dir, environment, "go", args...)
+}
+
+// mutatesModuleGraph reports whether a `go` invocation can rewrite go.mod or
+// go.sum. Read-only commands keep whatever workspace the caller has, because
+// turning it off would change what they report.
+func mutatesModuleGraph(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "get":
+		return true
+	case "mod":
+		return len(args) > 1 && (args[1] == "tidy" || args[1] == "edit" || args[1] == "download")
+	}
+	return false
 }
 
 func runCommandWithEnv(ctx context.Context, timeout time.Duration, retry int, dir string, environment []string, name string, args ...string) (string, int, error) {

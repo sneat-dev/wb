@@ -2517,9 +2517,14 @@
                 "go.work and go.work.sum are excluded through the worktree's own exclude file, never a tracked .gitignore",
                 "npm consumers prove a clean frozen install of the unlinked tree first, then link a dist built once with the repository's own build target and cached by the library content hash",
                 "No pnpm override, alias, or workspace: entry is ever written, and a link that changed a tracked file is reported as a failure",
-                "Every link is recorded in stream state with the version it replaced, so --undo restores published versions even after the library worktree is removed",
                 "--verify runs each consumer's lint and tests single-worker against the linked copy, reports per consumer without stopping at the first failure, prints the active links and 'verified against unpublished <library> at content-hash <h> (dirty)', and runs a GOWORK=off build and vet",
-                "A worktree with a live link is refused by wb worktree merge; no flag both bypasses that guard and pushes"
+                "A worktree with a live link is refused by wb worktree merge; no flag both bypasses that guard and pushes",
+                "Records every link in stream state BEFORE the filesystem is touched and again with the exact artefacts afterwards, so a crash mid-apply leaves a record --undo can act on",
+                "Refuses (exit 2, link-not-recordable) a consumer no open stream holds, before anything is written: an unrecorded link cannot be undone and is invisible to the merge guard",
+                "Proves the frozen install once per consumer before any linking, never once per package",
+                "Preserves whatever node_modules/<pkg> was \u2014 a pnpm symlink's target is recorded and re-created, an npm directory is moved aside \u2014 so --undo restores the published package either way",
+                "--undo clears an unrecorded go.work too, so the command the merge guard names can satisfy the guard; a removal that fails keeps its record so the guard stays closed",
+                "go mod tidy and go get run with GOWORK=off, set by the verb, so a module-graph mutation can never resolve against an unpublished library tree"
               ]
             }
           ],
@@ -2537,7 +2542,8 @@
                 "GOWORK=off",
                 "verified against unpublished",
                 "--undo",
-                "single worker"
+                "single worker",
+                "link-not-recordable"
               ]
             }
           ],
@@ -2608,6 +2614,46 @@
             {
               "path": "cmd/wb/deps_propagate_test.go",
               "name": "TestWorktreeMergeRefusesAWorktreeWithARecordedLink",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/locallink/locallink_test.go",
+              "name": "TestNoLinkIsWrittenWhenTheRecordCannotBe",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/locallink/locallink_test.go",
+              "name": "TestUndoRemovesAnUnrecordedGoWork",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/locallink/locallink_test.go",
+              "name": "TestUndoKeepsTheRecordWhenRemovalFails",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/locallink/locallink_test.go",
+              "name": "TestFrozenInstallRunsOncePerConsumerNotPerIdentity",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/locallink/locallink_test.go",
+              "name": "TestALinkThatCannotBeRecordedIsRefusedBeforeAnythingIsWritten",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/locallink/execports_test.go",
+              "name": "TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/deps_propagate_test.go",
+              "name": "TestEveryLandingVerbRefusesALiveLink",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/deps_propagate_test.go",
+              "name": "TestWorktreeMergeLandRefusesALinkedWorktreeFromItsReceipt",
               "kind": "integration"
             }
           ],

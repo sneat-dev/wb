@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/spf13/cobra"
 )
 
 // AC: merge-refuses-while-a-link-is-live — `wb worktree merge` refuses before
@@ -195,4 +196,115 @@ func gitPorcelain(t *testing.T, root string) string {
 		t.Fatalf("git status: %v: %s", err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+// MF-4. `wb worktree merge land` and `merge resume` take a RECEIPT, not a
+// worktree path, and used to skip the live-link guard entirely — so preparing
+// before linking and then landing the receipt pushed a linked worktree.
+func TestWorktreeMergeLandRefusesALinkedWorktreeFromItsReceipt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_HOME", home)
+	worktree := t.TempDir()
+	store := streams.OpenAt(filepath.Join(home, "streams"))
+	if _, err := store.Create(streams.Stream{
+		Name: "linked", Phase: streams.PhaseOpen,
+		Members: []streams.Member{{
+			Repository: "acme/app", Role: streams.RoleConsumer, Worktree: worktree,
+			Links: []streams.Link{{
+				Library: "/work/library", LibraryRepository: "acme/library",
+				Mechanism: streams.MechanismGoWork, Identity: "github.com/acme/library/backend",
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receipt := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(receipt, []byte(`{"sources":[{"worktree":"`+worktree+`"}],"candidate":{"worktree":"`+worktree+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, verb := range []string{"land", "resume"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"worktree", "merge", verb, receipt, "--non-interactive"}, &stdout, &stderr)
+		if code != exitUsage {
+			t.Fatalf("%s exit code = %d, want %d (refusal); stderr=%s", verb, code, exitUsage, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "github.com/acme/library/backend") {
+			t.Errorf("%s refusal does not name the link: %s", verb, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "--undo") {
+			t.Errorf("%s refusal does not name the clearing command: %s", verb, stderr.String())
+		}
+	}
+}
+
+// Every verb that pushes, lands or absorbs work must refuse a worktree holding
+// a live local link — and must be discoverable as such.
+//
+// This walks the command tree rather than naming call sites, so a landing verb
+// added later (wb stream absorb, in the local-integration rows) inherits the
+// requirement the moment it declares the annotation, instead of relying on
+// someone remembering to add a call. That is exactly how merge land/resume
+// came to be on the landing surface without ever calling the guard.
+func TestEveryLandingVerbRefusesALiveLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_HOME", home)
+	worktree := t.TempDir()
+	store := streams.OpenAt(filepath.Join(home, "streams"))
+	if _, err := store.Create(streams.Stream{
+		Name: "linked", Phase: streams.PhaseOpen,
+		Members: []streams.Member{{
+			Repository: "acme/app", Role: streams.RoleConsumer, Worktree: worktree,
+			Links: []streams.Link{{
+				Library: "/work/library", LibraryRepository: "acme/library",
+				Mechanism: streams.MechanismGoWork, Identity: "github.com/acme/library/backend",
+			}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receipt := filepath.Join(t.TempDir(), "receipt.json")
+	if err := os.WriteFile(receipt, []byte(`{"sources":[{"worktree":"`+worktree+`"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	guarded := landingGuardedCommands(newRootCmd())
+	if len(guarded) < 4 {
+		t.Fatalf("landing-guarded commands = %v; the merge surface alone should declare four", guarded)
+	}
+	for path, addressing := range guarded {
+		argument := worktree
+		if addressing == landingGuardByReceipt {
+			argument = receipt
+		}
+		invocation := append(strings.Fields(strings.TrimPrefix(path, "wb ")), argument, "--non-interactive")
+		var stdout, stderr bytes.Buffer
+		code := run(invocation, &stdout, &stderr)
+		if code != exitUsage {
+			t.Errorf("%s exit code = %d, want %d (refusal); stderr=%s", path, code, exitUsage, stderr.String())
+			continue
+		}
+		if !strings.Contains(stderr.String(), "live local link") {
+			t.Errorf("%s did not refuse on the live link: %s", path, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "--undo") {
+			t.Errorf("%s refusal does not name the clearing command: %s", path, stderr.String())
+		}
+	}
+}
+
+// landingGuardedCommands collects every command declaring the landing guard.
+func landingGuardedCommands(root *cobra.Command) map[string]string {
+	guarded := map[string]string{}
+	var visit func(*cobra.Command)
+	visit = func(parent *cobra.Command) {
+		for _, command := range parent.Commands() {
+			if addressing := command.Annotations[landingGuardAnnotation]; addressing != "" {
+				guarded[command.CommandPath()] = addressing
+			}
+			visit(command)
+		}
+	}
+	visit(root)
+	return guarded
 }

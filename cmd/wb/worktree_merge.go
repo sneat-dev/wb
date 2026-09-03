@@ -93,6 +93,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 		},
 	}
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
+	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
 	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd())
@@ -193,6 +194,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 			return err
 		},
 	}
+	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, false)
 	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable prepared receipt to replace with an additive source-set rebatch")
 	return command
@@ -207,6 +209,13 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
+			// The land verbs are the ones that push, so the live-link guard
+			// has to run here too — it used to cover only merge/prepare, so
+			// preparing before linking and then landing the receipt walked a
+			// linked worktree straight past it.
+			if err := refuseLinkedReceiptWorktrees(args[0]); err != nil {
+				return err
+			}
 			campaign := newWorktreeMergeProgress(command, flags)
 			receipt, err := orchestrate.ResumeWorktreeMerge(command.Context(), landMergeOptions(flags, args[0], campaign.reporter()))
 			finishWorktreeMergeProgress(campaign, receipt, err)
@@ -216,6 +225,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 			return err
 		},
 	}
+	markLandingGuard(command, landingGuardByReceipt)
 	bindWorktreeMergeFlags(command, &flags, false, true)
 	if name == "resume" {
 		command.Flags().BoolVar(&flags.stopBeforeMerge, "stop-before-merge", false, "PR-only: validate and publish the exact candidate, prove the open PR, then stop before checks or merge")

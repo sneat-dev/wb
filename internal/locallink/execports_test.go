@@ -285,3 +285,79 @@ func TestExecNodeBuildCacheIsKeyedByContentHash(t *testing.T) {
 		t.Fatal("a moved content hash reused a stale build instead of rebuilding")
 	}
 }
+
+// MF-8. Under pnpm's default isolated store, node_modules/<pkg> IS a symlink
+// into .pnpm/…. That symlink used to be deleted with no backup, so `--undo`
+// left the consumer with no package at all. Its target is now recorded and
+// re-created.
+func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
+	consumer := t.TempDir()
+	store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// pnpm links with a RELATIVE target; preserving it verbatim is what makes
+	// the restore correct if the tree is ever relocated.
+	relative, err := filepath.Rel(filepath.Dir(target), store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(relative, target); err != nil {
+		t.Fatal(err)
+	}
+
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
+	ctx := context.Background()
+
+	previous, err := node.Link(ctx, consumer, "@acme/core", dist)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous == "" {
+		t.Fatal("Link did not record where the existing symlink pointed")
+	}
+	linked, err := os.ReadFile(filepath.Join(target, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(linked), "1.1.0-dev") {
+		t.Fatalf("the link does not resolve to the built dist: %s", linked)
+	}
+
+	if err := node.Unlink(ctx, consumer, "@acme/core"); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(target)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the package is not a symlink again after undo: %v", err)
+	}
+	restoredTarget, err := os.Readlink(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredTarget != relative {
+		t.Fatalf("restored link points at %q, want the original %q", restoredTarget, relative)
+	}
+	restored, err := os.ReadFile(filepath.Join(target, "package.json"))
+	if err != nil {
+		t.Fatalf("the published package is not reachable after undo: %v", err)
+	}
+	if !strings.Contains(string(restored), `"version":"1.0.0"`) {
+		t.Fatalf("undo did not restore the published version: %s", restored)
+	}
+	// No bookkeeping left behind.
+	if fileExists(target + linkSymlinkBackupSuffix) {
+		t.Error("the link record survived undo")
+	}
+}

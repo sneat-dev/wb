@@ -25,11 +25,14 @@ func (engine *Engine) linkNpm(
 	declaration streams.Declaration,
 	libraryRepository, hash string,
 ) (streams.Link, error) {
+	// The frozen install is NOT run here. It proves a clean install of the
+	// unlinked tree, so it belongs once per consumer before any linking —
+	// linkConsumer owns it. Running it per identity meant every install after
+	// the first ran against an already-linked tree, and a real
+	// `pnpm install --frozen-lockfile` would reconcile node_modules against
+	// the lockfile and remove the link it was supposed to be validating.
 	if engine.Node == nil {
 		return streams.Link{}, fmt.Errorf("no Node toolchain available to link %s", declaration.Identity.Name)
-	}
-	if err := engine.Node.FrozenInstall(ctx, consumer); err != nil {
-		return streams.Link{}, fmt.Errorf("prove a clean frozen install of %s before linking: %w", consumer, err)
 	}
 	packageDir := library
 	if declaration.Identity.Directory != "." {

@@ -86,8 +86,14 @@ at the first failure. Every run states
 the links in effect with the published version each replaced. It also runs a
 GOWORK=off build and vet as the pre-landing check.
 
-A worktree with a live link is refused by 'wb worktree merge'. There is no flag
-that both bypasses that guard and pushes.`,
+Links are recorded in stream state BEFORE the filesystem is touched, so a crash
+mid-apply leaves a record --undo can act on. A consumer that no open stream
+holds is refused (link-not-recordable) before anything is written: an unrecorded
+link cannot be undone and is invisible to the merge guard.
+
+Every verb that pushes, lands or absorbs work refuses a worktree with a live
+link — merge, merge prepare, merge land, merge resume. There is no flag that
+both bypasses that guard and pushes.`,
 		Example: `# Link two consumers to a library worktree and verify them
 wb deps propagate local /path/to/library --to /path/to/app --to /path/to/site --verify
 
@@ -137,6 +143,11 @@ wb deps propagate local --to /path/to/app --undo`,
 				Verify: options.verify, Timeout: options.timeout, Stream: options.stream,
 			})
 			if err != nil {
+				// A guard that fired is exit 2 with the command that
+				// satisfies it; a failure is exit 1.
+				if refusal, refused := locallink.Refused(err); refused {
+					return &exitError{code: exitUsage, message: refusal.Error()}
+				}
 				return err
 			}
 			if err := printPropagateLocal(command, options.format, result); err != nil {

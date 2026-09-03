@@ -296,7 +296,17 @@ func packageManager(dir string) string {
 // Unlink restores exactly what was there rather than reinstalling.
 const linkBackupSuffix = ".wb-locallink-backup"
 
+// linkSymlinkBackupSuffix names the file recording where an existing SYMLINK
+// pointed, so Unlink can re-create it exactly.
+const linkSymlinkBackupSuffix = ".wb-locallink-symlink"
+
 // Link implements Node.
+//
+// Both shapes a package manager leaves in node_modules are preserved. pnpm's
+// default isolated store makes node_modules/<pkg> a SYMLINK into .pnpm/…, and
+// an earlier version simply deleted that symlink with no backup — so `--undo`
+// left the consumer with no package at all until someone re-installed. npm's
+// flat layout leaves a real directory, which is moved aside.
 func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist string) (string, error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -306,9 +316,23 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 	info, err := os.Lstat(target)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
+		// Record where it pointed before replacing it. Without this the
+		// installed package is unrecoverable on every pnpm consumer.
+		existing, readErr := os.Readlink(target)
+		if readErr != nil {
+			return "", fmt.Errorf("read the existing link at %s: %w", target, readErr)
+		}
+		backup := target + linkSymlinkBackupSuffix
+		if err := os.RemoveAll(backup); err != nil {
+			return "", fmt.Errorf("clear the stale link record at %s: %w", backup, err)
+		}
+		if err := os.WriteFile(backup, []byte(existing), 0o644); err != nil {
+			return "", fmt.Errorf("record the existing link target of %s: %w", packageName, err)
+		}
 		if err := os.Remove(target); err != nil {
 			return "", fmt.Errorf("replace the existing link at %s: %w", target, err)
 		}
+		previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkSymlinkBackupSuffix))
 	case err == nil:
 		backup := target + linkBackupSuffix
 		if err := os.RemoveAll(backup); err != nil {
@@ -327,7 +351,7 @@ func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist st
 	return previous, nil
 }
 
-// Unlink implements Node, restoring the installed package the link displaced.
+// Unlink implements Node, restoring whichever shape the link displaced.
 func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string) error {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	info, err := os.Lstat(target)
@@ -338,9 +362,27 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", target, err)
 	}
-	backup := target + linkBackupSuffix
-	if fileExists(backup) {
-		if err := os.Rename(backup, target); err != nil {
+	// A recorded symlink target is restored first: on pnpm this is the normal
+	// case, and it is the one that used to be lost entirely.
+	symlinkBackup := target + linkSymlinkBackupSuffix
+	if contents, readErr := os.ReadFile(symlinkBackup); readErr == nil {
+		original := strings.TrimSpace(string(contents))
+		if original == "" {
+			return fmt.Errorf("the recorded link target for %s is empty; restore it by re-installing", packageName)
+		}
+		if err := os.Symlink(original, target); err != nil {
+			return fmt.Errorf("restore the original link for %s: %w", packageName, err)
+		}
+		if err := os.Remove(symlinkBackup); err != nil {
+			return fmt.Errorf("clear the link record for %s: %w", packageName, err)
+		}
+		return nil
+	} else if !os.IsNotExist(readErr) {
+		return fmt.Errorf("read the link record for %s: %w", packageName, readErr)
+	}
+	directoryBackup := target + linkBackupSuffix
+	if fileExists(directoryBackup) {
+		if err := os.Rename(directoryBackup, target); err != nil {
 			return fmt.Errorf("restore the installed %s: %w", packageName, err)
 		}
 	}
