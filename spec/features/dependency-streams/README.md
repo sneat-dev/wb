@@ -51,6 +51,26 @@ re-running the full lint/vet/test suite through commit and push hooks and again
 in CI — on a 4-core workstation that is the difference between a stream that
 lands in an hour and one that occupies a day.
 
+A third cost is **abandoned worktrees**, and its causes are specific rather than
+cultural. The founder asked why agents do not clean up after themselves; the
+measured answers from one night's sweep (60 checkouts down to 35) are:
+
+- The orchestrator landed pull requests with raw `gh pr merge`, because wb's
+  merge stage breaks on the installed `gh` 2.45 — so the **opt-in `--cleanup`
+  never ran**. An opt-in cleanup attached to a verb people cannot use is not a
+  cleanup policy.
+- Reviewers created **detached checkouts**, which wb warns about and then drops
+  from its inventory, so nothing can retire them. Every review makes one.
+- Lanes were told to keep worktrees for the next round, and **nothing marks the
+  last round**, so "keep for now" never expires.
+- **Squash merges hide merged-ness**: 7 of 11 refusals were demonstrably merged
+  branches carrying one residual local commit.
+- No worktree carried an **owner or a TTL**, so nothing could tell an abandoned
+  tree from a paused one.
+
+None of these is an agent forgetting. Each is a verb that made the tidy path the
+harder one.
+
 The founder's directive states the intended shape directly: *"do less deps
 propagations and work more with locally changed deps and propagate at the end"*
 and *"stream is a good idea"* — and, on history: *"What I don't want to have is
@@ -764,6 +784,53 @@ The founder: *"maybe we do not clean wb work logs?"* — the answer this Feature
 gives is no, never, because deleting them destroys the analytics the stream
 exists to produce.
 
+#### REQ: cleanup-is-the-default-at-landing
+
+`wb pr land` and `wb worktree merge` MUST remove the task's worktree(s) and
+release its claims **by default**, and MUST require an explicit `--keep` to
+retain them. Cleanup MUST NOT be an opt-in flag: the measured failure was that
+`--cleanup` existed and was never passed.
+
+#### REQ: land-verbs-work-with-the-installed-gh
+
+The land and merge verbs MUST work against the `gh` actually installed — today
+2.45 — by vendoring the API calls they need rather than depending on newer CLI
+behaviour such as `--slurp`. A verb that breaks on the installed client forces
+operators back to raw `gh pr merge`, which is exactly how the cleanup path was
+bypassed.
+
+#### REQ: reviews-use-a-tracked-review-checkout
+
+`wb worktree review <owner/repo#N>` MUST create a **tracked, claimed,
+detached-safe** checkout carrying a TTL, which `gc` removes once the pull request
+merges or closes. Reviewers MUST NOT use `gh pr checkout` outside wb, because a
+checkout wb did not create is a checkout wb cannot retire.
+
+#### REQ: sessions-and-tasks-have-explicit-ends
+
+`wb worktree end <task>` MUST be the closing line of the lane contract, and
+`wb session end` MUST sweep everything the session created and did not explicitly
+hand over. A session that exits leaving an unended worktree MUST be reported.
+
+#### REQ: stream-end-removes-every-stream-worktree
+
+`wb stream end` MUST remove all of the stream's worktrees after the
+fast-forward landing, not merely undo its links.
+
+#### REQ: merged-ness-is-decided-by-commit-identity
+
+Whether a branch is merged MUST be decided by commit identity — patch-id, or the
+pull request's merge commit — never by branch-name ancestry alone, because a
+squash merge leaves no ancestry. Residue MUST be reported as `landed + residue`
+with the residual commits listed.
+
+#### REQ: gc-is-the-safety-net-and-is-measured
+
+`wb worktree gc` MUST be the safety net rather than the primary mechanism, and
+`wb report stream` MUST carry **worktrees abandoned per stream** as a metric with
+a target of **0**. A rising number means a landing verb stopped cleaning up, and
+that is the thing to fix rather than to sweep.
+
 #### REQ: terminal-artefacts-are-purged-unconditionally-and-silently
 
 An empty recognized `.wb-retired-stage-*` directory or a `.wb-retired-lock-*`
@@ -1304,6 +1371,38 @@ that store
 counts only unshared bytes, pruning the pnpm store is refused while a live
 worktree hard-links into it, and `~/.wb/worklogs`, `~/.wb/sessions`,
 `~/.wb/parked-sessions` and `~/.wb/handoffs` are refused by name.
+
+### AC: landing-with-defaults-leaves-nothing-behind
+
+**Requirements:** dependency-streams#req:cleanup-is-the-default-at-landing, dependency-streams#req:land-verbs-work-with-the-installed-gh, dependency-streams#req:stream-end-removes-every-stream-worktree
+
+**Given** a green pull request with a claimed worktree, on a machine with `gh`
+2.45 installed
+**When** the operator runs `wb pr land` with no flags
+**Then** the pull request lands without falling back to raw `gh pr merge`, the
+worktree is removed and its claim released, `--keep` is the only way to retain
+them; and after `wb stream end`, none of the stream's worktrees remain.
+
+### AC: a-review-checkout-retires-itself
+
+**Requirements:** dependency-streams#req:reviews-use-a-tracked-review-checkout, dependency-streams#req:merged-ness-is-decided-by-commit-identity, dependency-streams#req:gc-is-the-safety-net-and-is-measured
+
+**Given** a review checkout created by `wb worktree review <owner/repo#N>` whose
+pull request is then **squash**-merged
+**When** `gc` next runs
+**Then** the checkout appears in the inventory throughout, is classified merged
+on commit identity rather than ancestry, is removed within that single run, and
+`wb report stream` reports zero worktrees abandoned for the stream.
+
+### AC: a-session-that-exits-untidy-is-reported
+
+**Requirements:** dependency-streams#req:sessions-and-tasks-have-explicit-ends
+
+**Given** a session that created two worktrees, ended one with
+`wb worktree end` and handed over neither
+**When** the session exits and `wb session end` runs
+**Then** the un-ended worktree is reported by name with its owner and age, and
+the handed-over case is distinguished from the abandoned one.
 
 ## Rehearse Integration
 
