@@ -92,6 +92,12 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
+			// The landing guard runs before anything else, including the
+			// GitHub read: a worktree of this repository still building against
+			// an unpublished tree makes every check observation meaningless.
+			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
+				return err
+			}
 			events, streamName := landingEventLog(repository)
 			progress := newCIWaitProgress(command.ErrOrStderr(), !nonInteractive)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
@@ -156,7 +162,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")
 	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump")
-	return command
+	return markLandingGuard(command, landingGuardByPullRequest)
 }
 
 // splitPullRequestSelector reads owner/repository#number, the way an operator

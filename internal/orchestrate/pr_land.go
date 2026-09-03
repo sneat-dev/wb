@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/locallink"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -1031,26 +1032,25 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 }
 
 // refuseLinkedWorktree refuses a checkout that still holds a live local
-// dependency link. Retiring one silently restores every consumer of that link
-// to a published version nobody chose.
+// dependency link, through the one implementation WB has of that question.
+//
+// It consults both signals — recorded stream links and a `go.work` nobody
+// recorded — because either alone misses the other, and it reuses
+// locallink.HasLiveLink rather than asking half the question a second way.
 func refuseLinkedWorktree(projectsRoot string, entry worktrees.ListResult) *landRefusal {
 	store, err := streams.Open(projectsRoot)
 	if err != nil {
-		// No stream state at all is the ordinary case outside a stream.
-		return nil
+		// No stream state at all is the ordinary case outside a stream, but a
+		// `go.work` can still exist, so the check continues with no store.
+		store = nil
 	}
-	links, err := store.LiveLinksForWorktree(entry.WorktreeDir)
+	links, err := locallink.HasLiveLink(store, entry.WorktreeDir)
 	if err != nil || len(links) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(links))
-	for _, link := range links {
-		names = append(names, link.Link.Identity)
-	}
 	return &landRefusal{
-		code: "cleanup-blocked-live-link",
-		reason: "the worktree for task " + entry.Task + " still holds a live local dependency link (" +
-			strings.Join(names, ", ") + "), so retiring it would restore consumers to a published version",
-		command: "wb deps propagate local --undo " + entry.Task + ", or land with --keep",
+		code:    "cleanup-blocked-live-link",
+		reason:  locallink.RefusalMessage(entry.WorktreeDir, links),
+		command: "wb deps propagate local --undo, or land with --keep",
 	}
 }

@@ -108,7 +108,12 @@ file is not mechanical, and is refused until a review is recorded.
 | `kept-commit-does-not-build` | a kept commit does not build on its own | `--keep-commits` with a smaller set |
 | `checks-pending` / `checks-failed` | exit 1, not a refusal: the work is not ready | fix the failure, or rerun to keep waiting |
 | `cleanup-blocked-dirty` | the worktree that produced the branch has uncommitted changes, so landing would merge the work and then be unable to retire the checkout | `wb worktree end <task>`, or land with `--keep` |
-| `cleanup-blocked-live-link` | that worktree still holds a live local dependency link | `wb deps propagate local --undo <task>`, or land with `--keep` |
+| `cleanup-blocked-live-link` | a worktree still holds a live local dependency link | `wb deps propagate local … --undo`, or land with `--keep` |
+
+`wb pr land` is on WB's **landing surface**: before any GitHub call it refuses
+when an open stream worktree of the repository still builds against an
+unpublished tree. Landing then would publish a commit whose CI ran against
+something the registry never carried.
 
 Both of those are checked **before** the merge, while refusing is still free.
 Discovering afterwards that the checkout cannot be retired leaves the landing
