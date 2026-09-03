@@ -2537,6 +2537,14 @@ func printWorktreeCleanup(command *cobra.Command, results []worktrees.CleanupRes
 				return err
 			}
 		}
+		// A note never changes the decision above, so it is printed after it
+		// and on stderr: the operator sees why the receipt still reads the way
+		// it does without a script's parse of stdout changing shape.
+		for _, note := range result.Notes {
+			if _, err := fmt.Fprintf(command.ErrOrStderr(), "note: %s %s: %s\n", result.Task, result.Repository, note); err != nil {
+				return err
+			}
+		}
 	}
 	if apply {
 		_, err := fmt.Fprintf(command.OutOrStdout(), "%d removed\n", removed)

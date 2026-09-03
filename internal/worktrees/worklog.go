@@ -2038,12 +2038,21 @@ func sameDirtyWorktreeEvidence(left, right *DirtyWorktreeEvidence) bool {
 // chain without writing. Coordinated operations run this for every repository
 // before terminalizing the first claim.
 func preflightWorkLogSeal(home, worktree, finalCommit string) error {
+	_, err := preflightWorkLogSealWithNote(home, worktree, finalCommit)
+	return err
+}
+
+// preflightWorkLogSealWithNote is preflightWorkLogSeal for the callers that
+// have a receipt to print the note on. A renamed live branch no longer refuses
+// (see corroborateClaimWithWarning), and an operator who renamed a branch is
+// owed the observation on the receipt rather than silence.
+func preflightWorkLogSealWithNote(home, worktree, finalCommit string) (string, error) {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
 }
@@ -2052,33 +2061,36 @@ func preflightWorkLogSeal(home, worktree, finalCommit string) error {
 // migrating a legacy projection. Cleanup planning must remain read-only; apply
 // repeats preflightWorkLogSeal while holding the task lock before terminalizing
 // the claim or deleting Git state.
-func preflightWorkLogClaimReadOnly(home, worktree, finalCommit string) error {
+func preflightWorkLogClaimReadOnly(home, worktree, finalCommit string) (string, error) {
 	projection, err := readWorkLogProjectionForReadOnlyClaim(worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
 }
 
-func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) error {
+func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) (string, error) {
 	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = runDir.Close() }()
 	claims, err := openPrivateChild(runDir, "claims", false)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = claims.Close() }()
 	var claim workLogClaim
 	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
-		return err
+		// The bare openat error ("file does not exist") named nothing an
+		// operator could act on, and it is the text a cleanup receipt prints
+		// for the whole task. Name the record WB looked for.
+		return "", fmt.Errorf("read private claim %s of run %s: %w", projection.ClaimID, projection.RunID, err)
 	}
-	return corroborateClaim(worktree, finalCommit, projection, claim)
+	return corroborateClaimWithWarning(worktree, finalCommit, projection, claim)
 }
 
 func readWorkLogProjection(worktree string) (workLogProjection, error) {

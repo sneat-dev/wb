@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -467,13 +466,19 @@ func TestWorkLogBindsRunToExactPromptBeforeWorktreeCreation(t *testing.T) {
 	}
 }
 
-// TestWorkLogBranchMismatchErrorStatesProvenRecovery is the regression for
-// #183: an agent renaming the live branch away from the claim before landing
-// used to refuse with no recovery hint. The proven recovery — rename the live
-// branch back to the claim name — must appear in the error text, and actually
-// performing it must restore corroboration exactly as the issue's manual
-// recovery did.
-func TestWorkLogBranchMismatchErrorStatesProvenRecovery(t *testing.T) {
+// TestWorkLogBranchMismatchIsANoteAndTheCommitChecksStillRefuse replaces the
+// #183 regression that asserted the opposite. #183 fixed the recovery text of a
+// refusal that should not have existed: a branch renamed after its claim
+// invalidates nothing, because every proof WB relies on is a commit identity.
+// Refusing on the name stranded landed tasks and asked for a `git branch -m`
+// that changed no fact.
+//
+// So the rename is now a note, and this test pins both halves of that: the
+// rename alone corroborates and reports itself, and the commit checks the
+// refusal used to stand in front of still refuse on their own.
+//
+// Implements: dependency-streams#req:landing-evidence-is-commit-based-not-name-based.
+func TestWorkLogBranchMismatchIsANoteAndTheCommitChecksStillRefuse(t *testing.T) {
 	fixture := newGitFixture(t)
 	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -491,27 +496,35 @@ func TestWorkLogBranchMismatchErrorStatesProvenRecovery(t *testing.T) {
 	// the observed sneat-apps-ext-pass2 incident.
 	gitTest(t, worktree, "branch", "-m", "feature/renamed-by-agent")
 
-	err = preflightWorkLogSeal(fixture.home, worktree, head)
-	if err == nil {
-		t.Fatal("renamed live branch unexpectedly corroborated against the unrenamed claim")
+	note, err := preflightWorkLogSealWithNote(fixture.home, worktree, head)
+	if err != nil {
+		t.Fatalf("a renamed live branch refused a claim every commit check proves: %v", err)
 	}
-	for _, want := range []string{
-		fmt.Sprintf("live branch %q", "feature/renamed-by-agent"),
-		fmt.Sprintf("private claim %q", claimBranch),
-		"rename the live branch back to the claim name",
-		"git branch -m " + claimBranch,
-		"landing evidence is commit-based",
-		"still proves out",
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("branch mismatch error = %q, want it to contain %q", err.Error(), want)
+	// The note has to name both branches: WB deletes the live one, and the
+	// operator reading the receipt knows the claim by its recorded name.
+	for _, want := range []string{"feature/renamed-by-agent", claimBranch, "commit-based"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("branch rename note = %q, want it to contain %q", note, want)
 		}
 	}
 
-	// Performing the documented recovery restores corroboration.
+	// The commit checks the old refusal stood in front of still refuse. A
+	// commit made after the claim's terminal commit is real divergence, and it
+	// is caught whatever the branch is called.
+	if err := os.WriteFile(filepath.Join(worktree, "after-the-claim.txt"), []byte("later\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, worktree, "add", "after-the-claim.txt")
+	gitTest(t, worktree, "commit", "-m", "work after the terminal commit")
+	if _, err := preflightWorkLogSealWithNote(fixture.home, worktree, head); err == nil {
+		t.Fatal("a live head past the terminal commit corroborated")
+	}
+
+	// Renaming the branch back is still legal, and still says nothing either
+	// way: the diverged head is what refuses.
 	gitTest(t, worktree, "branch", "-m", claimBranch)
-	if err := preflightWorkLogSeal(fixture.home, worktree, head); err != nil {
-		t.Fatalf("documented recovery did not restore corroboration: %v", err)
+	if _, err := preflightWorkLogSealWithNote(fixture.home, worktree, head); err == nil {
+		t.Fatal("restoring the claimed branch name excused a diverged head")
 	}
 }
 

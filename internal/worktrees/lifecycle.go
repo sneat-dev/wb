@@ -537,6 +537,12 @@ type CleanupResult struct {
 	BranchDeleted          bool   `json:"branch_deleted"`
 	BacklogID              string `json:"backlog_id,omitempty"`
 	Reason                 string `json:"reason,omitempty"`
+	// Notes carries observations that are true and worth printing but do not
+	// change the decision — today, a live branch renamed away from the Work Log
+	// claim. Landing evidence is commit-based, so the rename cannot invalidate
+	// anything; silence about it would still be wrong, because the branch WB
+	// deletes is the live one and the operator should see both names.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // CleanupOutcome contains the decisions plus the durable audit report written
@@ -1577,13 +1583,19 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	results := make([]CleanupResult, len(listed.Results))
 	for index, entry := range listed.Results {
 		eligible, reason := cleanupEligibility(entry, normalized, now)
+		var note string
 		if eligible {
-			if err := preflightWorkLogClaimReadOnly(resolution.Write.Home, entry.WorktreeDir, entry.HeadSHA); err != nil {
+			corroborationNote, err := preflightWorkLogClaimReadOnly(resolution.Write.Home, entry.WorktreeDir, entry.HeadSHA)
+			if err != nil {
 				eligible = false
 				reason = fmt.Sprintf("preflight Work Log for %s: %v", entry.Repository, err)
 			}
+			note = corroborationNote
 		}
 		results[index] = CleanupResult{ListResult: entry, Eligible: eligible, Reason: reason}
+		if note != "" {
+			results[index].Notes = append(results[index].Notes, note)
+		}
 	}
 	// Residue reads back as a candidate that is no longer a Git worktree root,
 	// which is exactly the malformed-candidate shape blockDiagnosedTasks blocks
