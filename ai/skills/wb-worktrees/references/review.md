@@ -3,8 +3,16 @@
 **Never `gh pr checkout`. Never `git worktree add --detach`.** Use:
 
 ```sh
+# The ordinary case: work that never opened a pull request
+wb worktree review --from <branch-or-commit> --repo <owner/repository> --model <your model>
+
+# A pull request
 wb worktree review <owner/repository>#<number> --model <your model>
 ```
+
+`--from` is not the exception. Under the local model an agent's work is absorbed
+into its stream without ever opening a pull request, so most reviewable work has
+no number to address it by.
 
 ## Why this matters more than it looks
 
@@ -20,10 +28,25 @@ a time by people doing the obvious thing.
 
 `wb worktree review` makes the tracked path the easy path.
 
+### Why an untracked checkout can never be seen
+
+`wb worktree gc` decides whether a checkout is in use from four signals, and the
+first of them is a heartbeat every `wb` command refreshes **inside the
+checkout**. That heartbeat is written into the checkout's WB journal — and a
+checkout made with `git worktree add` or `gh pr checkout` has no journal, so no
+heartbeat can ever be written into it.
+
+The consequence is not "it looks idle". It is that WB can read **no signal at
+all** for it, and says so rather than assuming: the row is kept, and it names
+`wb worktree review --from …` as the way to make the checkout readable. An
+untracked checkout is therefore not merely untidy — it is permanently
+unclassifiable until it is recreated through this verb.
+
 ## What you get
 
 - a WB worktree at `~/.wb/worktrees/review-<owner>-<repo>-<n>/<owner>/<repo>`
-- on a **local branch** `review/<owner>-<repo>-<n>` at the pull request's head —
+- on a **local branch** `review/<owner>-<repo>-<n>` (or `review/<owner>-<repo>-<ref>`
+  for a local review) at the head under review —
   a branch rather than a detached HEAD, because detached is exactly the shape
   nothing can retire. The branch is never pushed.
 - an immutable manifest recording `purpose: review`, the pull request, and a TTL
@@ -64,6 +87,7 @@ wb worktree review acme/app#41 --sha 4f2a1c9
 | Refusal | Sanctioned next step |
 | --- | --- |
 | `pull-request-not-open` | `wb worktree review <selector> --sha <head>` to review an exact commit deliberately |
+| `ref-does-not-resolve` | fetch the branch into the canonical clone and rerun; a review checkout has to sit at something that exists |
 | `pull-request-has-no-head` | open the pull request in the browser; GitHub reports no head commit for it |
 | the branch already exists | a review of this pull request is already checked out — that is the collision working; use it, or end it first |
 

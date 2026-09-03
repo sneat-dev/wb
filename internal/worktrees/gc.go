@@ -163,17 +163,29 @@ type GCOutcome struct {
 	Reclaimable diskusage.Usage `json:"reclaimable"`
 	Reclaimed   diskusage.Usage `json:"reclaimed"`
 	// PartialTasks names tasks where some repositories retired and others did
-	// not, with the repositories left behind. Blocking every repository because
-	// one holds residue is correct for a merge and wrong for a cleanup.
+	// not, with the repositories left behind, why each was left, and the
+	// command that resolves it. Blocking every repository because one holds
+	// residue is correct for a merge and wrong for a cleanup — but a partial
+	// retirement that names no way forward leaves the remainder unreachable,
+	// which is the same dead end arriving more politely.
 	PartialTasks []GCPartialTask `json:"partial_tasks,omitempty"`
 	Totals       map[string]int  `json:"totals"`
 }
 
 // GCPartialTask records a coordinated task that retired per repository.
 type GCPartialTask struct {
-	Task      string   `json:"task"`
-	Retired   []string `json:"retired"`
-	LeftAlone []string `json:"left_alone"`
+	Task      string         `json:"task"`
+	Retired   []string       `json:"retired"`
+	LeftAlone []GCLeftBehind `json:"left_alone"`
+}
+
+// GCLeftBehind is one repository a partial retirement did not reach, with the
+// reason and the command that finishes it. A name on its own is a dead end.
+type GCLeftBehind struct {
+	Repository        string `json:"repository"`
+	Class             string `json:"class"`
+	Reason            string `json:"reason"`
+	SanctionedCommand string `json:"sanctioned_command,omitempty"`
 }
 
 // GC classifies every WB-managed checkout by evidence and, with Apply, retires
@@ -336,6 +348,12 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		// live owner to speak for it.
 		entry.Class = GCClassClaimedLive
 		entry.Reason = inUseReason(result, now)
+		if result.LastActivityAt.IsZero() {
+			// A checkout WB did not create has no journal, so no heartbeat can
+			// ever be written into it and this state is permanent until it is
+			// brought under management.
+			entry.SanctionedCommand = unreadableActivityCommand(result)
+		}
 		entry.SanctionedCommand = "wb worktree end " + result.Task
 	case result.Purpose == PurposeReview && !result.IntegratedAtOrigin:
 		// A review checkout holds someone else's work, so "not landed" says
@@ -464,7 +482,7 @@ func gcEvidence(result ListResult) []string {
 // per repository and names what it left behind.
 func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 	retired := map[string][]string{}
-	left := map[string][]string{}
+	left := map[string][]GCLeftBehind{}
 	sweepRoot, err := gcSweepReportDir(options)
 	if err != nil {
 		return err
@@ -473,11 +491,13 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 		entry := &outcome.Entries[index]
 		if !entry.Eligible {
 			// Every repository this pass did not retire is one the operator
-			// must be told about, whatever kept it: a coordinated task that
-			// retires two of three repositories has to name the third, and
-			// keying that on the class silently dropped the ones held back by
-			// the merge-grace window.
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
+			// must be told about, whatever kept it — and told what to do about
+			// it. A coordinated task that retires two of three repositories and
+			// names the third without a way forward has just moved the dead end.
+			left[entry.Task] = append(left[entry.Task], GCLeftBehind{
+				Repository: entry.Repository, Class: entry.Class,
+				Reason: entry.Reason, SanctionedCommand: entry.SanctionedCommand,
+			})
 			continue
 		}
 		cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
@@ -508,7 +528,10 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 		})
 		if err != nil {
 			entry.Error = err.Error()
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
+			left[entry.Task] = append(left[entry.Task], GCLeftBehind{
+				Repository: entry.Repository, Class: entry.Class, Reason: err.Error(),
+				SanctionedCommand: "wb worktree gc " + entry.Task + " --format json",
+			})
 			continue
 		}
 		for _, result := range cleanupOutcome.Results {
@@ -518,7 +541,10 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 		}
 		if !entry.Applied {
 			entry.Error = "cleanup did not retire this checkout; rerun with --format json for its plan"
-			left[entry.Task] = append(left[entry.Task], entry.Repository)
+			left[entry.Task] = append(left[entry.Task], GCLeftBehind{
+				Repository: entry.Repository, Class: entry.Class, Reason: entry.Error,
+				SanctionedCommand: "wb worktree gc " + entry.Task + " --format json",
+			})
 			continue
 		}
 		retired[entry.Task] = append(retired[entry.Task], entry.Repository)
@@ -527,9 +553,19 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 		if len(left[task]) == 0 {
 			continue
 		}
-		sort.Strings(left[task])
+		remaining := left[task]
+		sort.Slice(remaining, func(i, j int) bool { return remaining[i].Repository < remaining[j].Repository })
+		for index := range remaining {
+			if remaining[index].SanctionedCommand != "" {
+				continue
+			}
+			// Every left-behind repository names a way forward. Without one the
+			// operator has a list of names and nothing to do with it, which is
+			// the dead end this whole rule exists to remove.
+			remaining[index].SanctionedCommand = "wb worktree gc " + task + " --format json"
+		}
 		outcome.PartialTasks = append(outcome.PartialTasks, GCPartialTask{
-			Task: task, Retired: repositories, LeftAlone: left[task],
+			Task: task, Retired: repositories, LeftAlone: remaining,
 		})
 	}
 	sort.Slice(outcome.PartialTasks, func(i, j int) bool { return outcome.PartialTasks[i].Task < outcome.PartialTasks[j].Task })
@@ -764,7 +800,9 @@ func checkoutIsInUse(result ListResult, options GCOptions, now time.Time) bool {
 	seen := result.LastActivityAt
 	if seen.IsZero() {
 		// Nothing to judge by. An unknown age is not a licence to remove
-		// someone's work, so the checkout is treated as in use.
+		// someone's work, so the checkout is kept — but it is kept for a
+		// different reason than a checkout somebody just touched, and
+		// inUseReason says which.
 		return true
 	}
 	return now.Sub(seen) <= window
@@ -776,6 +814,14 @@ func inUseReason(result ListResult, now time.Time) string {
 	who := result.Owner
 	if who == "" || who == "unknown" {
 		who = "no registered owner"
+	}
+	if result.LastActivityAt.IsZero() {
+		// "Used 0m ago" would be a claim WB cannot support. Say what is
+		// actually true — nothing could be read — and name the command that
+		// makes the checkout readable, since a checkout WB did not create has
+		// no journal for a heartbeat to live in.
+		return "no activity signal could be read for this checkout (no heartbeat, no changed file, " +
+			"no Work Log, no commit), so WB will not assume it is idle"
 	}
 	return "this checkout was used " + humanAge(activityAgeSeconds(result, now)) +
 		" ago (" + who + "); a checkout in use is not a checkout to remove"
@@ -809,4 +855,17 @@ func staleOwnerWarning(result ListResult, options GCOptions, now time.Time, clas
 	return "owner " + result.Owner + " has a live process id but this checkout shows no activity for " +
 		humanAge(activityAgeSeconds(result, now)) +
 		" (no heartbeat, no edited file, no Work Log event, no commit); treating the process id as recycled"
+}
+
+// unreadableActivityCommand names the command that makes a checkout readable,
+// which depends on what it is. A checkout WB created always has a journal, so
+// reaching here means WB did not create it.
+func unreadableActivityCommand(result ListResult) string {
+	if result.Detached {
+		// A review checkout is the common shape, and `wb worktree review`
+		// creates one WB can see. adopt cannot: it has no manifest to
+		// reconstruct for a detached HEAD.
+		return "wb worktree review --from " + shortSHA(result.HeadSHA) + " --repo " + result.Repository
+	}
+	return "wb worktree adopt " + result.WorktreeDir
 }

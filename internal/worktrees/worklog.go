@@ -2205,19 +2205,27 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 	return corroborateClaim(worktree, head, projection, claim)
 }
 
+// corroborateClaim proves a claim still describes this worktree. It returns a
+// warning for facts that are worth recording and do not invalidate anything —
+// today, a branch renamed since the claim was written.
 func corroborateClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
+	_, err := corroborateClaimWithWarning(worktree, finalCommit, projection, claim)
+	return err
+}
+
+func corroborateClaimWithWarning(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) (renamed string, err error) {
 	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" {
-		return fmt.Errorf("work-log projection does not match immutable active claim")
+		return "", fmt.Errorf("work-log projection does not match immutable active claim")
 	}
 	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
-		return fmt.Errorf("private work-log claim identity/path mismatch")
+		return "", fmt.Errorf("private work-log claim identity/path mismatch")
 	}
 	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
-		return err
+		return "", err
 	}
-	branch, err := git(context.Background(), worktree, "branch", "--show-current")
-	if err != nil {
-		return fmt.Errorf("read the live branch of %s: %w", worktree, err)
+	branch, branchErr := git(context.Background(), worktree, "branch", "--show-current")
+	if branchErr != nil {
+		return "", fmt.Errorf("read the live branch of %s: %w", worktree, branchErr)
 	}
 	// A detached checkout has no branch to match. The claim records the branch
 	// the worktree was created on, and a review checkout leaves it behind by
@@ -2225,23 +2233,29 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 	// `git branch -m` a HEAD that is not on a branch, which is not a recovery
 	// at all. The commit checks below are the whole proof in that case, and
 	// they are commit-based exactly as the landing rule requires.
+	// A branch renamed since the claim is NOT a refusal.
+	//
+	// The refusal's own text admitted the contradiction: it said landing
+	// evidence is commit-based and then refused on a name. On this fleet it
+	// stranded three tasks whose work had landed and whose branch was gone from
+	// origin, asking the operator to `git branch -m` a name back purely as
+	// ceremony. Every check that actually proves anything is below — the head
+	// must be exactly the terminal commit, and it must descend from the claimed
+	// base — and those are commit identities, which a rename cannot change.
+	//
+	// Implements: dependency-streams#req:landing-evidence-is-commit-based-not-name-based.
 	if branch != "" && branch != claim.Branch {
-		// #183: the proven recovery is renaming the live branch back to the
-		// claim name. Landing evidence is commit-based (see corroborateClaim's
-		// own HEAD/base checks below and Cleanup's PR-containment proof), so a
-		// PR already opened from the renamed branch still proves out once the
-		// name matches again — this is a pure message change, not a relaxed
-		// check.
-		return fmt.Errorf("live branch %q does not match private claim %q; recovery: rename the live branch back to the claim name (git branch -m %s) — landing evidence is commit-based, so a PR already opened from the renamed branch still proves out once the name matches again", branch, claim.Branch, claim.Branch)
+		renamed = "live branch " + branch + " does not match the recorded claim " + claim.Branch +
+			"; landing evidence is commit-based, so this is a note rather than a refusal"
 	}
-	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
-	if err != nil || head != finalCommit {
-		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
+	head, headErr := git(context.Background(), worktree, "rev-parse", "HEAD")
+	if headErr != nil || head != finalCommit {
+		return renamed, fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
 	}
-	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
-		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
+	if _, ancestorErr := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); ancestorErr != nil {
+		return renamed, fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, ancestorErr)
 	}
-	return nil
+	return renamed, nil
 }
 
 func removeWorkLogProjection(worktree string) error {

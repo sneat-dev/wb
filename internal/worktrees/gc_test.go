@@ -1272,3 +1272,75 @@ func TestGCClassifiesATrackedReviewCheckoutAndRetiresItOnceItsSubjectLands(t *te
 		t.Fatalf("entry = %#v, want the review checkout eligible once its subject landed", landedEntry)
 	}
 }
+
+// A branch renamed since its claim must not strand a task whose work landed.
+// Three tasks on this fleet were stranded by a refusal whose own text admitted
+// landing evidence is commit-based, asking the operator to rename a branch that
+// no longer exists on origin.
+func TestGCRetiresALandedTaskWhoseBranchWasRenamed(t *testing.T) {
+	fixture, result, head, mergedAt := prepareMergedTask(t, "gc-renamed-branch")
+	installMergedPullRequestFixture(t, head, mergedAt)
+	gitTest(t, result.WorktreeDir, "branch", "-m", "renamed-after-landing")
+
+	outcome, err := GC(context.Background(), GCOptions{
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-renamed-branch"},
+		Apply: true, SkipSizes: true,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, outcome, "gc-renamed-branch")
+	if !entry.Applied || entry.Error != "" {
+		t.Fatalf("a landed task whose branch was renamed must still retire: %#v", entry)
+	}
+	if len(entry.Warnings) == 0 || !strings.Contains(strings.Join(entry.Warnings, " "), "renamed-after-landing") {
+		t.Fatalf("warnings = %#v, want the rename recorded rather than refused", entry.Warnings)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree survived: %v", statErr)
+	}
+}
+
+// A partial retirement must leave a way forward for the repositories it did not
+// reach. A list of names with nothing to do about them is the same dead end
+// arriving more politely.
+func TestGCPartialRetirementNamesAWayForwardForEveryRepositoryLeftBehind(t *testing.T) {
+	fixture, landed, head, mergedAt := prepareMergedTask(t, "gc-coordinated")
+	// A second repository in the same task, dirty, so it cannot retire.
+	second := filepath.Join(fixture.home, "worktrees", "gc-coordinated", "acme", "other")
+	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	otherCanonical := filepath.Join(fixture.projectsRoot, "acme", "other")
+	gitTest(t, fixture.projectsRoot, "clone", "--quiet", fixture.canonical, otherCanonical)
+	gitTest(t, otherCanonical, "worktree", "add", "-b", "gc-coordinated", second)
+	if err := os.WriteFile(filepath.Join(second, "wip.txt"), []byte("in progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	outcome, err := GC(context.Background(), GCOptions{
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"gc-coordinated"},
+		Apply: true, SkipSizes: true,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.PartialTasks) != 1 {
+		t.Fatalf("partial tasks = %#v, want the coordinated task reported", outcome.PartialTasks)
+	}
+	partial := outcome.PartialTasks[0]
+	if len(partial.Retired) == 0 || len(partial.LeftAlone) == 0 {
+		t.Fatalf("partial = %#v, want both halves named", partial)
+	}
+	for _, behind := range partial.LeftAlone {
+		if behind.Reason == "" || behind.SanctionedCommand == "" {
+			t.Fatalf("a repository left behind must carry a reason and a way forward: %#v", behind)
+		}
+	}
+	_ = landed
+}

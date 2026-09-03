@@ -11094,6 +11094,9 @@
                 "--mode",
                 "--model",
                 "--provider",
+                "--base",
+                "--from",
+                "--repo",
                 "--sha",
                 "--task",
                 "--ttl"
@@ -11103,7 +11106,9 @@
                 "The checkout sits on a local branch at the pull request's head, never a detached HEAD: detached is the one shape no WB verb can retire, and creating one deliberately would reproduce the defect this verb removes",
                 "The task name and branch are derived from the pull request, so a second reviewer of the same pull request collides with the first rather than creating an indistinguishable second checkout",
                 "The manifest records purpose=review and the pull request, so the inventory classifies it as review rather than as unlanded work and no landing verb is offered for it",
+                "--from <branch-or-commit> reviews work that never opened a pull request, which under the local model is most work: the ref is resolved in the canonical clone and one that does not resolve is refused rather than guessed at",
                 "A pull request that is not open is refused, naming --sha as the deliberate way to review a head it no longer has",
+                "The manifest it creates is also what makes the heartbeat possible: a checkout made with git worktree add has no journal to write one into, so WB can read no activity signal for it at all and says so rather than assuming it is idle",
                 "The originating instruction is the pull request itself, so no --original-prompt-file is required: making the tracked path harder than the untracked one is what produced the debt"
               ]
             }
@@ -11116,6 +11121,7 @@
             {
               "command": "wb worktree review --help",
               "contains": [
+                "--from",
                 "--sha",
                 "tracked",
                 "detached HEAD",
@@ -11157,8 +11163,28 @@
               "kind": "unit"
             },
             {
+              "path": "internal/orchestrate/worktree_review_test.go",
+              "name": "TestCreateReviewWorktreeReviewsALocalBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_review_test.go",
+              "name": "TestCreateReviewWorktreeRefusesAnUnknownRef",
+              "kind": "integration"
+            },
+            {
               "path": "internal/worktrees/gc_test.go",
-              "name": "TestGCClassifiesATrackedReviewCheckoutAndRetiresItOnceItsPullRequestLands",
+              "name": "TestGCRetiresALandedTaskWhoseBranchWasRenamed",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCPartialRetirementNamesAWayForwardForEveryRepositoryLeftBehind",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCClassifiesATrackedReviewCheckoutAndRetiresItOnceItsSubjectLands",
               "kind": "integration"
             }
           ],

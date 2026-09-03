@@ -141,24 +141,90 @@ func TestReviewEndRetiresADirtyReviewCheckout(t *testing.T) {
 }
 
 func TestReviewIdentityIsDerivedAndStable(t *testing.T) {
-	if got := ReviewTaskName("sneat-co/sneat-go", 1041); got != "review-sneat-co-sneat-go-1041" {
+	pullRequest := ReviewSubject{Repository: "sneat-co/sneat-go", PullRequest: "1041"}
+	if got := ReviewTaskName(pullRequest); got != "review-sneat-co-sneat-go-1041" {
 		t.Fatalf("task = %q", got)
 	}
-	if got := ReviewBranchName("sneat-co/sneat-go", 1041); got != "review/sneat-co-sneat-go-1041" {
+	if got := ReviewBranchName(pullRequest); got != "review/sneat-co-sneat-go-1041" {
 		t.Fatalf("branch = %q", got)
 	}
-	// A second reviewer of the same pull request collides with the first, which
-	// is a far better outcome than two checkouts nobody can tell apart. Two
-	// different pull requests must not.
-	if ReviewTaskName("acme/app", 7) == ReviewTaskName("acme/app", 8) {
-		t.Fatal("two pull requests must not share a review checkout")
+	// A local review is named for the ref, so two reviewers of the same branch
+	// collide — the outcome to want — while different branches do not.
+	local := ReviewSubject{Repository: "sneat-co/sneat-go", LocalRef: "agent/fix-login"}
+	if got := ReviewTaskName(local); got != "review-sneat-co-sneat-go-agent-fix-login" {
+		t.Fatalf("local task = %q", got)
 	}
-	if ReviewTaskName("acme/app", 7) == ReviewTaskName("other/app", 7) {
+	if ReviewTaskName(local) == ReviewTaskName(ReviewSubject{Repository: "sneat-co/sneat-go", LocalRef: "agent/other"}) {
+		t.Fatal("two branches must not share a review checkout")
+	}
+	if ReviewTaskName(pullRequest) == ReviewTaskName(local) {
+		t.Fatal("a pull-request review and a local review of the same repository are different reviews")
+	}
+	if ReviewTaskName(ReviewSubject{Repository: "acme/app", PullRequest: "7"}) ==
+		ReviewTaskName(ReviewSubject{Repository: "other/app", PullRequest: "7"}) {
 		t.Fatal("two repositories must not share a review checkout")
 	}
-	// An owner or repository with characters a path cannot carry still yields a
-	// usable task name rather than a refusal.
-	if got := ReviewTaskName("Acme.Corp/My_App", 3); got != "review-acme-corp-my-app-3" {
+	// Characters a path cannot carry still yield a usable name rather than a
+	// refusal.
+	if got := ReviewTaskName(ReviewSubject{Repository: "Acme.Corp/My_App", PullRequest: "3"}); got != "review-acme-corp-my-app-3" {
 		t.Fatalf("task = %q", got)
+	}
+}
+
+// Under the local model most reviewable work never opens a pull request, so a
+// review that can only be addressed by one cannot review most of the work.
+func TestCreateReviewWorktreeReviewsALocalBranch(t *testing.T) {
+	fixture := newLandFixture(t, "agent/fix-login", "go.mod")
+
+	result, err := CreateReviewWorktree(context.Background(), WorktreeReviewOptions{
+		Repository: "acme/app", From: "agent/fix-login", ProjectsRoot: fixture.projects,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown", Initiator: "reviewer"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "success" {
+		t.Fatalf("outcome = %s (%s): %s", result.Outcome, result.RefusalCode, result.Reason)
+	}
+	if result.PullRequest != 0 || result.LocalRef != "agent/fix-login" {
+		t.Fatalf("a local review names no pull request: %#v", result)
+	}
+	if result.HeadSHA != fixture.headSHA {
+		t.Fatalf("head = %s, want the branch tip %s", result.HeadSHA, fixture.headSHA)
+	}
+	if result.Task != "review-acme-app-agent-fix-login" {
+		t.Fatalf("task = %q", result.Task)
+	}
+	manifest, err := worktrees.ReadManifest(result.WorktreeDir)
+	if err != nil {
+		t.Fatalf("a review checkout must carry a manifest, which is also what makes the heartbeat possible: %v", err)
+	}
+	if manifest.Purpose != worktrees.PurposeReview || manifest.ReviewOf != "acme/app agent/fix-login" {
+		t.Fatalf("manifest = %#v", manifest)
+	}
+	// The heartbeat needs the journal the manifest lives beside; a checkout
+	// made with `git worktree add` has neither.
+	worktrees.TouchHeartbeat(result.WorktreeDir, "wb worktree info")
+	if at := worktrees.HeartbeatAt(result.WorktreeDir); at.IsZero() {
+		t.Fatal("a tracked review checkout must be able to record a heartbeat")
+	}
+}
+
+// A ref that does not resolve is refused rather than guessed at.
+func TestCreateReviewWorktreeRefusesAnUnknownRef(t *testing.T) {
+	fixture := newLandFixture(t, "agent/exists", "go.mod")
+
+	result, err := CreateReviewWorktree(context.Background(), WorktreeReviewOptions{
+		Repository: "acme/app", From: "agent/never-existed", ProjectsRoot: fixture.projects,
+		WorkLog: worktrees.WorkLogOptions{Model: "unknown", Initiator: "reviewer"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != "refused" || result.RefusalCode != ReviewRefusalUnknownRef {
+		t.Fatalf("outcome = %s (%s)", result.Outcome, result.RefusalCode)
+	}
+	if result.SanctionedCommand == "" {
+		t.Fatal("the refusal must name a way forward")
 	}
 }

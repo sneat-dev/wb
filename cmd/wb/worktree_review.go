@@ -12,10 +12,11 @@ import (
 )
 
 func newWorktreeReviewCmd() *cobra.Command {
-	var format, sha, task, agent, runtime, model, cli, provider, initiator, mode string
+	var format, sha, task, from, base, repositoryFlag string
+	var agent, runtime, model, cli, provider, initiator, mode string
 	var ttl time.Duration
 	command := &cobra.Command{
-		Use:   "review <owner/repository#number>",
+		Use:   "review [owner/repository#number]",
 		Short: "Create a tracked, claimed checkout of a pull request to review",
 		Long: `Create the checkout a review needs, as a WB worktree.
 
@@ -29,8 +30,19 @@ nothing in WB able to remove one.
 
 This verb closes that at the source. The checkout is created exactly the way
 every other WB worktree is, so it arrives tracked: an immutable manifest, a Work
-Log claim, an owner and a TTL — and 'wb worktree gc' retires it on its pull
-request's own state, without anyone having to remember anything.
+Log claim, an owner and a TTL — and 'wb worktree gc' retires it once the work it
+reviews has landed, without anyone having to remember anything. The manifest is
+also what makes the heartbeat work: a checkout made with 'git worktree add' has
+no journal to write one into, so nothing can tell whether anyone is using it.
+
+REVIEWING WORK THAT HAS NO PULL REQUEST is the ordinary case, not the exception.
+Under the local model an agent's work is absorbed into its stream without ever
+opening one, so '--from <branch-or-commit>' is how most reviews start:
+
+    wb worktree review --from agent/fix-login --repo sneat-co/sneat-go
+
+The ref is resolved in the repository's canonical clone. A ref that does not
+resolve is refused rather than guessed at.
 
 It sits on a branch, not a detached HEAD. A detached checkout is precisely the
 shape WB cannot retire, and creating one on purpose would reproduce the defect
@@ -48,7 +60,10 @@ and is the sanctioned way to do that.
 Finish with 'wb worktree review end <task>', which seals the Work Log and
 removes the checkout even when it is dirty — a review leaves scratch files, and
 that must not be a reason a checkout survives forever.`,
-		Example: `# Review a pull request
+		Example: `# Review a local branch that never opened a pull request
+wb worktree review --from agent/fix-login --repo sneat-co/sneat-go --model claude-opus-5
+
+# Review a pull request
 wb worktree review sneat-co/sneat-go#1041 --model claude-opus-5
 
 # Review an exact commit, including on a closed pull request
@@ -56,14 +71,36 @@ wb worktree review sneat-co/sneat-go#1041 --sha 4f2a1c9 --model claude-opus-5
 
 # Finish
 wb worktree review end review-sneat-co-sneat-go-1041`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
-			repository, number, err := splitPullRequestSelector(args[0])
-			if err != nil {
-				return &exitError{code: exitUsage, message: err.Error()}
+			repository, number := "", ""
+			if len(args) == 1 {
+				var err error
+				repository, number, err = splitPullRequestSelector(args[0])
+				if err != nil {
+					return &exitError{code: exitUsage, message: err.Error()}
+				}
+			}
+			if from != "" {
+				// A local review names its repository the way every other
+				// repository-scoped verb does, or takes the one the current
+				// checkout is in.
+				if repository == "" {
+					repository = repositoryFlag
+				}
+				if repository == "" {
+					derived, deriveErr := worktrees.OriginSlug(command.Context(), ".")
+					if deriveErr != nil {
+						return &exitError{code: exitUsage, message: "reviewing a local ref needs a repository: pass --repo owner/repository, or run from inside one"}
+					}
+					repository = derived
+				}
+			}
+			if repository == "" {
+				return &exitError{code: exitUsage, message: "give a pull request (owner/repository#number) or --from <branch-or-commit>"}
 			}
 			// The same admission rule `wb worktree create` applies: a review
 			// checkout is a mutation, and WB records who made it.
@@ -80,6 +117,8 @@ wb worktree review end review-sneat-co-sneat-go-1041`,
 				PullRequest:     number,
 				ProjectsRoot:    projectsRoot,
 				Task:            task,
+				From:            from,
+				Base:            base,
 				SHA:             sha,
 				TTL:             ttl,
 				SessionRequired: sessionRequired,
@@ -107,6 +146,9 @@ wb worktree review end review-sneat-co-sneat-go-1041`,
 			return nil
 		},
 	}
+	command.Flags().StringVar(&from, "from", "", "review a local branch or commit — the ordinary path for work that never opened a pull request")
+	command.Flags().StringVar(&base, "base", "", "with --from, the branch the work targets (default main)")
+	command.Flags().StringVar(&repositoryFlag, "repo", "", "with --from, the repository to review in; defaults to the current checkout's")
 	command.Flags().StringVar(&sha, "sha", "", "review this exact commit instead of the pull request's current head")
 	command.Flags().StringVar(&task, "task", "", "override the derived task name")
 	command.Flags().DurationVar(&ttl, "ttl", orchestrate.DefaultReviewTTL, "how long this checkout is expected to stay useful")
@@ -190,7 +232,11 @@ func printWorktreeReview(command *cobra.Command, result orchestrate.WorktreeRevi
 		_, err := fmt.Fprintf(out, "resolve with: %s\n", result.SanctionedCommand)
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "reviewing %s#%d %s\n", result.Repository, result.PullRequest, result.Title); err != nil {
+	subject := result.Repository + " " + result.LocalRef
+	if result.PullRequest != 0 {
+		subject = fmt.Sprintf("%s#%d", result.Repository, result.PullRequest)
+	}
+	if _, err := fmt.Fprintf(out, "reviewing %s %s\n", subject, result.Title); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintf(out, "created %s (%s at %s, ttl %s)\n",
