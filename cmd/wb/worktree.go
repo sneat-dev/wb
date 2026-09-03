@@ -867,6 +867,19 @@ The default is a dry-run plan.`,
 			if err != nil {
 				return err
 			}
+			// Abort carries the durable records it declined to act on the
+			// first result — see AbortResult.Quarantined. Name them on stderr
+			// in both formats, exactly as cleanup does, so a text-mode
+			// operator learns of them at all.
+			if len(results) > 0 {
+				for _, quarantined := range results[0].Quarantined {
+					if _, err := fmt.Fprintf(command.ErrOrStderr(),
+						"warning: abort skipped an unusable durable record %s (task %s): %s\n",
+						quarantined.Path, quarantined.Task, quarantined.Reason); err != nil {
+						return err
+					}
+				}
+			}
 			remaining := 0
 			for _, result := range results {
 				if result.Excluded {
