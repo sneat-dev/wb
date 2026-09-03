@@ -838,7 +838,7 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		// Rename never consults GitHub, so no landing receipt applies here.
 		// renameEligibility already refuses an adopted worktree, so this is
 		// never reached for one; a nested, non-external recheck is correct.
-		options.OldTask, plan.entry.WorktreeDir, options.Base, "", false, false, false,
+		options.OldTask, plan.entry.WorktreeDir, options.Base, "", false, false, false, inspectPolicy{},
 	)
 	if err != nil {
 		return fmt.Errorf("recheck %s before renaming: %w", plan.entry.Repository, err)
@@ -1221,7 +1221,7 @@ func resetRenameResultAfterRollback(plan *renamePlan) {
 func preflightRename(ctx context.Context, options RenameOptions, plan *renamePlan) error {
 	refreshed, err := inspectLifecycleWorktree(ctx, options.ProjectsRoot, "",
 		wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot}, options.OldTask,
-		plan.entry.WorktreeDir, options.Base, "", false, false, false)
+		plan.entry.WorktreeDir, options.Base, "", false, false, false, inspectPolicy{})
 	if err != nil {
 		return fmt.Errorf("preflight %s: %w", plan.entry.Repository, err)
 	}

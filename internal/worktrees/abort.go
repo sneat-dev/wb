@@ -147,7 +147,13 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			return nil, err
 		}
 	}
-	listed, err := ListWithDiagnostics(ctx, ListOptions{ProjectsRoot: projectsRoot, Task: task, Base: base})
+	// A detached checkout is the shape every pull-request review leaves behind,
+	// and `wb worktree gc` names abort as the way to retire one. Reading the
+	// inventory without it would make the named command fail on the exact
+	// shape it was named for.
+	listed, err := ListWithDiagnostics(ctx, ListOptions{
+		ProjectsRoot: projectsRoot, Task: task, Base: base, IncludeDetached: true,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -316,6 +322,7 @@ func preflightAbortRepository(
 		false,
 		false,
 		result.External,
+		inspectPolicy{includeDetached: true},
 	)
 	if err != nil {
 		return ListResult{}, "", nil, fmt.Errorf("preflight abort %s: %w", result.Repository, err)
@@ -335,7 +342,7 @@ func preflightAbortRepository(
 		return ListResult{}, "", nil, err
 	}
 	remoteHead := ""
-	if options.Disposition == AbortDiscarded {
+	if options.Disposition == AbortDiscarded && refreshed.Branch != "" {
 		remoteHead, err = remoteBranchHead(ctx, refreshed.CanonicalDir, refreshed.Branch)
 		if err != nil {
 			return ListResult{}, "", nil, fmt.Errorf("inspect remote branch before discarding %s: %w", refreshed.Repository, err)
@@ -396,6 +403,7 @@ func applyDiscardedAbort(
 		false,
 		false,
 		result.External,
+		inspectPolicy{includeDetached: true},
 	)
 	if err != nil {
 		return fmt.Errorf("recheck discarded worktree %s: %w", result.Repository, err)
@@ -406,9 +414,12 @@ func applyDiscardedAbort(
 	if err := worktree.validate(); err != nil {
 		return err
 	}
-	remoteHead, err := remoteBranchHead(ctx, refreshed.CanonicalDir, refreshed.Branch)
-	if err != nil {
-		return fmt.Errorf("recheck remote branch before discarding %s: %w", refreshed.Repository, err)
+	remoteHead := ""
+	if refreshed.Branch != "" {
+		remoteHead, err = remoteBranchHead(ctx, refreshed.CanonicalDir, refreshed.Branch)
+		if err != nil {
+			return fmt.Errorf("recheck remote branch before discarding %s: %w", refreshed.Repository, err)
+		}
 	}
 	if remoteHead != result.RemoteHeadSHA || (remoteHead != "" && remoteHead != refreshed.HeadSHA) {
 		return fmt.Errorf("abort safety changed for %s: remote branch moved from %q to %q", refreshed.Repository, result.RemoteHeadSHA, remoteHead)
@@ -489,10 +500,14 @@ func applyDiscardedAbort(
 	if err := persistLifecycleBacklog(home, &backlogRecord, lifecycleStageRemovingLocalBranch); err != nil {
 		return err
 	}
-	if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
-		return fmt.Errorf("delete discarded branch %s: %w", refreshed.Branch, err)
+	// A detached checkout has no ref of its own; removing the checkout is the
+	// whole of its retirement.
+	if refreshed.Branch != "" {
+		if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
+			return fmt.Errorf("delete discarded branch %s: %w", refreshed.Branch, err)
+		}
+		result.BranchDeleted = true
 	}
-	result.BranchDeleted = true
 	if refreshed.External {
 		owner, repository, splitErr := splitRepository(refreshed.Repository)
 		if splitErr != nil {
