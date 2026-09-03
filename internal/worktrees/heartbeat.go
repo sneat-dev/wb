@@ -97,9 +97,17 @@ func HeartbeatAt(worktree string) time.Time {
 // of work, and any of them alone is enough to mean "in use".
 func LastActivity(ctx context.Context, result ListResult) time.Time {
 	newest := time.Time{}
+	// A timestamp in the future cannot be a record of something that happened.
+	// Taken at face value it pins the checkout open forever while reporting
+	// "used 0m ago", which is both wrong and unfalsifiable, so it is ignored.
+	ceiling := time.Now().UTC().Add(time.Minute)
 	advance := func(candidate time.Time) {
+		candidate = candidate.UTC()
+		if candidate.After(ceiling) {
+			return
+		}
 		if candidate.After(newest) {
-			newest = candidate.UTC()
+			newest = candidate
 		}
 	}
 	advance(HeartbeatAt(result.WorktreeDir))
@@ -154,17 +162,17 @@ func newestWorkLogEventTime(worktree string) time.Time {
 		return time.Time{}
 	}
 	defer func() { _ = directory.Close() }()
-	info, err := directory.Stat()
-	if err != nil {
-		return time.Time{}
-	}
-	newest := info.ModTime()
+	// Deliberately NOT the directory's own modification time: writing the
+	// heartbeat renames a file into this directory, which bumps it, and the
+	// whole point of excluding the heartbeat here is that a read must not look
+	// like a Work Log write.
+	newest := time.Time{}
 	if _, err := directory.Seek(0, 0); err != nil {
-		return newest.UTC()
+		return newest
 	}
 	entries, err := directory.ReadDir(-1)
 	if err != nil {
-		return newest.UTC()
+		return newest
 	}
 	for _, entry := range entries {
 		if entry.Name() == heartbeatName {

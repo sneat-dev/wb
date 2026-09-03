@@ -53,7 +53,7 @@ func TestRetiringRemoteBacklogIsResumable(t *testing.T) {
 	fixture := newGitFixture(t)
 	record := strandAtRetiringRemote(t, fixture, "stranded-retiring-remote")
 
-	found, err := loadResumableLifecycleBacklog(
+	found, _, err := loadResumableLifecycleBacklog(
 		context.Background(), fixture.home, fixture.projectsRoot,
 		[]string{filepath.Join(fixture.home, "worktrees")}, taskSelectionSet([]string{record.Task}), "", "removed",
 	)

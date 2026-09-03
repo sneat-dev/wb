@@ -317,20 +317,21 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassClaimedLive
 		entry.Reason = lockedReason(result, resumeInterruptedCommand(result.Task))
 		entry.SanctionedCommand = resumeInterruptedCommand(result.Task)
-	case checkoutIsInUse(result, options, now) && result.OwnerState == "active":
+	case checkoutIsInUse(result, options, now):
 		// Deliberately before every landed class: a checkout whose owning
 		// session is alive is being used right now, and the fact that its work
 		// already landed makes it more likely to be mid-next-round, not less.
 		// The session ends its own worktree; a sweep must not do it underneath.
 		//
-		// "Alive" is a live PID *and* a recent registration. A PID alone is not
-		// a heartbeat: process ids are recycled, and the first real sweep this
-		// verb ran found ten finished review checkouts — 4 to 17 hours old —
-		// every one of them reporting owner=active and therefore refusing.
-		// A stale owner must not be able to pin a checkout forever.
+		// It applies to EVERY checkout, not only to one carrying a live owner
+		// registration. A detached review checkout has no registration at all,
+		// and neither does a `git worktree add` one, and neither does a
+		// checkout whose registering process has exited — which is precisely
+		// the population of the incident this rule exists to prevent: the
+		// reviewer's worktree was removed while it was in use, and it had no
+		// live owner to speak for it.
 		entry.Class = GCClassClaimedLive
-		entry.Reason = "a live session (" + result.Owner + ") still holds this checkout, " +
-			"last active " + humanAge(activityAgeSeconds(result, now)) + " ago"
+		entry.Reason = inUseReason(result, now)
 		entry.SanctionedCommand = "wb worktree end " + result.Task
 	case result.OpenPullRequest != nil:
 		entry.Class = GCClassOpenPR
@@ -732,14 +733,18 @@ const DisableSessionFreshness = -1
 // A window of zero disables the rule entirely, matching --older-than 0.
 func checkoutIsInUse(result ListResult, options GCOptions, now time.Time) bool {
 	window := options.SessionFreshness
+	if window < 0 {
+		// Any negative window disables the rule. Treating one as a window
+		// would invert the comparison and make every checkout look in use, or
+		// none of them — a silent inversion of a safety rule is worse than an
+		// explicit off switch.
+		return false
+	}
 	if window == 0 {
 		// An unset window is the safe one. A caller that forgets this field
 		// must not thereby switch off the guard that keeps a working lane's
 		// checkout from being deleted; switching it off is explicit.
 		window = DefaultSessionFreshness
-	}
-	if window == DisableSessionFreshness {
-		return false
 	}
 	seen := result.LastActivityAt
 	if seen.IsZero() {
@@ -748,6 +753,17 @@ func checkoutIsInUse(result ListResult, options GCOptions, now time.Time) bool {
 		return true
 	}
 	return now.Sub(seen) <= window
+}
+
+// inUseReason says what was seen, because "someone is using it" is only
+// actionable if the operator can tell which signal said so.
+func inUseReason(result ListResult, now time.Time) string {
+	who := result.Owner
+	if who == "" || who == "unknown" {
+		who = "no registered owner"
+	}
+	return "this checkout was used " + humanAge(activityAgeSeconds(result, now)) +
+		" ago (" + who + "); a checkout in use is not a checkout to remove"
 }
 
 func activityAgeSeconds(result ListResult, now time.Time) int64 {

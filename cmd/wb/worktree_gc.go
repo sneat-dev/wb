@@ -93,6 +93,9 @@ wb worktree gc --format json`,
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
 			}
+			if sessionFreshness < 0 {
+				return &exitError{code: exitUsage, message: "--session-freshness cannot be negative; use 0 to disable the in-use rule"}
+			}
 			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{

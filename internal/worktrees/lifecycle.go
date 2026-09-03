@@ -550,8 +550,13 @@ type CleanupOutcome struct {
 	// here. They are never part of the plan an operator approves: an empty
 	// retired stage and an inert retired lock are WB's own debris, and their
 	// removal is maintenance rather than a cleanup decision.
-	Purged   []PurgedArtefact         `json:"purged,omitempty"`
-	Recovery *InterruptedLockRecovery `json:"recovery,omitempty"`
+	Purged []PurgedArtefact `json:"purged,omitempty"`
+	// Quarantined names the durable cleanup records this run declined to act
+	// on. They are reported rather than swallowed, and they never abort the
+	// run: the backlog directory is shared by every task on the machine, and
+	// one record WB cannot validate must not refuse everybody else's cleanup.
+	Quarantined []LifecycleBacklogQuarantine `json:"quarantined,omitempty"`
+	Recovery    *InterruptedLockRecovery     `json:"recovery,omitempty"`
 }
 
 // InterruptedLockRecovery is durable operator-visible evidence for the one
@@ -1526,7 +1531,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	for _, layout := range resolution.Read {
 		recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 	}
-	backlog, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, taskSelectionSet(normalized.Tasks), normalized.Filter, "removed")
+	backlog, backlogQuarantine, err := loadResumableLifecycleBacklog(ctx, resolution.Write.Home, normalized.ProjectsRoot, recognizedWorktreesRoots, taskSelectionSet(normalized.Tasks), normalized.Filter, "removed")
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -1595,7 +1600,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
-	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts, Purged: listed.Purged, Recovery: recovery}
+	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts,
+		Purged: listed.Purged, Quarantined: backlogQuarantine, Recovery: recovery}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.

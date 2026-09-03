@@ -82,6 +82,11 @@ type AbortResult struct {
 	BacklogID     string                 `json:"backlog_id,omitempty"`
 	DirtyCapture  *DirtyWorktreeEvidence `json:"dirty_capture,omitempty"`
 	Reason        string                 `json:"reason,omitempty"`
+	// Quarantined names durable cleanup records this run declined to act on.
+	// It is carried on the first result rather than aborting the run: the
+	// backlog directory is shared, and somebody else's unreadable record must
+	// not be able to refuse this task's abort.
+	Quarantined []LifecycleBacklogQuarantine `json:"quarantined,omitempty"`
 }
 
 // Abort seals every Work Log in a coordinated task. It is the deliberate
@@ -137,15 +142,18 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		return nil, err
 	}
 	var backlog []lifecycleBacklogRecord
+	var backlogQuarantine []LifecycleBacklogQuarantine
 	if options.Disposition == AbortDiscarded {
 		recognizedWorktreesRoots := make([]string, 0, len(resolution.Read))
 		for _, layout := range resolution.Read {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}
-		backlog, err = loadResumableLifecycleBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, taskSelectionSet([]string{task}), "", string(AbortDiscarded))
+		var quarantined []LifecycleBacklogQuarantine
+		backlog, quarantined, err = loadResumableLifecycleBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, taskSelectionSet([]string{task}), "", string(AbortDiscarded))
 		if err != nil {
 			return nil, err
 		}
+		backlogQuarantine = quarantined
 	}
 	// A detached checkout is the shape every pull-request review leaves behind,
 	// and `wb worktree gc` names abort as the way to retire one. Reading the
@@ -171,6 +179,9 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		}
 		excluded := abortRepositoryExcludedByFilter(filter, entry.Repository, entry.WorktreeDir)
 		results[i] = AbortResult{ListResult: entry, Disposition: options.Disposition, Successor: options.Successor, Eligible: eligible, Excluded: excluded, Reason: reason}
+	}
+	if len(backlogQuarantine) > 0 && len(results) > 0 {
+		results[0].Quarantined = backlogQuarantine
 	}
 	for _, record := range backlog {
 		excluded := abortRepositoryExcludedByFilter(filter, record.Repository, record.WorktreeDir)

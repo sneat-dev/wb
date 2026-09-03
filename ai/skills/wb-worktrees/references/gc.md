@@ -86,7 +86,7 @@ evidence.
 | `dirty`, managed | `wb worktree abort <task> --apply` — seals the Work Log and captures the dirty bytes into a private archive before deleting anything |
 | `dirty`, unmanaged or unknown | the exact `git -C <path> stash push --include-untracked -m "wb gc <task>"` the row prints. That is the whole instruction: **no removal is named**, and the row's warning states that removing the checkout without the capture destroys the changes and nothing in WB can bring them back |
 | `claimed-live` — a live operation holds the task lock | `wb worktree cleanup <task> --resume-interrupted` once the operation is really dead |
-| `claimed-live` — the checkout was used inside `--session-freshness` (default 6 h) | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round |
+| `claimed-live` — the checkout was used inside `--session-freshness` (default 6 h) | `wb worktree end <task>` when you are done with it. This outranks **every** landed class, and it applies to every checkout — including a detached review checkout with no owner registration at all, which is exactly the population a sweep once removed out from under a reviewer |
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
 | `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
@@ -150,6 +150,11 @@ kind of work:
 - the newest **Work Log event**;
 - the newest **commit** on the branch.
 
+This guard applies to **every** checkout, not only to ones carrying a live
+owner registration. A review checkout has none, a `git worktree add` checkout
+has none, and a checkout whose registering process has exited has none — and
+those are precisely the checkouts a sweep once removed while they were in use.
+
 A live process id counts for **nothing** on its own. Process ids are recycled,
 and the question is whether a worktree is in use, not whether some process
 exists. Two earlier versions of this rule got it wrong in both directions: one
@@ -158,7 +163,9 @@ next reported a lane three hours into its work as recycled because the owner
 record is written once at creation and deduplicated thereafter.
 
 `--session-freshness 0` disables the rule, the same spelling as
-`--older-than 0`.
+`--older-than 0`. A negative value is refused. A timestamp in the future is
+ignored rather than treated as activity: a clock skew must not pin a checkout
+open forever while reporting that it was used no time ago.
 
 ## Empty task husks
 
