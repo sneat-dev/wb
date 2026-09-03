@@ -188,7 +188,7 @@ binding. Nothing in P0 depends on a P1 or P2 requirement.
 | 2 | `wb pr land` — cleanup by default + `--keep`, vendored `gh` API calls (2.45), explicit `--subject`, and `mechanical-bumps-are-not-reviewed` | The measured root cause: the opt-in `--cleanup` never ran because the merge stage broke on the installed `gh` |
 | 3 | `wb disk` + `wb cache prune` | Directive 8; `stream start`'s disk floor depends on them |
 | 4 | Exit-code + JSON-envelope contract, applied to 1–3 and everything after | Retrofitting it later means rewriting every skill section |
-| 5 | `wb stream start / status / end` + stream state + event log v1 (versioned, redacted, concurrent-append) | The identity everything else hangs off; no `sync` yet |
+| 5 | `wb stream start / join / status / end` + stream state + event log v1 (versioned, redacted, concurrent-append) | The identity everything else hangs off; `join` is the sanctioned answer to the one-stream-per-repo refusal; no `sync` yet |
 | 6 | `wb deps propagate local` + `wb worktree merge` link refusal | **Directive 1** — the feature's actual value |
 | 7 | Hook profiles + `wb hooks metrics` delta | Directive 4's local half; the evidence base for every later cost claim |
 | 8 | `wb stream sync` — rebase with `--force-with-lease`, per-branch conflict reporting, approval carry-forward, live-link refusal, CI concurrency guard | Directive 2; the hardest verb, testable only after 5–7 |
@@ -349,6 +349,21 @@ MUST NOT abort the rebase of the others. Sync MUST refuse by default while an
 agent pull request is mid-review, and MUST offer an explicit flag to proceed
 with a warning, because rebasing a branch under review invalidates the review.
 
+#### REQ: sync-is-idempotent-against-landed-bumps
+
+`wb stream sync` and Renovate are two writers for the same edge: a consumer
+inside an open stream can receive a library bump from either. Sync MUST therefore
+be **idempotent**, and its ordering is the mechanism:
+
+1. **Rebase first** onto the freshly fetched `origin/main`, so anything Renovate
+   already landed is present in the tree.
+2. **Then**, for each library in scope, compare the version the consumer now
+   requires against the target. Write a bump commit **only where the required
+   version is still below the target**.
+
+A bump Renovate has already landed MUST NOT be re-written. Running `sync` twice
+with no intervening change MUST produce **no new commits** the second time.
+
 #### REQ: landing-is-rebase-and-merge
 
 `wb stream propagate` MUST land a downstream repository by: performing a final
@@ -375,13 +390,12 @@ name any repository where it is disabled rather than silently falling back.
 Audited 2026-09-03: `allow_rebase_merge` is `true` on all 28 sneat-co product
 repositories and on `sneat-dev/wb`, so no repository currently needs enabling.
 
-**Optional `--ff` route.** Where branch protection permits a direct push to the
-default branch, `wb stream propagate --ff` MAY instead perform a final sync and
-`git push origin stream/<name>:main`, which preserves the original commit objects
-and makes ancestry hold. wb MUST **detect** that permission from the repository's
-protection and ruleset configuration rather than assume it, MUST fall back to
-rebase-and-merge with a stated reason when it is absent, and MUST record which
-route it used.
+There is **no direct-push alternative**. Rebase-and-merge is the landing, on every
+repository: a `git push stream/<name>:main` would preserve the original commit
+objects, but it also bypasses the pull request's green-checks gate and the
+protection fence that `propagate-remote-audits-protection-per-consumer` and
+`all-fences-run-before-the-first-side-effect` exist to enforce. Rewritten SHAs are
+accepted, and patch identity is how this Feature copes with them.
 
 #### REQ: never-merge-commit-a-stream-branch
 
@@ -439,6 +453,12 @@ versions, and this Feature does not displace it. Founder decision, 2026-09-03:
   `cicd` / `sneat-renovate-*` presets, early morning `Europe/Dublin`. Immediate
   creation keeps the drift visible; the window is what stops Renovate and a
   stream racing in the minutes after a publish.
+
+  **Prerequisite, owned outside this Feature and already met:** the window is a
+  preset change, and wb MUST NOT make it (see Not Doing). It landed in
+  `sneat-co/cicd#31` and `sneat-co/sneat-renovate-go#19` on 2026-09-03. Recording
+  the owner and repository here is deliberate: without it the acceptance criterion
+  below would fail at test time for a reason no implementer could act on.
 - `wb deps propagate remote` is for **planned waves** — the members a stream
   verified together — not for routine version currency.
 - A consumer **inside an active stream** still receives Renovate's bump **on
@@ -487,8 +507,14 @@ force discards whatever another agent pushed in between.
 `stream/<name>` in the same store as the existing worktree claims. A repository
 MUST carry **at most one open stream at a time**; `wb stream start` MUST refuse a
 repository that already has one, name the holding stream, and name the sanctioned
-commands — wait for it, or join it by adding this repository's work to the
-existing stream. Two concurrent streams on one repository are out of scope, and
+commands — wait for it, or `wb stream join <name> <owner/repository>`.
+
+`wb stream join` MUST add a repository to an existing stream: create its stream
+worktree and `stream/<name>` branch with its draft pull request exactly as
+`wb stream start` does, take its claims and stream lease, and record it in the
+stream's state so `status`, `sync`, `propagate` and `end` treat it as a member
+from that point on. It MUST refuse a repository that is already a member of a
+different open stream, for the same reason `start` does. Two concurrent streams on one repository are out of scope, and
 the refusal is what keeps them so: stream A landing rewrites `main` under stream
 B, whose already-approved agent branches would then all need re-rebasing and
 could each conflict with A's landed work.
@@ -658,6 +684,11 @@ The algorithm is a **linear prefix scan, not a bisection** — the names must ma
 what it does — and its honest cost is **one full run in the passing case, and
 `1 + k` runs when the culprit is element `k`**, worst case `1 + N`. It is not
 `1 + log N`.
+
+Prefix re-apply MUST run on a **local scratch branch that is never pushed**, and
+only the final green state MUST be pushed — once. Re-applying on the stream
+branch itself would push `k` intermediate states, each firing a stream-PR CI run,
+which is the cost this Feature exists to remove.
 
 If **every prefix passes**, the failure came from the base or from a rebased
 agent change rather than from any element. WB MUST report an **interaction
@@ -942,8 +973,12 @@ and — where known — tokens and tool calls.
 current content. Approvals MUST be keyed to the **patch-identity set**
 (`git patch-id --stable` over the reviewed range), **not** to a head SHA.
 
-A clean rebase preserves patch identity while changing every SHA, so an approval
-MUST **carry forward** across `wb stream sync`: `pr land` accepts an `APPROVE`
+A clean rebase preserves patch identity **where the reviewed hunks' context lines
+are unchanged** — `git patch-id` ignores line numbers but hashes the hunk text,
+context included, so a rebase over a `main` that touched the same regions yields
+a different patch-id with no conflict. The mechanism fails **safe**: a changed
+patch-id falls back to re-review rather than landing unreviewed work. Within that
+bound, an approval MUST **carry forward** across `wb stream sync`: `pr land` accepts an `APPROVE`
 whose recorded patch-id set equals the current range's, and the ledger MUST
 record both the approved SHA and the rebased SHA. Only a change in the patch-id
 set — a real content change, or a conflict resolved during rebase — invalidates
@@ -973,10 +1008,17 @@ never inside a member repository, and MUST be append-only: a verb MUST NOT
 rewrite or delete earlier events, because the log's value is that it records
 what actually happened rather than what the current state implies.
 
-Each event MUST carry, where applicable: `ts`, `stream`, `agent` and `session`,
-`verb`, `repo`, `worktree`, `branch`, `pr`, `outcome`, and `start`/`end`. Where
-the harness supplies them, it MUST also carry `tokens`, `tool_uses` and
-`duration_ms`.
+Each event MUST carry a schema version `v`, and, where applicable: `ts`,
+`stream`, `agent` and `session`, `verb`, `repo`, `worktree`, `branch`, `pr`,
+`outcome`, and `start`/`end`. Where the harness supplies them, it MUST also carry
+`tokens`, `tool_uses` and `duration_ms`. A reader MUST refuse an event whose `v`
+it does not understand rather than guess at its fields.
+
+Several lanes on one machine append to one stream's log concurrently, so the
+append discipline MUST be stated rather than assumed: either a single-`write`
+`O_APPEND` of one line under the platform's atomic-append size, or a per-agent
+shard merged by `ts` at read time. A partial line MUST be detectable and skipped
+by the reader, never silently parsed.
 
 This log MUST be the single source for every report below. A report MUST NOT
 re-derive history by querying GitHub, because a verb's own outcome is evidence
@@ -1034,14 +1076,8 @@ the stream from its event log:
 `--json` MUST emit the same model the HTML renders, so the visualization is one
 projection of the data and not a second implementation of it.
 
-The prototype dataset at
-`/home/ai/claude-parking/2026-09-02/stream-analytics/lane-reports.json` is the
-reference shape: `agents[]` (`id`, `kind`, `label`), `reports[]` (`agent`,
-`start`, `end`, `tokens`, `tool_uses`, `duration_ms`, `task`, `outcome`),
-`deliveries[]` (`t`, `repo`, `event`, `ref`), `load_samples[]` (`t`, `load1`),
-and `founder_directives[]` (`t`, `text`). Its `source` field records that
-`tokens` is cumulative per agent context — exactly the case the previous
-requirement forbids reporting raw.
+The stream-report shape is defined in this document — see **Appendix: the stream
+report data contract** — not by any file outside the repository.
 
 #### REQ: report-stream-emits-a-metrics-table
 
@@ -1094,8 +1130,18 @@ branch*.
 
 #### REQ: savings-are-recorded-per-invocation
 
-Each invocation MUST record `saved_tool_calls = equivalent calls − 1` and
-`saved_tokens_est` into the event log. The token estimate MUST be computed as
+Each invocation MUST record `saved_tool_calls` and `saved_tokens_est` into the
+event log. `saved_tool_calls` is **dynamic, not the declared list's length minus
+one**: it counts the operations the verb actually absorbed on this run — every
+poll of a wait included — minus the one call the agent made. A verb that polled
+CI eleven times saved more than one that polled twice, and the declared manual
+equivalent is the *floor*, not the figure.
+
+A **refused** invocation (exit `2`) MUST record `saved_tool_calls: 0` and no
+token estimate: it absorbed calls but delivered nothing, and counting it as a
+saving would let a guard that fires often look like a win. A **failed**
+invocation (exit `1`) MUST record what it absorbed up to the failure, marked as
+such. The token estimate MUST be computed as
 **Σ bytes of the intermediate outputs the verb consumed on the agent's behalf ÷ 4,
 plus saved_calls × a per-verb call overhead**, and MUST be labelled an estimate
 wherever it is displayed. A wait MUST count each poll it absorbed, because
@@ -1452,6 +1498,21 @@ one containing five intermediate commits, and one tagged upstream library releas
 **Then** the stream branch gains exactly three commits — one per reviewed agent
 change and one for the bump — and contains no merge commit.
 
+### AC: sync-writes-no-bump-that-renovate-already-landed
+
+**Requirements:** dependency-streams#req:sync-is-idempotent-against-landed-bumps, dependency-streams#req:renovate-bumps-daily-and-independently-of-streams
+
+**Given** a consumer inside an open stream requiring library `L v1.1`, a target of
+`v1.2`, and a Renovate pull request bumping `L` to `v1.2` that has **already
+merged to `main`**
+**When** the operator runs `wb stream sync`
+**Then** the rebase onto `origin/main` happens **first**, the post-rebase required
+version is already `v1.2`, and sync writes **zero** bump commits for `L` — no
+duplicate, no revert, no conflict; running `wb stream sync` a second time with
+nothing else changed produces no new commits at all; and a second library still
+at `v1.0` against a target of `v1.3` does receive its one bump commit in the same
+run.
+
 ### AC: a-release-reaches-a-stream-less-consumer-without-a-human
 
 **Requirements:** dependency-streams#req:renovate-bumps-daily-and-independently-of-streams
@@ -1599,10 +1660,11 @@ that run fails does it revert and re-apply **cumulative prefixes** (1, 1+2,
 1+2+3 …); it stops at the first failing prefix, names the seventh bump as the
 culprit and the failing check, lists one to six as proven good, leaves the tree
 out of the failed batch state, and costs `1 + 7` runs rather than ten. With all
-ten passing the total is exactly one full run — and in both cases the ten bumps
-plus one sync produce exactly **one** stream-PR CI run, not ten. If every prefix
-passes, WB reports an interaction failure naming the full element set and the
-base, and stops.
+ten passing the total is exactly one full run. The prefix runs happen on a local
+scratch branch that is never pushed, so in **both** cases the ten bumps plus one
+sync produce exactly **one** stream-PR CI run — the single push of the final
+green state — not ten and not `1 + k`. If every prefix passes, WB reports an
+interaction failure naming the full element set and the base, and stops.
 
 ### AC: hooks-are-cheap-on-a-stream-branch
 
@@ -1915,11 +1977,14 @@ the harness skills directory.
 **Requirements:** dependency-streams#req:landing-requires-an-approval-for-the-reviewed-patch-set, dependency-streams#req:every-refusal-names-the-sanctioned-command
 
 **Given** a pull request approved at SHA `A`, then (i) rebased by `wb stream sync`
-to `A'` with its patch-id set unchanged, and separately (ii) amended by the
-author to `B` with a changed patch-id set
+to `A'` over changes that touch **no file the pull request touches**, so its
+patch-id set is unchanged, and separately (ii) amended by the author to `B` with a
+changed patch-id set
 **When** `wb pr land` runs on each
 **Then** case (i) **lands** — the approval carries forward because the patch-id
-set matches, and the ledger records both `A` and `A'`; case (ii) is refused,
+set matches, and the ledger records both `A` and `A'`; a third case, a rebase
+over changes that shift the reviewed hunks' context, is refused like (ii) rather
+than landing, which is the safe direction; case (ii) is refused,
 naming the changed patch-id set rather than the changed SHA and naming
 `wb review request … --round 2`; and `--override` lands only with a reason
 written to the ledger.
@@ -2032,8 +2097,7 @@ on localhost and provide data to wb.sneat.dev web app?"* — and *"Or user can
 upload manually report artefact?"*
 
 **One data contract.** A versioned **stream report** JSON — events plus derived
-metrics, the reference shape being
-`/home/ai/claude-parking/2026-09-02/stream-analytics/lane-reports.json` — is the
+metrics, defined in **Appendix: the stream report data contract** below — is the
 single input to all four modes. The web app at `wb.sneat.dev` is a static site
 deployed like the other landings (Cloudflare) and versioned **with** the data
 contract. Redaction is identical in every mode.
@@ -2144,10 +2208,41 @@ so the version stream carries releases with no consumer-visible change. That
 inflates every wave this feature triggers, but it is a CI policy question for
 the tagging workflow rather than a stream behavior.
 
+## Appendix — the stream report data contract
+
+Normative, and defined here rather than by any file outside this repository: a
+data contract that lives in a parking directory on one workstation is
+unversioned and unreviewable. A fixture matching this shape MUST be committed
+under `spec/features/dependency-streams/_tests/` and used by the Rehearse
+scenarios.
+
+A **stream report** is one JSON object:
+
+| field | type | meaning |
+|---|---|---|
+| `v` | integer | contract version; a reader MUST refuse a version it does not understand |
+| `stream` | string | stream name |
+| `source` | string | how the figures were obtained, including any caveat that applies to them as a whole |
+| `model` | string | the model identifier the work ran under, where known |
+| `agents[]` | object | `id`, `kind` (`author`, `reviewer`, `orchestrator`, …), `label` |
+| `reports[]` | object | `agent`, `start`, `end`, `tokens`, `tool_uses`, `duration_ms`, `task`, `outcome` |
+| `deliveries[]` | object | `t`, `repo`, `event` (`pr_opened`, `review`, `merge`, `tag`, `publish`, `deploy`), `ref` |
+| `load_samples[]` | object | `t`, `load1` |
+| `founder_directives[]` | object | `t`, and `text` **only when `--include-directives` was passed** — otherwise the entry carries its timestamp and a redacted marker |
+| `metrics` | object | the derived figures of `report-stream-emits-a-metrics-table`, each traceable to the events it came from |
+
+`tokens` in `reports[]` is **cumulative per agent context** where the harness
+reports it that way; the report MUST label it as such, and any per-task figure
+MUST be derived by differencing consecutive reports of the same agent — the case
+`harness-usage-is-ingested-through-the-session-hook` forbids presenting raw. A
+field the harness did not supply MUST be **absent**, never zero.
+
+Redaction per `redaction-runs-before-any-bytes-leave-the-process` applies to the
+whole object before it is written or sent, in every delivery mode.
+
 ## Appendix — lessons this Feature moves up the enforcement ladder
 
-Mapped in `/home/ai/claude-parking/2026-09-02/lessons-for-wb.md` (118 relevant
-backstage lessons reviewed). Shipping this Feature lets **47** change status:
+Mapped from the backstage lessons corpus (118 relevant lessons reviewed). Shipping this Feature lets **47** change status:
 23 Recorded → Enforced, 15 Recorded → Enforced in the dependency/release group,
 4 Stated → Enforced, and 5 Recorded → Stated; a further 7 already-Enforced
 lessons widen their Control and Evidence only.
