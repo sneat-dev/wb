@@ -3921,6 +3921,130 @@
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
     },
     {
+      "id": "wb.pr.land",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb pr land",
+              "flags": [
+                "--allow-unfenced",
+                "--approved-by",
+                "--format",
+                "--keep",
+                "--keep-commits",
+                "--merge-method",
+                "--non-interactive",
+                "--poll-interval",
+                "--reason",
+                "--subject",
+                "--timeout"
+              ],
+              "modes": [
+                "Cleanup is the default: the task's worktree is retired and its claim released unless --keep is passed, because the measured failure was an opt-in cleanup that was never passed",
+                "Every GitHub call goes through gh api with an endpoint, and pagination follows GitHub's own link header, so the verb works against the installed gh 2.45 rather than requiring --slurp or gh pr checks --json",
+                "The head SHA is sent as a merge lease, so a branch that moved after its checks were observed is refused by GitHub itself rather than landed unverified",
+                "Squash is the default and the message is built: the subject is the pull request title, and the body carries the summary, one line per source commit, the pull request number and the review reference",
+                "--keep-commits with a mandatory --reason rebuilds the branch so the named commits land as their own, in order, with the rest aggregated; each kept commit must build on its own or the landing is refused naming a smaller set",
+                "A mechanical bump is classified from the diff — only go.mod, go.sum, package.json dependency fields, pnpm-lock.yaml, pnpm-workspace.yaml — never from the title, author or labels, and lands with no review ledger entry; anything else is refused without --approved-by",
+                "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
+                "Exit 0 landed, 1 the work is not ready, 2 a guard refused; --format json emits the envelope with refusal_code, sanctioned_command, evidence and the saved-call figures"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb pr land --help",
+              "contains": [
+                "CLEANUP IS THE DEFAULT",
+                "SQUASH IS THE DEFAULT",
+                "--keep-commits",
+                "--reason",
+                "made from the diff",
+                "gh api"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/pr-land.md",
+              "marker": "# Land a pull request with wb pr land",
+              "examples": [
+                "wb pr land sneat-co/sneat-go#1041",
+                "wb pr land sneat-co/sneat-go#1041 --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandMechanicalBumpNeedsNoApproval",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRefusesABumpWhoseDiffTouchesCode",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRefusesADraftAndAFailedCheck",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandAggregatesSourceCommitsIntoTheSquashMessage",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestLandRefusesKeepCommitsWithoutAReason",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/pr_land_test.go",
+              "name": "TestPlanKeptCommitsPreservesOrderAroundOneAggregate",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/orchestrate/gh_dialect_test.go",
+              "name": "TestNoSourceFileShellsOutToAGHDialectTheInstalledClientLacks",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/githubobserver/pages_test.go",
+              "name": "TestGetPagesFollowsTheLinkHeaderWithoutSlurp",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/pr_test.go",
+              "name": "TestPRLandSelectorAcceptsEveryFormAnOperatorHolds",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The review ledger itself is a later phase: --approved-by records the reviewer's pointer verbatim rather than verifying a recorded APPROVE against the patch-identity set. Deliberately separate from wb worktree merge: merge lands one or many local worktrees by whichever route the target permits, while this lands one existing pull request. They share the vendored GitHub reads and the same cleanup transaction, so there is one implementation of the checks stage and one of the deletion path."
+    },
+    {
       "id": "wb.remote.claim",
       "feature_refs": [
         "spec/features/remote-claims/README.md"

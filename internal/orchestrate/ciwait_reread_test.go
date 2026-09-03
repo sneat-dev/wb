@@ -59,8 +59,9 @@ if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
   echo '{"protected":false,"protection":{}}'; exit 0
 fi
 if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
-  echo '[[]]'; exit 0
+  echo '[]'; exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   count=0; if [ -f "$WB_CI_REREAD_STATE" ]; then count=$(cat "$WB_CI_REREAD_STATE"); fi
   count=$((count + 1)); printf '%s' "$count" > "$WB_CI_REREAD_STATE"
@@ -107,8 +108,9 @@ if [ "$1" = api ] && [ "$2" = 'repos/acme/docs/branches/main' ]; then
   echo '{"protected":false,"protection":{}}'; exit 0
 fi
 if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/docs/rules/branches/main?per_page=100'; then
-  echo '[[]]'; exit 0
+  echo '[]'; exit 0
 fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   count=0; if [ -f "$WB_CI_REREAD_STATE" ]; then count=$(cat "$WB_CI_REREAD_STATE"); fi
   count=$((count + 1)); printf '%s' "$count" > "$WB_CI_REREAD_STATE"

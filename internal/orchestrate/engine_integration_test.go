@@ -309,21 +309,15 @@ if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
   exit 0
 fi
-if [ "$1" = pr ] && [ "$2" = checks ]; then
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   count=0
   if [ -f "$WB_CHECK_STATE" ]; then count=$(cat "$WB_CHECK_STATE"); fi
   count=$((count + 1)); printf '%s' "$count" > "$WB_CHECK_STATE"
-  case " $* " in
-    *" --required "*) echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'; exit 0;;
-  esac
   if [ "$count" -eq 1 ]; then
-    echo "no checks reported on the branch" >&2
-    exit 1
+    echo '{"total_count":1,"check_runs":[{"name":"CI","status":"in_progress","conclusion":null,"app":{"id":42}}]}'
+    exit 0
   fi
-  echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'
-  exit 0
-fi
-if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
   echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'
   exit 0
 fi
@@ -343,12 +337,12 @@ if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_
   exit 0
 fi
 if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
-  echo '[[]]'
+  echo '[]'
   exit 0
 fi
 if [ "$1" = pr ] && [ "$2" = merge ]; then
   count=$(cat "$WB_CHECK_STATE")
-  if [ "$count" -lt 6 ]; then
+  if [ "$count" -lt 3 ]; then
     echo "merge attempted before stable exact-head reread: $count" >&2
     exit 31
   fi
@@ -381,10 +375,23 @@ exit 2
 	if err := waitAndMerge(ctx, Options{Timeout: 30 * time.Second, CheckPollInterval: time.Millisecond}, &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Merged || result.Status != "merged" || len(result.Checks) < 2 || !strings.Contains(result.Reason, "producer-aware") {
+	// One check, once. The receipt used to carry the same CI check twice —
+	// as "CI" from `gh pr checks` and as "check-run:CI" from the head commit's
+	// own check runs — which was the same observation made twice on unchanged
+	// inputs, and made through a `gh pr checks --json` the installed client
+	// does not have.
+	if !result.Merged || result.Status != "merged" || len(result.Checks) != 1 ||
+		result.Checks[0].Name != "check-run:CI" || !strings.Contains(result.Reason, "producer-aware") {
 		t.Fatalf("result = %+v", result)
 	}
-	if count, err := os.ReadFile(state); err != nil || strings.TrimSpace(string(count)) != "7" {
+	// The observation counter now sits on the head commit's own check-runs
+	// read, which is one call per observation. It used to count `gh pr checks`
+	// invocations, a dialect this waiter no longer speaks — and which counted
+	// the same observation twice, once for the checks and once for the
+	// "--required" derivation of a policy WB reads authoritatively elsewhere.
+	// The property under test is unchanged: a pending observation, then a
+	// passing one, then a confirming reread before the merge.
+	if count, err := os.ReadFile(state); err != nil || strings.TrimSpace(string(count)) != "3" {
 		t.Fatalf("stabilized waiter did not perform the expected observed/required rereads plus the final fresh-policy receipt: count=%q err=%v", count, err)
 	}
 	if count, err := os.ReadFile(policyState); err != nil || strings.TrimSpace(string(count)) != "2" {
@@ -402,11 +409,12 @@ if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"01234567890123456
 if [ "$1" = pr ] && [ "$2" = checks ]; then case " $* " in *" --required "*) echo '[{"name":"CI","bucket":"pass"}]';; *) echo '[{"name":"CI","bucket":"pass"}]';; esac; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'; exit 0; fi
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}'; exit 0; fi
-if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[]'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = merge ]; then echo 'base branch advanced; strict update required' >&2; exit 17; fi
 echo "unexpected gh args: $*" >&2; exit 2
 `
@@ -436,10 +444,11 @@ if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"01234567890123456
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass","link":"https://example.test/check"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{}}}'; exit 0; fi
-if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[]'; exit 0; fi
 echo "unexpected gh args: $*" >&2; exit 2
 `
 	writeEngineFile(t, filepath.Join(bin, "gh"), script)

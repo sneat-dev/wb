@@ -76,10 +76,10 @@ func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *tes
 			branchSummary: `{"protected":true,"protection":{"required_status_checks":{}}}`,
 			classicDetail: "gh: Not Found (HTTP 404)",
 			classicExit:   1,
-			rules: `[[
+			rules: `[
 {"type":"required_status_checks","ruleset_source_type":"Organization","ruleset_source":"acme","ruleset_id":3,"parameters":{"required_status_checks":[{"context":"Inherited","integration_id":7}]}},
 {"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7,"parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"CI","integration_id":42}]}}
-]]`,
+]`,
 			wantChecks:    []RequiredRemoteCheck{{Name: "CI", IntegrationID: 42}, {Name: "Inherited", IntegrationID: 7}},
 			wantFreshness: "strict required-status-check ruleset 7",
 		},
@@ -88,7 +88,7 @@ func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *tes
 			branchSummary: `{"protected":true,"protection":{"required_status_checks":{}}}`,
 			classicDetail: "gh: Not Found (HTTP 404)",
 			classicExit:   1,
-			rules:         `[[]]`,
+			rules:         `[]`,
 			wantChecks:    []RequiredRemoteCheck{},
 		},
 		{
@@ -96,7 +96,7 @@ func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *tes
 			branchSummary: `{"protected":true,"protection":{"required_status_checks":{}}}`,
 			classicDetail: "gh: Forbidden (HTTP 403)",
 			classicExit:   1,
-			rules:         `[[]]`,
+			rules:         `[]`,
 			wantReason:    "read authoritative required-status-check policy",
 		},
 		{
@@ -104,7 +104,7 @@ func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *tes
 			branchSummary: `{"protected":true,"protection":{"required_status_checks":{"contexts":["Classic"]}}}`,
 			classicDetail: "gh: Not Found (HTTP 404)",
 			classicExit:   1,
-			rules:         `[[{"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7,"parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"Ruleset CI","integration_id":42}]}}]]`,
+			rules:         `[{"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7,"parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"Ruleset CI","integration_id":42}]}}]`,
 			wantReason:    "read authoritative required-status-check policy",
 		},
 		{
@@ -112,14 +112,14 @@ func TestTargetBranchRequiredChecksTreatsOnlyEmptyClassic404AsRulesetOnly(t *tes
 			branchSummary: `{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"Classic","app_id":99}]}}}`,
 			classicDetail: "gh: Not Found (HTTP 404)",
 			classicExit:   1,
-			rules:         `[[{"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7,"parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"Ruleset CI","integration_id":42}]}}]]`,
+			rules:         `[{"type":"required_status_checks","ruleset_source_type":"Repository","ruleset_source":"acme/app","ruleset_id":7,"parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"Ruleset CI","integration_id":42}]}}]`,
 			wantReason:    "read authoritative required-status-check policy",
 		},
 		{
 			name:          "populated classic policy remains authoritative",
 			branchSummary: `{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"Summary","app_id":55}]}}}`,
 			classicDetail: `{"strict":true,"contexts":[],"checks":[{"context":"Classic","app_id":99}]}`,
-			rules:         `[[]]`,
+			rules:         `[]`,
 			wantChecks:    []RequiredRemoteCheck{{Name: "Classic", IntegrationID: 99}},
 			wantFreshness: "classic strict required-status-check policy",
 		},
@@ -138,7 +138,7 @@ if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_
   exit "$WB_CLASSIC_EXIT"
 fi
 if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then
-  if [ "$2" != '--paginate' ] || [ "$3" != '--slurp' ]; then echo 'active rules must be fully paginated' >&2; exit 31; fi
+  if echo "$*" | grep -Fq -- '--slurp'; then echo 'active rules must not use --slurp: gh 2.45 has no such flag' >&2; exit 31; fi
   echo "$WB_ACTIVE_RULES"; exit 0
 fi
 echo "unexpected gh args: $*" >&2; exit 30

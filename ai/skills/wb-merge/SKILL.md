@@ -45,6 +45,13 @@ skill, not a branch-prefix convention and not a model profile. Read
 For conflict-free receipt-backed automation, read
 [worktree-merge.md](references/worktree-merge.md).
 
+**When the work is already on GitHub as one pull request and it is ready to
+land, use [`wb pr land`](references/pr-land.md) instead** — it verifies the head
+and its checks, squashes with an aggregated message, proves the merge reached
+the base, deletes the branch, and retires the worktree, all as one verb.
+**Never run `gh pr merge` by hand**: that is the measured root cause of sixty
+abandoned worktrees, because the cleanup that should follow it never ran.
+
 The dedicated merger agent validates the candidate first. A passing candidate
 records that a target baseline was not needed; a failing candidate triggers an
 exact target-snapshot validation so unchanged target failures remain diagnostic

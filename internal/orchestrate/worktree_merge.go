@@ -1459,14 +1459,9 @@ func ResolveWorktreeMergeRoute(ctx context.Context, repository, target string, r
 	if err := json.Unmarshal(branchOutput, &branch); err != nil || branch.Protected == nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("authoritative target branch policy for %s is incomplete", target))
 	}
-	rulesEndpoint := "repos/" + repository + "/rules/branches/" + escapedTarget + "?per_page=100"
-	rulesOutput, err := githubRead(ctx, "", "api", "--paginate", "--slurp", rulesEndpoint)
+	pages, err := activeBranchRules(ctx, repository, target)
 	if err != nil {
 		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("active target rules are unavailable: %v", err))
-	}
-	var pages [][]githubActiveBranchRule
-	if err := json.Unmarshal([]byte(rulesOutput), &pages); err != nil || len(pages) == 0 {
-		return conservativeWorktreeMergePRRoute(requested, fmt.Sprintf("authoritative active target rules for %s are incomplete", target))
 	}
 	requiresPR := len(branch.Protection.RequiredPullRequestReviews) > 0 && string(branch.Protection.RequiredPullRequestReviews) != "null"
 	mergeQueue := false

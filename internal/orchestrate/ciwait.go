@@ -404,13 +404,23 @@ func commitChecks(ctx context.Context, options PullRequestWaitOptions) ([]Remote
 	checks := make([]RemoteCheck, 0)
 	pending := false
 	if options.PullRequest != "" {
-		result := githubExecute(ctx, "", "pr", "checks", options.PullRequest, "--repo", options.Repository, "--json", "name,bucket,link")
-		prChecks, prPending, err := decodePullRequestChecks(options.PullRequest, string(result.Stdout), string(result.Stderr), result.Err)
+		// The pull request contributes its identity, not a second copy of its
+		// checks: `gh pr checks` reports the check runs and statuses of the
+		// pull request's head commit, which the two reads below already
+		// enumerate from the API for this exact head. Asking again would be
+		// the same check run twice on unchanged inputs, and it would ask it
+		// through `gh pr checks --json`, which the installed 2.45 does not
+		// have. What the pull request must still prove is that it points at
+		// the head being waited on.
+		view, err := ReadPullRequest(ctx, options.Repository, options.PullRequest)
 		if err != nil {
 			return nil, false, err.Error()
 		}
-		checks = append(checks, prChecks...)
-		pending = prPending
+		if !strings.EqualFold(view.Head.SHA, options.Head) {
+			return nil, false, fmt.Sprintf(
+				"pull request %s#%s now points at %s, not the head %s being waited on",
+				options.Repository, options.PullRequest, shortMergeRevision(view.Head.SHA), shortMergeRevision(options.Head))
+		}
 	}
 	runChecks, runPending, reason := commitCheckRuns(ctx, options)
 	if reason != "" {
@@ -538,14 +548,10 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 	}
 	authority := "github-branch-protection+active-branch-rules"
 	if options.PullRequest != "" {
-		prChecks, prReason := pullRequestRequiredChecks(ctx, options.Repository, options.PullRequest)
-		if prReason != "" {
-			return nil, "", "", prReason
+		if reason := pullRequestTargetsBase(ctx, options.Repository, options.PullRequest, options.Target); reason != "" {
+			return nil, "", "", reason
 		}
-		for _, expectation := range prChecks {
-			addRequiredExpectation(required, expectation)
-		}
-		authority += "+pr-required-checks"
+		authority += "+pr-base-verified"
 	}
 	checks := make([]RequiredRemoteCheck, 0, len(required))
 	for _, expectation := range required {
@@ -555,26 +561,25 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 	return checks, authority, freshnessAuthority, ""
 }
 
-func pullRequestRequiredChecks(ctx context.Context, repository, pullRequest string) ([]RequiredRemoteCheck, string) {
-	result := githubExecute(ctx, "", "pr", "checks", pullRequest, "--repo", repository, "--required", "--json", "name,bucket,link")
-	checks, _, err := decodePullRequestChecks(pullRequest, string(result.Stdout), string(result.Stderr), result.Err)
+// pullRequestTargetsBase proves the pull request is landing where the
+// required-check policy was read from.
+//
+// It replaces `gh pr checks --required`, which the installed 2.45 does not
+// support and which was in any case a second derivation of a fact WB already
+// reads authoritatively: the required contexts come from the target's branch
+// protection and active rulesets, enumerated above. A pull request whose base
+// is some other branch is not covered by that policy at all, and that — not a
+// re-listed context name — is the thing this check exists to catch.
+func pullRequestTargetsBase(ctx context.Context, repository, pullRequest, target string) string {
+	view, err := ReadPullRequest(ctx, repository, pullRequest)
 	if err != nil {
-		return nil, fmt.Sprintf("read effective required checks for pull request %s: %v", pullRequest, err)
+		return fmt.Sprintf("read pull request %s#%s: %v", repository, pullRequest, err)
 	}
-	required := make([]RequiredRemoteCheck, 0, len(checks))
-	seen := map[string]bool{}
-	for _, check := range checks {
-		name := strings.TrimSpace(check.Name)
-		if name == "" {
-			return nil, fmt.Sprintf("pull request %s returned a required check with no name", pullRequest)
-		}
-		if !seen[name] {
-			seen[name] = true
-			required = append(required, RequiredRemoteCheck{Name: name})
-		}
+	if !strings.EqualFold(strings.TrimSpace(view.Base.Ref), strings.TrimSpace(target)) {
+		return fmt.Sprintf("pull request %s#%s targets %s, not %s, so the target's required-check policy does not govern it",
+			repository, pullRequest, view.Base.Ref, target)
 	}
-	sortRequiredChecks(required)
-	return required, ""
+	return ""
 }
 
 type githubBranchPolicyView struct {
@@ -666,17 +671,9 @@ func targetBranchRequiredChecks(ctx context.Context, repository, target string, 
 		}
 	}
 
-	rulesEndpoint := "repos/" + repository + "/rules/branches/" + url.PathEscape(target) + "?per_page=100"
-	rulesOutput, rulesErr := githubRead(ctx, "", "api", "--paginate", "--slurp", rulesEndpoint)
+	pages, rulesErr := activeBranchRules(ctx, repository, target)
 	if rulesErr != nil {
 		return nil, "", fmt.Sprintf("read active branch rules for target %s: %v", target, rulesErr)
-	}
-	var pages [][]githubActiveBranchRule
-	if err := json.Unmarshal([]byte(rulesOutput), &pages); err != nil {
-		return nil, "", fmt.Sprintf("decode paginated active branch rules for target %s: %v", target, err)
-	}
-	if len(pages) == 0 {
-		return nil, "", fmt.Sprintf("paginated active branch rules for target %s returned no page receipt", target)
 	}
 	for _, page := range pages {
 		for _, rule := range page {
@@ -808,24 +805,21 @@ func commitStatuses(ctx context.Context, options PullRequestWaitOptions) ([]Remo
 	return checks, pending, ""
 }
 
-type pullRequestIdentityView struct {
-	HeadRefOID  string `json:"headRefOid"`
-	BaseRefName string `json:"baseRefName"`
-}
-
+// pullRequestIdentity reads the exact head and target a pull request currently
+// points at, through the one GitHub surface every `gh` this fleet has seen
+// supports. It used to ask `gh pr view --json`, a second dialect for a fact
+// ReadPullRequest already carries.
 func pullRequestIdentity(ctx context.Context, repository, pullRequest string) (string, string, string) {
-	output, err := githubRead(ctx, "", "pr", "view", pullRequest, "--repo", repository, "--json", "headRefOid,baseRefName")
+	view, err := ReadPullRequest(ctx, repository, pullRequest)
 	if err != nil {
 		return "", "", err.Error()
 	}
-	var view pullRequestIdentityView
-	if err := json.Unmarshal([]byte(output), &view); err != nil || strings.TrimSpace(view.HeadRefOID) == "" || strings.TrimSpace(view.BaseRefName) == "" {
-		if err != nil {
-			return "", "", fmt.Sprintf("decode pull request identity: %v", err)
-		}
+	head := strings.TrimSpace(view.Head.SHA)
+	base := strings.TrimSpace(view.Base.Ref)
+	if head == "" || base == "" {
 		return "", "", "GitHub pull request view returned no exact head or target"
 	}
-	return strings.TrimSpace(view.HeadRefOID), strings.TrimSpace(view.BaseRefName), ""
+	return head, base, ""
 }
 
 type githubReference struct {
