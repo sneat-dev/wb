@@ -604,6 +604,78 @@ the release.
 wb MUST never print an ownerless version token; every version, tag or moving
 reference names its repository in the same sentence.
 
+### Review contract and ledger
+
+wb owns the review **contract**, **ledger** and **landing gate**. It does not own
+the reviewer runtime: dispatching the agent stays with the orchestrator, so a
+reviewer keeps its warm context across rounds and re-review communication is
+unchanged.
+
+#### REQ: review-request-produces-a-tracked-checkout-and-a-brief
+
+`wb review request <owner/repo#N> [--round n] [--probes <template>]` MUST create
+the tracked review checkout (`wb worktree review`), **pin the head SHA**, write a
+brief file, and name the output review file. The orchestrator's dispatch then
+becomes "send the agent this brief path" rather than a hand-assembled prompt.
+
+#### REQ: review-briefs-come-from-a-template-family
+
+The brief MUST be generated, not authored. `wb review request` MUST select a
+**template family** from the touched paths and repository config — `code-go`,
+`code-frontend`, `money-code` (100% coverage gate), `security-sensitive`
+(authorization, invites, roles, rules), `dependency-bump`, `spec`, `plan` — and
+auto-fill context: the pull request's title and body claims, the pinned head SHA,
+the touched files, and the coverage baseline. `--family` MUST override the
+selection for a pull request spanning kinds.
+
+For `--round n > 1` the brief MUST be generated **from the ledger**: the previous
+round's must-fix and should-fix list, the author's reply comment, and the diff
+between the reviewed SHA and the new head — so a re-review reads as a delta, not
+as a fresh review.
+
+Standard probes belong in the template: the field-path prefix rule,
+read-after-write ordering, authorization, non-vacuity reverts, the
+dependency-change check, and coverage. Most reviews need no bespoke thinking to
+brief.
+
+#### REQ: review-supports-the-exceptions-that-templates-cannot-cover
+
+Four exceptions MUST be first-class rather than worked around:
+
+1. **Novel risk classes** — `--probe "<free text>"`, repeatable. A reviewer that
+   finds a new class MUST be able to run
+   `wb review probe propose <family> "<text>" --lesson <id>`, and an accepted
+   probe MUST appear in that family's template. This is the loop back into the
+   backstage lessons corpus: **a lesson becomes a probe, and a probe enforces
+   the lesson.**
+2. **Cross-repository consequences** — `--build-consumer <owner/repo>`,
+   repeatable. wb MUST *suggest* candidates from `wb deps graph`, and the choice
+   MUST remain the orchestrator's.
+3. **Disputes** — a `--dispute` round whose brief carries **both positions** and
+   asks for a ruling, not a re-verification.
+4. **Escalation** — the verdict `BLOCKED-ON-FOUNDER`, recorded in the ledger with
+   the question text. Escalation itself stays with the orchestrator.
+
+#### REQ: review-record-writes-the-ledger
+
+`wb review record <owner/repo#N> --verdict APPROVE|REJECT|APPROVE-WITH-UNVERIFIED
+--file <review.md>` MUST post the pull-request comment with its footer and write
+to the event log: verdict, round, must-fix count, unverified probes, duration,
+and — where known — tokens and tool calls.
+
+#### REQ: landing-requires-an-approval-for-the-exact-head
+
+`wb pr land` MUST refuse without a recorded `APPROVE` **for the exact head SHA**.
+A new head invalidates the approval and requires a re-review. `--override` MUST
+require a reason, recorded in the ledger.
+
+#### REQ: review-metrics-compare-warm-and-fresh-reviewers
+
+`wb report stream` MUST report rounds per pull request, reject rate, minutes and
+tokens per round, and a **warm-versus-fresh reviewer comparison**. The evidence
+that makes this worth measuring: on 2026-09-02/03, round-1 reviews took 15–18
+minutes while warm round-2 reviews took 4–9.
+
 ### Event log and analytics
 
 #### REQ: every-verb-appends-a-structured-event
@@ -1404,6 +1476,41 @@ on commit identity rather than ancestry, is removed within that single run, and
 **Then** the un-ended worktree is reported by name with its owner and age, and
 the handed-over case is distinguished from the abandoned one.
 
+### AC: landing-refuses-when-the-head-moved-after-approval
+
+**Requirements:** dependency-streams#req:landing-requires-an-approval-for-the-exact-head, dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** a pull request approved at SHA `A`, to which the author then pushes SHA
+`B`
+**When** the operator runs `wb pr land`
+**Then** it refuses, states that the approval was recorded for `A` and the head
+is `B`, and names the sanctioned next step (`wb review request … --round 2`);
+and `--override` lands only with a reason that is written to the ledger.
+
+### AC: briefs-are-generated-with-family-context-and-round-deltas
+
+**Requirements:** dependency-streams#req:review-request-produces-a-tracked-checkout-and-a-brief, dependency-streams#req:review-briefs-come-from-a-template-family
+
+**Given** a Go pull request touching `invitus/`, and later a round-2 request
+after the author replies
+**When** `wb review request` runs for each
+**Then** the first selects the `security-sensitive` family automatically and its
+brief carries the pinned head SHA, the touched files, the coverage baseline and
+every probe from that template; the round-2 brief lists every round-1 must-fix,
+the author's reply, and the SHA range between the reviewed head and the new one;
+and `--family` overrides the selection.
+
+### AC: a-new-risk-class-becomes-a-template-probe
+
+**Requirements:** dependency-streams#req:review-supports-the-exceptions-that-templates-cannot-cover
+
+**Given** a reviewer that finds a risk class no template covers and runs
+`wb review probe propose <family> "<text>" --lesson <id>`
+**When** the probe is accepted with `wb review probe accept`
+**Then** it appears in that family's template for subsequent requests, is linked
+to its lesson id, and a `--dispute` round's brief carries both positions and asks
+for a ruling rather than a re-verification.
+
 ## Rehearse Integration
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, or process
@@ -1547,7 +1654,19 @@ ratified the reconciliation in
 **reduce cost by scheduling and sharding, never by removing checks or lowering
 floors.** "Speed is a correctness constraint" is never licence to weaken a gate.
 
-**2. Should agent pull requests be squashed into the stream branch, or should
+**2. Should wb dispatch reviewers itself?** This spec deliberately stops at the
+contract, ledger and landing gate, leaving the reviewer runtime to the
+orchestrator — because dispatching would complicate reviewer communication and,
+more importantly, would block re-reviews by the *same agent with warm context*,
+which the measured figures say is where the saving is (round-1 15–18 minutes
+against warm round-2 4–9).
+
+An optional dispatcher backend — `claude -p` with session resume, so a warm
+re-review is a resumed session rather than a new one — is worth building **only
+if the ledger shows it pays**. The ledger specified above is what would answer
+that, which is the reason to ship it first.
+
+**3. Should agent pull requests be squashed into the stream branch, or should
 their raw commits be kept?** This spec assumes **squash — one commit per
 reviewed change** (`agent-branches-squash-into-the-stream`), on the grounds that
 it is the granularity a reviewer of `main` wants and it keeps "fix typo" out of
@@ -1556,7 +1675,7 @@ commits, giving finer bisect resolution at the cost of a noisier `main`. This is
 recorded as an assumption because it is reversible: it changes only how agent
 pull requests are landed, not the stream's shape.
 
-**3. Should own-library consumer bumps keep flowing through Renovate once
+**4. Should own-library consumer bumps keep flowing through Renovate once
 `wb deps propagate remote` exists?** Renovate's own-library automerge is
 currently the mechanism that keeps every consumer on the latest release, and it
 is the only thing that covers repositories nobody put in a stream. But once a
