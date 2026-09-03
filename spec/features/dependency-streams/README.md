@@ -22,8 +22,8 @@ publication with consumer bumps happens once, at the end, over exactly the
 repositories the stream linked.
 
 There are no merge commits and no single opaque squash at the end. Verification
-is batched: a stream applies a whole batch and runs the suite once, bisecting
-only when that run fails. Every verb appends a structured event to the stream's
+is batched: a stream applies a whole batch and runs the suite once, re-applying
+cumulative prefixes only when that run fails. Every verb appends a structured event to the stream's
 own log, which is the single source for an animated timeline and the metrics
 that make the stream's cost and waits measurable rather than remembered.
 
@@ -118,6 +118,40 @@ Every wb guard that refuses MUST name, in its own failure output, the exact
 command that satisfies it; and there MUST be no flag that both bypasses a guard
 and pushes.
 
+#### REQ: verbs-share-an-exit-code-and-envelope-contract
+
+This design is refusal-driven end to end, so a caller MUST be able to tell
+**refused** (a guard fired; fix and retry) from **failed** (the work is broken)
+without parsing prose. Every verb MUST use:
+
+| code | meaning |
+|---|---|
+| `0` | success |
+| `1` | findings — the work is broken, or a check failed |
+| `2` | refusal or usage error — a guard fired, or the invocation was ambiguous |
+
+An ambiguous selector MUST exit `2` with the candidates listed; a
+not-mergeable pull request MUST exit `1` with the exact failing check.
+
+Every verb MUST also support `--format json` emitting a stable envelope:
+
+```json
+{
+  "v": 1,
+  "verb": "pr land",
+  "outcome": "success | findings | refused",
+  "refusal_code": "live-link | unapproved-patch-set | lease-failed | …",
+  "sanctioned_command": "wb deps propagate local --undo …",
+  "evidence": { "…": "the exact facts the verb relied on" },
+  "saved_tool_calls": 4,
+  "saved_tokens_est": 3200
+}
+```
+
+Without this, `one-verb-per-operation` hands an agent a verb it cannot branch on,
+and the agent goes back to hand-chaining `gh` — the exact regression
+`land-verbs-work-with-the-installed-gh` records.
+
 #### REQ: waits-are-verbs-not-instructions
 
 Any wait longer than a blocking tool's own ceiling MUST be owned by a wb verb
@@ -133,6 +167,53 @@ command whose success it will then trust.
 
 Every stream verb MUST re-fetch and re-read origin and stream state immediately
 before acting. A value read at session start is a snapshot, not a live view.
+
+## Delivery — P0, P1, P2
+
+This Feature carries three separable products at equal normative weight: the
+stream + local-link core (directives 1–4), the review contract and ledger, and
+the analytics/sharing stack. Only the first is needed to satisfy directives 1–4,
+and a monolith with no order would be implemented breadth-first and be unusable
+until all of it existed.
+
+**Normative rule.** A REQ or AC carrying a `**Phase:** P1` or `**Phase:** P2`
+line is **not normative for the first release**. Everything untagged is P0 and
+binding. Nothing in P0 depends on a P1 or P2 requirement.
+
+### P0 — in this order
+
+| # | Verb / change | Why here |
+|---|---|---|
+| 1 | `wb worktree gc` + inventory fixes (`detached-review`, silent stage/lock purge, `landed + residue`, merged-ness by patch identity, owner/age/TTL, no force flag) | Directive 8; pure-local; 10 detached review checkouts are invisible to wb today, on a disk at 89% |
+| 2 | `wb pr land` — cleanup by default + `--keep`, vendored `gh` API calls (2.45), explicit `--subject`, and `mechanical-bumps-are-not-reviewed` | The measured root cause: the opt-in `--cleanup` never ran because the merge stage broke on the installed `gh` |
+| 3 | `wb disk` + `wb cache prune` | Directive 8; `stream start`'s disk floor depends on them |
+| 4 | Exit-code + JSON-envelope contract, applied to 1–3 and everything after | Retrofitting it later means rewriting every skill section |
+| 5 | `wb stream start / status / end` + stream state + event log v1 (versioned, redacted, concurrent-append) | The identity everything else hangs off; no `sync` yet |
+| 6 | `wb deps propagate local` + `wb worktree merge` link refusal | **Directive 1** — the feature's actual value |
+| 7 | Hook profiles + `wb hooks metrics` delta | Directive 4's local half; the evidence base for every later cost claim |
+| 8 | `wb stream sync` — rebase with `--force-with-lease`, per-branch conflict reporting, approval carry-forward, live-link refusal, CI concurrency guard | Directive 2; the hardest verb, testable only after 5–7 |
+| 9 | Batch verification + prefix re-apply, with the CI-mechanism presence check | Directive 4's real payload; its AC is the acceptance gate for the whole feature |
+| 10 | `wb deps propagate remote --stream` | Directive 1's other half; composes `deps publish npm` + `deps bump` |
+| 11 | `wb report export` + `wb stats savings` (mode 0 only) + minimum-version assertion and post-release `wb self-update` | Directives 6–7 at their cheapest, most private delivery mode |
+
+Every row ships with its skill section — `a-verb-without-a-skill-section-fails-the-build`
+is the gate on each.
+
+### P1 — after P0 is usable
+
+The review contract, ledger, template families and probe loop (**except**
+`mechanical-bumps-are-not-reviewed`, which ships with row 2 because it is what
+makes `pr land` usable on bump pull requests); `wb report fleet` and the
+metric-regression lesson proposal; `wb release verify`; `wb deploy watch`;
+`wb renovate run --wait`.
+
+### P2 — needs a lifetime bound or prior data
+
+`wb serve` and `wb report publish` and the live relay — the Orca benchmark's
+Reject list says *"do not grow a `wb serve`"*, and mode 1's SSE stream is a
+long-lived process by construction, so it needs an explicit lifetime bound and
+auto-shutdown before it can be argued; `wb stats calibrate`, which cannot
+calibrate anything until two streams of data exist.
 
 ## Behavior
 
@@ -206,6 +287,14 @@ absorbed by the landing — a named, content-level check, never a path listing �
 MUST close or report its draft pull requests, and MUST delete its own
 task-directory scaffolding.
 
+Before the stream branch is deleted, `wb stream end` MUST additionally enumerate
+every **still-open agent pull request** targeting it and close or retarget each,
+reporting what it did. GitHub auto-retargets an open pull request to the base's
+own base when its base branch is deleted, so deleting `stream/<name>` silently
+converts every leftover agent pull request into one targeting `main` — precisely
+the misrouted condition this Feature guards against, arriving with no operator
+mistake to blame.
+
 #### REQ: every-stream-verb-has-a-terminal-recovery
 
 Every reachable `(phase, status)` of a stream verb MUST have a recovery
@@ -266,23 +355,49 @@ with a warning, because rebasing a branch under review invalidates the review.
 
 `wb stream propagate` MUST land a downstream repository by: performing a final
 `wb stream sync`, marking the stream pull request ready, waiting for green
-checks, and merging it with GitHub's **rebase-and-merge** so `main`
-fast-forwards and receives the stream's commits individually. The result MUST be
-**one push, one auto-tag, and one deploy per repository**, rather than one per
-constituent change.
+checks, and merging it with GitHub's **rebase and merge**, which yields a
+**linear, granular** history — the stream's changes arrive on `main` as
+individual commits with no merge commit. The result MUST be **one push, one
+auto-tag, and one deploy per repository**, rather than one per constituent
+change.
+
+**GitHub's rebase-and-merge always rewrites the commits.** It replays them onto
+the base with new committer metadata and **new SHAs**, even where a true
+fast-forward was available. This Feature therefore MUST NOT claim, anywhere,
+that `main` fast-forwards or that it receives the stream's commit *objects*: it
+receives content-identical **copies**. Every downstream rule — merged-ness,
+cleanup proof, branch deletion — MUST be expressed in terms of **patch identity**
+(`git patch-id --stable`) plus the pull request's merge record, never ancestry of
+the stream branch. wb MUST record the rewritten SHAs, paired with the source
+SHAs they came from, in the stream ledger, because after landing they are the
+only way back to the original commits.
 
 WB MUST verify the repository permits rebase merges before starting, and MUST
 name any repository where it is disabled rather than silently falling back.
 Audited 2026-09-03: `allow_rebase_merge` is `true` on all 28 sneat-co product
 repositories and on `sneat-dev/wb`, so no repository currently needs enabling.
 
+**Optional `--ff` route.** Where branch protection permits a direct push to the
+default branch, `wb stream propagate --ff` MAY instead perform a final sync and
+`git push origin stream/<name>:main`, which preserves the original commit objects
+and makes ancestry hold. wb MUST **detect** that permission from the repository's
+protection and ruleset configuration rather than assume it, MUST fall back to
+rebase-and-merge with a stated reason when it is absent, and MUST record which
+route it used.
+
 #### REQ: never-merge-commit-a-stream-branch
 
-WB MUST refuse to land a `stream/<name>` branch with a merge commit, on any
-route, and MUST say which route it will use instead. This guard is necessary
-rather than theoretical: `allow_merge_commit` is `true` on 26 of the 28 audited
-product repositories, so the unwanted route is available in the UI and to any
-caller that does not go through wb.
+WB MUST refuse to land a `stream/<name>` branch with a merge commit, on any route
+it controls, and MUST say which route it will use instead.
+
+A refusal inside wb cannot enforce a property of the remote, so this MUST be
+**detection plus a named remediation** rather than an asserted invariant:
+`wb stream start` MUST report every member where merge commits are permitted
+(`allow_merge_commit: true`, or no ruleset forbidding them) and name the
+remediation; and after landing, wb MUST post-check `git log --merges` over the
+landed range and report any merge commit it finds. `allow_merge_commit` is `true`
+on 26 of the 28 audited product repositories, so the unwanted route is available
+in the UI and to any caller that does not go through wb.
 
 While a stream is open, [`wb worktree merge --route auto`](../mechanical-worktree-merge/README.md)
 MUST route an agent worktree of that stream to the **stream branch**, not to
@@ -301,7 +416,7 @@ repository's own convention (`fix(deps): <module> vX → vY`, or `chore(deps): �
 where that is the repository's style), pushed to `stream/<name>`.
 
 The batch is verified once under the batch-verification requirements, and on
-failure bisected by reverting bump commits one at a time.
+failure resolved by cumulative prefix re-apply over the bump commits.
 
 The founder: *"I wonder if deps propagation can be made directly on stream branch
 so we do not create worktree for small deps changes."*
@@ -332,6 +447,27 @@ intra-machine unit.
 After any push wb MUST compare the pushed local SHA with `origin/<branch>` and
 fail on divergence. A push exit code is not evidence the intended commit landed.
 
+This REQ is scoped to **pushes only**. It MUST NOT be applied to a landed range:
+after a rebase-and-merge the landed commits have different SHAs by design, and
+extending this comparison there would create a second false gate.
+
+#### REQ: stream-pushes-use-a-lease-and-a-stream-claim
+
+Every push to `stream/<name>` MUST use `--force-with-lease` against the stream
+head wb last recorded, and MUST refuse — naming the sanctioned command — when
+the lease fails, because a rebase of a shared branch is a force-push and a bare
+force discards whatever another agent pushed in between.
+
+`wb stream start` MUST additionally take a **stream lease**: a claim on
+`stream/<name>` in the same store as the existing worktree claims. A repository
+MUST carry **at most one open stream at a time**; `wb stream start` MUST refuse a
+repository that already has one, name the holding stream, and name the sanctioned
+commands — wait for it, or join it by adding this repository's work to the
+existing stream. Two concurrent streams on one repository are out of scope, and
+the refusal is what keeps them so: stream A landing rewrites `main` under stream
+B, whose already-approved agent branches would then all need re-rebasing and
+could each conflict with A's landed work.
+
 #### REQ: review-checkout-is-disposable
 
 Reviewing a stream or agent branch MUST use a throwaway worktree; wb MUST refuse
@@ -339,9 +475,14 @@ a detached checkout inside a claimed worktree.
 
 #### REQ: stream-cleanup-proof-covers-a-rebase-landing
 
-The receipted proof chain for cleanup MUST cover rebase-and-merge landings —
-source SHA → stream head by ancestry → landed range on `origin/main` by ancestry
-and tree equality — not only the squash chain.
+The receipted proof chain for cleanup MUST cover rebase-and-merge landings. Because
+that route rewrites SHAs, the chain MUST be: source SHA → stream head by
+ancestry (this half still holds, the stream branch is not rewritten locally) →
+**landed range on `origin/main` by patch-identity set equality and tree
+equality**, together with the pull request's merge record. Ancestry of the stream
+branch into `origin/main` MUST NOT appear anywhere in the chain: it is false by
+construction after a rebase-and-merge, and a proof that requires it would refuse
+every landed stream forever.
 
 ### Local propagation
 
@@ -357,11 +498,16 @@ identity MUST be reported and skipped rather than linked.
 
 #### REQ: go-consumers-link-through-an-untracked-go-work
 
-For a Go consumer, WB MUST write a `go.work` at the consumer worktree root
-containing a `use` entry for the library worktree, and MUST ensure that path is
-Git-excluded so it can never be committed. `go.work` MUST NOT be added to the
-repository's tracked `.gitignore` if that file is tracked; WB MUST use a
-worktree-local exclude instead.
+For a Go consumer, WB MUST write a `go.work` at the consumer worktree root whose
+`use` entries name **every Go module in the consumer worktree** — `backend/`,
+the module root where there is no `backend/`, and any nested tooling module —
+**plus** the library worktree's module. A workspace containing only the library
+would leave the consumer's own module outside the workspace it now sits under,
+and `go build ./...` in `backend/` would not resolve at all.
+
+WB MUST ensure `go.work` **and `go.work.sum`** are Git-excluded so neither can
+be committed. WB MUST NOT add them to the repository's tracked `.gitignore` if
+that file is tracked; it MUST use a worktree-local exclude instead.
 
 CI MUST be unaffected, and the reason MUST be structural rather than
 conventional: the file does not exist in the repository, so a CI checkout has no
@@ -371,15 +517,44 @@ directive to `go.mod`.
 
 #### REQ: npm-consumers-link-through-a-built-dist
 
-For an npm consumer, WB MUST build the library once using the repository's own
-build target, then link the built output into the consumer's `node_modules`
-using the package manager's own link mechanism, so no tracked file changes.
+For an npm consumer, WB MUST build the library using the repository's own build
+target, then link the built output into the consumer's `node_modules` using the
+package manager's own link mechanism, so no tracked file changes.
+
+The build MUST be **cached against the library's content hash** and rebuilt
+whenever that hash moves. Building once and reusing it across an iterative stream
+would have consumers verifying against a stale `dist` and reporting false green —
+the failure this link exists to prevent.
 
 WB MUST NOT write a `pnpm` override, alias, or `workspace:` protocol entry into
 `pnpm-workspace.yaml` or any `package.json`. This is a hard prohibition, not a
 default: the founder rule forbids build-tooling workarounds in tracked config,
 and an override is exactly the artefact that survives the stream, reaches CI,
 and makes a consumer build against something the registry never published.
+
+#### REQ: no-module-graph-mutation-under-a-live-link
+
+`go mod tidy` and `go get` resolve against the workspace, so running either while
+a link is live can write a `go.sum` describing an **unpublished** library tree.
+Any wb verb that mutates the module graph — notably `wb stream sync` applying a
+bump — MUST therefore run it with `GOWORK=off`, set by the verb itself rather
+than left to the caller, and MUST refuse if it cannot. Catching this at
+`merge-refuses-a-linked-worktree` would be too late: the poisoned commit already
+exists and CI has already run on it.
+
+#### REQ: the-local-gate-states-what-it-verified-against
+
+Locally, every `go` invocation from the worktree root down discovers the
+`go.work` and therefore verifies against an **unpublished** library. That is the
+point of the link, but it MUST never be mistaken for a published-dependency
+result. Every verification run under a live link MUST state, in its own output,
+`verified against unpublished <library> at content-hash <h> (dirty)`.
+
+Before landing, wb MUST additionally run a **`GOWORK=off` build and vet** — the
+Go analogue of `npm-link-preserves-a-frozen-lockfile-baseline` — and record its
+result. Without it the Go half reintroduces
+`a-local-landing-gate-must-execute-the-same-mechanisms-as-ci` through the back
+door, which the npm half already guards against.
 
 #### REQ: verify-runs-single-worker-against-the-linked-copy
 
@@ -412,8 +587,9 @@ this guard and pushes.
 
 #### REQ: verification-prints-its-active-links
 
-Every verification run against a linked consumer MUST print the links in effect
-and the published version each replaced.
+Every verification run against a linked consumer MUST print the links in effect,
+the published version each replaced, and the **content hash** it verified
+against, so a result can be tied to an exact library tree after the fact.
 
 #### REQ: link-discovery-uses-the-canonical-dependency-sections
 
@@ -436,25 +612,48 @@ run the suite per applied change. The same rule applies at landing: the final
 verification before merging the stream pull request is one run over the final
 tree.
 
-#### REQ: batch-failure-bisects-to-the-first-bad-change
+#### REQ: the-batch-element-is-defined
 
-When a batch verification fails, WB MUST revert the batch and re-apply the
-changes one at a time, verifying after each, stopping at and reporting the
-**first** change whose application fails. The report MUST name that change, the
-failing check, and the changes already known good. WB MUST NOT leave the tree in
-the failed batch state, and MUST NOT continue past the first failure, because
-every later result would be measured against a known-broken tree.
+A batch **element** is exactly one of: one dependency-bump commit; one
+lockstep-versioned family applied together (Angular, Nx, Ionic, Capacitor,
+`@sneat/*`); or one agent pull request's squashed commit. The rebase onto a moved
+`origin/main` is **not** an element — it cannot be reverted independently — and
+is instead the batch's *base*.
 
-The total cost MUST therefore be one full run in the passing case, and one full
-run plus the bisect runs in the failing case — never one full run per change.
+#### REQ: batch-failure-is-found-by-prefix-re-apply
+
+When a batch verification fails, WB MUST revert every element, then re-apply them
+**cumulatively** — element 1, then 1+2, then 1+2+3, verifying after each prefix —
+and MUST report the **first failing prefix**, naming its last element as the
+culprit, the failing check, and the elements already proven good.
+
+Cumulative prefix re-apply, not isolated re-application: isolated re-application
+misses interaction failures, where each element passes alone and a pair does not.
+The algorithm is a **linear prefix scan, not a bisection** — the names must match
+what it does — and its honest cost is **one full run in the passing case, and
+`1 + k` runs when the culprit is element `k`**, worst case `1 + N`. It is not
+`1 + log N`.
+
+If **every prefix passes**, the failure came from the base or from a rebased
+agent change rather than from any element. WB MUST report an **interaction
+failure**, name the full element set and the base it was applied to, and stop. WB
+MUST NOT leave the tree in the failed batch state in any outcome.
 
 #### REQ: batch-verification-runs-what-ci-runs
 
 The single batched run MUST execute CI's own mechanisms — `go vet`, `-race`
 where CI uses it, `CI=1`, `-count=1`, build cache disabled — **or** name, in its
 own output, each mechanism it is not running and state that CI on the stream
-pull request owns it. Silently running less than CI while implying otherwise is
-the failure this forbids.
+pull request owns it.
+
+Before printing that claim, wb MUST **verify it**: for each mechanism named as
+skipped, wb MUST parse that member repository's stream-PR workflows (reusing
+`wb ci`) and confirm the mechanism is actually present. Where it is not, wb MUST
+refuse the skip, or report the member as **unguarded for that mechanism** — never
+print the assurance. `verify-runs-single-worker-against-the-linked-copy`
+mandates Go without `-race`, so this claim will be printed routinely; an
+unverified "CI owns it" is the 17-occurrence lesson reintroduced as a false
+assurance, which is worse than no gate.
 
 #### REQ: single-worker-does-not-replace-per-file-isolation
 
@@ -465,18 +664,23 @@ worse than a flake because it is reproducible and misattributed.
 
 #### REQ: batch-verification-is-keyed-to-a-tree-identity
 
-A batch result MUST be recorded against the exact stream-branch SHA and each
-link's library SHA, and MUST be invalidated when either moves.
+A batch result MUST be recorded against the exact stream-branch SHA and, for each
+live link, the library's **content hash** — not a commit SHA. The library is
+uncommitted by construction (that is the whole point of the link), so it has no
+SHA; the hash MUST be computed over the library working tree including untracked
+and modified files, for example by `git write-tree` against a temporary index, or
+an equivalent that covers the same bytes. The result MUST be invalidated when
+either identity moves.
 
 #### REQ: every-verification-run-is-bounded
 
-The batch run and each bisect step MUST carry a timeout and MUST report a hang as
+The batch run and each prefix re-apply step MUST carry a timeout and MUST report a hang as
 a failure, bounding descendants that hold the captured output pipe.
 
 #### REQ: a-lockstep-family-is-one-batch-element
 
 A lockstep-versioned family — Angular, Nx, Ionic, Capacitor, `@sneat/*` — MUST be
-applied as one batch element and MUST NOT be bisected internally.
+applied as one batch element and MUST NOT be split during prefix re-apply.
 
 #### REQ: every-profile-declares-a-measured-budget
 
@@ -500,6 +704,22 @@ The push hook MUST run **no** verification when the push target is a
 every push, and a local re-run duplicates it on the very machine the stream is
 trying to keep free. For every other target the current full profile MUST be
 unchanged. WB MUST report which profile it selected and why.
+
+**Moving the cost to CI obliges wb to bound CI**, or directive 4 is reversed
+rather than satisfied — GitHub Actions minutes are the fleet's real money cost,
+and this Feature's own metrics table promises to count redundant runs:
+
+- Syncs MUST happen only at **batch boundaries**, never once per bump. Ten bumps
+  plus one sync MUST produce **one** stream-PR CI run, not ten.
+- `wb stream start` MUST verify that each member's stream-PR workflow carries a
+  `concurrency` group keyed to the stream branch with `cancel-in-progress: true`,
+  and MUST report every member that does not, so a superseded force-push cancels
+  its predecessor instead of racing it.
+- A push whose resulting tree is identical to the last verified tree MUST NOT
+  trigger a fresh verification; wb MUST skip it and say so.
+- Stream-PR runs MUST be counted in the **redundant runs** metric alongside local
+  runs, so the CI half of the cost is visible in the same place as the local
+  half.
 
 `wb hooks metrics` MUST be able to evidence the difference — local commits, push
 attempts, hook failures and durations — so the saving is measured rather than
@@ -570,6 +790,8 @@ path, run status and every required job. Post-tag CI is an alarm, not prevention
 
 #### REQ: publication-is-a-terminal-outcome
 
+**Phase:** P1
+
 `wb release verify` MUST require an explicit publish, or an explicit
 machine-readable `not_releasable` the caller expected, and MUST confirm the tag,
 publish run and registry dist-tags agree. It MUST download and run the published
@@ -588,6 +810,8 @@ MUST query workflow runs by SHA when no check appears, and MUST re-dispatch
 rather than wait on faith.
 
 #### REQ: deploy-watch-asserts-the-exact-commit-in-production
+
+**Phase:** P1
 
 `wb deploy watch` MUST fetch the deployed artifact's own version marker and bind
 it to the landed commit. A green deploy run alone is not deployment truth.
@@ -613,12 +837,16 @@ unchanged.
 
 #### REQ: review-request-produces-a-tracked-checkout-and-a-brief
 
+**Phase:** P1
+
 `wb review request <owner/repo#N> [--round n] [--probes <template>]` MUST create
 the tracked review checkout (`wb worktree review`), **pin the head SHA**, write a
 brief file, and name the output review file. The orchestrator's dispatch then
 becomes "send the agent this brief path" rather than a hand-assembled prompt.
 
 #### REQ: review-briefs-come-from-a-template-family
+
+**Phase:** P1
 
 The brief MUST be generated, not authored. `wb review request` MUST select a
 **template family** from the touched paths and repository config — `code-go`,
@@ -639,6 +867,8 @@ dependency-change check, and coverage. Most reviews need no bespoke thinking to
 brief.
 
 #### REQ: review-supports-the-exceptions-that-templates-cannot-cover
+
+**Phase:** P1
 
 Four exceptions MUST be first-class rather than worked around:
 
@@ -661,7 +891,8 @@ Four exceptions MUST be first-class rather than worked around:
 A **mechanical bump** is a change whose diff touches **only** dependency
 manifests and lockfiles — `go.mod`, `go.sum`, `package.json` dependency fields,
 `pnpm-lock.yaml`, `pnpm-workspace.yaml`. A mechanical bump MUST NOT be reviewed:
-its gate is the batch verification, where green lands and red is bisected, and
+its gate is the batch verification, where green lands and red is resolved by
+prefix re-apply, and
 `wb pr land` MUST skip the review-ledger check for it.
 
 The classification MUST be decided **from the diff**, by wb, and never from the
@@ -671,18 +902,36 @@ family — because at that point it is no longer mechanical, whatever it is call
 
 #### REQ: review-record-writes-the-ledger
 
+**Phase:** P1
+
 `wb review record <owner/repo#N> --verdict APPROVE|REJECT|APPROVE-WITH-UNVERIFIED
 --file <review.md>` MUST post the pull-request comment with its footer and write
 to the event log: verdict, round, must-fix count, unverified probes, duration,
 and — where known — tokens and tool calls.
 
-#### REQ: landing-requires-an-approval-for-the-exact-head
+#### REQ: landing-requires-an-approval-for-the-reviewed-patch-set
 
-`wb pr land` MUST refuse without a recorded `APPROVE` **for the exact head SHA**.
-A new head invalidates the approval and requires a re-review. `--override` MUST
-require a reason, recorded in the ledger.
+**Phase:** P1
+
+`wb pr land` MUST refuse without a recorded `APPROVE` for the pull request's
+current content. Approvals MUST be keyed to the **patch-identity set**
+(`git patch-id --stable` over the reviewed range), **not** to a head SHA.
+
+A clean rebase preserves patch identity while changing every SHA, so an approval
+MUST **carry forward** across `wb stream sync`: `pr land` accepts an `APPROVE`
+whose recorded patch-id set equals the current range's, and the ledger MUST
+record both the approved SHA and the rebased SHA. Only a change in the patch-id
+set — a real content change, or a conflict resolved during rebase — invalidates
+the approval and requires a re-review.
+
+Keying on the head SHA instead would deadlock the normal order: review → APPROVE
+→ `wb stream sync` (which rebases and so changes the head) → `pr land` refuses,
+burning a re-review round on every approved-but-unlanded pull request, on every
+sync. `--override` MUST require a reason, recorded in the ledger.
 
 #### REQ: review-metrics-compare-warm-and-fresh-reviewers
+
+**Phase:** P1
 
 `wb report stream` MUST report rounds per pull request, reject rate, minutes and
 tokens per round, and a **warm-versus-fresh reviewer comparison**. The evidence
@@ -722,6 +971,24 @@ value as if it were the cost of one task.
 Events for which the harness supplied no usage MUST be recorded with those
 fields absent rather than zero, so a report can distinguish "free" from
 "unmeasured".
+
+#### REQ: redaction-runs-before-any-bytes-leave-the-process
+
+Every artifact this Feature emits off the event log — `wb report export`, and
+later any published or served form — MUST pass a redaction pass **inside the
+process, before any bytes are written or sent**. The pass MUST cover at least:
+
+- **secret-shaped strings** — tokens, keys, bearer values, anything matching the
+  patterns wb already redacts for `wb worktree log show`;
+- **absolute filesystem paths** — replaced by a stable relative or symbolic form;
+- **email addresses** and **hostnames**.
+
+**Founder-directive and task text is EXCLUDED by default** from any exported or
+published report. `report-stream-renders-an-animated-timeline` requires a
+founder-directive track, and `lane-reports.json` carries that text verbatim in
+`founder_directives[].text`; a local view MAY show it, but an artifact that
+leaves the machine MUST carry only timestamps and a redacted marker unless the
+operator passes `--include-directives`.
 
 #### REQ: report-stream-renders-an-animated-timeline
 
@@ -775,11 +1042,15 @@ estimated.
 
 #### REQ: report-fleet-compares-streams
 
+**Phase:** P1
+
 `wb report fleet` MUST aggregate completed streams over a period, defaulting to
 a week, and compare them on the same metrics so a trend is visible across
 streams rather than only within one.
 
 #### REQ: metric-regression-proposes-a-lesson
+
+**Phase:** P1
 
 When a metric regresses against the trailing comparison, wb MUST **propose** a
 backstage lesson naming the metric, the streams compared, and the events behind
@@ -815,11 +1086,28 @@ with totals per verb, per stream and per repository; and the event-log fields, s
 
 #### REQ: savings-estimates-are-calibrated-against-harness-truth
 
+**Phase:** P2
+
 `wb stats calibrate` MUST compare streams from before and after a verb existed,
 using the harness's real `tool_uses` and token figures (the shape recorded in
 `lane-reports.json`), and adjust the per-verb overhead table. Where a calibrated
 figure exists, reports MUST show **both** the estimate and the calibrated value
 rather than silently replacing one with the other.
+
+#### REQ: the-release-path-ends-at-the-installed-binary
+
+A release is not finished when the tag is cut. The release path MUST end by
+running `wb self-update` and verifying that `wb --version` reports the released
+tag, so the machine that publishes a verb is also running it.
+
+#### REQ: verbs-assert-a-minimum-wb-version
+
+Every stream verb MUST assert the fleet's declared **minimum wb version** and
+MUST refuse below it, naming `wb self-update` as the sanctioned command. The
+symmetric failure is already documented in this Feature: `gh` 2.45 broke wb's
+merge stage, so operators used raw `gh pr merge` and the opt-in cleanup never
+ran. An agent running a wb older than the verbs its skill describes fails the
+same way, and today nothing catches it.
 
 ### Worktree hygiene, disk, and caches
 
@@ -899,8 +1187,8 @@ hand over. A session that exits leaving an unended worktree MUST be reported.
 
 #### REQ: stream-end-removes-every-stream-worktree
 
-`wb stream end` MUST remove all of the stream's worktrees after the
-fast-forward landing, not merely undo its links.
+`wb stream end` MUST remove all of the stream's worktrees after the landing, not
+merely undo its links.
 
 #### REQ: merged-ness-is-decided-by-commit-identity
 
@@ -952,7 +1240,8 @@ A worktree whose pull request is merged but which holds local commits past the
 merged head MUST be reported as **`landed + residue`**, listing the residual
 commits, rather than as a bare "awaiting push". It MUST be retirable under
 `--allow-residue` or the existing `--superseded-by` receipt. This was 7 of 11
-refusals in the measured sweep, all on demonstrably merged branches; the residue
+refusals in the measured sweep, all on demonstrably merged branches carrying
+residual local commits (ahead-counts of 4, 2, 2, 2, 2, 1 and 5/4/4); the residue
 is the thing the operator needs to see.
 
 #### REQ: coordinated-tasks-retire-per-repository
@@ -964,9 +1253,11 @@ correct for a *merge* and wrong for a *cleanup*.
 #### REQ: sizes-are-reported-apparent-and-unshared
 
 Every size wb reports MUST be given **twice — apparent and unshared** — because
-pnpm hard-links `node_modules` into its store: this workstation measured **11.7
-GB apparent against 4.4 GB real**. A reclaim figure that counts hard-linked bytes
-promises a saving it cannot deliver.
+pnpm hard-links `node_modules` into its store: measured on this workstation over
+the same set, **11.7 GB apparent against 5.9 GB unshared** (after the sweep, 4.4
+GB unshared; 1.5 GB actually reclaimed). A reclaim figure that counts hard-linked
+bytes promises a saving it cannot deliver, and an apparent-versus-after-real pair
+overstates the ratio.
 
 The same measurement settles what `--share auto` is for: it is a **latency fix
 worth 3–6 minutes of CPU per install, not a disk fix**, and the spec must not
@@ -1008,12 +1299,6 @@ the claim**, so addressing a worktree and being authorized to act on it are the
 same operation. A selector that resolves to a worktree the caller does not hold
 MUST refuse rather than act.
 
-#### REQ: lane-brief-caches-facts-by-content-hash
-
-`wb lane brief` MUST assemble a lane's briefing facts with a cache keyed by
-**content hash**, so repeating a brief costs nothing when nothing changed, and is
-invalidated exactly when an input does.
-
 #### REQ: machine-readable-reads-are-cursor-paged
 
 Machine-readable read commands MUST support cursor paging, so an agent consuming
@@ -1036,7 +1321,7 @@ sequenceDiagram
     Note over O,C: agents branch from stream/<name>, PR into it,<br/>squash-merged: one commit per reviewed change
     O->>S: stream sync --verify
     S->>C: REBASE onto origin/main, rebase agent branches
-    S->>C: apply batch, run full suite ONCE (bisect on failure)
+    S->>C: apply batch, run full suite ONCE (prefix re-apply on failure)
     O->>S: deps propagate remote L --stream <name>
     S->>S: refuse if any link is live
     S->>R: merge library PRs, cut tags, deps publish npm
@@ -1060,10 +1345,11 @@ repository.
 The founder: *"Don't forget to update wb ai skills once implemented."*
 
 A verb an agent cannot discover is a verb that does not exist. Every new or
-changed verb in this Feature — `stream start/status/sync/end`,
-`deps propagate local/remote`, `pr land`, `review request/record/probe`,
-`worktree gc/review/end`, `disk`, `cache prune`, `report export/stream/publish`,
-`serve`, `stats savings/calibrate` — MUST ship **in the same pull request** as
+changed verb in this Feature — P0's `stream start/status/sync/end`,
+`deps propagate local/remote`, `pr land`, `worktree gc/review/end`,
+`session end`, `disk`, `cache prune`, `report export`, `stats savings` — and, in
+their own phases, `review request/record/probe`, `report fleet/publish`, `serve`,
+`stats calibrate` — MUST ship **in the same pull request** as
 its skill update under `skills/`, and `wb skills sync` MUST propagate it to the
 harness skills directory.
 
@@ -1153,6 +1439,18 @@ created, the two non-conflicting agent branches are rebased onto the new head,
 the conflict is reported naming the branch, its claiming agent and the
 conflicting paths, and the other two agents' results are still reported.
 
+### AC: a-second-stream-and-a-stale-lease-are-both-refused
+
+**Requirements:** dependency-streams#req:stream-pushes-use-a-lease-and-a-stream-claim, dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** a repository that already carries an open stream, and separately a
+stream branch whose remote head advanced after wb recorded it
+**When** `wb stream start` is run on the first and `wb stream sync` pushes on the
+second
+**Then** `start` refuses, names the holding stream and the sanctioned commands
+(wait, or join it); and the push refuses on a failed `--force-with-lease` naming
+the recorded and actual heads, without discarding the other agent's commit.
+
 ### AC: sync-refuses-while-a-pr-is-mid-review
 
 **Requirements:** dependency-streams#req:sync-rebases-and-never-merges
@@ -1174,17 +1472,20 @@ against `main` by mistake
 misrouted pull request and the stream branch it belongs to, and does not merge
 it as part of stream work.
 
-### AC: landing-is-a-fast-forward-with-one-deploy
+### AC: landing-is-linear-and-granular-with-one-deploy
 
 **Requirements:** dependency-streams#req:landing-is-rebase-and-merge, dependency-streams#req:never-merge-commit-a-stream-branch
 
 **Given** a stream branch holding six commits and a repository that permits
 rebase merges
 **When** the operator lands it
-**Then** `main` fast-forwards and gains the six commits individually with no
-merge commit, exactly one push, one auto-tag and one deploy occur, and — in a
-repository where `allow_rebase_merge` is disabled — WB names the repository and
-refuses instead of falling back to another route.
+**Then** `origin/main` gains six commits whose **patch-id set equals the stream
+branch's**, in order, with no merge commit — the SHAs differ, and the test MUST
+NOT assert SHA equality; the source→landed SHA pairs are recorded in the ledger;
+exactly one push, one auto-tag and one deploy occur; cleanup then succeeds on
+patch-identity and tree equality **without** requiring the stream branch to be an
+ancestor of `origin/main`; and in a repository where `allow_rebase_merge` is
+disabled WB names it and refuses rather than falling back.
 
 ### AC: go-consumer-builds-against-the-library-worktree
 
@@ -1193,9 +1494,13 @@ refuses instead of falling back to another route.
 **Given** a Go consumer that requires the library's module path and a library
 worktree containing an uncommitted change to that module
 **When** the operator runs `wb deps propagate local <library> --to <consumer>`
-**Then** the consumer compiles against the working-tree library, a `go.work`
-with a `use` entry exists at the consumer worktree root, `go.mod` is unchanged,
-`git status` reports a clean tree, and the same build with `GOWORK=off` resolves
+**Then** the consumer compiles against the working-tree library; the `go.work` at
+the consumer worktree root carries `use` entries for **every module in the
+consumer worktree and the library**; `go.work` and `go.work.sum` are both
+excluded and `git status` reports a clean tree; `go.mod` is unchanged; the
+verification output states `verified against unpublished <library> at
+content-hash <h> (dirty)`; a `wb stream sync` bump in that worktree runs its
+`go mod tidy` with `GOWORK=off`; and the same build with `GOWORK=off` resolves
 the published version instead.
 
 ### AC: npm-consumer-links-without-tracked-config
@@ -1243,17 +1548,21 @@ hand-written `go.work` containing a `use` entry and no stream record
 command that clears it, and no flag combination both bypasses the guard and
 pushes.
 
-### AC: ten-bumps-verify-once-then-bisect
+### AC: ten-bumps-verify-once-then-prefix-re-apply
 
-**Requirements:** dependency-streams#req:batch-verifies-once, dependency-streams#req:batch-failure-bisects-to-the-first-bad-change, dependency-streams#req:verbs-state-and-deduplicate-their-work
+**Requirements:** dependency-streams#req:batch-verifies-once, dependency-streams#req:the-batch-element-is-defined, dependency-streams#req:batch-failure-is-found-by-prefix-re-apply, dependency-streams#req:verbs-state-and-deduplicate-their-work
 
 **Given** a batch of ten dependency bumps in which the seventh breaks the build
 **When** the operator runs `wb stream sync --verify`
-**Then** WB applies all ten and runs the full suite exactly **once**, and only
-after that run fails does it revert and re-apply one at a time; it stops at the
-seventh, names it and the failing check, lists bumps one to six as known good,
-leaves the tree out of the failed batch state, and never performs ten full runs.
-With all ten passing, the total is exactly one full run.
+**Then** WB applies all ten and runs the full suite exactly **once**; only after
+that run fails does it revert and re-apply **cumulative prefixes** (1, 1+2,
+1+2+3 …); it stops at the first failing prefix, names the seventh bump as the
+culprit and the failing check, lists one to six as proven good, leaves the tree
+out of the failed batch state, and costs `1 + 7` runs rather than ten. With all
+ten passing the total is exactly one full run — and in both cases the ten bumps
+plus one sync produce exactly **one** stream-PR CI run, not ten. If every prefix
+passes, WB reports an interaction failure naming the full element set and the
+base, and stops.
 
 ### AC: hooks-are-cheap-on-a-stream-branch
 
@@ -1383,10 +1692,23 @@ its own worktree with a pull request into the stream branch.
 **Given** a repository whose CI runs `go vet` and `-race`, and a stream batch
 verified locally without `-race`
 **When** the batch run completes
-**Then** its output names `-race` as a mechanism it did not run and states that
-CI on the stream pull request owns it; and the Node half runs with per-file
-isolation retained and `NX_SKIP_NX_CACHE=true` set, so serialization is never
-presented as isolation.
+**Then** its output names `-race` as a mechanism it did not run **only after
+parsing that repository's stream-PR workflow and confirming `-race` is present
+there**; in a second member whose workflow does not run `-race`, wb refuses the
+skip or reports that member as unguarded for it rather than printing the
+assurance; and the Node half runs with per-file isolation retained (no
+`--no-isolate`, no `poolOptions.*.isolate=false`) and `NX_SKIP_NX_CACHE=true`
+set, so serialization is never presented as isolation.
+
+### AC: an-outdated-wb-refuses-with-the-update-command
+
+**Requirements:** dependency-streams#req:verbs-assert-a-minimum-wb-version, dependency-streams#req:the-release-path-ends-at-the-installed-binary
+
+**Given** an installed wb below the fleet's declared minimum version
+**When** any stream verb runs
+**Then** it refuses, names the installed and required versions, and names
+`wb self-update` as the sanctioned command; and after a release, the release path
+has verified that `wb --version` reports the released tag.
 
 ### AC: gc-removes-squash-merged-worktrees-and-keeps-claimed-ones
 
@@ -1418,24 +1740,25 @@ command that reclaims it.
 **Requirements:** dependency-streams#req:report-stream-renders-an-animated-timeline
 
 **Given** a completed stream exported with `wb report export <stream>`
-**When** the file is dropped onto the web app, and separately the same stream is
-viewed through `wb serve`
+**When** the file is opened directly and separately dropped onto the web app
 **Then** both render the same replay from the same versioned data contract, the
-dropped file is parsed in the browser with **no network requests**, and the local
-server mode works with the machine offline.
+dropped file is parsed in the browser with **no network requests**, and the
+exported HTML replay renders with the machine offline.
 
-### AC: a-published-snapshot-carries-no-redacted-string
+### AC: an-exported-report-carries-no-redacted-string
 
-**Requirements:** dependency-streams#req:every-verb-appends-a-structured-event
+**Requirements:** dependency-streams#req:redaction-runs-before-any-bytes-leave-the-process
 
 **Given** an event log containing a token-shaped string, an absolute home path,
-an email address and a hostname
-**When** the operator runs `wb report publish`
-**Then** the uploaded artifact contains no string matching any redaction pattern,
-visibility is whatever was chosen at publish time rather than a default, and the
-same redaction applies to `wb report export`.
+an email address, a hostname, and a founder-directive entry with verbatim text
+**When** the operator runs `wb report export`
+**Then** the artifact contains no string matching any redaction pattern, the
+directive appears as a timestamp and a redacted marker with its text absent, and
+running again with `--include-directives` is the only way the text appears.
 
 ### AC: serve-refuses-a-token-less-request
+
+**Phase:** P2
 
 **Requirements:** dependency-streams#req:every-refusal-names-the-sanctioned-command
 
@@ -1481,8 +1804,8 @@ output.
 **Requirements:** dependency-streams#req:sizes-are-reported-apparent-and-unshared, dependency-streams#req:cache-prune-refuses-to-break-live-worktrees
 
 **Given** worktrees whose `node_modules` are hard-linked into the pnpm store,
-measuring 11.7 GB apparent and 4.4 GB unshared, and live worktrees referencing
-that store
+measuring 11.7 GB apparent against 5.9 GB unshared over the same set, and live
+worktrees referencing that store
 **When** the operator runs `wb disk` and then `wb cache prune`
 **Then** every size is reported both apparent and unshared, the reclaim footer
 counts only unshared bytes, pruning the pnpm store is refused while a live
@@ -1521,6 +1844,18 @@ on commit identity rather than ancestry, is removed within that single run, and
 **Then** the un-ended worktree is reported by name with its owner and age, and
 the handed-over case is distinguished from the abandoned one.
 
+### AC: refusals-and-failures-are-distinguishable-without-parsing-prose
+
+**Requirements:** dependency-streams#req:verbs-share-an-exit-code-and-envelope-contract, dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** three invocations — one succeeding, one on a pull request whose checks
+failed, and one refused by the live-link guard
+**When** each is run with `--format json`
+**Then** they exit `0`, `1` and `2` respectively; each envelope carries `v`,
+`verb`, `outcome` and the evidence relied on; the refusal additionally carries
+`refusal_code` and a `sanctioned_command` that runs as printed; and an ambiguous
+worktree selector exits `2` listing the candidates.
+
 ### AC: a-verb-without-a-skill-section-fails-the-build
 
 **Requirements:** dependency-streams#req:one-verb-per-operation
@@ -1533,20 +1868,25 @@ present — carrying the verb, its flags, when to use it, and each refusal with 
 sanctioned next step — it passes, and `wb skills sync` propagates the section to
 the harness skills directory.
 
-### AC: landing-refuses-when-the-head-moved-after-approval
+### AC: approval-survives-a-rebase-but-not-a-content-change
 
-**Requirements:** dependency-streams#req:landing-requires-an-approval-for-the-exact-head, dependency-streams#req:every-refusal-names-the-sanctioned-command
+**Phase:** P1
 
-**Given** a pull request approved at SHA `A`, to which the author then pushes SHA
-`B`
-**When** the operator runs `wb pr land`
-**Then** it refuses, states that the approval was recorded for `A` and the head
-is `B`, and names the sanctioned next step (`wb review request … --round 2`);
-and `--override` lands only with a reason that is written to the ledger.
+**Requirements:** dependency-streams#req:landing-requires-an-approval-for-the-reviewed-patch-set, dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** a pull request approved at SHA `A`, then (i) rebased by `wb stream sync`
+to `A'` with its patch-id set unchanged, and separately (ii) amended by the
+author to `B` with a changed patch-id set
+**When** `wb pr land` runs on each
+**Then** case (i) **lands** — the approval carries forward because the patch-id
+set matches, and the ledger records both `A` and `A'`; case (ii) is refused,
+naming the changed patch-id set rather than the changed SHA and naming
+`wb review request … --round 2`; and `--override` lands only with a reason
+written to the ledger.
 
 ### AC: a-bump-pr-that-touches-code-is-not-mechanical
 
-**Requirements:** dependency-streams#req:mechanical-bumps-are-not-reviewed, dependency-streams#req:landing-requires-an-approval-for-the-exact-head
+**Requirements:** dependency-streams#req:mechanical-bumps-are-not-reviewed, dependency-streams#req:landing-requires-an-approval-for-the-reviewed-patch-set
 
 **Given** one pull request whose diff touches only `go.mod`, `go.sum` and
 `pnpm-lock.yaml`, and a second titled as a Renovate bump whose diff also edits a
@@ -1558,6 +1898,8 @@ its diff rather than its title, and is named as needing the `dependency-bump`
 review family.
 
 ### AC: briefs-are-generated-with-family-context-and-round-deltas
+
+**Phase:** P1
 
 **Requirements:** dependency-streams#req:review-request-produces-a-tracked-checkout-and-a-brief, dependency-streams#req:review-briefs-come-from-a-template-family
 
@@ -1571,6 +1913,8 @@ the author's reply, and the SHA range between the reviewed head and the new one;
 and `--family` overrides the selection.
 
 ### AC: a-new-risk-class-becomes-a-template-probe
+
+**Phase:** P1
 
 **Requirements:** dependency-streams#req:review-supports-the-exceptions-that-templates-cannot-cover
 
@@ -1612,8 +1956,11 @@ suite runs, which is the property that matters.
 - Cross-machine streams. A stream is local to one workstation; its worktrees are
   claimed fleet-wide, but its links are not shared.
 - Landing a stream with a merge commit or a single squash of the whole stream.
-- Implementing the deterministic follow-up verbs listed above; this Feature only
-  names them.
+- Implementing `wb release verify`, `wb deploy watch` or `wb renovate run --wait`
+  in the first release; their requirements are tagged P1 and this Feature only
+  names them there.
+- `wb lane brief`, which has no definition in this Feature and no command family
+  in the CLI today.
 - Writing to the backstage lessons corpus. wb proposes; a human decides.
 - Estimating token or duration figures the harness did not report, or presenting
   a cumulative context total as the cost of one task.
@@ -1633,8 +1980,8 @@ suite runs, which is the property that matters.
   governs landing order, not a display tree.
 - Full-autonomy launch flags as a default, and global state wipes of the
   `orca reset --all` shape.
-- Shipping `wb report stream --publish` (see Future work); this Feature specifies
-  only the local report.
+- Shipping `wb serve`, `wb report publish` or the live relay in the first release
+  (P2 — see Future work); P0 specifies only `wb report export`, mode 0.
 
 ## Future work — one data contract, four delivery modes
 
@@ -1741,7 +2088,7 @@ their raw commits be kept?** This spec assumes **squash — one commit per
 reviewed change** (`agent-branches-squash-into-the-stream`), on the grounds that
 it is the granularity a reviewer of `main` wants and it keeps "fix typo" out of
 the permanent history. The alternative is a rebase that preserves each agent's
-commits, giving finer bisect resolution at the cost of a noisier `main`. This is
+commits, giving finer prefix-scan resolution at the cost of a noisier `main`. This is
 recorded as an assumption because it is reversible: it changes only how agent
 pull requests are landed, not the stream's shape.
 
