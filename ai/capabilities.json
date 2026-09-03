@@ -6818,7 +6818,7 @@
                 "Apply is bounded-parallel by canonical repository under --parallel; one Git writer per clone is preserved, a selected task failure is isolated, and the report stays in walk order regardless of completion order",
                 "cleanup plans inspect and apply resumes a durable post-removal exact-ref backlog",
                 "--resume-interrupted recovers only one explicitly named task after exact lock metadata and a conclusively dead PID are proven",
-                "Recognized empty WB stage artifacts are descriptor-safely archived outside the active task; non-empty or invalid artifacts remain explicit blocking cleanup backlog",
+                "An empty recognized .wb-retired-stage-* directory and an inert .wb-retired-lock-* file are terminal debris: they are purged unconditionally and silently on the inventory read path, dry run included, and reported only as a purge receipt rather than as cleanup backlog. A task holding a live .lock is left entirely alone, and a non-empty or invalid stage remains explicit blocking backlog",
                 "--recover-stages inventories non-empty retired stages without following links, records Git identity and a deterministic private receipt, and archives only an unchanged exact stage under --apply",
                 "--retire-shells sweeps every task directory for a pre-existing empty shell (owner-namespace directory and/or retired lock, no live checkout) and retires it, dry-run by default",
                 "--superseded-by accepts only a trusted-reviewer receipt binding exact source/target heads, replacement PRs or commits, and a complete reviewed residual inventory; source or target drift and any unclassified residual refuse closed"
@@ -6920,7 +6920,7 @@
             },
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository",
+              "name": "TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository",
               "kind": "integration"
             },
             {
@@ -6930,7 +6930,7 @@
             },
             {
               "path": "internal/worktrees/lifecycle_integration_test.go",
-              "name": "TestCleanupArchivesEmptyArtifactOnlyTask",
+              "name": "TestCleanupRetiresATaskLeftHoldingOnlyAPurgedStage",
               "kind": "integration"
             },
             {
@@ -7218,6 +7218,143 @@
       "notes": "The projection is an untrusted opaque pointer; the immutable claim and live checkout are corroborated before terminal mutation."
     },
     {
+      "id": "wb.worktree.gc",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree gc",
+              "flags": [
+                "--allow-residue",
+                "--apply",
+                "--base",
+                "--format",
+                "--older-than",
+                "--parallel",
+                "--remote",
+                "--residue-depth",
+                "--skip-detached",
+                "--skip-sizes",
+                "--ttl",
+                "--verbose"
+              ],
+              "modes": [
+                "Dry-run plan is the default; --apply is required to retire anything",
+                "Merged-ness is decided by commit identity — GitHub's commit-to-pull-request index for the head, then for its ancestors — never by branch-name ancestry, because a squash merge leaves none",
+                "Classifies every checkout as contained, landed-clean, landed-residue, detached-review, detached-unknown, open-pr, dirty, claimed-live, unpushed, or unmerged, and prints the evidence behind the class",
+                "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
+                "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
+                "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
+                "No force flag exists; --allow-residue is the only widening and it prints the evidence it widens past",
+                "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
+                "An unpushed head is never retired by any flag: it is the only class that can lose work",
+                "Work Logs and event logs are never deleted",
+                "Every size is reported apparent and unshared, and the reclaim footer counts only unshared bytes, because pnpm hard-links node_modules into its store",
+                "Exit code 0 when nothing needed attention, 1 when something was kept, 2 on a usage error"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree gc --help",
+              "contains": [
+                "--allow-residue",
+                "--apply",
+                "landed + residue",
+                "commit identity",
+                "detached-review",
+                "no force flag",
+                "apparent and unshared"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/gc.md",
+              "marker": "# Worktree garbage collection",
+              "examples": [
+                "wb worktree gc",
+                "wb worktree gc --apply",
+                "wb worktree gc --format json",
+                "wb worktree gc my-task --allow-residue --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCClassifiesASquashMergedWorktreeRemovable",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCApplyRetiresTheSquashMergedWorktreeAndKeepsTheWorkLog",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCKeepsDirtyAndOpenPullRequestCheckoutsWithOwnerAgeAndSanctionedCommand",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCInventoriesAndRetiresADetachedReviewCheckout",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCRefusesADetachedCheckoutWithNoLanding",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCReportsLandedWithResidueAndRetiresItOnlyWithAllowResidue",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCPurgesTerminalArtefactsSilentlyOnItsOwnReadPath",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCHasNoForceShapedOption",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/terminal_artefacts_test.go",
+              "name": "TestPurgeTerminalArtefactsRemovesEmptyStageAndInertLock",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_gc_test.go",
+              "name": "TestWorktreeGCCLIPlansAndRefuses",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup — cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
+    },
+    {
       "id": "wb.worktree.guard",
       "feature_refs": [
         "spec/features/worktree-lifecycle/README.md"
@@ -7417,12 +7554,16 @@
                 "--format",
                 "--github",
                 "--only",
-                "--parallel"
+                "--parallel",
+                "--ttl"
               ],
               "modes": [
                 "Live managed Git worktrees only",
                 "Optional exact remote target and PR evidence",
-                "Versioned JSON envelope exposes results, diagnostics, and lifecycle-artifact cleanup backlog; it replaces the legacy bare result array"
+                "Versioned JSON envelope exposes results, diagnostics, and lifecycle-artifact cleanup backlog; it replaces the legacy bare result array",
+                "A detached checkout is inventoried rather than warned about and dropped, so the pull-request review checkouts that make up most permanent worktree debt are visible and removable",
+                "Every row carries its owner, its age, and whether it passed --ttl, so an abandoned worktree is distinguishable from a paused one",
+                "Empty .wb-retired-stage-* directories and inert .wb-retired-lock-* files are purged unconditionally and silently on this read path rather than logged once per artefact"
               ]
             }
           ],
@@ -7467,7 +7608,7 @@
             },
             {
               "path": "cmd/wb/worktree_test.go",
-              "name": "TestWorktreeListJSONIncludesArtifactOnlyCleanupBacklog",
+              "name": "TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt",
               "kind": "integration"
             }
           ],

@@ -316,6 +316,7 @@ func preflightAbortRepository(
 		false,
 		false,
 		result.External,
+		inspectPolicy{},
 	)
 	if err != nil {
 		return ListResult{}, "", nil, fmt.Errorf("preflight abort %s: %w", result.Repository, err)
@@ -396,6 +397,7 @@ func applyDiscardedAbort(
 		false,
 		false,
 		result.External,
+		inspectPolicy{},
 	)
 	if err != nil {
 		return fmt.Errorf("recheck discarded worktree %s: %w", result.Repository, err)

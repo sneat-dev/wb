@@ -54,6 +54,7 @@ func newWorktreeCmd() *cobra.Command {
 		{newWorktreeAdoptCmd(), "start"},
 		{newWorktreeMergeCmd(), "finish"},
 		{newWorktreeCleanupCmd(), "finish"},
+		{newWorktreeGCCmd(), "finish"},
 		{newWorktreeAbortCmd(), "finish"},
 		{newWorktreeSummaryCmd(), "inspect"},
 		{newWorktreeInfoCmd(), "inspect"},
@@ -1681,6 +1682,7 @@ func newWorktreeListCmd() *cobra.Command {
 	var base, format, absorbedBy, ownerState string
 	var github bool
 	var parallel int
+	var ttl time.Duration
 	command := &cobra.Command{
 		Use:   "list [task]",
 		Short: "List live WB-managed task worktrees and their lifecycle state",
@@ -1714,6 +1716,12 @@ joined into this command.`,
 				AbsorbedBy:   absorbedBy,
 				GitHub:       github,
 				Workers:      parallel,
+				// A detached checkout is what every pull-request review
+				// creates. Warning about it and then dropping it from the
+				// inventory is why nothing could ever retire one: the measured
+				// sweep showed 50 rows for 60 checkouts.
+				IncludeDetached: true,
+				TTL:             ttl,
 			})
 			if err != nil {
 				return err
@@ -1746,6 +1754,7 @@ joined into this command.`,
 	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "with --github, verify work landed inside this merged pull request number or exact landing commit")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().StringVar(&ownerState, "only", "", "only worktrees with owner PID state: active or orphaned")
+	command.Flags().DurationVar(&ttl, "ttl", 7*24*time.Hour, "report a worktree older than this as expired")
 	return command
 }
 
@@ -2343,15 +2352,38 @@ func printWorktreeList(command *cobra.Command, results []worktrees.ListResult) e
 		} else if result.MergedPullRequest != nil {
 			pr = result.MergedPullRequest.URL
 		}
+		branch := result.Branch
+		if result.Detached {
+			branch = "DETACHED"
+			if state == "active" {
+				state = "detached"
+			}
+		}
+		age := worktreeAgeLabel(result)
 		if _, err := fmt.Fprintf(
 			command.OutOrStdout(),
-			"%s  %s  %s  %s  owners=%s  %s\n",
-			result.Task, result.Repository, result.Branch, state, result.OwnerState, pr,
+			"%s  %s  %s  %s  owner=%s  age=%s  %s\n",
+			result.Task, result.Repository, branch, state, result.Owner, age, pr,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// worktreeAgeLabel renders how long a checkout has been there, and marks it
+// expired against the fleet's TTL. Nothing previously said "this task has been
+// finished for six days", so nothing ever prompted a sweep and the sweep only
+// happened when the disk filled.
+func worktreeAgeLabel(result worktrees.ListResult) string {
+	if result.AgeSeconds <= 0 {
+		return "-"
+	}
+	age := (time.Duration(result.AgeSeconds) * time.Second).Truncate(time.Minute).String()
+	if result.Expired {
+		return age + "!"
+	}
+	return age
 }
 
 func printWorktreeSummary(command *cobra.Command, task string, results []worktrees.ListResult, withGitHub bool) error {

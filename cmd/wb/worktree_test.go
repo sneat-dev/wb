@@ -209,13 +209,21 @@ func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 	}
 }
 
-func TestWorktreeListJSONIncludesArtifactOnlyCleanupBacklog(t *testing.T) {
+// An empty retired stage is terminal debris and never reaches the envelope as
+// backlog: the read path purges it, reports it once in the purge receipt, and
+// prints nothing on stderr. That silence is the requirement — one workstation
+// carried 55 of these and printed 55 `info:` lines before every single table.
+func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
 	const task = "artifact-json"
 	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.MkdirAll(retired, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(home, "worktrees", task, ".wb-retired-lock-6b0995eef65f84dace22d24df2644b33")
+	if err := os.WriteFile(lock, []byte("operation=artifact-json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(wbhome.EnvOverride, home)
@@ -231,13 +239,20 @@ func TestWorktreeListJSONIncludesArtifactOnlyCleanupBacklog(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &outcome); err != nil {
 		t.Fatalf("decode JSON inventory: %v\n%s", err, stdout.String())
 	}
-	if outcome.SchemaVersion != 1 || len(outcome.Results) != 0 || len(outcome.Diagnostics) != 0 || len(outcome.Artifacts) != 1 {
+	if outcome.SchemaVersion != 1 || len(outcome.Results) != 0 ||
+		len(outcome.Diagnostics) != 0 || len(outcome.Artifacts) != 0 {
 		t.Fatalf("JSON control-plane envelope = %#v", outcome)
 	}
-	if filepath.Base(outcome.Artifacts[0].Path) != filepath.Base(retired) ||
-		outcome.Artifacts[0].Task != task || !outcome.Artifacts[0].Eligible ||
-		outcome.Artifacts[0].Disposition != "archive_empty_stage" {
-		t.Fatalf("JSON lifecycle artifact = %#v", outcome.Artifacts)
+	if len(outcome.Purged) != 2 {
+		t.Fatalf("purge receipt = %#v, want the stage and the lock", outcome.Purged)
+	}
+	for _, path := range []string{retired, lock} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s survived the read path: %v", path, err)
+		}
+	}
+	if strings.Contains(stderr.String(), "info:") {
+		t.Fatalf("a terminal artefact must never become a per-invocation log line: %s", stderr.String())
 	}
 }
 

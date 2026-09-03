@@ -27,6 +27,11 @@ recognizes legacy linked worktrees there during migration.
   resume after interruption, or revert after a landed failure. This is the
   normal repeated counterpart to creation, not an exceptional release tool.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
+- Read [gc.md](references/gc.md) when the request is "clean up worktrees", "the
+  disk is full", or "what is safe to delete?" and you do not already know the
+  one task to retire. `wb worktree gc` classifies every checkout by landing
+  evidence — a squash merge leaves no ancestry, so `git` calls every landed
+  branch unmerged — and retires the provably finished ones.
 - Read [cleanup.md](references/cleanup.md) for ANY hygiene request — deleting
   merged branches, removing stale or leftover worktrees, or sweeping historic
   leftovers across the whole fleet. Start there before touching raw Git. If

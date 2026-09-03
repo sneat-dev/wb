@@ -14,6 +14,8 @@ cannot tell content that landed from content that was reverted after landing.
 
 | The request | Start here |
 | --- | --- |
+| "clean up worktrees", "the disk is full", "retire everything finished" | `wb worktree gc` — see [gc.md](gc.md) |
+| "cleanup refused, but I know this landed" | `wb worktree gc <task>` — it decides merged-ness by commit identity |
 | "clean up leftovers", "what is safe to delete?" | `wb worktree orphans` |
 | "audit worktree/branch hygiene" | `wb worktree orphans --only review` |
 | "this task's PRs merged, tidy it up" | `wb worktree cleanup <task>` |

@@ -65,6 +65,31 @@ type ListOptions struct {
 	// which is the behaviour to fall back to if a repository ever proves
 	// unsafe to inspect alongside its siblings.
 	Workers int
+	// IncludeDetached keeps a checkout whose HEAD is detached in the inventory
+	// instead of reporting it as a malformed candidate. A pull-request review
+	// checkout is detached by construction, and dropping it from the inventory
+	// is why nothing in WB could ever retire one: the measured sweep showed 50
+	// inventory rows for 60 checkouts. Callers that mutate a branch — cleanup,
+	// merge — leave this false, so a detached checkout stays outside their
+	// reach exactly as before; `wb worktree list` and `wb worktree gc` set it.
+	IncludeDetached bool
+	// TTL, when positive, marks a checkout older than this as expired. It is
+	// pure reporting: nothing acts on it, and its purpose is that "this task
+	// has been finished for six days" is visible before the disk fills.
+	TTL time.Duration
+	// ResidueEvidence asks the inventory to look for a landed ancestor when the
+	// head itself is not integrated. It costs up to ResidueDepth extra reads of
+	// GitHub's commit index per candidate, so it is opt-in: a fleet-wide sweep
+	// over dozens of unlanded worktrees must not pay for evidence nobody asked
+	// for. Verbs that classify — worktree gc — set it; verbs that merely list
+	// do not.
+	ResidueEvidence bool
+	// ResidueDepth bounds how far back from HEAD that walk goes. Zero uses
+	// DefaultResidueDepth.
+	ResidueDepth int
+	// Now is the clock used for age and TTL. Tests inject it; production
+	// leaves it nil for time.Now.
+	Now func() time.Time
 }
 
 // DefaultInspectWorkers is the default cap on concurrent candidate
@@ -261,6 +286,30 @@ type ListResult struct {
 	// itself — lives under the WB task directory. See openAdoptedCleanupWorktree
 	// and locateAdoptedWorktree.
 	External bool `json:"external,omitempty"`
+	// Detached marks a checkout with no current branch. Branch is empty for
+	// one, so every branch-shaped operation must skip it rather than act on an
+	// empty ref. It is populated only when ListOptions.IncludeDetached is set.
+	Detached bool `json:"detached,omitempty"`
+	// Owner is the agent identity that last took custody, or "orphaned" when
+	// none is live. It is the human-readable half of OwnerState, carried here
+	// so an inventory row can name who to ask before removing anything.
+	Owner string `json:"owner,omitempty"`
+	// CreatedAt is the immutable manifest's creation time, falling back to the
+	// worktree directory's own modification time for a checkout WB did not
+	// create. AgeSeconds and Expired are derived from it against ListOptions.TTL.
+	CreatedAt  time.Time `json:"created_at,omitempty"`
+	AgeSeconds int64     `json:"age_seconds,omitempty"`
+	TTLSeconds int64     `json:"ttl_seconds,omitempty"`
+	Expired    bool      `json:"expired,omitempty"`
+	// HeadUnknownToRemote records that GitHub's commit index has never seen
+	// this head: the checkout holds work that was never pushed anywhere.
+	HeadUnknownToRemote bool `json:"head_unknown_to_remote,omitempty"`
+	// Landing is the commit-identity landing evidence for a head that is not
+	// itself contained in the target: the merged pull request of an ancestor,
+	// plus the local commits stacked on top of it. A squash merge produces
+	// exactly this shape, and reporting it as a bare "awaiting push" was 7 of
+	// 11 refusals in the measured sweep. See landingEvidence.
+	Landing *LandingEvidence `json:"landing,omitempty"`
 	// supersessionReceipt is retained only for the current process so the
 	// terminal Work Log can embed the exact reviewed evidence. The public JSON
 	// carries the receipt path and reviewer identity; the private archive gets
@@ -315,6 +364,10 @@ type ListOutcome struct {
 	Results       []ListResult        `json:"results"`
 	Diagnostics   []ListDiagnostic    `json:"diagnostics,omitempty"`
 	Artifacts     []LifecycleArtifact `json:"artifacts,omitempty"`
+	// Purged records the terminal artefacts this read path swept. It is
+	// evidence for a receipt, never a per-invocation log line: see
+	// purgeTerminalArtefacts.
+	Purged []PurgedArtefact `json:"purged,omitempty"`
 }
 
 // CleanupOptions controls planning and removal of merged WB tasks.
@@ -382,6 +435,22 @@ type CleanupOptions struct {
 	OlderThan               time.Duration
 	ReportDir               string
 	Now                     func() time.Time
+	// AllowResidue widens eligibility past exactly one refusal: a branch whose
+	// work is provably landed by commit identity but which holds local commits
+	// past the landed head. It is not a force flag — no proof is skipped, the
+	// landing receipt must still hold — and the residual commits are printed
+	// before they are discarded, because deleting the branch discards them.
+	AllowResidue bool
+	// IncludeDetached lets a detached checkout — the shape every pull-request
+	// review creates — reach cleanup at all. It is only ever safe alongside
+	// evidence that the checkout's head is a merged pull request's head, which
+	// is what worktree gc classifies before it delegates here.
+	IncludeDetached bool
+	// TTL is reporting only, threaded to the inventory so a cleanup receipt can
+	// state a candidate's age against the fleet's expiry window.
+	TTL time.Duration
+	// ResidueDepth bounds the commit-to-pull-request walk. See ListOptions.
+	ResidueDepth int
 	// beforeCleanupLocks is a test-only seam before cleanup opens and locks
 	// task directories. It exercises substituted task hierarchy rejection.
 	beforeCleanupLocks func()
@@ -462,11 +531,16 @@ type CleanupResult struct {
 // all-or-nothing unit blockUnsafeTasks already applies to an unclean, locked,
 // or unmerged sibling. Every other task in the run proceeds normally.
 type CleanupOutcome struct {
-	Results     []CleanupResult          `json:"results"`
-	ReportPath  string                   `json:"report_path,omitempty"`
-	Diagnostics []ListDiagnostic         `json:"diagnostics,omitempty"`
-	Artifacts   []LifecycleArtifact      `json:"artifacts,omitempty"`
-	Recovery    *InterruptedLockRecovery `json:"recovery,omitempty"`
+	Results     []CleanupResult     `json:"results"`
+	ReportPath  string              `json:"report_path,omitempty"`
+	Diagnostics []ListDiagnostic    `json:"diagnostics,omitempty"`
+	Artifacts   []LifecycleArtifact `json:"artifacts,omitempty"`
+	// Purged records the terminal artefacts the inventory walk swept on its way
+	// here. They are never part of the plan an operator approves: an empty
+	// retired stage and an inert retired lock are WB's own debris, and their
+	// removal is maintenance rather than a cleanup decision.
+	Purged   []PurgedArtefact         `json:"purged,omitempty"`
+	Recovery *InterruptedLockRecovery `json:"recovery,omitempty"`
 }
 
 // InterruptedLockRecovery is durable operator-visible evidence for the one
@@ -878,9 +952,16 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		options.Workers = DefaultInspectWorkers
 	}
 	reporter := &listProgressReporter{report: options.Progress}
+	policy := inspectPolicy{
+		includeDetached: options.IncludeDetached,
+		ttl:             options.TTL,
+		residueEvidence: options.ResidueEvidence,
+		residueDepth:    options.ResidueDepth,
+		now:             options.Now,
+	}
 	for _, layout := range resolution.Read {
-		results, diagnostics, artifacts, listErr := listLayout(
-			ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter,
+		results, diagnostics, artifacts, purged, listErr := listLayout(
+			ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter, policy,
 		)
 		if listErr != nil {
 			return ListOutcome{}, listErr
@@ -888,6 +969,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		outcome.Results = append(outcome.Results, results...)
 		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
 		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
+		outcome.Purged = append(outcome.Purged, purged...)
 	}
 	if options.OwnerState != "" {
 		filtered := outcome.Results[:0]
@@ -914,7 +996,32 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		return outcome.Diagnostics[i].Task < outcome.Diagnostics[j].Task
 	})
 	sort.Slice(outcome.Artifacts, func(i, j int) bool { return outcome.Artifacts[i].Path < outcome.Artifacts[j].Path })
+	sort.Slice(outcome.Purged, func(i, j int) bool { return outcome.Purged[i].Path < outcome.Purged[j].Path })
 	return outcome, nil
+}
+
+// cleanupInspectPolicy is the one place a cleanup transaction's widenings
+// become an inventory policy, so the plan, the preflight, and the final
+// re-inspection under the task lock all ask the same question.
+func cleanupInspectPolicy(options CleanupOptions) inspectPolicy {
+	return inspectPolicy{
+		includeDetached: options.IncludeDetached,
+		ttl:             options.TTL,
+		residueEvidence: cleanupWantsResidueEvidence(options),
+		residueDepth:    options.ResidueDepth,
+		now:             options.Now,
+	}
+}
+
+// cleanupWantsResidueEvidence keeps the extra commit-index reads where they
+// earn their cost. A named task is a handful of candidates and its operator is
+// asking "why can I not finish this?", which is exactly the question
+// "landed + residue" answers. A fleet-wide --all-merged sweep walks dozens of
+// legitimately unlanded worktrees, and paying up to ResidueDepth API reads for
+// each of them to re-learn that they are unlanded is the redundant work that
+// verbs are required not to do.
+func cleanupWantsResidueEvidence(options CleanupOptions) bool {
+	return options.AllowResidue || len(options.Tasks) > 0 || options.Task != ""
 }
 
 func listLayout(
@@ -927,17 +1034,19 @@ func listLayout(
 	withGitHub bool,
 	workers int,
 	reporter *listProgressReporter,
-) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, error) {
+	policy inspectPolicy,
+) ([]ListResult, []ListDiagnostic, []LifecycleArtifact, []PurgedArtefact, error) {
 	taskEntries, err := os.ReadDir(layout.WorktreesRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
+		return nil, nil, nil, nil, fmt.Errorf("read worktree tasks under %s: %w", layout.WorktreesRoot, err)
 	}
 	results := make([]ListResult, 0)
 	diagnostics := make([]ListDiagnostic, 0)
 	artifacts := make([]LifecycleArtifact, 0)
+	purged := make([]PurgedArtefact, 0)
 	// The walk below is local and cheap; inspection is what contacts origin.
 	// Collect candidates first, then inspect them concurrently, so one slow
 	// remote cannot hold up the other several hundred.
@@ -955,6 +1064,10 @@ func listLayout(
 			continue
 		}
 		taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
+		// Sweep this task's terminal artefacts before the directory is read, so
+		// what they leave behind never reaches the inventory as backlog and
+		// never becomes an `info:` line. See purgeTerminalArtefacts.
+		purged = append(purged, purgeTerminalArtefacts(layout.WorktreesRoot, taskEntry.Name())...)
 		_, lockErr := os.Stat(filepath.Join(taskRoot, ".lock"))
 		locked := lockErr == nil
 		if lockErr != nil && !vanishedDuringWalk(lockErr) {
@@ -1075,11 +1188,11 @@ func listLayout(
 		}
 	}
 	inspected, inspectDiagnostics := runInspections(
-		ctx, pending, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter,
+		ctx, pending, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy,
 	)
 	results = append(results, inspected...)
 	diagnostics = append(diagnostics, inspectDiagnostics...)
-	return results, diagnostics, artifacts, nil
+	return results, diagnostics, artifacts, purged, nil
 }
 
 // runInspections inspects every queued candidate, up to workers at a time,
@@ -1098,6 +1211,7 @@ func runInspections(
 	withGitHub bool,
 	workers int,
 	reporter *listProgressReporter,
+	policy inspectPolicy,
 ) ([]ListResult, []ListDiagnostic) {
 	if len(pending) == 0 {
 		return nil, nil
@@ -1135,7 +1249,7 @@ func runInspections(
 				lock := locks.get(job.commonDir)
 				lock.Lock()
 				result, inspectErr := inspectLifecycleWorktree(
-					ctx, projectsRoot, home, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external,
+					ctx, projectsRoot, home, layout, job.task, job.path, base, absorbedBy, withGitHub, job.locked, job.external, policy,
 				)
 				lock.Unlock()
 
@@ -1353,14 +1467,19 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		normalized.ReportDir = DefaultCleanupReportDir(resolution.Write.Home, now)
 	}
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
-		ProjectsRoot: normalized.ProjectsRoot,
-		Tasks:        normalized.Tasks,
-		Base:         normalized.Base,
-		Filter:       normalized.Filter,
-		AbsorbedBy:   normalized.AbsorbedBy,
-		GitHub:       true,
-		Progress:     normalized.Progress,
-		Workers:      normalized.Workers,
+		ProjectsRoot:    normalized.ProjectsRoot,
+		Tasks:           normalized.Tasks,
+		Base:            normalized.Base,
+		Filter:          normalized.Filter,
+		AbsorbedBy:      normalized.AbsorbedBy,
+		GitHub:          true,
+		Progress:        normalized.Progress,
+		Workers:         normalized.Workers,
+		IncludeDetached: normalized.IncludeDetached,
+		TTL:             normalized.TTL,
+		ResidueEvidence: cleanupWantsResidueEvidence(normalized),
+		ResidueDepth:    normalized.ResidueDepth,
+		Now:             normalized.Now,
 	})
 	if err != nil {
 		return CleanupOutcome{}, err
@@ -1462,7 +1581,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	blockArtifactTasks(results, listed.Artifacts)
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
-	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts, Recovery: recovery}
+	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts, Purged: listed.Purged, Recovery: recovery}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.
@@ -1621,6 +1740,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				true,
 				false, // The task is locked by this cleanup operation.
 				outcome.Results[index].External,
+				cleanupInspectPolicy(normalized),
 			)
 			if err != nil {
 				worktree.close()
@@ -1827,12 +1947,19 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				worktree.close()
 				return err
 			}
-			if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
-				closeCanonical()
-				worktree.close()
-				return fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err)
+			// A detached checkout has no branch ref of its own: a review
+			// checkout points straight at a commit. Deleting the checkout is
+			// the whole of its retirement, and asking Git to delete
+			// refs/heads/ with an empty name would be a request to remove
+			// something that was never created.
+			if refreshed.Branch != "" {
+				if err := runSecureCleanupGitHelper(ctx, canonical, nil, nil, "", "", "update-ref", "-d", "refs/heads/"+refreshed.Branch, refreshed.HeadSHA); err != nil {
+					closeCanonical()
+					worktree.close()
+					return fmt.Errorf("delete local branch %s at %s: %w", refreshed.Branch, refreshed.HeadSHA, err)
+				}
+				outcome.Results[index].BranchDeleted = true
 			}
-			outcome.Results[index].BranchDeleted = true
 			if err := worktree.removeEmptyParent(normalized.afterCleanupParentAuthorization); err != nil {
 				closeCanonical()
 				worktree.close()
@@ -2359,6 +2486,30 @@ func resolveRecordedWorktreeBase(ctx context.Context, home, worktree, fallback s
 // pointer to a landing commit or merged pull request for work that reached the
 // target inside a differently named integration branch; it only says where to
 // look for a receipt and never substitutes for one (see absorbedLandingReceipt).
+// inspectPolicy carries the reporting-only widenings of an inventory read. Its
+// zero value is exactly the behaviour every mutation path had before them, so a
+// caller that removes worktrees or branches keeps passing it and can never
+// silently inherit a widening it did not ask for.
+type inspectPolicy struct {
+	// includeDetached keeps a detached checkout as a result instead of an
+	// error. Branch is empty for one; every branch-shaped operation must check.
+	includeDetached bool
+	// ttl marks a checkout older than this expired. Reporting only.
+	ttl time.Duration
+	// residueEvidence enables the commit-to-pull-request walk over ancestors.
+	residueEvidence bool
+	// residueDepth bounds that walk.
+	residueDepth int
+	now          func() time.Time
+}
+
+func (policy inspectPolicy) clock() time.Time {
+	if policy.now != nil {
+		return policy.now()
+	}
+	return time.Now()
+}
+
 func inspectLifecycleWorktree(
 	ctx context.Context,
 	projectsRoot string,
@@ -2366,6 +2517,7 @@ func inspectLifecycleWorktree(
 	layout wbhome.Layout,
 	task, worktree, base, absorbedBy string,
 	withGitHub, locked, external bool,
+	policy inspectPolicy,
 ) (ListResult, error) {
 	base, err := resolveRecordedWorktreeBase(ctx, home, worktree, base)
 	if err != nil {
@@ -2414,7 +2566,11 @@ func inspectLifecycleWorktree(
 	if err != nil {
 		return ListResult{}, err
 	}
-	if branch == "" || branch == base {
+	detached := branch == ""
+	if detached && !policy.includeDetached {
+		return ListResult{}, fmt.Errorf("WB worktree %s is not on a feature branch", worktree)
+	}
+	if branch == base {
 		return ListResult{}, fmt.Errorf("WB worktree %s is not on a feature branch", worktree)
 	}
 	head, err := git(ctx, worktree, "rev-parse", "HEAD")
@@ -2451,13 +2607,14 @@ func inspectLifecycleWorktree(
 		Branch:        branch, Base: base, HeadSHA: head,
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
-		External: external,
+		External: external, Detached: detached,
 	}
 	owners, ownerErr := lifecycleOwnerViews(home, worktree)
 	if ownerErr != nil {
 		return ListResult{}, fmt.Errorf("read owner metadata for %s: %w", worktree, ownerErr)
 	}
 	result.Owners, result.OwnerState = owners, worktreeOwnerState(owners)
+	applyWorktreeAge(&result, worktree, policy)
 	// The owner event is an append-only projection and may be absent after an
 	// interrupted creation. Prefer the immutable claim's session link when it
 	// exists so park can identify the intended member before attempting custody
@@ -2479,14 +2636,19 @@ func inspectLifecycleWorktree(
 		// LocallyMerged historically described the remote-tracking ref. Once an
 		// exact fetched target is available, report the stronger observation.
 		result.LocallyMerged = result.IntegratedAtOrigin
-		result.RemoteHeadSHA, err = remoteBranchHead(ctx, canonical, branch)
+		if branch != "" {
+			// A detached checkout has no branch on origin to read, and asking
+			// for the head of an empty ref is a question with no answer.
+			result.RemoteHeadSHA, err = remoteBranchHead(ctx, canonical, branch)
+			if err != nil {
+				return ListResult{}, err
+			}
+		}
+		pullRequests, known, err := githubPullRequestsForCommit(ctx, worktree, slug, head)
 		if err != nil {
 			return ListResult{}, err
 		}
-		pullRequests, err := githubPullRequests(ctx, worktree, slug, head)
-		if err != nil {
-			return ListResult{}, err
-		}
+		result.HeadUnknownToRemote = !known
 		result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
 		if !result.IntegratedAtOrigin {
 			result.RebaseMergedAtOrigin, err = rebaseMergedPullRequestIntegrated(ctx, canonical, head, result.RemoteTargetSHA, result.MergedPullRequest)
@@ -2512,8 +2674,61 @@ func inspectLifecycleWorktree(
 				}
 			}
 		}
+		if !result.IntegratedAtOrigin && policy.residueEvidence {
+			// Last, and only when every cheaper proof has said no: ask whether
+			// an ancestor landed and this checkout is carrying residue on top
+			// of it. Reporting that is the difference between "awaiting push"
+			// and "landed, and here are the two commits that did not".
+			result.Landing, err = landingEvidence(
+				ctx, worktree, canonical, slug, head, base, result.RemoteTargetSHA, policy.residueDepth,
+			)
+			if err != nil {
+				return ListResult{}, err
+			}
+			if result.Landing != nil && result.Landing.PullRequest != nil && result.MergedPullRequest == nil {
+				result.MergedPullRequest = result.Landing.PullRequest
+			}
+		}
 	}
 	return result, nil
+}
+
+// applyWorktreeAge records who holds a checkout and how long it has been
+// there. Nothing in WB could previously tell an abandoned worktree from a
+// paused one: the inventory showed `owners=orphaned` for 20 of them and no age
+// at all, so nothing ever prompted a sweep and the sweep only happened when the
+// disk filled.
+func applyWorktreeAge(result *ListResult, worktree string, policy inspectPolicy) {
+	result.Owner = worktreeOwnerName(result.Owners, result.OwnerState)
+	if manifest, err := ReadManifest(worktree); err == nil && !manifest.CreatedAt.IsZero() {
+		result.CreatedAt = manifest.CreatedAt.UTC()
+	} else if info, statErr := os.Stat(worktree); statErr == nil {
+		// A checkout WB did not create — an adopted or hand-made one — still
+		// has an age, and reporting the directory's own is honest as long as
+		// nothing claims it came from a manifest.
+		result.CreatedAt = info.ModTime().UTC()
+	}
+	if result.CreatedAt.IsZero() {
+		return
+	}
+	now := policy.clock()
+	if age := now.Sub(result.CreatedAt); age > 0 {
+		result.AgeSeconds = int64(age / time.Second)
+	}
+	if policy.ttl > 0 {
+		result.TTLSeconds = int64(policy.ttl / time.Second)
+		result.Expired = now.Sub(result.CreatedAt) > policy.ttl
+	}
+}
+
+// worktreeOwnerName names the agent to ask before removing a checkout.
+func worktreeOwnerName(owners []OwnerView, state string) string {
+	for index := len(owners) - 1; index >= 0; index-- {
+		if agent := strings.TrimSpace(owners[index].Agent); agent != "" {
+			return agent
+		}
+	}
+	return state
 }
 
 func isAncestor(ctx context.Context, repository, ancestor, descendant string) (bool, error) {
@@ -2591,6 +2806,16 @@ func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch strin
 // renamed, deleted, or (as in a rebase merge) differ from the managed
 // worktree's branch while the exact head SHA remains the durable receipt.
 func githubPullRequests(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, error) {
+	pullRequests, _, err := githubPullRequestsForCommit(ctx, worktree, repository, head)
+	return pullRequests, err
+}
+
+// githubPullRequestsForCommit additionally reports whether GitHub knows the
+// commit at all. A commit it has never seen was never pushed, and a checkout
+// holding one is the single class that can still lose work — so it is the one
+// class no widening may ever retire, and saying "never pushed" out loud is the
+// difference between a refusal an operator can act on and a mystery.
+func githubPullRequestsForCommit(ctx context.Context, worktree, repository, head string) ([]githubPullRequest, bool, error) {
 	result := githubobserver.Execute(ctx, worktree, "api", "--paginate", "repos/"+repository+"/commits/"+head+"/pulls")
 	if result.Err != nil {
 		if unknownGitHubCommit(result.Stdout) {
@@ -2600,18 +2825,18 @@ func githubPullRequests(ctx context.Context, worktree, repository, head string) 
 			// hid the whole worktree behind a malformed-candidate diagnostic —
 			// including from --absorbed-by, which exists precisely for work
 			// that reached the target without this commit ever being pushed.
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf(
+		return nil, false, fmt.Errorf(
 			"query pull requests for %s source commit %s: %w: %s",
 			repository, head, result.Err, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)),
 		)
 	}
 	var pullRequests []githubPullRequest
 	if err := json.Unmarshal(result.Stdout, &pullRequests); err != nil {
-		return nil, fmt.Errorf("decode pull requests for %s source commit %s: %w", repository, head, err)
+		return nil, true, fmt.Errorf("decode pull requests for %s source commit %s: %w", repository, head, err)
 	}
-	return pullRequests, nil
+	return pullRequests, true, nil
 }
 
 // unknownGitHubCommit recognizes only GitHub's own structured answer that the
@@ -2990,7 +3215,7 @@ func commitTree(ctx context.Context, repository, revision string) (string, error
 // applied only to a candidate that is otherwise eligible, so a refusal always
 // names the most specific reason WB actually observed.
 func cleanupEligibility(entry ListResult, options CleanupOptions, now time.Time) (bool, string) {
-	if eligible, reason := cleanupSafetyEligibility(entry, options.OlderThan, now); !eligible {
+	if eligible, reason := cleanupSafetyEligibility(entry, options.OlderThan, now, options.AllowResidue); !eligible {
 		return false, reason
 	}
 	if options.RequireRemoteRetirement && !options.DeleteRemote && entry.RemoteHeadSHA != "" {
@@ -3000,7 +3225,7 @@ func cleanupEligibility(entry ListResult, options CleanupOptions, now time.Time)
 	return true, ""
 }
 
-func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now time.Time) (bool, string) {
+func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now time.Time, allowResidue bool) (bool, string) {
 	switch {
 	case entry.Locked:
 		return false, lockedReason(entry, resumeInterruptedCommand(entry.Task))
@@ -3016,6 +3241,18 @@ func cleanupSafetyEligibility(entry ListResult, olderThan time.Duration, now tim
 		// A superseded branch is intentionally not integrated as one commit;
 		// its eligibility comes only from the independently reviewed receipt.
 		return true, ""
+	case entry.Detached && !entry.IntegratedAtOrigin:
+		return false, detachedRefusal(entry)
+	case !entry.IntegratedAtOrigin && entry.HeadUnknownToRemote && !entry.landedWithResidue():
+		return false, "head " + shortSHA(entry.HeadSHA) + " was never pushed: GitHub's commit index has never seen it, " +
+			"so nothing can prove this work landed and removing the checkout would lose it"
+	case !entry.IntegratedAtOrigin && entry.landedWithResidue() && allowResidue:
+		// The landing is proved by the same receipt every other eligible
+		// candidate needs; only the residual commits are being widened past,
+		// and the caller has already been shown exactly which they are.
+		return true, ""
+	case !entry.IntegratedAtOrigin && entry.landedWithResidue():
+		return false, entry.residueReason()
 	case !entry.IntegratedAtOrigin && entry.AbsorbedByRejection != "":
 		return false, "current branch head is not integrated into the exact origin target (awaiting push): " +
 			entry.AbsorbedByRejection
@@ -3276,6 +3513,7 @@ func preflightCleanupRepository(
 		true,
 		false,
 		entry.External,
+		cleanupInspectPolicy(options),
 	)
 	if err != nil {
 		return ListResult{}, fmt.Errorf("preflight cleanup %s: %w", entry.Repository, err)

@@ -48,7 +48,12 @@ type lifecycleBacklogRecord struct {
 	// registered without relocating it under WorktreesRoot — see
 	// ListResult.External. It changes only which shape
 	// validateLifecycleBacklog accepts for WorktreeDir.
-	External            bool      `json:"external,omitempty"`
+	External bool `json:"external,omitempty"`
+	// Detached marks a record for a checkout with no branch of its own — the
+	// shape every pull-request review creates. It changes only which branch
+	// operations the record owes: a detached checkout has no ref to retire, so
+	// resuming one must not go looking for a branch named "".
+	Detached            bool      `json:"detached,omitempty"`
 	Disposition         string    `json:"disposition"`
 	RecoveryKind        string    `json:"recovery_kind,omitempty"`
 	WorkLogEffort       string    `json:"work_log_effort_id,omitempty"`
@@ -77,7 +82,7 @@ func newLifecycleBacklogRecord(projectsRoot string, result ListResult, dispositi
 		Task: result.Task, Repository: result.Repository, ProjectsRoot: filepath.Clean(projectsRoot),
 		CanonicalDir: result.CanonicalDir, WorktreesRoot: result.WorktreesRoot, WorktreeDir: result.WorktreeDir,
 		Branch: result.Branch, Base: result.Base, HeadSHA: result.HeadSHA, RemoteHeadSHA: result.RemoteHeadSHA,
-		External:    result.External,
+		External: result.External, Detached: result.Detached,
 		Disposition: disposition, Stage: lifecycleStageSealed, CreatedAt: now, UpdatedAt: now,
 	}
 }
@@ -170,7 +175,11 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 			return fmt.Errorf("lifecycle backlog worktree path does not match managed layout")
 		}
 	}
-	if !validBranch(context.Background(), record.Branch) {
+	if record.Detached {
+		if record.Branch != "" || record.RemoteHeadSHA != "" {
+			return fmt.Errorf("detached lifecycle backlog must name no branch")
+		}
+	} else if !validBranch(context.Background(), record.Branch) {
 		return fmt.Errorf("invalid lifecycle backlog branch identity")
 	}
 	if !validBranch(context.Background(), record.Base) {
@@ -326,7 +335,7 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	if err := canonical.validate(); err != nil {
 		return err
 	}
-	if remoteHead, err := remoteBranchHead(ctx, record.CanonicalDir, record.Branch); err != nil {
+	if remoteHead, err := detachedAwareRemoteBranchHead(ctx, record); err != nil {
 		return err
 	} else if remoteHead != "" && !record.PreserveLocalBranch {
 		// A record sealed at retiring_remote was interrupted *during* the remote
@@ -385,9 +394,14 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	exists, err := localBranchExistsCanonical(ctx, canonical, record.Branch)
-	if err != nil {
-		return err
+	exists := false
+	if !record.Detached {
+		// A detached checkout owns no ref: removing the checkout is the whole
+		// of its retirement.
+		exists, err = localBranchExistsCanonical(ctx, canonical, record.Branch)
+		if err != nil {
+			return err
+		}
 	}
 	if exists && !record.PreserveLocalBranch {
 		head, err := gitCanonical(ctx, canonical, "rev-parse", "refs/heads/"+record.Branch)
@@ -434,11 +448,13 @@ func completeVacantLifecycleBacklog(ctx context.Context, home string, record *li
 	if err != nil || registrations[filepath.Clean(record.WorktreeDir)] {
 		return lockErr
 	}
-	if remoteHead, err := remoteBranchHead(ctx, record.CanonicalDir, record.Branch); err != nil || (remoteHead != "" && !record.PreserveLocalBranch) {
+	if remoteHead, err := detachedAwareRemoteBranchHead(ctx, record); err != nil || (remoteHead != "" && !record.PreserveLocalBranch) {
 		return lockErr
 	}
-	if exists, err := localBranchExistsCanonical(ctx, canonical, record.Branch); err != nil || (exists && !record.PreserveLocalBranch) {
-		return lockErr
+	if !record.Detached {
+		if exists, err := localBranchExistsCanonical(ctx, canonical, record.Branch); err != nil || (exists && !record.PreserveLocalBranch) {
+			return lockErr
+		}
 	}
 	if record.RecoveryKind == "create_work_log_failed" && record.WorkLogClaim != "" {
 		if err := sealCreateFailureBacklogClaim(home, *record); err != nil {
@@ -473,4 +489,13 @@ func sealCreateFailureBacklogClaim(home string, record lifecycleBacklogRecord) e
 		return fmt.Errorf("seal failed-create Work Log claim: %w", err)
 	}
 	return nil
+}
+
+// detachedAwareRemoteBranchHead answers the remote-branch question a detached
+// record cannot ask: it has no branch, so origin has nothing of its own to hold.
+func detachedAwareRemoteBranchHead(ctx context.Context, record *lifecycleBacklogRecord) (string, error) {
+	if record.Detached {
+		return "", nil
+	}
+	return remoteBranchHead(ctx, record.CanonicalDir, record.Branch)
 }

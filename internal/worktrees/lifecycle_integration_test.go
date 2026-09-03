@@ -1198,7 +1198,14 @@ func TestCleanupExactRepositoryCannotActOnAnotherRepository(t *testing.T) {
 	}
 }
 
-func TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository(t *testing.T) {
+// An empty retired stage is terminal debris, not cleanup backlog. It is purged
+// on the read path itself — before any plan is built, dry run included — so it
+// can never become a per-invocation `info:` line again, and it can never keep a
+// task that is otherwise finished from finishing. One workstation carried 55 of
+// them, printing 55 lines before every `wb worktree list` for 220 KB of empty
+// directories, because their removal was coupled to cleaning the task and a task
+// that is never cleanable keeps its artefacts forever.
+func TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository(t *testing.T) {
 	const task = "cleanup-retired-stage"
 	fixture, result, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
@@ -1221,17 +1228,22 @@ func TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository
 	if len(planned.Results) != 1 || !planned.Results[0].Eligible {
 		t.Fatalf("retired stage poisoned selected repository plan: %#v", planned.Results)
 	}
-	var plannedExact *LifecycleArtifact
-	for index := range planned.Artifacts {
-		if planned.Artifacts[index].Path == retired {
-			plannedExact = &planned.Artifacts[index]
+	for _, artifact := range planned.Artifacts {
+		if artifact.Path == retired {
+			t.Fatalf("an empty retired stage must not survive into a plan as backlog: %#v", artifact)
 		}
 	}
-	if plannedExact == nil || !plannedExact.Eligible ||
-		plannedExact.State != "quarantined" ||
-		plannedExact.Disposition != "archive_empty_stage" ||
-		plannedExact.Applied {
-		t.Fatalf("retired stage plan = %#v", planned.Artifacts)
+	var purged *PurgedArtefact
+	for index := range planned.Purged {
+		if planned.Purged[index].Path == retired {
+			purged = &planned.Purged[index]
+		}
+	}
+	if purged == nil || purged.Kind != purgedRetiredStage {
+		t.Fatalf("purge receipt = %#v", planned.Purged)
+	}
+	if _, statErr := os.Stat(retired); !os.IsNotExist(statErr) {
+		t.Fatalf("retired stage remains in active task: %v", statErr)
 	}
 
 	applied, err := Cleanup(context.Background(), CleanupOptions{
@@ -1248,23 +1260,6 @@ func TestCleanupArchivesExactEmptyRetiredStageWithoutPoisoningFilteredRepository
 	}
 	if len(applied.Results) != 1 || !applied.Results[0].Applied {
 		t.Fatalf("selected repository was not cleaned: %#v", applied.Results)
-	}
-	var appliedExact *LifecycleArtifact
-	for index := range applied.Artifacts {
-		if applied.Artifacts[index].Path == retired {
-			appliedExact = &applied.Artifacts[index]
-		}
-	}
-	if appliedExact == nil || !appliedExact.Applied ||
-		appliedExact.Disposition != "archived_empty_stage" ||
-		appliedExact.ArchivePath == "" {
-		t.Fatalf("retired stage apply = %#v", applied.Artifacts)
-	}
-	if _, statErr := os.Stat(retired); !os.IsNotExist(statErr) {
-		t.Fatalf("retired stage remains in active task: %v", statErr)
-	}
-	if info, statErr := os.Stat(appliedExact.ArchivePath); statErr != nil || !info.IsDir() {
-		t.Fatalf("durable retired-stage archive missing: info=%v err=%v", info, statErr)
 	}
 	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
 		t.Fatalf("selected worktree remains after terminal cleanup: %v", statErr)
@@ -1318,10 +1313,14 @@ func TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog(t *testing.T)
 	}
 }
 
-func TestCleanupArchivesEmptyArtifactOnlyTask(t *testing.T) {
+// A task holding nothing but an empty retired stage is two pieces of terminal
+// debris stacked on each other. The stage is purged on the read path, and the
+// namespace that then holds nothing is retired by cleanup as an empty task.
+func TestCleanupRetiresATaskLeftHoldingOnlyAPurgedStage(t *testing.T) {
 	fixture := newGitFixture(t)
 	const task = "artifact-only-empty"
-	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	taskPath := filepath.Join(fixture.home, "worktrees", task)
+	retired := filepath.Join(taskPath, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.MkdirAll(retired, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1335,8 +1334,14 @@ func TestCleanupArchivesEmptyArtifactOnlyTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planned.Results) != 0 || len(planned.Artifacts) != 1 || !planned.Artifacts[0].Eligible {
+	if len(planned.Results) != 0 || len(planned.Purged) != 1 || planned.Purged[0].Path != retired {
 		t.Fatalf("artifact-only cleanup plan = %#v", planned)
+	}
+	if _, statErr := os.Stat(retired); !os.IsNotExist(statErr) {
+		t.Fatalf("empty retired stage survived the read path: %v", statErr)
+	}
+	if len(planned.Artifacts) != 1 || planned.Artifacts[0].Kind != "task_namespace" || !planned.Artifacts[0].Eligible {
+		t.Fatalf("artifact-only cleanup plan artifacts = %#v", planned.Artifacts)
 	}
 
 	applied, err := Cleanup(context.Background(), CleanupOptions{
@@ -1350,14 +1355,11 @@ func TestCleanupArchivesEmptyArtifactOnlyTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(applied.Results) != 0 || len(applied.Artifacts) != 1 ||
-		!applied.Artifacts[0].Applied || applied.Artifacts[0].Disposition != "archived_empty_stage" {
+		!applied.Artifacts[0].Applied || applied.Artifacts[0].Kind != "task_namespace" {
 		t.Fatalf("artifact-only cleanup apply = %#v", applied)
 	}
-	if _, statErr := os.Stat(retired); !os.IsNotExist(statErr) {
-		t.Fatalf("artifact-only active backlog remains: %v", statErr)
-	}
-	if info, statErr := os.Stat(applied.Artifacts[0].ArchivePath); statErr != nil || !info.IsDir() {
-		t.Fatalf("artifact-only durable archive missing: info=%v err=%v", info, statErr)
+	if _, statErr := os.Stat(taskPath); !os.IsNotExist(statErr) {
+		t.Fatalf("empty task namespace remains: %v", statErr)
 	}
 }
 
