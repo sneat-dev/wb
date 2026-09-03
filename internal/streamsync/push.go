@@ -40,6 +40,10 @@ const RefusalUnjustifiedPush = "unjustified-push"
 type PushDecision struct {
 	Trigger PushTrigger `json:"trigger"`
 	Reason  string      `json:"reason"`
+	// SHA is what origin holds after the push. It is set only once the push
+	// has been verified, so a caller reading this field is reading an effect
+	// rather than an intention.
+	SHA string `json:"sha,omitempty"`
 }
 
 // Refusal is a guard that fired.

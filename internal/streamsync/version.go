@@ -69,3 +69,14 @@ func prerelease(value string) string {
 	}
 	return ""
 }
+
+// comparable reports whether both versions can be read at all.
+//
+// It exists so an unreadable version is reported as UNREADABLE rather than as
+// "already at target": no commit is written either way, but the two say very
+// different things to an operator, and only one of them is true.
+func comparable(required, target string) bool {
+	_, requiredOK := semver(required)
+	_, targetOK := semver(target)
+	return requiredOK && targetOK
+}

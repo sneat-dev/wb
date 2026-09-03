@@ -292,3 +292,191 @@ func TestBelowIsTheIdempotenceComparison(t *testing.T) {
 		}
 	}
 }
+
+// MF-1. A justified push REALLY pushes, under --force-with-lease against the
+// recorded head, and the reported SHA is what the remote holds. Setting
+// result.Push and eventing success without pushing reported an effect that did
+// not exist.
+func TestAJustifiedPushActuallyPushesUnderALease(t *testing.T) {
+	engine, git, _, _, events := newTestEngine()
+	options := baseOptions()
+	options.PushTrigger = TriggerExplicit
+	options.PushReason = "handing off to the release lane"
+	options.RecordedRemoteHead = "recorded-head-sha"
+
+	result, err := engine.Sync(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !git.pushed() {
+		t.Fatalf("nothing was pushed: %v", git.calls)
+	}
+	if len(git.pushes) != 1 || git.pushes[0] != options.Branch {
+		t.Fatalf("pushes = %v, want the stream branch once", git.pushes)
+	}
+	// The lease is what stops a rebase force-push discarding another agent.
+	leased := false
+	for _, call := range git.calls {
+		if strings.Contains(call, "push "+options.Branch+" lease=recorded-head-sha") {
+			leased = true
+		}
+	}
+	if !leased {
+		t.Fatalf("calls = %v, want --force-with-lease against the recorded head", git.calls)
+	}
+	if result.Push == nil || result.Push.SHA != "pushed-sha" {
+		t.Fatalf("push = %#v, want the verified remote SHA", result.Push)
+	}
+	pushEvents := events.withPhase("push")
+	if len(pushEvents) != 1 || pushEvents[0].Outcome != "success" || pushEvents[0].Evidence["sha"] != "pushed-sha" {
+		t.Fatalf("push events = %#v, want one success carrying the pushed SHA", pushEvents)
+	}
+}
+
+// A push that FAILS is reported as a failure, and no push is claimed.
+func TestAFailedPushIsReportedAndNotClaimed(t *testing.T) {
+	engine, git, _, _, events := newTestEngine()
+	git.pushErr = errors.New("stale info: remote ref moved")
+	options := baseOptions()
+	options.PushTrigger = TriggerLanding
+
+	result, err := engine.Sync(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Push != nil {
+		t.Fatalf("push = %#v, want nothing claimed after a failed push", result.Push)
+	}
+	if !result.Failed() {
+		t.Fatal("a failed push reported success")
+	}
+	pushEvents := events.withPhase("push")
+	if len(pushEvents) != 1 || pushEvents[0].Outcome != "findings" {
+		t.Fatalf("push events = %#v, want the event to follow the real outcome", pushEvents)
+	}
+}
+
+// MF-2. A failed bump is a FAILURE, and the worktree is restored to the state
+// sync found it in — a half-applied manifest would make the next sync refuse
+// as dirty and tell the operator to commit it.
+func TestAFailedBumpFailsTheRunAndRestoresTheWorktree(t *testing.T) {
+	engine, git, bumper, _, _ := newTestEngine()
+	options := baseOptions()
+	options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
+	bumper.required["L"] = "v1.0.0"
+	bumper.applyErr["L"] = errors.New("go mod tidy: checksum mismatch")
+	git.heads["HEAD"] = "pre-bump-head"
+
+	result, err := engine.Sync(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Failed() {
+		t.Fatal("a failed bump exited 0")
+	}
+	if result.Bumps[0].Action != BumpFailed {
+		t.Fatalf("bump = %#v, want it marked failed", result.Bumps[0])
+	}
+	if len(git.restored) != 1 || git.restored[0] != "pre-bump-head" {
+		t.Fatalf("restored = %v, want the worktree returned to the pre-bump head", git.restored)
+	}
+	if !strings.Contains(result.Bumps[0].Detail, "restored") {
+		t.Errorf("detail does not say the worktree was restored: %q", result.Bumps[0].Detail)
+	}
+}
+
+// SF-1. An unreadable version is reported as unreadable, not as
+// "already-at-target": no commit either way, but only one of those is true.
+func TestAnUnreadableVersionIsReportedAsUnreadable(t *testing.T) {
+	engine, _, bumper, _, _ := newTestEngine()
+	options := baseOptions()
+	options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
+	bumper.required["L"] = "workspace:*"
+
+	result, err := engine.Sync(context.Background(), options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Bumps[0].Action != BumpUnreadableVersion {
+		t.Fatalf("action = %q, want %q", result.Bumps[0].Action, BumpUnreadableVersion)
+	}
+	if result.Bumps[0].Commit != "" {
+		t.Error("an unreadable version wrote a commit")
+	}
+}
+
+// MF-3. EVERY exit writes exactly one terminal event, including the failure
+// paths that previously wrote none.
+func TestEveryExitWritesExactlyOneTerminalEvent(t *testing.T) {
+	t.Run("stream conflict", func(t *testing.T) {
+		engine, git, _, _, events := newTestEngine()
+		git.conflicts["stream/checkout"] = []string{"backend/handler.go"}
+		if _, err := engine.Sync(context.Background(), baseOptions()); err != nil {
+			t.Fatal(err)
+		}
+		assertOneTerminalEvent(t, events, "findings")
+	})
+	t.Run("agent conflict", func(t *testing.T) {
+		engine, git, _, _, events := newTestEngine()
+		options := baseOptions()
+		options.AgentBranches = []AgentBranch{{Branch: "agent/one", Agent: "wbs-1"}}
+		git.conflicts["agent/one"] = []string{"backend/handler.go"}
+		if _, err := engine.Sync(context.Background(), options); err != nil {
+			t.Fatal(err)
+		}
+		assertOneTerminalEvent(t, events, "findings")
+	})
+	t.Run("failed bump", func(t *testing.T) {
+		engine, _, bumper, _, events := newTestEngine()
+		options := baseOptions()
+		options.Libraries = []Library{{Name: "L", Target: "v2.0.0", Ecosystem: "go"}}
+		bumper.required["L"] = "v1.0.0"
+		bumper.applyErr["L"] = errors.New("boom")
+		if _, err := engine.Sync(context.Background(), options); err != nil {
+			t.Fatal(err)
+		}
+		assertOneTerminalEvent(t, events, "findings")
+	})
+	t.Run("review-in-progress refusal", func(t *testing.T) {
+		engine, _, _, _, events := newTestEngine()
+		options := baseOptions()
+		options.AgentBranches = []AgentBranch{{Branch: "agent/one", InReview: true}}
+		if _, err := engine.Sync(context.Background(), options); err == nil {
+			t.Fatal("expected a refusal")
+		}
+		event := assertOneTerminalEvent(t, events, "refused")
+		if event.Evidence["refusal_code"] != "review-in-progress" {
+			t.Errorf("event = %#v, want the refusal code recorded", event)
+		}
+	})
+	t.Run("dirty-worktree refusal", func(t *testing.T) {
+		engine, git, _, _, events := newTestEngine()
+		git.clean = false
+		if _, err := engine.Sync(context.Background(), baseOptions()); err == nil {
+			t.Fatal("expected a refusal")
+		}
+		event := assertOneTerminalEvent(t, events, "refused")
+		if event.Evidence["refusal_code"] != "dirty-worktree" {
+			t.Errorf("event = %#v, want the refusal code recorded", event)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		engine, _, _, _, events := newTestEngine()
+		if _, err := engine.Sync(context.Background(), baseOptions()); err != nil {
+			t.Fatal(err)
+		}
+		assertOneTerminalEvent(t, events, "success")
+	})
+}
+
+func assertOneTerminalEvent(t *testing.T, events *fakeEvents, wantOutcome string) Event {
+	t.Helper()
+	terminal := events.withPhase("complete")
+	if len(terminal) != 1 {
+		t.Fatalf("terminal events = %#v, want exactly one per invocation", terminal)
+	}
+	if terminal[0].Outcome != wantOutcome {
+		t.Fatalf("outcome = %q, want %q", terminal[0].Outcome, wantOutcome)
+	}
+	return terminal[0]
+}

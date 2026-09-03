@@ -6990,8 +6990,14 @@
                 "A lockstep family is one element and is never split during prefix re-apply",
                 "Reports an interaction failure, blaming no element, when every prefix passes",
                 "Names a skipped CI mechanism only after reading the member's stream-PR workflows and proving CI runs it; anything neither side carries is reported as unguarded",
-                "NEVER pushes: a push happens only on landing, review, park or --push --reason, and a dependency bump is not a trigger",
-                "Without a trigger the remote is left untouched and the report says so, with the local commit count"
+                "Without a trigger the remote is left untouched and the report says so, with the local commit count",
+                "Pushes ONLY on a justified trigger, and then really pushes: --force-with-lease against the head WB recorded, then re-reading the ref to prove the intended commit landed",
+                "A push that fails is reported as a failure and no push is claimed; the event follows the real outcome",
+                "A failed bump fails the run and the worktree is restored to the state sync found it in, so no half-applied manifest is left for the next run",
+                "A version WB cannot compare is reported as version-unreadable rather than already-at-target",
+                "Writes exactly one terminal event per invocation on every exit, including conflicts and both refusals",
+                "Syncs every member, library included: the bumps are consumer-only but the rebase is not",
+                "A mechanism a reusable workflow might run is reported unverified, never unguarded"
               ]
             }
           ],
@@ -7005,11 +7011,11 @@
               "contains": [
                 "never a merge",
                 "idempotent",
-                "NEVER PUSHES",
                 "not a bisection",
                 "interaction failure",
                 "review-in-progress",
-                "unjustified-push"
+                "unjustified-push",
+                "force-with-lease"
               ]
             }
           ],
@@ -7074,6 +7080,41 @@
             {
               "path": "internal/streamsync/batch_test.go",
               "name": "TestSkippedMechanismsAreOnlyClaimedWhenCIProvablyRunsThem",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestAJustifiedPushActuallyPushesUnderALease",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestAFailedPushIsReportedAndNotClaimed",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestAFailedBumpFailsTheRunAndRestoresTheWorktree",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestEveryExitWritesExactlyOneTerminalEvent",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/sync_test.go",
+              "name": "TestAnUnreadableVersionIsReportedAsUnreadable",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestAReusableWorkflowMakesAMechanismUnverifiedNotUnguarded",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamsync/batch_test.go",
+              "name": "TestTheBatchBaseComesFromTheFirstElementsParent",
               "kind": "unit"
             }
           ],
