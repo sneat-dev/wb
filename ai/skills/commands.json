@@ -56,6 +56,9 @@
     "status": [
       "wb-fleet"
     ],
+    "stream": [
+      "wb-streams"
+    ],
     "sync": [
       "wb-fleet"
     ],
