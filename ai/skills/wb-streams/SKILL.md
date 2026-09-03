@@ -153,6 +153,75 @@ outcome. A push that fails is reported as a failure, never as a success.
 A sync with no trigger leaves the remote untouched **and says so**;
 `wb stream status` shows the local commits accumulating.
 
+### `wb stream absorb <agent-worktree>`
+
+**There are no pull requests below the stream.** An agent branches from
+`stream/<name>`, works, and its change reaches the stream branch through this
+verb — a rebase and a squash, entirely local.
+
+```sh
+wb stream absorb /path/to/agent-worktree --verify
+wb stream absorb /path/to/agent-worktree --title "feat(checkout): accept saved cards" --verify
+```
+
+Absorb **never pushes**, and never opens, updates or merges a pull request. The
+only pull request per repository per stream is the draft stream pull request.
+`wb worktree merge --route stream` is an alias of this verb.
+
+The work is still reviewed and still lands as one reviewed commit; what
+disappears is the pull request that carried it. So the review hangs on the
+**content**: absorb refuses without a recorded `APPROVE` for exactly the
+patch-identity set it is about to absorb — `git patch-id --stable` over the
+commits the stream branch does not already carry.
+
+- A **content-identical rebase carries the approval forward**: the SHAs move,
+  the patch set does not. A reorder is not a content change either.
+- **Any content change invalidates it** and needs a new round.
+- **`APPROVE-WITH-FIXES` does not clear absorption.** The fixes it asks for
+  change the content, so absorbing the unfixed set would land exactly the code
+  the reviewer asked to change.
+- The **newest** verdict for a patch set wins, so a later `REJECT` supersedes an
+  earlier `APPROVE`.
+- A **mechanical bump** — a diff touching only dependency manifests and
+  lockfiles — skips the ledger, as it does at landing.
+
+The squash message is **aggregated, never defaulted**: the title as subject, the
+summary as body, one line per source commit (`<short-sha> <subject>`), and the
+reviewed patch set. A squash that kept only a title would discard every message
+the branch carried.
+
+`--keep-commits <sha,...>` preserves commits instead of squashing. It **requires
+`--reason`**, and **every kept commit must build on its own** — keeping commits
+is only better than squashing if the history stays bisectable.
+
+| refusal | do this |
+|---|---|
+| `unapproved-patch-set` | `wb review request <worktree>`, then `wb review record --worktree <path> --verdict APPROVE --round N` |
+| `keep-without-reason` | add `--reason "<text>"` |
+| `kept-commit-does-not-build` | fix the commit, or drop `--keep-commits` and squash |
+| `nothing-to-absorb` | the stream already carries this work — `wb stream status` |
+| `live-link` | `wb deps propagate local … --undo` first |
+
+### `wb review record`
+
+Records a verdict against the patch-identity set a worktree currently carries.
+
+```sh
+wb review record --worktree /path/to/agent-worktree --verdict APPROVE --round 1 --by reviewer
+wb review record --worktree /path/to/agent-worktree --verdict REJECT --round 2 --note "races on the shared cache"
+```
+
+Flags: `--worktree` (required), `--verdict` (`APPROVE` | `APPROVE-WITH-FIXES` |
+`REJECT`), `--round` (1 or greater), `--by`, `--note`, `--stream`, `--format`.
+
+Verdicts are **appended** to the stream's event log — or to the fleet log for a
+worktree outside every stream, because a review still has to be recorded
+somewhere. Nothing is ever rewritten, so a later round never erases the one
+before it.
+
+`wb review request` (the reviewer's checkout side) is a separate verb and is not
+in this skill yet.
+
 ### `wb stream status [name]`
 
 Reports the three states in which a stream is incomplete, **separately** and

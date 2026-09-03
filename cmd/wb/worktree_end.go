@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/streamsync"
 	"github.com/sneat-dev/wb/internal/worktreeend"
 	"github.com/sneat-dev/wb/internal/worktrees"
 	"github.com/spf13/cobra"
@@ -70,6 +72,7 @@ wb worktree end improve-login --repo acme/app --apply --note "landed in #412"`,
 				Inventory:    worktreeInventory{},
 				Links:        streamLinkGuard{store: store},
 				Capture:      gitStashCapture{},
+				Parker:       parkPusher{events: streamEventSink{log: store.EventLog(parkStreamFor(store, args[0]))}},
 				Notes:        workLogNotes{},
 				Retirer:      cleanupRetirer{},
 				Claims:       claimReleaser{writer: command.ErrOrStderr()},
@@ -127,6 +130,11 @@ func printWorktreeEnd(command *cobra.Command, format string, result worktreeend.
 		}
 		if len(member.Dirty) > 0 {
 			if _, err := fmt.Fprintf(out, "    uncommitted: %s\n", strings.Join(member.Dirty, ", ")); err != nil {
+				return err
+			}
+		}
+		if member.ParkPush != "" {
+			if _, err := fmt.Fprintf(out, "    pushed %d local commit(s) with trigger park: %s\n", member.UnpushedCommits, member.ParkPush); err != nil {
 				return err
 			}
 		}
@@ -308,4 +316,70 @@ func runGitIn(ctx context.Context, dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s in %s: %w: %s", strings.Join(args, " "), dir, err, strings.TrimSpace(string(output)))
 	}
 	return string(output), nil
+}
+
+// parkPusher publishes unpushed commits before a checkout is retired.
+//
+// `pushes-are-justified-and-counted` names park as one of four triggers, and
+// this is the moment it exists for: a stash capture survives the worktree but
+// not the machine, so committed work that exists nowhere else is pushed first.
+type parkPusher struct{ events streamEventSink }
+
+func (parker parkPusher) UnpushedCommits(ctx context.Context, worktree, branch string) (int, error) {
+	// A branch with no remote counterpart is entirely unpushed, which is the
+	// normal state for an agent branch rather than an error.
+	if _, err := runGitIn(ctx, worktree, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+branch); err != nil {
+		out, countErr := runGitIn(ctx, worktree, "rev-list", "--count", branch)
+		if countErr != nil {
+			return 0, nil
+		}
+		return strconv.Atoi(strings.TrimSpace(out))
+	}
+	out, err := runGitIn(ctx, worktree, "rev-list", "--count", "origin/"+branch+".."+branch)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(out))
+}
+
+func (parker parkPusher) Push(ctx context.Context, worktree, branch, reason string) (string, error) {
+	local, err := runGitIn(ctx, worktree, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if _, err := runGitIn(ctx, worktree, "push", "--set-upstream", "origin", branch); err != nil {
+		return "", err
+	}
+	// The push exit code is not evidence the intended commit landed.
+	if _, err := runGitIn(ctx, worktree, "fetch", "--quiet", "origin", branch); err != nil {
+		return "", err
+	}
+	remote, err := runGitIn(ctx, worktree, "rev-parse", "refs/remotes/origin/"+branch)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(remote) != strings.TrimSpace(local) {
+		return "", fmt.Errorf("pushed %s but origin/%s is %s", strings.TrimSpace(local), branch, strings.TrimSpace(remote))
+	}
+	_ = parker.events.Append(streamsync.Event{
+		Verb: "worktree end", Phase: "push", Outcome: "success",
+		Detail:   reason,
+		Evidence: map[string]string{"trigger": string(streamsync.TriggerPark), "reason": reason, "branch": branch, "head": strings.TrimSpace(local)},
+	})
+	return strings.TrimSpace(local), nil
+}
+
+// parkStreamFor names the log a park push is recorded in: the stream holding
+// the task where there is one, the fleet log otherwise.
+func parkStreamFor(store *streams.Store, task string) string {
+	all, _, err := store.List()
+	if err != nil {
+		return task
+	}
+	for _, stream := range all {
+		if stream.Open() && stream.Name == task {
+			return stream.Name
+		}
+	}
+	return task
 }

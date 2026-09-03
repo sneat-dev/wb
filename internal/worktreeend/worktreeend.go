@@ -52,10 +52,15 @@ type MemberResult struct {
 	// so the operator can recover it; a capture nobody can find is not a
 	// capture.
 	CaptureRef string `json:"capture_ref,omitempty"`
-	NotePath   string `json:"note_path,omitempty"`
-	Removed    bool   `json:"removed"`
-	Action     string `json:"action"`
-	Detail     string `json:"detail,omitempty"`
+	// UnpushedCommits is how many local commits the checkout held.
+	UnpushedCommits int `json:"unpushed_commits,omitempty"`
+	// ParkPush is the SHA park published, empty when there was nothing
+	// unpushed.
+	ParkPush string `json:"park_push,omitempty"`
+	NotePath string `json:"note_path,omitempty"`
+	Removed  bool   `json:"removed"`
+	Action   string `json:"action"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // Result is the whole invocation's report.
@@ -133,6 +138,20 @@ type Notes interface {
 	Seal(worktree, note string) (path string, err error)
 }
 
+// Parker pushes unpushed work before a checkout is retired.
+//
+// `pushes-are-justified-and-counted` names park as one of exactly four
+// triggers, and it is the one that exists precisely for this moment: a
+// checkout being retired with local commits nobody else can see. A capture to a
+// local stash survives the worktree but not the machine, so park pushes.
+type Parker interface {
+	// UnpushedCommits counts commits the remote does not carry.
+	UnpushedCommits(ctx context.Context, worktree, branch string) (int, error)
+	// Push publishes the branch with trigger `park`, returning the pushed SHA.
+	// It must verify the ref it pushed rather than trusting an exit code.
+	Push(ctx context.Context, worktree, branch, reason string) (sha string, err error)
+}
+
 // Retirer runs the existing cleanup transaction.
 type Retirer interface {
 	Retire(ctx context.Context, projectsRoot, task, repository, worktree string) error
@@ -149,6 +168,7 @@ type Engine struct {
 	Inventory    Inventory
 	Links        LinkGuard
 	Capture      Capture
+	Parker       Parker
 	Notes        Notes
 	Retirer      Retirer
 	Claims       Claims
@@ -246,10 +266,45 @@ func (engine *Engine) endWorktree(ctx context.Context, options Options, worktree
 
 	if !options.Apply {
 		member.Action = "would-end"
-		if len(dirty) > 0 && !options.KeepCapture {
-			member.Detail = fmt.Sprintf("%d uncommitted path(s) would be captured before removal", len(dirty))
+		if engine.Parker != nil && worktree.Branch != "" {
+			if unpushed, err := engine.Parker.UnpushedCommits(ctx, worktree.Path, worktree.Branch); err == nil {
+				member.UnpushedCommits = unpushed
+			}
 		}
+		var notes []string
+		if member.UnpushedCommits > 0 {
+			notes = append(notes, fmt.Sprintf("%d unpushed commit(s) would be pushed with trigger park", member.UnpushedCommits))
+		}
+		if len(dirty) > 0 && !options.KeepCapture {
+			notes = append(notes, fmt.Sprintf("%d uncommitted path(s) would be captured before removal", len(dirty)))
+		}
+		member.Detail = strings.Join(notes, "; ")
 		return member
+	}
+
+	// Unpushed COMMITS go to the remote before the checkout is retired.
+	// A stash capture survives the worktree but not the machine, so work that
+	// is already committed is pushed under the `park` trigger — this is the
+	// one moment park exists for.
+	if engine.Parker != nil && worktree.Branch != "" {
+		unpushed, err := engine.Parker.UnpushedCommits(ctx, worktree.Path, worktree.Branch)
+		if err != nil {
+			member.Action, member.Detail = "failed", "could not establish what is unpushed, so nothing was removed: "+err.Error()
+			return member
+		}
+		member.UnpushedCommits = unpushed
+		if unpushed > 0 {
+			sha, err := engine.Parker.Push(ctx, worktree.Path, worktree.Branch, "park: "+options.Task)
+			if err != nil {
+				// Refusing to retire silently is the point: removing a
+				// checkout whose commits exist nowhere else loses them.
+				member.Action = "failed"
+				member.Detail = fmt.Sprintf(
+					"%d unpushed commit(s) could not be pushed, so the checkout was NOT retired: %v", unpushed, err)
+				return member
+			}
+			member.ParkPush = sha
+		}
 	}
 
 	// Capture strictly before removal. A capture taken afterwards is not a

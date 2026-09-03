@@ -74,6 +74,13 @@ wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor 
 wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/replacement --apply --actor operator --reason "audited replacement candidate"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
+			// --route stream is an alias of `wb stream absorb`: inside a
+			// stream there are no pull requests below the stream branch, so
+			// "merge this worktree" means absorb it locally. Routing here
+			// rather than duplicating the logic keeps one implementation.
+			if flags.route == "stream" {
+				return runStreamAbsorbAlias(command, args)
+			}
 			if err := validateWorktreeMergeFlags(flags); err != nil {
 				return err
 			}
@@ -632,7 +639,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 		command.Flags().StringVar(&flags.provider, "provider", "", "routing or billing provider identity, never a credential")
 	}
 	if land {
-		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")
+		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, pr, or stream (an alias of wb stream absorb)")
 		command.Flags().BoolVar(&flags.cleanup, "cleanup", false, "after remote receipt and canonical synchronization, retire absorbed managed assets")
 		command.Flags().StringVar(&flags.onFailure, "on-failure", "stop", "post-landing failure action: stop or prepare a forward revert")
 		command.Flags().DurationVar(&flags.interval, "check-interval", orchestrate.DefaultCheckPollInterval, "foreground interval between exact GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")

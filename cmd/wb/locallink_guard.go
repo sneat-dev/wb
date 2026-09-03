@@ -149,4 +149,5 @@ var landingSurface = map[string]string{
 	"wb worktree merge prepare": landingGuardByWorktree,
 	"wb worktree merge land":    landingGuardByReceipt,
 	"wb worktree merge resume":  landingGuardByReceipt,
+	"wb stream absorb":          landingGuardByWorktree,
 }

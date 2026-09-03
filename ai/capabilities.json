@@ -4529,6 +4529,91 @@
       "notes": "Repo status never scans the projects-root fleet; use wb fleet status for that worklist."
     },
     {
+      "id": "wb.review.record",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb review record",
+              "flags": [
+                "--by",
+                "--format",
+                "--note",
+                "--round",
+                "--stream",
+                "--timeout",
+                "--verdict",
+                "--worktree"
+              ],
+              "modes": [
+                "Records a verdict against the patch-identity set a worktree currently carries, computed with git patch-id --stable over the commits the stream branch does not have",
+                "The verdict is keyed on content, not on a SHA, so an approval survives a content-identical rebase and lapses the moment the content changes",
+                "Only APPROVE clears absorption; APPROVE-WITH-FIXES deliberately does not, because the fixes change the content",
+                "Appends to the stream's event log, or to the fleet log for a worktree outside every stream",
+                "Nothing is rewritten, so a later round never erases the one before it and the newest record for a patch set is the answer"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb review record --help",
+              "contains": [
+                "patch-id --stable",
+                "content-identical rebase",
+                "Only APPROVE",
+                "fleet log"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "### `wb review record`",
+              "examples": [
+                "wb review record --worktree /path/to/agent-worktree --verdict APPROVE --round 1 --by reviewer"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestAnApprovalSurvivesARebaseButNotAContentChange",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestTheNewestVerdictWins",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestApproveWithFixesDoesNotClearAbsorption",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A review below the stream has no pull request to hang on, so it hangs on the content: the patch-identity set is what an approval is keyed on."
+    },
+    {
       "id": "wb.root.filter",
       "feature_refs": [
         "docs/cli-flag-matrix.md"
@@ -6191,6 +6276,111 @@
         }
       },
       "notes": "Status is local and read-only; it does not imply remote freshness. Prefer the explicit fleet and repo nouns for new automation."
+    },
+    {
+      "id": "wb.stream.absorb",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb stream absorb",
+              "flags": [
+                "--format",
+                "--keep-commits",
+                "--reason",
+                "--stream",
+                "--summary",
+                "--timeout",
+                "--title",
+                "--verify"
+              ],
+              "modes": [
+                "Lands an agent's work on the stream branch locally: a rebase and a squash to one commit",
+                "There are no pull requests below the stream \u2014 absorb never pushes and never opens, updates or merges a pull request",
+                "Refuses without a recorded APPROVE for exactly the patch-identity set it is about to absorb",
+                "A content-identical rebase or a reorder carries the approval forward; any content change invalidates it",
+                "A mechanical bump, touching only dependency manifests and lockfiles, skips the ledger as it does at landing",
+                "The squash message aggregates the title, the summary, one line per source commit and the reviewed patch set",
+                "--keep-commits requires --reason and every kept commit must build on its own",
+                "Refuses a worktree holding a live local link, declaring the landing guard",
+                "wb worktree merge --route stream is an alias of this verb"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream absorb --help",
+              "contains": [
+                "NO PULL REQUESTS BELOW THE STREAM",
+                "patch-id --stable",
+                "AGGREGATED",
+                "unapproved-patch-set",
+                "keep-without-reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "### `wb stream absorb <agent-worktree>`",
+              "examples": [
+                "wb stream absorb /path/to/agent-worktree --verify"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestAbsorbRefusesWithoutAnApprovalForThisExactPatchSet",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestFiveAgentsAbsorbLocallyAndOpenNoPullRequest",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestKeepCommitsWithoutAReasonIsRefused",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestAKeptCommitThatDoesNotBuildIsRefused",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestTheSquashMessageAggregatesEverySourceCommit",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streamabsorb/absorb_test.go",
+              "name": "TestAMechanicalBumpSkipsTheLedger",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Every agent pull request below the stream cost a push, a CI run, an API round trip and a review round on a branch nobody outside the stream would read; the work is still reviewed, but the pull request that carried it is gone."
     },
     {
       "id": "wb.stream.delete",

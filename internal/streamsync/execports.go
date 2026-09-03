@@ -23,6 +23,25 @@ func (git ExecGit) run(ctx context.Context, dir string, args ...string) (string,
 	return runBounded(ctx, git.Timeout, dir, nil, "git", args...)
 }
 
+// Run executes one bounded Git command. It is exported so a verb that composes
+// this Git surface — `wb stream absorb` — adds its own commands without
+// opening a second Git implementation that could drift from this one.
+func (git ExecGit) Run(ctx context.Context, dir string, args ...string) (string, error) {
+	return git.run(ctx, dir, args...)
+}
+
+// RunWithInput executes a bounded Git command with stdin, for `patch-id`,
+// which reads its patch stream from standard input.
+func (git ExecGit) RunWithInput(ctx context.Context, dir, input string, args ...string) (string, error) {
+	return runBoundedWithInput(ctx, git.Timeout, dir, nil, input, "git", args...)
+}
+
+// RunTool executes a bounded NON-Git command in the worktree, for the build
+// check behind --keep-commits.
+func (git ExecGit) RunTool(ctx context.Context, dir, name string, args ...string) (string, error) {
+	return runBounded(ctx, git.Timeout, dir, []string{"GOWORK=off"}, name, args...)
+}
+
 // Fetch implements Git.
 func (git ExecGit) Fetch(ctx context.Context, dir string) error {
 	_, err := git.run(ctx, dir, "fetch", "--quiet", "--prune", "origin")
@@ -270,6 +289,10 @@ func fileExists(path string) bool {
 }
 
 func runBounded(ctx context.Context, timeout time.Duration, dir string, env []string, name string, args ...string) (string, error) {
+	return runBoundedWithInput(ctx, timeout, dir, env, "", name, args...)
+}
+
+func runBoundedWithInput(ctx context.Context, timeout time.Duration, dir string, env []string, input, name string, args ...string) (string, error) {
 	if timeout <= 0 {
 		timeout = defaultCommandTimeout
 	}
@@ -278,6 +301,9 @@ func runBounded(ctx context.Context, timeout time.Duration, dir string, env []st
 	command := exec.CommandContext(bounded, name, args...)
 	command.Dir = dir
 	command.Env = append(console.Env(), env...)
+	if input != "" {
+		command.Stdin = strings.NewReader(input)
+	}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		detail := streams.RedactString(strings.TrimSpace(string(output)))

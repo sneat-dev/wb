@@ -41,6 +41,9 @@
     "repo": [
       "wb-fleet"
     ],
+    "review": [
+      "wb-streams"
+    ],
     "run": [
       "wb-run"
     ],

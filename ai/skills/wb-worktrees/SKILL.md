@@ -282,6 +282,17 @@ In order, and the order is the contract:
 5. **release** the fleet-wide claim, but only once every worktree is gone. A
    claim released while a checkout survives would advertise the task as free.
 
+**Unpushed commits are pushed first, with trigger `park`.** A stash capture
+survives the worktree but not the machine, so committed work that exists nowhere
+else leaves the machine before the checkout is retired. The push is recorded as
+an event carrying `trigger=park` and the reason `park: <task>` — park is one of
+the four justified push triggers, and this is the moment it exists for.
+
+If that push **fails**, or WB cannot establish how much is unpushed, the
+checkout is **not retired** and the claim is **not released**: removing it would
+destroy commits that exist nowhere else. Nothing unpushed means no push — park
+is a trigger, not a habit.
+
 Flags: `--apply`, `--repo` (narrow a coordinated task), `--note`, `--no-capture`
 (only when the work is already preserved elsewhere), `--format`.
 

@@ -300,3 +300,167 @@ func TestRepositoryNarrowsACoordinatedTask(t *testing.T) {
 		t.Fatalf("retired = %v, want only the named repository", retirer.retired)
 	}
 }
+
+// fakeParker records what park pushed, so "exactly once" is asserted on the
+// calls rather than on the absence of an error.
+type fakeParker struct {
+	unpushed map[string]int
+	pushErr  map[string]error
+	countErr map[string]error
+	pushes   []string
+	reasons  []string
+	order    *[]string
+}
+
+func (parker *fakeParker) UnpushedCommits(_ context.Context, worktree, _ string) (int, error) {
+	if err := parker.countErr[worktree]; err != nil {
+		return 0, err
+	}
+	return parker.unpushed[worktree], nil
+}
+
+func (parker *fakeParker) Push(_ context.Context, worktree, branch, reason string) (string, error) {
+	if err := parker.pushErr[worktree]; err != nil {
+		return "", err
+	}
+	parker.pushes = append(parker.pushes, worktree+" "+branch)
+	parker.reasons = append(parker.reasons, reason)
+	if parker.order != nil {
+		*parker.order = append(*parker.order, "push "+worktree)
+	}
+	return "pushed-sha-" + worktree, nil
+}
+
+// AC: park pushes exactly once and records the trigger.
+//
+// A stash capture survives the worktree but not the machine, so committed work
+// that exists nowhere else is pushed under the `park` trigger before the
+// checkout is retired.
+func TestParkPushesUnpushedCommitsExactlyOnceBeforeRetiring(t *testing.T) {
+	engine, capture, retirer, claims, _, order := newEngine(t, []Worktree{
+		{Repository: "acme/app", Path: "/wt/app", Branch: "agent/one"},
+	})
+	parker := &fakeParker{unpushed: map[string]int{"/wt/app": 3}, pushErr: map[string]error{}, countErr: map[string]error{}, order: order}
+	engine.Parker = parker
+	capture.dirty["/wt/app"] = []string{"notes.md"}
+
+	result, err := engine.End(context.Background(), Options{Task: "improve-login", Apply: true})
+	if err != nil {
+		t.Fatalf("end: %v", err)
+	}
+	if len(parker.pushes) != 1 {
+		t.Fatalf("pushes = %v, want exactly one", parker.pushes)
+	}
+	if parker.reasons[0] != "park: improve-login" {
+		t.Errorf("reason = %q, want the park trigger to name the task", parker.reasons[0])
+	}
+	member := result.Members[0]
+	if member.UnpushedCommits != 3 || member.ParkPush == "" {
+		t.Fatalf("member = %#v, want the push reported", member)
+	}
+	// Order: the push happens BEFORE the capture and before the removal —
+	// committed work leaves the machine first.
+	if len(*order) != 3 || (*order)[0] != "push /wt/app" || (*order)[2] != "retire /wt/app" {
+		t.Fatalf("order = %v, want push, capture, retire", *order)
+	}
+	if len(retirer.retired) != 1 || len(claims.released) != 1 {
+		t.Fatalf("retired = %v, released = %v", retirer.retired, claims.released)
+	}
+}
+
+// A checkout with nothing unpushed is retired without a push: park is a
+// trigger, not a habit.
+func TestNothingUnpushedMeansNoPush(t *testing.T) {
+	engine, _, retirer, _, _, _ := newEngine(t, []Worktree{
+		{Repository: "acme/app", Path: "/wt/app", Branch: "agent/one"},
+	})
+	parker := &fakeParker{unpushed: map[string]int{"/wt/app": 0}, pushErr: map[string]error{}, countErr: map[string]error{}}
+	engine.Parker = parker
+
+	result, err := engine.End(context.Background(), Options{Task: "t", Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parker.pushes) != 0 {
+		t.Fatalf("pushes = %v, want none", parker.pushes)
+	}
+	if result.Members[0].ParkPush != "" {
+		t.Errorf("member = %#v, want no park push", result.Members[0])
+	}
+	if len(retirer.retired) != 1 {
+		t.Fatalf("retired = %v, want the checkout still retired", retirer.retired)
+	}
+}
+
+// A push that fails does NOT retire the checkout: removing it would destroy
+// commits that exist nowhere else.
+func TestAFailedParkPushRefusesToRetire(t *testing.T) {
+	engine, _, retirer, claims, _, _ := newEngine(t, []Worktree{
+		{Repository: "acme/app", Path: "/wt/app", Branch: "agent/one"},
+	})
+	engine.Parker = &fakeParker{
+		unpushed: map[string]int{"/wt/app": 2},
+		pushErr:  map[string]error{"/wt/app": errors.New("remote rejected: protected branch")},
+		countErr: map[string]error{},
+	}
+
+	result, err := engine.End(context.Background(), Options{Task: "t", Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Failed() {
+		t.Fatal("a failed park push reported success")
+	}
+	if len(retirer.retired) != 0 {
+		t.Fatalf("the checkout was retired with %d unpushed commit(s): %v", 2, retirer.retired)
+	}
+	if len(claims.released) != 0 {
+		t.Errorf("the claim was released while the work is unpushed: %v", claims.released)
+	}
+	if !strings.Contains(result.Members[0].Detail, "NOT retired") {
+		t.Errorf("detail = %q, want it to say the checkout was not retired", result.Members[0].Detail)
+	}
+}
+
+// A count WB could not establish must not be read as "nothing unpushed".
+func TestAnUnknownUnpushedCountRefusesToRetire(t *testing.T) {
+	engine, _, retirer, _, _, _ := newEngine(t, []Worktree{
+		{Repository: "acme/app", Path: "/wt/app", Branch: "agent/one"},
+	})
+	engine.Parker = &fakeParker{
+		unpushed: map[string]int{}, pushErr: map[string]error{},
+		countErr: map[string]error{"/wt/app": errors.New("origin unreachable")},
+	}
+
+	result, err := engine.End(context.Background(), Options{Task: "t", Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retirer.retired) != 0 {
+		t.Fatalf("the checkout was retired on an unknown unpushed count: %v", retirer.retired)
+	}
+	if !strings.Contains(result.Members[0].Detail, "nothing was removed") {
+		t.Errorf("detail = %q", result.Members[0].Detail)
+	}
+}
+
+// The dry run says what park would push, so the operator sees it before it
+// happens.
+func TestTheDryRunNamesWhatParkWouldPush(t *testing.T) {
+	engine, capture, _, _, _, _ := newEngine(t, []Worktree{
+		{Repository: "acme/app", Path: "/wt/app", Branch: "agent/one"},
+	})
+	engine.Parker = &fakeParker{unpushed: map[string]int{"/wt/app": 4}, pushErr: map[string]error{}, countErr: map[string]error{}}
+	capture.dirty["/wt/app"] = []string{"notes.md"}
+
+	result, err := engine.End(context.Background(), Options{Task: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Members[0].Detail, "4 unpushed commit(s) would be pushed with trigger park") {
+		t.Fatalf("detail = %q", result.Members[0].Detail)
+	}
+	if !strings.Contains(result.Members[0].Detail, "would be captured") {
+		t.Errorf("the dry run dropped the capture note: %q", result.Members[0].Detail)
+	}
+}
