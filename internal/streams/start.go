@@ -179,10 +179,13 @@ func (engine *Engine) Start(ctx context.Context, options StartOptions, transitiv
 	} else if loadErr != nil && !errors.Is(loadErr, ErrNotFound) {
 		return StartResult{}, loadErr
 	}
+	var stateFindings []PreflightFinding
 	for _, repository := range repositories {
-		if refuseErr := engine.refuseSecondStream(repository, options.Name); refuseErr != nil {
+		unreadable, refuseErr := engine.refuseSecondStream(repository, options.Name)
+		if refuseErr != nil {
 			return StartResult{}, refuseErr
 		}
+		stateFindings = unreadableFindings(unreadable)
 	}
 
 	inputs, err := engine.preflightInputs(ctx, repositories, options.Base)
@@ -190,12 +193,14 @@ func (engine *Engine) Start(ctx context.Context, options StartOptions, transitiv
 		return StartResult{}, err
 	}
 	// The readiness checks read origin, so origin is re-read first: a stale
-	// clone would answer the red-base question from a snapshot.
-	for _, input := range inputs {
-		_ = engine.Git.Fetch(ctx, input.Path)
-	}
+	// clone would answer the red-base question from a snapshot. A fetch that
+	// fails is REPORTED rather than discarded — the checks below then ran
+	// against a possibly stale clone, and the operator has to know that.
+	fetchFindings := engine.refreshOrigins(ctx, inputs)
 	preflight := RunPreflight(ctx, engine.GitHub, engine.HooksCheck, inputs)
 	refused, reported := splitPreflight(preflight)
+	reported = append(reported, fetchFindings...)
+	reported = append(reported, stateFindings...)
 	if len(refused) > 0 {
 		return StartResult{Preflight: preflight}, &Refusal{
 			Code:       RefusalPreflight,
@@ -230,7 +235,7 @@ func (engine *Engine) Start(ctx context.Context, options StartOptions, transitiv
 			return loadErr
 		}
 		for _, repository := range repositories {
-			if refuseErr := engine.refuseSecondStream(repository, options.Name); refuseErr != nil {
+			if _, refuseErr := engine.refuseSecondStream(repository, options.Name); refuseErr != nil {
 				return refuseErr
 			}
 		}
@@ -304,12 +309,60 @@ func (engine *Engine) Start(ctx context.Context, options StartOptions, transitiv
 			Detail: "an ended stream of this name was archived as " + archived,
 		})
 	}
+	// A member whose branch or draft pull request never landed is a finding,
+	// not a silent field in the record. Without this the verb exits 0 while a
+	// member has no pull request and therefore no CI — exactly the state the
+	// draft-PR requirement exists to prevent.
+	reported = append(reported, incompleteMemberFindings(saved)...)
 	return StartResult{
 		Stream:              saved,
 		Preflight:           preflight,
 		Reported:            reported,
 		TransitiveOmissions: omittedConsumers(repositories, transitive),
 	}, nil
+}
+
+// refreshOrigins re-reads origin for every member and reports each failure.
+//
+// A fetch WB could not complete does not stop the start — the checks can still
+// run, and refusing on an unreachable network would make the verb unusable
+// offline — but it changes what those checks mean, so it is never discarded.
+func (engine *Engine) refreshOrigins(ctx context.Context, inputs []PreflightInput) []PreflightFinding {
+	var findings []PreflightFinding
+	for _, input := range inputs {
+		if err := engine.Git.Fetch(ctx, input.Path); err != nil {
+			findings = append(findings, PreflightFinding{
+				Repository: input.Repository,
+				Check:      "origin-refresh",
+				Status:     PreflightUnknown,
+				Detail: "could not re-read origin, so the readiness checks below ran against a possibly stale clone: " +
+					RedactString(err.Error()),
+			})
+		}
+	}
+	return findings
+}
+
+// incompleteMemberFindings names every member left without a pushed branch or
+// an open draft pull request.
+func incompleteMemberFindings(stream Stream) []PreflightFinding {
+	var findings []PreflightFinding
+	for _, member := range stream.Members {
+		if member.PullRequest != 0 {
+			continue
+		}
+		detail := "no draft pull request was opened, so pushes to " + member.Branch + " run no CI"
+		if member.PullRequestError != "" {
+			detail += ": " + member.PullRequestError
+		}
+		findings = append(findings, PreflightFinding{
+			Repository: member.Repository,
+			Check:      "draft-pull-request",
+			Status:     PreflightFail,
+			Detail:     detail + " — retry with `wb stream join " + stream.Name + " " + member.Repository + "`",
+		})
+	}
+	return findings
 }
 
 // splitPreflight separates findings that refuse from findings that are
@@ -436,11 +489,10 @@ func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResul
 	if err != nil {
 		return StartResult{}, err
 	}
-	for _, input := range inputs {
-		_ = engine.Git.Fetch(ctx, input.Path)
-	}
+	fetchFindings := engine.refreshOrigins(ctx, inputs)
 	preflight := RunPreflight(ctx, engine.GitHub, engine.HooksCheck, inputs)
 	refused, reported := splitPreflight(preflight)
+	reported = append(reported, fetchFindings...)
 	if len(refused) > 0 {
 		return StartResult{Preflight: preflight}, &Refusal{
 			Code:       RefusalPreflight,
@@ -453,7 +505,7 @@ func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResul
 	// coordinates under the store lock, before any worktree is created, so a
 	// crash mid-join leaves a member `status` and `end` can both see.
 	if err := engine.Store.WithStoreLock(func() error {
-		if refuseErr := engine.refuseSecondStream(options.Repository, options.Name); refuseErr != nil {
+		if _, refuseErr := engine.refuseSecondStream(options.Repository, options.Name); refuseErr != nil {
 			return refuseErr
 		}
 		_, updateErr := engine.Store.Update(options.Name, func(current *Stream) error {
@@ -611,15 +663,21 @@ func streamExistsRefusal(name string) *Refusal {
 	}
 }
 
-func (engine *Engine) refuseSecondStream(repository, joining string) error {
-	holder, held, err := engine.Store.RepositoryStream(repository)
+// refuseSecondStream enforces one open stream per repository.
+//
+// It returns the unreadable records alongside its decision: a "no stream holds
+// this repository" answer is only as good as the records WB could read, and a
+// truncated file could be the very stream that holds it. The caller reports
+// them so the guard never looks more certain than it is.
+func (engine *Engine) refuseSecondStream(repository, joining string) ([]Unreadable, error) {
+	holder, held, unreadable, err := engine.Store.RepositoryStream(repository)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !held || holder.Name == joining {
-		return nil
+		return unreadable, nil
 	}
-	return &Refusal{
+	return unreadable, &Refusal{
 		Code:    RefusalRepositoryInStream,
 		Message: fmt.Sprintf("%s already carries open stream %q; a repository carries at most one open stream, because landing one stream rewrites the base under the other", repository, holder.Name),
 		Sanctioned: []string{
@@ -627,6 +685,21 @@ func (engine *Engine) refuseSecondStream(repository, joining string) error {
 			"wb stream end " + holder.Name,
 		},
 	}
+}
+
+// unreadableFindings turns unreadable stream records into reported findings.
+// They are never fatal — one truncated file must not refuse every start on the
+// machine — but they are never silent either.
+func unreadableFindings(unreadable []Unreadable) []PreflightFinding {
+	findings := make([]PreflightFinding, 0, len(unreadable))
+	for _, broken := range unreadable {
+		findings = append(findings, PreflightFinding{
+			Check:  "stream-state-readable",
+			Status: PreflightUnknown,
+			Detail: fmt.Sprintf("stream record %s could not be read (%s), so the one-open-stream check could not consider it", broken.Name, broken.Reason),
+		})
+	}
+	return findings
 }
 
 func (engine *Engine) preflightInputs(ctx context.Context, repositories []string, base string) ([]PreflightInput, error) {

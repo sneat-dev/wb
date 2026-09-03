@@ -48,9 +48,29 @@ type RunOptions struct {
 	// CoverageDiagnosticsRepository identifies the owning repository in the
 	// private manifest when a fleet runner executes several repositories.
 	CoverageDiagnosticsRepository string
+	// SingleWorker constrains every check to one worker, so a verification
+	// run cannot exceed the workstation's concurrency cap on its own. Go tests
+	// gain `-p 1` and never `-race`; Node runs gain `--parallel=1` and
+	// `--maxWorkers=1` with the Nx daemon and cache disabled.
+	//
+	// Serialization is deliberately *not* a substitute for per-file
+	// isolation: nothing here relaxes an isolation flag, because a serialized
+	// leak is worse than a flake — it is reproducible and misattributed.
+	SingleWorker bool
+	// Env is appended to each check's environment as KEY=VALUE entries. It is
+	// how a caller states the environment a run must carry (GOWORK=off,
+	// NX_DAEMON=false) rather than leaving it to the shell that invoked wb.
+	Env []string
 	// Progress receives lifecycle events for external checks. Callers may use it
 	// for terminal diagnostics; reports remain the authoritative output.
 	Progress func(Progress)
+}
+
+// SingleWorkerNodeEnv is the environment a single-worker Node run must carry.
+// It is exported so a caller that composes its own command still states the
+// same environment the profile does.
+func SingleWorkerNodeEnv() []string {
+	return []string{"CI=1", "NX_DAEMON=false", "NX_SKIP_NX_CACHE=true"}
 }
 
 // ProgressState identifies a visible quality-work transition.
@@ -122,7 +142,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 			if check == CheckSpec {
 				continue
 			}
-			command := goCommand(check)
+			command := goCommand(check, options.SingleWorker)
 			entry := runVerification(ctx, options, "go", relativePath(path, module), check, module, command...)
 			report.Results = append(report.Results, entry)
 		}
@@ -150,7 +170,7 @@ func VerifyWithOptions(ctx context.Context, repository, path string, checks []Ch
 					report.Results = append(report.Results, VerificationEntry{Language: "node", Module: node.Module, Check: check, Status: StatusSkipped, Detail: "script is not defined"})
 					continue
 				}
-				command := []string{node.PackageManager, "run", string(check)}
+				command := nodeCheckCommand(node.PackageManager, check, options.SingleWorker)
 				entry := runVerification(ctx, options, "node", node.Module, check, node.Path, command...)
 				report.Results = append(report.Results, entry)
 			}
@@ -201,17 +221,34 @@ func containsCheck(checks []Check, want Check) bool {
 	return false
 }
 
-func goCommand(check Check) []string {
+func goCommand(check Check, singleWorker bool) []string {
 	switch check {
 	case CheckLint:
 		return []string{"go", "vet", "./..."}
 	case CheckTest:
+		if singleWorker {
+			// -p 1 bounds how many packages compile and run at once, which is
+			// the knob that keeps a verification run inside the workstation's
+			// concurrency cap. -race is deliberately absent: it multiplies
+			// wall time and memory, and CI on the stream pull request owns it.
+			return []string{"go", "test", "-p", "1", "./..."}
+		}
 		return []string{"go", "test", "./..."}
 	case CheckBuild:
 		return []string{"go", "build", "./..."}
 	default:
 		return nil
 	}
+}
+
+// nodeCheckCommand appends the single-worker flags after the script separator,
+// so they reach the underlying runner rather than the package manager.
+func nodeCheckCommand(packageManager string, check Check, singleWorker bool) []string {
+	command := []string{packageManager, "run", string(check)}
+	if !singleWorker {
+		return command
+	}
+	return append(command, "--parallel=1", "--", "--maxWorkers=1")
 }
 
 func runVerification(ctx context.Context, options RunOptions, language, module string, check Check, dir string, command ...string) VerificationEntry {
@@ -403,8 +440,15 @@ func detectPackageManager(root, declared string) string {
 }
 
 func run(ctx context.Context, dir, name string, args ...string) (string, error) {
+	return runWithEnv(ctx, nil, dir, name, args...)
+}
+
+func runWithEnv(ctx context.Context, env []string, dir, name string, args ...string) (string, error) {
 	command := process.CommandContext(ctx, name, args...)
 	command.Dir = dir
+	if len(env) > 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
@@ -418,7 +462,7 @@ func runWithOptions(ctx context.Context, options RunOptions, dir, name string, a
 		if options.Timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
 		}
-		output, err := run(attemptCtx, dir, name, args...)
+		output, err := runWithEnv(attemptCtx, options.Env, dir, name, args...)
 		timedOut := attemptCtx.Err() == context.DeadlineExceeded
 		cancel()
 		if timedOut {

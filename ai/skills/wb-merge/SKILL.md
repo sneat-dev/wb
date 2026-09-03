@@ -14,6 +14,30 @@ steps below only for unsupported policy, conflicts, or behavioral judgment.
 wb worktree merge <source-worktree...> --route auto --cleanup --format json
 ```
 
+## A live local link is a refusal
+
+`wb worktree merge` (and `wb worktree merge prepare`) **refuse before any push**
+a worktree that holds a live local link — a link recorded in stream state, or a
+`go.work` carrying a `use` entry. Such a worktree builds against an
+*unpublished* working tree, so landing it would publish a commit whose CI ran
+against something the registry never carried.
+
+The two signals are checked independently: state alone would miss a hand-written
+`go.work`, and `go.work` alone would miss an npm link. Either one refuses, with
+exit code `2`.
+
+The refusal names the exact command that clears it:
+
+```sh
+wb deps propagate local <library-worktree> --to <consumer-worktree> --undo
+```
+
+**There is no flag that both bypasses this guard and pushes.** Do not hand-roll
+`git push` around it.
+
+Inside a stream, agent pull requests target `stream/<name>`, never `main`, and
+landing the stream itself is rebase-and-merge. See the `wb-streams` skill.
+
 This is the canonical, harness-neutral merger contract. It is an operational
 skill, not a branch-prefix convention and not a model profile. Read
 [ci-polling.md](references/ci-polling.md) when CI must be observed and

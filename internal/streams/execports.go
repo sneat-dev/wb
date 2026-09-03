@@ -153,14 +153,32 @@ func (git ExecGit) CommitsNotIn(ctx context.Context, dir, branch, base string) (
 	return commits, nil
 }
 
+// commitSubjects reads every subject in ONE `git log`.
+//
+// `--no-walk` makes git print exactly the commits named rather than their
+// ancestry, so a backlog of N commits costs one child process instead of N.
+// The SHA is printed alongside the subject because `--no-walk` does not
+// guarantee the input order.
 func (git ExecGit) commitSubjects(ctx context.Context, dir string, shas []string) (map[string]string, error) {
+	if len(shas) == 0 {
+		return map[string]string{}, nil
+	}
+	args := append([]string{"log", "--no-walk", "--format=%H %s"}, shas...)
+	out, err := git.run(ctx, dir, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read commit subjects in %s: %w", dir, err)
+	}
 	subjects := make(map[string]string, len(shas))
-	for _, sha := range shas {
-		out, err := git.run(ctx, dir, "log", "-1", "--format=%s", sha)
-		if err != nil {
-			return nil, fmt.Errorf("read the subject of %s in %s: %w", sha, dir, err)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
 		}
-		subjects[sha] = strings.TrimSpace(out)
+		sha, subject, found := strings.Cut(line, " ")
+		if !found {
+			continue
+		}
+		subjects[sha] = subject
 	}
 	return subjects, nil
 }
