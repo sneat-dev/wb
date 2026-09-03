@@ -6021,6 +6021,510 @@
       "notes": "Status is local and read-only; it does not imply remote freshness. Prefer the explicit fleet and repo nouns for new automation."
     },
     {
+      "id": "wb.stream.delete",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb stream delete",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Removes an ended stream's record and its event log",
+                "Refuses an open stream: deleting one would strand its worktrees, branches and pull requests with no record any verb could reach",
+                "Rarely needed, because wb stream start archives an ended stream of the same name and proceeds"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream delete --help",
+              "contains": [
+                "refuses an OPEN stream",
+                "archives the old record"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "### `wb stream delete <name>`",
+              "examples": [
+                "wb stream delete checkout-rewrite.ended-20260903T101500Z"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestDeleteRefusesAnOpenStreamAndRemovesAnEndedOne",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/stream_test.go",
+              "name": "TestStreamDeleteRefusesAnOpenStream",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "An ended stream's record and event log are evidence and are never pruned as a side effect; delete is the explicit, refusable way to discard one."
+    },
+    {
+      "id": "wb.stream.end",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb stream end",
+              "flags": [
+                "--apply",
+                "--force-unabsorbed",
+                "--format",
+                "--keep-remote-branch",
+                "--reason",
+                "--retarget"
+              ],
+              "modes": [
+                "Closes or retargets every still-open pull request against the stream branches before the branch could be deleted, asserting each effect by re-reading the pull request",
+                "Deletes origin/stream/<name> as well as the local checkout, so the scaffolding it claims to remove includes the remote branch",
+                "Closes each member's own draft pull request, releases the leases of members that were actually retired, and retires every worktree through wb worktree cleanup",
+                "Ending publishes, bumps and merges nothing",
+                "Without --apply it reports exactly what it would do and changes nothing",
+                "Refuses (exit 2) while any local link is live, naming the exact wb deps propagate local --undo per link",
+                "The absorption guard FAILS CLOSED: a comparison that could not run refuses, because a check that cannot answer must not pass",
+                "--force-unabsorbed requires --reason; the reason and every finding stepped over are written to the event log",
+                "Re-reads origin before judging absorption, so a stale local clone cannot refuse work the base already carries",
+                "Retires a stream interrupted while it was being created, from the coordinates its record carried before the first side effect"
+              ]
+            }
+          ],
+          "limitation": "stream-end-restores-published-state is implemented as a refusal, not a removal: end refuses while a live link remains and names the exact `wb deps propagate local ... --undo` per link, but does not run them. Removing them inside end requires the local-link verb from the propagate-local row."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream end --help",
+              "contains": [
+                "publishes, bumps and merges nothing",
+                "live-link",
+                "unabsorbed-work",
+                "--retarget",
+                "--apply",
+                "--force-unabsorbed",
+                "keep-remote-branch"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "# WB streams",
+              "examples": [
+                "wb stream end checkout-rewrite --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streams/end_test.go",
+              "name": "TestEndRefusesWhileALinkIsLive",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/end_test.go",
+              "name": "TestEndRefusesUnabsorbedWork",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/end_test.go",
+              "name": "TestEndClosesStillOpenAgentPullRequestsBeforeRemovingTheBranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/end_test.go",
+              "name": "TestEndWithoutApplyChangesNothing",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestEndRefusesWhenTheAbsorptionCheckCouldNotRun",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestForceUnabsorbedRequiresAReasonAndRecordsIt",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestEndDeletesTheRemoteStreamBranchAfterSettlingItsPullRequests",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestAStartInterruptedAfterTheFirstPushIsRecoverableByEnd",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "GitHub auto-retargets an open pull request onto the base when its base branch is deleted, so leftover agent work is settled first; and an absorption check that could not run refuses rather than retiring a member on the strength of an answer it never got."
+    },
+    {
+      "id": "wb.stream.join",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb stream join",
+              "flags": [
+                "--agent",
+                "--agent-runtime",
+                "--base",
+                "--cli",
+                "--effort",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--model",
+                "--original-prompt-file",
+                "--provider",
+                "--role",
+                "--run"
+              ],
+              "modes": [
+                "Adds a repository to an existing stream, creating its stream worktree, branch and draft pull request exactly as start does",
+                "It is the sanctioned answer to the one-stream-per-repository refusal; joining an existing member is a no-op",
+                "Refuses (exit 2) a repository that belongs to a different open stream, a second library, and an ended stream",
+                "Re-running join for a member whose draft pull request never opened retries exactly that effect, which is the documented recovery"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream join --help",
+              "contains": [
+                "--role",
+                "library-exists",
+                "repository-in-stream",
+                "stream-ended"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "# WB streams",
+              "examples": [
+                "wb stream join checkout-rewrite acme/reports --role consumer --mode manual --initiator me@example.com --model unknown --original-prompt-file ./prompt.txt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestJoinAddsAMemberToAnExistingStream",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestJoinIsIdempotentForAMemberAlreadyInTheStream",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestJoinRefusesASecondLibrary",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestJoinRetriesAMemberWhoseDraftPullRequestNeverOpened",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Two concurrent streams on one repository are out of scope: landing one rewrites the base under the other, so every already-approved agent branch would need re-rebasing."
+    },
+    {
+      "id": "wb.stream.start",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb stream start",
+              "flags": [
+                "--agent",
+                "--agent-runtime",
+                "--base",
+                "--cli",
+                "--effort",
+                "--format",
+                "--initiator",
+                "--library",
+                "--mode",
+                "--model",
+                "--original-prompt-file",
+                "--provider",
+                "--run"
+              ],
+              "modes": [
+                "Creates one worktree per repository on branch stream/<name> through the existing wb worktree create path, each with a DRAFT pull request to its base",
+                "The first repository is the library unless --library names another; the role is recorded because propagation direction is not symmetric",
+                "Every fence runs before the first side effect: name validation, the one-open-stream-per-repository refusal, and the fleet readiness checks",
+                "Readiness per member: wb hooks check, an npm provider-identity scan, a red-base check, and a stream-PR concurrency check for cancel-in-progress",
+                "Refuses (exit 2) on stream-exists, repository-in-stream naming wb stream join, and preflight-failed naming wb hooks repair",
+                "Reports (exit 1) a red base, a missing CI concurrency group, a check it could not establish, and any transitive consumer left out of the stream",
+                "Stream membership is recorded in WB-owned state outside every repository, so git status in each member stays clean",
+                "Writes the stream record \u2014 with every member's intended worktree, branch and base \u2014 BEFORE the first side effect, so an interrupted start leaves a `creating` stream wb stream end can retire",
+                "Reserves the name under the store-wide lock that also decides the one-open-stream question, so two concurrent starts arbitrate before either pushes anything",
+                "Starting on the name of an ENDED stream archives the old record as <name>.ended-<timestamp> and proceeds, so a name is never burned by its first use",
+                "An unreadable stream record elsewhere in the store is reported, never allowed to refuse an unrelated start"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream start --help",
+              "contains": [
+                "stream/<name>",
+                "repository-in-stream",
+                "preflight-failed",
+                "--library",
+                "concurrency group",
+                "draft pull request"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "# WB streams",
+              "examples": [
+                "wb stream start checkout-rewrite acme/library acme/app --mode manual --initiator me@example.com --model unknown --original-prompt-file -"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestStartRefusesARepositoryThatAlreadyCarriesAnOpenStream",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestStartRefusesBeforeCreatingAnythingWhenHooksAreUnhealthy",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestStartReportsAMemberWhoseStreamWorkflowDoesNotCancelInProgress",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/start_test.go",
+              "name": "TestStartNamesTransitiveConsumersLeftOut",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/stream_test.go",
+              "name": "TestStreamStartRefusalExitsUsageWithItsEnvelope",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestASecondStartOnTheSameNameRefusesBeforePublishingAnything",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestStartReusesTheNameOfAnEndedStreamByArchivingIt",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestACredentialInAGitErrorNeverReachesTheStateFile",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestAnUnreadableStreamIsReportedAndDoesNotBlockOthers",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The stream name is the worktree task name, so a stream introduces no second identity for the same work and WB never invents a second worktree creation path."
+    },
+    {
+      "id": "wb.stream.status",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb stream status",
+              "flags": [
+                "--format"
+              ],
+              "modes": [
+                "Reports the three gaps separately and per repository: consumers holding a live local link, library changes merged but untagged, and consumers behind the newest published version",
+                "Lists every open pull request targeting a stream branch \u2014 the ones GitHub would silently retarget at the base if the branch were deleted",
+                "Collapses patch-identical unabsorbed commits so N branches carrying one body of work read as one cluster",
+                "Reconstructs everything from WB-owned stream state, so it answers after an interrupted session",
+                "Anything it could not establish is reported under 'could not establish'; an empty gap list is never readable as nothing is wrong",
+                "With no name, every stream in the store is listed",
+                "Re-reads origin before comparing against origin/<base> or reading the tags, so a stale local clone cannot mis-report a gap",
+                "Clusters unabsorbed commits on git patch-id --stable, never on subject text",
+                "Reads only the library module's own tags, so a repository carrying tags for several modules cannot mis-report the behind-consumers gap"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb stream status --help",
+              "contains": [
+                "three states in which a stream is incomplete",
+                "could not establish",
+                "patch-identical",
+                "live local link"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-streams/SKILL.md",
+              "marker": "# WB streams",
+              "examples": [
+                "wb stream status checkout-rewrite"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/streams/status_test.go",
+              "name": "TestStatusSeparatesLinkedUntaggedAndBehind",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/streams/status_test.go",
+              "name": "TestStatusCollapsesPatchIdenticalBacklog",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/status_test.go",
+              "name": "TestStatusReportsWhatItCouldNotEstablish",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestEndAndStatusReReadOriginBeforeTrustingALocalRef",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/streams/recovery_test.go",
+              "name": "TestStatusReadsOnlyTheLibraryModulesTags",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "A merged-but-untagged library is not the same problem as a consumer left behind, so the three gaps are reported separately rather than collapsed into one incomplete flag."
+    },
+    {
       "id": "wb.sync",
       "feature_refs": [],
       "since": "existing",
@@ -6430,11 +6934,11 @@
                 "--remote",
                 "--successor"
               ],
-                "modes": [
-                  "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
-                  "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
-                  "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
-                  "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
+              "modes": [
+                "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
+                "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
+                "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
                 "handoff/not_landed require a creator-declared successor model and preserve independent optional CLI/provider route identity",
                 "a durable post-removal backlog resumes exact local-ref retirement after interruption"
               ]
@@ -7218,6 +7722,103 @@
       "notes": "The projection is an untrusted opaque pointer; the immutable claim and live checkout are corroborated before terminal mutation."
     },
     {
+      "id": "wb.worktree.end",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree end",
+              "flags": [
+                "--apply",
+                "--format",
+                "--no-capture",
+                "--note",
+                "--repo"
+              ],
+              "modes": [
+                "The closing half of wb worktree create and the last line of every lane contract",
+                "Refuses while any worktree holds a live local link, from both independent signals: a link recorded in stream state, and a go.work carrying use entries",
+                "Captures uncommitted work as a git stash commit in the repository the worktree was cut from, BEFORE anything is removed, and prints the exact recoverable SHA",
+                "A dirty worktree is not a refusal; a capture that fails stops the removal, because retiring a checkout whose work could not be preserved loses data irrecoverably",
+                "Seals a closing note into the Work Log; a note that cannot be sealed never strands the worktree",
+                "Retires each worktree through the existing wb worktree cleanup transaction, so cleanup's own guards still apply",
+                "Releases the fleet-wide claim only once every worktree is gone",
+                "Without --apply it reports exactly what it would do and changes nothing"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree end --help",
+              "contains": [
+                "live local link",
+                "BEFORE anything is",
+                "NOT a refusal",
+                "git stash apply",
+                "release the fleet-wide claim"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/SKILL.md",
+              "marker": "## Ending a task \u2014 `wb worktree end`",
+              "examples": [
+                "wb worktree end improve-login",
+                "wb worktree end improve-login --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktreeend/worktreeend_test.go",
+              "name": "TestUncommittedWorkIsCapturedBeforeTheWorktreeIsRetired",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktreeend/worktreeend_test.go",
+              "name": "TestAFailedCaptureStopsTheRemoval",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktreeend/worktreeend_test.go",
+              "name": "TestALiveLinkRefusesTheWholeTaskBeforeAnySideEffect",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktreeend/worktreeend_test.go",
+              "name": "TestTheClaimIsKeptWhenAWorktreeSurvives",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/worktree_end_test.go",
+              "name": "TestWorktreeEndCapturesDirtyWorkAndRetiresTheCheckout",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Every lane contract already told agents to end with this verb; until now it did not exist, so an agent either left residue for wb worktree gc or hand-rolled a removal that loses the claim, the Work Log seal and any uncommitted work."
+    },
+    {
       "id": "wb.worktree.gc",
       "feature_refs": [
         "spec/features/dependency-streams/README.md"
@@ -7246,14 +7847,14 @@
               ],
               "modes": [
                 "Dry-run plan is the default; --apply is required to retire anything",
-                "Merged-ness is decided by commit identity — GitHub's commit-to-pull-request index for the head, then for its ancestors — never by branch-name ancestry, because a squash merge leaves none",
+                "Merged-ness is decided by commit identity \u2014 GitHub's commit-to-pull-request index for the head, then for its ancestors \u2014 never by branch-name ancestry, because a squash merge leaves none",
                 "Classifies every checkout as contained, landed-clean, landed-residue, detached-review, detached-unknown, open-pr, dirty, claimed-live, unpushed, or unmerged, and prints the evidence behind the class",
                 "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
                 "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
                 "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
-                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past — the residual commits, or the receipt and the reviewer after every bound head is re-verified",
+                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past \u2014 the residual commits, or the receipt and the reviewer after every bound head is re-verified",
                 "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
-                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes — no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
+                "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
                 "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported, and an applying sweep retires the husks, so the debris gc's own advice creates is seen on the next sweep instead of accumulating",
                 "A live session outranks a landed head: a checkout whose owner is alive is kept and names wb worktree end, because landed work is more likely to be mid-next-round, not less",
@@ -7385,7 +7986,7 @@
           "limitation": null
         }
       },
-      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup — cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
+      "notes": "The safety net rather than the mechanism: a rising count of retirable checkouts means a landing verb stopped cleaning up after itself. Deliberately not a mode of wb worktree cleanup \u2014 cleanup answers 'retire this named task', gc answers 'what is finished anywhere', and gc's classification is what makes a squash-merged or detached checkout visible to cleanup's own transaction at all."
     },
     {
       "id": "wb.worktree.guard",
@@ -8739,7 +9340,9 @@
     },
     {
       "id": "wb.worktree.merge.acknowledge-landed-failed",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -8747,7 +9350,14 @@
           "commands": [
             {
               "path": "wb worktree merge acknowledge-landed-failed",
-              "flags": ["--actor", "--apply", "--format", "--initiator", "--mode", "--reason"],
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
               "modes": [
                 "Proves an exact clean candidate and every exact clean receipted source are contained in the freshly fetched remote target",
                 "Acknowledges only stale prepare validation_failed or landed_post_target_ci_failed receipts without falsely making either a successful landing"
@@ -8761,7 +9371,14 @@
           "anchors": [
             {
               "command": "wb worktree merge acknowledge-landed-failed --help",
-              "contains": ["separate audited acknowledgement", "--apply", "--actor", "--initiator", "--mode", "--reason"]
+              "contains": [
+                "separate audited acknowledgement",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
             }
           ],
           "limitation": null
@@ -8772,7 +9389,9 @@
             {
               "path": "ai/skills/wb-merge/references/worktree-merge.md",
               "marker": "# Mechanical worktree merge",
-              "examples": ["wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>"]
+              "examples": [
+                "wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
             }
           ],
           "limitation": null
@@ -9057,67 +9676,435 @@
     },
     {
       "id": "wb.worktree.merge.land",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge land", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--progress", "--retry", "--route", "--timeout"], "modes": ["Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy", "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge land --help", "contains": ["exact integration candidate", "--route", "--cleanup"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --progress --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge land",
+              "flags": [
+                "--check-interval",
+                "--cleanup",
+                "--format",
+                "--on-failure",
+                "--progress",
+                "--retry",
+                "--route",
+                "--timeout"
+              ],
+              "modes": [
+                "Consumes an exact prepare receipt, incorporates a freshly fetched target without resolving conflicts, and selects a direct or pull-request route from authoritative GitHub policy",
+                "Waits for exact-head and post-target check receipts, reports stage and check-poll progress on stderr when requested, verifies the remote landing, safely synchronizes an eligible canonical checkout, and cleans only when explicitly requested"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge land --help",
+              "contains": [
+                "exact integration candidate",
+                "--route",
+                "--cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress --format json"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree merge land <candidate-worktree-or-receipt> --route auto --cleanup --progress --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "The candidate or receipt, never branch naming alone, is the continuation identity."
     },
     {
       "id": "wb.worktree.merge.prepare",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "v0.66.0",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare", "flags": ["--agent-id", "--agent-runtime", "--cli", "--format", "--model", "--progress", "--provider", "--rebatch-receipt", "--retry", "--target", "--timeout"], "modes": ["Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, reports stage and validation progress on stderr when requested, and persists a resumable receipt", "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing", "After failed post-target CI, accepts only an additive same-source repair, proves the target contains the failed landing, advances the retained candidate, and records every failed attempt before a fresh PR", "With --rebatch-receipt, replaces one unlanded prepared lane only with a new candidate whose source set retains every old ref at a descendant head and adds a distinct ref; target drift and dirty or ambiguous identity are refused, while immutable evidence is linked by an append-only acknowledgement"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare --help", "contains": ["isolated local integration candidate", "--target", "--model"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare <source-worktree...> --target main --progress --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge prepare <source-worktree...> --target <branch> --progress --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_test.go", "name": "TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge prepare",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--cli",
+                "--format",
+                "--model",
+                "--progress",
+                "--provider",
+                "--rebatch-receipt",
+                "--retry",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Creates one exclusive WB-managed integration lane for the repository and target, merges ordered immutable source heads, validates the result, reports stage and validation progress on stderr when requested, and persists a resumable receipt",
+                "Leaves every source and the canonical clone unchanged so dependent agents can consume the candidate SHA before remote landing",
+                "After failed post-target CI, accepts only an additive same-source repair, proves the target contains the failed landing, advances the retained candidate, and records every failed attempt before a fresh PR",
+                "With --rebatch-receipt, replaces one unlanded prepared lane only with a new candidate whose source set retains every old ref at a descendant head and adds a distinct ref; target drift and dirty or ambiguous identity are refused, while immutable evidence is linked by an append-only acknowledgement"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge prepare --help",
+              "contains": [
+                "isolated local integration candidate",
+                "--target",
+                "--model"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge prepare <source-worktree...> --target main --progress --format json"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree merge prepare <source-worktree...> --target <branch> --progress --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestPrepareWorktreeMergeCreatesIsolatedConsumableCandidate",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_test.go",
+              "name": "TestPrepareWorktreeMergeCarriesForwardRepairAfterTargetCIFailure",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "Prepared means local and validated, not remotely landed."
     },
     {
       "id": "wb.worktree.merge.prepare-published-forward-repair",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge prepare-published-forward-repair", "flags": ["--actor", "--agent-id", "--agent-runtime", "--apply", "--cli", "--expected-current-target", "--expected-immutable-claim-sha256", "--expected-receipt-sha256", "--expected-source-sha", "--expected-supersession-sha256", "--format", "--initiator", "--mode", "--model", "--provider", "--reason", "--retry", "--timeout"], "modes": ["Dry-runs pinned immutable receipt/claim/self-supersession historical roots and exact active current-source proof without creating a worktree", "Creates one distinct clean WB-managed candidate with immutable historical receipt/refresh roots and pinned current sources as ancestors, without requiring historical worktrees to remain live or changing any historical record"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge prepare-published-forward-repair --help", "contains": ["self-supersession", "historical worktrees need not remain live", "--expected-receipt-sha256", "--expected-immutable-claim-sha256", "--expected-supersession-sha256", "--expected-current-target", "--expected-source-sha", "--apply", "--actor", "--initiator", "--mode", "--reason"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance", "kind": "integration"}, {"path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go", "name": "TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate", "kind": "integration"}, {"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge prepare-published-forward-repair",
+              "flags": [
+                "--actor",
+                "--agent-id",
+                "--agent-runtime",
+                "--apply",
+                "--cli",
+                "--expected-current-target",
+                "--expected-immutable-claim-sha256",
+                "--expected-receipt-sha256",
+                "--expected-source-sha",
+                "--expected-supersession-sha256",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--model",
+                "--provider",
+                "--reason",
+                "--retry",
+                "--timeout"
+              ],
+              "modes": [
+                "Dry-runs pinned immutable receipt/claim/self-supersession historical roots and exact active current-source proof without creating a worktree",
+                "Creates one distinct clean WB-managed candidate with immutable historical receipt/refresh roots and pinned current sources as ancestors, without requiring historical worktrees to remain live or changing any historical record"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge prepare-published-forward-repair --help",
+              "contains": [
+                "self-supersession",
+                "historical worktrees need not remain live",
+                "--expected-receipt-sha256",
+                "--expected-immutable-claim-sha256",
+                "--expected-supersession-sha256",
+                "--expected-current-target",
+                "--expected-source-sha",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go",
+              "name": "TestPreparePublishedForwardRepairBreaksSelfSupersessionCycleWithoutMutatingHistoricalEvidence",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go",
+              "name": "TestPreparePublishedForwardRepairRetainsImmutableHistoricalSourcesWhileCurrentSourcesAdvance",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_published_forward_repair_test.go",
+              "name": "TestPreparePublishedForwardRepairRefusesMismatchedPinnedEvidenceWithoutCandidate",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergePublishedForwardRepairCommandRequiresPinnedEvidence",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "This explicit recovery-only candidate constructor does not relax normal prepare or rebatch. Historical source tuples are immutable receipt/refresh ancestry evidence, while only explicitly supplied current sources require live managed identities. It creates no merge receipt and only a distinct candidate later consumable by the append-only self-supersession correction."
     },
     {
       "id": "wb.worktree.merge.resume",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "v0.66.0",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge resume", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--progress", "--retry", "--route", "--stop-before-merge", "--timeout"], "modes": ["Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup", "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge resume --help", "contains": ["Resume a receipt", "--route", "--stop-before-merge"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge resume",
+              "flags": [
+                "--check-interval",
+                "--cleanup",
+                "--format",
+                "--on-failure",
+                "--progress",
+                "--retry",
+                "--route",
+                "--stop-before-merge",
+                "--timeout"
+              ],
+              "modes": [
+                "Replays immutable completed boundaries, reports resumed stage and check-poll progress on stderr when requested, and continues from the first incomplete receipt state without duplicating a worktree, pull request, merge, or cleanup",
+                "With --route pr --stop-before-merge, revalidates an unchanged candidate using the caller-supplied timeout, refuses source or target drift, publishes and verifies the exact open PR head/base, then returns published_merge_pending before CI or merge"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge resume --help",
+              "contains": [
+                "Resume a receipt",
+                "--route",
+                "--stop-before-merge"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "Pending exact-head checks are explicitly non-terminal and carry resume arguments."
     },
     {
       "id": "wb.worktree.merge.revert",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "v0.66.0",
       "surfaces": {
-        "runtime": {"status": "Full", "commands": [{"path": "wb worktree merge revert", "flags": ["--check-interval", "--cleanup", "--format", "--on-failure", "--progress", "--retry", "--route", "--timeout"], "modes": ["Creates a new forward candidate by applying the inverse before/after landing delta to the current target, reports progress on stderr when requested, then lands it through the same verified route"]}], "limitation": null},
-        "help": {"status": "Full", "anchors": [{"command": "wb worktree merge revert --help", "contains": ["forward revert", "--route"]}], "limitation": null},
-        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-merge/references/worktree-merge.md", "marker": "# Mechanical worktree merge", "examples": ["wb worktree merge revert <landing-receipt> --route auto --progress --format json"]}, {"path": "ai/skills/wb-worktrees/references/merge.md", "marker": "# Merge and land completed worktrees", "examples": ["wb worktree merge revert <landing-receipt> --route auto --cleanup --progress --format json"]}], "limitation": null},
-        "tests": {"status": "Full", "references": [{"path": "cmd/wb/worktree_merge_test.go", "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney", "kind": "integration"}], "limitation": null}
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge revert",
+              "flags": [
+                "--check-interval",
+                "--cleanup",
+                "--format",
+                "--on-failure",
+                "--progress",
+                "--retry",
+                "--route",
+                "--timeout"
+              ],
+              "modes": [
+                "Creates a new forward candidate by applying the inverse before/after landing delta to the current target, reports progress on stderr when requested, then lands it through the same verified route"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge revert --help",
+              "contains": [
+                "forward revert",
+                "--route"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge revert <landing-receipt> --route auto --progress --format json"
+              ]
+            },
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree merge revert <landing-receipt> --route auto --cleanup --progress --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
       },
       "notes": "The landing receipt retains the remote before and after identities needed to construct the inverse tree delta."
     },
     {
       "id": "wb.worktree.merge.seal-validation-failed",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -9125,7 +10112,21 @@
           "commands": [
             {
               "path": "wb worktree merge seal-validation-failed",
-              "flags": ["--actor", "--agent-id", "--agent-runtime", "--apply", "--cli", "--format", "--initiator", "--mode", "--model", "--provider", "--reason", "--retry", "--timeout"],
+              "flags": [
+                "--actor",
+                "--agent-id",
+                "--agent-runtime",
+                "--apply",
+                "--cli",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--model",
+                "--provider",
+                "--reason",
+                "--retry",
+                "--timeout"
+              ],
               "modes": [
                 "Dry-runs immutable receipt, claim, source, and freshly fetched target proofs without creating a worktree",
                 "Creates one WB-managed replacement at the exact current target, adds only missing approved ancestry with a no-content merge, and refuses unless the final tree is exactly target-identical"
@@ -9139,7 +10140,14 @@
           "anchors": [
             {
               "command": "wb worktree merge seal-validation-failed --help",
-              "contains": ["fresh WB-managed replacement candidate", "--apply", "--actor", "--reason", "--model", "--mode"]
+              "contains": [
+                "fresh WB-managed replacement candidate",
+                "--apply",
+                "--actor",
+                "--reason",
+                "--model",
+                "--mode"
+              ]
             }
           ],
           "limitation": null
@@ -9150,12 +10158,16 @@
             {
               "path": "ai/skills/wb-merge/references/worktree-merge.md",
               "marker": "# Mechanical worktree merge",
-              "examples": ["wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>"]
+              "examples": [
+                "wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>"
+              ]
             },
             {
               "path": "ai/skills/wb-worktrees/references/merge.md",
               "marker": "# Merge and land completed worktrees",
-              "examples": ["wb worktree merge seal-validation-failed <validation-failed-receipt> --apply --actor <operator> --reason <reason>"]
+              "examples": [
+                "wb worktree merge seal-validation-failed <validation-failed-receipt> --apply --actor <operator> --reason <reason>"
+              ]
             }
           ],
           "limitation": null
@@ -9176,7 +10188,9 @@
     },
     {
       "id": "wb.worktree.merge.supersede-validation-failed",
-      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
       "since": "unreleased",
       "surfaces": {
         "runtime": {
@@ -9184,7 +10198,14 @@
           "commands": [
             {
               "path": "wb worktree merge supersede-validation-failed",
-              "flags": ["--actor", "--apply", "--format", "--initiator", "--mode", "--reason"],
+              "flags": [
+                "--actor",
+                "--apply",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ],
               "modes": [
                 "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",
                 "Accepts only prepare validation_failed receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
@@ -9198,7 +10219,14 @@
           "anchors": [
             {
               "command": "wb worktree merge supersede-validation-failed --help",
-              "contains": ["separate append-only supersession acknowledgement", "--apply", "--actor", "--initiator", "--mode", "--reason"]
+              "contains": [
+                "separate append-only supersession acknowledgement",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
             }
           ],
           "limitation": null
@@ -9209,7 +10237,9 @@
             {
               "path": "ai/skills/wb-merge/references/worktree-merge.md",
               "marker": "# Mechanical worktree merge",
-              "examples": ["wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>"]
+              "examples": [
+                "wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>"
+              ]
             }
           ],
           "limitation": null

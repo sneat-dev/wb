@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Streams"
+  short_description: "Coordinate a library and its consumers as one named stream"
+  default_prompt: "Use $wb-streams to start, join, inspect, or end a cross-repository dependency stream."
