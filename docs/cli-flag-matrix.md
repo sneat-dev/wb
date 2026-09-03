@@ -39,6 +39,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `ci audit` | `--fleet` only | `--fleet` only | rejected | yes |
 | `ci wait` | rejected | rejected | rejected | yes |
 | `hooks install`, `check`, `repair` | yes | `--fleet` only | rejected | yes |
+| `hooks measure` | yes | rejected | rejected | yes |
 | hidden `hooks run` | yes | rejected | rejected | yes |
 | `hooks agent pre-tool-use`, `hooks agent install` | yes | rejected | rejected | yes |
 | `hooks metrics` | rejected | rejected | rejected | yes |

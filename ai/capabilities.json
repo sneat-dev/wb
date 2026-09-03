@@ -3567,6 +3567,101 @@
       "notes": "A transient go-run executable is rejected. Generated shims retain no installer executable path; at hook execution they resolve WB_EXECUTABLE or a safe absolute PATH result. Pure deletion semantics do not solve the general secure-hook cache/metrics authority gap tracked by WB #61."
     },
     {
+      "id": "wb.hooks.measure",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb hooks measure",
+              "flags": [
+                "--config",
+                "--days",
+                "--file",
+                "--json",
+                "--repo"
+              ],
+              "modes": [
+                "Prices three profiles from the recorded hook events: the commit profile, a push to a stream/<name> branch, and every other push",
+                "Each profile carries its measured budget \u2014 the slowest run actually observed, never an estimate",
+                "The stream saving is the number of stream-branch pushes priced at the measured average of a non-stream push, with the basis printed beside it",
+                "Anything the window could not price is listed under 'not measured', so a zero saving is never readable as the stream profile saving nothing",
+                "Per-block cost is reported so a slow profile can be named rather than guessed at",
+                "Built from the same recording wb hooks metrics charts, so the two views cannot disagree"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb hooks measure --help",
+              "contains": [
+                "stream/<name>",
+                "never runs a test suite",
+                "measured budget",
+                "not measured",
+                "wb hooks metrics"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-hooks/references/metrics.md",
+              "marker": "## Profile cost and the stream saving",
+              "examples": [
+                "wb hooks measure .",
+                "wb hooks measure . --days 30 --json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/hooks/measure_test.go",
+              "name": "TestMeasureSeparatesStreamPushesFromEveryOtherPush",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/hooks/measure_test.go",
+              "name": "TestMeasureNamesWhatItCouldNotPrice",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/hooks/streamtier_test.go",
+              "name": "TestPushToAStreamBranchRunsNoLocalVerification",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/hooks/streamtier_test.go",
+              "name": "TestBuiltInCommitHooksAreScopedAndRunNoTests",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/hooks_measure_test.go",
+              "name": "TestHooksMeasureShowsTheStreamProfileDelta",
+              "kind": "e2e"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Moving local cost to CI obliges WB to bound CI, so the stream-branch push profile is paired with wb stream start's concurrency check; a cost claim with no measurement behind it is the assurance this Feature refuses to print."
+    },
+    {
       "id": "wb.hooks.metrics",
       "feature_refs": [],
       "since": "existing",

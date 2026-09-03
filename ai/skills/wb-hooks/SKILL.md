@@ -1,6 +1,6 @@
 ---
 name: wb-hooks
-description: Install, inspect, repair, and measure WB-managed Git hooks. Use when a repository needs fleet-standard pre-commit or pre-push checks, hook drift is reported, worktree policy must be enforced, or local hook cost and failures need diagnosis.
+description: Install, inspect, repair, and price WB-managed Git hooks, including the cheap commit profile and the stream-branch push that defers to CI. Use when a repository needs fleet-standard pre-commit or pre-push checks, hook drift is reported, worktree policy must be enforced, or local hook cost and failures need diagnosis.
 ---
 
 # WB hooks
@@ -13,7 +13,8 @@ commands around them.
 
 - Read [manage.md](references/manage.md) to install, check, or repair hooks.
 - Read [policy.md](references/policy.md) to add profiles or templates.
-- Read [metrics.md](references/metrics.md) to diagnose hook time and failures.
+- Read [metrics.md](references/metrics.md) to diagnose hook time and failures,
+  and to price the profiles with `wb hooks measure`.
 
 ## Fast path
 

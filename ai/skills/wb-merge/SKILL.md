@@ -16,7 +16,8 @@ wb worktree merge <source-worktree...> --route auto --cleanup --format json
 
 ## A live local link is a refusal
 
-`wb worktree merge` (and `wb worktree merge prepare`) **refuse before any push**
+`wb worktree merge`, `wb worktree merge prepare`, `wb worktree merge land` and
+`wb worktree merge resume` all **refuse before any push**
 a worktree that holds a live local link — a link recorded in stream state, or a
 `go.work` carrying a `use` entry. Such a worktree builds against an
 *unpublished* working tree, so landing it would publish a commit whose CI ran
@@ -25,6 +26,10 @@ against something the registry never carried.
 The two signals are checked independently: state alone would miss a hand-written
 `go.work`, and `go.work` alone would miss an npm link. Either one refuses, with
 exit code `2`.
+
+The land verbs take a **receipt** rather than a worktree path, so they resolve
+the worktrees to guard out of it — preparing before linking and then landing the
+receipt used to walk a linked worktree straight past the guard.
 
 The refusal names the exact command that clears it:
 

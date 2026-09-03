@@ -291,6 +291,67 @@ func builtinTemplate(name string) (string, bool) {
 		return "#!/bin/sh\nset -eu\ngit diff --cached --check\n", true
 	case BuiltinPrePush:
 		return "#!/bin/sh\nset -eu\ngit diff --check\n", true
+	// A commit is a save point, not a release gate: the commit hook runs
+	// formatting and static checks over the files changed in THIS commit and
+	// is measured in seconds. It never runs a test suite. See
+	// `commit-hook-is-fast-and-scoped`.
+	case BuiltinNodePreCommit:
+		return `#!/bin/sh
+set -eu
+if [ ! -f package.json ]; then
+    exit 0
+fi
+if ! command -v node >/dev/null 2>&1; then
+    exit 0
+fi
+changed="$(git diff --cached --name-only --diff-filter=ACMR -z -- \
+    '*.js' '*.jsx' '*.mjs' '*.cjs' '*.ts' '*.tsx' '*.json' '*.css' '*.scss' '*.html' '*.md' \
+    | tr '\0' '\n')"
+if [ -z "$changed" ]; then
+    exit 0
+fi
+if [ -f pnpm-lock.yaml ]; then
+    runner=pnpm
+elif [ -f yarn.lock ]; then
+    runner=yarn
+elif [ -f bun.lock ] || [ -f bun.lockb ]; then
+    runner=bun
+else
+    runner=npx
+fi
+run_tool() {
+    tool="$1"
+    shift
+    case "$runner" in
+        pnpm) pnpm exec "$tool" "$@" ;;
+        yarn) yarn "$tool" "$@" ;;
+        bun)  bun x "$tool" "$@" ;;
+        *)    npx --no-install "$tool" "$@" ;;
+    esac
+}
+# Formatting first: it is the cheapest check and the one whose failure is
+# mechanical. Both tools are optional; a repository without them is not
+# failed for lacking a dependency this hook did not install.
+if [ -f .prettierrc ] || [ -f .prettierrc.json ] || [ -f .prettierrc.js ] || \
+   [ -f .prettierrc.cjs ] || [ -f .prettierrc.yaml ] || [ -f .prettierrc.yml ] || \
+   [ -f prettier.config.js ] || [ -f prettier.config.cjs ]; then
+    if ! printf '%s\n' "$changed" | xargs -r run_tool prettier --check; then
+        echo "WB hook: formatting failed on the files in this commit. Run your formatter and re-stage." >&2
+        exit 1
+    fi
+fi
+if [ -f eslint.config.js ] || [ -f eslint.config.mjs ] || [ -f eslint.config.cjs ] || \
+   [ -f .eslintrc ] || [ -f .eslintrc.js ] || [ -f .eslintrc.cjs ] || \
+   [ -f .eslintrc.json ] || [ -f .eslintrc.yaml ] || [ -f .eslintrc.yml ]; then
+    lintable="$(printf '%s\n' "$changed" | grep -E '\.(js|jsx|mjs|cjs|ts|tsx)$' || true)"
+    if [ -n "$lintable" ]; then
+        if ! printf '%s\n' "$lintable" | xargs -r run_tool eslint --no-error-on-unmatched-pattern; then
+            echo "WB hook: static checks failed on the files in this commit." >&2
+            exit 1
+        fi
+    fi
+fi
+`, true
 	case BuiltinGoPreCommit:
 		return `#!/bin/sh
 set -eu

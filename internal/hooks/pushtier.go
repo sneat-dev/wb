@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/sneat-dev/wb/internal/streambranch"
 )
 
 // CheckpointRefPrefix marks a WB checkpoint ref. A push confined to this
@@ -26,8 +28,9 @@ type pushTier int
 
 const (
 	// tierIrrelevant marks one ref update that carries no publication
-	// requirement of its own (a deletion, or a WB checkpoint ref). It never
-	// raises the overall decision; it is excluded when combining ref updates.
+	// requirement of its own (a deletion, a WB checkpoint ref, or a push to a
+	// stream branch whose pull request CI is the gate). It never raises the
+	// overall decision; it is excluded when combining ref updates.
 	tierIrrelevant pushTier = -1
 	// TierSkip runs neither lint nor test.
 	TierSkip pushTier = 0
@@ -145,7 +148,10 @@ func ClassifyPushTier(updates []RefUpdate, defaultBranch string, lookup PRLookup
 		}
 	}
 	if best == tierIrrelevant {
-		return Classification{Tier: TierSkip, Reason: "every pushed ref is a deletion or a WB checkpoint ref (refs/wb/checkpoints/*, not a landing receipt); skipping lint and test"}
+		if reason == "" {
+			reason = "every pushed ref carries no local verification requirement of its own"
+		}
+		return Classification{Tier: TierSkip, Reason: reason + "; skipping lint and test"}
 	}
 	return Classification{Tier: best, Reason: reason}
 }
@@ -156,6 +162,17 @@ func classifyOneRef(update RefUpdate, defaultBranch string, lookup PRLookup) (pu
 		return tierIrrelevant, fmt.Sprintf("%s is a remote-ref deletion", update.RemoteRef)
 	case isCheckpointRef(update.RemoteRef):
 		return tierIrrelevant, fmt.Sprintf("%s is a WB checkpoint ref, not a landing receipt", update.RemoteRef)
+	// A stream branch carries a draft pull request whose CI verifies every
+	// push. Re-running that verification locally duplicates it on the very
+	// machine the stream is trying to keep free, so the push hook runs no
+	// verification at all here.
+	//
+	// This case must precede the publication tests below: a stream branch
+	// always has an open pull request, which is exactly what would otherwise
+	// force the full tier on every single push to it.
+	case streambranch.Is(update.RemoteRef):
+		return tierIrrelevant, fmt.Sprintf(
+			"%s is a stream branch: CI on its stream pull request is the gate, so no local verification runs", update.RemoteRef)
 	case isTagRef(update.RemoteRef):
 		return TierFull, fmt.Sprintf("%s is a tag: publication push", update.RemoteRef)
 	case defaultBranch != "" && update.RemoteRef == "refs/heads/"+defaultBranch:
