@@ -68,20 +68,28 @@ hand-written workaround, and a named command that fails on the shape it was
 named for is worse than no name at all.
 
 Two of these depend on whether WB created the checkout, which the row reports as
-`managed`. WB will not delete uncommitted work it never recorded, so a checkout
-made with `git worktree add` or `gh pr checkout` gets a different — and
-working — next step from one `wb worktree create` made.
+`management`: **managed** (WB wrote its manifest), **unmanaged** (the manifest is
+there and does not validate), or **unknown** (no manifest at all — a checkout
+made with `git worktree add` or `gh pr checkout`). Absence of evidence is
+`unknown`, never `unmanaged`, and an unknown checkout gets the same care as one
+WB owns: not knowing must never widen what the tool is willing to suggest.
+
+**A dirty checkout is captured before anything is removed.** The changes are
+uncommitted, so whatever the capture writes is their only copy. The row for a
+dirty checkout WB does not own therefore names the capture and nothing else;
+once the tree is clean, rerun `gc` and it classifies the checkout on its own
+evidence.
 
 | Refusal | Sanctioned next step |
 | --- | --- |
 | `dirty`, managed | `wb worktree abort <task> --apply` — seals the Work Log and captures the dirty bytes into a private archive before deleting anything |
-| `dirty`, not managed | `wb worktree adopt <path>` for a branch checkout; for a detached one, the exact `git -C <canonical> worktree remove --force <path>` the row prints. `wb worktree abort` would refuse: there is no Work Log to seal |
+| `dirty`, unmanaged or unknown | the exact `git -C <path> stash push --include-untracked -m "wb gc <task>"` the row prints. That is the whole instruction: **no removal is named**, and the row's warning states that removing the checkout without the capture destroys the changes and nothing in WB can bring them back |
 | `claimed-live` — a live operation holds the task lock | `wb worktree cleanup <task> --resume-interrupted` once the operation is really dead |
 | `claimed-live` — a live session still owns it | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round |
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
 | `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
-| `detached-unknown`, not managed | the exact `git -C <canonical> worktree remove --force <path>` the row prints. `wb worktree rescue` refuses a linked worktree by design, and `wb worktree adopt` cannot reconstruct a manifest for a detached HEAD — naming either would hand you a command that fails. `wb worktree review` will close this gap by creating review checkouts tracked and claimed |
+| `detached-unknown`, unmanaged or unknown | the exact `git -C <canonical> worktree remove <path>` the row prints — deliberately **without** `--force`, so Git itself refuses if the tree turns out to hold changes. The row also warns that the commit is unreferenced once the checkout is gone, and prints the `git branch` invocation that keeps it. `wb worktree rescue` refuses a linked worktree by design, and `wb worktree adopt` cannot reconstruct a manifest for a detached HEAD — naming either would hand you a command that fails. `wb worktree review` will close this gap by creating review checkouts tracked and claimed |
 | `unpushed` — the head was never pushed | `wb worktree merge <task> --route auto` to land it. **Nothing retires this class**; it is the only one that can lose work |
 | `unmerged` — pushed but not landed, or the landing walk hit `--residue-depth` | `wb worktree merge <task> --route auto`, or rerun with a larger `--residue-depth` when the row says the walk was truncated |
 

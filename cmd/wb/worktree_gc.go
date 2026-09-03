@@ -174,6 +174,11 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 				return err
 			}
 		}
+		if entry.Management != "" && entry.Management != "managed" {
+			if _, err := fmt.Fprintf(out, "    WB management: %s\n", entry.Management); err != nil {
+				return err
+			}
+		}
 		if entry.Error != "" {
 			if _, err := fmt.Fprintf(out, "    error: %s\n", entry.Error); err != nil {
 				return err
@@ -191,10 +196,15 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 	if outcome.Apply {
 		usage, label = outcome.Reclaimed, "reclaimed"
 	}
+	for _, artifact := range outcome.Artifacts {
+		if _, err := fmt.Fprintf(out, "artifact %s %s: %s\n", artifact.Kind, artifact.Path, artifact.Reason); err != nil {
+			return err
+		}
+	}
 	_, err := fmt.Fprintf(out,
-		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged; %s %s apparent / %s unshared\n",
+		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d empty shells retired; %s %s apparent / %s unshared\n",
 		outcome.Totals["retired"], outcome.Totals["eligible"], outcome.Totals["refused"],
-		outcome.Totals["purged_artefacts"], label,
+		outcome.Totals["purged_artefacts"], outcome.Totals["retired_shells"], label,
 		diskusage.Human(usage.ApparentBytes), diskusage.Human(usage.UnsharedBytes))
 	return err
 }

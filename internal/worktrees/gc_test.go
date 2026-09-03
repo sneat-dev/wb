@@ -447,8 +447,8 @@ func TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape(t *testing.T
 	// This checkout was made with `git worktree add --detach`, exactly as a
 	// pull-request review makes one, so WB holds no Work Log for it and must
 	// not name a wb verb that would refuse.
-	if entry.Managed {
-		t.Fatalf("entry = %#v, want it recognised as one WB did not create", entry)
+	if entry.Management != ManagementUnknown {
+		t.Fatalf("entry management = %q, want unknown: WB wrote no manifest for this checkout", entry.Management)
 	}
 	if strings.Contains(entry.SanctionedCommand, "wb worktree rescue") ||
 		strings.Contains(entry.SanctionedCommand, "wb worktree adopt") {
@@ -456,7 +456,7 @@ func TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape(t *testing.T
 			entry.SanctionedCommand)
 	}
 	// Run exactly what the refusal names, on exactly this shape.
-	if err := runSanctionedCommand(t, entry.SanctionedCommand); err != nil {
+	if err := runSanctionedCommand(t, fixture.projectsRoot, entry.SanctionedCommand); err != nil {
 		t.Fatalf("the command a refusal names must work on the shape it names it for: %v", err)
 	}
 	if _, statErr := os.Stat(reviewDir); !os.IsNotExist(statErr) {
@@ -479,7 +479,7 @@ func TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape(t *testing.T
 		t.Fatal(err)
 	}
 	managedEntry := entryFor(t, managedPlan, "gc-managed-abort")
-	if !managedEntry.Managed {
+	if managedEntry.Management != ManagementManaged {
 		t.Fatalf("a WB-created checkout must be recognised as managed: %#v", managedEntry)
 	}
 	results, err := Abort(context.Background(), AbortOptions{
@@ -515,8 +515,8 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	entry := entryFor(t, plan, task)
-	if entry.Class != GCClassDirty || entry.Eligible || entry.Managed {
-		t.Fatalf("a dirty detached checkout = %#v, want a refused, unmanaged dirty row", entry)
+	if entry.Class != GCClassDirty || entry.Eligible || entry.Management != ManagementUnknown {
+		t.Fatalf("a dirty detached checkout = %#v, want a refused row WB does not claim to know", entry)
 	}
 	// WB never created this checkout, so it holds no Work Log to seal and
 	// `wb worktree abort` would refuse the dirty capture. Naming abort here
@@ -525,15 +525,58 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 	if strings.Contains(entry.SanctionedCommand, "wb worktree abort") {
 		t.Fatalf("sanctioned command = %q, but abort cannot seal a checkout WB never recorded", entry.SanctionedCommand)
 	}
-	if !strings.Contains(entry.Reason, "no Work Log claim") {
-		t.Fatalf("reason = %q, want it to say why WB will not delete this", entry.Reason)
+	// And it must not name a removal either. The changes are uncommitted: a
+	// removal is the one thing that makes them unrecoverable, and printing it
+	// as the resolution is an instruction to destroy them.
+	if strings.Contains(entry.SanctionedCommand, "worktree remove") || strings.Contains(entry.SanctionedCommand, "--force") {
+		t.Fatalf("sanctioned command = %q, but a dirty checkout must be captured before anything is removed", entry.SanctionedCommand)
 	}
-	// Prove the named command works on this exact shape.
-	if err := runSanctionedCommand(t, entry.SanctionedCommand); err != nil {
+	if !strings.Contains(entry.Reason, "no Work Log") || !strings.Contains(entry.Reason, "capture") {
+		t.Fatalf("reason = %q, want it to say what WB knows and what to do first", entry.Reason)
+	}
+	if len(entry.Warnings) == 0 || !strings.Contains(strings.Join(entry.Warnings, " "), "only copy") {
+		t.Fatalf("warnings = %#v, want the row to state exactly what skipping the capture discards", entry.Warnings)
+	}
+
+	// Run exactly what the row printed, then prove the content survived it.
+	if err := runSanctionedCommand(t, fixture.projectsRoot, entry.SanctionedCommand); err != nil {
 		t.Fatalf("the command a refusal names must work on the shape it names it for: %v", err)
 	}
+	stashed := runGitTestOutput(t, worktree, "stash", "list")
+	if !strings.Contains(stashed, "wb gc "+task) {
+		t.Fatalf("the capture left no stash entry: %q", stashed)
+	}
+	if content := runGitTestOutput(t, worktree, "show", "stash@{0}^3:wip.txt"); !strings.Contains(content, "in progress") {
+		t.Fatalf("the captured content is not recoverable: %q", content)
+	}
+	// The checkout is clean now, so the next sweep classifies it on its own
+	// evidence and names a removal that Git itself would refuse if it were not.
+	clean, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanEntry := entryFor(t, clean, task)
+	if cleanEntry.Class == GCClassDirty {
+		t.Fatalf("after the capture the checkout is clean: %#v", cleanEntry)
+	}
+	if cleanEntry.Eligible {
+		// Nothing left to name: gc itself retires it.
+		applied, applyErr := GC(context.Background(), GCOptions{
+			ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, Apply: true, SkipSizes: true,
+		})
+		if applyErr != nil {
+			t.Fatal(applyErr)
+		}
+		if !entryFor(t, applied, task).Applied {
+			t.Fatalf("gc did not retire the now-clean checkout: %#v", applied.Entries)
+		}
+	} else if err := runSanctionedCommand(t, fixture.projectsRoot, cleanEntry.SanctionedCommand); err != nil {
+		t.Fatalf("the follow-up command must work too: %v", err)
+	}
 	if _, statErr := os.Stat(worktree); !os.IsNotExist(statErr) {
-		t.Fatalf("dirty detached checkout survived its own sanctioned command: %v", statErr)
+		t.Fatalf("checkout survived its own sanctioned command: %v", statErr)
 	}
 
 	// And abort remains correct on the managed dirty shape it IS named for.
@@ -554,7 +597,7 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	managedEntry := entryFor(t, managedPlan, "gc-dirty-managed")
-	if !managedEntry.Managed || managedEntry.SanctionedCommand != "wb worktree abort gc-dirty-managed --apply" {
+	if managedEntry.Management != ManagementManaged || managedEntry.SanctionedCommand != "wb worktree abort gc-dirty-managed --apply" {
 		t.Fatalf("managed dirty entry = %#v", managedEntry)
 	}
 	results, err := Abort(context.Background(), AbortOptions{
@@ -570,19 +613,97 @@ func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
 }
 
 // runSanctionedCommand executes a printed sanctioned command literally, the way
-// an operator or an agent would paste it. Only the git form is executable from
-// here; a wb form is exercised through its own package entry point.
-func runSanctionedCommand(t *testing.T, command string) error {
+// an operator or an agent would paste it. Both halves of the refusal table must
+// be executable from here, or only half of it is actually validated: a `git`
+// form runs as the process it names, and a `wb` form is dispatched to the same
+// package entry point the CLI calls.
+func runSanctionedCommand(t *testing.T, projectsRoot, command string) error {
 	t.Helper()
 	fields := strings.Fields(command)
-	if len(fields) == 0 || fields[0] != "git" {
+	if len(fields) == 0 {
+		t.Fatal("empty sanctioned command")
+	}
+	switch fields[0] {
+	case "git":
+		// Quoted arguments (a stash message) survive the split as separate
+		// fields; rejoin them so the command runs exactly as printed.
+		run := exec.Command(fields[0], unquoteFields(fields[1:])...)
+		if output, err := run.CombinedOutput(); err != nil {
+			return fmt.Errorf("%s: %v\n%s", command, err, output)
+		}
+		return nil
+	case "wb":
+		return runSanctionedWBCommand(t, projectsRoot, fields[1:])
+	default:
 		t.Fatalf("not an executable sanctioned command: %q", command)
+		return nil
 	}
-	run := exec.Command(fields[0], fields[1:]...)
-	if output, err := run.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s: %v\n%s", command, err, output)
+}
+
+// runSanctionedWBCommand dispatches the wb verbs the gc refusal table names.
+// An unrecognised one fails the test rather than passing silently: the table
+// must not name a verb this harness cannot prove works.
+func runSanctionedWBCommand(t *testing.T, projectsRoot string, fields []string) error {
+	t.Helper()
+	if len(fields) >= 3 && fields[0] == "worktree" && fields[1] == "abort" {
+		options := AbortOptions{
+			ProjectsRoot: projectsRoot, Task: fields[2],
+			Disposition: AbortDiscarded, DeleteRemote: true,
+		}
+		for index := 3; index < len(fields); index++ {
+			switch fields[index] {
+			case "--apply":
+				options.Apply = true
+			case "--disposition":
+				if index+1 < len(fields) {
+					options.Disposition = AbortDisposition(fields[index+1])
+					index++
+				}
+			}
+		}
+		results, err := Abort(context.Background(), options)
+		if err != nil {
+			return err
+		}
+		for _, result := range results {
+			if !result.Applied {
+				return fmt.Errorf("wb worktree abort %s did not apply: %s", fields[2], result.Reason)
+			}
+		}
+		return nil
 	}
+	t.Fatalf("gc named a wb verb this harness cannot execute: wb %s", strings.Join(fields, " "))
 	return nil
+}
+
+// unquoteFields rejoins the fields of a shell-quoted argument.
+func unquoteFields(fields []string) []string {
+	joined := strings.Join(fields, " ")
+	arguments := make([]string, 0, len(fields))
+	for len(joined) > 0 {
+		joined = strings.TrimLeft(joined, " ")
+		if joined == "" {
+			break
+		}
+		if joined[0] == '"' {
+			end := strings.IndexByte(joined[1:], '"')
+			if end < 0 {
+				arguments = append(arguments, joined[1:])
+				break
+			}
+			arguments = append(arguments, joined[1:1+end])
+			joined = joined[end+2:]
+			continue
+		}
+		end := strings.IndexByte(joined, ' ')
+		if end < 0 {
+			arguments = append(arguments, joined)
+			break
+		}
+		arguments = append(arguments, joined[:end])
+		joined = joined[end:]
+	}
+	return arguments
 }
 
 // S2: a live session outranks a landed head. Its work having landed makes it
@@ -666,4 +787,15 @@ func TestGCDetachedReviewRowNamesTheEvidenceThatDecidedIt(t *testing.T) {
 	if !strings.Contains(entry.Reason, "pull/77") && !strings.Contains(entry.Reason, "landed at") {
 		t.Fatalf("reason = %q, want it to name the evidence rather than assert intent", entry.Reason)
 	}
+}
+
+func runGitTestOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(output)
 }

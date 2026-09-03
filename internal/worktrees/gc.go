@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,10 +96,12 @@ type GCEntry struct {
 	WorktreesRoot string `json:"worktrees_root"`
 	Branch        string `json:"branch,omitempty"`
 	Detached      bool   `json:"detached,omitempty"`
-	// Managed records whether WB created this checkout and holds a Work Log for
-	// it. It decides which command a refusal can honestly name: WB will not
-	// delete uncommitted work it never recorded.
-	Managed           bool             `json:"managed"`
+	// Management is managed, unmanaged, or unknown. It decides which command a
+	// refusal can honestly name, and it is deliberately three-valued: a
+	// checkout with no manifest is *unknown*, not unmanaged, because failing
+	// open into a destructive suggestion on missing evidence is exactly the
+	// mistake this field exists to prevent.
+	Management        string           `json:"management"`
 	HeadSHA           string           `json:"head_sha"`
 	RemoteHeadSHA     string           `json:"remote_head_sha,omitempty"`
 	Class             string           `json:"class"`
@@ -131,6 +134,13 @@ type GCOutcome struct {
 	Entries       []GCEntry        `json:"entries"`
 	Purged        []PurgedArtefact `json:"purged,omitempty"`
 	Diagnostics   []ListDiagnostic `json:"diagnostics,omitempty"`
+	// Artifacts is WB's own control-plane residue that is not a checkout: a
+	// non-empty quarantined stage, or the empty <task>/<owner>/<repository>
+	// husk a removal outside WB leaves behind. Omitting it made gc blind to
+	// exactly the debris its own advice creates.
+	Artifacts []LifecycleArtifact `json:"artifacts,omitempty"`
+	// RetiredShells records the empty task shells an applying sweep swept.
+	RetiredShells []RetiredShell `json:"retired_shells,omitempty"`
 	// Reclaimable and Reclaimed are always both figures. An apparent size
 	// counts hard-linked bytes a deletion will not return; over one measured
 	// sweep that was 11.7 GB apparent against 5.9 GB unshared.
@@ -196,6 +206,7 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		Entries:       make([]GCEntry, 0, len(listed.Results)),
 		Purged:        listed.Purged,
 		Diagnostics:   listed.Diagnostics,
+		Artifacts:     listed.Artifacts,
 		Totals:        map[string]int{},
 	}
 	// One accounting unit for the whole sweep. Summing per-worktree figures
@@ -248,6 +259,20 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		if len(appliedRoots) > 0 {
 			outcome.Reclaimed = walk.Total(appliedRoots...)
 		}
+		// The husk a removal leaves — an empty <task>/<owner>/<repository>
+		// namespace with no checkout under it — is invisible to the inventory
+		// and would otherwise accumulate one directory per sweep, including
+		// the sweeps gc's own advice produces.
+		shells, shellErr := RetireTaskShells(ctx, RetireShellsOptions{
+			ProjectsRoot: options.ProjectsRoot, Filter: options.Filter, Apply: true,
+		})
+		if shellErr == nil {
+			for _, shell := range shells.Results {
+				if shell.Applied {
+					outcome.RetiredShells = append(outcome.RetiredShells, shell)
+				}
+			}
+		}
 	}
 	summarizeGC(&outcome)
 	return outcome, nil
@@ -274,11 +299,12 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	if warning := renamedBranchWarning(result); warning != "" {
 		entry.Warnings = append(entry.Warnings, warning)
 	}
-	entry.Managed = worktreeIsWBManaged(result.WorktreeDir)
+	entry.Management = worktreeManagement(result.WorktreeDir)
 	switch {
 	case !result.Clean:
 		entry.Class = GCClassDirty
-		entry.Reason, entry.SanctionedCommand = dirtyResolution(result, entry.Managed)
+		entry.Reason, entry.SanctionedCommand, entry.Warnings =
+			dirtyResolution(result, entry.Management, entry.Warnings)
 	case result.Locked:
 		entry.Class = GCClassClaimedLive
 		entry.Reason = lockedReason(result, resumeInterruptedCommand(result.Task))
@@ -316,7 +342,7 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		// bytes before anything is removed. It is named here rather than
 		// rescue, which exists for the shared canonical clone and refuses a
 		// linked worktree by design.
-		entry.SanctionedCommand = detachedUnknownResolution(result, entry.Managed)
+		entry.SanctionedCommand, entry.Warnings = detachedUnknownResolution(result, entry.Management, entry.Warnings)
 	case result.IntegratedAtOrigin && result.AbsorbedAtOrigin:
 		entry.Class = GCClassLandedClean
 		entry.Eligible = true
@@ -501,6 +527,8 @@ func summarizeGC(outcome *GCOutcome) {
 		}
 	}
 	outcome.Totals["purged_artefacts"] = len(outcome.Purged)
+	outcome.Totals["retired_shells"] = len(outcome.RetiredShells)
+	outcome.Totals["artifacts"] = len(outcome.Artifacts)
 }
 
 // Refused reports how many checkouts this pass declined to touch. It is the
@@ -558,28 +586,56 @@ func residueDepthOrDefault(depth int) int {
 	return depth
 }
 
-// worktreeIsWBManaged reports whether WB created this checkout. The immutable
-// manifest is written once, at creation, so its presence is the fact; a
-// checkout made with `git worktree add` or `gh pr checkout` has none.
-func worktreeIsWBManaged(worktree string) bool {
+// Management values.
+const (
+	// ManagementManaged: WB created this checkout and holds a Work Log for it.
+	ManagementManaged = "managed"
+	// ManagementUnmanaged: the checkout carries a WB manifest that does not
+	// validate. Only a positively wrong marker earns this.
+	ManagementUnmanaged = "unmanaged"
+	// ManagementUnknown: no manifest at all. WB does not know what this is, and
+	// not knowing must never widen what it is willing to suggest.
+	ManagementUnknown = "unknown"
+)
+
+// worktreeManagement classifies a checkout by the immutable manifest WB writes
+// once at creation. The three-valued answer is the point: absence of evidence
+// is "unknown", and an unknown checkout gets the same care as one WB owns.
+func worktreeManagement(worktree string) string {
 	manifest, err := ReadManifest(worktree)
-	return err == nil && strings.TrimSpace(manifest.Repository) != ""
+	switch {
+	case err != nil:
+		return ManagementUnknown
+	case strings.TrimSpace(manifest.Repository) == "" || strings.TrimSpace(manifest.Worktree) == "":
+		return ManagementUnmanaged
+	default:
+		return ManagementManaged
+	}
 }
 
-// dirtyResolution names the command that actually resolves a dirty checkout,
-// which depends on whether WB has a Work Log to seal for it. `wb worktree
-// abort` captures the uncommitted bytes into that private archive before
-// deleting anything, and refuses outright without one — correctly, because WB
-// must not delete work it never recorded. Naming abort for an unrecorded
-// checkout would hand the operator a command that fails on the exact shape it
-// was named for.
-func dirtyResolution(result ListResult, managed bool) (reason, command string) {
-	if managed {
-		return "worktree has local changes", "wb worktree abort " + result.Task + " --apply"
+// dirtyResolution names the command that resolves a dirty checkout.
+//
+// For a WB-created one that is `wb worktree abort`, which seals the Work Log
+// and captures the uncommitted bytes into a private archive before deleting
+// anything. For every other one — WB never recorded it, or WB cannot tell —
+// the named command MUST be the capture, and only the capture: the changes are
+// uncommitted, so what it writes is their only copy. Naming a removal here,
+// even alongside a capture, is how uncommitted work gets destroyed by someone
+// doing exactly what the tool printed.
+//
+// Once the capture has run the checkout is clean, and the next sweep classifies
+// it on its own evidence. That is the whole follow-up.
+func dirtyResolution(result ListResult, management string, warnings []string) (reason, command string, updated []string) {
+	if management == ManagementManaged {
+		return "worktree has local changes", "wb worktree abort " + result.Task + " --apply", warnings
 	}
-	return "worktree has local changes and WB holds no Work Log claim for it — this checkout was not created by WB, " +
-			"so nothing here will delete changes it never recorded",
-		unmanagedRemovalCommand(result)
+	warnings = append(warnings,
+		"these changes are uncommitted and WB holds no Work Log for this checkout, so the stash the command above "+
+			"writes is their only copy; removing the checkout without it destroys them, and nothing in WB can bring "+
+			"them back. Rerun gc once the tree is clean and it will classify the checkout on its own evidence")
+	return "worktree has local changes and WB has no Work Log for it (" + management + "): capture them first",
+		"git -C " + result.WorktreeDir + " stash push --include-untracked -m " + strconv.Quote("wb gc "+result.Task),
+		warnings
 }
 
 // detachedUnknownResolution names the command for a detached checkout with no
@@ -588,20 +644,19 @@ func dirtyResolution(result ListResult, managed bool) (reason, command string) {
 // reconstruct a manifest for a detached HEAD, so naming either would repeat the
 // defect this rule exists to prevent. Until `wb worktree review` creates review
 // checkouts as tracked, claimed ones — dependency-streams
-// REQ reviews-use-a-tracked-review-checkout — the honest sanctioned command for
-// that shape is Git's own, named exactly.
-func detachedUnknownResolution(result ListResult, managed bool) string {
-	if managed {
-		return "wb worktree abort " + result.Task + " --disposition discarded --apply"
+// REQ reviews-use-a-tracked-review-checkout — the honest command is Git's own,
+// named exactly, and deliberately without --force so Git itself refuses if the
+// tree turns out to hold changes after all.
+func detachedUnknownResolution(result ListResult, management string, warnings []string) (string, []string) {
+	if management == ManagementManaged {
+		return "wb worktree abort " + result.Task + " --disposition discarded --apply", warnings
 	}
-	return unmanagedRemovalCommand(result)
-}
-
-func unmanagedRemovalCommand(result ListResult) string {
+	warnings = append(warnings,
+		"this checkout sits at a commit no branch points at, so removing it leaves that commit unreferenced; "+
+			"if it holds work worth keeping, give it a branch first with git -C "+result.CanonicalDir+
+			" branch <name> "+shortSHA(result.HeadSHA))
 	if !result.Detached && result.Branch != "" {
-		// A branch checkout can be brought under WB management, after which
-		// every WB verb applies to it normally.
-		return "wb worktree adopt " + result.WorktreeDir
+		return "wb worktree adopt " + result.WorktreeDir, warnings
 	}
-	return "git -C " + result.CanonicalDir + " worktree remove --force " + result.WorktreeDir
+	return "git -C " + result.CanonicalDir + " worktree remove " + result.WorktreeDir, warnings
 }
