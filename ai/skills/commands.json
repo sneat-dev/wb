@@ -68,6 +68,9 @@
     "version": [
       "wb-install"
     ],
+    "pr": [
+      "wb-merge"
+    ],
     "worktree": [
       "wb-worktrees",
       "wb-change",

@@ -23,11 +23,12 @@ if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"'"$HEADSHA"'","ba
 if [ "$1" = pr ] && [ "$2" = checks ]; then echo '[{"name":"CI","bucket":"pass"}]'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"'"$HEADSHA"'"}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/compare/'; then echo '{"status":"identical","base_commit":{"sha":"'"$HEADSHA"'"},"merge_base_commit":{"sha":"'"$HEADSHA"'"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":1,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"'"$HEADSHA"'","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
 if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo '{"protected":true,"protection":{"required_status_checks":{"checks":[{"context":"CI","app_id":42}]}}}'; exit 0; fi
 if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main/protection/required_status_checks' ]; then echo '{"strict":true,"contexts":[],"checks":[{"context":"CI","app_id":42}]}'; exit 0; fi
-if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[[]]'; exit 0; fi
+if [ "$1" = api ] && echo "$*" | grep -Fq 'repos/acme/app/rules/branches/main?per_page=100'; then echo '[]'; exit 0; fi
 if [ "$1" = pr ] && [ "$2" = merge ]; then echo "HELD REPOSITORY WAS MERGED" > "$WB_HOLD_BREACH"; exit 0; fi
 echo "unexpected gh args: $*" >&2
 exit 2

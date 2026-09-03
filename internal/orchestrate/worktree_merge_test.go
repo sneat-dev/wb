@@ -716,7 +716,12 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if !strings.Contains(string(logContents), "pr checks https://example.test/acme/app/pull/41") || strings.Contains(string(logContents), "pr merge") {
+	// The checks stage is now vendored: it reads the pull request and the head
+	// commit's own check runs through `gh api`, never `gh pr checks --json`,
+	// which the installed 2.45 does not support.
+	if !strings.Contains(string(logContents), "api repos/acme/app/pulls/41") ||
+		!strings.Contains(string(logContents), "/check-runs?per_page=100") ||
+		strings.Contains(string(logContents), "pr merge") {
 		t.Fatalf("ordinary resume did not continue from the published handoff at checks without merging:\n%s", logContents)
 	}
 }
@@ -2238,12 +2243,12 @@ func TestResolveWorktreeMergeAutoRouteUsesDirectOnlyForAuthoritativelyUnprotecte
 		rulesJSON  string
 		want       WorktreeMergeRoute
 	}{
-		{name: "unprotected", branchJSON: `{"protected":false,"protection":{}}`, rulesJSON: `[[]]`, want: WorktreeMergeRouteDirect},
-		{name: "classic pull request", branchJSON: `{"protected":true,"protection":{"required_pull_request_reviews":{}}}`, rulesJSON: `[[]]`, want: WorktreeMergeRoutePullRequest},
-		{name: "ruleset pull request", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[[{"type":"pull_request","ruleset_id":7,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]]`, want: WorktreeMergeRoutePullRequest},
-		{name: "incomplete branch policy", branchJSON: `{}`, rulesJSON: `[[]]`, want: WorktreeMergeRoutePullRequest},
+		{name: "unprotected", branchJSON: `{"protected":false,"protection":{}}`, rulesJSON: `[]`, want: WorktreeMergeRouteDirect},
+		{name: "classic pull request", branchJSON: `{"protected":true,"protection":{"required_pull_request_reviews":{}}}`, rulesJSON: `[]`, want: WorktreeMergeRoutePullRequest},
+		{name: "ruleset pull request", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[{"type":"pull_request","ruleset_id":7,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]`, want: WorktreeMergeRoutePullRequest},
+		{name: "incomplete branch policy", branchJSON: `{}`, rulesJSON: `[]`, want: WorktreeMergeRoutePullRequest},
 		{name: "incomplete rules policy", branchJSON: `{"protected":false,"protection":{}}`, rulesJSON: `{}`, want: WorktreeMergeRoutePullRequest},
-		{name: "merge queue unsupported", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[[{"type":"merge_queue","ruleset_id":9,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]]`, want: WorktreeMergeRouteUnsupported},
+		{name: "merge queue unsupported", branchJSON: `{"protected":true,"protection":{}}`, rulesJSON: `[{"type":"merge_queue","ruleset_id":9,"ruleset_source_type":"Repository","ruleset_source":"acme/app"}]`, want: WorktreeMergeRouteUnsupported},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			installWorktreeMergeGH(t, test.branchJSON, test.rulesJSON)
@@ -2302,7 +2307,7 @@ func installWorktreeMergeGH(t *testing.T, branchJSON, rulesJSON string) {
 	body := "#!/bin/sh\nset -eu\n" +
 		"case \"$*\" in\n" +
 		"  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\\n' \"$WB_TEST_BRANCH_JSON\" ;;\n" +
-		"  'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
+		"  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\\n' \"$WB_TEST_RULES_JSON\" ;;\n" +
 		"  *) echo \"unexpected gh command: $*\" >&2; exit 2 ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
@@ -2322,7 +2327,7 @@ func installWorktreeMergeDirectGH(t *testing.T) {
 set -eu
 case "$*" in
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
-  'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[[]]' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main')
     target_sha="${WB_TEST_TARGET_SHA:-}"
     if [ -n "${WB_TEST_REMOTE:-}" ]; then target_sha="$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)"; fi
@@ -2342,6 +2347,8 @@ case "$*" in
     fi
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
   'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
+  'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
+    printf '{"number":41,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
@@ -2364,8 +2371,10 @@ case "$*" in
   'pr view https://example.test/acme/app/pull/17 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
     printf '{"state":"MERGED","mergedAt":"2026-08-27T00:00:00Z","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":"%s"}}\n' "$WB_TEST_CANDIDATE_SHA" "$WB_TEST_TARGET_SHA" ;;
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":false,"protection":{}}' ;;
-  'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[[]]' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main') printf '{"object":{"sha":"%s"}}\n' "$WB_TEST_TARGET_SHA" ;;
+  'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
+    printf '{"number":41,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
@@ -2409,7 +2418,7 @@ state="OPEN"
 if [ -f "$state_file" ]; then state="$(cat "$state_file")"; fi
 case "$*" in
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":true,"protection":{"required_pull_request_reviews":{}}}' ;;
-  'api --paginate --slurp repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[[]]' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
   'pr list --head '*' --base main --state open --json url --jq .[0].url') printf '\n' ;;
   'pr create --base main --head '* ) printf '%s\n' 'https://example.test/acme/app/pull/41' ;;
   'pr view https://example.test/acme/app/pull/41 --repo acme/app --json state,headRefOid,baseRefName')
@@ -2426,6 +2435,8 @@ case "$*" in
   'pr merge https://example.test/acme/app/pull/41 --match-head-commit '*' --merge')
     git --git-dir="$WB_TEST_REMOTE" update-ref refs/heads/main "$WB_TEST_CANDIDATE_SHA"
     printf 'MERGED\n' >"$state_file" ;;
+  'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
+    printf '{"number":41,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   'api repos/acme/app/git/ref/heads/main --include'|'api repos/acme/app/git/ref/heads/main') printf '{"object":{"sha":"%s"}}\n' "$(git --git-dir="$WB_TEST_REMOTE" rev-parse refs/heads/main)" ;;

@@ -316,13 +316,47 @@ landing does that.
 Agents working inside a stream MUST branch from `stream/<name>` into their own
 worktrees, with claims exactly as today, and open pull requests **against the
 stream branch**, never against `main`. After review each agent PR MUST be landed
-into the stream branch with a **squash** merge, producing exactly one commit per
-reviewed change.
+with a **squash** merge by default.
 
-That one-commit-per-reviewed-change rule is the stream's granularity
-**assumption**, recorded as such: it is what makes the final history granular
-without carrying every intermediate "fix typo" commit. The alternative — keeping
-each agent's raw commits — is an Open Question below.
+#### REQ: the-squash-message-aggregates-the-source-commits
+
+A squash that keeps only the pull request's title discards every commit message
+the branch carried, and `git log` on the landed branch can then no longer answer
+what a change contained. The squash commit message MUST therefore be
+**aggregated**, not defaulted:
+
+- **subject** — the pull request's title. GitHub substitutes the branch's first
+  commit subject when no subject is given, which is how a `wip(...)` or
+  `fix typo` message lands on a protected branch verbatim; correcting it
+  afterwards requires rewriting history, which is to say it cannot be corrected.
+- **body** — the pull request body's summary, then **one line per source
+  commit** as `<short-sha> <subject>`, with a commit's full message folded under
+  its line where that message carries information the subject does not, then the
+  pull request number and the review-ledger reference.
+
+Commit trailers (`Co-Authored-By`, `Signed-off-by`, session links) are
+provenance rather than information about the change, and MUST be omitted from
+the folded bodies.
+
+#### REQ: keeping-a-commit-separate-is-reasoned-and-must-build
+
+An agent MAY keep specific commits out of the aggregate:
+`--keep-commits <sha>[,<sha>...] --reason "<text>"`. WB MUST then rebase the
+pull request so the kept commits land as their **own commits, in their original
+relative order**, with everything else squashed into one aggregated commit, and
+MUST record the source→landed SHA pairs in the stream ledger — a rebase landing
+rewrites every commit, so that pairing is the only way back to the originals.
+
+`--reason` is **mandatory**, and the refusal for its absence MUST name it. A
+commit standing alone in the history of a default branch has to say why it is
+there; the reason MUST be written into the aggregated commit's body and into the
+ledger.
+
+Every kept commit MUST **build on its own** — the repository's own build target,
+`go build ./...` for a Go module — before the landing proceeds. A kept commit
+that does not build MUST refuse, naming `--keep-commits` with a smaller set: a
+commit that does not build is not a state anyone can bisect to, so promoting it
+to its own place in the log is worse than aggregating it.
 
 #### REQ: upstream-bumps-are-one-commit-each
 
@@ -922,6 +956,28 @@ read-after-write ordering, authorization, non-vacuity reverts, the
 dependency-change check, and coverage. Most reviews need no bespoke thinking to
 brief.
 
+#### REQ: briefs-and-lane-briefs-carry-the-rules-that-apply-to-the-paths
+
+**Phase:** P1
+
+SpecScore carries a **Rules** entity — `spec/rules/<slug>/README.md`, each rule a
+statement plus the control that enforces it, with lessons cross-linked as
+Sources. A rule that exists and is not in front of the agent about to break it is
+a rule nobody is following.
+
+`wb review request` MUST therefore derive its probes from **the rules that apply
+to the touched paths**, in addition to the template family, and `wb review probe
+propose` MUST take `--rule <slug>` (keeping `--lesson <id>` as an alias until the
+existing lessons are promoted into rules). `wb stream start` and `wb worktree
+create` MUST print the applicable rules — statement and control — into the lane
+brief, so a rule reaches an agent that has no memory of the session where it was
+agreed.
+
+WB MUST NOT depend on the Rules CLI existing: where `specscore rule list
+--applies-to <path> --format json` is unavailable or fails, the brief MUST be
+produced without the rules section and MUST say that it was, rather than
+silently omitting them or refusing to brief at all.
+
 #### REQ: review-supports-the-exceptions-that-templates-cannot-cover
 
 **Phase:** P1
@@ -1389,7 +1445,7 @@ sequenceDiagram
     S->>C: worktree on stream/<name> + DRAFT PR to main
     O->>S: deps propagate local L --to C... --verify
     S->>C: go.work use / built dist link (untracked)
-    Note over O,C: agents branch from stream/<name>, PR into it,<br/>squash-merged: one commit per reviewed change
+    Note over O,C: agents branch from stream/<name>, PR into it,<br/>squash-merged with an aggregated message; --keep-commits promotes<br/>a reasoned few to their own commits
     O->>S: stream sync --verify
     S->>C: REBASE onto origin/main, rebase agent branches
     S->>C: apply batch, run full suite ONCE (prefix re-apply on failure)
@@ -1488,15 +1544,31 @@ published version
 **Then** all three conditions are reported separately and named per repository,
 and the report is produced from stream state after a session restart.
 
+### AC: five-commits-land-as-three-with-the-aggregate-naming-the-rest
+
+**Requirements:** dependency-streams#req:the-squash-message-aggregates-the-source-commits, dependency-streams#req:keeping-a-commit-separate-is-reasoned-and-must-build
+
+**Given** a reviewed pull request whose branch carries five commits
+**When** it is landed with `--keep-commits <two of those shas> --reason "…"`
+**Then** the base receives **three** commits — the two kept ones, in their
+original relative order, and one aggregated commit whose body lists the other
+three by short SHA and subject and carries the reason; the ledger records each
+source SHA against the SHA that landed it; and landing the same pull request
+with `--keep-commits` and no `--reason` is refused with the refusal naming
+`--reason`, while naming a commit that does not build is refused naming
+`--keep-commits` with a smaller set.
+
 ### AC: agent-work-lands-as-one-commit-each
 
 **Requirements:** dependency-streams#req:agent-branches-squash-into-the-stream, dependency-streams#req:upstream-bumps-are-one-commit-each
 
 **Given** two agents each with a reviewed pull request against `stream/<name>`,
-one containing five intermediate commits, and one tagged upstream library release
+one containing five intermediate commits and neither using `--keep-commits`, and
+one tagged upstream library release
 **When** both are landed and `wb stream sync` records the bump
 **Then** the stream branch gains exactly three commits — one per reviewed agent
-change and one for the bump — and contains no merge commit.
+change and one for the bump — each agent's commit carrying the aggregated body
+that names its own source commits, and the branch contains no merge commit.
 
 ### AC: sync-writes-no-bump-that-renovate-already-landed
 
@@ -2187,14 +2259,16 @@ re-review is a resumed session rather than a new one — is worth building **onl
 if the ledger shows it pays**. The ledger specified above is what would answer
 that, which is the reason to ship it first.
 
-**3. Should agent pull requests be squashed into the stream branch, or should
-their raw commits be kept?** This spec assumes **squash — one commit per
-reviewed change** (`agent-branches-squash-into-the-stream`), on the grounds that
-it is the granularity a reviewer of `main` wants and it keeps "fix typo" out of
-the permanent history. The alternative is a rebase that preserves each agent's
-commits, giving finer prefix-scan resolution at the cost of a noisier `main`. This is
-recorded as an assumption because it is reversible: it changes only how agent
-pull requests are landed, not the stream's shape.
+*(The former question 3 — whether agent pull requests should be squashed or have
+their raw commits kept — is **resolved**. Founder, 2026-09-03: squash by default,
+and the squash message **aggregates** the source commits, so the branch's own
+messages survive inside one commit rather than being discarded by the squash or
+scattered across the history by a rebase. An agent may promote specific commits
+to their own place with `--keep-commits … --reason …`, which is reasoned rather
+than default, and each promoted commit must build on its own. See
+`the-squash-message-aggregates-the-source-commits` and
+`keeping-a-commit-separate-is-reasoned-and-must-build`, with
+AC `five-commits-land-as-three-with-the-aggregate-naming-the-rest`.)*
 
 *(The former question 4 — whether own-library bumps keep flowing through
 Renovate — is **resolved**. Founder, 2026-09-03: "Yes, renovate should bump deps

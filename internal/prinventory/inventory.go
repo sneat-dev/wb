@@ -4,9 +4,12 @@
 package prinventory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"sort"
 	"strings"
@@ -270,7 +273,10 @@ func inventoryOwner(ctx context.Context, options Options, owner Owner) (OwnerRes
 		// on a non-midnight cutoff day.
 		query += " created:<=" + cutoff.UTC().Format("2006-01-02")
 	}
-	args := []string{"api", "--method", "GET", "--paginate", "--slurp", "/search/issues", "-f", "q=" + query, "-f", "per_page=100"}
+	// Deliberately not --slurp: it needs a gh newer than the 2.45 installed on
+	// this fleet. Plain --paginate concatenates one JSON object per page, which
+	// parsePages reads with a streaming decoder on every client.
+	args := []string{"api", "--method", "GET", "--paginate", "/search/issues", "-f", "q=" + query, "-f", "per_page=100"}
 	out, err := options.Runner.Run(ctx, args...)
 	if err != nil {
 		d := Diagnostic{Owner: owner.Login, Severity: "error", Message: "GitHub owner query failed: " + err.Error()}
@@ -286,7 +292,7 @@ func inventoryOwner(ctx context.Context, options Options, owner Owner) (OwnerRes
 		result.TotalReported += page.TotalCount
 		items = append(items, page.Items...)
 	}
-	// --slurp returns one page object per page; total_count repeats on every
+	// Pagination returns one page object per page; total_count repeats on every
 	// page, so reconcile against the first authoritative count.
 	if len(pages) > 0 {
 		result.TotalReported = pages[0].TotalCount
@@ -329,16 +335,31 @@ func inventoryOwner(ctx context.Context, options Options, owner Owner) (OwnerRes
 	return result, prs, result.Diagnostics
 }
 
+// parsePages reads however many pages the client produced. An array of pages is
+// what --slurp used to emit and is still accepted so an operator with a newer
+// gh sees the same result; a stream of concatenated objects is what plain
+// --paginate emits, on every gh this fleet has.
 func parsePages(raw []byte) ([]searchPage, error) {
 	var pages []searchPage
 	if err := json.Unmarshal(raw, &pages); err == nil {
 		return pages, nil
 	}
-	var page searchPage
-	if err := json.Unmarshal(raw, &page); err != nil {
-		return nil, err
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	streamed := make([]searchPage, 0, 1)
+	for {
+		var page searchPage
+		if err := decoder.Decode(&page); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+		streamed = append(streamed, page)
 	}
-	return []searchPage{page}, nil
+	if len(streamed) == 0 {
+		return nil, fmt.Errorf("GitHub returned no decodable page")
+	}
+	return streamed, nil
 }
 
 func repositorySlug(raw string) string {

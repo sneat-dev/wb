@@ -2,7 +2,6 @@ package orchestrate
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -717,26 +716,6 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	default:
 		return fmt.Errorf("GitHub CI receipt failed for %s at %s: %s", result.PR, result.Commit, receipt.Reason)
 	}
-}
-
-func decodePullRequestChecks(pr, output, stderr string, commandErr error) ([]RemoteCheck, bool, error) {
-	var checks []RemoteCheck
-	if err := json.Unmarshal([]byte(output), &checks); err == nil {
-		// `gh pr checks` uses non-zero exit statuses for both pending (8) and
-		// failed checks, while still returning its requested JSON receipt. The
-		// normalized buckets, not the transport exit code, decide whether this
-		// exact CI observation is resumable or terminal.
-		return checks, len(checks) == 0, nil
-	} else if commandErr == nil {
-		return nil, false, fmt.Errorf("decode checks for %s: %w", pr, err)
-	}
-	lowerOutput := strings.ToLower(output)
-	lowerStderr := strings.ToLower(stderr)
-	if strings.Contains(lowerOutput, "no checks reported") || strings.Contains(lowerOutput, "no required checks reported") ||
-		strings.Contains(lowerStderr, "no checks reported") || strings.Contains(lowerStderr, "no required checks reported") {
-		return nil, true, nil
-	}
-	return nil, false, commandErr
 }
 
 func githubChecksPollInterval(options Options) time.Duration {

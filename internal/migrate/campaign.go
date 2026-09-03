@@ -25,6 +25,7 @@ import (
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/encode"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
@@ -2054,26 +2055,26 @@ func openCampaignPR(repo *campaignRepository, spec Spec) (string, error) {
 	return lastNonEmptyLine(url), nil
 }
 
-func requiredChecksGreen(worktree, prURL string) ([]RemoteCheck, bool, error) {
-	result := githubobserver.Execute(context.Background(), worktree, "pr", "checks", prURL, "--required", "--json", "name,bucket")
-	var checks []RemoteCheck
-	if decodeErr := json.Unmarshal(result.Stdout, &checks); decodeErr != nil {
-		if result.Err != nil {
-			return nil, false, result.Err
-		}
-		return nil, false, fmt.Errorf("decode required checks for %s: %w", prURL, decodeErr)
+// requiredChecksGreen asks the one implementation WB has of "are this pull
+// request's checks green?".
+//
+// It used to shell out to `gh pr checks --required --json`, which the gh
+// installed on this fleet does not support — the same dependency that broke the
+// merge verb's checks stage and sent operators back to raw `gh pr merge`.
+func requiredChecksGreen(_ string, prURL string) ([]RemoteCheck, bool, error) {
+	repository, err := orchestrate.RepositoryFromPullRequestURL(prURL)
+	if err != nil {
+		return nil, false, err
 	}
-	// gh exits non-zero while checks are pending or failing, but still returns
-	// the requested JSON. Treat that as a blocked merge, not a transport error.
-	if result.Err != nil {
-		return checks, false, nil
+	observed, green, err := orchestrate.PullRequestHeadChecks(context.Background(), repository, prURL)
+	if err != nil {
+		return nil, false, err
 	}
-	for _, check := range checks {
-		if check.Bucket != "pass" {
-			return checks, false, nil
-		}
+	checks := make([]RemoteCheck, 0, len(observed))
+	for _, check := range observed {
+		checks = append(checks, RemoteCheck{Name: check.Name, Bucket: check.Bucket})
 	}
-	return checks, true, nil
+	return checks, green, nil
 }
 
 func lastNonEmptyLine(value string) string {
