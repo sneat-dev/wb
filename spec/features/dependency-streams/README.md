@@ -13,11 +13,17 @@ status: Draft
 ## Summary
 
 A **stream** is one named cross-repository unit of work spanning a library and
-the consumers that must change with it. Inside a stream, a consumer builds
-against the library's *working tree* through an untracked local link, so a
-change is proven across every affected repository before anything is published.
-Publication and consumer bumps happen once, at the end, as a single deliberate
-wave over exactly the repositories the stream linked.
+the consumers that must change with it: a consumer builds against the library's
+*working tree* through an untracked local link, so a change is proven across
+every affected repository before anything is published; each downstream
+repository accumulates the work on one `stream/<name>` branch kept current by
+rebase and landed by rebase-and-merge, so history stays linear and granular; and
+publication with consumer bumps happens once, at the end, over exactly the
+repositories the stream linked.
+
+There are no merge commits and no single opaque squash at the end. Verification
+is batched: a stream applies a whole batch and runs the suite once, bisecting
+only when that run fails.
 
 ## Problem
 
@@ -33,12 +39,56 @@ resumable, but they cannot make it cheap: they are remote propagation, and
 remote propagation is the expensive half. Nothing in WB lets a consumer build
 against an unpublished library, and nothing records that several worktrees are
 one piece of work — so an operator holds the set in their head, and a
-half-finished cross-repository change is indistinguishable from an abandoned
-one.
+half-finished cross-repository change is indistinguishable from an abandoned one.
+
+Two further costs compound it. **History**: several agents working the same
+repository during one effort, plus a bump per upstream release, produce either a
+thicket of merge commits or one squashed commit that hides every change. Neither
+is reviewable. **Time and CPU**: ten dependency bumps land as ten pushes, each
+re-running the full lint/vet/test suite through commit and push hooks and again
+in CI — on a 4-core workstation that is the difference between a stream that
+lands in an hour and one that occupies a day.
 
 The founder's directive states the intended shape directly: *"do less deps
 propagations and work more with locally changed deps and propagate at the end"*
-and *"stream is a good idea"*.
+and *"stream is a good idea"* — and, on history: *"What I don't want to have is
+a lot of merge commits. Want to have clean but granular history."*
+
+## Principles
+
+These are stream-wide rules, not per-command details. Every REQ below is an
+application of one of them.
+
+#### REQ: one-verb-per-operation
+
+Any operation that needs more than one `gh` or `git` call to complete **and
+verify** MUST be exactly one wb verb. An operator or agent MUST NOT be expected
+to chain calls and check the result by eye: the sequence, its waits, and its
+verification are the verb's responsibility. A verb MUST report the evidence it
+relied on, so a caller never has to re-derive it.
+
+The founder's framing: *"Make deterministic operations when multiple tool calls
+required to be performed by wb."*
+
+#### REQ: verbs-state-and-deduplicate-their-work
+
+Every verb MUST state which checks it will run before running them, and MUST run
+a given check at most once for the same inputs within one invocation. Re-running
+an identical check on unchanged inputs is a defect, not a safety margin.
+
+#### REQ: stream-speed-and-cpu-are-first-class
+
+Stream latency and CPU load MUST be treated as correctness constraints, not
+preferences. Verification MUST be batched by default (see Batch verification),
+and MUST respect the workstation's concurrency cap — this fleet's is **3
+concurrent lanes on a 4-core VM, at most one Angular build and at most two Go
+builds**. A design that is correct but re-verifies the same tree ten times MUST
+be rejected.
+
+The founder's framing: *"optimize number of tests and vet/lint etc we run … we
+don't want to run test 10 times if we merge 10 deps bumps … This is critical and
+should be one of the main wb principles — care about speed of stream and cpu
+load."*
 
 ## Behavior
 
@@ -85,6 +135,84 @@ worktree removal to the existing
 [`wb worktree cleanup`](../worktree-lifecycle/README.md). It MUST refuse to
 report success while any link remains. Ending a stream MUST NOT publish, bump,
 or merge anything.
+
+### Linear history
+
+#### REQ: stream-branch-with-draft-pr
+
+For each downstream repository, `wb stream start` MUST create exactly one
+worktree on branch `stream/<name>` and open a **draft** pull request from it to
+`main`, so CI runs on every push to the stream branch and the stream's true
+state is always visible. The draft PR MUST NOT be marked ready by `start`; only
+landing does that.
+
+#### REQ: agent-branches-squash-into-the-stream
+
+Agents working inside a stream MUST branch from `stream/<name>` into their own
+worktrees, with claims exactly as today, and open pull requests **against the
+stream branch**, never against `main`. After review each agent PR MUST be landed
+into the stream branch with a **squash** merge, producing exactly one commit per
+reviewed change.
+
+That one-commit-per-reviewed-change rule is the stream's granularity
+**assumption**, recorded as such: it is what makes the final history granular
+without carrying every intermediate "fix typo" commit. The alternative — keeping
+each agent's raw commits — is an Open Question below.
+
+#### REQ: upstream-bumps-are-one-commit-each
+
+An upstream library release MUST reach the stream branch as exactly **one
+commit per bump**. `wb stream sync` MUST write that version bump once the
+library is tagged and published. Before the library is tagged, consumers MUST
+use `wb deps propagate local` links instead, so an unpublished library never
+produces a version-bump commit.
+
+WB MUST NOT open Renovate-style pull requests against `main` for a dependency
+that is inside an open stream. Renovate's own-library pull requests continue to
+land on `main` as the safety net for repositories and dependencies outside any
+stream; `wb stream sync` picks those up automatically, because it rebases the
+stream branch onto the updated `origin/main`.
+
+#### REQ: sync-rebases-and-never-merges
+
+`wb stream sync` MUST rebase `stream/<name>` onto the freshly fetched
+`origin/main` — never merge it — and MUST then rebase every open agent branch of
+the stream onto the new stream head. WB knows those branches from the stream's
+claims and recorded membership, so the operator MUST NOT have to name them.
+
+Conflicts MUST be reported **per agent branch**, naming the branch, the agent
+that claimed it, and the conflicting paths; a conflict in one agent's branch
+MUST NOT abort the rebase of the others. Sync MUST refuse by default while an
+agent pull request is mid-review, and MUST offer an explicit flag to proceed
+with a warning, because rebasing a branch under review invalidates the review.
+
+#### REQ: landing-is-rebase-and-merge
+
+`wb stream propagate` MUST land a downstream repository by: performing a final
+`wb stream sync`, marking the stream pull request ready, waiting for green
+checks, and merging it with GitHub's **rebase-and-merge** so `main`
+fast-forwards and receives the stream's commits individually. The result MUST be
+**one push, one auto-tag, and one deploy per repository**, rather than one per
+constituent change.
+
+WB MUST verify the repository permits rebase merges before starting, and MUST
+name any repository where it is disabled rather than silently falling back.
+Audited 2026-09-03: `allow_rebase_merge` is `true` on all 28 sneat-co product
+repositories and on `sneat-dev/wb`, so no repository currently needs enabling.
+
+#### REQ: never-merge-commit-a-stream-branch
+
+WB MUST refuse to land a `stream/<name>` branch with a merge commit, on any
+route, and MUST say which route it will use instead. This guard is necessary
+rather than theoretical: `allow_merge_commit` is `true` on 26 of the 28 audited
+product repositories, so the unwanted route is available in the UI and to any
+caller that does not go through wb.
+
+While a stream is open, [`wb worktree merge --route auto`](../mechanical-worktree-merge/README.md)
+MUST route an agent worktree of that stream to the **stream branch**, not to
+`main`. If an agent pull request is nonetheless found open against `main` while
+its repository has an open stream, WB MUST report it as misrouted, name the
+stream branch it belongs to, and MUST NOT merge it as part of stream work.
 
 ### Local propagation
 
@@ -145,12 +273,57 @@ the library — is the source of truth for reversal.
 
 #### REQ: merge-refuses-a-linked-worktree
 
-[`wb worktree merge`](../mechanical-worktree-merge/README.md) MUST refuse to
-push or land a worktree that has a live link recorded in stream state, or a
-`go.work` containing a `use` entry, and MUST name the offending link and the
-command that clears it. The refusal MUST be based on both signals independently:
-state alone would miss a hand-written `go.work`, and `go.work` alone would miss
-an npm link. There MUST be no flag that both bypasses this guard and pushes.
+`wb worktree merge` MUST refuse to push or land a worktree that has a live link
+recorded in stream state, or a `go.work` containing a `use` entry, and MUST name
+the offending link and the command that clears it. The refusal MUST be based on
+both signals independently: state alone would miss a hand-written `go.work`, and
+`go.work` alone would miss an npm link. There MUST be no flag that both bypasses
+this guard and pushes.
+
+### Batch verification
+
+#### REQ: batch-verifies-once
+
+`wb stream sync --verify` MUST apply the whole batch it is given — for example
+ten dependency bumps plus the rebased agent changes — and then run the full
+lint, vet, test and build suite **once** over the resulting tree. It MUST NOT
+run the suite per applied change. The same rule applies at landing: the final
+verification before merging the stream pull request is one run over the final
+tree.
+
+#### REQ: batch-failure-bisects-to-the-first-bad-change
+
+When a batch verification fails, WB MUST revert the batch and re-apply the
+changes one at a time, verifying after each, stopping at and reporting the
+**first** change whose application fails. The report MUST name that change, the
+failing check, and the changes already known good. WB MUST NOT leave the tree in
+the failed batch state, and MUST NOT continue past the first failure, because
+every later result would be measured against a known-broken tree.
+
+The total cost MUST therefore be one full run in the passing case, and one full
+run plus the bisect runs in the failing case — never one full run per change.
+
+### Hook profiles
+
+#### REQ: commit-hook-is-fast-and-scoped
+
+The WB-managed commit hook installed by
+[`wb hooks install`](../pre-push-tiering-and-remote-checkpoints/README.md) MUST
+run only formatting and static checks, scoped to the files changed in that
+commit, and MUST be measured in seconds. It MUST NOT run the test suite. A
+commit is not a release gate; it is a save point.
+
+#### REQ: push-hook-defers-to-ci-on-stream-branches
+
+The push hook MUST run **no** verification when the push target is a
+`stream/<name>` branch, because that branch has a pull request whose CI verifies
+every push, and a local re-run duplicates it on the very machine the stream is
+trying to keep free. For every other target the current full profile MUST be
+unchanged. WB MUST report which profile it selected and why.
+
+`wb hooks metrics` MUST be able to evidence the difference — local commits, push
+attempts, hook failures and durations — so the saving is measured rather than
+asserted.
 
 ### Remote propagation
 
@@ -171,16 +344,16 @@ Consumer selection MUST come from the stream's recorded links, not from a fleet
 scan. WB MUST NOT bump a repository that was not linked in the stream, even when
 `wb deps graph` shows it depends on the library. A repository that depends on
 the library but was never linked was never verified against these changes, and
-belongs to the safety net described below rather than to this wave.
+belongs to the Renovate safety net rather than to this wave.
 
 #### REQ: remote-propagation-reports-per-consumer
 
-For each consumer WB MUST open one grouped pull request, wait for checks, merge
-when green — reusing `wb deps bump`'s existing `--pr`, `--merge`, and CI-wait
-behavior — and verify the resulting deploy where the repository has one. The
-report MUST state, per consumer, the versions moved, the pull request, the check
-outcome, and the deploy evidence. A consumer whose checks fail MUST leave the
-stream open and MUST NOT block the reporting of the others.
+For each consumer WB MUST land the stream branch as specified in
+`landing-is-rebase-and-merge`, wait for checks, and verify the resulting deploy
+where the repository has one. The report MUST state, per consumer, the versions
+moved, the pull request, the check outcome, and the deploy evidence. A consumer
+whose checks fail MUST leave the stream open and MUST NOT block the reporting of
+the others.
 
 #### REQ: remote-propagation-refuses-live-links
 
@@ -188,49 +361,74 @@ stream open and MUST NOT block the reporting of the others.
 live, and MUST name them. Publishing a library whose consumers are still
 resolving it from a working tree would verify nothing.
 
-## Architecture
+## Architecture & Dependencies
 
 ```mermaid
 sequenceDiagram
-    participant O as Operator or lane agent
+    participant O as Operator / lane agents
     participant S as wb stream
     participant L as Library worktree
-    participant C as Consumer worktrees
+    participant C as Consumer stream/<name> branch
     participant R as Registry / GitHub
     O->>S: stream start <name> <repos...>
     S->>L: wb worktree create (+ claim)
-    S->>C: wb worktree create (+ claim)
+    S->>C: worktree on stream/<name> + DRAFT PR to main
     O->>S: deps propagate local L --to C... --verify
     S->>C: go.work use / built dist link (untracked)
-    S->>C: verify lint+test single-worker
-    Note over S,C: iterate freely — nothing published
+    Note over O,C: agents branch from stream/<name>, PR into it,<br/>squash-merged: one commit per reviewed change
+    O->>S: stream sync --verify
+    S->>C: REBASE onto origin/main, rebase agent branches
+    S->>C: apply batch, run full suite ONCE (bisect on failure)
     O->>S: deps propagate remote L --stream <name>
     S->>S: refuse if any link is live
     S->>R: merge library PRs, cut tags, deps publish npm
     R-->>S: exact tag + registry evidence
-    S->>R: deps bump --changed <mod>@<ver> (stream members only)
-    R-->>S: per-consumer PR, checks, merge, deploy
+    S->>C: one bump commit per release
+    S->>R: ready PR, wait green, REBASE-AND-MERGE
+    R-->>S: one push → one auto-tag → one deploy
     O->>S: stream end <name> → undo links, worktree cleanup
 ```
 
-WB owns the stream identity, the link record, and the two guards. It owns no new
-publication, bump, worktree, or claim mechanics: those remain with
-`wb deps publish`, `wb deps bump`, `wb worktree create/merge/cleanup`, and
-`wb remote claim`. The link record is the only new durable state, and it lives
-beside the Work Log, never in a member repository.
+WB owns the stream identity, the link record, the linear-history guards, and the
+batch policy. It owns no new publication, bump, worktree, claim, or hook
+mechanics: those remain with `wb deps publish`, `wb deps bump`,
+`wb worktree create/merge/cleanup`, `wb remote claim`, and `wb hooks
+install/check/repair/metrics`. The link record and stream membership are the only
+new durable state, and they live beside the Work Log, never in a member
+repository.
+
+### Deterministic verbs — follow-up features
+
+Applications of `one-verb-per-operation`, each derived from a multi-call
+sequence performed by hand during the 2026-09-02/03 release night. Each is its
+own Feature, not part of this one:
+
+- **`wb pr land <repo#n>`** — verify head, mergeability and green checks, squash
+  with the pull request title as the subject, delete the branch, report the
+  resulting commit SHA.
+- **`wb release verify <repo>`** — confirm the tag, the publish workflow run, and
+  the registry `dist-tags` agree, and name the one that disagrees.
+- **`wb deploy watch <repo>`** — follow the CI and deploy runs to a green result
+  or the exact failing step.
+- **`wb renovate run <repo> --wait`** — tick the Dependency Dashboard manual job,
+  wait for the run, and report what was offered, created, and armed.
+- **`wb deps drift`** — already specified in
+  [Dependency Drift](../dependency-drift/README.md); the per-repository
+  pin-versus-latest table belongs to its output, not to a hand-built report.
 
 ## Acceptance Criteria
 
 ### AC: stream-groups-worktrees-under-one-name
 
-**Requirements:** dependency-streams#req:stream-is-a-named-set-of-worktrees, dependency-streams#req:stream-state-is-untracked-and-local
+**Requirements:** dependency-streams#req:stream-is-a-named-set-of-worktrees, dependency-streams#req:stream-state-is-untracked-and-local, dependency-streams#req:stream-branch-with-draft-pr
 
 **Given** an operator names a stream and three repositories
 **When** they run `wb stream start`
 **Then** WB creates one worktree per repository through the existing worktree
-creation path with its claim and Work Log archival, records the three as one
-stream in WB-owned state outside every repository, and `git status` in each
-worktree reports no new or modified file.
+creation path with its claim and Work Log archival, each downstream repository
+is on branch `stream/<name>` with a draft pull request open to `main`, the
+stream is recorded in WB-owned state outside every repository, and `git status`
+in each worktree reports no new or modified file.
 
 ### AC: status-separates-linked-untagged-and-behind
 
@@ -242,6 +440,61 @@ published version
 **When** the operator runs `wb stream status`
 **Then** all three conditions are reported separately and named per repository,
 and the report is produced from stream state after a session restart.
+
+### AC: agent-work-lands-as-one-commit-each
+
+**Requirements:** dependency-streams#req:agent-branches-squash-into-the-stream, dependency-streams#req:upstream-bumps-are-one-commit-each
+
+**Given** two agents each with a reviewed pull request against `stream/<name>`,
+one containing five intermediate commits, and one tagged upstream library release
+**When** both are landed and `wb stream sync` records the bump
+**Then** the stream branch gains exactly three commits — one per reviewed agent
+change and one for the bump — and contains no merge commit.
+
+### AC: sync-rebases-and-reports-conflicts-per-agent
+
+**Requirements:** dependency-streams#req:sync-rebases-and-never-merges
+
+**Given** an open stream with three agent branches, where `origin/main` has moved
+and exactly one agent branch conflicts with the new stream head
+**When** the operator runs `wb stream sync`
+**Then** the stream branch is rebased onto `origin/main` with no merge commit
+created, the two non-conflicting agent branches are rebased onto the new head,
+the conflict is reported naming the branch, its claiming agent and the
+conflicting paths, and the other two agents' results are still reported.
+
+### AC: sync-refuses-while-a-pr-is-mid-review
+
+**Requirements:** dependency-streams#req:sync-rebases-and-never-merges
+
+**Given** an agent pull request against the stream branch that is under review
+**When** the operator runs `wb stream sync`
+**Then** WB refuses by default, names the pull request and its reviewer state,
+and proceeds only under an explicit flag, emitting a warning that the review was
+invalidated.
+
+### AC: misrouted-agent-pr-is-reported-not-merged
+
+**Requirements:** dependency-streams#req:never-merge-commit-a-stream-branch
+
+**Given** an agent worktree of an open stream whose pull request was opened
+against `main` by mistake
+**When** the operator runs `wb worktree merge --route auto`
+**Then** WB routes stream agent worktrees to the stream branch, reports the
+misrouted pull request and the stream branch it belongs to, and does not merge
+it as part of stream work.
+
+### AC: landing-is-a-fast-forward-with-one-deploy
+
+**Requirements:** dependency-streams#req:landing-is-rebase-and-merge, dependency-streams#req:never-merge-commit-a-stream-branch
+
+**Given** a stream branch holding six commits and a repository that permits
+rebase merges
+**When** the operator lands it
+**Then** `main` fast-forwards and gains the six commits individually with no
+merge commit, exactly one push, one auto-tag and one deploy occur, and — in a
+repository where `allow_rebase_merge` is disabled — WB names the repository and
+refuses instead of falling back to another route.
 
 ### AC: go-consumer-builds-against-the-library-worktree
 
@@ -268,15 +521,16 @@ override, alias, or `workspace:` entry is introduced anywhere in tracked config.
 
 ### AC: verify-reports-every-consumer-single-worker
 
-**Requirements:** dependency-streams#req:verify-runs-single-worker-against-the-linked-copy
+**Requirements:** dependency-streams#req:verify-runs-single-worker-against-the-linked-copy, dependency-streams#req:stream-speed-and-cpu-are-first-class
 
 **Given** two linked consumers, one of which fails its tests against the
 library's change
 **When** the operator adds `--verify`
 **Then** both consumers are verified against the linked copy, Node runs carry
 `--maxWorkers=1 --parallel=1` with `NX_DAEMON=false` and Go runs use
-`go test -p 1` without `-race`, the failure is attributed to its consumer, and
-the passing consumer is still reported.
+`go test -p 1` without `-race`, concurrency stays within the workstation cap,
+the failure is attributed to its consumer, and the passing consumer is still
+reported.
 
 ### AC: undo-restores-published-versions
 
@@ -299,19 +553,44 @@ hand-written `go.work` containing a `use` entry and no stream record
 command that clears it, and no flag combination both bypasses the guard and
 pushes.
 
+### AC: ten-bumps-verify-once-then-bisect
+
+**Requirements:** dependency-streams#req:batch-verifies-once, dependency-streams#req:batch-failure-bisects-to-the-first-bad-change, dependency-streams#req:verbs-state-and-deduplicate-their-work
+
+**Given** a batch of ten dependency bumps in which the seventh breaks the build
+**When** the operator runs `wb stream sync --verify`
+**Then** WB applies all ten and runs the full suite exactly **once**, and only
+after that run fails does it revert and re-apply one at a time; it stops at the
+seventh, names it and the failing check, lists bumps one to six as known good,
+leaves the tree out of the failed batch state, and never performs ten full runs.
+With all ten passing, the total is exactly one full run.
+
+### AC: hooks-are-cheap-on-a-stream-branch
+
+**Requirements:** dependency-streams#req:commit-hook-is-fast-and-scoped, dependency-streams#req:push-hook-defers-to-ci-on-stream-branches
+
+**Given** a repository with WB-managed hooks and an open stream branch
+**When** an agent commits to and pushes that branch, and separately pushes a
+non-stream branch
+**Then** the commit hook runs only formatting and static checks over the changed
+files and no test suite; the push to the stream branch runs no local
+verification and says CI on the stream pull request is the gate; the push to the
+other branch runs the current full profile unchanged; and `wb hooks metrics`
+shows the recorded durations for both.
+
 ### AC: remote-wave-publishes-then-bumps-only-members
 
-**Requirements:** dependency-streams#req:remote-propagation-is-the-end-of-stream-wave, dependency-streams#req:remote-propagation-bumps-only-stream-members, dependency-streams#req:remote-propagation-reports-per-consumer
+**Requirements:** dependency-streams#req:remote-propagation-is-the-end-of-stream-wave, dependency-streams#req:remote-propagation-bumps-only-stream-members, dependency-streams#req:remote-propagation-reports-per-consumer, dependency-streams#req:one-verb-per-operation
 
 **Given** a stream whose links have been undone, whose library changes are
 merged, and a fourth repository that depends on the library but was never in the
 stream
 **When** the operator runs `wb deps propagate remote --stream <name>`
-**Then** the library is tagged and published with exact registry evidence before
-any consumer changes, exactly the stream's consumers receive one grouped pull
-request each, the fourth repository receives none, and the report states per
-consumer the versions moved, the pull request, the check outcome, and the deploy
-evidence.
+**Then** one verb completes and verifies the whole sequence, the library is
+tagged and published with exact registry evidence before any consumer changes,
+exactly the stream's consumers land their stream branches, the fourth repository
+receives none, and the report states per consumer the versions moved, the pull
+request, the check outcome, and the deploy evidence.
 
 ### AC: remote-wave-refuses-live-links
 
@@ -327,10 +606,13 @@ refuses to report success while any link remains.
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, or process
 surface. Pending scenario stubs live under `_tests/` and are intended to use
-temporary Git remotes plus fake registry, GitHub, and build adapters, so no
-scenario publishes a package or opens a real pull request. The link guards are
+temporary Git remotes plus fake registry, GitHub, build, and hook adapters, so
+no scenario publishes a package or opens a real pull request. The guards are
 observable without a network: `git status`, the presence or absence of
-`go.work`, and byte-comparison of tracked manifests against `HEAD`.
+`go.work`, byte-comparison of tracked manifests against `HEAD`, and
+`git log --merges` on the landed branch. Batch behavior is observable by
+counting adapter invocations — the ten-bump scenario asserts the number of full
+suite runs, which is the property that matters.
 
 ## Not Doing
 
@@ -339,17 +621,29 @@ observable without a network: `git status`, the presence or absence of
 - Committing `replace` directives, `go.work` files, `pnpm` overrides, aliases,
   or `workspace:` protocol entries to any repository.
 - Changing Renovate presets, schedules, or automerge policy from wb.
-- Replacing `wb deps bump`, `wb deps publish`, `wb worktree create/merge`, or
-  `wb remote claim` with stream-specific implementations.
+- Replacing `wb deps bump`, `wb deps publish`, `wb worktree create/merge`,
+  `wb remote claim`, or `wb hooks` with stream-specific implementations.
 - Publishing from a developer machine: publication remains the repository's own
   workflow, as [NPM release propagation](../npm-release-propagation/README.md)
   already requires.
 - Cross-machine streams. A stream is local to one workstation; its worktrees are
   claimed fleet-wide, but its links are not shared.
+- Landing a stream with a merge commit or a single squash of the whole stream.
+- Implementing the deterministic follow-up verbs listed above; this Feature only
+  names them.
 
 ## Open Questions
 
-**Should own-library consumer bumps keep flowing through Renovate once
+**1. Should agent pull requests be squashed into the stream branch, or should
+their raw commits be kept?** This spec assumes **squash — one commit per
+reviewed change** (`agent-branches-squash-into-the-stream`), on the grounds that
+it is the granularity a reviewer of `main` wants and it keeps "fix typo" out of
+the permanent history. The alternative is a rebase that preserves each agent's
+commits, giving finer bisect resolution at the cost of a noisier `main`. This is
+recorded as an assumption because it is reversible: it changes only how agent
+pull requests are landed, not the stream's shape.
+
+**2. Should own-library consumer bumps keep flowing through Renovate once
 `wb deps propagate remote` exists?** Renovate's own-library automerge is
 currently the mechanism that keeps every consumer on the latest release, and it
 is the only thing that covers repositories nobody put in a stream. But once a
