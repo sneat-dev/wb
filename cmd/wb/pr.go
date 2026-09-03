@@ -268,7 +268,7 @@ func landingEventLog(repository string) (streams.EventAppender, string) {
 	if err != nil {
 		return streams.DiscardEvents{}, ""
 	}
-	if stream, found, streamErr := store.RepositoryStream(repository); streamErr == nil && found {
+	if stream, found, _, streamErr := store.RepositoryStream(repository); streamErr == nil && found {
 		return store.EventLog(stream.Name), stream.Name
 	}
 	// Outside every stream the event still belongs somewhere: the analytics
