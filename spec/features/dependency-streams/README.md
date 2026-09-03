@@ -1055,6 +1055,38 @@ install/check/repair/metrics`. The link record and stream membership are the onl
 new durable state, and they live beside the Work Log, never in a member
 repository.
 
+### Definition of Done — skills ship with the verb
+
+The founder: *"Don't forget to update wb ai skills once implemented."*
+
+A verb an agent cannot discover is a verb that does not exist. Every new or
+changed verb in this Feature — `stream start/status/sync/end`,
+`deps propagate local/remote`, `pr land`, `review request/record/probe`,
+`worktree gc/review/end`, `disk`, `cache prune`, `report export/stream/publish`,
+`serve`, `stats savings/calibrate` — MUST ship **in the same pull request** as
+its skill update under `skills/`, and `wb skills sync` MUST propagate it to the
+harness skills directory.
+
+Each skill section MUST carry the verb, its flags, when to use it, and — this is
+the part that decays first — **its refusals and the sanctioned next step for
+each**, since a refusal an agent cannot resolve becomes a hand-written
+workaround. It MUST also carry the lane-contract lines: *"consume the library
+through `wb deps propagate local`; the orchestrator runs `remote` at the end"*
+and *"end with `wb worktree end`"*.
+
+**Skills to rewrite when the stream model lands**, because the stream changes
+what they tell an agent to do rather than merely adding to it:
+
+- **`wb-worktrees`** — worktrees are now created by `wb stream start`, agents
+  branch from `stream/<name>` rather than `main`, and cleanup is the default at
+  landing rather than an opt-in step.
+- **`wb-deps`** — local linking is the normal path and remote propagation is the
+  end-of-stream wave; the current text describes only the remote half.
+- **`wb-merge`** — agent pull requests target the stream branch, landing is
+  rebase-and-merge, and a live link or an unapproved head is a refusal.
+- A new **`wb-streams`** skill for the stream lifecycle itself, and a new
+  **`wb-review`** skill for the review contract and ledger.
+
 ### Deterministic verbs — follow-up features
 
 Applications of `one-verb-per-operation`, each derived from a multi-call
@@ -1488,6 +1520,18 @@ on commit identity rather than ancestry, is removed within that single run, and
 **When** the session exits and `wb session end` runs
 **Then** the un-ended worktree is reported by name with its owner and age, and
 the handed-over case is distinguished from the abandoned one.
+
+### AC: a-verb-without-a-skill-section-fails-the-build
+
+**Requirements:** dependency-streams#req:one-verb-per-operation
+
+**Given** a new verb added to `wb commands --format json` with no matching
+section in `skills/`
+**When** `wb ci` / `wb check` runs, or the repository's own test suite runs
+**Then** it fails and names the verb missing its skill; and with the section
+present — carrying the verb, its flags, when to use it, and each refusal with its
+sanctioned next step — it passes, and `wb skills sync` propagates the section to
+the harness skills directory.
 
 ### AC: landing-refuses-when-the-head-moved-after-approval
 
