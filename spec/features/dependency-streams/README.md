@@ -288,12 +288,13 @@ MUST close or report its draft pull requests, and MUST delete its own
 task-directory scaffolding.
 
 Before the stream branch is deleted, `wb stream end` MUST additionally enumerate
-every **still-open agent pull request** targeting it and close or retarget each,
+every **still-open pull request** targeting it and close or retarget each,
 reporting what it did. GitHub auto-retargets an open pull request to the base's
 own base when its base branch is deleted, so deleting `stream/<name>` silently
-converts every leftover agent pull request into one targeting `main` — precisely
-the misrouted condition this Feature guards against, arriving with no operator
-mistake to blame.
+converts any leftover pull request into one targeting `main`, arriving with no
+operator mistake to blame. Under `agent-work-is-absorbed-locally` there should be
+none to find — agent work is absorbed locally and never opens one — so anything
+this enumeration finds is itself the finding.
 
 #### REQ: every-stream-verb-has-a-terminal-recovery
 
@@ -311,12 +312,102 @@ worktree on branch `stream/<name>` and open a **draft** pull request from it to
 state is always visible. The draft PR MUST NOT be marked ready by `start`; only
 landing does that.
 
-#### REQ: agent-branches-squash-into-the-stream
+#### REQ: agent-work-is-absorbed-locally
 
-Agents working inside a stream MUST branch from `stream/<name>` into their own
-worktrees, with claims exactly as today, and open pull requests **against the
-stream branch**, never against `main`. After review each agent PR MUST be landed
-with a **squash** merge by default.
+**There are no pull requests below the stream.** Agents working inside a stream
+branch from `stream/<name>` into their own worktrees, with claims exactly as
+today, and their work reaches the stream branch through a **local** verb:
+
+```sh
+wb stream absorb <agent-worktree>
+```
+
+`wb worktree merge --route stream` MUST be an alias of it. Absorb MUST rebase
+the agent branch onto the current stream branch, squash it to **one commit**
+carrying the aggregated message below, and MUST NOT push and MUST NOT open,
+update or merge a pull request.
+
+The only pull request per repository per stream is the **draft stream pull
+request** created by `wb stream start`, and it is pushed only on the triggers in
+`pushes-are-justified-and-counted`.
+
+The founder's framing, 2026-09-03: *"adopt the local model"*. Every agent pull
+request below the stream costs a push, a CI run, an API round trip and a review
+round on a branch nobody outside the stream will ever read. The work still gets
+reviewed — see `review-pins-a-local-head` — and it still lands as one reviewed
+commit; what disappears is the pull request that carried it.
+
+`wb pr land` remains the verb for pull requests whose base is `main`: the stream
+landing pull request, and any pull request in a repository with no open stream.
+
+#### REQ: review-pins-a-local-head
+
+**Phase:** P1
+
+A review below the stream has no pull request to hang on, so it hangs on the
+content. `wb review request` MUST pin a **local** head by its patch-identity set
+(`git patch-id --stable` over the reviewed range) and MUST create the reviewer's
+checkout from that local ref — so
+[`wb worktree review`](../worktree-lifecycle/README.md) MUST accept a local
+branch or commit as its source, not only a pull request number. `wb review
+record` MUST write the verdict to the event log; it MUST post a pull-request
+comment only where a pull request actually exists — the stream's draft pull
+request, or a pull request into `main`.
+
+The landing gate moves with the review: **`wb stream absorb` MUST refuse without
+a recorded `APPROVE` for the exact patch-identity set it is about to absorb**,
+naming `wb review request`. A content-identical rebase carries the approval
+forward, because the patch-identity set is unchanged; any content change
+invalidates it and requires a new round. A **mechanical bump** — a diff touching
+only dependency manifests and lockfiles, decided from the diff — skips the
+ledger check exactly as it does at `pr land`.
+
+#### REQ: pushes-are-justified-and-counted
+
+A push costs agent time, tokens, CI minutes and money, and ten dependency bumps
+pushed one at a time cost ten of each for one landing. The founder: *"push when
+we complete work or asked to park or at some major milestones … a push needs to
+be justified."*
+
+Dependency bumps MUST NEVER push individually. `wb stream sync` applies them as
+**local commits** in the stream worktree and runs the batch verification
+locally. Agent branches are the same: intermediate commits stay local, and
+`wb stream absorb` never pushes.
+
+A push MUST happen only on one of exactly **four named triggers**:
+
+1. **landing** — `wb deps propagate remote` or the stream landing, after a green
+   batch verification;
+2. **review** — the stream's draft pull request being made ready for review;
+3. **park** — `wb worktree end`, session park, or any hand-off where unpushed
+   work would otherwise be lost. `wb worktree end` MUST push with trigger `park`
+   before retiring a checkout that holds unpushed commits;
+4. **explicit** — `--push --reason "<text>"`, the only escape hatch, with the
+   reason **mandatory**.
+
+A push with no recognised trigger MUST be refused, listing the four. Every push
+MUST write an event carrying its trigger and reason, and `wb report stream` MUST
+count **pushes per stream** and **CI minutes per push**. The draft stream pull
+request's CI therefore runs only on those pushes; the workflow `concurrency`
+group is the second guard, not the first.
+
+#### REQ: stream-start-checks-a-load-floor
+
+**Phase:** P1
+
+`stream-speed-and-cpu-are-first-class` states this fleet's concurrency cap —
+three lanes, at most one Angular and at most two Go — as a MUST, and
+`caches-are-pruned-against-budgets-and-a-floor` gives `wb stream start` a disk
+floor. Neither measures **load**, so nothing stops a fourth lane starting on a
+saturated machine; and the wb suite was memory-killed twice at roughly 575 MB
+free while three lanes ran.
+
+`wb stream start` and `wb worktree create --mode agent` MUST read the 1-minute
+load average, the available memory, and the count of running verification
+processes (`go test`, vitest/nx workers), and MUST **refuse** — exit 2, naming
+the numbers and the cap — when starting another lane would exceed the cap, or
+when available memory is below a floor (default 1 GiB). `--force` MUST override
+with a reason recorded in the event log.
 
 #### REQ: the-squash-message-aggregates-the-source-commits
 
@@ -446,10 +537,11 @@ on 26 of the 28 audited product repositories, so the unwanted route is available
 in the UI and to any caller that does not go through wb.
 
 While a stream is open, [`wb worktree merge --route auto`](../mechanical-worktree-merge/README.md)
-MUST route an agent worktree of that stream to the **stream branch**, not to
-`main`. If an agent pull request is nonetheless found open against `main` while
-its repository has an open stream, WB MUST report it as misrouted, name the
-stream branch it belongs to, and MUST NOT merge it as part of stream work.
+MUST absorb an agent worktree of that stream into the **stream branch locally**
+(`wb stream absorb`), and MUST NOT open a pull request for it. If a pull request
+is nonetheless found open against `main` from an agent worktree while its
+repository has an open stream, WB MUST report it as misrouted, name the stream
+it belongs to, and MUST NOT merge it as part of stream work.
 
 #### REQ: dependency-bumps-are-commits-on-the-stream-branch
 
@@ -459,7 +551,8 @@ worktree** — it needs a checkout, because `go get` / `go mod tidy` and
 `pnpm install --lockfile-only` must run to update `go.sum` and `pnpm-lock.yaml`
 — and MUST produce **one commit per library**, subject-formatted to the
 repository's own convention (`fix(deps): <module> vX → vY`, or `chore(deps): …`
-where that is the repository's style), pushed to `stream/<name>`.
+where that is the repository's style), committed **locally** on `stream/<name>`.
+`pushes-are-justified-and-counted` forbids a push per bump.
 
 The batch is verified once under the batch-verification requirements, and on
 failure resolved by cumulative prefix re-apply over the bump commits.
@@ -470,8 +563,8 @@ so we do not create worktree for small deps changes."*
 **Exception, and it is the important half.** A bump that needs code adaptation is
 not a mechanical bump. When applying a bump breaks compilation, wb MUST stop,
 report the failing library and the break, and MUST NOT attempt to adapt the code.
-That becomes an **agent task on the stream** with its own worktree and a pull
-request into the stream branch, exactly like any other reviewed change.
+That becomes an **agent task on the stream** with its own worktree, reviewed and
+absorbed locally exactly like any other change on the stream.
 
 Repositories outside any stream are covered entirely by Renovate's independent
 daily path, unchanged.
@@ -1495,8 +1588,9 @@ what they tell an agent to do rather than merely adding to it:
   landing rather than an opt-in step.
 - **`wb-deps`** — local linking is the normal path and remote propagation is the
   end-of-stream wave; the current text describes only the remote half.
-- **`wb-merge`** — agent pull requests target the stream branch, landing is
-  rebase-and-merge, and a live link or an unapproved head is a refusal.
+- **`wb-merge`** — agent work is absorbed into the stream branch locally and
+  opens no pull request, landing the stream is rebase-and-merge, and a live link
+  or an unapproved patch set is a refusal.
 - A new **`wb-streams`** skill for the stream lifecycle itself, and a new
   **`wb-review`** skill for the review contract and ledger.
 
@@ -1543,6 +1637,65 @@ published version
 **When** the operator runs `wb stream status`
 **Then** all three conditions are reported separately and named per repository,
 and the report is produced from stream state after a session restart.
+
+### AC: a-stream-of-five-agents-opens-one-pull-request
+
+**Requirements:** dependency-streams#req:agent-work-is-absorbed-locally, dependency-streams#req:pushes-are-justified-and-counted
+
+**Given** one stream over one repository with five agents, each with a reviewed
+worktree
+**When** every agent's work is absorbed and the stream is landed
+**Then** exactly **one** pull request existed for that repository — the draft
+stream pull request — and **zero** pull requests were opened below the stream;
+the stream branch gained five commits, one per agent, each carrying the
+aggregated message naming its own source commits; and the pushes are only the
+ones a named trigger produced, each with its trigger recorded in the event log.
+
+### AC: absorb-refuses-without-an-approval-for-this-exact-patch-set
+
+**Requirements:** dependency-streams#req:review-pins-a-local-head
+
+**Given** an agent worktree whose work has not been reviewed, and a second whose
+patch-identity set has a recorded `APPROVE`
+**When** each is absorbed
+**Then** the first is refused naming `wb review request`; the second succeeds;
+the second still succeeds after a content-identical rebase, because the
+patch-identity set is unchanged; and it is refused as stale once its content
+changes.
+
+### AC: a-review-checkout-needs-no-pull-request
+
+**Requirements:** dependency-streams#req:review-pins-a-local-head, dependency-streams#req:reviews-use-a-tracked-review-checkout
+
+**Given** an agent branch that exists only locally
+**When** the reviewer runs `wb worktree review --from <local ref>`
+**Then** a tracked, claimed review checkout is created at that ref with no pull
+request anywhere, the review verdict is written to the event log, and no
+pull-request comment is attempted.
+
+### AC: ten-bumps-are-one-push-and-one-ci-run
+
+**Requirements:** dependency-streams#req:pushes-are-justified-and-counted, dependency-streams#req:batch-verifies-once
+
+**Given** ten dependency bumps applied by `wb stream sync`
+**When** the batch verification runs and passes
+**Then** the stream worktree holds ten local commits and **zero** pushes
+happened while the batch was unverified; landing produces exactly **one** push
+and **one** CI run; a `sync` with no trigger and no `--push` leaves the remote
+untouched and says so; and `--push` without `--reason` is refused, naming the
+four triggers.
+
+### AC: a-lane-is-refused-on-a-saturated-machine
+
+**Phase:** P1
+
+**Requirements:** dependency-streams#req:stream-start-checks-a-load-floor
+
+**Given** two `go test` runs already in flight on a four-core workstation
+**When** the operator runs `wb stream start` for a third Go-testing repository
+**Then** it is refused with exit 2, naming both running verifications, the
+load average, the available memory and the cap; with none running it proceeds;
+and `--force` proceeds with the reason recorded.
 
 ### AC: five-commits-land-as-three-with-the-aggregate-naming-the-rest
 
@@ -2231,13 +2384,14 @@ text be retained rather than deleted:
    under the new push profile and runs CI on the draft PR. **Revise the lesson to
    say so**, or "propagate at the end" will be misread as "push less".
 4. `l154` ("stop defaulting to Do NOT push") — its own prescribed remedy *is* the
-   stream. **Revise to cite this Feature**, distinguishing "push to the stream
-   branch" (encouraged) from "propagate" (batched, end-of-stream).
+   stream. **Revise to cite this Feature**, and to say that a push is now
+   justified by one of the four triggers in `pushes-are-justified-and-counted`
+   rather than by a default in either direction.
 5. `l51` (fail any PR touching `.github/workflows/` without a justification line)
-   — would add a per-PR gate to every stream that legitimately touches CI.
-   **Keep its push-early/draft-PR half** (already satisfied by
-   `stream-branch-with-draft-pr`) **and scope the justification-line proposal to
-   non-stream branches.**
+   — under `agent-work-is-absorbed-locally` there are no pull requests below the
+   stream for it to gate. **Scope the justification line to pull requests whose
+   base is `main`**: the stream landing pull request, and pull requests in
+   repositories with no open stream. There is nothing else for it to apply to.
 
 **Standing tension, not a contradiction:** `l10` (coverage floors are raised with
 real tests, never lowered to fit) and `l2` (a new test must be proven to fail
