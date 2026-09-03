@@ -7839,6 +7839,7 @@
                 "--parallel",
                 "--remote",
                 "--residue-depth",
+                "--session-freshness",
                 "--skip-detached",
                 "--skip-sizes",
                 "--superseded-by",
@@ -7856,8 +7857,8 @@
                 "Every refusal names a command that exists and works on that shape, decided from three-valued WB management: managed (WB wrote the manifest), unmanaged (the manifest does not validate), or unknown (no manifest). Absence of evidence is unknown, never unmanaged, so a checkout WB cannot identify is treated with the same care as one it owns",
                 "A dirty checkout is captured before anything is removed: a managed one names wb worktree abort, which seals the Work Log first, and every other one names only the git stash that preserves the changes \u2014 no removal is named at all, and the row warns that removing the checkout without the capture destroys them",
                 "A removal WB names for a checkout it does not own never carries --force, so Git itself refuses if the tree turns out to hold changes; the row additionally prints the git branch invocation that keeps an otherwise unreferenced detached commit",
-                "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported, and an applying sweep retires the husks, so the debris gc's own advice creates is seen on the next sweep instead of accumulating",
-                "A live session outranks a landed head: a checkout whose owner is alive is kept and names wb worktree end, because landed work is more likely to be mid-next-round, not less",
+                "The inventory's own lifecycle artifacts and the empty task husks a removal leaves are reported in the dry run and retired under --apply, scoped to the tasks the run selected, so the debris gc's own advice creates is planned before it is swept and a named-task run never sweeps the fleet on its behalf",
+                "A live session outranks a landed head: a checkout whose owner is alive AND touched it inside --session-freshness is kept and names wb worktree end. A live process id alone is not a heartbeat — ids are recycled — so an older owner is reported as stale in a warning and the checkout is classified on its own evidence rather than pinned open forever",
                 "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
                 "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
@@ -7966,6 +7967,26 @@
               "path": "internal/worktrees/gc_test.go",
               "name": "TestGCNamesARepositoryHeldBackByTheGraceWindow",
               "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCTreatsAStaleOwnerAsRecycledRatherThanAsAHeartbeat",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCPlansEmptyShellsAndScopesThemToTheNamedTask",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestWorktreeManagementSeparatesAbsentFromInvalid",
+              "kind": "unit"
             },
             {
               "path": "internal/diskusage/diskusage_test.go",

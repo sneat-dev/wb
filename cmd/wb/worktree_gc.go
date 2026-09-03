@@ -13,7 +13,7 @@ import (
 func newWorktreeGCCmd() *cobra.Command {
 	var base, format, supersededBy string
 	var apply, allowResidue, skipDetached, skipSizes, deleteRemote, verbose bool
-	var olderThan, ttl time.Duration
+	var olderThan, ttl, sessionFreshness time.Duration
 	var residueDepth, parallel int
 	command := &cobra.Command{
 		Use:   "gc [task...]",
@@ -41,7 +41,12 @@ Classes, each decided by evidence and printed with it:
   detached-unknown  detached with no landing association: refused
   open-pr           a pull request is still awaiting a decision: refused
   dirty             uncommitted changes: refused
-  claimed-live      a live operation or session holds it: refused
+  claimed-live      a live operation, or a session that touched it inside
+                    --session-freshness, holds it: refused. A live process id
+                    alone is not a heartbeat — ids are recycled — so an owner
+                    that has not touched the checkout inside that window is
+                    reported as stale and the checkout is classified on its own
+                    evidence
   unpushed          a head GitHub has never seen. This is the only class that
                     can lose work, so nothing ever retires it
   unmerged          pushed, not landed, no open pull request: refused
@@ -89,21 +94,22 @@ wb worktree gc --format json`,
 			progress := newInventoryProgress(command.ErrOrStderr(), verbose)
 			defer progress.finish()
 			outcome, err := worktrees.GC(command.Context(), worktrees.GCOptions{
-				ProjectsRoot: projectsRoot,
-				Tasks:        args,
-				Filter:       filterFlag,
-				Base:         base,
-				Apply:        apply,
-				AllowResidue: allowResidue,
-				SupersededBy: supersededBy,
-				SkipDetached: skipDetached,
-				OlderThan:    olderThan,
-				TTL:          ttl,
-				ResidueDepth: residueDepth,
-				Workers:      parallel,
-				SkipSizes:    skipSizes,
-				DeleteRemote: deleteRemote,
-				Progress:     progress.report,
+				ProjectsRoot:     projectsRoot,
+				Tasks:            args,
+				Filter:           filterFlag,
+				Base:             base,
+				Apply:            apply,
+				AllowResidue:     allowResidue,
+				SupersededBy:     supersededBy,
+				SkipDetached:     skipDetached,
+				OlderThan:        olderThan,
+				TTL:              ttl,
+				SessionFreshness: sessionFreshness,
+				ResidueDepth:     residueDepth,
+				Workers:          parallel,
+				SkipSizes:        skipSizes,
+				DeleteRemote:     deleteRemote,
+				Progress:         progress.report,
 			})
 			if err != nil {
 				return err
@@ -137,6 +143,8 @@ wb worktree gc --format json`,
 	command.Flags().StringVar(&base, "base", "main", "fallback origin target branch for candidates without a recorded one")
 	command.Flags().DurationVar(&olderThan, "older-than", 0, "keep a checkout whose pull request merged less than this ago")
 	command.Flags().DurationVar(&ttl, "ttl", 7*24*time.Hour, "report a checkout older than this as expired")
+	command.Flags().DurationVar(&sessionFreshness, "session-freshness", worktrees.DefaultSessionFreshness,
+		"how recently an owning session must have touched a checkout for its live process id to still mean it is in use")
 	command.Flags().IntVar(&residueDepth, "residue-depth", worktrees.DefaultResidueDepth, "how many commits back from HEAD to consult the commit-to-pull-request index")
 	command.Flags().IntVar(&parallel, "parallel", worktrees.DefaultInspectWorkers, "maximum repositories to inspect concurrently")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
@@ -201,10 +209,23 @@ func printWorktreeGC(command *cobra.Command, outcome worktrees.GCOutcome) error 
 			return err
 		}
 	}
+	shells := outcome.Totals["retired_shells"]
+	shellLabel := "empty shells retired"
+	if !outcome.Apply {
+		shells, shellLabel = outcome.Totals["eligible_shells"], "empty shells to retire"
+	}
+	for _, shell := range outcome.Shells {
+		if shell.Error == "" {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "shell %s %s: %s\n", shell.Task, shell.Path, shell.Error); err != nil {
+			return err
+		}
+	}
 	_, err := fmt.Fprintf(out,
-		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d empty shells retired; %s %s apparent / %s unshared\n",
+		"\n%d retired, %d eligible, %d kept, %d terminal artefacts purged, %d %s; %s %s apparent / %s unshared\n",
 		outcome.Totals["retired"], outcome.Totals["eligible"], outcome.Totals["refused"],
-		outcome.Totals["purged_artefacts"], outcome.Totals["retired_shells"], label,
+		outcome.Totals["purged_artefacts"], shells, shellLabel, label,
 		diskusage.Human(usage.ApparentBytes), diskusage.Human(usage.UnsharedBytes))
 	return err
 }

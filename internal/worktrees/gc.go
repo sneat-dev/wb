@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -73,6 +74,12 @@ type GCOptions struct {
 	OlderThan time.Duration
 	// TTL marks checkouts older than this expired in the report. Reporting only.
 	TTL time.Duration
+	// SessionFreshness is how recently an owning session must have touched a
+	// checkout for its live process id to still mean "in use". Beyond it the
+	// process id is presumed recycled and the checkout is classified on its own
+	// evidence, with the stale owner named in a warning. Zero uses
+	// DefaultSessionFreshness.
+	SessionFreshness time.Duration
 	// ResidueDepth bounds the commit-to-pull-request walk.
 	ResidueDepth int
 	Workers      int
@@ -139,8 +146,9 @@ type GCOutcome struct {
 	// husk a removal outside WB leaves behind. Omitting it made gc blind to
 	// exactly the debris its own advice creates.
 	Artifacts []LifecycleArtifact `json:"artifacts,omitempty"`
-	// RetiredShells records the empty task shells an applying sweep swept.
-	RetiredShells []RetiredShell `json:"retired_shells,omitempty"`
+	// Shells records the empty task shells this sweep found, planned in a dry
+	// run and retired under --apply.
+	Shells []RetiredShell `json:"shells,omitempty"`
 	// Reclaimable and Reclaimed are always both figures. An apparent size
 	// counts hard-linked bytes a deletion will not return; over one measured
 	// sweep that was 11.7 GB apparent against 5.9 GB unshared.
@@ -246,6 +254,14 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	if len(eligibleRoots) > 0 {
 		outcome.Reclaimable = walk.Total(eligibleRoots...)
 	}
+	// The husk a removal leaves — an empty <task>/<owner>/<repository> namespace
+	// with no checkout under it — is invisible to the inventory and would
+	// otherwise accumulate one directory per sweep, including the sweeps gc's
+	// own advice produces. It is reported in a dry run for the same reason
+	// everything else is: a plan that omits work the apply will do is not a plan.
+	if err := sweepTaskShells(ctx, options, &outcome); err != nil {
+		return outcome, err
+	}
 	if options.Apply {
 		if err := applyGC(ctx, options, &outcome); err != nil {
 			return outcome, err
@@ -258,20 +274,6 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		}
 		if len(appliedRoots) > 0 {
 			outcome.Reclaimed = walk.Total(appliedRoots...)
-		}
-		// The husk a removal leaves — an empty <task>/<owner>/<repository>
-		// namespace with no checkout under it — is invisible to the inventory
-		// and would otherwise accumulate one directory per sweep, including
-		// the sweeps gc's own advice produces.
-		shells, shellErr := RetireTaskShells(ctx, RetireShellsOptions{
-			ProjectsRoot: options.ProjectsRoot, Filter: options.Filter, Apply: true,
-		})
-		if shellErr == nil {
-			for _, shell := range shells.Results {
-				if shell.Applied {
-					outcome.RetiredShells = append(outcome.RetiredShells, shell)
-				}
-			}
 		}
 	}
 	summarizeGC(&outcome)
@@ -299,6 +301,9 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	if warning := renamedBranchWarning(result); warning != "" {
 		entry.Warnings = append(entry.Warnings, warning)
 	}
+	if warning := staleOwnerWarning(result, options, now); warning != "" {
+		entry.Warnings = append(entry.Warnings, warning)
+	}
 	entry.Management = worktreeManagement(result.WorktreeDir)
 	switch {
 	case !result.Clean:
@@ -309,13 +314,20 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassClaimedLive
 		entry.Reason = lockedReason(result, resumeInterruptedCommand(result.Task))
 		entry.SanctionedCommand = resumeInterruptedCommand(result.Task)
-	case result.OwnerState == "active":
+	case sessionIsFresh(result, options, now):
 		// Deliberately before every landed class: a checkout whose owning
 		// session is alive is being used right now, and the fact that its work
 		// already landed makes it more likely to be mid-next-round, not less.
 		// The session ends its own worktree; a sweep must not do it underneath.
+		//
+		// "Alive" is a live PID *and* a recent registration. A PID alone is not
+		// a heartbeat: process ids are recycled, and the first real sweep this
+		// verb ran found ten finished review checkouts — 4 to 17 hours old —
+		// every one of them reporting owner=active and therefore refusing.
+		// A stale owner must not be able to pin a checkout forever.
 		entry.Class = GCClassClaimedLive
-		entry.Reason = "a live session (" + result.Owner + ") still holds this checkout"
+		entry.Reason = "a live session (" + result.Owner + ") still holds this checkout, " +
+			"last seen " + humanAge(sessionAgeSeconds(result, now)) + " ago"
 		entry.SanctionedCommand = "wb worktree end " + result.Task
 	case result.OpenPullRequest != nil:
 		entry.Class = GCClassOpenPR
@@ -527,7 +539,13 @@ func summarizeGC(outcome *GCOutcome) {
 		}
 	}
 	outcome.Totals["purged_artefacts"] = len(outcome.Purged)
-	outcome.Totals["retired_shells"] = len(outcome.RetiredShells)
+	for _, shell := range outcome.Shells {
+		if shell.Applied {
+			outcome.Totals["retired_shells"]++
+			continue
+		}
+		outcome.Totals["eligible_shells"]++
+	}
 	outcome.Totals["artifacts"] = len(outcome.Artifacts)
 }
 
@@ -604,8 +622,15 @@ const (
 func worktreeManagement(worktree string) string {
 	manifest, err := ReadManifest(worktree)
 	switch {
-	case err != nil:
+	case errors.Is(err, errManifestNotFound):
+		// Nothing there at all: WB has no claim about this checkout, and the
+		// absence of a claim is not a claim that it is foreign.
 		return ManagementUnknown
+	case err != nil:
+		// A manifest that exists and will not read is positively wrong — a
+		// truncated write, a hand-edit, a replaced file — and that is a
+		// different fact from its absence.
+		return ManagementUnmanaged
 	case strings.TrimSpace(manifest.Repository) == "" || strings.TrimSpace(manifest.Worktree) == "":
 		return ManagementUnmanaged
 	default:
@@ -659,4 +684,90 @@ func detachedUnknownResolution(result ListResult, management string, warnings []
 		return "wb worktree adopt " + result.WorktreeDir, warnings
 	}
 	return "git -C " + result.CanonicalDir + " worktree remove " + result.WorktreeDir, warnings
+}
+
+// sweepTaskShells reports, and under --apply retires, the empty task
+// namespaces a removal leaves behind. It is scoped to the same tasks the sweep
+// itself selected: a caller acting on one named task must not have shells
+// retired across the fleet on its behalf, and an error here is a finding rather
+// than something to swallow.
+func sweepTaskShells(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
+	shells, err := RetireTaskShells(ctx, RetireShellsOptions{
+		ProjectsRoot: options.ProjectsRoot,
+		Filter:       options.Filter,
+		Tasks:        options.Tasks,
+		Apply:        options.Apply,
+	})
+	if err != nil {
+		return fmt.Errorf("sweep empty task shells: %w", err)
+	}
+	for _, shell := range shells.Results {
+		if !shell.Eligible && shell.Error == "" {
+			continue
+		}
+		outcome.Shells = append(outcome.Shells, shell)
+	}
+	return nil
+}
+
+// DefaultSessionFreshness is how long an owner registration keeps meaning "this
+// session is using the checkout". It is deliberately generous relative to a
+// lane's working rhythm and deliberately finite: an owner that has not touched
+// a worktree within it cannot be distinguished from a recycled process id, and
+// treating the two the same is how ten finished review checkouts pinned
+// themselves open for seventeen hours.
+const DefaultSessionFreshness = 90 * time.Minute
+
+// sessionIsFresh reports whether an owning session is both alive and recent.
+func sessionIsFresh(result ListResult, options GCOptions, now time.Time) bool {
+	if result.OwnerState != "active" {
+		return false
+	}
+	window := options.SessionFreshness
+	if window <= 0 {
+		window = DefaultSessionFreshness
+	}
+	seen := lastOwnerActivity(result)
+	if seen.IsZero() {
+		// No timestamp to judge by: keep the checkout. An unknown age is not a
+		// licence to remove someone's work.
+		return true
+	}
+	return now.Sub(seen) <= window
+}
+
+// lastOwnerActivity is when a live owner last recorded custody.
+func lastOwnerActivity(result ListResult) time.Time {
+	latest := time.Time{}
+	for _, owner := range result.Owners {
+		if owner.PIDStatus != "active" {
+			continue
+		}
+		if owner.At.After(latest) {
+			latest = owner.At
+		}
+	}
+	return latest
+}
+
+func sessionAgeSeconds(result ListResult, now time.Time) int64 {
+	seen := lastOwnerActivity(result)
+	if seen.IsZero() {
+		return 0
+	}
+	if age := now.Sub(seen); age > 0 {
+		return int64(age / time.Second)
+	}
+	return 0
+}
+
+// staleOwnerWarning names an owner whose process is alive but which has not
+// touched the checkout inside the freshness window, so a real session is never
+// silently ignored.
+func staleOwnerWarning(result ListResult, options GCOptions, now time.Time) string {
+	if result.OwnerState != "active" || sessionIsFresh(result, options, now) {
+		return ""
+	}
+	return "owner " + result.Owner + " has a live process id but has not touched this checkout for " +
+		humanAge(sessionAgeSeconds(result, now)) + "; treating the process id as recycled rather than as a heartbeat"
 }

@@ -2205,7 +2205,16 @@ func corroborateClaim(worktree, finalCommit string, projection workLogProjection
 		return err
 	}
 	branch, err := git(context.Background(), worktree, "branch", "--show-current")
-	if err != nil || branch != claim.Branch {
+	if err != nil {
+		return fmt.Errorf("read the live branch of %s: %w", worktree, err)
+	}
+	// A detached checkout has no branch to match. The claim records the branch
+	// the worktree was created on, and a review checkout leaves it behind by
+	// construction; refusing on the absent name asked an operator to
+	// `git branch -m` a HEAD that is not on a branch, which is not a recovery
+	// at all. The commit checks below are the whole proof in that case, and
+	// they are commit-based exactly as the landing rule requires.
+	if branch != "" && branch != claim.Branch {
 		// #183: the proven recovery is renaming the live branch back to the
 		// claim name. Landing evidence is commit-based (see corroborateClaim's
 		// own HEAD/base checks below and Cleanup's PR-containment proof), so a

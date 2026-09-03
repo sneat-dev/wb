@@ -799,3 +799,160 @@ func runGitTestOutput(t *testing.T, dir string, args ...string) string {
 	}
 	return string(output)
 }
+
+// S10: absence of a manifest and a manifest that will not read are different
+// facts, and only the second is a claim that the checkout is foreign.
+func TestWorktreeManagementSeparatesAbsentFromInvalid(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "management",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := worktreeManagement(created[0].WorktreeDir); got != ManagementManaged {
+		t.Fatalf("a WB-created checkout = %q, want managed", got)
+	}
+	bare := filepath.Join(t.TempDir(), "bare")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := worktreeManagement(bare); got != ManagementUnknown {
+		t.Fatalf("a checkout with no manifest = %q, want unknown", got)
+	}
+	manifest := filepath.Join(created[0].WorktreeDir, journalRootDirectory, journalLocalDirectory, manifestName)
+	if _, statErr := os.Stat(manifest); statErr != nil {
+		t.Fatalf("a created worktree must carry its manifest: %v", statErr)
+	}
+	if err := os.WriteFile(manifest, []byte("this: [is not: yaml\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := worktreeManagement(created[0].WorktreeDir); got != ManagementUnmanaged {
+		t.Fatalf("a manifest that will not read = %q, want unmanaged", got)
+	}
+}
+
+// S11 and S12: the shell sweep is scoped to the tasks the run selected, and a
+// dry run says what an apply would do.
+func TestGCPlansEmptyShellsAndScopesThemToTheNamedTask(t *testing.T) {
+	fixture := newGitFixture(t)
+	worktreesRoot := filepath.Join(fixture.home, "worktrees")
+	for _, task := range []string{"gc-shell-named", "gc-shell-other"} {
+		if err := os.MkdirAll(filepath.Join(worktreesRoot, task, "acme", "app"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installPerCommitPullRequestFixture(t, nil)
+
+	plan, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-shell-named"}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Totals["eligible_shells"] != 1 {
+		t.Fatalf("a dry run must state the shells an apply would retire: %#v", plan.Totals)
+	}
+	for _, shell := range plan.Shells {
+		if shell.Task != "gc-shell-named" {
+			t.Fatalf("the shell sweep reached outside the named task: %#v", shell)
+		}
+		if shell.Applied {
+			t.Fatalf("a dry run retired a shell: %#v", shell)
+		}
+	}
+
+	applied, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-shell-named"}, Apply: true, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Totals["retired_shells"] != 1 {
+		t.Fatalf("apply did not retire the planned shell: %#v", applied.Totals)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktreesRoot, "gc-shell-named")); !os.IsNotExist(statErr) {
+		t.Fatalf("named task shell survived: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(worktreesRoot, "gc-shell-other")); statErr != nil {
+		t.Fatalf("a task the run did not select was swept anyway: %v", statErr)
+	}
+}
+
+// A live process id is not a heartbeat: ids are recycled, and the first real
+// sweep this verb ran found ten finished review checkouts, four to seventeen
+// hours old, every one reporting owner=active and therefore refusing forever.
+func TestGCTreatsAStaleOwnerAsRecycledRatherThanAsAHeartbeat(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-stale-owner")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	if err := RecordCustody(result.WorktreeDir, "gc-stale-owner", "test", AgentIdentity{
+		AgentID: "lane-a", Model: "unknown", PID: os.Getpid(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inside the freshness window the session owns it, landed or not.
+	fresh, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-stale-owner"}, SkipSizes: true,
+		Now: func() time.Time { return time.Now().Add(time.Minute) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry := entryFor(t, fresh, "gc-stale-owner"); entry.Class != GCClassClaimedLive || entry.Eligible {
+		t.Fatalf("a checkout its session just touched = %#v, want it kept", entry)
+	}
+
+	// Past it, the same live process id means nothing, the landing evidence
+	// decides, and the stale owner is named rather than silently dropped.
+	stale, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-stale-owner"}, SkipSizes: true,
+		SessionFreshness: time.Minute,
+		Now:              func() time.Time { return time.Now().Add(4 * time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, stale, "gc-stale-owner")
+	if entry.Class != GCClassLandedClean || !entry.Eligible {
+		t.Fatalf("a landed checkout with a stale owner = %#v, want it classified on its own evidence", entry)
+	}
+	if len(entry.Warnings) == 0 || !strings.Contains(strings.Join(entry.Warnings, " "), "recycled") {
+		t.Fatalf("warnings = %#v, want the stale owner named", entry.Warnings)
+	}
+}
+
+// The first real sweep this verb ran found nine review checkouts it had proved
+// landed and then refused to retire, because the Work Log claim recorded the
+// branch the worktree was created on and a detached checkout has none. The
+// refusal told the operator to `git branch -m` a HEAD that is not on a branch.
+func TestGCRetiresAClaimedDetachedCheckoutWhoseClaimNamesABranch(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-claimed-detached")
+	// Detach the worktree at its own head, the way a review checkout is left.
+	gitTest(t, result.WorktreeDir, "checkout", "--detach", head)
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+
+	outcome, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-claimed-detached"}, Apply: true, SkipSizes: true,
+		SessionFreshness: time.Nanosecond,
+		Now:              func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, outcome, "gc-claimed-detached")
+	if entry.Class != GCClassDetachedReview || !entry.Applied {
+		t.Fatalf("entry = %#v, want a detached review checkout retired on its landing evidence", entry)
+	}
+	if entry.Error != "" {
+		t.Fatalf("a claim naming the branch the worktree was created on must not refuse a detached checkout: %s", entry.Error)
+	}
+	if _, statErr := os.Stat(result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("checkout survived: %v", statErr)
+	}
+}

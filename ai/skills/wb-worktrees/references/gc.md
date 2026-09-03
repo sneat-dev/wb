@@ -68,9 +68,10 @@ hand-written workaround, and a named command that fails on the shape it was
 named for is worse than no name at all.
 
 Two of these depend on whether WB created the checkout, which the row reports as
-`management`: **managed** (WB wrote its manifest), **unmanaged** (the manifest is
-there and does not validate), or **unknown** (no manifest at all — a checkout
-made with `git worktree add` or `gh pr checkout`). Absence of evidence is
+`management`: **managed** (WB wrote its manifest and it reads), **unmanaged**
+(a manifest is there and does not read or does not name its repository and
+worktree), or **unknown** (no manifest at all — a checkout made with
+`git worktree add` or `gh pr checkout`). Absence of evidence is
 `unknown`, never `unmanaged`, and an unknown checkout gets the same care as one
 WB owns: not knowing must never widen what the tool is willing to suggest.
 
@@ -85,7 +86,7 @@ evidence.
 | `dirty`, managed | `wb worktree abort <task> --apply` — seals the Work Log and captures the dirty bytes into a private archive before deleting anything |
 | `dirty`, unmanaged or unknown | the exact `git -C <path> stash push --include-untracked -m "wb gc <task>"` the row prints. That is the whole instruction: **no removal is named**, and the row's warning states that removing the checkout without the capture destroys the changes and nothing in WB can bring them back |
 | `claimed-live` — a live operation holds the task lock | `wb worktree cleanup <task> --resume-interrupted` once the operation is really dead |
-| `claimed-live` — a live session still owns it | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round |
+| `claimed-live` — a session that touched it inside `--session-freshness` still owns it | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round. A live process id **alone** is not a heartbeat — ids are recycled — so an owner that has not touched the checkout inside the window is reported as stale in a warning and the checkout is classified on its own evidence |
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
 | `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
@@ -135,6 +136,14 @@ The footer is **one accounting unit over the whole sweep**, not a sum of the
 rows. Two worktrees that link the same store file would otherwise have it
 counted twice in the apparent total and dropped from the unshared one, even
 though removing both does return its blocks.
+
+## Empty task husks
+
+Removing a checkout leaves an empty `<task>/<owner>/<repository>` namespace
+behind, including when the removal was one gc's own advice named. gc reports
+those in the dry run and retires them under `--apply`, scoped to the tasks the
+run selected — a named-task sweep never retires shells across the fleet on your
+behalf.
 
 ## Terminal artefacts
 
