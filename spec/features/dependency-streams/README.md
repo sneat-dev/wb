@@ -684,6 +684,38 @@ is only evidence. The proposal MUST link to the lessons corpus and follow its
 entry shape; the lessons-mining lane supplies `lessons-for-wb.md` as the
 integration point.
 
+#### REQ: every-verb-declares-its-manual-equivalent
+
+Every deterministic verb MUST declare its **manual equivalent**: the ordered list
+of `gh`, `git` or shell calls an agent would otherwise have made. `wb pr land`,
+for example, is *view → poll checks (one or more) → merge → verify → delete
+branch*.
+
+#### REQ: savings-are-recorded-per-invocation
+
+Each invocation MUST record `saved_tool_calls = equivalent calls − 1` and
+`saved_tokens_est` into the event log. The token estimate MUST be computed as
+**Σ bytes of the intermediate outputs the verb consumed on the agent's behalf ÷ 4,
+plus saved_calls × a per-verb call overhead**, and MUST be labelled an estimate
+wherever it is displayed. A wait MUST count each poll it absorbed, because
+absorbing a poll loop is the largest single saving these verbs make.
+
+#### REQ: savings-are-surfaced-in-three-places
+
+The same figures MUST appear in three surfaces and MUST reconcile: an
+interactive-mode footer line (`saved 4 tool calls, ~3.2k tokens`), suppressed
+under `--non-interactive`; `wb stats savings [--stream] [--since] [--format json]`
+with totals per verb, per stream and per repository; and the event-log fields, so
+`wb report stream` can draw a **cost avoided** series beside the cost curve.
+
+#### REQ: savings-estimates-are-calibrated-against-harness-truth
+
+`wb stats calibrate` MUST compare streams from before and after a verb existed,
+using the harness's real `tool_uses` and token figures (the shape recorded in
+`lane-reports.json`), and adjust the per-verb overhead table. Where a calibrated
+figure exists, reports MUST show **both** the estimate and the calibrated value
+rather than silently replacing one with the other.
+
 ### Worktree hygiene, disk, and caches
 
 The founder: *"We have a real problem with worktrees hygiene — always fight
@@ -731,6 +763,78 @@ not be discarded.
 The founder: *"maybe we do not clean wb work logs?"* — the answer this Feature
 gives is no, never, because deleting them destroys the analytics the stream
 exists to produce.
+
+#### REQ: terminal-artefacts-are-purged-unconditionally-and-silently
+
+An empty recognized `.wb-retired-stage-*` directory or a `.wb-retired-lock-*`
+file MUST be retired on any `wb worktree` read path, unconditionally, and MUST
+NOT be logged at `info` on every invocation. Measured on this workstation: 55
+empty stage directories and 63 lock files, together 220 KB, producing 55 `info:`
+lines before the table on **every** `wb worktree list`. Their removal is
+currently coupled to an unrelated success path — cleaning the task — so a task
+that is never cleanable keeps its artefacts forever.
+
+#### REQ: detached-review-checkouts-are-inventoried-and-removable
+
+A detached checkout MUST appear in `wb worktree list` and in `gc`'s plan, not be
+warned about and then dropped from the inventory. `gc` MUST classify
+`detached-review` (detached **and** HEAD is the head of, or associated with, a
+MERGED pull request) as eligible for removal, and `detached-unknown` as a refusal
+that prints the SHA and whether it exists on origin.
+
+This is the largest source of permanent worktree debt here: every pull-request
+review creates one, and today nothing in wb can ever remove one — the inventory
+showed 50 rows for 60 checkouts.
+
+#### REQ: landing-evidence-is-commit-based-not-name-based
+
+A branch renamed since its claim MUST NOT strand a task. When commit-based
+landing proof succeeds, a name mismatch MUST be a **warning on the receipt**, not
+a refusal. Refusing on a name check while the same output admits that landing
+evidence is commit-based asks the operator to rename a branch that no longer
+exists on origin, purely as ceremony.
+
+#### REQ: merged-with-residue-is-reported-as-such
+
+A worktree whose pull request is merged but which holds local commits past the
+merged head MUST be reported as **`landed + residue`**, listing the residual
+commits, rather than as a bare "awaiting push". It MUST be retirable under
+`--allow-residue` or the existing `--superseded-by` receipt. This was 7 of 11
+refusals in the measured sweep, all on demonstrably merged branches; the residue
+is the thing the operator needs to see.
+
+#### REQ: coordinated-tasks-retire-per-repository
+
+A task spanning several repositories MUST retire per repository and name the
+repositories left behind. Blocking all of them because one holds residue is
+correct for a *merge* and wrong for a *cleanup*.
+
+#### REQ: sizes-are-reported-apparent-and-unshared
+
+Every size wb reports MUST be given **twice — apparent and unshared** — because
+pnpm hard-links `node_modules` into its store: this workstation measured **11.7
+GB apparent against 4.4 GB real**. A reclaim figure that counts hard-linked bytes
+promises a saving it cannot deliver.
+
+The same measurement settles what `--share auto` is for: it is a **latency fix
+worth 3–6 minutes of CPU per install, not a disk fix**, and the spec must not
+claim otherwise.
+
+#### REQ: cache-prune-refuses-to-break-live-worktrees
+
+`wb cache prune` MUST refuse to prune the pnpm store while any live worktree
+hard-links into it — pruning it turns a cache reclaim into silent corruption of
+every frontend worktree on the machine. It MUST also refuse outright for
+`~/.wb/worklogs`, `~/.wb/sessions`, `~/.wb/parked-sessions` and `~/.wb/handoffs`,
+named in code as never-prunable rather than merely omitted from a default list.
+
+#### REQ: gc-refusals-never-escalate
+
+`wb worktree gc` MUST expose no force flag. `--allow-residue` and
+`--superseded-by` are the only widenings, and both MUST print the evidence they
+widen past. `unpushed` — a tip commit the commit→PR index does not know — MUST
+always refuse and say "never pushed" explicitly, because it is the only class
+that can lose work.
 
 ### Borrowed from the Orca benchmark
 
@@ -1125,6 +1229,82 @@ against their declared budgets; logs are untouched; and a subsequent
 `wb stream start` refuses while free space is below the floor, naming the
 command that reclaims it.
 
+### AC: exported-report-renders-offline
+
+**Requirements:** dependency-streams#req:report-stream-renders-an-animated-timeline
+
+**Given** a completed stream exported with `wb report export <stream>`
+**When** the file is dropped onto the web app, and separately the same stream is
+viewed through `wb serve`
+**Then** both render the same replay from the same versioned data contract, the
+dropped file is parsed in the browser with **no network requests**, and the local
+server mode works with the machine offline.
+
+### AC: a-published-snapshot-carries-no-redacted-string
+
+**Requirements:** dependency-streams#req:every-verb-appends-a-structured-event
+
+**Given** an event log containing a token-shaped string, an absolute home path,
+an email address and a hostname
+**When** the operator runs `wb report publish`
+**Then** the uploaded artifact contains no string matching any redaction pattern,
+visibility is whatever was chosen at publish time rather than a default, and the
+same redaction applies to `wb report export`.
+
+### AC: serve-refuses-a-token-less-request
+
+**Requirements:** dependency-streams#req:every-refusal-names-the-sanctioned-command
+
+**Given** `wb serve` running on a random port with a minted token
+**When** a request arrives without the token, and separately from an origin
+outside the allow-list
+**Then** both are refused, the listener is bound to `127.0.0.1` only, and the
+refusal names the sanctioned way to obtain the URL.
+
+### AC: pr-land-records-the-calls-it-absorbed
+
+**Requirements:** dependency-streams#req:every-verb-declares-its-manual-equivalent, dependency-streams#req:savings-are-recorded-per-invocation, dependency-streams#req:savings-are-surfaced-in-three-places
+
+**Given** a green pull request landed with `wb pr land`, where the manual
+equivalent is view → poll checks → merge → verify → delete branch
+**When** the verb completes in interactive mode
+**Then** the event records `saved_tool_calls` of at least 4 plus a
+`saved_tokens_est` labelled an estimate, each absorbed poll is counted, a footer
+line reports both; the same totals appear in `wb stats savings` and in
+`wb report stream`'s cost-avoided series; and the identical run under
+`--non-interactive` emits no footer while recording the same fields.
+
+### AC: hygiene-defects-do-not-recur
+
+**Requirements:** dependency-streams#req:terminal-artefacts-are-purged-unconditionally-and-silently, dependency-streams#req:detached-review-checkouts-are-inventoried-and-removable, dependency-streams#req:landing-evidence-is-commit-based-not-name-based, dependency-streams#req:merged-with-residue-is-reported-as-such, dependency-streams#req:coordinated-tasks-retire-per-repository
+
+**Given** a workstation carrying empty `.wb-retired-stage-*` directories and
+`.wb-retired-lock-*` files, a detached checkout at a merged pull request's head,
+a task whose branch was renamed after landing, a worktree merged but holding one
+residual local commit, and a three-repository task where one repository holds
+residue
+**When** the operator runs `wb worktree list` and then `wb worktree gc`
+**Then** the stage and lock artefacts are purged silently with no `info:` line
+per artefact; the detached checkout appears in the inventory and is classified
+`detached-review` and eligible; the renamed branch produces a warning on the
+receipt rather than a refusal; the residual worktree reports `landed + residue`
+and lists the residual commits; the two clean repositories of the coordinated
+task retire and the third is named; and no force flag exists anywhere in the
+output.
+
+### AC: sizes-and-cache-prune-tell-the-truth
+
+**Requirements:** dependency-streams#req:sizes-are-reported-apparent-and-unshared, dependency-streams#req:cache-prune-refuses-to-break-live-worktrees
+
+**Given** worktrees whose `node_modules` are hard-linked into the pnpm store,
+measuring 11.7 GB apparent and 4.4 GB unshared, and live worktrees referencing
+that store
+**When** the operator runs `wb disk` and then `wb cache prune`
+**Then** every size is reported both apparent and unshared, the reclaim footer
+counts only unshared bytes, pruning the pnpm store is refused while a live
+worktree hard-links into it, and `~/.wb/worklogs`, `~/.wb/sessions`,
+`~/.wb/parked-sessions` and `~/.wb/handoffs` are refused by name.
+
 ## Rehearse Integration
 
 Every acceptance criterion has a deterministic CLI, Git, filesystem, or process
@@ -1180,25 +1360,53 @@ suite runs, which is the property that matters.
 - Shipping `wb report stream --publish` (see Future work); this Feature specifies
   only the local report.
 
-## Future work — shareable stream replays
+## Future work — one data contract, four delivery modes
 
-Out of scope for this Feature; recorded because it changes what the event log is
-worth. The founder: *"That could become a killer feature … wb can upload those
-work logs and/or animated graph data to wb cloud (doesn't exist yet) or to
-private storage and open and show the graph snapshot or animation on
-wb.sneat.dev — this can be shareable … Think twitch for ai agent sessions."*
+A separate follow-up Feature, recorded here because it constrains the event
+schema this Feature does specify. The founder: *"My idea is that we upload and
+share log data and visualize at wb.sneat.dev. For local view wb can start server
+on localhost and provide data to wb.sneat.dev web app?"* — and *"Or user can
+upload manually report artefact?"*
 
-`wb report stream --publish` would upload a snapshot — or a live replay — to
-private storage first and a hosted `wb.sneat.dev` viewer later. Two constraints
-are already clear and belong on the record now, because they shape the event
-schema this Feature does specify:
+**One data contract.** A versioned **stream report** JSON — events plus derived
+metrics, the reference shape being
+`/home/ai/claude-parking/2026-09-02/stream-analytics/lane-reports.json` — is the
+single input to all four modes. The web app at `wb.sneat.dev` is a static site
+deployed like the other landings (Cloudflare) and versioned **with** the data
+contract. Redaction is identical in every mode.
 
-- **Redaction is a precondition, not a later feature.** Events carry repository
-  paths, branch names, worktree paths and verb output; a publish path MUST
-  redact secrets and local filesystem paths before anything leaves the machine.
-- **Private storage first, cloud second.** A shareable link is a disclosure
-  surface; the default MUST be private, and sharing MUST be an explicit act on a
-  named snapshot rather than a mode the stream runs in.
+Delivery order, cheapest and most private first:
+
+**(0) Export a file.** `wb report export <stream> [--format json|html]` writes
+**one** file: the redacted stream report, or a self-contained HTML replay of the
+shape of `stream-analytics/stream-timeline.html`. The user opens it directly, or
+drops it onto `wb.sneat.dev` ("Open a report": drag-and-drop or file picker),
+where it is parsed **in the browser** with no upload unless the user then chooses
+to publish. Sharing is sending the file. This mode needs no server and no
+account, which is why it ships first.
+
+**(1) Local server.** `wb serve [--port] [--open]` binds `127.0.0.1` only, mints
+a random token, and serves the report JSON plus a live SSE event stream from the
+stream's event log. The web app reads it via
+`?source=localhost:<port>#<token>`, with a CORS allow-list of exactly
+`https://wb.sneat.dev` and localhost, and
+`Access-Control-Allow-Private-Network: true` for Chrome's Private Network Access
+check. Because Safari and locked-down browsers may refuse a private-network
+request regardless, `--open` MUST also serve an **embedded copy** of the web app
+as an offline fallback. Nothing leaves the machine in this mode.
+
+**(2) Published snapshot.** `wb report publish` runs the redaction pass and
+uploads to **founder-owned private storage first** (bucket plus signed links; a
+wb cloud later), yielding `wb.sneat.dev/?snapshot=<id>`. Visibility — private
+link, unlisted, or public — is chosen at publish time, never inherited.
+
+**(3) Live relay.** `wb serve --publish` relays events to the cloud as they
+happen so viewers can follow on `wb.sneat.dev` — *"think twitch for AI agent
+sessions"*. It needs the cloud, so it is last.
+
+This supersedes the earlier one-line sharing note: the constraints that matter —
+redaction as a precondition, private storage before cloud — are unchanged, but
+they now attach to a contract rather than to a single command.
 
 ## Open Questions
 
