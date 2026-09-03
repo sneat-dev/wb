@@ -73,6 +73,7 @@ not created; read the report or the JSON envelope.`,
 	command.AddCommand(
 		newStreamStartCmd(),
 		newStreamJoinCmd(),
+		newStreamSyncCmd(),
 		newStreamStatusCmd(),
 		newStreamEndCmd(),
 		newStreamDeleteCmd(),
