@@ -656,6 +656,19 @@ Four exceptions MUST be first-class rather than worked around:
 4. **Escalation** — the verdict `BLOCKED-ON-FOUNDER`, recorded in the ledger with
    the question text. Escalation itself stays with the orchestrator.
 
+#### REQ: mechanical-bumps-are-not-reviewed
+
+A **mechanical bump** is a change whose diff touches **only** dependency
+manifests and lockfiles — `go.mod`, `go.sum`, `package.json` dependency fields,
+`pnpm-lock.yaml`, `pnpm-workspace.yaml`. A mechanical bump MUST NOT be reviewed:
+its gate is the batch verification, where green lands and red is bisected, and
+`wb pr land` MUST skip the review-ledger check for it.
+
+The classification MUST be decided **from the diff**, by wb, and never from the
+pull request's title, author or labels. Any source, test or configuration file in
+the diff reclassifies the change as one that needs the `dependency-bump` review
+family — because at that point it is no longer mechanical, whatever it is called.
+
 #### REQ: review-record-writes-the-ledger
 
 `wb review record <owner/repo#N> --verdict APPROVE|REJECT|APPROVE-WITH-UNVERIFIED
@@ -1486,6 +1499,19 @@ the handed-over case is distinguished from the abandoned one.
 **Then** it refuses, states that the approval was recorded for `A` and the head
 is `B`, and names the sanctioned next step (`wb review request … --round 2`);
 and `--override` lands only with a reason that is written to the ledger.
+
+### AC: a-bump-pr-that-touches-code-is-not-mechanical
+
+**Requirements:** dependency-streams#req:mechanical-bumps-are-not-reviewed, dependency-streams#req:landing-requires-an-approval-for-the-exact-head
+
+**Given** one pull request whose diff touches only `go.mod`, `go.sum` and
+`pnpm-lock.yaml`, and a second titled as a Renovate bump whose diff also edits a
+`.go` or `.ts` file
+**When** `wb pr land` runs on each
+**Then** the first lands on batch-verification evidence with no review-ledger
+check; the second is **refused without a recorded APPROVE**, is classified from
+its diff rather than its title, and is named as needing the `dependency-bump`
+review family.
 
 ### AC: briefs-are-generated-with-family-context-and-round-deltas
 
