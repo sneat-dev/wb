@@ -62,6 +62,11 @@ const (
 	EffortKindTask    = "task"
 )
 
+// PurposeReview marks a checkout created to review a pull request. It is a
+// manifest fact rather than a naming convention because a convention is
+// something the next caller can be unaware of.
+const PurposeReview = "review"
+
 var errManifestNotFound = errors.New("worktree manifest not found")
 
 var promptFileName = regexp.MustCompile(`^([0-9]{4})-[A-Za-z0-9][A-Za-z0-9._-]*\.md$`)
@@ -69,26 +74,32 @@ var promptFileName = regexp.MustCompile(`^([0-9]{4})-[A-Za-z0-9][A-Za-z0-9._-]*\
 // Manifest is written once, when the worktree is created, and never rewritten.
 // A later correction is appended to the journal rather than edited in place.
 type Manifest struct {
-	Version            int       `yaml:"version"`
-	EffortID           string    `yaml:"effort_id"`
-	ParentEffort       string    `yaml:"parent_effort,omitempty"`
-	EffortKind         string    `yaml:"effort_kind"`
-	Repository         string    `yaml:"repository"`
-	Worktree           string    `yaml:"worktree"`
-	Branch             string    `yaml:"branch"`
-	Base               string    `yaml:"base"`
-	BaseSHA            string    `yaml:"base_sha"`
-	CreatedAt          time.Time `yaml:"created_at"`
-	Initiator          string    `yaml:"initiator,omitempty"`
-	AgentID            string    `yaml:"agent_id,omitempty"`
-	AgentRuntime       string    `yaml:"agent_runtime,omitempty"`
-	Model              string    `yaml:"model,omitempty"`
-	CLI                string    `yaml:"cli,omitempty"`
-	Provider           string    `yaml:"provider,omitempty"`
-	DependencyCampaign bool      `yaml:"dependency_campaign,omitempty"`
-	RunID              string    `yaml:"run_id,omitempty"`
-	ClaimID            string    `yaml:"claim_id,omitempty"`
-	Provenance         string    `yaml:"provenance"`
+	Version      int       `yaml:"version"`
+	EffortID     string    `yaml:"effort_id"`
+	ParentEffort string    `yaml:"parent_effort,omitempty"`
+	EffortKind   string    `yaml:"effort_kind"`
+	Repository   string    `yaml:"repository"`
+	Worktree     string    `yaml:"worktree"`
+	Branch       string    `yaml:"branch"`
+	Base         string    `yaml:"base"`
+	BaseSHA      string    `yaml:"base_sha"`
+	CreatedAt    time.Time `yaml:"created_at"`
+	// Purpose is empty for ordinary feature work and PurposeReview for a
+	// checkout created to review a pull request. ReviewOf names that pull
+	// request, and TTLSeconds is how long the checkout is expected to be useful.
+	Purpose            string `yaml:"purpose,omitempty"`
+	ReviewOf           string `yaml:"review_of,omitempty"`
+	TTLSeconds         int64  `yaml:"ttl_seconds,omitempty"`
+	Initiator          string `yaml:"initiator,omitempty"`
+	AgentID            string `yaml:"agent_id,omitempty"`
+	AgentRuntime       string `yaml:"agent_runtime,omitempty"`
+	Model              string `yaml:"model,omitempty"`
+	CLI                string `yaml:"cli,omitempty"`
+	Provider           string `yaml:"provider,omitempty"`
+	DependencyCampaign bool   `yaml:"dependency_campaign,omitempty"`
+	RunID              string `yaml:"run_id,omitempty"`
+	ClaimID            string `yaml:"claim_id,omitempty"`
+	Provenance         string `yaml:"provenance"`
 
 	// InferredFields and Evidence are populated only for a reconstructed
 	// manifest, so a reader can see exactly which values were guessed and from
@@ -489,6 +500,9 @@ func writeCreationJournal(effort, run, claimID string, result CreateResult, opti
 		Base:         result.Base,
 		BaseSHA:      result.BaseSHA,
 		CreatedAt:    now,
+		Purpose:      strings.TrimSpace(options.Purpose),
+		ReviewOf:     strings.TrimSpace(options.ReviewOf),
+		TTLSeconds:   int64(options.TTL / time.Second),
 		Initiator:    strings.TrimSpace(options.Initiator),
 		AgentID:      strings.TrimSpace(options.AgentID),
 		AgentRuntime: strings.TrimSpace(options.AgentRuntime),

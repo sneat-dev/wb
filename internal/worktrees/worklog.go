@@ -89,6 +89,17 @@ type WorkLogOptions struct {
 	WBSessionID           string
 	OriginalPrompt        string // readable local file, copied to the private archive
 	RequireOriginalPrompt bool   // public create/recycle commands require exact local recovery input
+	// Purpose records what this checkout is for when it is not ordinary feature
+	// work. A review checkout is not a feature branch, and every verb that would
+	// otherwise offer to land it needs to know that from the immutable manifest
+	// rather than from a branch-name convention.
+	Purpose string
+	// ReviewOf is the pull request a review checkout was created for.
+	ReviewOf string
+	// TTL is how long this checkout is expected to stay useful. It is reporting
+	// only — nothing is removed because a clock elapsed — but without it nothing
+	// can tell an abandoned checkout from a paused one.
+	TTL time.Duration
 	// AcquiredVia records how this claim came to exist when it is not an
 	// ordinary `wb worktree create`. "adopted" marks a claim written for a
 	// pre-WB worktree by `wb worktree adopt`, so the claim itself — not just

@@ -66,6 +66,13 @@ type CreateOptions struct {
 	Base               string
 	Resume             bool
 	WorkLog            WorkLogOptions
+	// StartRevision creates the branch at this exact commit instead of at the
+	// freshly fetched base tip. It is for a checkout that must sit at a
+	// specific published commit — a pull request's head, for a review — and the
+	// caller must have fetched and verified it. Base still names the branch
+	// this work targets, because that is what every lifecycle check compares
+	// against.
+	StartRevision string
 	// beforeHomeDirectoryOpen is a test-only seam before WB opens or creates
 	// its resolved home hierarchy. It proves a substituted WB_HOME leaf cannot
 	// redirect the initial descriptor chain.
@@ -652,6 +659,12 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, branchErr
 		}
 		plan.result.Branch, plan.result.BaseSHA = branch, baseRevision
+		if normalized.StartRevision != "" {
+			// The branch starts at the caller's verified commit; Base keeps
+			// naming the target this work is measured against.
+			plan.baseRevision = normalized.StartRevision
+			plan.result.BaseSHA = normalized.StartRevision
+		}
 		plan.branchExists, err = localBranchExistsCanonical(ctx, plan.canonical, branch)
 		if err != nil {
 			return nil, err

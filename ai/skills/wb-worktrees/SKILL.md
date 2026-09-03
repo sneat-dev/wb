@@ -27,6 +27,10 @@ recognizes legacy linked worktrees there during migration.
   resume after interruption, or revert after a landed failure. This is the
   normal repeated counterpart to creation, not an exceptional release tool.
 - Read [guard.md](references/guard.md) to validate or recover a checkout.
+- Read [review.md](references/review.md) **before checking out a pull request to
+  review**. `wb worktree review <owner/repo>#<n>` creates the tracked, claimed,
+  TTL'd checkout; `gh pr checkout` creates one nothing in WB can ever retire,
+  and ten of those was the largest source of worktree debt on this fleet.
 - Read [gc.md](references/gc.md) when the request is "clean up worktrees", "the
   disk is full", or "what is safe to delete?" and you do not already know the
   one task to retire. `wb worktree gc` classifies every checkout by landing

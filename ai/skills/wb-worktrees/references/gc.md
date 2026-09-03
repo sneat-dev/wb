@@ -56,6 +56,7 @@ Exit codes: `0` nothing needed attention, `1` something was kept, `2` usage.
 | `claimed-live` | a live operation or session holds it | keep |
 | `unpushed` | GitHub's commit index has never seen this head | keep, always |
 | `unmerged` | pushed, not landed, no open pull request | keep |
+| `review` | a tracked review checkout (`wb worktree review`) whose pull request has not landed | keep until it lands, then retire |
 
 ## Refusals and what resolves each
 
@@ -90,7 +91,8 @@ evidence.
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
 | `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
-| `detached-unknown`, unmanaged or unknown | the exact `git -C <canonical> worktree remove <path>` the row prints — deliberately **without** `--force`, so Git itself refuses if the tree turns out to hold changes. The row also warns that the commit is unreferenced once the checkout is gone, and prints the `git branch` invocation that keeps it. `wb worktree rescue` refuses a linked worktree by design, and `wb worktree adopt` cannot reconstruct a manifest for a detached HEAD — naming either would hand you a command that fails. `wb worktree review` will close this gap by creating review checkouts tracked and claimed |
+| `review` — a tracked review checkout whose pull request has not landed | `wb worktree review end <task>` when the review is done. It is not unlanded work: it holds someone else's, and no landing verb is offered for it |
+| `detached-unknown`, unmanaged or unknown | the exact `git -C <canonical> worktree remove <path>` the row prints — deliberately **without** `--force`, so Git itself refuses if the tree turns out to hold changes. The row also warns that the commit is unreferenced once the checkout is gone, and prints the `git branch` invocation that keeps it. `wb worktree rescue` refuses a linked worktree by design, and `wb worktree adopt` cannot reconstruct a manifest for a detached HEAD — naming either would hand you a command that fails. `wb worktree review` creates review checkouts tracked and claimed, which is how this shape stops being produced |
 | `unpushed` — the head was never pushed | `wb worktree merge <task> --route auto` to land it. **Nothing retires this class**; it is the only one that can lose work |
 | `unmerged` — pushed but not landed, or the landing walk hit `--residue-depth` | `wb worktree merge <task> --route auto`, or rerun with a larger `--residue-depth` when the row says the walk was truncated |
 

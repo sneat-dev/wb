@@ -52,6 +52,7 @@ func newWorktreeCmd() *cobra.Command {
 	}{
 		{newWorktreeCreateCmd(), "start"},
 		{newWorktreeAdoptCmd(), "start"},
+		{newWorktreeReviewCmd(), "start"},
 		{newWorktreeMergeCmd(), "finish"},
 		{newWorktreeEndCmd(), "finish"},
 		{newWorktreeCleanupCmd(), "finish"},

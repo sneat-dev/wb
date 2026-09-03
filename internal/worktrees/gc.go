@@ -43,6 +43,10 @@ const (
 	GCClassUnpushed = "unpushed"
 	// GCClassUnmerged is pushed, not landed, and has no open pull request.
 	GCClassUnmerged = "unmerged"
+	// GCClassReview is a tracked review checkout whose pull request is still
+	// open. It is kept, but it is not unlanded work and must never be offered
+	// to a landing verb.
+	GCClassReview = "review"
 )
 
 // GCOptions controls one garbage-collection pass. Dry run is the default:
@@ -333,6 +337,17 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassClaimedLive
 		entry.Reason = inUseReason(result, now)
 		entry.SanctionedCommand = "wb worktree end " + result.Task
+	case result.Purpose == PurposeReview && !result.IntegratedAtOrigin:
+		// A review checkout holds someone else's work, so "not landed" says
+		// nothing about it. It is finished when its pull request is, which the
+		// landed classes below decide.
+		entry.Class = GCClassReview
+		entry.Reason = "tracked review checkout of " + result.ReviewOf + ", whose pull request has not landed yet"
+		entry.SanctionedCommand = "wb worktree review end " + result.Task
+		if result.Expired {
+			entry.Warnings = append(entry.Warnings,
+				"this review checkout has outlived its declared TTL; if the review is done, end it")
+		}
 	case result.OpenPullRequest != nil:
 		entry.Class = GCClassOpenPR
 		entry.Reason = "pull request is still open: " + result.OpenPullRequest.URL

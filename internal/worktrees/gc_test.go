@@ -1207,3 +1207,68 @@ func TestNegativeSessionFreshnessDisablesRatherThanInverts(t *testing.T) {
 		t.Fatal("an unset window keeps the safe default")
 	}
 }
+
+// A tracked review checkout holds someone else's work, so "not landed" says
+// nothing about it: it is finished when what it reviews is. gc must not offer
+// it to a landing verb, and must retire it once that work lands.
+func TestGCClassifiesATrackedReviewCheckoutAndRetiresItOnceItsSubjectLands(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "review-acme-app-7",
+		Branch: "review/acme-app-7", BranchChosen: true,
+		WorkLog: WorkLogOptions{
+			Model: "unknown", Purpose: PurposeReview, ReviewOf: "acme/app#7", TTL: time.Hour,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A review checkout sits at the head it reviews, which is by construction
+	// not yet in the target.
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "reviewed.txt"), []byte("under review\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, created[0].WorktreeDir, "add", "reviewed.txt")
+	gitTest(t, created[0].WorktreeDir, "commit", "-m", "work under review")
+	head := gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: openPullRequestPayload(t, 7, head),
+	})
+
+	open, err := GC(context.Background(), GCOptions{
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"review-acme-app-7"}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, open, "review-acme-app-7")
+	if entry.Class != GCClassReview || entry.Eligible {
+		t.Fatalf("entry = %#v, want a kept review row rather than unlanded work", entry)
+	}
+	if entry.SanctionedCommand != "wb worktree review end review-acme-app-7" {
+		t.Fatalf("sanctioned command = %q", entry.SanctionedCommand)
+	}
+	if !strings.Contains(entry.Reason, "acme/app#7") {
+		t.Fatalf("reason = %q, want it to name what is being reviewed", entry.Reason)
+	}
+
+	// The work lands: the checkout's head reaches the target and the review
+	// checkout retires itself without the reviewer having to remember it.
+	gitTest(t, fixture.canonical, "merge", "--ff-only", "review/acme-app-7")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 7, head, head, time.Now().Add(-time.Hour)),
+	})
+	landed, err := GC(context.Background(), GCOptions{
+		SessionFreshness: DisableSessionFreshness,
+		ProjectsRoot:     fixture.projectsRoot, Tasks: []string{"review-acme-app-7"}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	landedEntry := entryFor(t, landed, "review-acme-app-7")
+	if landedEntry.Class == GCClassReview || !landedEntry.Eligible {
+		t.Fatalf("entry = %#v, want the review checkout eligible once its subject landed", landedEntry)
+	}
+}

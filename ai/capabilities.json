@@ -11074,6 +11074,166 @@
       "notes": "Preserving and discarding are separate decisions on purpose. git stash is deliberately unused: its stack is shared with every linked worktree, and git stash create omits untracked files, which is exactly the content most at risk. The clean that --restore runs omits -x so ignored paths, including WB's own generated marker, survive."
     },
     {
+      "id": "wb.worktree.review",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree review",
+              "flags": [
+                "--agent",
+                "--agent-runtime",
+                "--cli",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--model",
+                "--provider",
+                "--sha",
+                "--task",
+                "--ttl"
+              ],
+              "modes": [
+                "Creates the review checkout through the ordinary worktree creation path, so it arrives with an immutable manifest, a Work Log claim, an owner, a TTL and the fleet-wide remote claim — everything a checkout made with gh pr checkout lacks and cannot acquire",
+                "The checkout sits on a local branch at the pull request's head, never a detached HEAD: detached is the one shape no WB verb can retire, and creating one deliberately would reproduce the defect this verb removes",
+                "The task name and branch are derived from the pull request, so a second reviewer of the same pull request collides with the first rather than creating an indistinguishable second checkout",
+                "The manifest records purpose=review and the pull request, so the inventory classifies it as review rather than as unlanded work and no landing verb is offered for it",
+                "A pull request that is not open is refused, naming --sha as the deliberate way to review a head it no longer has",
+                "The originating instruction is the pull request itself, so no --original-prompt-file is required: making the tracked path harder than the untracked one is what produced the debt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree review --help",
+              "contains": [
+                "--sha",
+                "tracked",
+                "detached HEAD",
+                "wb worktree review end"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/review.md",
+              "marker": "# Review a pull request in a tracked checkout",
+              "examples": [
+                "wb worktree review acme/app#41 --sha 4f2a1c9"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_review_test.go",
+              "name": "TestCreateReviewWorktreeProducesATrackedCheckout",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_review_test.go",
+              "name": "TestCreateReviewWorktreeRefusesAClosedPullRequestWithoutASHA",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_review_test.go",
+              "name": "TestReviewIdentityIsDerivedAndStable",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCClassifiesATrackedReviewCheckoutAndRetiresItOnceItsPullRequestLands",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Closes the measured largest source of permanent worktree debt: every pull-request review used to create a detached checkout WB could neither see nor retire, and one sweep found ten of them, four to seventeen hours old, every pull request already merged."
+    },
+    {
+      "id": "wb.worktree.review.end",
+      "feature_refs": [
+        "spec/features/dependency-streams/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree review end",
+              "flags": [
+                "--apply",
+                "--format"
+              ],
+              "modes": [
+                "Dry-run plan is the default; --apply removes the checkout",
+                "Removes the checkout even when it is dirty, after capturing the uncommitted bytes into the private Work Log archive: a review leaves scratch files, and that must never be the reason a checkout survives forever",
+                "It is the ordinary abort transaction under the review's own name — the same audited seal, the same durable capture, the same claim release"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree review end --help",
+              "contains": [
+                "--apply",
+                "even when it is dirty",
+                "private Work Log archive"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/review.md",
+              "marker": "## Finish",
+              "examples": [
+                "wb worktree review end review-<owner>-<repo>-<n> --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_review_test.go",
+              "name": "TestReviewEndRetiresADirtyReviewCheckout",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Named separately from wb worktree abort because a reviewer looking for how to finish a review will not think to look for abort, and a verb an agent cannot discover is a verb that does not exist."
+    },
+    {
       "id": "wb.worktree.set",
       "feature_refs": [
         "spec/features/work-log/README.md"

@@ -312,6 +312,12 @@ type ListResult struct {
 	// "in use" is decided from, because a live process id is evidence about a
 	// process and the question is about a worktree.
 	LastActivityAt time.Time `json:"last_activity_at,omitempty"`
+	// Purpose is the manifest's record of what this checkout is for. A review
+	// checkout carries PurposeReview, and ReviewOf names what it reviews, so
+	// every verb that would otherwise offer to land it can tell that it is not
+	// feature work without reading a branch name.
+	Purpose  string `json:"purpose,omitempty"`
+	ReviewOf string `json:"review_of,omitempty"`
 	// Landing is the commit-identity landing evidence for a head that is not
 	// itself contained in the target: the merged pull request of an ancestor,
 	// plus the local commits stacked on top of it. A squash merge produces
@@ -2727,7 +2733,17 @@ func inspectLifecycleWorktree(
 // disk filled.
 func applyWorktreeAge(result *ListResult, worktree string, policy inspectPolicy) {
 	result.Owner = worktreeOwnerName(result.Owners, result.OwnerState)
-	if manifest, err := ReadManifest(worktree); err == nil && !manifest.CreatedAt.IsZero() {
+	manifest, manifestErr := ReadManifest(worktree)
+	if manifestErr == nil {
+		result.Purpose = strings.TrimSpace(manifest.Purpose)
+		result.ReviewOf = strings.TrimSpace(manifest.ReviewOf)
+		if manifest.TTLSeconds > 0 && policy.ttl <= 0 {
+			// A checkout that declared its own expected lifetime is judged
+			// against that rather than against a fleet-wide default.
+			policy.ttl = time.Duration(manifest.TTLSeconds) * time.Second
+		}
+	}
+	if manifestErr == nil && !manifest.CreatedAt.IsZero() {
 		result.CreatedAt = manifest.CreatedAt.UTC()
 	} else if info, statErr := os.Stat(worktree); statErr == nil {
 		// A checkout WB did not create — an adopted or hand-made one — still
