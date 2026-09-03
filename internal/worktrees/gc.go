@@ -56,6 +56,14 @@ type GCOptions struct {
 	// AllowResidue retires a checkout whose work landed but which holds local
 	// commits past the landed head, discarding exactly those commits.
 	AllowResidue bool
+	// SupersededBy is a path to an explicit trusted-reviewer supersession
+	// receipt, for an intentionally split branch whose original head never
+	// landed as one unit. It is the second of the two widenings the Feature
+	// names, and like the first it skips no proof: the receipt must bind the
+	// exact source and target heads, classify every residual, and carry a
+	// trusted approving actor, all of which the cleanup transaction verifies.
+	// It is named-task only and never participates in a fleet sweep.
+	SupersededBy string
 	// SkipDetached leaves detached checkouts out of the sweep entirely. The
 	// default is to include them, because excluding them is the defect.
 	SkipDetached bool
@@ -81,12 +89,16 @@ type GCOptions struct {
 
 // GCEntry is one classified checkout with the evidence behind its class.
 type GCEntry struct {
-	Task              string           `json:"task"`
-	Repository        string           `json:"repository"`
-	WorktreeDir       string           `json:"worktree_dir"`
-	WorktreesRoot     string           `json:"worktrees_root"`
-	Branch            string           `json:"branch,omitempty"`
-	Detached          bool             `json:"detached,omitempty"`
+	Task          string `json:"task"`
+	Repository    string `json:"repository"`
+	WorktreeDir   string `json:"worktree_dir"`
+	WorktreesRoot string `json:"worktrees_root"`
+	Branch        string `json:"branch,omitempty"`
+	Detached      bool   `json:"detached,omitempty"`
+	// Managed records whether WB created this checkout and holds a Work Log for
+	// it. It decides which command a refusal can honestly name: WB will not
+	// delete uncommitted work it never recorded.
+	Managed           bool             `json:"managed"`
 	HeadSHA           string           `json:"head_sha"`
 	RemoteHeadSHA     string           `json:"remote_head_sha,omitempty"`
 	Class             string           `json:"class"`
@@ -158,6 +170,9 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 	if options.Now != nil {
 		now = options.Now
 	}
+	if strings.TrimSpace(options.SupersededBy) != "" && len(options.Tasks) != 1 {
+		return GCOutcome{}, fmt.Errorf("--superseded-by names one trusted receipt for one task; supply exactly one task")
+	}
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot:    options.ProjectsRoot,
 		Tasks:           options.Tasks,
@@ -183,10 +198,22 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		Diagnostics:   listed.Diagnostics,
 		Totals:        map[string]int{},
 	}
+	// One accounting unit for the whole sweep. Summing per-worktree figures
+	// double-counts every pnpm store file two worktrees both link to, and
+	// under-reports the blocks that come back when both are removed.
+	walk := diskusage.NewWalk()
+	for index := range listed.Results {
+		// The receipt is verified, never trusted: applySupersessionReceipt
+		// re-reads the bound source and target heads and records a rejection
+		// the classification below turns into a refusal.
+		if err := applySupersessionReceipt(ctx, options.SupersededBy, &listed.Results[index]); err != nil {
+			return GCOutcome{}, err
+		}
+	}
 	for _, result := range listed.Results {
 		entry := classifyForGC(result, options, now())
 		if entry.Eligible && !options.SkipSizes {
-			if usage, measureErr := diskusage.Measure(ctx, result.WorktreeDir); measureErr == nil {
+			if usage, measureErr := walk.Measure(ctx, result.WorktreeDir); measureErr == nil {
 				entry.Size = usage
 			}
 		}
@@ -198,15 +225,28 @@ func GC(ctx context.Context, options GCOptions) (GCOutcome, error) {
 		}
 		return outcome.Entries[i].Task < outcome.Entries[j].Task
 	})
+	eligibleRoots := make([]string, 0, len(outcome.Entries))
 	for index := range outcome.Entries {
 		if !outcome.Entries[index].Eligible {
 			continue
 		}
-		outcome.Reclaimable = outcome.Reclaimable.Add(outcome.Entries[index].Size)
+		eligibleRoots = append(eligibleRoots, outcome.Entries[index].WorktreeDir)
+	}
+	if len(eligibleRoots) > 0 {
+		outcome.Reclaimable = walk.Total(eligibleRoots...)
 	}
 	if options.Apply {
 		if err := applyGC(ctx, options, &outcome); err != nil {
 			return outcome, err
+		}
+		appliedRoots := make([]string, 0, len(outcome.Entries))
+		for index := range outcome.Entries {
+			if outcome.Entries[index].Applied {
+				appliedRoots = append(appliedRoots, outcome.Entries[index].WorktreeDir)
+			}
+		}
+		if len(appliedRoots) > 0 {
+			outcome.Reclaimed = walk.Total(appliedRoots...)
 		}
 	}
 	summarizeGC(&outcome)
@@ -234,16 +274,20 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 	if warning := renamedBranchWarning(result); warning != "" {
 		entry.Warnings = append(entry.Warnings, warning)
 	}
+	entry.Managed = worktreeIsWBManaged(result.WorktreeDir)
 	switch {
 	case !result.Clean:
 		entry.Class = GCClassDirty
-		entry.Reason = "worktree has local changes"
-		entry.SanctionedCommand = "wb worktree abort " + result.Task + " --apply"
+		entry.Reason, entry.SanctionedCommand = dirtyResolution(result, entry.Managed)
 	case result.Locked:
 		entry.Class = GCClassClaimedLive
 		entry.Reason = lockedReason(result, resumeInterruptedCommand(result.Task))
 		entry.SanctionedCommand = resumeInterruptedCommand(result.Task)
-	case result.OwnerState == "active" && !result.IntegratedAtOrigin:
+	case result.OwnerState == "active":
+		// Deliberately before every landed class: a checkout whose owning
+		// session is alive is being used right now, and the fact that its work
+		// already landed makes it more likely to be mid-next-round, not less.
+		// The session ends its own worktree; a sweep must not do it underneath.
 		entry.Class = GCClassClaimedLive
 		entry.Reason = "a live session (" + result.Owner + ") still holds this checkout"
 		entry.SanctionedCommand = "wb worktree end " + result.Task
@@ -251,14 +295,28 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassOpenPR
 		entry.Reason = "pull request is still open: " + result.OpenPullRequest.URL
 		entry.SanctionedCommand = "wb worktree merge " + result.Task + " --route auto"
+	case result.SupersessionRejection != "":
+		entry.Class = GCClassUnmerged
+		entry.Reason = "trusted supersession receipt refused: " + result.SupersessionRejection
+		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --superseded-by <receipt.json>"
+	case result.SupersededAtOrigin:
+		entry.Class = GCClassLandedClean
+		entry.Eligible = true
+		entry.Reason = "retired on the trusted supersession receipt " + result.SupersessionReceipt +
+			" approved by " + result.SupersessionReviewer
 	case result.Detached && result.IntegratedAtOrigin:
 		entry.Class = GCClassDetachedReview
 		entry.Eligible = true
-		entry.Reason = "detached review checkout of a landed pull request"
+		entry.Reason = detachedReviewReason(result)
 	case result.Detached:
 		entry.Class = GCClassDetachedUnknown
 		entry.Reason = detachedRefusal(result)
-		entry.SanctionedCommand = "wb worktree rescue " + result.WorktreeDir
+		// abort is the audited alternative to deleting an unfinished checkout:
+		// it seals the Work Log and keeps a bounded private capture of the
+		// bytes before anything is removed. It is named here rather than
+		// rescue, which exists for the shared canonical clone and refuses a
+		// linked worktree by design.
+		entry.SanctionedCommand = detachedUnknownResolution(result, entry.Managed)
 	case result.IntegratedAtOrigin && result.AbsorbedAtOrigin:
 		entry.Class = GCClassLandedClean
 		entry.Eligible = true
@@ -267,6 +325,12 @@ func classifyForGC(result ListResult, options GCOptions, now time.Time) GCEntry 
 		entry.Class = GCClassContained
 		entry.Eligible = true
 		entry.Reason = "head is contained in the fetched origin target"
+	case result.Landing != nil && result.Landing.Truncated:
+		entry.Class = GCClassUnmerged
+		entry.Reason = "the landing walk reached its --residue-depth bound without finding a landed ancestor, " +
+			"so this checkout is unclassified rather than proved unlanded"
+		entry.SanctionedCommand = "wb worktree gc " + result.Task + " --residue-depth " +
+			fmt.Sprint(2*residueDepthOrDefault(options.ResidueDepth))
 	case result.landedWithResidue():
 		entry.Class = GCClassLandedResidue
 		entry.Eligible = options.AllowResidue
@@ -348,9 +412,12 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 	for index := range outcome.Entries {
 		entry := &outcome.Entries[index]
 		if !entry.Eligible {
-			if entry.Class != GCClassContained && entry.Class != GCClassLandedClean {
-				left[entry.Task] = append(left[entry.Task], entry.Repository)
-			}
+			// Every repository this pass did not retire is one the operator
+			// must be told about, whatever kept it: a coordinated task that
+			// retires two of three repositories has to name the third, and
+			// keying that on the class silently dropped the ones held back by
+			// the merge-grace window.
+			left[entry.Task] = append(left[entry.Task], entry.Repository)
 			continue
 		}
 		cleanupOutcome, err := Cleanup(ctx, CleanupOptions{
@@ -360,6 +427,7 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 			Base:            options.Base,
 			Apply:           true,
 			AllowResidue:    options.AllowResidue,
+			SupersededBy:    options.SupersededBy,
 			IncludeDetached: !options.SkipDetached,
 			OlderThan:       options.OlderThan,
 			TTL:             options.TTL,
@@ -393,12 +461,12 @@ func applyGC(ctx context.Context, options GCOptions, outcome *GCOutcome) error {
 			continue
 		}
 		retired[entry.Task] = append(retired[entry.Task], entry.Repository)
-		outcome.Reclaimed = outcome.Reclaimed.Add(entry.Size)
 	}
 	for task, repositories := range retired {
 		if len(left[task]) == 0 {
 			continue
 		}
+		sort.Strings(left[task])
 		outcome.PartialTasks = append(outcome.PartialTasks, GCPartialTask{
 			Task: task, Retired: repositories, LeftAlone: left[task],
 		})
@@ -467,4 +535,73 @@ func humanAge(seconds int64) string {
 	default:
 		return fmt.Sprintf("%dd", seconds/86400)
 	}
+}
+
+// detachedReviewReason states what decided the class. "Review checkout" is an
+// inference about intent; containment is the fact, and a reader deciding
+// whether to trust a removal needs the fact.
+func detachedReviewReason(result ListResult) string {
+	switch {
+	case result.MergedPullRequest != nil:
+		return "detached checkout at the head of merged pull request " + result.MergedPullRequest.URL
+	case result.AbsorbedAtOrigin:
+		return "detached checkout whose head landed at " + shortSHA(result.AbsorbedBySHA) + " by receipt"
+	default:
+		return "detached checkout whose head is contained in the fetched origin target"
+	}
+}
+
+func residueDepthOrDefault(depth int) int {
+	if depth <= 0 {
+		return DefaultResidueDepth
+	}
+	return depth
+}
+
+// worktreeIsWBManaged reports whether WB created this checkout. The immutable
+// manifest is written once, at creation, so its presence is the fact; a
+// checkout made with `git worktree add` or `gh pr checkout` has none.
+func worktreeIsWBManaged(worktree string) bool {
+	manifest, err := ReadManifest(worktree)
+	return err == nil && strings.TrimSpace(manifest.Repository) != ""
+}
+
+// dirtyResolution names the command that actually resolves a dirty checkout,
+// which depends on whether WB has a Work Log to seal for it. `wb worktree
+// abort` captures the uncommitted bytes into that private archive before
+// deleting anything, and refuses outright without one — correctly, because WB
+// must not delete work it never recorded. Naming abort for an unrecorded
+// checkout would hand the operator a command that fails on the exact shape it
+// was named for.
+func dirtyResolution(result ListResult, managed bool) (reason, command string) {
+	if managed {
+		return "worktree has local changes", "wb worktree abort " + result.Task + " --apply"
+	}
+	return "worktree has local changes and WB holds no Work Log claim for it — this checkout was not created by WB, " +
+			"so nothing here will delete changes it never recorded",
+		unmanagedRemovalCommand(result)
+}
+
+// detachedUnknownResolution names the command for a detached checkout with no
+// landing association. A WB-created one is sealed and discarded by abort; one
+// WB never created has no Work Log to seal, and `wb worktree adopt` cannot
+// reconstruct a manifest for a detached HEAD, so naming either would repeat the
+// defect this rule exists to prevent. Until `wb worktree review` creates review
+// checkouts as tracked, claimed ones — dependency-streams
+// REQ reviews-use-a-tracked-review-checkout — the honest sanctioned command for
+// that shape is Git's own, named exactly.
+func detachedUnknownResolution(result ListResult, managed bool) string {
+	if managed {
+		return "wb worktree abort " + result.Task + " --disposition discarded --apply"
+	}
+	return unmanagedRemovalCommand(result)
+}
+
+func unmanagedRemovalCommand(result ListResult) string {
+	if !result.Detached && result.Branch != "" {
+		// A branch checkout can be brought under WB management, after which
+		// every WB verb applies to it normally.
+		return "wb worktree adopt " + result.WorktreeDir
+	}
+	return "git -C " + result.CanonicalDir + " worktree remove --force " + result.WorktreeDir
 }

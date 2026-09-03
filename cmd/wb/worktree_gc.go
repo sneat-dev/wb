@@ -11,7 +11,7 @@ import (
 )
 
 func newWorktreeGCCmd() *cobra.Command {
-	var base, format string
+	var base, format, supersededBy string
 	var apply, allowResidue, skipDetached, skipSizes, deleteRemote, verbose bool
 	var olderThan, ttl time.Duration
 	var residueDepth, parallel int
@@ -51,10 +51,12 @@ cleanup transaction — the same descriptor-anchored guards, the same durable Wo
 Log seal and receipt — one repository at a time, so a coordinated task retires
 per repository and names the repositories it left behind.
 
-There is deliberately no force flag. --allow-residue is the only widening, and
-it prints the evidence it widens past. Work Logs and event logs are never touched:
-they are the evidence base for every WB report and are small enough that keeping
-them costs nothing.
+There is deliberately no force flag. --allow-residue and --superseded-by are the
+only two widenings, and both print the evidence they widen past: --allow-residue
+lists the commits it is about to discard, and --superseded-by names the receipt
+and the reviewer who approved it, after re-verifying every head the receipt
+binds. Work Logs and event logs are never touched: they are the evidence base
+for every WB report and are small enough that keeping them costs nothing.
 
 Empty .wb-retired-stage-* directories and inert .wb-retired-lock-* files are
 purged unconditionally and silently on any worktree read path, gc included, and
@@ -93,6 +95,7 @@ wb worktree gc --format json`,
 				Base:         base,
 				Apply:        apply,
 				AllowResidue: allowResidue,
+				SupersededBy: supersededBy,
 				SkipDetached: skipDetached,
 				OlderThan:    olderThan,
 				TTL:          ttl,
@@ -127,6 +130,7 @@ wb worktree gc --format json`,
 	}
 	command.Flags().BoolVar(&apply, "apply", false, "retire eligible checkouts instead of planning")
 	command.Flags().BoolVar(&allowResidue, "allow-residue", false, "also retire a landed checkout holding local commits past the landed head, discarding them")
+	command.Flags().StringVar(&supersededBy, "superseded-by", "", "retire one named task on an explicit trusted-reviewer supersession receipt")
 	command.Flags().BoolVar(&skipDetached, "skip-detached", false, "leave detached checkouts out of the sweep entirely")
 	command.Flags().BoolVar(&skipSizes, "skip-sizes", false, "do not measure disk usage of eligible checkouts")
 	command.Flags().BoolVar(&deleteRemote, "remote", false, "also delete an unchanged source branch on origin")

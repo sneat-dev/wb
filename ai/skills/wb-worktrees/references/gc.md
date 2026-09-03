@@ -49,7 +49,7 @@ Exit codes: `0` nothing needed attention, `1` something was kept, `2` usage.
 | `contained` | head is in the freshly fetched origin target | retire |
 | `landed-clean` | landed by receipt: squash, rebase, or absorbed by an integration branch | retire |
 | `landed-residue` | landed, plus local commits past the landed head | retire **only** with `--allow-residue` |
-| `detached-review` | detached at a landed pull request's head | retire |
+| `detached-review` | detached, and its head is contained in the target or named by a merged pull request — the row says which | retire |
 | `detached-unknown` | detached, no landing association | keep |
 | `open-pr` | a pull request is still open | keep |
 | `dirty` | uncommitted changes | keep |
@@ -62,20 +62,35 @@ Exit codes: `0` nothing needed attention, `1` something was kept, `2` usage.
 Every kept row prints its reason and the exact command that satisfies it. Run
 that command; do not work around the refusal with raw Git.
 
+Every refusal names a command that **exists and works on the shape it was named
+for**. That is the whole point: a refusal an agent cannot resolve becomes a
+hand-written workaround, and a named command that fails on the shape it was
+named for is worse than no name at all.
+
+Two of these depend on whether WB created the checkout, which the row reports as
+`managed`. WB will not delete uncommitted work it never recorded, so a checkout
+made with `git worktree add` or `gh pr checkout` gets a different — and
+working — next step from one `wb worktree create` made.
+
 | Refusal | Sanctioned next step |
 | --- | --- |
-| `dirty` — the checkout has local changes | `wb worktree abort <task> --apply` (captures the dirty bytes durably first), or finish and land the work |
+| `dirty`, managed | `wb worktree abort <task> --apply` — seals the Work Log and captures the dirty bytes into a private archive before deleting anything |
+| `dirty`, not managed | `wb worktree adopt <path>` for a branch checkout; for a detached one, the exact `git -C <canonical> worktree remove --force <path>` the row prints. `wb worktree abort` would refuse: there is no Work Log to seal |
 | `claimed-live` — a live operation holds the task lock | `wb worktree cleanup <task> --resume-interrupted` once the operation is really dead |
-| `claimed-live` — a live session still owns it | `wb worktree end <task>` from that session |
+| `claimed-live` — a live session still owns it | `wb worktree end <task>` from that session. This outranks a landed head: a session sitting in a landed worktree is usually mid-next-round |
 | `open-pr` — the pull request is still open | `wb worktree merge <task> --route auto` |
 | `landed-residue` — landed, holding local commits | `wb worktree gc <task> --allow-residue --apply`, after reading the residual commits it lists |
-| `detached-unknown` — detached with no landing | `wb worktree rescue <path>` to put the content on a branch |
+| `detached-unknown`, managed | `wb worktree abort <task> --disposition discarded --apply` |
+| `detached-unknown`, not managed | the exact `git -C <canonical> worktree remove --force <path>` the row prints. `wb worktree rescue` refuses a linked worktree by design, and `wb worktree adopt` cannot reconstruct a manifest for a detached HEAD — naming either would hand you a command that fails. `wb worktree review` will close this gap by creating review checkouts tracked and claimed |
 | `unpushed` — the head was never pushed | `wb worktree merge <task> --route auto` to land it. **Nothing retires this class**; it is the only one that can lose work |
-| `unmerged` — pushed but not landed | `wb worktree merge <task> --route auto` |
+| `unmerged` — pushed but not landed, or the landing walk hit `--residue-depth` | `wb worktree merge <task> --route auto`, or rerun with a larger `--residue-depth` when the row says the walk was truncated |
 
 There is **no force flag**, and asking for one is the wrong move.
-`--allow-residue` is the only widening, it skips no proof, and it prints the
-commits it is about to discard before discarding them.
+`--allow-residue` and `--superseded-by` are the only two widenings; neither
+skips a proof. `--allow-residue` prints the commits it is about to discard;
+`--superseded-by <receipt.json>` names one trusted-reviewer receipt for one
+named task, and every head that receipt binds is re-verified before anything is
+retired.
 
 ## Residue
 
@@ -107,6 +122,11 @@ Every size is reported **apparent and unshared**, because pnpm hard-links
 GB unshared, and only the unshared figure comes back when the tree is deleted.
 The reclaim footer counts unshared bytes only. Pass `--skip-sizes` to skip the
 measurement entirely.
+
+The footer is **one accounting unit over the whole sweep**, not a sum of the
+rows. Two worktrees that link the same store file would otherwise have it
+counted twice in the apparent total and dropped from the unshared one, even
+though removing both does return its blocks.
 
 ## Terminal artefacts
 

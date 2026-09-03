@@ -33,9 +33,8 @@ type Usage struct {
 	Files         int64 `json:"files"`
 }
 
-// Add sums two measurements. Summing per-tree measurements is exact only when
-// the trees do not share inodes with each other; callers that need a shared
-// figure across trees measure their common root instead.
+// Add sums two measurements. Summing per-tree measurements is only exact when
+// the trees share no inodes with each other; use a Walk when they might.
 func (u Usage) Add(other Usage) Usage {
 	return Usage{
 		ApparentBytes: u.ApparentBytes + other.ApparentBytes,
@@ -50,7 +49,9 @@ type inodeKey struct {
 	inode  uint64
 }
 
-type inodeRecord struct {
+// seenInode is one inode as one tree saw it: its size and blocks, how many
+// links the filesystem says exist, and how many of them this tree holds.
+type seenInode struct {
 	size   int64
 	blocks int64
 	links  uint64
@@ -62,8 +63,12 @@ type inodeRecord struct {
 // caller sweeping a fleet must not fail because one path was already removed.
 // Unreadable subdirectories are skipped rather than fatal, for the same reason.
 func Measure(ctx context.Context, root string) (Usage, error) {
-	usage := Usage{}
-	multi := map[inodeKey]*inodeRecord{}
+	usage, _, err := measure(ctx, root)
+	return usage, err
+}
+
+func measure(ctx context.Context, root string) (Usage, map[inodeKey]*seenInode, error) {
+	inodes := map[inodeKey]*seenInode{}
 	walkErr := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -87,30 +92,28 @@ func Measure(ctx context.Context, root string) (Usage, error) {
 		if stat.Mode&unix.S_IFMT != unix.S_IFREG {
 			return nil
 		}
-		usage.Files++
-		blocks := stat.Blocks * 512
-		if stat.Nlink <= 1 {
-			usage.ApparentBytes += stat.Size
-			usage.UnsharedBytes += blocks
-			return nil
-		}
 		key := inodeKey{device: uint64(stat.Dev), inode: stat.Ino}
-		record, known := multi[key]
-		if !known {
-			multi[key] = &inodeRecord{size: stat.Size, blocks: blocks, links: uint64(stat.Nlink), seen: 1}
+		if record, known := inodes[key]; known {
+			record.seen++
 			return nil
 		}
-		record.seen++
+		links := uint64(stat.Nlink)
+		if links == 0 {
+			links = 1
+		}
+		inodes[key] = &seenInode{size: stat.Size, blocks: stat.Blocks * 512, links: links, seen: 1}
 		return nil
 	})
 	if walkErr != nil {
 		if errors.Is(walkErr, os.ErrNotExist) {
-			return Usage{}, nil
+			return Usage{}, map[inodeKey]*seenInode{}, nil
 		}
-		return Usage{}, fmt.Errorf("measure %s: %w", root, walkErr)
+		return Usage{}, nil, fmt.Errorf("measure %s: %w", root, walkErr)
 	}
-	for _, record := range multi {
+	usage := Usage{}
+	for _, record := range inodes {
 		usage.ApparentBytes += record.size
+		usage.Files += int64(record.seen)
 		if record.seen >= record.links {
 			// Every link to this inode is inside the tree, so removing the tree
 			// removes the last link and the blocks come back.
@@ -119,7 +122,87 @@ func Measure(ctx context.Context, root string) (Usage, error) {
 		}
 		usage.SharedBytes += record.size
 	}
+	return usage, inodes, nil
+}
+
+// Walk measures several trees as one accounting unit.
+//
+// Summing per-tree measurements is wrong across a fleet, and wrong in both
+// directions. Two worktrees that hard-link the same pnpm store file each report
+// its apparent size, so the total double-counts it; and when the only links to
+// a file live in two measured worktrees, each tree calls it shared with
+// something outside itself, so the total under-reports what removing both would
+// return. A Walk answers the question a reclaim footer is actually asking —
+// "how much comes back if I remove all of these?" — by counting every inode
+// once and treating it as unshared exactly when every link to it is inside the
+// selected set.
+type Walk struct {
+	inodes map[inodeKey]*walkRecord
+}
+
+type walkRecord struct {
+	size   int64
+	blocks int64
+	links  uint64
+	// roots counts how many links to this inode each measured tree holds.
+	roots map[string]uint64
+}
+
+// NewWalk starts an accounting unit.
+func NewWalk() *Walk { return &Walk{inodes: map[inodeKey]*walkRecord{}} }
+
+// Measure measures one tree and records it in the walk. The returned Usage is
+// that tree on its own, exactly as Measure reports it; the cross-tree figures
+// come from Total.
+func (w *Walk) Measure(ctx context.Context, root string) (Usage, error) {
+	usage, inodes, err := measure(ctx, root)
+	if err != nil {
+		return Usage{}, err
+	}
+	if w.inodes == nil {
+		w.inodes = map[inodeKey]*walkRecord{}
+	}
+	for key, seen := range inodes {
+		record, known := w.inodes[key]
+		if !known {
+			record = &walkRecord{size: seen.size, blocks: seen.blocks, links: seen.links, roots: map[string]uint64{}}
+			w.inodes[key] = record
+		}
+		record.roots[root] += seen.seen
+	}
 	return usage, nil
+}
+
+// Total reports what removing the named measured trees would reclaim. With no
+// roots it covers every tree the walk measured.
+func (w *Walk) Total(roots ...string) Usage {
+	selected := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		selected[root] = true
+	}
+	usage := Usage{}
+	for _, record := range w.inodes {
+		held := uint64(0)
+		present := false
+		for root, count := range record.roots {
+			if len(selected) != 0 && !selected[root] {
+				continue
+			}
+			present = true
+			held += count
+		}
+		if !present {
+			continue
+		}
+		usage.ApparentBytes += record.size
+		usage.Files += int64(held)
+		if held >= record.links {
+			usage.UnsharedBytes += record.blocks
+			continue
+		}
+		usage.SharedBytes += record.size
+	}
+	return usage
 }
 
 // Human renders a byte count for a terminal. It is deliberately coarse: these

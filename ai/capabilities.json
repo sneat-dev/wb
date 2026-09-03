@@ -7240,6 +7240,7 @@
                 "--residue-depth",
                 "--skip-detached",
                 "--skip-sizes",
+                "--superseded-by",
                 "--ttl",
                 "--verbose"
               ],
@@ -7250,7 +7251,11 @@
                 "A detached review checkout at a landed pull request's head is eligible; a detached head with no landing association is refused and says whether origin has the commit at all",
                 "A landed branch holding local commits past the landed head is reported as landed + residue with those commits listed, and is retirable only under --allow-residue",
                 "A branch renamed since its claim produces a warning on the receipt rather than a refusal, because landing evidence is commit-based",
-                "No force flag exists; --allow-residue is the only widening and it prints the evidence it widens past",
+                "No force flag exists; --allow-residue and --superseded-by are the only two widenings and both print the evidence they widen past — the residual commits, or the receipt and the reviewer after every bound head is re-verified",
+                "Every refusal names a command that exists and works on that shape, decided from whether WB created the checkout: a WB-created one names wb worktree abort, which now inventories detached checkouts and seals a private capture of their bytes first, while one WB never created names wb worktree adopt or the exact git worktree remove invocation, because abort has no Work Log to seal and adopt cannot reconstruct a manifest for a detached HEAD",
+                "A live session outranks a landed head: a checkout whose owner is alive is kept and names wb worktree end, because landed work is more likely to be mid-next-round, not less",
+                "A landing walk that hits its --residue-depth bound is reported as unclassified with a larger depth named, never silently as unlanded",
+                "The reclaim footer is one accounting unit over the whole sweep, so a store file two worktrees both link is counted once and is unshared exactly when every link to it is inside the retired set",
                 "Removal is delegated to the ordinary cleanup transaction, one repository at a time, so a coordinated task retires per repository and names the repositories left behind",
                 "An unpushed head is never retired by any flag: it is the only class that can lose work",
                 "Work Logs and event logs are never deleted",
@@ -7336,6 +7341,31 @@
             {
               "path": "internal/worktrees/gc_test.go",
               "name": "TestGCHasNoForceShapedOption",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCKeepsAClaimedLiveCheckoutEvenWhenItsWorkLanded",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/gc_test.go",
+              "name": "TestGCNamesARepositoryHeldBackByTheGraceWindow",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/diskusage/diskusage_test.go",
+              "name": "TestWalkCountsAnInodeSharedBetweenTwoTreesExactlyOnce",
               "kind": "unit"
             },
             {

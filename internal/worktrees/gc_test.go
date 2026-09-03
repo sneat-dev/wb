@@ -3,7 +3,9 @@ package worktrees
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -411,5 +413,257 @@ func TestGCHasNoForceShapedOption(t *testing.T) {
 				t.Fatalf("GCOptions.%s is a force-shaped widening", value.Field(index).Name)
 			}
 		}
+	}
+}
+
+// M1: a refusal must name a command that exists AND works on the shape it was
+// named for. This executes the sanctioned command for a detached checkout with
+// no landing association, on exactly that shape, and requires it to succeed.
+func TestGCDetachedUnknownSanctionedCommandActuallyRetiresThatShape(t *testing.T) {
+	fixture := newGitFixture(t)
+	base := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "unreviewed.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "unreviewed.txt")
+	gitTest(t, fixture.canonical, "commit", "-m", "unreviewed")
+	detachedHead := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "reset", "--hard", base)
+	const task = "gc-detached-sanctioned"
+	reviewDir := filepath.Join(fixture.home, "worktrees", task, "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "--detach", reviewDir, detachedHead)
+	installPerCommitPullRequestFixture(t, nil, detachedHead)
+
+	plan, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, plan, task)
+	if entry.Class != GCClassDetachedUnknown || entry.Eligible {
+		t.Fatalf("entry = %#v", entry)
+	}
+	// This checkout was made with `git worktree add --detach`, exactly as a
+	// pull-request review makes one, so WB holds no Work Log for it and must
+	// not name a wb verb that would refuse.
+	if entry.Managed {
+		t.Fatalf("entry = %#v, want it recognised as one WB did not create", entry)
+	}
+	if strings.Contains(entry.SanctionedCommand, "wb worktree rescue") ||
+		strings.Contains(entry.SanctionedCommand, "wb worktree adopt") {
+		t.Fatalf("sanctioned command = %q, but rescue refuses a linked worktree and adopt refuses a detached HEAD",
+			entry.SanctionedCommand)
+	}
+	// Run exactly what the refusal names, on exactly this shape.
+	if err := runSanctionedCommand(t, entry.SanctionedCommand); err != nil {
+		t.Fatalf("the command a refusal names must work on the shape it names it for: %v", err)
+	}
+	if _, statErr := os.Stat(reviewDir); !os.IsNotExist(statErr) {
+		t.Fatalf("detached checkout survived its own sanctioned command: %v", statErr)
+	}
+
+	// A WB-created checkout keeps the audited path: abort seals its Work Log
+	// and captures its bytes before anything is removed.
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "gc-managed-abort",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedPlan, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-managed-abort"}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedEntry := entryFor(t, managedPlan, "gc-managed-abort")
+	if !managedEntry.Managed {
+		t.Fatalf("a WB-created checkout must be recognised as managed: %#v", managedEntry)
+	}
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "gc-managed-abort",
+		Disposition: AbortDiscarded, Apply: true, DeleteRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("abort on a WB-created checkout: %v", err)
+	}
+	if len(results) != 1 || !results[0].Applied || !results[0].WorktreeGone {
+		t.Fatalf("abort = %#v", results)
+	}
+	_ = created
+}
+
+// M2: the same requirement for the `dirty` class, on the hardest shape — a
+// checkout that is both dirty and detached, which the inventory used to drop.
+func TestGCDirtySanctionedCommandWorksOnADirtyDetachedCheckout(t *testing.T) {
+	fixture := newGitFixture(t)
+	head := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	const task = "gc-dirty-detached"
+	worktree := filepath.Join(fixture.home, "worktrees", task, "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "--detach", worktree, head)
+	if err := os.WriteFile(filepath.Join(worktree, "wip.txt"), []byte("in progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installPerCommitPullRequestFixture(t, nil, head)
+
+	plan, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, plan, task)
+	if entry.Class != GCClassDirty || entry.Eligible || entry.Managed {
+		t.Fatalf("a dirty detached checkout = %#v, want a refused, unmanaged dirty row", entry)
+	}
+	// WB never created this checkout, so it holds no Work Log to seal and
+	// `wb worktree abort` would refuse the dirty capture. Naming abort here
+	// would hand the operator a command that fails on the exact shape it was
+	// named for, which is the defect this rule exists to prevent.
+	if strings.Contains(entry.SanctionedCommand, "wb worktree abort") {
+		t.Fatalf("sanctioned command = %q, but abort cannot seal a checkout WB never recorded", entry.SanctionedCommand)
+	}
+	if !strings.Contains(entry.Reason, "no Work Log claim") {
+		t.Fatalf("reason = %q, want it to say why WB will not delete this", entry.Reason)
+	}
+	// Prove the named command works on this exact shape.
+	if err := runSanctionedCommand(t, entry.SanctionedCommand); err != nil {
+		t.Fatalf("the command a refusal names must work on the shape it names it for: %v", err)
+	}
+	if _, statErr := os.Stat(worktree); !os.IsNotExist(statErr) {
+		t.Fatalf("dirty detached checkout survived its own sanctioned command: %v", statErr)
+	}
+
+	// And abort remains correct on the managed dirty shape it IS named for.
+	managed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "gc-dirty-managed",
+		WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managed[0].WorktreeDir, "wip.txt"), []byte("in progress\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managedPlan, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-dirty-managed"}, SkipSizes: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managedEntry := entryFor(t, managedPlan, "gc-dirty-managed")
+	if !managedEntry.Managed || managedEntry.SanctionedCommand != "wb worktree abort gc-dirty-managed --apply" {
+		t.Fatalf("managed dirty entry = %#v", managedEntry)
+	}
+	results, err := Abort(context.Background(), AbortOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "gc-dirty-managed",
+		Disposition: AbortDiscarded, Apply: true, DeleteRemote: true,
+	})
+	if err != nil {
+		t.Fatalf("abort on the managed dirty checkout it is named for: %v", err)
+	}
+	if len(results) != 1 || !results[0].Applied || results[0].DirtyCapture == nil {
+		t.Fatalf("abort on a managed dirty checkout = %#v", results)
+	}
+}
+
+// runSanctionedCommand executes a printed sanctioned command literally, the way
+// an operator or an agent would paste it. Only the git form is executable from
+// here; a wb form is exercised through its own package entry point.
+func runSanctionedCommand(t *testing.T, command string) error {
+	t.Helper()
+	fields := strings.Fields(command)
+	if len(fields) == 0 || fields[0] != "git" {
+		t.Fatalf("not an executable sanctioned command: %q", command)
+	}
+	run := exec.Command(fields[0], fields[1:]...)
+	if output, err := run.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s: %v\n%s", command, err, output)
+	}
+	return nil
+}
+
+// S2: a live session outranks a landed head. Its work having landed makes it
+// more likely to be mid-next-round, not less.
+func TestGCKeepsAClaimedLiveCheckoutEvenWhenItsWorkLanded(t *testing.T) {
+	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-live-owner")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+	if err := RecordCustody(result.WorktreeDir, "gc-live-owner", "test", AgentIdentity{
+		AgentID: "lane-a", Model: "unknown", PID: os.Getpid(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	outcome, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-live-owner"}, SkipSizes: true,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, outcome, "gc-live-owner")
+	if entry.Class != GCClassClaimedLive || entry.Eligible {
+		t.Fatalf("entry = %#v, want a landed checkout kept because its session is live", entry)
+	}
+	if entry.SanctionedCommand != "wb worktree end gc-live-owner" {
+		t.Fatalf("sanctioned command = %q", entry.SanctionedCommand)
+	}
+}
+
+// S3: a repository the grace window held back is still a repository left
+// behind, and a coordinated task has to name it.
+func TestGCNamesARepositoryHeldBackByTheGraceWindow(t *testing.T) {
+	fixture, _, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-grace")
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+
+	outcome, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{"gc-grace"}, SkipSizes: true,
+		OlderThan: 24 * time.Hour,
+		Now:       func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, outcome, "gc-grace")
+	if entry.Eligible || !strings.Contains(entry.Reason, "safety window") {
+		t.Fatalf("entry = %#v, want it held back by the grace window", entry)
+	}
+	if !strings.Contains(entry.SanctionedCommand, "--older-than 0") {
+		t.Fatalf("sanctioned command = %q", entry.SanctionedCommand)
+	}
+	if outcome.Refused() != 1 {
+		t.Fatalf("a checkout held back by the window is a refusal: %#v", outcome.Totals)
+	}
+}
+
+// S1: the detached-review label must be justified by what decided it.
+func TestGCDetachedReviewRowNamesTheEvidenceThatDecidedIt(t *testing.T) {
+	fixture, _, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "gc-review-evidence-source")
+	const task = "gc-review-evidence"
+	reviewDir := filepath.Join(fixture.home, "worktrees", task, "acme", "app")
+	gitTest(t, fixture.canonical, "worktree", "add", "--detach", reviewDir, head)
+	installPerCommitPullRequestFixture(t, map[string]string{
+		head: mergedPullRequestPayload(t, 77, strings.Repeat("a", 40), squashSHA, mergedAt),
+	})
+
+	outcome, err := GC(context.Background(), GCOptions{
+		ProjectsRoot: fixture.projectsRoot, Tasks: []string{task}, SkipSizes: true,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := entryFor(t, outcome, task)
+	if entry.Class != GCClassDetachedReview || !entry.Eligible {
+		t.Fatalf("entry = %#v", entry)
+	}
+	if !strings.Contains(entry.Reason, "pull/77") && !strings.Contains(entry.Reason, "landed at") {
+		t.Fatalf("reason = %q, want it to name the evidence rather than assert intent", entry.Reason)
 	}
 }

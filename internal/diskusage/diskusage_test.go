@@ -161,3 +161,78 @@ func TestHumanBytesRendersBothFigures(t *testing.T) {
 		}
 	}
 }
+
+// The fleet case the reclaim footer gets wrong when it sums per-tree figures:
+// two worktrees hard-linking the same store file. Summed, its apparent size is
+// counted twice; and because neither tree owns every link, neither counts it as
+// unshared even though removing both would return the blocks.
+func TestWalkCountsAnInodeSharedBetweenTwoTreesExactlyOnce(t *testing.T) {
+	parent := t.TempDir()
+	first := filepath.Join(parent, "worktree-a")
+	second := filepath.Join(parent, "worktree-b")
+	writeFile(t, filepath.Join(first, "node_modules", "pkg.bin"), 20480)
+	if err := os.MkdirAll(filepath.Join(second, "node_modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(first, "node_modules", "pkg.bin"), filepath.Join(second, "node_modules", "pkg.bin")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+	writeFile(t, filepath.Join(first, "own.bin"), 1024)
+	writeFile(t, filepath.Join(second, "own.bin"), 2048)
+
+	walk := NewWalk()
+	firstUsage, err := walk.Measure(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondUsage, err := walk.Measure(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summed := firstUsage.Add(secondUsage)
+	if summed.ApparentBytes != 20480*2+1024+2048 {
+		t.Fatalf("per-tree sum = %#v; the fixture must be one that a naive sum double-counts", summed)
+	}
+
+	total := walk.Total()
+	if total.ApparentBytes != 20480+1024+2048 {
+		t.Fatalf("walk apparent = %d, want the shared inode counted once", total.ApparentBytes)
+	}
+	if total.UnsharedBytes <= summed.UnsharedBytes {
+		t.Fatalf("walk unshared = %d, want more than the per-tree sum %d: removing both trees frees the shared blocks",
+			total.UnsharedBytes, summed.UnsharedBytes)
+	}
+	if total.SharedBytes != 0 {
+		t.Fatalf("walk shared = %d, want zero: every link is inside the measured set", total.SharedBytes)
+	}
+}
+
+func TestWalkTotalForASubsetKeepsTheSharedInodeShared(t *testing.T) {
+	parent := t.TempDir()
+	first := filepath.Join(parent, "worktree-a")
+	second := filepath.Join(parent, "worktree-b")
+	writeFile(t, filepath.Join(first, "pkg.bin"), 8192)
+	if err := os.MkdirAll(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(first, "pkg.bin"), filepath.Join(second, "pkg.bin")); err != nil {
+		t.Skipf("hard links unavailable: %v", err)
+	}
+
+	walk := NewWalk()
+	if _, err := walk.Measure(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := walk.Measure(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	// Only one of the two was actually retired, so the other link survives and
+	// the blocks do not come back.
+	subset := walk.Total(first)
+	if subset.UnsharedBytes != 0 || subset.SharedBytes != 8192 {
+		t.Fatalf("subset total = %#v, want the inode reported as still shared", subset)
+	}
+	if both := walk.Total(first, second); both.UnsharedBytes < 8192 {
+		t.Fatalf("both-trees total = %#v, want the blocks reclaimed", both)
+	}
+}
