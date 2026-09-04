@@ -590,6 +590,7 @@ func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newGitFixture(t)
+			configureFixtureSharedWorktrees(t, fixture)
 			outside := t.TempDir()
 			test.setup(t, fixture, outside)
 			_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
@@ -608,6 +609,7 @@ func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
 
 func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	ownerPath := filepath.Join(fixture.home, "worktrees", "owner-swap", "acme")
 	movedOwner := ownerPath + "-moved"
@@ -637,6 +639,7 @@ func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 
 func TestCreateDoesNotFollowWorktreesAncestorSwapDuringSecureAdd(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	worktreesPath := filepath.Join(fixture.home, "worktrees")
 	movedWorktrees := worktreesPath + "-moved"
@@ -670,6 +673,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapDuringSecureAdd(t *testing.T) {
 
 func TestCreateDoesNotFollowWorktreesAncestorSwapBeforePlanning(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	external := t.TempDir()
 	worktreesPath := filepath.Join(fixture.home, "worktrees")
 	movedWorktrees := worktreesPath + "-moved"
@@ -686,7 +690,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapBeforePlanning(t *testing.T) {
 			}
 		}, WorkLog: WorkLogOptions{Model: "unknown"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "operation path changed before planning") {
+	if err == nil || !strings.Contains(err.Error(), "worktree placement changed") {
 		t.Fatalf("worktrees-ancestor-plan-swap Create error = %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(external, operation)); !os.IsNotExist(statErr) {
@@ -703,6 +707,7 @@ func TestCreateDoesNotFollowWorktreesAncestorSwapBeforePlanning(t *testing.T) {
 
 func TestCreateRejectsOwnerSwapAfterWorktreeRepair(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	operation := "owner-swap-after-repair"
 	ownerPath := filepath.Join(fixture.home, "worktrees", operation, "acme")
@@ -739,6 +744,7 @@ func TestCreateRejectsOwnerSwapAfterWorktreeRepair(t *testing.T) {
 
 func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	operation := "stage-swap"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
@@ -787,6 +793,7 @@ func TestCreateRejectsStageRootSwapWithoutLeakingCheckoutOrBranch(t *testing.T) 
 
 func TestCreateCleansStageWhenOpeningItFails(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	operation := "stage-open-failure"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
 	parkedStage := filepath.Join(operationRoot, "parked-stage-before-open")
@@ -847,7 +854,7 @@ func TestCreateCleansStageWhenOpeningItFails(t *testing.T) {
 func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
 	fixture := newGitFixture(t)
 	operation := "late-destination"
-	destination := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
+	destination := filepath.Join(fixture.canonical, ".worktrees", operation)
 	foreign := "foreign destination\n"
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
@@ -882,6 +889,7 @@ func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
 
 func TestCreateRefusesLateStagedCheckoutSubstitutionWithoutPublishingIt(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	operation := "late-checkout-substitution"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
 	parkedCheckout := filepath.Join(t.TempDir(), "parked-checkout")
@@ -920,6 +928,7 @@ func TestCreateRefusesLateStagedCheckoutSubstitutionWithoutPublishingIt(t *testi
 
 func TestCreateRefusesLatePublishedWorktreeSubstitutionBeforeRepair(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	operation := "late-published-substitution"
 	finalPath := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
 	parkedWorktree := filepath.Join(t.TempDir(), "parked-worktree")
@@ -1223,6 +1232,7 @@ func TestCleanupGitEnvironmentPinsCanonicalWorkTreeForHooks(t *testing.T) {
 
 func TestCreatePreservesDoubleSwapAcrossSecureCheckoutPublish(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	operation := "checkout-double-swap"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
 	stageRoot := ""
@@ -1342,6 +1352,7 @@ func TestCreateUsesHeldCanonicalRootAfterAuthorizationSwap(t *testing.T) {
 
 func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	operation := "stage-swap-after-validation"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
@@ -1402,6 +1413,7 @@ func TestCreateDoesNotFollowStageRootSwapAfterValidation(t *testing.T) {
 
 func TestCreateRejectsStageRootMovedOutsideOperationAfterValidation(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	operation := "stage-outside-after-validation"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
@@ -1438,6 +1450,7 @@ func TestCreateRejectsStageRootMovedOutsideOperationAfterValidation(t *testing.T
 
 func TestCreatePublishesAfterExternalStageMoveFollowingFinalVerification(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	operation := "stage-outside-publish"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
@@ -1476,6 +1489,7 @@ func TestCreatePublishesAfterExternalStageMoveFollowingFinalVerification(t *test
 
 func TestCreateRollsBackExternalStageAfterPublishedRepairFailure(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	outside := t.TempDir()
 	operation := "stage-outside-repair-failure"
 	operationRoot := filepath.Join(fixture.home, "worktrees", operation)
@@ -1515,6 +1529,7 @@ func TestCreateRollsBackExternalStageAfterPublishedRepairFailure(t *testing.T) {
 
 func TestCreateResolvesGitBeforeEnteringStageDirectory(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatal(err)
@@ -1597,6 +1612,7 @@ func TestCreateRejectsWhitespaceEquivalentRepositoryBeforeMutation(t *testing.T)
 
 func TestCreateRollsBackPartialStagedWorktreeFailure(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "partial-add",
@@ -1614,6 +1630,7 @@ func TestCreateRollsBackPartialStagedWorktreeFailure(t *testing.T) {
 
 func TestCreateRollsBackWhenContextIsCancelledAfterStagedAdd(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := Create(ctx, []string{"acme/app"}, CreateOptions{
@@ -1632,6 +1649,7 @@ func TestCreateRollsBackWhenContextIsCancelledAfterStagedAdd(t *testing.T) {
 
 func TestCreateRollsBackWhenPublishedWorktreeRepairFails(t *testing.T) {
 	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
 		Operation:    "repair-failure",
@@ -1696,8 +1714,8 @@ func TestDefaultHomeCreatesNewWorktreeWhileLegacyWorktreeRemainsGuardable(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := created[0].WorktreeDir, filepath.Join(fixture.home, "worktrees", "new-home", "acme", "app"); got != want {
-		t.Fatalf("new worktree = %q, want authoritative default-home path %q", got, want)
+	if got, want := created[0].WorktreeDir, filepath.Join(fixture.canonical, ".worktrees", "new-home"); got != want {
+		t.Fatalf("new worktree = %q, want repository-local default path %q", got, want)
 	}
 	if strings.HasPrefix(created[0].WorktreeDir, filepath.Join(fixture.projectsRoot, ".wb")) {
 		t.Fatalf("new worktree silently reused legacy home: %s", created[0].WorktreeDir)
@@ -2316,6 +2334,16 @@ type gitFixture struct {
 
 func newGitFixture(t *testing.T) *gitFixture {
 	return newGitFixtureForRepository(t, "app")
+}
+
+// configureFixtureSharedWorktrees keeps tests that exercise the historical
+// task/owner/repository hierarchy on the explicit shared-placement path. New
+// placement tests cover the default canonical-local hierarchy separately.
+func configureFixtureSharedWorktrees(t *testing.T, fixture *gitFixture) {
+	t.Helper()
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+filepath.Join(fixture.home, "worktrees")+"\n")
 }
 
 func newGitFixtureForRepository(t *testing.T, repository string) *gitFixture {

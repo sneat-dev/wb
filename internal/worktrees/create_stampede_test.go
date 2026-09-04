@@ -102,8 +102,10 @@ func TestCreateStampedeOnNewTaskSlugHasExactlyOneWinnerAndNoPartialState(t *test
 		t.Fatalf("refusal does not name the contended task: %q", refusalSamples[0])
 	}
 
-	// No partial worktree state: exactly one repository directory exists under
-	// the task, and it is a real, usable checkout.
+	// No partial worktree state: exactly one physical checkout exists for the
+	// task, and it is a real, usable checkout. Repository-local placement has
+	// one task directory per canonical repository, so there is no shared owner
+	// directory to count.
 	var winnerDir string
 	for i, dir := range worktreeDirs {
 		if dir != "" {
@@ -120,17 +122,12 @@ func TestCreateStampedeOnNewTaskSlugHasExactlyOneWinnerAndNoPartialState(t *test
 	if _, err := os.Stat(filepath.Join(winnerDir, ".git")); err != nil {
 		t.Fatalf("winner worktree is not a usable git checkout: %v", err)
 	}
-	ownerDir := filepath.Join(fixture.home, "worktrees", task, "acme")
-	entries, err := os.ReadDir(ownerDir)
-	if err != nil {
-		t.Fatalf("read task owner directory: %v", err)
+	listed, listErr := ListWithDiagnostics(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: task})
+	if listErr != nil {
+		t.Fatalf("list stampede task: %v", listErr)
 	}
-	if len(entries) != 1 {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		t.Fatalf("task owner directory has %d entries, want exactly 1 (the winner): %v", len(entries), names)
+	if len(listed.Results) != 1 || listed.Results[0].WorktreeDir != winnerDir || len(listed.Diagnostics) != 0 {
+		t.Fatalf("stampede inventory = %#v diagnostics=%#v, want exactly the winner", listed.Results, listed.Diagnostics)
 	}
 
 	// No orphaned claim/run: exactly one Work Log run exists for this task,
