@@ -79,7 +79,7 @@ type WorktreeCreator interface {
 	// It performs no side effect, so the stream record can carry each
 	// member's intended coordinates BEFORE anything is created — which is
 	// what makes an interrupted start recoverable.
-	PlannedWorktree(task, repository string) string
+	PlannedWorktree(task, repository string) (string, error)
 	Create(ctx context.Context, task, branch string, repositories []string) ([]CreatedWorktree, error)
 	// Remove retires one member's worktree through the existing cleanup
 	// path. `stream end` delegates removal rather than deleting directories.
@@ -245,10 +245,14 @@ func (engine *Engine) Start(ctx context.Context, options StartOptions, transitiv
 			if strings.EqualFold(repository, library) {
 				role = RoleLibrary
 			}
+			worktree, planErr := engine.Worktrees.PlannedWorktree(options.Name, repository)
+			if planErr != nil {
+				return fmt.Errorf("plan worktree for %s before stream reservation: %w", repository, planErr)
+			}
 			planned.Members = append(planned.Members, Member{
 				Repository: repository,
 				Role:       role,
-				Worktree:   engine.Worktrees.PlannedWorktree(options.Name, repository),
+				Worktree:   worktree,
 				Branch:     Branch(options.Name),
 				Base:       memberBase(options.Base, inputs, repository),
 				JoinedAt:   engine.now(),
@@ -512,10 +516,14 @@ func (engine *Engine) Join(ctx context.Context, options JoinOptions) (StartResul
 			if _, ok := current.Member(options.Repository); ok {
 				return nil
 			}
+			worktree, planErr := engine.Worktrees.PlannedWorktree(options.Name, options.Repository)
+			if planErr != nil {
+				return fmt.Errorf("plan worktree for %s before stream reservation: %w", options.Repository, planErr)
+			}
 			current.Members = append(current.Members, Member{
 				Repository: options.Repository,
 				Role:       role,
-				Worktree:   engine.Worktrees.PlannedWorktree(options.Name, options.Repository),
+				Worktree:   worktree,
 				Branch:     Branch(options.Name),
 				Base:       memberBase(options.Base, inputs, options.Repository),
 				JoinedAt:   engine.now(),

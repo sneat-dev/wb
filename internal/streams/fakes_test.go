@@ -259,15 +259,19 @@ func (hub *fakeHub) DefaultBranchStatus(_ context.Context, dir, branch string) (
 // fakeWorktrees stands in for the existing worktree creation and cleanup path.
 type fakeWorktrees struct {
 	root      string
+	planErr   error
 	createErr error
 	created   []CreatedWorktree
 	removed   []string
 	removeErr map[string]error
 }
 
-func (worktrees *fakeWorktrees) PlannedWorktree(task, repository string) string {
+func (worktrees *fakeWorktrees) PlannedWorktree(task, repository string) (string, error) {
+	if worktrees.planErr != nil {
+		return "", worktrees.planErr
+	}
 	owner, name, _ := strings.Cut(repository, "/")
-	return filepath.Join(worktrees.root, "worktrees", task, owner, name)
+	return filepath.Join(worktrees.root, "worktrees", task, owner, name), nil
 }
 
 func (worktrees *fakeWorktrees) Create(_ context.Context, task, branch string, repositories []string) ([]CreatedWorktree, error) {
