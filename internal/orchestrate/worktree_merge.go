@@ -281,6 +281,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		} else if strandedAcknowledged {
 			return existing, fmt.Errorf("merge receipt %s was acknowledged as a proved stranded landing; prepare a new source candidate", receiptPath)
 		}
+		if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, existing); adoptionErr != nil {
+			return existing, fmt.Errorf("validate published-candidate adoption for %s: %w", receiptPath, adoptionErr)
+		} else if adopted {
+			existing.PullRequest, existing.PublishedCandidateSHA = adoption.PullRequest, existing.Candidate.SHA
+		}
 		if rebatch != nil && existing.RebatchOf == rebatch.ReceiptPath && existing.Status == WorktreeMergePrepared {
 			lock, lockErr := AcquireOperationLock(projectsRoot, lane, true)
 			if lockErr != nil {
@@ -353,6 +358,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		} else if collisionAcknowledged {
 			return *active, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", active.ReceiptPath)
 		}
+		if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, *active); adoptionErr != nil {
+			return *active, fmt.Errorf("validate published-candidate adoption for %s: %w", active.ReceiptPath, adoptionErr)
+		} else if adopted {
+			active.PullRequest, active.PublishedCandidateSHA = adoption.PullRequest, active.Candidate.SHA
+		}
 		// This is a read-only replay of an already published candidate, not a
 		// resume. It preserves the supported checks-failed forward-repair path
 		// after that path has recorded validation_failed, while a descendant
@@ -414,6 +424,11 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			return current, fmt.Errorf("re-read receipt-collision acknowledgement for %s: %w", receiptPath, collisionErr)
 		} else if collisionAcknowledged {
 			return current, fmt.Errorf("merge receipt %s has a receipt-collision acknowledgement and may proceed only as --rebatch-receipt original", receiptPath)
+		}
+		if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, current); adoptionErr != nil {
+			return current, fmt.Errorf("re-read published-candidate adoption for %s: %w", receiptPath, adoptionErr)
+		} else if adopted {
+			current.PullRequest, current.PublishedCandidateSHA = adoption.PullRequest, current.Candidate.SHA
 		}
 		replay, replayErr := isExactPublishedValidationFailureReplay(ctx, projectsRoot, current, sources)
 		if replayErr != nil {
@@ -2597,6 +2612,7 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeSelfSupersessionCorrectionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergePublishedCandidateAdoptionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeStrandedLandingAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) {
 			continue
