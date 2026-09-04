@@ -163,6 +163,21 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		for _, layout := range resolution.Read {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}
+		// A removed local checkout leaves its canonical .worktrees parent in
+		// place, while the durable backlog is still authoritative for retiring
+		// the exact branch. Include those physical roots even though no live
+		// task remains for List to discover.
+		localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot)
+		for _, layout := range localLayouts {
+			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
+		}
+		configuredLayouts, configErr := appendConfiguredSharedWorktreesLayout(nil)
+		if configErr != nil {
+			return nil, configErr
+		}
+		for _, layout := range configuredLayouts {
+			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
+		}
 		var quarantined []LifecycleBacklogQuarantine
 		backlog, quarantined, err = loadResumableLifecycleBacklog(ctx, resolution.Write.Home, projectsRoot, recognizedWorktreesRoots, taskSelectionSet([]string{task}), "", string(AbortDiscarded))
 		if err != nil {
