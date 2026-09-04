@@ -1,8 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sneat-dev/wb/internal/streams"
 )
 
 // An operator holds a pull request in whichever form their source gave them:
@@ -64,5 +68,31 @@ func TestSplitCommaSeparatedAcceptsRepeatedAndJoinedValues(t *testing.T) {
 	want := []string{"a", "b", "c", "d", "e"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("splitCommaSeparated = %v, want %v", got, want)
+	}
+}
+
+// A landing outside a stream appends to .fleet. The next PR landing must
+// inventory that event log without calling it corrupt stream state before the
+// local-link guard can make its real decision.
+func TestPRLandFleetEventLogDoesNotMakeTheNextLandingGuardFailClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("WB_HOME", home)
+	previousProjectsRoot := projectsRoot
+	projectsRoot = t.TempDir()
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	log, streamName := landingEventLog("acme/app")
+	if streamName != "" {
+		t.Fatalf("stream name = %q, want an outside-stream landing", streamName)
+	}
+	if err := log.Append(streams.Event{Verb: "wb pr land", Outcome: "refused"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "streams", fleetEventLogName, "events.jsonl")); err != nil {
+		t.Fatalf("fleet event log was not appended: %v", err)
+	}
+
+	if err := refuseLinkedRepositoryWorktrees("acme/app"); err != nil {
+		t.Fatalf("next landing guard rejected only the fleet event log: %v", err)
 	}
 }
