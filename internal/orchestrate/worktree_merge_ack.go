@@ -1378,8 +1378,16 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 	if err != nil {
 		return fmt.Errorf("validate corrected self-supersession replacement: %w", err)
 	}
-	if replacement != correction.CorrectedReplacement || replacementClaim.BaseSHA != correction.ReplacementClaimBaseSHA {
+	if replacement.Task != correction.CorrectedReplacement.Task || filepath.Clean(replacement.Worktree) != filepath.Clean(correction.CorrectedReplacement.Worktree) ||
+		replacement.Branch != correction.CorrectedReplacement.Branch || replacementClaim.BaseSHA != correction.ReplacementClaimBaseSHA {
 		return errors.New("corrected self-supersession replacement identity or claim base no longer matches recorded evidence")
+	}
+	containsRecordedReplacement, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, correction.CorrectedReplacement.SHA, replacement.SHA)
+	if ancestorErr != nil {
+		return fmt.Errorf("verify corrected self-supersession replacement ancestry: %w", ancestorErr)
+	}
+	if !containsRecordedReplacement {
+		return errors.New("corrected self-supersession replacement does not retain its recorded replacement commit")
 	}
 	if err := requireImmutableHistoricalWorktreeMergeSources(ctx, replacement.Worktree, receipt); err != nil {
 		return fmt.Errorf("validate corrected self-supersession historical source: %w", err)
@@ -1389,9 +1397,15 @@ func validateSelfSupersessionCorrection(ctx context.Context, projectsRoot string
 		return err
 	}
 	if currentTarget != supersession.CurrentTargetSHA || currentTarget != correction.CurrentTargetSHA {
-		return fmt.Errorf("corrected self-supersession target drifted from recorded %s to %s", correction.CurrentTargetSHA, currentTarget)
+		containsRecordedTarget, targetAncestorErr := isMergeAncestor(ctx, replacement.Worktree, correction.CurrentTargetSHA, currentTarget)
+		if targetAncestorErr != nil {
+			return fmt.Errorf("verify corrected self-supersession target ancestry: %w", targetAncestorErr)
+		}
+		if !containsRecordedTarget {
+			return fmt.Errorf("corrected self-supersession target %s is not a descendant of recorded target %s", currentTarget, correction.CurrentTargetSHA)
+		}
 	}
-	for _, root := range append([]string{originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
+	for _, root := range append([]string{correction.CorrectedReplacement.SHA, originalClaim.BaseSHA, receipt.TargetSHA, supersession.CurrentTargetSHA, correction.CurrentTargetSHA, replacementClaim.BaseSHA}, sourceSHAs(immutableHistoricalWorktreeMergeSources(receipt))...) {
 		contains, ancestorErr := isMergeAncestor(ctx, replacement.Worktree, root, replacement.SHA)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
