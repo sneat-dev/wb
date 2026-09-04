@@ -20,6 +20,10 @@ func TestSecureCleanupGitHelperRunsRealGoHookWithPrivateCachesAndAuthorizedMetri
 	t.Setenv(wbhome.EnvOverride, wbHome)
 	t.Setenv("HOME", filepath.Join(t.TempDir(), "home"))
 	t.Setenv("XDG_STATE_HOME", "")
+	// The descriptor-capability child must not pass instrumentation or a
+	// workspace outside this retained repository to the hook it invokes.
+	t.Setenv("GOCOVERDIR", filepath.Join(t.TempDir(), "outside-coverage"))
+	t.Setenv("GOWORK", filepath.Join(t.TempDir(), "outside.go.work"))
 	forbidden := filepath.Join(t.TempDir(), "must-not-write")
 	t.Setenv("WB_TEST_FORBIDDEN", forbidden)
 	installSecureHookCapabilityFixture(t, fixture.canonical)
@@ -102,6 +106,10 @@ mkdir -p "$report_dir"
 if /bin/sh -c ': > "$1"' sh "$WB_TEST_FORBIDDEN" 2>/dev/null; then
     echo "forbidden write unexpectedly succeeded" >&2
     exit 99
+fi
+if [ -n "${GOCOVERDIR-}" ] || [ -n "${GOWORK-}" ]; then
+    echo "cleanup helper leaked coverage or workspace environment" >&2
+    exit 98
 fi
 go env GOPATH > "$report_dir/gopath.txt"
 go env GOCACHE > "$report_dir/gocache.txt"
