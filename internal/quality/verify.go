@@ -479,13 +479,40 @@ func commandError(command, output string, err error) string {
 	if detail == "" {
 		detail = err.Error()
 	}
-	const (
-		max       = 1000
-		headBytes = 250
-	)
+	if strings.HasPrefix(detail, coverageFailureSummaryHeader) {
+		if rawStart := strings.Index(detail, coverageRawOutputHeader); rawStart >= 0 {
+			// Keep the complete job/test index even when raw process logs need a
+			// transport-safe bound. Those logs are retained separately whenever a
+			// coverage diagnostics directory is configured.
+			summary := detail[:rawStart]
+			return summary + truncateCommandDetailTo(detail[rawStart:], 1000-len(summary))
+		}
+	}
+	return truncateCommandDetailTo(detail, 1000)
+}
+
+func truncateCommandDetailTo(detail string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	if len(detail) > max {
-		tailBytes := max - headBytes
-		detail = detail[:headBytes] + fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes) + detail[len(detail)-tailBytes:]
+		headBytes := max / 4
+		if headBytes > 250 {
+			headBytes = 250
+		}
+		// Reserve enough space for the truncation notice itself. Its exact
+		// length depends only on the rendered tail count.
+		tailBytes := max - headBytes - 64
+		if tailBytes < 0 {
+			tailBytes = 0
+		}
+		marker := fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+		tailBytes = max - headBytes - len(marker)
+		if tailBytes < 0 {
+			tailBytes = 0
+		}
+		marker = fmt.Sprintf("\n… output truncated; final %d bytes:\n", tailBytes)
+		detail = detail[:headBytes] + marker + detail[len(detail)-tailBytes:]
 	}
 	return detail
 }

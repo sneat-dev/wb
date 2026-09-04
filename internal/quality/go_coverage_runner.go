@@ -26,6 +26,11 @@ type goCoverageJobResult struct {
 	err    error
 }
 
+const (
+	coverageFailureSummaryHeader = "WB coverage failure index:\n"
+	coverageRawOutputHeader      = "WB coverage raw output:\n"
+)
+
 // CoverageDiagnosticManifest is intentionally separate from CoverageReport:
 // it contains unbounded command output and therefore stays in the private
 // report root rather than crossing the bounded hook/session boundary.
@@ -163,12 +168,6 @@ func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfil
 	var runErr error
 	for index, result := range results {
 		if result.err != nil {
-			fmt.Fprintf(&failedOutput, "[%s]\n%s", jobs[index].label, result.output)
-			if !strings.HasSuffix(result.output, "\n") {
-				failedOutput.WriteByte('\n')
-			}
-			failedOutput.WriteString(result.err.Error())
-			failedOutput.WriteByte('\n')
 			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", jobs[index].label, result.err))
 		} else {
 			if strings.TrimSpace(result.output) != "" {
@@ -181,6 +180,23 @@ func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfil
 		}
 	}
 	if runErr != nil {
+		// The command error is deliberately bounded before it crosses a CI or
+		// session transport. Put every failing job and Go test name first, so the
+		// actionable index survives even when a shard's raw log is enormous.
+		failureIndex := summarizeCoverageFailures(jobs, results)
+		failedOutput.WriteString(failureIndex)
+		failedOutput.WriteString(coverageRawOutputHeader)
+		for index, result := range results {
+			if result.err == nil {
+				continue
+			}
+			fmt.Fprintf(&failedOutput, "[%s]\n%s", jobs[index].label, result.output)
+			if !strings.HasSuffix(result.output, "\n") {
+				failedOutput.WriteByte('\n')
+			}
+			failedOutput.WriteString(result.err.Error())
+			failedOutput.WriteByte('\n')
+		}
 		if diagnosticsDir != "" {
 			if err := writeCoverageDiagnostics(diagnosticsDir, repository, module, jobs, results); err != nil {
 				runErr = errors.Join(runErr, fmt.Errorf("write coverage diagnostics: %w", err))
@@ -192,6 +208,47 @@ func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfil
 		return output.String(), err
 	}
 	return output.String(), nil
+}
+
+// summarizeCoverageFailures emits the complete compact failure index before
+// raw process output. Go reports nested tests as separate `--- FAIL:` lines;
+// preserve both the top-level and subtest names because either may identify
+// the actual failing journey.
+func summarizeCoverageFailures(jobs []goCoverageJob, results []goCoverageJobResult) string {
+	var summary strings.Builder
+	summary.WriteString(coverageFailureSummaryHeader)
+	for index, result := range results {
+		if result.err == nil {
+			continue
+		}
+		names := failedGoTestNames(result.output)
+		if len(names) == 0 {
+			fmt.Fprintf(&summary, "- [%s] command failed without a named Go test\n", jobs[index].label)
+			continue
+		}
+		for _, name := range names {
+			fmt.Fprintf(&summary, "- [%s] %s\n", jobs[index].label, name)
+		}
+	}
+	return summary.String()
+}
+
+func failedGoTestNames(output string) []string {
+	seen := make(map[string]bool)
+	names := make([]string, 0)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "--- FAIL: ") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "--- FAIL: "))
+		if len(fields) == 0 || seen[fields[0]] {
+			continue
+		}
+		seen[fields[0]] = true
+		names = append(names, fields[0])
+	}
+	return names
 }
 
 func writeCoverageDiagnostics(directory, repository, module string, jobs []goCoverageJob, results []goCoverageJobResult) error {
