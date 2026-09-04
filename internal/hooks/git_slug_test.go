@@ -86,6 +86,50 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 	}
 }
 
+func TestExecutionLayoutOfStagingWorktreeUsesCanonicalCheckoutIdentity(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	bare := filepath.Join(root, "remote.git")
+	canonical := filepath.Join(root, "projects", "strongo", "selfupdate")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "init", "--bare", "--initial-branch=main", bare)
+	git(t, root, "clone", bare, canonical)
+	git(t, canonical, "config", "user.name", "WB Tests")
+	git(t, canonical, "config", "user.email", "wb-tests@example.invalid")
+	mustWrite(t, filepath.Join(canonical, "README.md"), "test\n")
+	git(t, canonical, "add", "README.md")
+	git(t, canonical, "commit", "-m", "initial")
+	git(t, canonical, "push", "-u", "origin", "main")
+	git(t, canonical, "remote", "set-url", "origin", "git@github.com:strongo/cli-helpers.git")
+
+	stage := filepath.Join(root, "home", ".wb", "worktrees", "upgrade", ".wb-stage-deadbeefdeadbeefdeadbeefdeadbeef", "checkout")
+	if err := os.MkdirAll(filepath.Dir(stage), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, canonical, "worktree", "add", "-b", "feature/upgrade", stage, "main")
+
+	canonicalLayout, err := ResolveExecutionLayout(canonical, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(canonicalLayout.Root, filepath.Join("hook-runtime", "strongo", "selfupdate")) {
+		t.Fatalf("canonical runtime root = %q, want canonical checkout identity", canonicalLayout.Root)
+	}
+
+	t.Setenv("PATH", "/nonexistent")
+	stageLayout, err := ResolveExecutionLayout(stage, "")
+	if err != nil {
+		t.Fatalf("resolve staging execution layout without Git: %v", err)
+	}
+	if stageLayout.Root != canonicalLayout.Root {
+		t.Fatalf("staging runtime root = %q, want canonical root %q", stageLayout.Root, canonicalLayout.Root)
+	}
+}
+
 func TestFileURLRemoteIsNotAHostedSlug(t *testing.T) {
 	if hostedRemote("file:///tmp/hr2/origin.git") {
 		t.Fatal("file:// is a local path remote, not a hosted owner/repository")
