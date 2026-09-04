@@ -2315,9 +2315,11 @@ func addWorktreeAtSecureDestination(
 	if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 		return err
 	}
-	stageName, err := makeSecureStageDirectory(operationDirectory)
+	var stageName string
 	if owner == "" {
 		stageName, err = makeTaskBoundLocalStageDirectory(operationDirectory, repository)
+	} else {
+		stageName, err = makeSecureStageDirectory(operationDirectory)
 	}
 	if err != nil {
 		return fmt.Errorf("create secure worktree staging directory: %w", err)
@@ -2943,7 +2945,7 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 	return "", fmt.Errorf("create collision-free secure staging directory")
 }
 
-func taskBoundLocalStagePrefix(task string) string { return ".wb-stage-task-" + task + "-" }
+func taskBoundLocalStagePrefix(task string) string { return fmt.Sprintf(".wb-stage-task-%x-", task) }
 
 func isTaskBoundLocalStageCheckout(path, task string) bool {
 	return strings.HasPrefix(filepath.Base(filepath.Dir(path)), taskBoundLocalStagePrefix(task)) && filepath.Base(path) == "checkout"
@@ -2976,6 +2978,11 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 	if err != nil {
 		return false, err
 	}
+	rootDirectory, err := openAbsoluteDirectoryNoFollow(root, false)
+	if err != nil {
+		return false, err
+	}
+	defer rootDirectory.Close()
 	var checkout string
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), taskBoundLocalStagePrefix(task)) {
@@ -2984,6 +2991,19 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 		candidate := filepath.Join(root, entry.Name(), "checkout")
 		registered, regErr := registeredBranchNameCanonical(ctx, canonical, candidate)
 		if regErr != nil || registered != branch {
+			// A crash before Git add leaves an empty task-bound stage. Retire it
+			// descriptor-relatively so the next create does not inherit a blocker.
+			fd, openErr := unix.Openat(int(rootDirectory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+			if openErr == nil {
+				stage := os.NewFile(uintptr(fd), "wb-empty-local-stage")
+				if stage != nil {
+					empty, emptyErr := directoryEmpty(stage)
+					if emptyErr == nil && empty {
+						_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
+					}
+					_ = stage.Close()
+				}
+			}
 			continue
 		}
 		if checkout != "" {
@@ -3003,6 +3023,18 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 	}
 	if _, err := moveWorktree(ctx, canonical.path, root, checkout, final, worktreeMoveHooks{}); err != nil {
 		return false, fmt.Errorf("recover task-bound local stage: %w", err)
+	}
+	stageName := filepath.Base(filepath.Dir(checkout))
+	fd, openErr := unix.Openat(int(rootDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if openErr == nil {
+		stage := os.NewFile(uintptr(fd), "wb-recovered-local-stage")
+		if stage != nil {
+			empty, emptyErr := directoryEmpty(stage)
+			if emptyErr == nil && empty {
+				_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
+			}
+			_ = stage.Close()
+		}
 	}
 	return true, nil
 }
