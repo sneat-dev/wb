@@ -108,6 +108,10 @@ a general force flag.
   This lets one repository blocked on something abort cannot fix stop
   blocking the rest of the task without ever widening into #76's cross-repo
   blast-radius concern.
+- `worktree abort --absorbed-by <merged-pr>` is accepted only with the
+  terminal `--disposition discarded`. It fetches and verifies the named PR
+  receipt before a clean source is removed; `--absorbed-by` never widens a
+  handoff or converts a commit message into deletion authority.
 - `--non-interactive` disables every live terminal UI and progress line,
   including sync, status, fleet quality checks, CI waits, dependency campaigns,
   npm publication, remote publication, and hierarchical migration.

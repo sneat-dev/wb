@@ -232,6 +232,7 @@ type PullRequest struct {
 	Repository string     `json:"repository,omitempty"`
 	State      string     `json:"state"`
 	Base       string     `json:"base"`
+	BaseSHA    string     `json:"base_sha,omitempty"`
 	HeadSHA    string     `json:"head_sha"`
 	MergeSHA   string     `json:"merge_sha,omitempty"`
 	Merged     *time.Time `json:"merged_at,omitempty"`
@@ -3516,7 +3517,7 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 	for _, candidate := range pullRequests {
 		pullRequest := &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
-			Repository: repository, Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
+			Repository: repository, Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
 		}
 		if candidate.MergedAt != nil {
 			pullRequest.State = "MERGED"
@@ -3659,6 +3660,11 @@ func attestedAbsorbedReceipt(
 	if err != nil || rejection != "" {
 		return nil, rejection, err
 	}
+	if pullRequest != nil {
+		if rejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest); err != nil || rejection != "" {
+			return nil, rejection, err
+		}
+	}
 	landed, err := isAncestor(ctx, repository, landingSHA, target)
 	if err != nil {
 		return nil, "", err
@@ -3706,6 +3712,108 @@ func attestedAbsorbedReceipt(
 		}
 	}
 	return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+}
+
+// verifyAttestedSquashPullRequest proves the physical relationship that a
+// squash landing hides from ordinary ancestry. GitHub supplies the immutable
+// pull-request head and merge commit; Git supplies the exact source, the
+// freshly fetched target, and both trees. No commit message, title, or branch
+// name can stand in for any part of this proof.
+func verifyAttestedSquashPullRequest(
+	ctx context.Context,
+	repository, sourceHead, target, absorbedBy string,
+	pullRequest *PullRequest,
+) (string, error) {
+	if pullRequest == nil || pullRequest.Merged == nil || pullRequest.Number <= 0 ||
+		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.HeadSHA) || !isGitObjectID(pullRequest.MergeSHA) {
+		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
+	}
+	if _, err := fetchExactRemotePullRequestHead(ctx, repository, pullRequest.Number, pullRequest.HeadSHA); err != nil {
+		var mismatch *pullRequestHeadMismatchError
+		if errors.As(err, &mismatch) {
+			return mismatch.Error(), nil
+		}
+		return "", fmt.Errorf("fetch pull request %d head %s for --absorbed-by %s: %w", pullRequest.Number, pullRequest.HeadSHA, absorbedBy, err)
+	}
+	sourceInPullRequest, err := isAncestor(ctx, repository, sourceHead, pullRequest.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	if !sourceInPullRequest {
+		return fmt.Sprintf("--absorbed-by %s pull request head %s does not contain exact source head %s", absorbedBy, pullRequest.HeadSHA, sourceHead), nil
+	}
+	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
+	if err != nil {
+		return "", err
+	}
+	if !mergeInTarget {
+		return fmt.Sprintf("--absorbed-by %s merge commit %s is not contained in the exact fetched origin/%s target %s", absorbedBy, pullRequest.MergeSHA, pullRequest.Base, target), nil
+	}
+	pullRequestTree, err := commitTree(ctx, repository, pullRequest.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	mergeTree, err := commitTree(ctx, repository, pullRequest.MergeSHA)
+	if err != nil {
+		return "", err
+	}
+	if pullRequestTree != mergeTree {
+		return fmt.Sprintf("--absorbed-by %s pull request head tree %s does not equal merge tree %s", absorbedBy, pullRequestTree, mergeTree), nil
+	}
+	return "", nil
+}
+
+// fetchExactRemotePullRequestHead obtains GitHub's stable numbered pull-head
+// ref without creating a local ref or touching FETCH_HEAD. An API-reported SHA
+// alone is not proof that the configured origin exposes the named pull request;
+// conversely, fetching an arbitrary object SHA relies on server configuration
+// and can accidentally accept an unrelated reachable object.
+type pullRequestHeadMismatchError struct{ message string }
+
+func (err *pullRequestHeadMismatchError) Error() string { return err.message }
+
+func fetchExactRemotePullRequestHead(ctx context.Context, repository string, number int, expectedSHA string) (string, error) {
+	return fetchExactRemotePullRequestHeadWithRun(ctx, repository, number, expectedSHA, func(runCtx context.Context, args ...string) (string, error) {
+		return git(runCtx, repository, args...)
+	})
+}
+
+func fetchExactRemotePullRequestHeadWithRun(
+	ctx context.Context,
+	repository string,
+	number int,
+	expectedSHA string,
+	run func(context.Context, ...string) (string, error),
+) (string, error) {
+	if number <= 0 {
+		return "", fmt.Errorf("invalid pull request number %d", number)
+	}
+	if !isGitObjectID(expectedSHA) {
+		return "", fmt.Errorf("invalid expected pull request head %q", expectedSHA)
+	}
+	ref := "refs/pull/" + strconv.Itoa(number) + "/head"
+	remote, err := run(ctx, "ls-remote", "--exit-code", "origin", ref)
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(remote)
+	if len(fields) != 2 || fields[1] != ref || !isGitObjectID(fields[0]) {
+		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("origin returned malformed %s response %q", ref, remote)}
+	}
+	if fields[0] != expectedSHA {
+		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("origin advertises %s as %s, expected exact API head %s", ref, fields[0], expectedSHA)}
+	}
+	if _, err := run(ctx, "fetch", "--no-tags", "--no-write-fetch-head", "--", "origin", ref); err != nil {
+		return "", err
+	}
+	fetched, err := run(ctx, "rev-parse", "--verify", "--end-of-options", expectedSHA+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if fetched != expectedSHA {
+		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("fetched %s resolved to %s, expected exact API head %s", ref, fetched, expectedSHA)}
+	}
+	return fetched, nil
 }
 
 // resolveAbsorbedBy turns an operator pointer into one exact landing commit.
@@ -3759,6 +3867,9 @@ func resolveAbsorbedByPullRequest(
 	if candidate.MergedAt == nil {
 		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not merged", slug, number), nil
 	}
+	if !strings.EqualFold(candidate.State, "closed") {
+		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not closed", slug, number), nil
+	}
 	if candidate.Base.Ref != base {
 		return "", nil, fmt.Sprintf(
 			"--absorbed-by pull request %s#%d merged into %q, not the requested base %q",
@@ -3771,9 +3882,15 @@ func resolveAbsorbedByPullRequest(
 			slug, number, candidate.MergeCommitSHA,
 		), nil
 	}
+	if !isGitObjectID(candidate.Head.SHA) {
+		return "", nil, fmt.Sprintf(
+			"--absorbed-by pull request %s#%d has invalid head commit %q",
+			slug, number, candidate.Head.SHA,
+		), nil
+	}
 	return candidate.MergeCommitSHA, &PullRequest{
-		Number: candidate.Number, URL: candidate.URL, State: "MERGED",
-		Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA,
+		Number: candidate.Number, URL: candidate.URL, Repository: slug, State: "MERGED",
+		Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
 		MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
 	}, "", nil
 }
@@ -3795,7 +3912,7 @@ func absorbingPullRequest(pullRequests []githubPullRequest, base string) *PullRe
 		}
 		absorbing = &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: "MERGED",
-			Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA,
+			Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
 			MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
 		}
 	}

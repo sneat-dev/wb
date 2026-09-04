@@ -814,7 +814,7 @@ registered session in --mode agent, or --mode manual with --initiator <human>.`,
 }
 
 func newWorktreeAbortCmd() *cobra.Command {
-	var base, disposition, successor, format string
+	var base, disposition, successor, absorbedBy, format string
 	var claimID, actor, reason string
 	var model, cli, provider string
 	var apply, deleteRemote, all bool
@@ -834,6 +834,11 @@ exact local branch refs only after that archive has been sealed. A discarded app
 an exact matching remote source branch is then retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
+
+For a clean source retained after a squash landing, --disposition discarded
+--absorbed-by <merged-pr> verifies GitHub's merged PR metadata and rechecks
+the exact source head, fetched PR head, landing tree, and freshly fetched
+target before removal. It never accepts a commit-message reference as proof.
 
 An orphaned disposition is narrower: the worktree and its local/remote branch
 are already gone, so WB deletes nothing. It requires one exact --claim plus an
@@ -860,7 +865,8 @@ The default is a dry-run plan.`,
 			results, err := worktrees.Abort(command.Context(), worktrees.AbortOptions{
 				ProjectsRoot: projectsRoot, Task: args[0], Base: base, Filter: filterFlag,
 				Disposition: worktrees.AbortDisposition(disposition), Successor: successor, All: all,
-				ClaimID: claimID, Actor: actor, Reason: reason,
+				AbsorbedBy: absorbedBy,
+				ClaimID:    claimID, Actor: actor, Reason: reason,
 				SuccessorIdentity: worktrees.ClaimExecutionIdentity{Model: model, CLI: cli, Provider: provider},
 				DeleteRemote:      deleteRemote, Apply: apply,
 			})
@@ -954,6 +960,7 @@ The default is a dry-run plan.`,
 	command.Flags().StringVar(&base, "base", "main", "base branch for managed-worktree validation")
 	command.Flags().StringVar(&disposition, "disposition", "", "required: handoff, not_landed, discarded, or orphaned")
 	command.Flags().StringVar(&successor, "successor", "", "one successor agent/session ID (required for handoff or not_landed)")
+	command.Flags().StringVar(&absorbedBy, "absorbed-by", "", "merged pull request that proves a clean squash-absorbed source before discarded removal")
 	command.Flags().StringVar(&claimID, "claim", "", "exact immutable Work Log claim ID (required for orphaned)")
 	command.Flags().StringVar(&actor, "actor", "", "approving person or agent identity (required for orphaned)")
 	command.Flags().StringVar(&reason, "reason", "", "audit reason for sealing an absent orphaned claim")
