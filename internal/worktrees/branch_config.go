@@ -42,6 +42,44 @@ type worktreePlacement struct {
 	Local bool
 }
 
+// WorktreePlacement is the public, resolved physical placement for one
+// canonical repository. It deliberately does not expose WB_HOME: that is
+// lifecycle authority, not a worktree checkout location.
+type WorktreePlacement struct {
+	Root            string
+	RepositoryLocal bool
+}
+
+// Path returns the one physical checkout path for task and repository.
+func (placement WorktreePlacement) Path(task, repository string) (string, error) {
+	owner, name, err := splitRepository(repository)
+	if err != nil {
+		return "", err
+	}
+	if !validSafeSegment(task) {
+		return "", fmt.Errorf("invalid worktree task %q", task)
+	}
+	if placement.RepositoryLocal {
+		return filepath.Join(placement.Root, task), nil
+	}
+	return filepath.Join(placement.Root, task, owner, name), nil
+}
+
+// ResolveWorktreePlacement resolves user placement policy against an exact
+// canonical base revision. It opens no destination and performs no mutation.
+func ResolveWorktreePlacement(ctx context.Context, canonicalPath, baseRevision string) (WorktreePlacement, error) {
+	canonical, err := openCanonicalRepository(canonicalPath)
+	if err != nil {
+		return WorktreePlacement{}, err
+	}
+	defer canonical.close()
+	placement, err := configuredWorktreePlacement(ctx, canonical, baseRevision)
+	if err != nil {
+		return WorktreePlacement{}, err
+	}
+	return WorktreePlacement{Root: placement.Root, RepositoryLocal: placement.Local}, nil
+}
+
 // branchNamingOptions carries only precedence inputs. Agent provenance is
 // deliberately absent: Work Logs, not branch spelling, own that data.
 type branchNamingOptions struct {
