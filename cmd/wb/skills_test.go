@@ -461,7 +461,7 @@ func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
 
 func TestReleaseWorkflowFallsBackForCLIChangingNonConventionalMerge(t *testing.T) {
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
-	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "release.yml")
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "go-ci.yml")
 	contents, err := os.ReadFile(workflowPath)
 	if err != nil {
 		t.Fatal(err)
