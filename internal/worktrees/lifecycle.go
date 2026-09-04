@@ -2053,7 +2053,31 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// above) already scoped listed.Diagnostics to the current selection, so
 	// every diagnostic here is one the caller asked to see.
 	for _, task := range normalized.Tasks {
-		if !cleanupTaskWasFound(task, listed, backlog) {
+		found := cleanupTaskWasFound(task, listed, backlog)
+		if !found && recovery != nil && recovery.Task == task && normalized.Filter != "" {
+			// A repository filter intentionally hides nonmatching members from the
+			// displayed plan. Re-check only this recovered task without that filter
+			// to distinguish such a member from a manually created dead-lock shell.
+			// The second walk is observational: it never changes the filtered plan
+			// or authorizes consuming the recovered lock.
+			unfiltered, listErr := ListWithDiagnostics(ctx, ListOptions{
+				ProjectsRoot:    normalized.ProjectsRoot,
+				Task:            task,
+				Base:            normalized.Base,
+				Workers:         normalized.Workers,
+				IncludeDetached: normalized.IncludeDetached,
+				TTL:             normalized.TTL,
+				Activity:        normalized.Activity,
+				ResidueEvidence: cleanupWantsResidueEvidence(normalized),
+				ResidueDepth:    normalized.ResidueDepth,
+				Now:             normalized.Now,
+			})
+			if listErr != nil {
+				return CleanupOutcome{}, listErr
+			}
+			found = cleanupTaskWasFound(task, unfiltered, nil)
+		}
+		if !found {
 			return CleanupOutcome{}, fmt.Errorf("WB worktree task %q was not found", task)
 		}
 	}
