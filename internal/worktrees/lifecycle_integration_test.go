@@ -440,7 +440,7 @@ func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created) != 1 || created[0].WorktreeDir != filepath.Join(fixture.home, "worktrees", "dot-repository", "acme", ".github") {
+	if len(created) != 1 || created[0].WorktreeDir != filepath.Join(fixture.canonical, ".worktrees", "dot-repository") {
 		t.Fatalf("dot-prefixed repository creation = %#v", created)
 	}
 	worktree := created[0].WorktreeDir
