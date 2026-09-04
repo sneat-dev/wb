@@ -161,7 +161,26 @@ exception, never a silent bypass.
 
 ## Move a registered session over SSH
 
-## Park and resume a registered session
+## Park and resume an agent session
+
+**Registration is not a precondition. Park registers you if needed:**
+
+```sh
+wb session park --context-file <file>
+```
+
+If no session is registered for the calling process, park registers one first
+from what it can observe — the agent PID from `--pid`, `WB_AGENT_PID`, or the
+nearest recognised harness above this process; the runtime from `--runtime`,
+the environment, or the observed parent process name; the model from `--model`
+or the environment; the machine from this hostname — and then parks. Both the
+session record and the park output carry `registered_at_park`, and the output
+names the `wb_session_id` it created, so you learn your own identity from the
+park itself. A runtime or model WB was neither told nor able to observe is
+recorded as `unknown`: missing metadata never refuses a park. Never hand-roll
+parking because you are unregistered — that is the exact failure this removes.
+`--wb-session-id` parks an already-registered session instead and never creates
+a registration.
 
 `wb session park --context-file <file>` records an append-only checkpoint
 containing every worktree owned by the active session. The context file may be

@@ -69,6 +69,22 @@ harness-exit diagnostics, per-stage interruption repair, concurrent winner behav
 parked-to-resumed finalization. Then obtain independent Sol/Terra review and run
 the live Mac-to-VM Luna journey before marking this task or plan complete.
 
+### Task 3: Park registers an unregistered session
+
+**Id:** task-3
+**Verifies:** park-and-resume-agent-sessions#ac:unregistered-session-can-park
+**Depends-On:** 2
+**Status:** complete
+
+Make the registration precondition disappear from the park verb. Resolve the
+calling session as before, and when nothing is registered, register one from
+declared flags, an existing `WB_AGENT_*` declaration, or the nearest recognised
+harness in the process tree, recording an undeducible runtime or model as
+`unknown` and marking the registration `registered_at_park` on both the session
+record and the park output. Keep `--wb-session-id` targeting an already
+registered session, refuse to overwrite a parked or resumed record at the same
+PID, and leave `wb session move` and every fail-closed member check untouched.
+
 ## Open Questions
 
 None at this time.

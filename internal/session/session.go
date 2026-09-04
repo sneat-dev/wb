@@ -46,6 +46,13 @@ type Record struct {
 	// work; new integrations should use NativeHarnessID.
 	AgentID string `json:"agent_id,omitempty"`
 
+	// RegisteredAtPark records that this registration was created by
+	// `wb session park` from what it could observe, rather than declared by an
+	// explicit `wb session register`. It is provenance, not a lesser status: a
+	// reader that sees an inferred runtime or model needs to know the session
+	// never announced them itself.
+	RegisteredAtPark bool `json:"registered_at_park,omitempty"`
+
 	// WBVersion and WBPath describe the binary that took the registration.
 	// Several WB builds can coexist — a release on PATH and a local build
 	// under test — and knowing which one a session used is what makes
@@ -161,6 +168,12 @@ func Register(dir string, record Record) (Record, error) {
 			}
 			if record.StartedAt.IsZero() {
 				record.StartedAt = previous.StartedAt
+			}
+			// How a WB session identity first came into existence is a fact
+			// about that identity, so a later re-registration of the same
+			// session cannot quietly present itself as a declared one.
+			if !record.RegisteredAtPark {
+				record.RegisteredAtPark = previous.RegisteredAtPark
 			}
 		}
 	}

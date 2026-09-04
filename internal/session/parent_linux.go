@@ -31,3 +31,14 @@ func parentPID(pid int) (int, bool) {
 	}
 	return parent, true
 }
+
+// processName reads a process's executable name from /proc. An unreadable or
+// vanished process is simply unnamed: the caller treats that the same way it
+// treats a name it does not recognise.
+func processName(pid int) string {
+	content, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(content))
+}
