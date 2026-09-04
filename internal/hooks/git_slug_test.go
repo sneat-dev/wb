@@ -76,6 +76,11 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 	if strings.Contains(stageSlug, ".wb-stage-") {
 		t.Fatalf("staging originSlug leaked the stage directory: %q", stageSlug)
 	}
+
+	t.Setenv("PATH", "/nonexistent")
+	if got := canonicalCheckoutSlug(stage); got != "acme/app" {
+		t.Fatalf("canonicalCheckoutSlug without git = %q, want acme/app from the gitfile (hooks must not spawn git during worktree add)", got)
+	}
 }
 
 func TestFileURLRemoteIsNotAHostedSlug(t *testing.T) {
