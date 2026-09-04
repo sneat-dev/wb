@@ -329,13 +329,14 @@ func repositoryBranchConfigAt(ctx context.Context, canonical *canonicalRepositor
 	// ls-tree has a typed empty result for an absent path. Never infer policy
 	// absence from Git's human-facing stderr; its entry type also lets us reject
 	// symlinks and submodules before bytes influence branch naming.
-	// gitCanonical runs from the retained common Git directory. --full-tree
-	// makes this exact-tree query independent of that CWD's pathspec prefix.
-	entry, err := gitCanonical(ctx, canonical, "ls-tree", "--full-tree", revision, "--", ".wb/worktrees.yaml")
+	// gitCanonicalPolicyBytes runs from retained canonical descriptors.
+	// --full-tree makes this exact-tree query independent of a CWD pathspec
+	// prefix.
+	entryBytes, err := gitCanonicalPolicyBytes(ctx, canonical, "ls-tree", "--full-tree", revision, "--", ".wb/worktrees.yaml")
 	if err != nil {
 		return nil, false, fmt.Errorf("inspect repository worktrees policy at %s: %w", revision, err)
 	}
-	entry = strings.TrimSpace(entry)
+	entry := strings.TrimSpace(string(entryBytes))
 	if entry == "" {
 		return nil, false, nil
 	}
@@ -345,22 +346,22 @@ func repositoryBranchConfigAt(ctx context.Context, canonical *canonicalRepositor
 		(fields[0] != "100644" && fields[0] != "100755") || !isGitObjectID(fields[2]) {
 		return nil, false, fmt.Errorf("repository worktrees policy at %s must be a regular blob, not %q", revision, entry)
 	}
-	sizeOutput, err := gitCanonical(ctx, canonical, "cat-file", "-s", fields[2])
+	sizeBytes, err := gitCanonicalPolicyBytes(ctx, canonical, "cat-file", "-s", fields[2])
 	if err != nil {
 		return nil, false, fmt.Errorf("inspect repository worktrees policy blob size at %s: %w", revision, err)
 	}
-	size, err := strconv.ParseInt(strings.TrimSpace(sizeOutput), 10, 64)
+	size, err := strconv.ParseInt(strings.TrimSpace(string(sizeBytes)), 10, 64)
 	if err != nil || size < 0 {
-		return nil, false, fmt.Errorf("parse repository worktrees policy blob size at %s: %q", revision, strings.TrimSpace(sizeOutput))
+		return nil, false, fmt.Errorf("parse repository worktrees policy blob size at %s: %q", revision, strings.TrimSpace(string(sizeBytes)))
 	}
 	if size > maxBranchConfigSize {
 		return nil, false, fmt.Errorf("repository worktrees policy blob at %s exceeds %d-byte limit", revision, maxBranchConfigSize)
 	}
-	contents, err := gitCanonical(ctx, canonical, "show", fields[2])
+	contents, err := gitCanonicalPolicyBytes(ctx, canonical, "show", fields[2])
 	if err != nil {
 		return nil, false, fmt.Errorf("read repository worktrees policy blob at %s: %w", revision, err)
 	}
-	return []byte(contents), true, nil
+	return contents, true, nil
 }
 
 func parseBranchConfig(path string, contents []byte) (branchConfigFile, bool, error) {

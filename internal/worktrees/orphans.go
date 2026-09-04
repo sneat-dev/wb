@@ -2,6 +2,7 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -220,6 +221,9 @@ func discoverCanonicalClones(projectsRoot string) ([]canonicalClone, []string) {
 	var unscanned []string
 
 	owners, err := os.ReadDir(projectsRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, []string{fmt.Sprintf("%s: %v", projectsRoot, err)}
 	}
