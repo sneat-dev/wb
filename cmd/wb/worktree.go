@@ -2095,31 +2095,29 @@ required to remove anything.`,
 				return fmt.Errorf("unsupported format %q; use text or json", format)
 			}
 			if apply && len(tasks) != 0 {
-				appliedTasks := make(map[string]bool, len(tasks))
-				for _, result := range outcome.Results {
-					if result.Applied {
-						appliedTasks[result.Task] = true
-					}
-				}
-				for _, artifact := range outcome.Artifacts {
-					if artifact.Applied {
-						appliedTasks[artifact.Task] = true
-					}
-				}
+				appliedTasks := appliedCleanupTaskNames(outcome)
+				namedApplied := namedCleanupApplySatisfied(tasks, outcome)
 				// leakedReleases is wb#321's exit-code seam: see
 				// exitNonZeroOnReleaseLeak in remote_autoclaim.go for why it
 				// is false today, and flip that one constant, not this
 				// loop, to change it.
 				var leakedReleases []string
 				for _, task := range tasks {
-					if appliedTasks[task] {
+					shouldRelease := appliedTasks[task]
+					if !shouldRelease && len(tasks) == 1 && namedApplied {
+						// Logical effort resolved to session-resume-* members
+						// that applied; the remote claim still uses the
+						// operator's original selector.
+						shouldRelease = true
+					}
+					if shouldRelease {
 						result := tryAutoRelease(defaultRemoteDeps(), projectsRoot, task, remoteClaimWriter(command))
 						if result.Leaked() {
 							leakedReleases = append(leakedReleases, task)
 						}
 					}
 				}
-				if len(tasks) == 1 && !appliedTasks[tasks[0]] {
+				if len(tasks) == 1 && !namedApplied {
 					return fmt.Errorf("task %q was not removed because it did not satisfy cleanup safety", tasks[0])
 				}
 				if exitNonZeroOnReleaseLeak && len(leakedReleases) > 0 {
@@ -2150,6 +2148,49 @@ required to remove anything.`,
 	_ = command.Flags().MarkDeprecated("workers", "use --parallel instead")
 	command.Flags().BoolVarP(&verbose, "verbose", "v", false, "stream per-candidate inspection progress to stderr, even when not on a terminal")
 	return command
+}
+
+// appliedCleanupTaskNames collects physical task identities Cleanup actually
+// retired. Session-resume members keep their on-disk namespace here, not the
+// logical effort an operator typed.
+func appliedCleanupTaskNames(outcome worktrees.CleanupOutcome) map[string]bool {
+	applied := make(map[string]bool, len(outcome.Results)+len(outcome.Artifacts))
+	for _, result := range outcome.Results {
+		if result.Applied {
+			applied[result.Task] = true
+		}
+	}
+	for _, artifact := range outcome.Artifacts {
+		if artifact.Applied {
+			applied[artifact.Task] = true
+		}
+	}
+	return applied
+}
+
+// namedCleanupApplySatisfied reports whether a single named --apply cleanup
+// retired every identity Cleanup resolved from that selector. The library
+// expands a logical effort to session-resume-* directories before it mutates;
+// judging the pre-resolution argv is how a successful resume cleanup used to
+// exit 1 after worktree_gone and branch_deleted were already true (wb#265).
+func namedCleanupApplySatisfied(requested []string, outcome worktrees.CleanupOutcome) bool {
+	if len(requested) != 1 {
+		return true
+	}
+	applied := appliedCleanupTaskNames(outcome)
+	names := outcome.ResolvedTasks
+	if len(names) == 0 {
+		names = requested
+	}
+	if len(names) == 0 {
+		return false
+	}
+	for _, name := range names {
+		if !applied[name] {
+			return false
+		}
+	}
+	return true
 }
 
 func printRetireTaskShells(command *cobra.Command, outcome worktrees.RetireShellsOutcome) error {
