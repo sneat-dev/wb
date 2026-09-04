@@ -43,8 +43,6 @@ func TestBuiltInNodePrePushSelectsPackageManager(t *testing.T) {
 			if got, want := readLogLines(t, toolLog), []string{
 				"node:lint",
 				test.manager + ":run lint",
-				"node:test",
-				test.manager + ":run test",
 			}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("tool calls = %v, want %v", got, want)
 			}
@@ -58,7 +56,7 @@ func TestBuiltInNodePrePushSkipsUndefinedScripts(t *testing.T) {
 	if err != nil || result.ExitCode != 0 {
 		t.Fatalf("run result = %#v, error = %v", result, err)
 	}
-	if got, want := readLogLines(t, toolLog), []string{"node:lint", "npm:run lint", "node:test"}; !reflect.DeepEqual(got, want) {
+	if got, want := readLogLines(t, toolLog), []string{"node:lint", "npm:run lint"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("tool calls = %v, want %v", got, want)
 	}
 }

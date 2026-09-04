@@ -74,7 +74,7 @@ func TestASkippedPushExplainsItself(t *testing.T) {
 	classification := ClassifyPushTier([]RefUpdate{{
 		RemoteRef: "refs/heads/stream/x", LocalRef: "refs/heads/stream/x", LocalSHA: "a", RemoteSHA: "b",
 	}}, "main", nil)
-	if classification.Reason == "" || !strings.Contains(classification.Reason, "skipping lint and test") {
+	if classification.Reason == "" || !strings.Contains(classification.Reason, "skipping language validation") {
 		t.Fatalf("reason = %q", classification.Reason)
 	}
 }

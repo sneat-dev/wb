@@ -285,7 +285,7 @@ func TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness(t *testing.T) {
 	}
 }
 
-func TestMaybeWarnSkillsDriftWarnsForEachPresentHarness(t *testing.T) {
+func TestOrdinaryCommandsDoNotWarnAboutSkillsDrift(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
@@ -306,17 +306,8 @@ func TestMaybeWarnSkillsDriftWarnsForEachPresentHarness(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	text := stderr.String()
-	for _, dir := range []string{
-		filepath.Join(home, ".claude", "skills"),
-		filepath.Join(home, ".cursor", "skills"),
-	} {
-		if !strings.Contains(text, dir) {
-			t.Errorf("drift banner missing %s; stderr=%q", dir, text)
-		}
-	}
-	if strings.Contains(text, filepath.Join(home, ".codex", "skills")) {
-		t.Errorf("absent Codex must not appear in the drift banner; stderr=%q", text)
+	if stderr.Len() != 0 {
+		t.Fatalf("ordinary command emitted skills drift noise: %q", stderr.String())
 	}
 }
 
