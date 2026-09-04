@@ -70,6 +70,29 @@ func TestLogicalCleanupTaskResolvesSessionResumeNamespace(t *testing.T) {
 	}
 }
 
+func TestLogicalCleanupTaskResolvesRepositoryLocalSessionResumeNamespace(t *testing.T) {
+	fixture := newGitFixture(t)
+	physical := "session-resume-local-abc-m-001-abcdef01"
+	root := filepath.Join(fixture.canonical, ".worktrees")
+	worktree := filepath.Join(root, physical)
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := newCreatedManifest("logical-local-session-effort")
+	manifest.Worktree = worktree
+	manifest.Repository = "acme/app"
+	if err := WriteManifest(worktree, manifest); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveLogicalCleanupTasks([]wbhome.Layout{{WorktreesRoot: root, Local: true}}, []string{"logical-local-session-effort"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0] != physical {
+		t.Fatalf("resolved local logical cleanup task = %#v, want %q", resolved, physical)
+	}
+}
+
 func TestCleanupLogicalSessionResumeApplyReportsPhysicalResolvedTasks(t *testing.T) {
 	const logical = "logical-session-cleanup"
 	const physical = "session-resume-resume-apply-m-001-abcdef01"

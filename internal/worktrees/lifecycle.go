@@ -179,7 +179,7 @@ func gitCommonDir(ctx context.Context, worktreePath string) string {
 	return worktreePath
 }
 
-// listProgressReporter carries the shared candidate counter across layouts so// listProgressReporter carries the shared candidate counter across layouts so
+// listProgressReporter carries the shared candidate counter across layouts so
 // the index a caller sees is continuous over the whole run, not per layout.
 //
 // Every worker reports through one reporter, so the counter and the callback
@@ -1960,7 +1960,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// A task directory with no repositories under it yields no candidate and no
 	// diagnostic, so it is invisible to inventory. Discover it here, before any
 	// apply, so a dry run states it and an apply acts only on what was planned.
-	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter)
+	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter, resolution.Write.Home)
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -2759,6 +2759,13 @@ func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]stri
 					continue
 				}
 				taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
+				if layout.Local {
+					manifest, manifestErr := ReadManifest(taskRoot)
+					if manifestErr == nil && manifest.EffortID == logical {
+						matches = append(matches, taskEntry.Name())
+					}
+					continue
+				}
 				owners, readErr := os.ReadDir(taskRoot)
 				if readErr != nil {
 					if errors.Is(readErr, os.ErrNotExist) {

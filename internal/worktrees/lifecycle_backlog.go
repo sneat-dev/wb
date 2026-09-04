@@ -259,10 +259,12 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
-	allowedRoots := make(map[string]bool, len(worktreesRoots))
-	for _, root := range worktreesRoots {
-		allowedRoots[filepath.Clean(root)] = true
-	}
+	// A checked-out task can disappear before a user changes the configured
+	// shared root. The immutable WB_HOME backlog is then the only authority
+	// left for its former physical root. Keep the argument for call-site
+	// compatibility, but never make current placement policy a prerequisite
+	// for validating that durable record.
+	_ = worktreesRoots
 	var records []lifecycleBacklogRecord
 	var quarantined []LifecycleBacklogQuarantine
 	for _, entry := range entries {
@@ -289,7 +291,7 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 		// this run's projects root, worktrees root, disposition, task and
 		// repository, and is not already finished.
 		if entry.Name() != record.ID+".json" || record.Stage == lifecycleStageComplete || record.Disposition != disposition ||
-			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) || !allowedRoots[filepath.Clean(record.WorktreesRoot)] {
+			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) {
 			continue
 		}
 		if !taskSelectionMatches(tasks, record.Task) || !filterMatches(filter, record.Repository) {
