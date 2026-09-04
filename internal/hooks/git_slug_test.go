@@ -78,6 +78,9 @@ func TestOriginSlugOfAStagingWorktreeMatchesTheCanonicalClone(t *testing.T) {
 	}
 
 	t.Setenv("PATH", "/nonexistent")
+	if got := originSlug(stage); got != "acme/app" {
+		t.Fatalf("originSlug on a staging worktree spawned Git or missed the gitfile: %q", got)
+	}
 	if got := canonicalCheckoutSlug(stage); got != "acme/app" {
 		t.Fatalf("canonicalCheckoutSlug without git = %q, want acme/app from the gitfile (hooks must not spawn git during worktree add)", got)
 	}

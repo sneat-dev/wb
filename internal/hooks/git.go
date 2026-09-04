@@ -165,6 +165,13 @@ func RunSecureHooksGitHelper(args []string) int {
 }
 
 func originSlug(repoRoot string) string {
+	// A linked worktree — including `.wb-stage-*/checkout` during create — is
+	// entered by Git hooks while `git worktree add` still holds the canonical
+	// repository lock. Spawning Git here deadlocks the add. The gitfile already
+	// names the main worktree; WB's layout slug on that path is the attribution.
+	if canonical := canonicalRootFromCheckout(repoRoot); canonical != "" && filepath.Clean(canonical) != filepath.Clean(repoRoot) {
+		return checkoutSlug(canonical)
+	}
 	remote, err := gitOutput(repoRoot, "remote", "get-url", "origin")
 	if err != nil || remote == "" {
 		return canonicalCheckoutSlug(repoRoot)
