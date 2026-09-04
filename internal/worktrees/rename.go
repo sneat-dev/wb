@@ -496,6 +496,8 @@ type renameReport struct {
 // decision/result (result) so apply can use the former without exposing it.
 type renamePlan struct {
 	entry            ListResult
+	destinationRoot  string
+	destinationLocal bool
 	refreshed        ListResult
 	baseRevision     string
 	remoteHead       string
@@ -549,38 +551,44 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 	if len(listed.Results) == 0 && len(listed.Diagnostics) == 0 {
 		return RenameOutcome{}, fmt.Errorf("WB worktree task %q was not found", normalized.OldTask)
 	}
-	worktreesRoots := make(map[string]bool, 1)
-	for _, entry := range listed.Results {
-		worktreesRoots[entry.WorktreesRoot] = true
-	}
-	if len(worktreesRoots) > 1 {
-		return RenameOutcome{}, fmt.Errorf("task %q exists under more than one WB worktrees root; rename is not supported for a split task", normalized.OldTask)
-	}
-
-	destinationTaskPath := filepath.Join(resolution.Write.WorktreesRoot, normalized.NewTask)
-	destinationReason := ""
-	if _, statErr := os.Lstat(destinationTaskPath); statErr == nil {
-		destinationReason = fmt.Sprintf("destination task already exists: %s", destinationTaskPath)
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return RenameOutcome{}, fmt.Errorf("inspect destination task %s: %w", destinationTaskPath, statErr)
-	}
-
 	plans := make([]renamePlan, len(listed.Results))
+	destinationReason := ""
+	sharedTaskDestinations := make(map[string]bool)
 	for index, entry := range listed.Results {
-		owner, repository, splitErr := splitRepository(entry.Repository)
-		if splitErr != nil {
-			return RenameOutcome{}, splitErr
-		}
 		branch, baseRevision, branchErr := resolveRenameBranch(ctx, normalized, entry)
 		if branchErr != nil {
 			return RenameOutcome{}, branchErr
 		}
+		placement, placementErr := ResolveWorktreePlacement(ctx, entry.CanonicalDir, baseRevision)
+		if placementErr != nil {
+			return RenameOutcome{}, placementErr
+		}
+		newWorktreeDir, pathErr := placement.Path(normalized.NewTask, entry.Repository)
+		if pathErr != nil {
+			return RenameOutcome{}, pathErr
+		}
+		collisionPath := newWorktreeDir
+		if !placement.RepositoryLocal {
+			collisionPath = filepath.Join(placement.Root, normalized.NewTask)
+			if sharedTaskDestinations[collisionPath] {
+				collisionPath = ""
+			} else {
+				sharedTaskDestinations[collisionPath] = true
+			}
+		}
+		if collisionPath != "" {
+			if _, statErr := os.Lstat(collisionPath); statErr == nil {
+				destinationReason = fmt.Sprintf("destination task already exists: %s", collisionPath)
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return RenameOutcome{}, fmt.Errorf("inspect destination task %s: %w", collisionPath, statErr)
+			}
+		}
 		eligible, reason := renameEligibility(entry)
-		plans[index] = renamePlan{entry: entry, baseRevision: baseRevision, result: RenameResult{
+		plans[index] = renamePlan{entry: entry, destinationRoot: placement.Root, destinationLocal: placement.RepositoryLocal, baseRevision: baseRevision, result: RenameResult{
 			OldTask: normalized.OldTask, NewTask: normalized.NewTask,
 			Repository: entry.Repository, CanonicalDir: entry.CanonicalDir,
 			OldWorktreeDir: entry.WorktreeDir,
-			NewWorktreeDir: filepath.Join(destinationTaskPath, owner, repository),
+			NewWorktreeDir: newWorktreeDir,
 			OldBranch:      entry.Branch, NewBranch: branch, Base: normalized.Base,
 			Eligible: eligible, Reason: reason,
 		}}
@@ -619,13 +627,15 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 		return fail(fmt.Errorf("no repository under task %q is eligible to rename: %s", normalized.OldTask, firstRenameReason(plans)))
 	}
 
-	oldWorktreesRoot := plans[0].entry.WorktreesRoot
-	oldTaskDirectory, err := openExistingTaskDirectory(oldWorktreesRoot, normalized.OldTask)
+	// WB_HOME owns the task lock for every placement. Physical local roots are
+	// per-repository and must never grow independent locks, otherwise a create
+	// in one canonical repository can race a rename in another.
+	oldOperation, err := prepareOperationRoot(resolution.Write.Home, normalized.OldTask, nil)
 	if err != nil {
 		return fail(fmt.Errorf("open task %q: %w", normalized.OldTask, err))
 	}
-	defer func() { _ = oldTaskDirectory.Close() }()
-	oldLock, err := acquireLockAt(oldTaskDirectory, normalized.OldTask)
+	defer oldOperation.close()
+	oldLock, err := acquireLockAt(oldOperation.Directory, normalized.OldTask)
 	if err != nil {
 		return fail(fmt.Errorf("lock task %q: %w", normalized.OldTask, err))
 	}
@@ -651,39 +661,34 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 		return fail(fmt.Errorf("reserve new private Work Log prompt: %w", err))
 	}
 
-	newWorktreesDirectory, err := openOrCreateWorktreesRoot(resolution.Write.Home)
+	newOperation, err := prepareOperationRoot(resolution.Write.Home, normalized.NewTask, nil)
 	if err != nil {
 		return fail(err)
 	}
-	defer func() { _ = newWorktreesDirectory.Close() }()
-	newTaskDirectory, newTaskPath, err := createNewTaskDirectory(newWorktreesDirectory, resolution.Write.WorktreesRoot, normalized.NewTask)
-	if err != nil {
-		return fail(err)
-	}
-	defer func() { _ = newTaskDirectory.Close() }()
-	newLock, err := acquireLockAt(newTaskDirectory, normalized.NewTask)
+	defer newOperation.close()
+	newLock, err := acquireLockAt(newOperation.Directory, normalized.NewTask)
 	if err != nil {
 		return fail(fmt.Errorf("lock task %q: %w", normalized.NewTask, err))
 	}
 	defer func() { _ = newLock.release() }()
-	if err := prepareRenameDestinations(newTaskDirectory, newTaskPath, plans); err != nil {
-		if cleanupErr := retireEmptyRenameDestination(newWorktreesDirectory, newTaskDirectory, &newLock, normalized.NewTask, plans); cleanupErr != nil {
-			err = fmt.Errorf("%w; preserve failed destination for audit: %v", err, cleanupErr)
-		}
-		return fail(err)
+	newInventory, inventoryErr := ListWithDiagnostics(ctx, ListOptions{
+		ProjectsRoot: normalized.ProjectsRoot, Task: normalized.NewTask, Base: normalized.Base, GitHub: false,
+	})
+	if inventoryErr != nil {
+		return fail(fmt.Errorf("inspect destination task %q while locked: %w", normalized.NewTask, inventoryErr))
 	}
-
+	if len(newInventory.Results) > 0 || len(newInventory.Diagnostics) > 0 {
+		return fail(fmt.Errorf("destination task already exists: %s", normalized.NewTask))
+	}
 	for index := range plans {
 		if !plans[index].result.Eligible {
 			continue
 		}
-		if applyErr := applyRename(ctx, newTaskDirectory, newTaskPath, normalized, &plans[index]); applyErr != nil {
-			rollbackErr := rollbackAppliedRenames(ctx, filepath.Dir(plans[index].entry.WorktreesRoot), plans[:index])
+		if applyErr := applyRename(ctx, resolution.Write.Home, normalized, &plans[index]); applyErr != nil {
+			rollbackErr := rollbackAppliedRenames(ctx, resolution.Write.Home, plans[:index])
 			outcome.Results = collectRenameResults(plans)
 			if rollbackErr != nil {
 				applyErr = fmt.Errorf("%w; coordinated rollback failed: %v", applyErr, rollbackErr)
-			} else if cleanupErr := retireEmptyRenameDestination(newWorktreesDirectory, newTaskDirectory, &newLock, normalized.NewTask, plans); cleanupErr != nil {
-				applyErr = fmt.Errorf("%w; rollback restored repositories but destination retirement failed: %v", applyErr, cleanupErr)
 			}
 			return fail(applyErr)
 		}
@@ -823,10 +828,9 @@ func firstRenameReason(plans []renamePlan) string {
 }
 
 // applyRename moves one repository's worktree and switches it onto a freshly
-// created branch. newTaskDirectory/newTaskPath are the already-created,
-// already-locked destination task directory shared by every repository in
-// this Rename call.
-func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath string, options RenameOptions, plan *renamePlan) (returnErr error) {
+// created branch. The WB_HOME task lock is held by Rename; this function only
+// prepares the physical parent that owns this repository's checkout.
+func applyRename(ctx context.Context, home string, options RenameOptions, plan *renamePlan) (returnErr error) {
 	owner, repository, err := splitRepository(plan.entry.Repository)
 	if err != nil {
 		return err
@@ -834,7 +838,7 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 
 	// Recheck safety immediately before mutating under the source task lock.
 	refreshed, err := inspectLifecycleWorktree(
-		ctx, options.ProjectsRoot, "", wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot},
+		ctx, options.ProjectsRoot, "", wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot, Local: plan.entry.Local},
 		// Rename never consults GitHub, so no landing receipt applies here.
 		// renameEligibility already refuses an adopted worktree, so this is
 		// never reached for one; a nested, non-external recheck is correct.
@@ -855,7 +859,6 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 	if refreshed.HeadSHA != plan.refreshed.HeadSHA {
 		return fmt.Errorf("rename safety changed for %s after coordinated preflight", refreshed.Repository)
 	}
-	home := filepath.Dir(plan.entry.WorktreesRoot)
 	priorProjection, projectionErr := readWorkLogProjectionForClaim(home, plan.entry.WorktreeDir)
 	plan.priorProjection = priorProjection
 	plan.hadProjection = projectionErr == nil
@@ -904,27 +907,14 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		plan.result.OldRemoteDeleted = true
 	}
 
-	if !directoryStillMatches(newTaskPath, newTaskDirectory) {
-		return fmt.Errorf("destination task path changed before creating owner directory: %s", newTaskPath)
-	}
-	ownerFD, err := openOrCreateNoFollowDirectory(int(newTaskDirectory.Fd()), owner)
-	if err != nil {
-		return fmt.Errorf("create destination owner directory: %w", err)
-	}
-	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-rename-owner")
-	if ownerDirectory == nil {
-		_ = unix.Close(ownerFD)
-		return fmt.Errorf("wrap destination owner directory %s", owner)
-	}
-	defer func() { _ = ownerDirectory.Close() }()
-	if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
+	if err := prepareRenamePhysicalDestination(ctx, options.NewTask, owner, repository, plan); err != nil {
 		return err
 	}
 
 	moveOutcome, err := moveWorktree(
 		ctx,
 		plan.entry.CanonicalDir,
-		plan.entry.WorktreesRoot,
+		plan.destinationRoot,
 		plan.entry.WorktreeDir,
 		plan.result.NewWorktreeDir,
 		worktreeMoveHooks{
@@ -954,7 +944,7 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 	}
 	plan.result.PreservedCachePaths = append([]string(nil), options.PreserveCachePaths...)
 
-	if checkoutErr := runSecureRenameGit(ctx, plan.entry.CanonicalDir, plan.entry.WorktreesRoot, plan.result.NewWorktreeDir,
+	if checkoutErr := runSecureRenameGit(ctx, plan.entry.CanonicalDir, plan.destinationRoot, plan.result.NewWorktreeDir,
 		"checkout", "-b", plan.result.NewBranch, plan.baseRevision); checkoutErr != nil {
 		return fmt.Errorf("check out new branch %s in %s: %w", plan.result.NewBranch, plan.result.NewWorktreeDir, checkoutErr)
 	}
@@ -984,7 +974,7 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 			return fmt.Errorf("bind preflight for %s: %w", plan.entry.Repository, err)
 		}
 	}
-	if _, logErr := recordWorkLog(filepath.Dir(filepath.Dir(newTaskPath)), options.NewTask, CreateResult{
+	if _, logErr := recordWorkLog(home, options.NewTask, CreateResult{
 		Repository: plan.entry.Repository, CanonicalDir: plan.entry.CanonicalDir,
 		WorktreeDir: plan.result.NewWorktreeDir, Branch: plan.result.NewBranch, Base: options.Base,
 		BaseSHA: plan.baseRevision, Action: "recycled",
@@ -992,6 +982,98 @@ func applyRename(ctx context.Context, newTaskDirectory *os.File, newTaskPath str
 		return fmt.Errorf("bind recycled worktree to a new work log: %w", logErr)
 	}
 	plan.result.Applied = true
+	return nil
+}
+
+// prepareRenamePhysicalDestination opens the destination through descriptors
+// immediately before moveWorktree performs its own no-replace rename. Local
+// placement has no task directory: the checkout itself is the task child.
+// Shared placement retains the historical task/owner hierarchy, but its lock
+// still belongs to WB_HOME and is held by Rename.
+func prepareRenamePhysicalDestination(ctx context.Context, task, owner, repository string, plan *renamePlan) error {
+	if plan.destinationLocal {
+		canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
+		if err != nil {
+			return err
+		}
+		defer canonical.close()
+		rootPath, root, err := prepareCanonicalWorktreesRoot(ctx, canonical, plan.baseRevision)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = root.Close() }()
+		if rootPath != plan.destinationRoot || !directoryStillMatches(rootPath, root) {
+			return fmt.Errorf("local rename destination root changed before move: %s", plan.destinationRoot)
+		}
+		return requireAbsentNoFollowChild(int(root.Fd()), task)
+	}
+
+	root, err := openAbsoluteDirectoryNoFollow(plan.destinationRoot, true)
+	if err != nil {
+		return fmt.Errorf("open shared rename destination root %s: %w", plan.destinationRoot, err)
+	}
+	defer func() { _ = root.Close() }()
+	if !directoryStillMatches(plan.destinationRoot, root) {
+		return fmt.Errorf("shared rename destination root changed before move: %s", plan.destinationRoot)
+	}
+	taskFD, err := openOrCreateNoFollowDirectory(int(root.Fd()), task)
+	if err != nil {
+		return fmt.Errorf("create shared rename task destination: %w", err)
+	}
+	taskDirectory := os.NewFile(uintptr(taskFD), "wb-rename-shared-task")
+	if taskDirectory == nil {
+		_ = unix.Close(taskFD)
+		return fmt.Errorf("wrap shared rename task destination")
+	}
+	defer func() { _ = taskDirectory.Close() }()
+	ownerFD, err := openOrCreateNoFollowDirectory(int(taskDirectory.Fd()), owner)
+	if err != nil {
+		return fmt.Errorf("create shared rename owner destination: %w", err)
+	}
+	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-rename-shared-owner")
+	if ownerDirectory == nil {
+		_ = unix.Close(ownerFD)
+		return fmt.Errorf("wrap shared rename owner destination")
+	}
+	defer func() { _ = ownerDirectory.Close() }()
+	return requireAbsentNoFollowChild(ownerFD, repository)
+}
+
+// preflightRenamePhysicalDestination proves every target root is usable
+// before the first source claim is sealed. It deliberately leaves the final
+// checkout name absent; moveWorktree owns that no-replace publication.
+func preflightRenamePhysicalDestination(ctx context.Context, task string, plan *renamePlan) error {
+	if plan.destinationLocal {
+		canonical, err := openCanonicalRepository(plan.entry.CanonicalDir)
+		if err != nil {
+			return err
+		}
+		defer canonical.close()
+		rootPath, root, err := prepareCanonicalWorktreesRoot(ctx, canonical, plan.baseRevision)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = root.Close() }()
+		if rootPath != plan.destinationRoot || !directoryStillMatches(rootPath, root) {
+			return fmt.Errorf("local rename destination root changed during preflight: %s", plan.destinationRoot)
+		}
+		return requireAbsentNoFollowChild(int(root.Fd()), task)
+	}
+	root, err := openAbsoluteDirectoryNoFollow(plan.destinationRoot, true)
+	if err != nil {
+		return fmt.Errorf("open shared rename destination root %s: %w", plan.destinationRoot, err)
+	}
+	defer func() { _ = root.Close() }()
+	if !directoryStillMatches(plan.destinationRoot, root) {
+		return fmt.Errorf("shared rename destination root changed during preflight: %s", plan.destinationRoot)
+	}
+	probe := ".wb-rename-probe-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	if err := unix.Mkdirat(int(root.Fd()), probe, 0o700); err != nil {
+		return fmt.Errorf("verify shared rename destination write access: %w", err)
+	}
+	if err := unix.Unlinkat(int(root.Fd()), probe, unix.AT_REMOVEDIR); err != nil {
+		return fmt.Errorf("remove shared rename destination probe: %w", err)
+	}
 	return nil
 }
 
@@ -1220,7 +1302,7 @@ func resetRenameResultAfterRollback(plan *renamePlan) {
 
 func preflightRename(ctx context.Context, options RenameOptions, plan *renamePlan) error {
 	refreshed, err := inspectLifecycleWorktree(ctx, options.ProjectsRoot, "",
-		wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot}, options.OldTask,
+		wbhome.Layout{WorktreesRoot: plan.entry.WorktreesRoot, Local: plan.entry.Local}, options.OldTask,
 		plan.entry.WorktreeDir, options.Base, "", false, false, false, inspectPolicy{})
 	if err != nil {
 		return fmt.Errorf("preflight %s: %w", plan.entry.Repository, err)
@@ -1276,8 +1358,15 @@ func preflightRename(ctx context.Context, options RenameOptions, plan *renamePla
 	if remoteHead != "" && !options.DeleteRemote {
 		return fmt.Errorf("origin/%s remains cleanup backlog; rerun recycle with --remote", refreshed.Branch)
 	}
-	if err := preflightWorkLogSeal(filepath.Dir(plan.entry.WorktreesRoot), refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
+	resolution, resolveErr := wbhome.Resolve(options.ProjectsRoot)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	if err := preflightWorkLogSeal(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
 		return fmt.Errorf("preflight Work Log for %s: %w", plan.entry.Repository, err)
+	}
+	if err := preflightRenamePhysicalDestination(ctx, options.NewTask, plan); err != nil {
+		return fmt.Errorf("preflight destination for %s: %w", plan.entry.Repository, err)
 	}
 	plan.refreshed = refreshed
 	plan.baseRevision = baseRevision

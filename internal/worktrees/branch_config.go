@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,7 +26,81 @@ type branchConfigFile struct {
 	Version   int `yaml:"version"`
 	Worktrees struct {
 		BranchPrefix *string `yaml:"branch_prefix"`
+		// Root is intentionally a user-only setting. It selects the exact
+		// shared directory containing <task>/<owner>/<repository> worktrees.
+		// When unset, new worktrees are repository-local at
+		// <canonical>/.worktrees/<task>.
+		Root *string `yaml:"root"`
 	} `yaml:"worktrees"`
+}
+
+// worktreePlacement is the physical placement selected for one canonical
+// repository. WB_HOME remains the authority for claims, locks, and receipts;
+// placement only answers where Git writes the linked checkout.
+type worktreePlacement struct {
+	Root  string
+	Local bool
+}
+
+// WorktreePlacement is the public, resolved physical placement for one
+// canonical repository. It deliberately does not expose WB_HOME: that is
+// lifecycle authority, not a worktree checkout location.
+type WorktreePlacement struct {
+	Root            string
+	RepositoryLocal bool
+}
+
+// Path returns the one physical checkout path for task and repository.
+func (placement WorktreePlacement) Path(task, repository string) (string, error) {
+	owner, name, err := splitRepository(repository)
+	if err != nil {
+		return "", err
+	}
+	if !validSafeSegment(task) {
+		return "", fmt.Errorf("invalid worktree task %q", task)
+	}
+	if placement.RepositoryLocal {
+		return filepath.Join(placement.Root, task), nil
+	}
+	return filepath.Join(placement.Root, task, owner, name), nil
+}
+
+// ResolveWorktreePlacement resolves user placement policy against an exact
+// canonical base revision. It opens no destination and performs no mutation.
+func ResolveWorktreePlacement(ctx context.Context, canonicalPath, baseRevision string) (WorktreePlacement, error) {
+	canonical, err := openCanonicalRepository(canonicalPath)
+	if err != nil {
+		return WorktreePlacement{}, err
+	}
+	defer canonical.close()
+	placement, err := configuredWorktreePlacement(ctx, canonical, baseRevision)
+	if err != nil {
+		return WorktreePlacement{}, err
+	}
+	return WorktreePlacement{Root: placement.Root, RepositoryLocal: placement.Local}, nil
+}
+
+// ResolveUserWorktreePlacement resolves only the machine-local placement
+// setting. It performs no Git reads, so callers that merely display a planned
+// path do not fetch or treat a mutable checkout as repository policy.
+// Mutating lifecycle operations must use ResolveWorktreePlacement instead.
+func ResolveUserWorktreePlacement(canonicalPath string) (WorktreePlacement, error) {
+	if !filepath.IsAbs(canonicalPath) {
+		return WorktreePlacement{}, fmt.Errorf("canonical repository path must be absolute: %s", canonicalPath)
+	}
+	canonicalPath = filepath.Clean(canonicalPath)
+	global, found, globalPath, err := configuredUserWorktreesConfig()
+	if err != nil {
+		return WorktreePlacement{}, err
+	}
+	if found && global.Worktrees.Root != nil {
+		root, resolveErr := resolveSharedWorktreesRoot(*global.Worktrees.Root)
+		if resolveErr != nil {
+			return WorktreePlacement{}, fmt.Errorf("worktrees config %s root: %w", globalPath, resolveErr)
+		}
+		return WorktreePlacement{Root: root}, nil
+	}
+	return WorktreePlacement{Root: filepath.Join(canonicalPath, ".worktrees"), RepositoryLocal: true}, nil
 }
 
 // branchNamingOptions carries only precedence inputs. Agent provenance is
@@ -113,6 +188,105 @@ func configuredBranchPrefix(ctx context.Context, canonical *canonicalRepository,
 		prefix = *config.Worktrees.BranchPrefix
 	}
 	return prefix, nil
+}
+
+// configuredWorktreePlacement reads the machine-local placement setting. A
+// repository is allowed to choose branch spelling, but it must never redirect
+// filesystem writes on a developer's machine.
+func configuredWorktreePlacement(ctx context.Context, canonical *canonicalRepository, baseRevision string) (worktreePlacement, error) {
+	if canonical == nil || !isGitObjectID(baseRevision) {
+		return worktreePlacement{}, fmt.Errorf("worktree placement requires a fetched canonical target-base revision")
+	}
+	contents, found, err := repositoryBranchConfigAt(ctx, canonical, baseRevision)
+	if err != nil {
+		return worktreePlacement{}, err
+	}
+	if found {
+		config, _, parseErr := parseBranchConfig(".wb/worktrees.yaml at "+baseRevision, contents)
+		if parseErr != nil {
+			return worktreePlacement{}, parseErr
+		}
+		if config.Worktrees.Root != nil {
+			return worktreePlacement{}, fmt.Errorf("repository worktrees policy at %s must not set worktrees.root; placement is a user-local setting", baseRevision)
+		}
+	}
+	placement, err := ResolveUserWorktreePlacement(canonical.path)
+	if err != nil {
+		return worktreePlacement{}, err
+	}
+	return worktreePlacement{Root: placement.Root, Local: placement.RepositoryLocal}, nil
+}
+
+func configuredUserWorktreesConfig() (branchConfigFile, bool, string, error) {
+	globalPath, err := defaultWorktreesConfigPath()
+	if err != nil {
+		return branchConfigFile{}, false, "", err
+	}
+	global, found, err := loadBranchConfigFile(globalPath)
+	return global, found, globalPath, err
+}
+
+func appendConfiguredSharedWorktreesLayout(layouts []wbhome.Layout) ([]wbhome.Layout, error) {
+	config, found, path, err := configuredUserWorktreesConfig()
+	if err != nil {
+		return nil, err
+	}
+	if !found || config.Worktrees.Root == nil {
+		return layouts, nil
+	}
+	root, err := resolveSharedWorktreesRoot(*config.Worktrees.Root)
+	if err != nil {
+		return nil, fmt.Errorf("worktrees config %s root: %w", path, err)
+	}
+	for _, layout := range layouts {
+		if filepath.Clean(layout.WorktreesRoot) == filepath.Clean(root) {
+			return layouts, nil
+		}
+	}
+	return append(layouts, wbhome.Layout{WorktreesRoot: root}), nil
+}
+
+func resolveSharedWorktreesRoot(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("must not be empty")
+	}
+	if value == "~" || strings.HasPrefix(value, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user home: %w", err)
+		}
+		if value == "~" {
+			value = home
+		} else {
+			value = filepath.Join(home, strings.TrimPrefix(value, "~/"))
+		}
+	}
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("must be an absolute path (or begin with ~/)")
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	return resolvePlacementPath(filepath.Clean(absolute))
+}
+
+func resolvePlacementPath(path string) (string, error) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return path, nil
+	}
+	resolvedParent, err := resolvePlacementPath(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(path)), nil
 }
 
 func defaultWorktreesConfigPath() (string, error) {
@@ -218,6 +392,14 @@ func parseBranchConfig(path string, contents []byte) (branchConfigFile, bool, er
 		}
 		if prefix != "" && !validBranch(context.Background(), prefix+"probe") {
 			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s has invalid branch_prefix %q", path, prefix)
+		}
+	}
+	if config.Worktrees.Root != nil {
+		if strings.TrimSpace(*config.Worktrees.Root) != *config.Worktrees.Root {
+			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s root must not have surrounding whitespace", path)
+		}
+		if *config.Worktrees.Root == "" {
+			return branchConfigFile{}, false, fmt.Errorf("worktrees config %s root must not be empty", path)
 		}
 	}
 	return config, true, nil

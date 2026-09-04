@@ -47,6 +47,23 @@ func residueSweep(projectsRoot string, roots map[string]string, registered map[s
 		if err != nil {
 			continue
 		}
+		if layout == LayoutLocal {
+			owner, repository, coordinatesErr := canonicalCoordinates(projectsRoot, filepath.Dir(root))
+			if coordinatesErr != nil {
+				continue
+			}
+			for _, task := range tasks {
+				if !task.IsDir() || strings.HasPrefix(task.Name(), ".") {
+					continue
+				}
+				candidate := inspectResidue(projectsRoot, root, layout, task.Name(), owner+"/"+repository,
+					filepath.Join(root, task.Name()), registered)
+				if candidate != nil {
+					found = append(found, *candidate)
+				}
+			}
+			continue
+		}
 		for _, task := range tasks {
 			if !task.IsDir() || strings.HasPrefix(task.Name(), ".") {
 				continue

@@ -111,6 +111,95 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 	}
 }
 
+func TestCreateUsesConfiguredSharedWorktreesRoot(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "shared-root", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create shared-root = %#v, err=%v", created, err)
+	}
+	resolvedRoot, resolveErr := resolveSharedWorktreesRoot(sharedRoot)
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
+	want := filepath.Join(resolvedRoot, "shared-root", "acme", "app")
+	if created[0].WorktreeDir != want {
+		t.Fatalf("shared worktree = %q, want %q", created[0].WorktreeDir, want)
+	}
+	if _, err := Guard(context.Background(), want, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
+		t.Fatalf("guard explicit shared worktree: %v", err)
+	}
+	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "shared-root", Workers: 1})
+	if err != nil || len(listed) != 1 || listed[0].WorktreeDir != want || listed[0].External {
+		t.Fatalf("list explicit shared worktree = %#v, err=%v", listed, err)
+	}
+}
+
+func TestSharedWorktreeRootRejectsRelativePath(t *testing.T) {
+	if _, err := resolveSharedWorktreesRoot("relative/worktrees"); err == nil {
+		t.Fatal("relative shared root was accepted")
+	}
+}
+
+func TestCreateFindsActiveClaimAcrossPlacementChange(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "placement-resume", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("initial local create = %#v, err=%v", created, err)
+	}
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n  branch_prefix: changed/\n")
+	if _, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "placement-resume", WorkLog: WorkLogOptions{Model: "unknown"},
+	}); err == nil || !strings.Contains(err.Error(), "worktree already exists") {
+		t.Fatalf("non-resume after placement change must refuse duplicate, err=%v", err)
+	}
+	resumed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "placement-resume", Resume: true, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(resumed) != 1 || resumed[0].WorktreeDir != created[0].WorktreeDir || resumed[0].Action != "resumed" {
+		t.Fatalf("resume across placement change = %#v, err=%v", resumed, err)
+	}
+	if _, err := os.Stat(filepath.Join(sharedRoot, "placement-resume", "acme", "app")); !os.IsNotExist(err) {
+		t.Fatalf("config change created duplicate shared worktree: %v", err)
+	}
+}
+
+func TestCreateResumeIgnoresMalformedUnrelatedRegisteredClaim(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "resume-target", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create target = %#v, err=%v", created, err)
+	}
+	other, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "unrelated-broken", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(other) != 1 {
+		t.Fatalf("create unrelated = %#v, err=%v", other, err)
+	}
+	projection := filepath.Join(other[0].WorktreeDir, workLogProjectionDirectory, workLogProjectionName)
+	if err := os.WriteFile(projection, []byte("not json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "resume-target", Resume: true, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(resumed) != 1 || resumed[0].WorktreeDir != created[0].WorktreeDir {
+		t.Fatalf("resume target with unrelated malformed claim = %#v, err=%v", resumed, err)
+	}
+}
+
 func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 	tests := []struct {
 		name          string
