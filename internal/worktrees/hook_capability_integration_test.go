@@ -107,8 +107,8 @@ if /bin/sh -c ': > "$1"' sh "$WB_TEST_FORBIDDEN" 2>/dev/null; then
     echo "forbidden write unexpectedly succeeded" >&2
     exit 99
 fi
-if [ -n "${GOCOVERDIR-}" ] || [ -n "${GOWORK-}" ]; then
-    echo "cleanup helper leaked coverage or workspace environment" >&2
+if [ -n "${GOCOVERDIR-}" ] || [ "${GOWORK-}" != "off" ]; then
+    echo "cleanup helper leaked coverage environment or did not disable caller workspace" >&2
     exit 98
 fi
 go env GOPATH > "$report_dir/gopath.txt"
