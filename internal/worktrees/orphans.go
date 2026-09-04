@@ -26,6 +26,8 @@ import (
 const (
 	LayoutCurrent  = "current"
 	LayoutLegacy   = "legacy"
+	LayoutLocal    = "local"
+	LayoutShared   = "shared"
 	LayoutExternal = "external"
 )
 
@@ -151,7 +153,12 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 
 	families := map[string][]OrphanWorktree{}
 	registered := map[string]bool{}
+	residueRoots := map[string]string{
+		currentRoot: LayoutCurrent,
+		legacyRoot:  LayoutLegacy,
+	}
 	for _, clone := range clones {
+		residueRoots[filepath.Join(clone.path, ".worktrees")] = LayoutLocal
 		linked, err := linkedWorktreesOf(ctx, clone.path)
 		if err != nil {
 			report.Unscanned = append(report.Unscanned, fmt.Sprintf("%s: %v", clone.path, err))
@@ -159,16 +166,14 @@ func Orphans(ctx context.Context, options OrphanOptions) (OrphanReport, error) {
 		}
 		for _, worktree := range linked {
 			registered[filepath.Clean(worktree.path)] = true
-			entry := inspectOrphan(ctx, clone, worktree, currentRoot, legacyRoot, base, staleAfter, now)
+			entry := inspectOrphan(ctx, home, clone, worktree, currentRoot, legacyRoot, base, staleAfter, now)
 			families[entry.RootEffort] = append(families[entry.RootEffort], entry)
 		}
 	}
 	// Everything above discovered through Git and therefore cannot see a
 	// checkout Git no longer registers. WB owns the roots below, so a directory
 	// there that nothing lists is WB's residue to explain.
-	report.Residue = residueSweep(projectsRoot, map[string]string{
-		currentRoot: LayoutCurrent, legacyRoot: LayoutLegacy,
-	}, registered)
+	report.Residue = residueSweep(projectsRoot, residueRoots, registered)
 	sort.Slice(report.Residue, func(i, j int) bool { return report.Residue[i].Path < report.Residue[j].Path })
 	report.Totals.Residue = len(report.Residue)
 
@@ -290,6 +295,7 @@ func linkedWorktreesOf(ctx context.Context, clone string) ([]linkedWorktree, err
 
 func inspectOrphan(
 	ctx context.Context,
+	home string,
 	clone canonicalClone,
 	worktree linkedWorktree,
 	currentRoot, legacyRoot string,
@@ -302,7 +308,7 @@ func inspectOrphan(
 		CanonicalDir: clone.path,
 		Repository:   clone.repository,
 		Branch:       worktree.branch,
-		Layout:       layoutOf(worktree.path, currentRoot, legacyRoot),
+		Layout:       orphanLayoutOf(ctx, home, clone, worktree.path, currentRoot, legacyRoot),
 		Missing:      worktree.missing,
 	}
 	if _, err := os.Stat(worktree.path); err != nil {
@@ -428,15 +434,24 @@ func familyDisposition(worktrees []OrphanWorktree) (string, string) {
 	}
 }
 
-func layoutOf(worktree, currentRoot, legacyRoot string) string {
+func orphanLayoutOf(ctx context.Context, home string, clone canonicalClone, worktree, currentRoot, legacyRoot string) string {
 	switch {
 	case pathWithin(currentRoot, worktree):
 		return LayoutCurrent
 	case pathWithin(legacyRoot, worktree):
 		return LayoutLegacy
-	default:
-		return LayoutExternal
+	case pathWithin(filepath.Join(clone.path, ".worktrees"), worktree):
+		return LayoutLocal
 	}
+	// A changed worktrees.root must not turn a live managed member into an
+	// external checkout. The active claim is the ownership proof; a path shape
+	// alone is never enough to make an arbitrary external worktree managed.
+	if claim, _, _, err := activeWorkLogClaim(home, worktree); err == nil {
+		if _, layoutErr := claimedSharedWorktreeLayout(worktree, claim); layoutErr == nil {
+			return LayoutShared
+		}
+	}
+	return LayoutExternal
 }
 
 // rootEffort is the first segment of a dotted effort path: the feature effort a
