@@ -43,12 +43,15 @@ func TestCleanupCompletesBacklogRecordWhoseTaskNamespaceIsGone(t *testing.T) {
 	installMergedPullRequestFixture(t, head, mergedAt)
 	stranded := strandCleanupBacklogRecord(t, fixture, "cleanup-vacant-namespace", mergedAt)
 
-	// The manual repair: the whole task namespace and the branch, by hand.
-	if err := os.RemoveAll(filepath.Dir(filepath.Dir(created.WorktreeDir))); err != nil {
+	// The manual repair removes WB's logical coordination namespace, not the
+	// placement-specific checkout parent. Repo-local placement keeps that lock
+	// under WB_HOME while the checkout lives below the canonical repository.
+	taskNamespace := filepath.Join(fixture.home, "worktrees", "cleanup-vacant-namespace")
+	if err := os.RemoveAll(taskNamespace); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "branch", "-D", created.Branch)
-	if _, statErr := os.Stat(filepath.Dir(filepath.Dir(created.WorktreeDir))); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(taskNamespace); !os.IsNotExist(statErr) {
 		t.Fatalf("fixture did not remove the task namespace: %v", statErr)
 	}
 	// The record's own subjects are now all absent, which is the only state
@@ -79,10 +82,11 @@ func TestCleanupCompletesBacklogRecordWhoseTaskNamespaceIsGone(t *testing.T) {
 func TestCleanupRefusesVacantBacklogRecordWhoseBranchSurvives(t *testing.T) {
 	fixture, created, head, mergedAt := prepareMergedTask(t, "cleanup-vacant-branch-alive")
 	installMergedPullRequestFixture(t, head, mergedAt)
-	strandCleanupBacklogRecord(t, fixture, "cleanup-vacant-branch-alive", mergedAt)
+	stranded := strandCleanupBacklogRecord(t, fixture, "cleanup-vacant-branch-alive", mergedAt)
 
-	// Namespace removed by hand, branch deliberately left behind.
-	if err := os.RemoveAll(filepath.Dir(filepath.Dir(created.WorktreeDir))); err != nil {
+	// The logical namespace is removed by hand; the branch deliberately remains.
+	taskNamespace := filepath.Join(fixture.home, "worktrees", "cleanup-vacant-branch-alive")
+	if err := os.RemoveAll(taskNamespace); err != nil {
 		t.Fatal(err)
 	}
 
@@ -96,5 +100,10 @@ func TestCleanupRefusesVacantBacklogRecordWhoseBranchSurvives(t *testing.T) {
 	}
 	if exists, branchErr := localBranchExists(context.Background(), fixture.canonical, created.Branch); branchErr != nil || !exists {
 		t.Fatalf("branch exists=%t err=%v, want it untouched", exists, branchErr)
+	}
+	var record lifecycleBacklogRecord
+	content, readErr := os.ReadFile(filepath.Join(lifecycleBacklogDirectory(fixture.home), stranded.BacklogID+".json"))
+	if readErr != nil || json.Unmarshal(content, &record) != nil || record.Stage == lifecycleStageComplete {
+		t.Fatalf("record = %#v read=%v, want incomplete backlog", record, readErr)
 	}
 }

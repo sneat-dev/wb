@@ -361,12 +361,6 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	}
 	lockRoot := lifecycleTaskLockRoot(home, layout)
 	task, err := acquireCleanupTaskAtReclaimingInterrupted(lockRoot, record.Task, true)
-	if errors.Is(err, os.ErrNotExist) {
-		// A local checkout can be removed before an interrupted transaction
-		// ever wrote its WB_HOME task shell. Recreate only that logical lock
-		// namespace; the immutable backlog still revalidates every Git asset.
-		task, err = acquireCleanupTaskAtOrCreate(lockRoot, record.Task)
-	}
 	if err != nil {
 		lockErr := fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 		if !errors.Is(err, os.ErrNotExist) {
