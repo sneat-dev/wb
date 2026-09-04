@@ -4544,9 +4544,10 @@ func runSecureCleanupGitHelper(ctx context.Context, canonical *canonicalReposito
 // secureCleanupGitHelperEnvironment keeps the hook process inside the held
 // repository and hook-runtime capability roots. Go's coverage runtime points
 // GOCOVERDIR into the parent test binary's private build directory, which the
-// cleanup capability deliberately cannot write. Likewise a caller's GOWORK
-// can point outside the retained repository. The hook still receives its
-// explicit private Go cache paths from the resolved hook layout.
+// cleanup capability deliberately cannot write. A caller's GOWORK can point
+// outside the retained repository, while discovering WB's own parent go.work
+// from a temporary hook repository is equally incorrect. The hook still
+// receives its explicit private Go cache paths from the resolved hook layout.
 func secureCleanupGitHelperEnvironment() []string {
 	parent := console.Env()
 	environment := make([]string, 0, len(parent))
@@ -4557,7 +4558,7 @@ func secureCleanupGitHelperEnvironment() []string {
 		}
 		environment = append(environment, entry)
 	}
-	return environment
+	return append(environment, "GOWORK=off")
 }
 
 // localOriginDirectoryForSecurePush authorizes the local file remote named by
