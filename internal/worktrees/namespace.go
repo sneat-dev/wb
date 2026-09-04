@@ -60,22 +60,12 @@ func removeEmptyTaskDirectory(task *cleanupTaskHandle) bool {
 // that would have selected them are long gone. Discovery is read-only and
 // happens before any apply, so a namespace a concurrent `wb worktree create`
 // makes after this scan can never appear in the list an apply acts on.
-func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter string, homes ...string) ([]LifecycleArtifact, error) {
-	logicalRoot := ""
-	if len(homes) > 0 && homes[0] != "" {
-		logicalRoot = filepath.Join(filepath.Clean(homes[0]), "worktrees")
-	}
+func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter, home string, liveTasks map[string]bool) ([]LifecycleArtifact, error) {
+	logicalRoot := filepath.Join(filepath.Clean(home), "worktrees")
 	artifacts := make([]LifecycleArtifact, 0)
 	seen := make(map[string]bool, len(layouts))
 	for _, layout := range layouts {
 		root := filepath.Clean(layout.WorktreesRoot)
-		// New local and relocated shared placements use this directory only for
-		// logical locks/claims. Its empty task shell is not proof that every
-		// physical member is terminal, so only a transaction that inspected the
-		// physical members may retire it.
-		if logicalRoot != "" && root == logicalRoot {
-			continue
-		}
 		if seen[root] {
 			continue
 		}
@@ -97,6 +87,13 @@ func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter 
 			// A malformed task directory name is already reported as its own
 			// diagnostic and is never something WB acts on by name.
 			if !validSafeSegment(entry.Name()) {
+				continue
+			}
+			// New local and relocated shared placements use WB_HOME only for
+			// coordination. A shell with a physical member remains authoritative
+			// state and cannot be retired. A genuinely empty historical shell is
+			// still terminal residue and must remain cleanable.
+			if root == logicalRoot && liveTasks[entry.Name()] {
 				continue
 			}
 			path := filepath.Join(root, entry.Name())
