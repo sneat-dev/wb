@@ -232,6 +232,7 @@ type PullRequest struct {
 	Repository string     `json:"repository,omitempty"`
 	State      string     `json:"state"`
 	Base       string     `json:"base"`
+	BaseSHA    string     `json:"base_sha,omitempty"`
 	HeadSHA    string     `json:"head_sha"`
 	MergeSHA   string     `json:"merge_sha,omitempty"`
 	Merged     *time.Time `json:"merged_at,omitempty"`
@@ -3516,7 +3517,7 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 	for _, candidate := range pullRequests {
 		pullRequest := &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: candidate.State,
-			Repository: repository, Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
+			Repository: repository, Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA, Merged: candidate.MergedAt,
 		}
 		if candidate.MergedAt != nil {
 			pullRequest.State = "MERGED"
@@ -3659,6 +3660,11 @@ func attestedAbsorbedReceipt(
 	if err != nil || rejection != "" {
 		return nil, rejection, err
 	}
+	if pullRequest != nil {
+		if rejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest); err != nil || rejection != "" {
+			return nil, rejection, err
+		}
+	}
 	landed, err := isAncestor(ctx, repository, landingSHA, target)
 	if err != nil {
 		return nil, "", err
@@ -3706,6 +3712,72 @@ func attestedAbsorbedReceipt(
 		}
 	}
 	return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
+}
+
+// verifyAttestedSquashPullRequest proves the physical relationship that a
+// squash landing hides from ordinary ancestry. GitHub supplies the immutable
+// pull-request head and merge commit; Git supplies the exact source, the
+// freshly fetched target, and both trees. No commit message, title, or branch
+// name can stand in for any part of this proof.
+func verifyAttestedSquashPullRequest(
+	ctx context.Context,
+	repository, sourceHead, target, absorbedBy string,
+	pullRequest *PullRequest,
+) (string, error) {
+	if pullRequest == nil || pullRequest.Merged == nil || pullRequest.Number <= 0 ||
+		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.HeadSHA) || !isGitObjectID(pullRequest.MergeSHA) {
+		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
+	}
+	if _, err := fetchExactRemoteCommit(ctx, repository, pullRequest.HeadSHA); err != nil {
+		return "", fmt.Errorf("fetch pull request head %s for --absorbed-by %s: %w", pullRequest.HeadSHA, absorbedBy, err)
+	}
+	sourceInPullRequest, err := isAncestor(ctx, repository, sourceHead, pullRequest.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	if !sourceInPullRequest {
+		return fmt.Sprintf("--absorbed-by %s pull request head %s does not contain exact source head %s", absorbedBy, pullRequest.HeadSHA, sourceHead), nil
+	}
+	mergeInTarget, err := isAncestor(ctx, repository, pullRequest.MergeSHA, target)
+	if err != nil {
+		return "", err
+	}
+	if !mergeInTarget {
+		return fmt.Sprintf("--absorbed-by %s merge commit %s is not contained in the exact fetched origin/%s target %s", absorbedBy, pullRequest.MergeSHA, pullRequest.Base, target), nil
+	}
+	pullRequestTree, err := commitTree(ctx, repository, pullRequest.HeadSHA)
+	if err != nil {
+		return "", err
+	}
+	mergeTree, err := commitTree(ctx, repository, pullRequest.MergeSHA)
+	if err != nil {
+		return "", err
+	}
+	if pullRequestTree != mergeTree {
+		return fmt.Sprintf("--absorbed-by %s pull request head tree %s does not equal merge tree %s", absorbedBy, pullRequestTree, mergeTree), nil
+	}
+	return "", nil
+}
+
+// fetchExactRemoteCommit obtains the immutable pull-request head from origin
+// before using it as ancestry or tree evidence. A commit merely mentioned by
+// an API response is not proof that the repository's configured origin can
+// supply the object being attested.
+func fetchExactRemoteCommit(ctx context.Context, repository, sha string) (string, error) {
+	if !isGitObjectID(sha) {
+		return "", fmt.Errorf("invalid commit %q", sha)
+	}
+	if _, err := git(ctx, repository, "fetch", "--no-tags", "origin", sha); err != nil {
+		return "", err
+	}
+	fetched, err := git(ctx, repository, "rev-parse", "--verify", "--end-of-options", sha+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if fetched != sha {
+		return "", fmt.Errorf("origin returned %s for requested commit %s", fetched, sha)
+	}
+	return fetched, nil
 }
 
 // resolveAbsorbedBy turns an operator pointer into one exact landing commit.
@@ -3759,6 +3831,9 @@ func resolveAbsorbedByPullRequest(
 	if candidate.MergedAt == nil {
 		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not merged", slug, number), nil
 	}
+	if !strings.EqualFold(candidate.State, "closed") {
+		return "", nil, fmt.Sprintf("--absorbed-by pull request %s#%d is not closed", slug, number), nil
+	}
 	if candidate.Base.Ref != base {
 		return "", nil, fmt.Sprintf(
 			"--absorbed-by pull request %s#%d merged into %q, not the requested base %q",
@@ -3771,9 +3846,15 @@ func resolveAbsorbedByPullRequest(
 			slug, number, candidate.MergeCommitSHA,
 		), nil
 	}
+	if !isGitObjectID(candidate.Head.SHA) {
+		return "", nil, fmt.Sprintf(
+			"--absorbed-by pull request %s#%d has invalid head commit %q",
+			slug, number, candidate.Head.SHA,
+		), nil
+	}
 	return candidate.MergeCommitSHA, &PullRequest{
-		Number: candidate.Number, URL: candidate.URL, State: "MERGED",
-		Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA,
+		Number: candidate.Number, URL: candidate.URL, Repository: slug, State: "MERGED",
+		Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
 		MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
 	}, "", nil
 }
@@ -3795,7 +3876,7 @@ func absorbingPullRequest(pullRequests []githubPullRequest, base string) *PullRe
 		}
 		absorbing = &PullRequest{
 			Number: candidate.Number, URL: candidate.URL, State: "MERGED",
-			Base: candidate.Base.Ref, HeadSHA: candidate.Head.SHA,
+			Base: candidate.Base.Ref, BaseSHA: candidate.Base.SHA, HeadSHA: candidate.Head.SHA,
 			MergeSHA: candidate.MergeCommitSHA, Merged: candidate.MergedAt,
 		}
 	}

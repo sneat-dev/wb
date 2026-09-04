@@ -1997,17 +1997,24 @@ func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateRes
 	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
 	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
 
-	// A sibling candidate the same integration branch carried.
+	// A real integration branch carries the source plus a sibling candidate.
+	// Its tip is retained on origin so an explicit --absorbed-by PR receipt can
+	// fetch and attest it independently of the source checkout.
+	integrationBranch := "integration/" + task
+	gitTest(t, fixture.canonical, "checkout", "-b", integrationBranch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge candidate into integration branch")
 	if err := os.WriteFile(filepath.Join(fixture.canonical, "sibling.txt"), []byte("sibling candidate\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitTest(t, fixture.canonical, "add", "sibling.txt")
 	gitTest(t, fixture.canonical, "commit", "-m", "sibling candidate")
 	integrationTip := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "-u", "origin", integrationBranch)
 
 	// Land the whole batch as one squash commit, exactly as a PR-required,
 	// merge-commit-rejecting target branch demands.
-	gitTest(t, fixture.canonical, "merge", "--squash", result.Branch)
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "merge", "--squash", integrationBranch)
 	gitTest(t, fixture.canonical, "commit", "-m", "squash integration batch (#77)")
 	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	gitTest(t, fixture.canonical, "push", "origin", "main")
@@ -2017,7 +2024,9 @@ func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateRes
 	if gitTestOutput(t, fixture.canonical, "rev-parse", head+"^{tree}") == gitTestOutput(t, fixture.canonical, "rev-parse", squashSHA+"^{tree}") {
 		t.Fatal("fixture must land more than the candidate's own tree, or it would be a plain rebase receipt")
 	}
-	_ = integrationTip
+	if merged, err := isAncestor(context.Background(), fixture.canonical, head, integrationTip); err != nil || !merged {
+		t.Fatalf("integration head must contain source: merged=%t err=%v", merged, err)
+	}
 	return fixture, result, head, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 }
 
