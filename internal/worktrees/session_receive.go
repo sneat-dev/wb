@@ -17,6 +17,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errSessionReceivePinNotRegistered = errors.New("received session pin has no registered checkout")
+
 // SessionReceiveOptions is the target-only Git boundary for a portable
 // session handoff. It deliberately accepts the validated protocol request as
 // one unit so the branch, commits, path, and digest cannot drift apart while
@@ -125,9 +127,10 @@ type SessionReceiveResult struct {
 	Reused        bool   `json:"reused"`
 }
 
-// SessionReceiveWorktreePath recovers the exact registered target checkout
-// for an already accepted request. It never reinterprets a received handoff
-// through the current placement policy, which may have changed since receive.
+// SessionReceiveWorktreePath recovers the exact registered target checkout for
+// a replay. Before a receive publishes its pin, it returns the pure user-policy
+// plan used to launch that first receive. A malformed registered pin is never
+// silently replanned through changed configuration.
 func SessionReceiveWorktreePath(projectsRoot string, request sessionmove.Request) (string, error) {
 	if _, err := sessionmove.EncodeRequest(request); err != nil {
 		return "", err
@@ -170,13 +173,28 @@ func SessionReceiveMemberPath(projectsRoot string, spec SessionReceiveSpec) (str
 	if err != nil {
 		return "", err
 	}
-	canonical, err := openCanonicalRepository(canonicalPath)
+	canonical, openErr := openCanonicalRepository(canonicalPath)
+	if openErr == nil {
+		defer canonical.close()
+		_, path, receivedErr := receivedSessionWorktreePath(context.Background(), canonical, spec, remote.Identity.Repository)
+		if receivedErr == nil {
+			return path, nil
+		}
+		if !errors.Is(receivedErr, errSessionReceivePinNotRegistered) {
+			return "", receivedErr
+		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return "", openErr
+	}
+	return plannedSessionReceiveWorktreePath(canonicalPath, spec, remote.Identity.Repository)
+}
+
+func plannedSessionReceiveWorktreePath(canonicalPath string, spec SessionReceiveSpec, repository string) (string, error) {
+	placement, err := ResolveUserWorktreePlacement(canonicalPath)
 	if err != nil {
 		return "", err
 	}
-	defer canonical.close()
-	_, path, err := receivedSessionWorktreePath(context.Background(), canonical, spec, remote.Identity.Repository)
-	return path, err
+	return placement.Path("session-"+spec.OperationID, repository)
 }
 
 // sessionReceivePhysicalCoordinates chooses only the checkout root. The
@@ -220,7 +238,7 @@ func receivedSessionWorktreePath(
 		return "", "", fmt.Errorf("inspect received session pin registration: %w", err)
 	}
 	if !occupied {
-		return "", "", fmt.Errorf("received session pin branch %q has no registered checkout", spec.PinBranch)
+		return "", "", fmt.Errorf("%w for pin branch %q", errSessionReceivePinNotRegistered, spec.PinBranch)
 	}
 	registeredPath = filepath.Clean(registeredPath)
 	localRoot := filepath.Join(canonical.path, ".worktrees")
