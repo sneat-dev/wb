@@ -160,10 +160,23 @@ Select only fields that change. `--cli=` or `--provider=` explicitly clears an
 optional value. Do not edit private claim files: WB appends an immutable event
 and offline outbox receipt, then projects the explicit predecessor chain.
 
-By default the printed path is below `~/.wb/worktrees`. A populated historic
-`<projects-root>/.wb` is never a create target. If an old managed hook exists,
-WB refreshes its home semantics before creation or fails before creating a
-mixed-layout checkout.
+By default the printed path is
+`<canonical-repository>/.worktrees/<task>`, including when `WB_HOME` is set.
+`WB_HOME` remains the private home for Work Logs, locks, receipts, and reports.
+For a shared checkout root, set this user-only configuration:
+
+```yaml
+version: 1
+worktrees:
+  root: ~/.wb/worktrees
+```
+
+WB expands `~`, requires the resulting root to be absolute, and prints
+`<root>/<task>/<owner>/<repository>`. Repository policy may set a branch prefix
+but cannot select a checkout root. Existing linked worktrees governed by the
+same `WB_HOME`, including a populated historic `<projects-root>/.wb`, remain
+discoverable; they are never silently selected as a new create target or
+relocated because the default changed.
 
 ## Branch policy
 

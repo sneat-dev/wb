@@ -39,6 +39,13 @@ func newFixture(t *testing.T) fixture {
 	return fixture{ProjectsRoot: projectsRoot, Canonical: canonical, Worktree: worktree}
 }
 
+func addLocalWorktree(t *testing.T, repositories fixture) string {
+	t.Helper()
+	worktree := filepath.Join(repositories.Canonical, ".worktrees", "local-task")
+	git(t, repositories.Canonical, "worktree", "add", "-q", "-b", "local-task", worktree)
+	return worktree
+}
+
 func git(t *testing.T, directory string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", directory}, arguments...)...)
@@ -113,6 +120,32 @@ func TestDescribeReadsALinkedWorktree(t *testing.T) {
 	}
 }
 
+func TestDescribeReadsALocalLinkedWorktree(t *testing.T) {
+	repositories := newFixture(t)
+	localWorktree := addLocalWorktree(t, repositories)
+	inspection, err := Describe(localWorktree, describeOptions(repositories))
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	descriptor := inspection.Descriptor
+	if descriptor.Task != "local-task" {
+		t.Fatalf("task = %q, want local-task", descriptor.Task)
+	}
+	if !sameDirectory(descriptor.WorktreesRoot, filepath.Join(repositories.Canonical, ".worktrees")) {
+		t.Fatalf("worktrees root = %q", descriptor.WorktreesRoot)
+	}
+	if descriptor.CanonicalPath != repositories.Canonical || descriptor.Repository != "sneat-dev/wb" {
+		t.Fatalf("local descriptor lost canonical identity: %+v", descriptor)
+	}
+}
+
+func TestTaskCoordinatesRefusesAnArbitraryDotWorktreesParent(t *testing.T) {
+	repositories := newFixture(t)
+	if task, root := taskCoordinates(filepath.Join(t.TempDir(), ".worktrees", "task"), repositories.Canonical, "sneat-dev/wb"); task != "" || root != "" {
+		t.Fatalf("arbitrary .worktrees path = task %q root %q", task, root)
+	}
+}
+
 // sameFile compares two paths that may differ only by symlink resolution,
 // which is exactly how macOS presents a temporary directory.
 func sameFile(t *testing.T, left, right string) bool {
@@ -120,6 +153,16 @@ func sameFile(t *testing.T, left, right string) bool {
 	resolve := func(path string) string {
 		if resolved, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
 			return filepath.Join(resolved, filepath.Base(path))
+		}
+		return path
+	}
+	return resolve(left) == resolve(right)
+}
+
+func sameDirectory(left, right string) bool {
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
 		}
 		return path
 	}

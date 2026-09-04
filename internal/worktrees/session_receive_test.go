@@ -78,6 +78,10 @@ func TestReceiveSessionBundleSecurelyClonesMissingCanonicalRepository(t *testing
 
 func TestReceiveSessionBundleCreatesAndReusesExactPinnedWorktree(t *testing.T) {
 	fixture := newSessionReceiveFixture(t)
+	planned, err := SessionReceiveWorktreePath(fixture.projectsRoot, fixture.request)
+	if err != nil || !sameSessionReceivePath(planned, fixture.targetWorktree()) {
+		t.Fatalf("planned worktree = %q, err = %v, want %q", planned, err, fixture.targetWorktree())
+	}
 	fetchHeadPath := filepath.Join(fixture.canonical, ".git", "FETCH_HEAD")
 	fetchHeadSentinel := []byte("caller-owned FETCH_HEAD sentinel\n")
 	if err := os.WriteFile(fetchHeadPath, fetchHeadSentinel, 0o644); err != nil {
@@ -94,7 +98,7 @@ func TestReceiveSessionBundleCreatesAndReusesExactPinnedWorktree(t *testing.T) {
 	if created.Repository != "acme/app" || created.Commit != fixture.request.BundleCommit || created.Reused {
 		t.Fatalf("created result = %#v", created)
 	}
-	wantPath := filepath.Join(fixture.home, "worktrees", "session-"+fixture.request.HandoffID, "acme", "app")
+	wantPath := fixture.targetWorktree()
 	if created.WorktreeDir != wantPath {
 		t.Fatalf("worktree = %q, want %q", created.WorktreeDir, wantPath)
 	}
@@ -126,6 +130,79 @@ func TestReceiveSessionBundleCreatesAndReusesExactPinnedWorktree(t *testing.T) {
 	}
 	if count := strings.Count(gitTestOutput(t, fixture.canonical, "worktree", "list", "--porcelain"), "worktree "+created.WorktreeDir); count != 1 {
 		t.Fatalf("target worktree registration count = %d, want 1", count)
+	}
+}
+
+func TestReceiveSessionBundleUsesConfiguredSharedRoot(t *testing.T) {
+	fixture := newSessionReceiveFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+	planned, err := SessionReceiveWorktreePath(fixture.projectsRoot, fixture.request)
+	physicalSharedRoot, err := resolvePlacementPath(sharedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(physicalSharedRoot, "session-"+fixture.request.HandoffID, "acme", "app")
+	if err != nil || !sameSessionReceivePath(planned, want) {
+		t.Fatalf("planned worktree = %q, err = %v, want configured shared path %q", planned, err, want)
+	}
+
+	created, err := ReceiveSessionBundle(context.Background(), SessionReceiveOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Request:      fixture.request,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameSessionReceivePath(created.WorktreeDir, want) {
+		t.Fatalf("worktree = %q, want configured shared path %q", created.WorktreeDir, want)
+	}
+	if _, err := os.Stat(fixture.targetWorktree()); !os.IsNotExist(err) {
+		t.Fatalf("local default path exists after configured placement: %v", err)
+	}
+}
+
+func TestReceiveSessionBundleReusesRegisteredPathAfterPlacementChanges(t *testing.T) {
+	fixture := newSessionReceiveFixture(t)
+	created, err := ReceiveSessionBundle(context.Background(), SessionReceiveOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Request:      fixture.request,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+
+	replayed, err := ReceiveSessionBundle(context.Background(), SessionReceiveOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Request:      fixture.request,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Reused || !sameSessionReceivePath(replayed.WorktreeDir, created.WorktreeDir) {
+		t.Fatalf("replayed result = %#v, created = %#v", replayed, created)
+	}
+	fence, digest := acquireSessionReceiveFence(t, fixture, filepath.Join(fixture.home, sessionmove.DirName))
+	verified, err := VerifyReceivedSessionBundle(context.Background(), SessionReceiveOptions{
+		ProjectsRoot: fixture.projectsRoot, Request: fixture.request,
+		RequestDigest: digest, ExecutionLock: fence,
+	})
+	if err != nil || !sameSessionReceivePath(verified.WorktreeDir, created.WorktreeDir) {
+		t.Fatalf("verified result = %#v, err = %v, want %q", verified, err, created.WorktreeDir)
+	}
+	path, err := SessionReceiveWorktreePath(fixture.projectsRoot, fixture.request)
+	if err != nil || !sameSessionReceivePath(path, created.WorktreeDir) {
+		t.Fatalf("recovered session path = %q, err = %v, want %q", path, err, created.WorktreeDir)
+	}
+	configuredPath := filepath.Join(sharedRoot, "session-"+fixture.request.HandoffID, "acme", "app")
+	if _, err := os.Stat(configuredPath); !os.IsNotExist(err) {
+		t.Fatalf("changed placement created a second session checkout: %v", err)
 	}
 }
 
@@ -206,14 +283,18 @@ func TestReceiveSessionBundleRecoversExactInterruptedReceivePublication(t *testi
 		t.Run(state, func(t *testing.T) {
 			fixture := newSessionReceiveFixture(t)
 			operation := "session-" + fixture.request.HandoffID
-			operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+			lockRoot := fixture.operationLockRoot()
+			operationRoot := fixture.physicalWorktreesRoot()
 			stagePath := filepath.Join(operationRoot, ".wb-stage-0123456789abcdef0123456789abcdef")
 			stageCheckout := filepath.Join(stagePath, "checkout")
 			if err := os.MkdirAll(stagePath, 0o700); err != nil {
 				t.Fatal(err)
 			}
 			lockContents := []byte("operation=" + operation + "\npid=2147483647\n")
-			if err := os.WriteFile(filepath.Join(operationRoot, ".lock"), lockContents, 0o600); err != nil {
+			if err := os.MkdirAll(lockRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(lockRoot, ".lock"), lockContents, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			pinBranch := "wb-session/" + fixture.request.HandoffID
@@ -332,12 +413,16 @@ func TestReceiveSessionBundleRefusesUnsafeInterruptedReceiveStage(t *testing.T) 
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newSessionReceiveFixture(t)
 			operation := "session-" + fixture.request.HandoffID
-			operationRoot := filepath.Join(fixture.home, "worktrees", operation)
+			lockRoot := fixture.operationLockRoot()
+			operationRoot := fixture.physicalWorktreesRoot()
 			stageCheckout := filepath.Join(operationRoot, test.stageName, "checkout")
 			if err := os.MkdirAll(filepath.Dir(stageCheckout), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			lockPath := filepath.Join(operationRoot, ".lock")
+			if err := os.MkdirAll(lockRoot, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			lockPath := filepath.Join(lockRoot, ".lock")
 			lockContents := []byte("operation=" + operation + "\npid=2147483647\n")
 			if err := os.WriteFile(lockPath, lockContents, 0o600); err != nil {
 				t.Fatal(err)
@@ -550,6 +635,7 @@ func newSessionReceiveFixture(t *testing.T) *sessionReceiveFixture {
 	home := filepath.Join(root, ".wb")
 	t.Setenv(wbhome.EnvOverride, home)
 	t.Setenv(wbhome.EnvMigrationCompat, "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	remote := filepath.Join(root, "remotes", "acme", "app.git")
 	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
 		t.Fatal(err)
@@ -607,7 +693,33 @@ func newSessionReceiveFixture(t *testing.T) *sessionReceiveFixture {
 }
 
 func (fixture *sessionReceiveFixture) targetWorktree() string {
-	return filepath.Join(fixture.home, "worktrees", "session-"+fixture.request.HandoffID, "acme", "app")
+	return filepath.Join(fixture.physicalCanonical(), ".worktrees", "session-"+fixture.request.HandoffID)
+}
+
+func (fixture *sessionReceiveFixture) operationLockRoot() string {
+	return filepath.Join(fixture.home, "worktrees", "session-"+fixture.request.HandoffID)
+}
+
+func (fixture *sessionReceiveFixture) physicalWorktreesRoot() string {
+	return filepath.Join(fixture.physicalCanonical(), ".worktrees")
+}
+
+func (fixture *sessionReceiveFixture) physicalCanonical() string {
+	resolved, err := filepath.EvalSymlinks(fixture.canonical)
+	if err != nil {
+		return fixture.canonical
+	}
+	return resolved
+}
+
+func sameSessionReceivePath(left, right string) bool {
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+		return path
+	}
+	return resolve(left) == resolve(right)
 }
 
 func (fixture *sessionReceiveFixture) requireNoTargetWorktree(t *testing.T) {

@@ -17,6 +17,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errSessionReceivePinNotRegistered = errors.New("received session pin has no registered checkout")
+
 // SessionReceiveOptions is the target-only Git boundary for a portable
 // session handoff. It deliberately accepts the validated protocol request as
 // one unit so the branch, commits, path, and digest cannot drift apart while
@@ -125,10 +127,10 @@ type SessionReceiveResult struct {
 	Reused        bool   `json:"reused"`
 }
 
-// SessionReceiveWorktreePath derives the one accepted target checkout path
-// from local ProjectsRoot plus the immutable request. It performs no Git or
-// network access and is safe for successor-start replay after the harness may
-// already have changed the worktree.
+// SessionReceiveWorktreePath recovers the exact registered target checkout for
+// a replay. Before a receive publishes its pin, it returns the pure user-policy
+// plan used to launch that first receive. A malformed registered pin is never
+// silently replanned through changed configuration.
 func SessionReceiveWorktreePath(projectsRoot string, request sessionmove.Request) (string, error) {
 	if _, err := sessionmove.EncodeRequest(request); err != nil {
 		return "", err
@@ -167,15 +169,95 @@ func SessionReceiveMemberPath(projectsRoot string, spec SessionReceiveSpec) (str
 	if err != nil {
 		return "", err
 	}
-	owner, name, _, err := canonicalRepositoryPath(root, remote.Identity.Repository)
+	_, _, canonicalPath, err := canonicalRepositoryPath(root, remote.Identity.Repository)
 	if err != nil {
 		return "", err
 	}
-	home, err := wbhome.Root(root)
+	canonical, openErr := openCanonicalRepository(canonicalPath)
+	if openErr == nil {
+		defer canonical.close()
+		_, path, receivedErr := receivedSessionWorktreePath(context.Background(), canonical, spec, remote.Identity.Repository)
+		if receivedErr == nil {
+			return path, nil
+		}
+		if !errors.Is(receivedErr, errSessionReceivePinNotRegistered) {
+			return "", receivedErr
+		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return "", openErr
+	}
+	return plannedSessionReceiveWorktreePath(canonicalPath, spec, remote.Identity.Repository)
+}
+
+func plannedSessionReceiveWorktreePath(canonicalPath string, spec SessionReceiveSpec, repository string) (string, error) {
+	placement, err := ResolveUserWorktreePlacement(canonicalPath)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, "worktrees", "session-"+spec.OperationID, owner, name), nil
+	return placement.Path("session-"+spec.OperationID, repository)
+}
+
+// sessionReceivePhysicalCoordinates chooses only the checkout root. The
+// handoff lock remains below WB_HOME, so receives for one task serialize even
+// when their repositories publish into different repository-local roots.
+func sessionReceivePhysicalCoordinates(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	spec SessionReceiveSpec,
+	repository string,
+) (placement worktreePlacement, operationPath, owner, name, worktreePath string, err error) {
+	placement, err = configuredWorktreePlacement(ctx, canonical, spec.Commit)
+	if err != nil {
+		return worktreePlacement{}, "", "", "", "", err
+	}
+	owner, name, splitErr := splitRepository(repository)
+	if splitErr != nil {
+		return worktreePlacement{}, "", "", "", "", splitErr
+	}
+	operationName := "session-" + spec.OperationID
+	if placement.Local {
+		operationPath = placement.Root
+		owner, name = "", operationName
+		return placement, operationPath, owner, name, filepath.Join(operationPath, name), nil
+	}
+	operationPath = filepath.Join(placement.Root, operationName)
+	return placement, operationPath, owner, name, filepath.Join(operationPath, owner, name), nil
+}
+
+// receivedSessionWorktreePath recovers a completed receive from the pin branch
+// Git registered at publish time. The pin and its registered checkout are the
+// durable authority on replay; a changed user root only affects a new receive.
+func receivedSessionWorktreePath(
+	ctx context.Context,
+	canonical *canonicalRepository,
+	spec SessionReceiveSpec,
+	repository string,
+) (operationPath, worktreePath string, err error) {
+	occupied, registeredPath, err := branchWorktreeCanonical(ctx, canonical, spec.PinBranch)
+	if err != nil {
+		return "", "", fmt.Errorf("inspect received session pin registration: %w", err)
+	}
+	if !occupied {
+		return "", "", fmt.Errorf("%w for pin branch %q", errSessionReceivePinNotRegistered, spec.PinBranch)
+	}
+	registeredPath = filepath.Clean(registeredPath)
+	localRoot := filepath.Join(canonical.path, ".worktrees")
+	localPath := filepath.Join(localRoot, "session-"+spec.OperationID)
+	if registeredPath == filepath.Clean(localPath) {
+		return localRoot, registeredPath, nil
+	}
+	owner, name, splitErr := splitRepository(repository)
+	if splitErr != nil {
+		return "", "", splitErr
+	}
+	if filepath.Base(registeredPath) != name || filepath.Base(filepath.Dir(registeredPath)) != owner {
+		return "", "", fmt.Errorf("received session pin branch is registered outside its deterministic repository path")
+	}
+	operationPath = filepath.Dir(filepath.Dir(registeredPath))
+	if filepath.Base(operationPath) != "session-"+spec.OperationID {
+		return "", "", fmt.Errorf("received session pin branch is registered outside its deterministic task path")
+	}
+	return operationPath, registeredPath, nil
 }
 
 // VerifyReceivedSessionBundle is the local-only replay boundary after a
@@ -204,10 +286,6 @@ func VerifyReceivedSessionMember(ctx context.Context, options SessionMemberRecei
 	if err := validateSessionReceiveSpec(ctx, spec); err != nil {
 		return SessionReceiveResult{}, err
 	}
-	home, err := wbhome.Root(projectsRoot)
-	if err != nil {
-		return SessionReceiveResult{}, err
-	}
 	if spec.Fence == nil || !spec.Fence.HeldForSession(spec.AuthorityStore, spec.AuthorityID, string(spec.AuthorityDigest)) {
 		return SessionReceiveResult{}, fmt.Errorf("local session receive replay requires exact admitted handoff authority")
 	}
@@ -215,7 +293,7 @@ func VerifyReceivedSessionMember(ctx context.Context, options SessionMemberRecei
 	if err != nil {
 		return SessionReceiveResult{}, err
 	}
-	owner, name, canonicalPath, err := canonicalRepositoryPath(projectsRoot, remote.Identity.Repository)
+	_, _, canonicalPath, err := canonicalRepositoryPath(projectsRoot, remote.Identity.Repository)
 	if err != nil {
 		return SessionReceiveResult{}, err
 	}
@@ -232,8 +310,10 @@ func VerifyReceivedSessionMember(ctx context.Context, options SessionMemberRecei
 	if err := verifySessionReceiveCanonical(ctx, canonical, remote.Identity); err != nil {
 		return SessionReceiveResult{}, err
 	}
-	operationPath := filepath.Join(home, "worktrees", "session-"+spec.OperationID)
-	worktreePath := filepath.Join(operationPath, owner, name)
+	operationPath, worktreePath, err := receivedSessionWorktreePath(ctx, canonical, spec, remote.Identity.Repository)
+	if err != nil {
+		return SessionReceiveResult{}, err
+	}
 	if err := verifySessionReceiveReuse(ctx, canonical, operationPath, worktreePath, spec.PinBranch, spec.Commit); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("verify accepted pinned target worktree locally: %w", err)
 	}
@@ -376,7 +456,63 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	}
 	defer func() { _ = lock.release() }()
 
-	worktreePath, exists, err := prepareWorktreeDestination(operation.Path, operation.Directory, owner, name)
+	if occupied, _, occupiedErr := branchWorktreeCanonical(ctx, canonical, pinBranch); occupiedErr != nil {
+		return result, occupiedErr
+	} else if occupied {
+		registeredOperation, registeredWorktree, registeredErr := receivedSessionWorktreePath(ctx, canonical, spec, repository)
+		if registeredErr == nil {
+			if reuseErr := verifySessionReceiveReuse(ctx, canonical, registeredOperation, registeredWorktree, pinBranch, spec.Commit); reuseErr != nil {
+				return SessionReceiveResult{}, reuseErr
+			}
+			if lock.interrupted {
+				physicalRoot, openErr := openAbsoluteDirectoryNoFollow(registeredOperation, false)
+				if openErr != nil {
+					return SessionReceiveResult{}, fmt.Errorf("open completed interrupted receive root: %w", openErr)
+				}
+				retireErr := retireCompletedInterruptedSessionStage(ctx, registeredOperation, physicalRoot)
+				closeErr := physicalRoot.Close()
+				if retireErr != nil {
+					return SessionReceiveResult{}, retireErr
+				}
+				if closeErr != nil {
+					return SessionReceiveResult{}, fmt.Errorf("close completed interrupted receive root: %w", closeErr)
+				}
+			}
+			return SessionReceiveResult{
+				Repository: repository, CanonicalDir: canonicalPath, WorktreeDir: registeredWorktree,
+				Commit: spec.Commit, HandoverBytes: append([]byte(nil), handoverBytes...), Reused: true,
+			}, nil
+		}
+		if !lock.interrupted {
+			return result, registeredErr
+		}
+	}
+
+	placement, physicalOperationPath, physicalOwner, physicalRepository, worktreePath, err := sessionReceivePhysicalCoordinates(ctx, canonical, spec, repository)
+	if err != nil {
+		return result, err
+	}
+	physicalOperation := operation
+	if placement.Local {
+		localRoot, localRootDirectory, localRootErr := prepareCanonicalWorktreesRoot(ctx, canonical, spec.Commit)
+		if localRootErr != nil {
+			return result, localRootErr
+		}
+		defer localRootDirectory.Close()
+		if filepath.Clean(localRoot) != filepath.Clean(physicalOperationPath) {
+			return result, fmt.Errorf("resolved local session worktree root changed before publish")
+		}
+		physicalOperation = preparedOperationRoot{Path: localRoot, Worktrees: localRootDirectory, Directory: localRootDirectory}
+	} else if filepath.Clean(placement.Root) != filepath.Join(home, "worktrees") {
+		sharedOperation, sharedOperationErr := prepareOperationRootAt(placement.Root, operationName)
+		if sharedOperationErr != nil {
+			return result, sharedOperationErr
+		}
+		defer sharedOperation.close()
+		physicalOperation = sharedOperation
+	}
+	var exists bool
+	worktreePath, exists, err = prepareWorktreeDestination(physicalOperation.Path, physicalOperation.Directory, physicalOwner, physicalRepository)
 	if err != nil {
 		return result, err
 	}
@@ -386,7 +522,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	}
 	if lock.interrupted {
 		recovered, recoveryErr := recoverInterruptedSessionReceivePublication(
-			ctx, canonical, operation.Path, operation.Directory, owner, name, worktreePath,
+			ctx, canonical, physicalOperation.Path, physicalOperation.Directory, physicalOwner, physicalRepository, worktreePath,
 			pinBranch, spec.Commit, exists,
 		)
 		if recoveryErr != nil {
@@ -403,7 +539,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 		}
 	}
 	if exists {
-		if err := verifySessionReceiveReuse(ctx, canonical, operation.Path, worktreePath, pinBranch, spec.Commit); err != nil {
+		if err := verifySessionReceiveReuse(ctx, canonical, physicalOperation.Path, worktreePath, pinBranch, spec.Commit); err != nil {
 			return SessionReceiveResult{}, err
 		}
 		return result, nil
@@ -427,7 +563,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	}
 	var publication *createdWorktreePublication
 	if err := addWorktreeAtSecureDestination(
-		ctx, canonical, operation.Path, operation.Directory, owner, name,
+		ctx, canonical, physicalOperation.Path, physicalOperation.Directory, physicalOwner, physicalRepository,
 		branch, spec.Branch, spec.Commit, branchExists,
 		nil, // beforeAdd
 		nil, // afterStageDirectoryCreated
@@ -448,7 +584,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 	if publication != nil {
 		defer publication.close()
 	}
-	if err := verifySessionReceiveReuse(ctx, canonical, operation.Path, worktreePath, pinBranch, spec.Commit); err != nil {
+	if err := verifySessionReceiveReuse(ctx, canonical, physicalOperation.Path, worktreePath, pinBranch, spec.Commit); err != nil {
 		return SessionReceiveResult{}, fmt.Errorf("verify new pinned target worktree: %w", err)
 	}
 	return result, nil
@@ -738,17 +874,27 @@ func recoverInterruptedSessionReceivePublication(
 		return false, fmt.Errorf("verify exact interrupted receive stage: %w", err)
 	}
 
-	ownerFD, err := openOrCreateNoFollowDirectory(int(operationDirectory.Fd()), owner)
-	if err != nil {
-		return false, err
-	}
-	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-session-receive-recovery-owner")
-	if ownerDirectory == nil {
-		_ = unix.Close(ownerFD)
-		return false, fmt.Errorf("wrap interrupted receive owner directory")
+	ownerFD := int(operationDirectory.Fd())
+	ownerPath := operationRoot
+	var ownerDirectory *os.File
+	if owner == "" {
+		ownerDirectory, err = duplicateDirectoryDescriptor(operationDirectory, "wb-session-receive-recovery-parent")
+		if err != nil {
+			return false, fmt.Errorf("retain direct interrupted receive parent: %w", err)
+		}
+	} else {
+		ownerFD, err = openOrCreateNoFollowDirectory(ownerFD, owner)
+		if err != nil {
+			return false, err
+		}
+		ownerDirectory = os.NewFile(uintptr(ownerFD), "wb-session-receive-recovery-owner")
+		if ownerDirectory == nil {
+			_ = unix.Close(ownerFD)
+			return false, fmt.Errorf("wrap interrupted receive owner directory")
+		}
+		ownerPath = filepath.Join(operationRoot, owner)
 	}
 	defer func() { _ = ownerDirectory.Close() }()
-	ownerPath := filepath.Join(operationRoot, owner)
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		return false, fmt.Errorf("interrupted receive owner path changed before recovery")
 	}

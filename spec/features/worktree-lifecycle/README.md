@@ -12,16 +12,18 @@ status: Implementing
 
 ## Summary
 
-`wb worktree` creates, guards, inventories, and safely cleans task worktrees
-while a workstation moves from the historic `<projects-root>/.wb` layout to
-the user-scoped `~/.wb` home. `wb worktree list` reports local Git state with
-optional GitHub PR evidence; `wb worktree cleanup` safely plans or applies
-removal of clean task worktrees and exact merged branch refs.
+`wb worktree` creates, guards, inventories, and safely cleans task worktrees.
+Its default checkout is `<canonical-repository>/.worktrees/<task>`, while
+`WB_HOME` remains the user-scoped private home for Work Logs, locks, receipts,
+and reports. A user-only absolute shared root may instead place checkouts at
+`<root>/<task>/<owner>/<repository>`. `wb worktree list` reports local Git
+state with optional GitHub PR evidence; `wb worktree cleanup` safely plans or
+applies removal of clean task worktrees and exact merged branch refs.
 
 ## Problem
 
-Central worktrees protect canonical clones, but completed tasks accumulate
-linked checkouts and branches. Ad-hoc cleanup can discard uncommitted work,
+Worktrees inside canonical repository directories protect canonical clones, but
+completed tasks accumulate linked checkouts and branches. Ad-hoc cleanup can discard uncommitted work,
 delete a reused branch, or remove one repository while a coordinated task is
 still active elsewhere. A default-layout migration must not either continue
 creating work under an obsolete projects-root directory or strand linked
@@ -53,30 +55,40 @@ the remote only when `--github` is explicit.
 
 #### REQ: authoritative-write-home
 
-New worktree creation, locks, and new cleanup reports MUST use the resolver's
+New Work Logs, task locks, receipts, and cleanup reports MUST use the resolver's
 write home: `~/.wb` by default, or the exact directory named by `WB_HOME` when
 that variable is set. A populated `<projects-root>/.wb` MUST NOT silently
 become the write home. `WB_HOME` MUST remain authoritative for commands later
-started by a managed hook installed from that environment.
+started by a managed hook installed from that environment, but MUST NOT choose
+the default physical checkout location.
+
+#### REQ: local-default-and-user-shared-root
+
+Without a user `worktrees.root` setting, creation MUST place a new checkout at
+`<canonical-repository>/.worktrees/<task>`. An explicit root may come only
+from the user's `$XDG_CONFIG_HOME/wb/worktrees.yaml` or
+`~/.config/wb/worktrees.yaml`; after `~` expansion it MUST be absolute and
+places a checkout at `<root>/<task>/<owner>/<repository>`. Repository policy
+MUST NOT set or override the root. The creator needs permissions for both the
+private `WB_HOME` state and the selected physical checkout directory.
 
 #### REQ: migration-layout-compatibility
 
-Without an explicit `WB_HOME`, the shared layout resolver MUST recognize an
-existing legacy `<projects-root>/.wb/worktrees` hierarchy in addition to the
-new write layout. Guard, inventory, and cleanup MUST continue to validate and
-operate on those linked worktrees using their actual layout. An explicit
-`WB_HOME` selects only that layout so a caller can intentionally isolate a
-session or fixture. A managed hook that pins the normal default home MUST mark
-that fact so it retains this migration compatibility without treating a
-user-selected `WB_HOME` as non-authoritative.
+Guard, inventory, and cleanup MUST continue to validate and operate on existing
+local, configured-shared, and historic `<projects-root>/.wb/worktrees` linked
+worktrees governed by the same `WB_HOME`, using their actual placement.
+Changing `worktrees.root` MUST NOT relocate them or stop their discovery. A
+managed hook that pins the normal default home MUST preserve that compatibility
+without treating a user-selected `WB_HOME` as non-authoritative.
 
 #### REQ: legacy-mixed-inventory
 
-Inventory MUST recognize both historic direct-repository task entries
-`<task>/<repository>` and current `<task>/<owner>/<repository>` entries.
-Once a Git root is recognized, traversal MUST stop below it. Malformed
-candidates MUST yield deterministic diagnostics without hiding valid sibling
-repositories whenever the command's result API permits.
+Inventory MUST recognize default local `<canonical-repository>/.worktrees/<task>`
+entries, configured shared `<task>/<owner>/<repository>` entries, and historic
+direct-repository `<task>/<repository>` entries. Once a Git root is recognized,
+traversal MUST stop below it. Malformed candidates MUST yield deterministic
+diagnostics without hiding valid sibling repositories whenever the command's
+result API permits.
 
 #### REQ: validated-identity
 
