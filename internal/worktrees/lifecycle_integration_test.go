@@ -2272,6 +2272,21 @@ func TestCleanupReportsUnresolvableAbsorbedByPointerAsCandidateRefusal(t *testin
 func simulateProcessDeathLeavingLock(t *testing.T, taskDir string) {
 	t.Helper()
 	entries, err := os.ReadDir(taskDir)
+	if errors.Is(err, os.ErrNotExist) {
+		// Repository-local cleanup can finish removing its physical checkout
+		// before the process is killed, leaving no old shared task namespace.
+		// Recreate the logical WB_HOME shell with the exact retired-lock shape
+		// a killed lifecycle operation leaves for recovery.
+		if err := os.MkdirAll(taskDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		retired := filepath.Join(taskDir, ".wb-retired-lock-fixture")
+		contents := fmt.Sprintf("operation=%s\npid=%d\n", filepath.Base(taskDir), killedLifecycleProcessPID(t))
+		if err := os.WriteFile(retired, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entries, err = os.ReadDir(taskDir)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2299,7 +2314,7 @@ func TestCleanupResumesAfterProcessDeathLeftItsLockBehind(t *testing.T) {
 	}); !errors.Is(err, injected) {
 		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
 	}
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-resume-after-death")
 	simulateProcessDeathLeavingLock(t, taskDir)
 
 	resumed, err := Cleanup(context.Background(), CleanupOptions{
@@ -2334,7 +2349,7 @@ func TestCleanupRefusesWhileAnotherProcessHoldsTheTaskLock(t *testing.T) {
 	}); !errors.Is(err, injected) {
 		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
 	}
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-live-lock-holder")
 	simulateProcessDeathLeavingLock(t, taskDir)
 
 	// A live holder keeps the kernel lock. Liveness, not mere existence, is
@@ -2366,7 +2381,7 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 	installMergedPullRequestFixture(t, head, mergedAt)
 	// No interruption happened, so there is no durable record of what remains.
 	// A stray .lock must still block: only a describable remnant is resumable.
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-interrupted-no-backlog")
 	if err := os.WriteFile(filepath.Join(taskDir, ".lock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2403,9 +2418,9 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 
 func TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock(t *testing.T) {
 	const task = "cleanup-named-interrupted-recovery"
-	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	fixture, _, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", task)
 	contents := fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))
 	lockPath := filepath.Join(taskDir, ".lock")
 	if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {

@@ -1940,7 +1940,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	if recovery != nil {
 		for index := range listed.Results {
-			if listed.Results[index].Task == recovery.Task && listed.Results[index].WorktreesRoot == recovery.WorktreesRoot {
+			if listed.Results[index].Task == recovery.Task &&
+				logicalCleanupTaskKey(listed.Results[index], resolution.Write.Home) == cleanupTaskKey(recovery.WorktreesRoot, recovery.Task) {
 				listed.Results[index].Locked = false
 			}
 		}
