@@ -167,7 +167,7 @@ func RunSecureHooksGitHelper(args []string) int {
 func originSlug(repoRoot string) string {
 	remote, err := gitOutput(repoRoot, "remote", "get-url", "origin")
 	if err != nil || remote == "" {
-		return filepath.Base(repoRoot)
+		return canonicalCheckoutSlug(repoRoot)
 	}
 	remote = strings.TrimSuffix(remote, ".git")
 	remote = strings.TrimSuffix(remote, "/")
@@ -189,13 +189,16 @@ func originSlug(repoRoot string) string {
 			return strings.Join(parts[len(parts)-2:], "/")
 		}
 	}
-	return checkoutSlug(repoRoot)
+	return canonicalCheckoutSlug(repoRoot)
 }
 
 // hostedRemote reports whether a remote names a hosting service rather than a
 // local path. A scheme, or an scp-style host:path, means the trailing segments
 // are owner/repository; a bare filesystem path means they are directories.
 func hostedRemote(remote string) bool {
+	if strings.HasPrefix(strings.ToLower(remote), "file:") {
+		return false
+	}
 	if strings.Contains(remote, "://") {
 		return true
 	}
@@ -205,6 +208,26 @@ func hostedRemote(remote string) bool {
 	}
 	// git@github.com:owner/repo — the host side carries a dot and no slash.
 	return strings.Contains(host, ".") && !strings.Contains(host, "/")
+}
+
+// canonicalCheckoutSlug attributes hook events to the main worktree's
+// owner/repository, not to a linked worktree or a `.wb-stage-*/checkout`
+// path. A local-path origin cannot supply a hosted slug; reading the current
+// checkout's last two segments during `worktree create` names the staging
+// directory, which is a different tree than the Landlock write root computed
+// for the canonical clone — mkdir then fails with EPERM and create dies
+// mid-add.
+func canonicalCheckoutSlug(repoRoot string) string {
+	if common, err := gitCommonDir(repoRoot); err == nil {
+		canonical := strings.TrimSuffix(common, string(filepath.Separator))
+		if filepath.Base(canonical) == ".git" {
+			canonical = filepath.Dir(canonical)
+		}
+		if canonical != "" && canonical != "." {
+			return checkoutSlug(canonical)
+		}
+	}
+	return checkoutSlug(repoRoot)
 }
 
 // checkoutSlug derives owner/repository from WB's own layout, which is

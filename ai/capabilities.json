@@ -3659,7 +3659,7 @@
           "limitation": null
         }
       },
-      "notes": "Moving local cost to CI obliges WB to bound CI, so the stream-branch push profile is paired with wb stream start's concurrency check; a cost claim with no measurement behind it is the assurance this Feature refuses to print."
+      "notes": "Moving local cost to CI obliges WB to bound CI, so the stream-branch push profile is paired with wb stream start's concurrency check; a cost claim with no measurement behind it is the assurance this Feature refuses to print. The go profile matches on go.mod at the repository root. The Go commit hook runs gofmt and package-scoped go vet, never a test suite. Pre-push events record the pushed ref and classified tier so measure can attribute a stream push even when HEAD is another branch."
     },
     {
       "id": "wb.hooks.metrics",

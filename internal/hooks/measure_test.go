@@ -95,6 +95,19 @@ func TestMeasureRespectsTheRepositoryFilterAndWindow(t *testing.T) {
 	}
 }
 
+func TestMeasureKeysStreamPushesOnThePushedRef(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	event := pushEvent("feature/checked-out", 40*time.Millisecond, now)
+	event.Ref = "refs/heads/stream/x"
+	delta := Measure([]Event{event, pushEvent("feature/other", 30*time.Second, now)}, 7, "", now)
+	if delta.StreamPush.Runs != 1 {
+		t.Fatalf("stream pushes = %d, want 1 from the pushed ref even though the checkout was feature/checked-out", delta.StreamPush.Runs)
+	}
+	if delta.OtherPush.Runs != 1 {
+		t.Fatalf("other pushes = %d, want the non-stream event", delta.OtherPush.Runs)
+	}
+}
+
 func TestMeasureCollectsPerBlockCost(t *testing.T) {
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	block := Event{
