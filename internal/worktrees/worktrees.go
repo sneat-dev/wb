@@ -3435,9 +3435,13 @@ func retiredStagePrefixForActiveStage(name string) string {
 
 func isLowerHex(value string) bool {
 	for _, character := range value {
-		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
-			return false
+		if character >= '0' && character <= '9' {
+			continue
 		}
+		if character >= 'a' && character <= 'f' {
+			continue
+		}
+		return false
 	}
 	return value != ""
 }
