@@ -128,8 +128,13 @@ func (store *Store) List() ([]Stream, []Unreadable, error) {
 		if !entry.IsDir() {
 			continue
 		}
+		// .fleet is the reserved event-only log for landings outside a stream.
+		// It deliberately has no stream state. Lstat is intentional: a dangling
+		// stream.json symlink is not safely absent and must remain unreadable.
 		if entry.Name() == reservedFleetMetadataDirectory {
-			continue
+			if _, err := os.Lstat(store.statePath(entry.Name())); os.IsNotExist(err) {
+				continue
+			}
 		}
 		stream, err := store.Load(entry.Name())
 		if err != nil {

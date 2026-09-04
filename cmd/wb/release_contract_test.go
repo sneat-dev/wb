@@ -117,7 +117,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatal("go-ci release job missing")
 	}
-	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@v1.14.14" {
+	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c" {
 		t.Fatalf("release uses=%v", got)
 	}
 	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility"})
@@ -140,9 +140,19 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
-	assert("required check name", aggregate["name"], "Build, vet, test")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"static", "lint", "coverage", "race"})
+	assert("required check name", aggregate["name"], "Required checks passed")
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "source", "static", "lint", "coverage", "race"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
+	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
+		job, ok := jobs[name].(map[string]any)
+		if !ok {
+			t.Fatalf("validation job %s missing", name)
+		}
+		assert(name+" starts after eligibility", job["needs"], "release-eligibility")
+		if _, conditional := job["if"]; conditional {
+			t.Errorf("%s must validate PRs even when publication is ineligible", name)
+		}
+	}
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
 	if !ok {
 		t.Fatal("eligibility job missing")
@@ -215,6 +225,56 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		}
 	}
 	assert("only CLI publisher", publishers, []string{"go-ci.yml:release"})
+}
+
+func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "go-ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string
+				Env map[string]string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(raw, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	steps := workflow.Jobs["test"].Steps
+	if len(steps) != 1 || steps[0].Run == "" {
+		t.Fatal("required check must only summarize the validation results")
+	}
+	step := steps[0]
+	if len(step.Env) != 6 {
+		t.Fatalf("summary checks %d results, want all six prerequisites", len(step.Env))
+	}
+	run := func(failedKey, result string) error {
+		cmd := exec.Command("sh", "-c", step.Run)
+		cmd.Env = os.Environ()
+		for key := range step.Env {
+			value := "success"
+			if key == failedKey {
+				value = result
+			}
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+		return cmd.Run()
+	}
+	if err := run("", ""); err != nil {
+		t.Fatalf("all successful prerequisites rejected: %v", err)
+	}
+	for key := range step.Env {
+		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
+			t.Run(key+"/"+result, func(t *testing.T) {
+				if err := run(key, result); err == nil {
+					t.Fatalf("summary accepted %s=%q", key, result)
+				}
+			})
+		}
+	}
 }
 
 func workflowContractTestCommands(t *testing.T, job map[string]any) []string {

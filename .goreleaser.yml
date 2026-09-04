@@ -48,7 +48,7 @@ checksum:
 # `spctl --assess`, and executes (rc=0).
 #
 # `enabled` is gated on the MACOS_SIGN_P12 env var, forwarded by
-# .github/workflows/go-ci.yml (pinned to strongo/cicd@v1.14.14 with
+# .github/workflows/go-ci.yml (pinned to an immutable strongo/cicd revision with
 # require_notarized_macos: true).
 notarize:
   macos:

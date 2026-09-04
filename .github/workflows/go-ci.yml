@@ -17,8 +17,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  static:
-    name: Tidy, format, vet, build
+  release-eligibility:
+    name: Determine release eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      eligible: ${{ steps.eligibility.outputs.eligible }}
+    steps:
+      # Resolve publication policy first. An ineligible PR still runs all
+      # validation jobs; only publication depends on the eligible output.
+      - name: Checkout eligibility source and history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Determine eligible publication ref
+        id: eligibility
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          .github/scripts/release-eligible.sh "$EVENT_NAME" "$REF" "$BEFORE" "$SHA" >> "$GITHUB_OUTPUT"
+
+  source:
+    name: Check formatting and dependencies
+    needs: release-eligibility
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -29,9 +54,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: go mod tidy check
+      - name: Check go.mod and go.sum are tidy
         run: go mod tidy -diff
-      - name: gofmt
+      - name: Check Go formatting (read-only)
         run: |
           set -eu
           OUT=$(gofmt -l .)
@@ -40,13 +65,28 @@ jobs:
             echo "$OUT"
             exit 1
           fi
+
+  static:
+    name: Build and vet
+    needs: release-eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
 
   lint:
-    name: golangci-lint
+    name: Lint (golangci-lint)
+    needs: release-eligibility
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -67,7 +107,8 @@ jobs:
           install-mode: goinstall
 
   coverage:
-    name: Sharded coverage
+    name: Tests and coverage (8 shards)
+    needs: release-eligibility
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -100,7 +141,8 @@ jobs:
           retention-days: 14
 
   race:
-    name: Race detector
+    name: Race tests
+    needs: release-eligibility
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -127,52 +169,33 @@ jobs:
           ./internal/fleetsync/...
 
   test:
-    name: Build, vet, test
+    # This job only combines results. Keep its name aligned with the required
+    # status check in branch protection when changing it.
+    name: Required checks passed
     if: ${{ always() }}
-    needs: [static, lint, coverage, race]
+    needs: [release-eligibility, source, static, lint, coverage, race]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
-      - name: Require every parallel Go gate
+      - name: Summarize required check results (no build or tests)
         env:
+          ELIGIBILITY_RESULT: ${{ needs.release-eligibility.result }}
+          SOURCE_RESULT: ${{ needs.source.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           RACE_RESULT: ${{ needs.race.result }}
         run: |
           set -eu
-          for result in "$STATIC_RESULT" "$LINT_RESULT" "$COVERAGE_RESULT" "$RACE_RESULT"; do
+          for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT"; do
+            name=${check%%:*}
+            result=${check#*:}
             if [ "$result" != "success" ]; then
-              echo "A required parallel Go gate concluded: $result" >&2
+              echo "Required check '$name' concluded: $result" >&2
               exit 1
             fi
           done
-
-  release-eligibility:
-    name: Release eligibility
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    outputs:
-      eligible: ${{ steps.eligibility.outputs.eligible }}
-    steps:
-      # The eligibility script is repository content, so every event that
-      # reaches this job checks out the exact SHA it will consider publishing.
-      # Full history makes a main push's before..sha path comparison valid
-      # even when it spans more than one commit.
-      - name: Checkout eligibility source and history
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Determine eligible publication ref
-        id: eligibility
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          BEFORE: ${{ github.event.before }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -eu
-          .github/scripts/release-eligible.sh "$EVENT_NAME" "$REF" "$BEFORE" "$SHA" >> "$GITHUB_OUTPUT"
+          echo "All required checks passed. This job only combines their results."
 
   release:
     name: Release
@@ -188,7 +211,9 @@ jobs:
     concurrency:
       group: wb-release-${{ github.ref }}
       cancel-in-progress: false
-    uses: strongo/cicd/.github/workflows/release.yml@v1.14.14
+    # Resolve smoke-test metadata alongside the artifact build, then verify
+    # published artifacts and Homebrew installs in parallel after promotion.
+    uses: strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c
     permissions:
       contents: write
     with:

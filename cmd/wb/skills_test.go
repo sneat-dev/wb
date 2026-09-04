@@ -436,12 +436,12 @@ func TestGoCIReportsRequiredCheckForEveryPullRequestAndMainPush(t *testing.T) {
 		}
 	}
 	tidyIndex := strings.Index(string(contents), "run: go mod tidy -diff")
-	formatIndex := strings.Index(string(contents), "- name: gofmt")
+	formatIndex := strings.Index(string(contents), "- name: Check Go formatting (read-only)")
 	if tidyIndex < 0 {
 		t.Fatalf("%s does not fail when go.mod or go.sum needs go mod tidy", workflowPath)
 	}
 	if formatIndex < 0 || tidyIndex > formatIndex {
-		t.Fatalf("%s must run go mod tidy -diff before formatting, build, and test gates", workflowPath)
+		t.Fatalf("%s must run go mod tidy -diff before its formatting check", workflowPath)
 	}
 	if strings.Contains(string(contents), "run: go mod tidy\n") {
 		t.Fatalf("%s mutates release source with bare go mod tidy instead of checking its diff", workflowPath)

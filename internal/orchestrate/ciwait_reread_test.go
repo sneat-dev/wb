@@ -160,22 +160,41 @@ echo "unexpected gh args: $*" >&2; exit 30
 
 func TestWaitForCommitChecksFallsBackToPollCadenceOnFingerprintChurn(t *testing.T) {
 	state := installRereadTestGH(t, checksBearingRereadScript(`"https://ci.example/run/$count"`))
-	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	interval := 200 * time.Millisecond
+	shortReread := 5 * time.Millisecond
+	var waits []time.Duration
+	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: rereadTestHead,
-		Slice: 5 * time.Second, CheckPollInterval: 3 * time.Second,
-		StableRereadDelay: 50 * time.Millisecond,
+		// The slice is a watchdog only. The callback owns completion after it
+		// observes the cadence this regression is about.
+		Slice: 30 * time.Second, CheckPollInterval: interval,
+		StableRereadDelay: shortReread,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll == 0 {
+				return
+			}
+			waits = append(waits, progress.NextPoll)
+			if len(waits) == 3 {
+				cancel()
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != PullRequestWaitPending {
-		t.Fatalf("churning terminal fingerprints must stay pending, got %+v", result)
+	if result.Status != PullRequestWaitFailed || !strings.Contains(result.Reason, context.Canceled.Error()) {
+		t.Fatalf("callback-cancelled churn wait = %+v", result)
 	}
-	// One shortened reread is allowed after the first terminal observation;
-	// once the fingerprint churns, every later wait must return to the full
-	// poll cadence, so only two or three observations fit in this slice.
-	// Re-observing on the shortened delay without bound would fit dozens.
-	if observations := rereadTestObservations(t, state); observations < 2 || observations > 3 {
-		t.Fatalf("observed the exact head %d times; churn did not fall back to the poll cadence", observations)
+	// One shortened reread is allowed after the first terminal observation.
+	// Once its fingerprint churns, every later wait must be the full cadence.
+	// This observes the scheduler's actual requested waits rather than fitting
+	// subprocess observations into a wall-clock slice under machine load.
+	if !slices.Equal(waits, []time.Duration{shortReread, interval, interval}) {
+		t.Fatalf("churn reread waits = %v, want short then full cadence", waits)
+	}
+	if observations := rereadTestObservations(t, state); observations != 3 {
+		t.Fatalf("observed the exact head %d times, want the three scheduled observations", observations)
 	}
 }
