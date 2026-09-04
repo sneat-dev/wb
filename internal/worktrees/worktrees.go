@@ -1233,6 +1233,16 @@ func isRetiredWorktreeStagingDirectory(name string) bool {
 	return strings.HasPrefix(name, ".wb-retired-stage-") && len(name) > len(".wb-retired-stage-")
 }
 
+func isMatchingRetiredStageDirectory(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) || len(name) == len(prefix) {
+		return false
+	}
+	// A generic shared-root allocator must never consume a task-bound local
+	// retirement. Its task hash is the evidence that limits reuse to the exact
+	// local task that created it.
+	return prefix != ".wb-retired-stage-" || !strings.HasPrefix(name, ".wb-retired-stage-task-")
+}
+
 func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root string) (owner, repository string, err error) {
 	_, commonDir, directoriesErr := gitDirectories(ctx, root)
 	if directoriesErr != nil {
@@ -2926,7 +2936,7 @@ func OpenOperationLockDirectory(path string) (*os.File, error) {
 // operations therefore converge on a reusable bounded pool instead of adding
 // one inert stage directory forever.
 func makeSecureStageDirectory(parent *os.File) (string, error) {
-	if name, claimed, err := claimRetiredStageDirectory(parent); err != nil {
+	if name, claimed, err := claimRetiredStageDirectory(parent, ".wb-stage-", ".wb-retired-stage-"); err != nil {
 		return "", err
 	} else if claimed {
 		return name, nil
@@ -2952,6 +2962,11 @@ func taskBoundLocalStagePrefix(task string) string {
 	return fmt.Sprintf(".wb-stage-task-%x-", sum[:12])
 }
 
+func taskBoundLocalRetiredStagePrefix(task string) string {
+	sum := sha256.Sum256([]byte(task))
+	return fmt.Sprintf(".wb-retired-stage-task-%x-", sum[:12])
+}
+
 func isTaskBoundLocalStageCheckout(path, task string) bool {
 	return strings.HasPrefix(filepath.Base(filepath.Dir(path)), taskBoundLocalStagePrefix(task)) && filepath.Base(path) == "checkout"
 }
@@ -2960,12 +2975,18 @@ func makeTaskBoundLocalStageDirectory(parent *os.File, task string) (string, err
 	if !validSafeSegment(task) {
 		return "", fmt.Errorf("invalid local stage task %q", task)
 	}
+	activePrefix := taskBoundLocalStagePrefix(task)
+	if name, claimed, err := claimRetiredStageDirectory(parent, activePrefix, taskBoundLocalRetiredStagePrefix(task)); err != nil {
+		return "", err
+	} else if claimed {
+		return name, nil
+	}
 	for attempt := 0; attempt < 16; attempt++ {
 		var token [16]byte
 		if _, err := rand.Read(token[:]); err != nil {
 			return "", err
 		}
-		name := taskBoundLocalStagePrefix(task) + fmt.Sprintf("%x", token[:])
+		name := activePrefix + fmt.Sprintf("%x", token[:])
 		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
 			return name, nil
 		} else if !errors.Is(err, unix.EEXIST) {
@@ -3044,7 +3065,7 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 	return true, nil
 }
 
-func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err error) {
+func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix string) (name string, claimed bool, err error) {
 	if _, err := parent.Seek(0, 0); err != nil {
 		return "", false, fmt.Errorf("rewind secure staging parent for retirement reap: %w", err)
 	}
@@ -3053,7 +3074,7 @@ func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err
 		return "", false, fmt.Errorf("read secure staging parent for retirement reap: %w", err)
 	}
 	for _, entry := range entries {
-		if !isRetiredWorktreeStagingDirectory(entry.Name()) {
+		if !isMatchingRetiredStageDirectory(entry.Name(), retiredPrefix) {
 			continue
 		}
 		fd, openErr := unix.Openat(int(parent.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
@@ -3080,7 +3101,7 @@ func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err
 				_ = retired.Close()
 				return "", false, fmt.Errorf("generate reclaimed staging name: %w", err)
 			}
-			name = fmt.Sprintf(".wb-stage-%x", token[:])
+			name = activePrefix + fmt.Sprintf("%x", token[:])
 			moved, moveErr := moveExpectedDirectoryNoReplace(parent, entry.Name(), parent, name, retired, nil)
 			if errors.Is(moveErr, unix.EEXIST) {
 				continue
@@ -3391,11 +3412,34 @@ func quarantineStageDirectoryAt(operationDirectory *os.File, name string, expect
 	if err != nil || actual != expected {
 		return fmt.Errorf("%w: secure staging directory %s changed before quarantine", errDirectoryMoveIdentityChanged, name)
 	}
-	retired, err := quarantineDirectoryEntry(operationDirectory, name, stage, ".wb-retired-stage-")
+	retired, err := quarantineDirectoryEntry(operationDirectory, name, stage, retiredStagePrefixForActiveStage(name))
 	if err != nil {
 		return err
 	}
 	return retired.Close()
+}
+
+func retiredStagePrefixForActiveStage(name string) string {
+	const activePrefix = ".wb-stage-task-"
+	const retiredPrefix = ".wb-retired-stage-task-"
+	if !strings.HasPrefix(name, activePrefix) {
+		return ".wb-retired-stage-"
+	}
+	rest := strings.TrimPrefix(name, activePrefix)
+	parts := strings.Split(rest, "-")
+	if len(parts) != 2 || len(parts[0]) != 24 || len(parts[1]) != 32 || !isLowerHex(parts[0]) || !isLowerHex(parts[1]) {
+		return ".wb-retired-stage-"
+	}
+	return retiredPrefix + parts[0] + "-"
+}
+
+func isLowerHex(value string) bool {
+	for _, character := range value {
+		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+			return false
+		}
+	}
+	return value != ""
 }
 
 const rollbackCleanupTimeout = 30 * time.Second

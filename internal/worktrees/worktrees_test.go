@@ -1057,31 +1057,54 @@ func TestAcquireLockDoesNotStealEmptyLockInCreationWindow(t *testing.T) {
 }
 
 func TestSecureStageReusesEmptyRetirementWithoutDeletingIt(t *testing.T) {
-	operationRoot := t.TempDir()
-	if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
-		operationRoot = resolved
-	}
-	directory, err := openAbsoluteDirectoryNoFollow(operationRoot, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = directory.Close() }()
-	retiredName := ".wb-retired-stage-empty"
-	if err := os.Mkdir(filepath.Join(operationRoot, retiredName), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	name, err := makeSecureStageDirectory(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(name, ".wb-stage-") {
-		t.Fatalf("claimed stage name = %q", name)
-	}
-	if _, statErr := os.Stat(filepath.Join(operationRoot, retiredName)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("retired name should be atomically claimed, stat err = %v", statErr)
-	}
-	if info, statErr := os.Stat(filepath.Join(operationRoot, name)); statErr != nil || !info.IsDir() {
-		t.Fatalf("claimed stage is unavailable: info=%v err=%v", info, statErr)
+	for _, test := range []struct {
+		name        string
+		retiredName string
+		activePref  string
+		allocate    func(*os.File) (string, error)
+	}{
+		{
+			name:        "shared",
+			retiredName: ".wb-retired-stage-empty",
+			activePref:  ".wb-stage-",
+			allocate:    makeSecureStageDirectory,
+		},
+		{
+			name:        "task-bound local",
+			retiredName: taskBoundLocalRetiredStagePrefix("local-stage-reuse") + "empty",
+			activePref:  taskBoundLocalStagePrefix("local-stage-reuse"),
+			allocate: func(parent *os.File) (string, error) {
+				return makeTaskBoundLocalStageDirectory(parent, "local-stage-reuse")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operationRoot := t.TempDir()
+			if resolved, resolveErr := filepath.EvalSymlinks(operationRoot); resolveErr == nil {
+				operationRoot = resolved
+			}
+			directory, err := openAbsoluteDirectoryNoFollow(operationRoot, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = directory.Close() }()
+			if err := os.Mkdir(filepath.Join(operationRoot, test.retiredName), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			name, err := test.allocate(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(name, test.activePref) {
+				t.Fatalf("claimed stage name = %q, want prefix %q", name, test.activePref)
+			}
+			if _, statErr := os.Stat(filepath.Join(operationRoot, test.retiredName)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("retired name should be atomically claimed, stat err = %v", statErr)
+			}
+			if info, statErr := os.Stat(filepath.Join(operationRoot, name)); statErr != nil || !info.IsDir() {
+				t.Fatalf("claimed stage is unavailable: info=%v err=%v", info, statErr)
+			}
+		})
 	}
 }
 
