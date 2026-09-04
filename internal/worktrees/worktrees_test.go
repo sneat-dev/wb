@@ -608,6 +608,9 @@ func TestCreateRejectsSymlinkedTaskAndOwnerDirectories(t *testing.T) {
 
 func TestCreateDoesNotFollowOwnerSwapDuringSecureAdd(t *testing.T) {
 	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+filepath.Join(fixture.home, "worktrees")+"\n")
 	outside := t.TempDir()
 	ownerPath := filepath.Join(fixture.home, "worktrees", "owner-swap", "acme")
 	movedOwner := ownerPath + "-moved"
@@ -847,7 +850,7 @@ func TestCreateCleansStageWhenOpeningItFails(t *testing.T) {
 func TestCreateRefusesLateSecureDestinationWithoutClobberingIt(t *testing.T) {
 	fixture := newGitFixture(t)
 	operation := "late-destination"
-	destination := filepath.Join(fixture.home, "worktrees", operation, "acme", "app")
+	destination := filepath.Join(fixture.canonical, ".worktrees", operation)
 	foreign := "foreign destination\n"
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
 		ProjectsRoot: fixture.projectsRoot,
