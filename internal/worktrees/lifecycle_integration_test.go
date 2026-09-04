@@ -2111,6 +2111,69 @@ func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing
 	}
 }
 
+// TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts
+// models a merger that incorporated a source then amended the same file before
+// squashing the integration PR. The exact source is in the PR head and the PR
+// head equals the landing tree, but replaying the source onto the squash
+// landing conflicts. That legacy patch-containment question must not override
+// the stronger numbered-PR proof.
+func TestCleanupAcceptsAttestedSquashPullRequestWhenGenericContainmentConflicts(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "cleanup-attested-pr-amendment", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "README.md"), []byte("# source\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "README.md")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "source edits README")
+	sourceHead := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+
+	integrationBranch := "integration/cleanup-attested-pr-amendment"
+	gitTest(t, fixture.canonical, "checkout", "-b", integrationBranch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge source into integration")
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "README.md"), []byte("# amended in integration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "add", "README.md")
+	gitTest(t, fixture.canonical, "commit", "-m", "amend source in integration")
+	integrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "-u", "origin", integrationBranch)
+	gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", integrationHead)
+
+	gitTest(t, fixture.canonical, "checkout", "main")
+	gitTest(t, fixture.canonical, "merge", "--squash", integrationBranch)
+	gitTest(t, fixture.canonical, "commit", "-m", "squash amended integration")
+	squashSHA := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	contained, err := contentContained(context.Background(), fixture.canonical, sourceHead, squashSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contained {
+		t.Fatal("fixture must make generic source-to-squash containment fail")
+	}
+
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, mergedAt)
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-attested-pr-amendment", OlderThan: 0,
+		AbsorbedBy: "77", Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible || !planned.Results[0].AbsorbedAtOrigin ||
+		planned.Results[0].AbsorbedBySHA != squashSHA || planned.Results[0].MergedPullRequest == nil {
+		t.Fatalf("attested amended squash cleanup = %#v", planned)
+	}
+}
+
 func TestCleanupAcceptsAbsorbedIntegrationBranchSquashReceipt(t *testing.T) {
 	fixture, result, head, squashSHA, mergedAt := prepareAbsorbedCandidate(t, "cleanup-absorbed-squash")
 	installAbsorbingPullRequestFixture(t, strings.Repeat("a", 40), squashSHA, mergedAt)
