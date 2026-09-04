@@ -1,0 +1,654 @@
+---
+format: https://specscore.md/feature-specification
+status: Draft
+---
+
+# Feature: Agent SDLC Throughput
+
+> [SpecScore.**Studio**](https://specscore.studio): | [Explore](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-sdlc-throughput?op=explore) | [Edit](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-sdlc-throughput?op=edit) | [Ask question](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-sdlc-throughput?op=ask) | [Request change](https://specscore.studio/app/github.com/sneat-dev/wb/spec/features/agent-sdlc-throughput?op=request-change) |
+**Status:** Draft
+**Source Ideas:** —
+
+## Summary
+
+Make the common agent change a two-command WB journey while preserving isolated
+worktrees, exact remote receipts, and recoverability:
+
+```text
+wb worktree create <task> ...
+# the agent edits and reviews files; exact-path formatters run immediately
+wb worktree land <worktree...>
+```
+
+WB owns deterministic subprocess execution, resource admission, validation
+receipts, integration queues, dependency waves, and lifecycle cleanup. The
+primary operating model is one orchestrator with three to seven concurrent
+author/research streams on a four-vCPU VM. Agents may remain numerous while WB
+admits no more CPU-heavy work than the machine can sustain.
+
+This Feature coordinates existing lifecycle, stream, quality, merge, and Work
+Log contracts. It does not weaken canonical-clone immutability or create a
+second ownership, receipt, cache, or recovery system.
+
+## Founder Direction
+
+The following are founder statements from the September 4, 2026 discussion:
+
+- *“wherever possible try to offload deterministic work to CLIs - wb
+  specifically. Ideally batched.”*
+- *“Ideally small change should look like wb worktree create; AI agent work;
+  wb worktree land.”*
+- *“I tend to think that for me most comfortable way to work is to have
+  orchestrator and 3-7 streams working in parallel.”*
+- *“I often run agents in vm with limited cpu - mine has 4 virtual cores.”*
+- *“I’d say agent should never run tests directly.”*
+- *“Go already caches and reuse test results where possible.”*
+- *“Go fmt and prettier are pretty fast and important to run as close to edits
+  as possible.”*
+
+The proposed three-unit CPU budget, scheduler shape, command spelling, warm-slot
+policy, and lesson curator are design recommendations rather than founder
+rulings.
+
+## Problem
+
+The current process protects source and recovery well, but agents repeatedly
+pay for orchestration WB can perform deterministically. They invoke formatter,
+test, build, and Git commands separately; wait on local hooks and CI; repeat
+broad checks after focused failures; and manually carry dependency, landing,
+cleanup, and lessons state between sessions.
+
+### Measured Baseline
+
+A read-only September 4, 2026 scan found:
+
+| Evidence | Result | Interpretation |
+|---|---:|---|
+| Local WB hook events, last 30 days | 501 push attempts, about 23.4 machine-hours | Local push validation is a material cost. |
+| Push-hook latency | p50 94.2 s, p90 422.8 s, p95 602.4 s | The ordinary push path often blocks an agent for minutes. |
+| Commit-check latency | p50 76 ms, p90 407 ms, p95 787 ms | Focused commit feedback is cheap and should stay close to edits. |
+| Laptop Work Logs | 2,126 claims; 1,798 sealed (84.57%) | There is enough lifecycle volume to justify deterministic coordination; unsealed claims are censored. |
+| Laptop sealed claim lifetime | p50 24.19 min, p90 978.27 min | Flow has a long tail, but this includes work, waits, and parking. |
+| Laptop claim to PR merge | p50 15.04 min, p95 915.06 min | Review and landing tails are substantial. |
+| Laptop PR merge to cleanup | p50 4.30 min, p90 13.49 days | Cleanup is usually fast but has an extreme ownership tail. |
+| VM Work Logs | 383 claims; 299 sealed (78.07%) | A second host shows similar incomplete lifecycle evidence. |
+| VM sealed claim lifetime | p50 18.53 min, p90 530.20 min | The VM also has a long flow tail. |
+| VM PR merge to cleanup | p50 1.37 min, p90 188.89 min | VM cleanup is materially healthier than laptop cleanup. |
+| Laptop dependency reports | 47 reports; 81 downstream repositories; 19 revisited | Shared consumers are repeatedly revisited across waves. |
+| Not-enforced lesson listing | 196 lines, 17,268 bytes | The whole improvement backlog is unsuitable worker preflight context. |
+| WB skill source | 67 files, 258,374 bytes | Skill routing and deduplication matter; this does not prove every harness loads every byte. |
+
+During this investigation the shared `/Users/alex/.local/bin/wb` changed from
+the released `sneat-dev/wb` revision `6217a510` to feature-build revision
+`172a853c`. The replacement then warned that synchronized skills came from the
+other build. This is direct evidence that concurrent feature work can mutate a
+tool used by every agent and invalidate another session's verified assumptions.
+
+The Work Log schema does not record command start/end, CPU time, memory,
+process count, cache state, commit/push/PR creation, CI queue time, retry cause,
+tokens, or cost. Logical claim overlap is not CPU concurrency. The evidence
+therefore cannot yet establish that Git worktree materialization is the primary
+startup bottleneck. Repository-local placement is too new for a useful
+performance comparison.
+
+### Current Validation and CI
+
+WB's staged Go commit hook checks `gofmt` and vets touched packages. Its Node
+hook checks changed files with configured Prettier and ESLint. That scope is
+appropriate, although formatting should happen immediately after edits and the
+commit hook should normally only verify it.
+
+The WB repository's non-stream pre-push template runs `go vet ./...` plus an
+eight-process coverage run. On a four-core VM this can oversubscribe the machine
+and duplicates pull-request CI. Coverage and nightly full race deliberately use
+`-count=1`, bypassing Go's test-result cache while retaining compiler and
+module caches. Focused development tests should allow Go's result cache.
+
+GitHub CI is clear and usefully parallel: format/tidy, vet/build, lint,
+eight-shard coverage, and scoped race are separate, while full-module race is
+nightly/manual. In run `33918379694`, release eligibility took 6 seconds,
+coverage dominated at 4 minutes 35 seconds, and the required aggregate was
+green in 4 minutes 54 seconds. That run does not justify restructuring CI. The
+measured local duplicate gate is the larger problem.
+
+## Behavior
+
+### Primary Journey
+
+1. The orchestrator creates or resumes named isolated worktrees through WB.
+   Creation returns when each checkout is safe to edit. Dependency preparation
+   may continue as a queued operation with a durable ID.
+2. Three to seven author/research agents edit concurrently. Exact edited paths
+   are formatted immediately. Agents submit tests, builds, dependency
+   operations, and Git commands through WB rather than launching heavy
+   subprocesses directly.
+3. WB admits work against one machine-wide budget, coalesces equivalent checks,
+   supersedes obsolete queued checks, and publishes bounded receipts. Agents
+   continue reasoning or editing while non-blocking checks run.
+4. A stream reports only a fresh actionable failure. A success remains silent
+   until status or landing needs its receipt.
+5. The orchestrator submits compatible completed worktrees to one durable
+   merger lane per repository/target. WB validates once, lands through the
+   permitted route, proves the remote receipt, synchronizes an eligible
+   canonical checkout, and terminalizes or explicitly recycles every source.
+6. An AI merger is created only for a semantic conflict, behavioral decision,
+   or review WB cannot resolve mechanically.
+
+**Observable good result:** three to seven agents remain productive, heavy
+subprocesses stay within the configured CPU/memory budget, equivalent
+validation runs once, every result is bound to immutable inputs, and completed
+work has one owner through remote receipt and cleanup.
+
+### Other Operating Modes
+
+- **One orchestrator per stream:** every orchestrator uses the same machine
+  scheduler and repository merger lane, so session count does not multiply CPU
+  budgets or landing owners.
+- **Single agent or human-led task:** an interactive command waits by default;
+  `--async` returns an operation receipt. The same create/edit/land journey
+  applies.
+- **Recovery:** recovery and landing work outrank new background validation.
+  A successor resumes durable intents and lifecycle receipts.
+- **Larger machines:** budget follows explicit capacity. Raising agent count
+  never raises CPU admission automatically.
+
+### Governed Command Execution
+
+Agents MUST submit test, build, lint, dependency-install, and Git commands
+through one WB execution gateway. Direct heavy commands in a WB-managed agent
+worktree MUST be refused by the harness guard with the sanctioned WB command.
+
+Use a compatible extension of the existing `wb run` recipe command:
+
+```text
+wb run [--async] -- go test ./internal/worktrees -run TestName
+wb run -- git commit -m "..."
+```
+
+Without `--`, the existing `wb run <recipe>` behavior remains unchanged. The
+boundary preserves the child argument vector and removes ambiguity between a
+recipe name and an executable. Recognized commands receive resource
+classification, cache policy, bounded diagnostics, and result fingerprints.
+Unknown commands may be scheduled but MUST NOT be deduplicated or treated as
+replayable.
+
+Intent verbs remain preferred: `wb worktree land`, checkpoint, dependency,
+cleanup, and recovery commands carry stronger semantics than raw Git. The Git
+wrapper is the governed compatibility path when no intent verb exists.
+
+Formatting, `git add`, `git commit`, checkout/branch mutation, and lifecycle
+transitions are synchronous because the agent needs their effects. Tests,
+builds, coverage, dependency preparation, CI observation, and exact-SHA pushes
+may be asynchronous. A queued push records the exact source SHA and destination
+ref and refuses if either changes.
+
+### Toolchain Isolation
+
+Feature work MUST NOT replace the shared installed WB executable or synchronize
+global agent skills as a side effect of build, test, hook, or local validation.
+WB execution uses the caller's pinned WB revision or a private content-addressed
+build produced for that worktree. Only a verified release/install operation may
+atomically update the shared executable and then synchronize skills from the
+same exact revision. Operation receipts record the WB, Go/Node, dependency, and
+policy fingerprints they used.
+
+### Immediate Formatting
+
+After an edit transaction, a harness/editor hook passes exact changed paths to
+WB. WB runs `gofmt` on existing changed Go files and configured Prettier on
+supported changed files. A short debounce may batch a multi-file edit, but
+formatting never waits behind a heavy-work queue.
+
+The commit hook verifies staged paths and keeps cheap focused static checks.
+Landing rechecks candidate-changed paths. No edit or commit hook starts
+repository-wide formatting, tests, coverage, or race.
+
+### Validation Ladder
+
+| Stage | Default work | Cache policy |
+|---|---|---|
+| Edit | Exact-path formatter; named diagnostic when requested | Reuse native caches. |
+| Commit | Staged diff/format plus cheap touched-package static checks | Reuse native caches; no tests. |
+| Development | Named test or affected package/direct dependants through WB | Allow Go test-result cache. |
+| Land candidate | Changed-file format plus affected static/test scope; widen for shared/build surfaces | Reuse matching WB receipts and native caches. |
+| Pull-request CI | Full tests/coverage policy and scoped race | Fresh policy-defined run. |
+| Nightly/manual CI | Full-module race and other expensive assurance | Fresh deliberate run. |
+
+Module manifests, lockfiles, build tags, generators, CI, and shared public APIs
+widen candidate scope deterministically. Docs-only changes run no Go checks. A
+test-only change starts with its package. After a broad failure WB schedules
+the named failing package/test rather than repeating the broad gate.
+
+`wb worktree land` consumes matching receipts and runs only missing required
+checks. It returns to an agent for failure or judgment, not to orchestrate
+successful subprocesses.
+
+### Four-Core Resource Scheduler
+
+Every WB-owned operation is submitted to one local daemon, which stores an
+append-only intent queue and launches short-lived workers. Synchronous CLI calls
+wait for the same receipt that `--async` returns immediately. Existing typed
+packages continue to own Git descriptors, task locks, claims, Work Logs, merge
+receipts, and recovery; the daemon owns admission, scheduling, and delivery.
+Immediate exact-path formatting may run directly because it uses no CPU queue.
+
+The CLI uses protobuf contracts through ConnectRPC over a user-restricted local
+transport: `<projects-root>/.wb/runtime/daemon.sock`, a mode-0600 Unix domain
+socket on macOS/Linux, or `\\.\pipe\wb-<user-SID>`, a current-user-only named
+pipe on Windows. A custom dialer changes only the transport; generated request,
+receipt, enum, error, deadline, and cancellation contracts remain identical.
+The local channel accepts typed lifecycle operations and the local-only raw
+`wb run -- <argv>` compatibility gateway. `SubmitOperation` carries an
+idempotency key; `GetOperation`, `WaitOperation`, and `CancelOperation` own the
+lifecycle. `WaitOperation` accepts an opaque `after_cursor` and bounded wait so
+a dropped stream or daemon restart resumes without losing progress.
+`GetDaemonInfo` reports daemon build, protocol version, queue schema, scheduler
+generation, and `ready` or `draining` state.
+
+If the daemon is absent, the CLI starts the registered launchd, systemd user,
+or Windows per-user service and retries within a bounded startup window. An explicit recovery mode
+may execute locally under the same cross-process CPU leases, but silent daemon
+bypass is forbidden because it would create a second scheduler.
+WB installation registers the per-user service; normal users and agents do not
+start it manually. Help, version, daemon install/status/repair, and exact-path
+formatting are bootstrap-safe without the daemon. If supervised startup fails,
+other governed or mutating operations refuse with the exact repair command.
+`--local-recovery` is an explicit, receipted emergency path rather than an
+automatic fallback.
+
+The four-vCPU default has three CPU units, preserving one core for interactive
+work:
+
+| Work class | Units | Limit |
+|---|---:|---|
+| Exact-path format/local metadata | 0 | Immediate with short timeout. |
+| Focused Go test/vet or light lint | 1 | Fair-queued by session. |
+| Broad Go/Node test or build | 2 | Child parallelism capped to units. |
+| Angular/Nx production build | 2 | At most one at a time. |
+| Coverage or race | 3 | One local run; normally CI-owned. |
+| Git fetch/remote observation | network slot | Four by default. |
+| Git/common-dir mutation | classified | One writer per canonical repository. |
+
+WB sets `GOMAXPROCS`, Go `-p`, and supported Node/Nx/Vitest workers from the
+allocation. One scheduler slot cannot hide eight test processes. The existing
+dependency-stream cap of at most two Go builds, one Angular build, and three
+validation lanes remains the upper bound.
+
+Admission uses weighted fair queuing by session with aging. Recovery,
+interactive human work, ready-to-land candidates, and blocking focused tests
+outrank speculative background work. Priority reorders queued work but never
+interrupts a destructive operation.
+
+Queued cancellation is terminal. Cancellation or process death after mutation
+begins records `recovery_required`. Late results are accepted only when intent,
+scheduler generation, canonical identity, tree, target, and policy fingerprints
+still match.
+
+### Scheduler Upgrade
+
+Every CLI/scheduler handshake carries the WB build revision, protocol version,
+queue schema, process-start identity, and scheduler generation. A verified
+shared WB installation triggers a controlled restart:
+
+1. The installer atomically publishes the verified versioned binary and install
+   receipt.
+2. The old scheduler enters `draining`: it stops dispatching new operations to
+   workers but continues accepting requests into the durable queue.
+3. Read-only work may be cancelled and resubmitted; mutating workers reach the
+   next durable lifecycle boundary.
+4. The old scheduler checkpoints its queue generation and exits.
+5. The supervisor starts the new exact revision, which replays durable intents,
+   validates schemas/fingerprints, and reacquires only safe leases.
+6. The new scheduler publishes `ready` and dispatches the queued operations
+   under the new generation. Asynchronous callers already hold their operation
+   receipts; synchronous callers continue waiting across the restart.
+
+A compatible client may observe the old scheduler while it drains. New requests
+are fingerprinted and persisted against the next scheduler generation, so an
+upgrade does not create an availability gap. An incompatible client requests
+this controlled restart or refuses with the exact recovery command. If drain
+exceeds its timeout, WB names the blocking operation and keeps the old process
+alive; it never force-kills a Git mutation. After a crash the supervisor
+restarts immediately and rebuilds from durable queue and lifecycle receipts.
+Private feature builds neither replace the shared binary nor restart the shared
+scheduler.
+
+### Cross-machine synchronization
+
+Each registered machine runs its own local scheduler and keeps durable queue
+authority local. Cross-machine coordination distributes immutable events and
+remote receipts; it does not migrate a running process or lease between
+machines.
+
+When a PR lands, WB publishes the repository, target ref, and exact observed
+remote SHA. Every online registered machine fetches that repository promptly.
+It fast-forwards the canonical target only when the checkout is clean, has no
+local commits, and no local repository writer holds a lease. Otherwise WB
+records `target_update_pending` and applies the fast-forward when the lease
+clears. Active feature worktrees are never silently rebased or reset; only new
+worktrees consume the synchronized target automatically.
+
+The default transport is outbound HTTPS from each daemon to an event relay or
+authoritative receipt feed, which avoids exposing a laptop or VM to unsolicited
+inbound traffic. A local or mutually authenticated HTTPS ConnectRPC API exposes
+typed enqueue, status, wait, wake, and health operations. SSH is a supported adapter for a
+user-controlled registered machine. Delivery is at least once and processing
+is idempotent on `(repository, target ref, remote SHA, machine)`.
+
+A machine may optionally publish that API through Cloudflare Tunnel. The WB
+daemon binds only to loopback or a Unix socket; `cloudflared` creates the
+outbound tunnel and Cloudflare Access requires a distinct, revocable service
+identity for each calling machine. The published API is typed: it accepts
+allow-listed operations and bounded repository/ref/SHA inputs with idempotency
+keys. It never exposes the generic local `wb run -- <argv>` surface as remote
+arbitrary command execution. WB validates authorization again at the daemon and
+records the caller machine on every accepted intent.
+
+The loopback/HTTPS listener never exposes the local raw-command endpoint.
+Connect's browser-compatible protocol lets the future dashboard use the same
+generated service without a separate REST gateway.
+Read models expose machines and heartbeats, repositories and target freshness,
+queued/running/terminal operations, validation cost percentiles, dependency
+waves, streams, and worktree lifecycle alerts. Event delivery uses opaque
+cursors so a dashboard can resume without replaying the full log. Read-only
+dashboard credentials cannot enqueue or cancel work; operator actions use a
+separate scope and idempotency key. CLI reports, the MCP adapter, and the web
+dashboard consume these contracts instead of reading daemon database files.
+
+Repository synchronization follows every verified landing receipt. Replacing
+the shared WB executable and restarting its daemon happens only for a verified
+WB release installation; a merge to the WB repository's `main` is not itself
+an executable upgrade.
+
+### Validation Identity and Notifications
+
+A reusable receipt is keyed by:
+
+```text
+operation + canonical repository + exact tree + scope + toolchain +
+dependency/lock fingerprint + policy hash + environment class
+```
+
+Go compiler, module, and result caches remain enabled where policy permits. The
+WB receipt prevents repeated command launch; it does not replace Go's cache.
+
+Equivalent requests subscribe to one operation. A newer tree supersedes an
+older queued check without cancelling a mutating worker. Success is silent and
+discoverable. Failure notifies subscribers once with the smallest actionable
+diagnostic. Obsolete results are recorded as stale and never reported current.
+
+### Durable Merger Lanes
+
+WB maintains one queue per `(canonical repository, target ref)`. It batches
+compatible reviewed work, creates one integration candidate, validates it once,
+then reuses the existing mechanical merge receipt for push, pull request,
+checks, landing, canonical synchronization, and cleanup.
+
+The orchestrator owns ordering and product decisions. WB owns the durable
+queue. A temporary AI merger handles only conflicts, semantic review, or
+contradictory behavior.
+
+### Batched Dependency Propagation
+
+One campaign owns a durable provider/consumer DAG and one integration
+branch/worktree per downstream repository. Consumers validate combined
+unpublished providers through local links. Upstream updates accumulate before
+one downstream manifest change and push.
+
+Default flush policy:
+
+- five minutes with no new provider event;
+- twenty minutes maximum delay;
+- immediate when a consumer blocks active work, the change is critical, no
+  other provider is pending, or a user asks;
+- recovery-needed, failed, or stale streams move explicitly to the next wave.
+
+Each wave creates at most one downstream change and CI run per repository.
+Terminal consumers such as `sneat-co/sneat-go` update once after their
+upstream set stabilizes. Reports name included/deferred providers, the flush
+reason, and validation receipts.
+
+### Recyclable Workspace Slots
+
+Canonical clones remain read-only. Editable canonical checkouts are rejected
+because they combine synchronization authority and private task ownership.
+
+| Option | Safety | Expected performance | Policy |
+|---|---|---|---|
+| Always create/remove | Current strong isolation | Repeats local materialization | Baseline and concurrency fallback. |
+| Editable canonical | Conflated authority | Avoids creation | Reject. |
+| Explicit manual recycle | Existing guarded transaction | Preserves approved caches | Keep and instrument. |
+| Automatic recycle slot | Strong if separately fenced | Potentially fastest | Trial only after measurement. |
+
+A slot binds canonical identity to the authoritative layout resolver. It has a
+stable path but no permanent warm branch, task claim, remote claim, or active
+Work Log. Availability comes from metadata. There is at most one logical slot
+per repository across repository-local and configured shared layouts,
+including migration.
+
+Acquisition atomically reserves the slot, fetches the exact target, creates a
+fresh task branch and Work Log, assigns the live session, and reconciles
+dependencies. Only declared repository-relative ignored caches survive. A
+second agent receives a new isolated worktree. Claimed, interrupted, dirty,
+unpushed, unlanded, or recovery-needed checkouts are never inferred available.
+
+```text
+absent -> provisioning -> released -> acquiring -> claimed
+claimed -> releasing -> released
+provisioning|acquiring|claimed|releasing -> recovery_needed
+recovery_needed -> salvaging -> released|quarantined
+```
+
+`wb sync` may refresh only `released`; acquisition still revalidates the
+remote target.
+
+### Lessons Without Worker Context Spam
+
+Workers load only relevant compact Enforced rules selected by repository,
+command, and change surface. They never load the full not-enforced backlog.
+
+When a process gap is clear, the worker submits a small structured observation
+to a private WB outbox: failed control, expected control, evidence reference,
+repository, command category, and candidate known lesson. It contains no prompt
+body, source, secrets, or arbitrary output.
+
+A lower-cost asynchronous curator batches and deduplicates observations,
+records or recurs SpecScore lessons, proposes promotion, lints once, and opens
+at most one Backstage change per batch. Safety-critical, repeated, or blocking
+gaps may force synchronous curation. Effectiveness is recurrence reduction
+after enforcement, not lesson volume.
+
+SpecScore should add compact/count/limit/fields output for preflight and a batch
+occurrence input. Shared index updates remain transactional unless that contract
+is deliberately redesigned.
+
+### Work Log and Command Telemetry
+
+WB appends bounded events for create, dependency preparation, formatting,
+command execution, validation, commit, push, PR creation, CI wait, candidate,
+landing, cleanup, recycle, and recovery. Events record:
+
+- correlation/category/scope and start/end/outcome/retry cause;
+- repository, before/after SHA, tree/policy/toolchain fingerprints;
+- queue/lock wait, wall/CPU time, peak RSS, allocated units, child count;
+- cache/receipt hit or miss and CI queue/start/end;
+- actual provider tokens/cost only when exposed by the provider.
+
+Events never record prompts, commit messages, diffs, source, secrets, raw
+arguments, or arbitrary output. Raw events stay private under `WB_HOME`;
+reports aggregate p50/p75/p90/p95 and throughput. Retention and remote
+aggregation are user policy.
+
+Read-only reports MUST be side-effect-free. `wb hooks metrics` and
+`wb hooks measure` must read existing events without preparing or changing
+hook-runtime permissions.
+
+## Operation State
+
+```text
+requested -> validated -> queued -> admitted -> running -> succeeded|failed
+queued -> cancelled|superseded
+running -> recovery_required|stale_result
+recovery_required -> queued|failed|cancelled
+```
+
+The intent is written before admission with bounded nonsecret fields:
+operation ID, idempotency key, requester/session, repositories, expected
+canonical/base/head/tree, kind, priority, resources, placement snapshot, and
+input digest. Reissuing an idempotency key cannot create a second worktree,
+branch, push, claim, or deletion.
+
+## Compatibility and Migration
+
+1. Add phase telemetry and side-effect-free reports without changing behavior.
+   Measure cold creation, manual recycle, dependency preparation, and first edit
+   at one, three, five, and seven active agents.
+2. Introduce governed execution in observe-only mode.
+3. Add the local scheduler, sync/async receipts, resource caps, coalescing, and
+   stale-result suppression.
+4. Add registered-machine receipt fan-out, fetch, and guarded canonical
+   fast-forward; keep queue authority local to each machine.
+5. Move broad non-stream pre-push validation into scheduler/landing policy.
+   Keep diff/worktree guards and cheap commit checks.
+6. Add `wb worktree land` over existing merge/receipt/sync/cleanup machinery.
+7. Add dependency debounce and shared downstream integration branches to the
+   existing stream/campaign engine.
+8. Trial one explicit recycle slot per selected repository and compare it with
+   always-create and manual recycle.
+9. Add a thin MCP adapter only after CLI/API receipts stabilize.
+
+Existing create, merge, quality, manual recycle, and both placement layouts
+remain valid during migration. Older clients may inspect but cannot mutate
+unknown newer operation states.
+
+## Acceptance Criteria
+
+### AC: seven-agents-respect-four-core-budget
+
+Given seven sessions submit mixed focused tests, broad tests, an Angular build,
+coverage, and fetches on four vCPUs, when WB schedules them, then no more than
+three CPU units run, child workers stay within allocations, network work uses a
+separate cap, fair queuing gives every session progress, and one core remains
+outside WB's budget.
+
+### AC: equivalent-tests-run-once
+
+Given three sessions request the same test for the same exact tree, toolchain,
+dependencies, scope, policy, and environment, then one subprocess runs and all
+three consume its receipt. A later request reuses the success.
+
+### AC: landed-target-reaches-registered-machines
+
+Given laptop and VM schedulers are registered and a PR lands on `origin/main`,
+then both machines fetch the exact landed SHA. A clean idle canonical checkout
+fast-forwards promptly; a busy or dirty canonical checkout records a pending
+update and advances only after its local writer lease clears. Existing feature
+worktrees are unchanged, and duplicate delivery creates no duplicate mutation.
+
+### AC: changed-tree-invalidates-result
+
+Given a queued or completed test and a changed worktree, then the old result is
+stale for that request, no stale failure is announced as current, and WB creates
+or finds a receipt for the new tree.
+
+### AC: direct-agent-test-names-wrapper
+
+Given a registered agent runs a direct test/build/coverage/race command in a
+managed worktree, then the harness guard refuses before launch and prints the
+equivalent governed command. Human use outside agent mode remains compatible.
+
+### AC: feature-validation-cannot-replace-shared-wb
+
+Given one session validates an unmerged WB feature while other sessions use the
+released CLI, then validation builds and runs a private content-addressed
+binary; the shared executable and synchronized skills remain byte-identical.
+A release install updates both from one exact verified revision.
+
+### AC: verified-install-drains-and-restarts-scheduler
+
+Given an old scheduler has queued work and a mutating worker in flight, when a
+verified WB release is installed, then new worker dispatch stops while durable
+request intake continues, the mutating worker reaches a durable boundary, the
+queue generation is checkpointed, one new scheduler starts from the installed
+revision, and every queued intent is either resumed once or given an exact
+incompatible-schema disposition. No second independent scheduler dispatches
+work during the transition.
+
+### AC: formatting-follows-the-edit
+
+Given an edit changes Go and Prettier-supported files, then only those paths are
+formatted before the next review; commit verifies staged paths; and neither
+hook starts tests, coverage, race, or repository-wide formatting.
+
+### AC: land-is-the-second-command
+
+Given compatible clean worktrees and matching focused receipts, when the
+orchestrator runs `wb worktree land`, WB prepares one candidate, runs only
+missing validation, lands through a permitted route, proves remote target and
+post-target checks, synchronizes an eligible canonical checkout, and
+terminalizes or recycles every source without another deterministic agent call.
+
+### AC: merger-agent-is-exceptional
+
+Given a conflict-free reviewed batch, no AI merger session is created. Given a
+semantic conflict, WB preserves exact candidate/source state and requests
+judgment.
+
+### AC: downstream-updates-once-per-wave
+
+Given several provider changes reach one consumer during the debounce window,
+one consumer change, validation, push, and CI run include all ready providers.
+The report names deferred providers. A blocked critical consumer may force an
+explicitly reasoned immediate flush.
+
+### AC: interrupted-work-is-never-reused
+
+Given a worker/session dies during mutation, the intent and checkout become
+recovery-required. Owner death or clean Git status never releases them, and
+resume/salvage uses existing exact lifecycle evidence.
+
+### AC: one-slot-across-layout-migration
+
+Given a released slot and a placement-root change, two concurrent acquisitions
+identify one logical slot through canonical identity and `WB_HOME`; one
+acquires it and the other receives a new isolated worktree.
+
+### AC: telemetry-supports-causal-analysis
+
+A create-to-land report separately measures queue, fetch/materialization,
+dependency, validation, push/CI, landing, and cleanup. CPU/RSS/cache/retry data
+is present where available, and private content is absent.
+
+### AC: lessons-are-curated-off-worker-path
+
+Several observations of one gap create no global worker-context load and become
+one deduplicated curation batch. Future workers receive only relevant compact
+Enforced rules.
+
+## Open Questions
+
+1. Should noninteractive agent commands return operation receipts by default,
+   while interactive human commands wait, or must `--async` always be explicit?
+2. Is the default priority recovery, interactive human, ready-to-land,
+   blocking focused test, dependency preparation, background validation?
+3. Which cache paths, size/age caps, and eviction policy may recyclable slots
+   retain? Is automatic acquisition opt-in until measured?
+4. Does WB generate operation IDs from caller idempotency keys, or may trusted
+   adapters supply final IDs?
+5. How long are raw operation events retained, and may aggregate
+   timing/resource/token metrics leave the machine?
+6. After observe-only rollout, are direct heavy agent commands refused always
+   or only while the scheduler service is available?
+7. Which conditions force synchronous lesson curation beyond safety-critical,
+   repeated, or currently blocking gaps?
+
+## Dependencies
+
+- worktree-lifecycle
+- mechanical-worktree-merge
+- dependency-streams
+- work-log
+- fleet-quality
+
+---
+*This document follows the https://specscore.md/feature-specification*

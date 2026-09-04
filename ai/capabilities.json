@@ -1284,6 +1284,74 @@
       "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
     },
     {
+      "id": "wb.daemon.serve",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb daemon serve",
+              "flags": [
+                "--listen"
+              ],
+              "modes": [
+                "Serves the embedded read-only dashboard and versioned JSON API on a loopback listener"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb daemon serve --help",
+              "contains": [
+                "--listen",
+                "Cloudflare Tunnel",
+                "loopback"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-daemon/SKILL.md",
+              "marker": "# WB daemon",
+              "examples": [
+                "wb daemon serve"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/dashboard/dashboard_test.go",
+              "name": "TestDashboardServesUIAndHealth",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/daemon_test.go",
+              "name": "TestDaemonRequiresLoopbackListener",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Cloudflare Tunnel is a transport option; authorization remains separate and remote arbitrary argv is excluded."
+    },
+    {
       "id": "wb.deps.bump",
       "feature_refs": [],
       "since": "existing",
@@ -3331,8 +3399,9 @@
               ],
               "modes": [
                 "Reads a Claude Code PreToolUse payload on stdin and writes a deny document when the call would write inside a canonical clone.",
+                "Redirects CPU-heavy validation in a WB-managed worktree to wb run -- so it receives telemetry and machine-wide admission.",
                 "Fails open without exception: an unreadable payload, an unknown tool, an unmodelled shell construct, and an internal panic all allow the call.",
-                "Never refuses a read, a linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
+                "Never refuses a read, immediate gofmt/Prettier formatting, an unmanaged linked-worktree write, or the fetch and fast-forward a canonical clone exists to perform."
               ]
             }
           ],
@@ -3382,6 +3451,11 @@
               "kind": "unit"
             },
             {
+              "path": "internal/agentguard/agentguard_test.go",
+              "name": "TestManagedWorktreeRequiresGovernedHeavyValidation",
+              "kind": "unit"
+            },
+            {
               "path": "cmd/wb/hooks_agent_test.go",
               "name": "TestAgentHookNeverExitsNonZero",
               "kind": "integration"
@@ -3390,7 +3464,7 @@
           "limitation": null
         }
       },
-      "notes": "Refuses an agent tool call that would write into a canonical clone, one layer earlier than any Git hook can see. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, and known generators \u2014 and every unmodelled construct, including an interpreter given an inline script and a working directory reached through a variable, is allowed rather than guessed at."
+      "notes": "Refuses an agent tool call that would write into a canonical clone, and routes recognized heavy validation in managed worktrees through WB. Bash detection is deliberately partial \u2014 recognised Git write verbs, redirections, in-place editors, file mutators, known generators, and common validation commands \u2014 while every unmodelled construct is allowed rather than guessed at."
     },
     {
       "id": "wb.hooks.check",
@@ -4048,10 +4122,10 @@
                 "--keep-commits with a mandatory --reason rebuilds the branch so the named commits land as their own, in order, with the rest aggregated; each kept commit must build on its own or the landing is refused naming a smaller set",
                 "A mechanical bump is classified from the diff's CONTENT, never from filenames or from the title, author or labels: package.json counts only when every changed line is a dependency entry inside dependencies/devDependencies/peerDependencies/optionalDependencies, a manifest under testdata/docs/examples/fixtures is code, and a file GitHub could not diff is not classifiable and therefore not mechanical",
                 "Nothing that rewrites the resolved graph is ever mechanical, in any manifest: overrides, resolutions, packageExtensions, patchedDependencies and catalogs in package.json or pnpm-workspace.yaml, and replace, exclude, go or toolchain in go.mod. The enclosing section is read from the hunk's context lines AND from the @@ header, where Git puts it when the hunk shows no section line of its own",
-                "The live-link refusal runs whatever --keep says — --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed — and a stream WB cannot read stops the landing rather than being reported as no link",
+                "The live-link refusal runs whatever --keep says \u2014 --keep opts out of retiring the worktree, not out of the rule that a worktree building against an unpublished tree must not be landed \u2014 and a stream WB cannot read stops the landing rather than being reported as no link",
                 "On the declared landing surface with the wb.dev/landing-guard annotation, addressed by pull request: every open stream worktree of the repository is checked for a live local link BEFORE any GitHub call, because a refusal that has to reach the network first fails differently when the network does",
                 "Cleanup is pre-flighted before the merge: a dirty worktree or one holding a live local dependency link refuses the landing while refusing is still free, naming wb worktree end or --keep, because discovering it afterwards leaves the landing done and the tidy-up impossible",
-                "Every invocation writes exactly one stream event — success, findings or refusal, and including --keep — carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
+                "Every invocation writes exactly one stream event \u2014 success, findings or refusal, and including --keep \u2014 carrying the pull request, head, mechanical verdict, approval reference, kept commits and saved_tool_calls; a refused invocation records zero saved calls because it did none of the caller's work",
                 "Keeping commits separate re-observes the REWRITTEN head's own checks before merging, and is refused on a target with no required status check unless --allow-unfenced is explicit, because the checks observed before the rewrite describe content that no longer exists",
                 "Source commits are paired with the commits that landed them by git patch-id --stable over the base's new commits, never by the scratch worktree's SHAs, which exist nowhere after a rebase merge",
                 "The landing is verified as an effect: the pull request must report itself merged and the merge commit must be reachable from the base before the branch is deleted",
@@ -5055,9 +5129,14 @@
               "flags": [
                 "--apply",
                 "--config",
+                "--days",
+                "--history",
+                "--json",
                 "--list"
               ],
               "modes": [
+                "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
+                "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
             }
@@ -5072,7 +5151,9 @@
               "contains": [
                 "--apply",
                 "--config",
-                "--list"
+                "--history",
+                "--list",
+                "run -- <command>"
               ]
             }
           ],
@@ -5085,7 +5166,9 @@
               "path": "ai/skills/wb-run/SKILL.md",
               "marker": "# WB run",
               "examples": [
-                "wb run --list"
+                "wb run --list",
+                "wb run -- go test ./internal/worktrees -run TestCreate",
+                "wb run --history --days 7"
               ]
             }
           ],
@@ -5094,6 +5177,21 @@
         "tests": {
           "status": "Full",
           "references": [
+            {
+              "path": "cmd/wb/run_command_test.go",
+              "name": "TestRunCommandPreservesStreamsAndExitCode",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/runlog/runlog_test.go",
+              "name": "TestRecorderWritesPrivacySafeLifecycleEvents",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/runqueue/queue_test.go",
+              "name": "TestAcquireCoordinatesIndependentCallers",
+              "kind": "unit"
+            },
             {
               "path": "internal/orchestrate/engine_integration_test.go",
               "name": "TestRunIsolatesDirtyCanonicalClone",
@@ -5108,7 +5206,7 @@
           "limitation": null
         }
       },
-      "notes": "Apply follows recipe publication policy; selection should be narrowed before fleet mutation."
+      "notes": "Command execution uses worker-level cross-process leases below the projects root so independent agents share one CPUCount-1 budget. Apply follows recipe publication policy; selection should be narrowed before fleet mutation."
     },
     {
       "id": "wb.self-update",
@@ -7536,7 +7634,7 @@
                 "--all",
                 "--apply",
                 "--actor",
-				"--absorbed-by",
+                "--absorbed-by",
                 "--base",
                 "--claim",
                 "--cli",
@@ -7550,7 +7648,7 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
-				"discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
+                "discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
@@ -7575,7 +7673,7 @@
                 "--cli",
                 "--provider",
                 "--remote",
-				"--absorbed-by",
+                "--absorbed-by",
                 "--all",
                 "resumable",
                 "discarded",
@@ -7594,7 +7692,7 @@
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
-				"wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
+                "wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }
@@ -7606,22 +7704,22 @@
           "references": [
             {
               "path": "internal/worktrees/abort_test.go",
-				"name": "TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest",
-				"kind": "integration"
-			},
-			{
-				"path": "internal/worktrees/abort_test.go",
-				"name": "TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs",
-				"kind": "integration"
-			},
-			{
-				"path": "internal/worktrees/abort_test.go",
-				"name": "TestAbortDiscardedRefusesSquashSourceAdvanceAtRemovalBoundary",
-				"kind": "integration"
-			},
-			{
-				"path": "internal/worktrees/abort_test.go",
-                "name": "TestAbortDiscardedUnusedWorktreesIsAudited",
+              "name": "TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedRefusesSquashSourceAdvanceAtRemovalBoundary",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/abort_test.go",
+              "name": "TestAbortDiscardedUnusedWorktreesIsAudited",
               "kind": "integration"
             },
             {
@@ -8866,6 +8964,84 @@
       "notes": "Safe default inspect surface. Prompt bodies are never included; use wb worktree log for the private agent dump."
     },
     {
+      "id": "wb.worktree.land",
+      "feature_refs": [
+        "spec/features/agent-sdlc-throughput/README.md",
+        "spec/features/mechanical-worktree-merge/README.md",
+        "spec/features/modern-cli-help-discovery/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree land",
+              "flags": [
+                "--agent-id",
+                "--agent-runtime",
+                "--check-interval",
+                "--cleanup",
+                "--cli",
+                "--format",
+                "--model",
+                "--on-failure",
+                "--progress",
+                "--provider",
+                "--retry",
+                "--route",
+                "--target",
+                "--timeout"
+              ],
+              "modes": [
+                "Runs the prepare and land phases, proves the remote receipt, and cleans terminal sources by default."
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree land --help",
+              "contains": [
+                "wb worktree land .",
+                "--route",
+                "--cleanup"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/merge.md",
+              "marker": "# Merge and land completed worktrees",
+              "examples": [
+                "wb worktree land <source-worktree...> --format json"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeLandDefaultsToCleanup",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "The primary completion verb validates one candidate, proves the remote landing receipt, and defaults receipt-gated cleanup on."
+    },
+    {
       "id": "wb.worktree.list",
       "feature_refs": [
         "spec/features/worktree-lifecycle/README.md"
@@ -10031,7 +10207,7 @@
           "limitation": null
         }
       },
-      "notes": "This runnable parent is the promoted default journey; prepare, land, resume, and revert remain explicit recovery and control surfaces."
+      "notes": "The legacy merge spelling keeps cleanup opt-in. Prepare, receipt-land, resume, and revert remain explicit recovery and control surfaces."
     },
     {
       "id": "wb.worktree.merge.acknowledge-landed-failed",

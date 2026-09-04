@@ -11,7 +11,7 @@ status: Implementing
 
 ## Summary
 
-Tier the managed pre-push hook by push target and give wb worktree checkpoint a fast, tier-0-only remote ref, so agents can persist work often without paying the full test-suite tax on every push.
+Tier the managed pre-push hook by push target and give wb worktree checkpoint a fast, tier-0-only remote ref, so agents can persist work often without paying broad validation cost on every push.
 
 ## Problem
 
@@ -24,12 +24,13 @@ every push is why agents batch up work instead of checkpointing often, which
 is itself a data-loss risk: a machine that disappears mid-batch takes
 unpersisted work with it.
 
-Two separate needs follow from this:
+The September 4, 2026 throughput review later found that limiting tests to
+publication pushes was still too costly: 501 push attempts consumed about 23.4
+machine-hours in 30 days, while pull-request CI already ran full coverage. Two
+separate needs follow from this:
 
-1. The expensive tiers (lint, test) should run only when a push is actually
-   about to matter to someone else — landing on the default branch, a tag, or
-   a branch already under review — not on every checkpoint of in-progress
-   work.
+1. Static checks should run before publication, while tests, builds, coverage,
+   and race run once in the landing/CI path instead of once per push.
 2. Agents need an explicit, fast, non-reviewed persistence path that is
    neither the reviewed branch itself nor a local-only journal entry, so a
    disappearing machine never costs more than the last few minutes of work.
@@ -46,8 +47,10 @@ and metrics blocks) MUST run unconditionally on every push and MUST stay
 sub-second; it is never skippable by any push classification. Tier 1
 (`go vet ./...` / the Node profile's `lint`) MUST run on every push that is
 not a pure remote-ref deletion and not confined to the
-`refs/wb/checkpoints/*` namespace. Tier 2 (`go test ./...` / `test`) MUST run
-only on a publication push.
+`refs/wb/checkpoints/*` namespace. Tier 2 MUST identify a publication push for
+telemetry and downstream policy, but MUST run the same static checks as Tier 1.
+Local pre-push hooks MUST NOT run tests, builds, coverage, or race; landing and
+CI own those gates.
 
 #### REQ: publication-definition
 
@@ -68,8 +71,8 @@ opportunistic `gh` lookup is permitted only with a bounded timeout; successful
 positive results may be TTL-cached, while negative, failed, and timed-out
 results MUST NOT be cached.
 When PR status cannot be established within that bounded budget, the hook
-MUST treat it as unknown and run Tier 1, never silently escalate to Tier 2:
-CI remains the real gate for a publication push.
+MUST treat it as unknown and run Tier 1, never silently classify it as a
+publication: CI remains the real gate either way.
 
 #### REQ: one-line-explainable-decision
 

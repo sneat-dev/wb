@@ -1191,15 +1191,14 @@ func TestRepositoryPolicyUsesShardedCoverageForGoPrePush(t *testing.T) {
 	for _, marker := range []string{
 		"hooks push-tier",
 		"go vet ./...",
-		"go run ./cmd/wb coverage .",
-		"--test-shards 8",
-		"--shard-package ./internal/worktrees",
-		"--minimum 58",
-		"--format summary",
-		"--report-dir",
 	} {
 		if !strings.Contains(string(contents), marker) {
 			t.Fatalf("repository Go pre-push template is missing %q:\n%s", marker, contents)
+		}
+	}
+	for _, forbidden := range []string{"go test", "go run ./cmd/wb coverage", "--test-shards"} {
+		if strings.Contains(string(contents), forbidden) {
+			t.Fatalf("repository Go pre-push template still runs %q:\n%s", forbidden, contents)
 		}
 	}
 }

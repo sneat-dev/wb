@@ -188,18 +188,3 @@ func splitHarnessName(raw string) []string {
 	}
 	return names
 }
-
-func presentSkillsTargets() ([]skillsTarget, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	var targets []skillsTarget
-	for _, harness := range knownSkillsHarnesses {
-		if !harness.present(home) {
-			continue
-		}
-		targets = append(targets, skillsTarget{Harness: harness.ID, Dir: harness.skillsDir(home)})
-	}
-	return targets, nil
-}

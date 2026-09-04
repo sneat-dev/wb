@@ -155,6 +155,7 @@ func markLandingGuard(command *cobra.Command, addressing string) *cobra.Command 
 // rows — is added here FIRST, and the test then fails until it declares the
 // guard.
 var landingSurface = map[string]string{
+	"wb worktree land":          landingGuardByWorktree,
 	"wb worktree merge":         landingGuardByWorktree,
 	"wb worktree merge prepare": landingGuardByWorktree,
 	"wb worktree merge land":    landingGuardByReceipt,

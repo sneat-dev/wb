@@ -101,6 +101,21 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	}
 }
 
+func TestWorktreeLandDefaultsToCleanup(t *testing.T) {
+	command := newWorktreeLandCmd()
+	if command.Name() != "land" {
+		t.Fatalf("Name() = %q", command.Name())
+	}
+	for _, flag := range []string{"target", "route", "cleanup", "on-failure", "format", "progress"} {
+		if command.Flags().Lookup(flag) == nil {
+			t.Errorf("land is missing --%s", flag)
+		}
+	}
+	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "true" {
+		t.Fatalf("land --cleanup = %#v, want default true", cleanup)
+	}
+}
+
 func TestValidateWorktreeMergeFlagsStopBeforeMerge(t *testing.T) {
 	tests := []struct {
 		name    string

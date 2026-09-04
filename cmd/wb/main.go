@@ -45,7 +45,7 @@ The fastest agent workflow is:
 
   Start isolated work   wb worktree create <task> <owner/repository>
   Inspect progress      wb worktree summary <task>
-  Land and clean up     wb worktree merge <worktree> --route auto --cleanup
+  Land and clean up     wb worktree land <worktree>
 
 Not sure which command matches an intent? Search the structured catalog:
 
@@ -103,7 +103,6 @@ func newRootCmd() *cobra.Command {
 			// deliberately keyed to the current directory: a fleet-wide sweep
 			// run from somewhere else must not make every lane look busy.
 			worktrees.TouchHeartbeatForCurrentDirectory(persistentCommandID(cmd))
-			maybeWarnSkillsDrift(cmd)
 			return nil
 		},
 	}
@@ -135,6 +134,7 @@ func newRootCmd() *cobra.Command {
 		groupedRootCommand(newDepsCmd(), rootGroupChange),
 		groupedRootCommand(newMigrateCmd(), rootGroupChange),
 		groupedRootCommand(newRunCmd(), rootGroupChange),
+		groupedRootCommand(newDaemonCmd(), rootGroupMaintain),
 		groupedRootCommand(newRemoteCmd(), rootGroupMaintain),
 		groupedRootCommand(newLayoutCmd(), rootGroupMaintain),
 		groupedRootCommand(newArchiveCmd(), rootGroupMaintain),
@@ -154,7 +154,8 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
-		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
+		"daemon serve": true,
+		"deps graph":   true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"deps propagate local": true,
 		"ci audit":             true,
 		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,

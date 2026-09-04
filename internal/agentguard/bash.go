@@ -1,7 +1,9 @@
 package agentguard
 
 import (
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -12,6 +14,11 @@ type finding struct {
 	// Detail names the specific construct that was recognised, in the words
 	// an agent should read back — "git reset", "shell redirection", and so on.
 	Detail string
+	// GovernedCommand is the validation command an agent must submit through
+	// `wb run --` so WB can measure, coalesce, and schedule it. It is set only
+	// inside a managed worktree; ordinary human shells and foreign checkouts
+	// remain outside this agent-hook policy.
+	GovernedCommand []string
 }
 
 // inspectBash reports whether a Bash command would write inside a canonical
@@ -65,11 +72,102 @@ func inspectBash(command, sessionCwd, projectsRoot string) *finding {
 			workingDirectory = applyChangeDirectory(workingDirectory, words[1:])
 			continue
 		}
+		if managedWorktree(workingDirectory) && isGovernedValidation(name, words) {
+			return &finding{Detail: strings.Join(words, " "), GovernedCommand: words}
+		}
 		if result := inspectCommand(name, words, workingDirectory, projectsRoot); result != nil {
 			return result
 		}
 	}
 	return nil
+}
+
+// managedWorktree reports whether directory is enclosed by a WB worktree
+// manifest. This is intentionally a metadata-only walk: the PreToolUse hook
+// runs before every agent command, so spawning Git or parsing the full manifest
+// here would tax the entire fleet. An absent or unreadable marker fails open.
+func managedWorktree(directory string) bool {
+	if directory == "" {
+		return false
+	}
+	current, ok := absolutePath(directory)
+	if !ok {
+		return false
+	}
+	for range maxAncestorWalk {
+		info, err := os.Stat(filepath.Join(current, ".wb", "local", "manifest.yaml"))
+		if err == nil && !info.IsDir() {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+		current = parent
+	}
+	return false
+}
+
+var validationScript = regexp.MustCompile(`^(test|build|lint|e2e|coverage)(:|$)`)
+
+// isGovernedValidation names CPU-heavy validation that agents must submit
+// through `wb run --`. Fast formatters stay direct and close to edits.
+func isGovernedValidation(name string, words []string) bool {
+	name = filepath.Base(name)
+	switch name {
+	case "go":
+		return containsAnyWord(words[1:], "test", "vet", "build")
+	case "golangci-lint", "staticcheck", "pytest", "vitest", "jest", "mocha":
+		return true
+	case "nx":
+		return containsAnyWord(words[1:], "test", "build", "lint", "e2e", "run-many", "affected")
+	case "npm", "pnpm", "yarn", "bun":
+		return packageManagerValidation(words[1:])
+	case "npx":
+		nested := firstNonFlag(words[1:])
+		if len(nested) == 0 {
+			return false
+		}
+		return isGovernedValidation(filepath.Base(nested[0]), nested)
+	case "cargo":
+		return containsAnyWord(words[1:], "test", "build", "check", "clippy")
+	}
+	return false
+}
+
+func packageManagerValidation(arguments []string) bool {
+	words := firstNonFlag(arguments)
+	if len(words) == 0 {
+		return false
+	}
+	if validationScript.MatchString(words[0]) {
+		return true
+	}
+	switch words[0] {
+	case "run":
+		return len(words) > 1 && validationScript.MatchString(words[1])
+	case "exec", "dlx":
+		return len(words) > 1 && isGovernedValidation(filepath.Base(words[1]), words[1:])
+	}
+	return false
+}
+
+func firstNonFlag(words []string) []string {
+	for len(words) > 0 && strings.HasPrefix(words[0], "-") {
+		words = words[1:]
+	}
+	return words
+}
+
+func containsAnyWord(words []string, targets ...string) bool {
+	for _, word := range words {
+		for _, target := range targets {
+			if word == target {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // inspectRedirects refuses `... > <inside a canonical clone>`. This is the one

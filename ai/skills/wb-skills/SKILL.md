@@ -54,8 +54,8 @@ text, or in this file, does not resolve as `$wb-<name>` in this harness.
 
 ## The drift warning
 
-`wb` compares the wb version that last ran `wb skills sync` against the
-version now running, and prints one line on stderr when they disagree:
+The SessionStart hook compares the WB version that last ran `wb skills sync`
+against the installed version and prints one line when they disagree:
 
 ```
 wb: Agent Skills in /home/user/.claude/skills were synced by wb 0.74.0, this is wb 0.75.1 -- run `wb skills sync`
@@ -67,9 +67,11 @@ or, when skills were never synced on this machine at all:
 wb: Agent Skills are not installed in /home/user/.claude/skills -- run `wb skills sync`
 ```
 
-Treat either line as an instruction, not background noise: run
-`wb skills sync` before relying on any `$wb-*` skill's exact current
-behavior.
+Treat either line as an instruction: run `wb skills sync` before relying on any
+`$wb-*` skill's exact current behavior. Ordinary WB invocations do not repeat
+the warning. A verified `wb self-update` synchronizes skills immediately, and
+SessionStart reports any remaining drift once per agent session instead of
+spending context on every command.
 
 ## Session-start automation (Claude Code)
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "WB Operations"
+  short_description: "Serve the local WB dashboard and read-only API"
+  default_prompt: "Use $wb-daemon to serve or inspect WB's local operations dashboard safely."
