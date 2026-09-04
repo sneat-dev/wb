@@ -488,7 +488,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 		}
 	}
 
-	placement, physicalOperationPath, physicalOwner, physicalRepository, worktreePath, err := sessionReceivePhysicalCoordinates(ctx, canonical, spec, repository)
+	placement, physicalOperationPath, physicalOwner, physicalRepository, _, err := sessionReceivePhysicalCoordinates(ctx, canonical, spec, repository)
 	if err != nil {
 		return result, err
 	}
@@ -498,7 +498,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 		if localRootErr != nil {
 			return result, localRootErr
 		}
-		defer localRootDirectory.Close()
+		defer func() { _ = localRootDirectory.Close() }()
 		if filepath.Clean(localRoot) != filepath.Clean(physicalOperationPath) {
 			return result, fmt.Errorf("resolved local session worktree root changed before publish")
 		}
@@ -511,8 +511,7 @@ func receiveSessionMember(ctx context.Context, options SessionMemberReceiveOptio
 		defer sharedOperation.close()
 		physicalOperation = sharedOperation
 	}
-	var exists bool
-	worktreePath, exists, err = prepareWorktreeDestination(physicalOperation.Path, physicalOperation.Directory, physicalOwner, physicalRepository)
+	worktreePath, exists, err := prepareWorktreeDestination(physicalOperation.Path, physicalOperation.Directory, physicalOwner, physicalRepository)
 	if err != nil {
 		return result, err
 	}

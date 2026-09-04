@@ -74,7 +74,7 @@ func CreateWorktreeAtPlacement(
 		if rootErr != nil {
 			return nil, rootErr
 		}
-		defer directory.Close()
+		defer func() { _ = directory.Close() }()
 		if filepath.Clean(root) != filepath.Clean(placement.Root) {
 			return nil, fmt.Errorf("resolved local worktree root changed before creation")
 		}
