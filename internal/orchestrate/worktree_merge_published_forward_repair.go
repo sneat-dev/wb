@@ -376,7 +376,13 @@ func immutableHistoricalWorktreeMergeSources(receipt WorktreeMergeReceipt) []Wor
 }
 
 func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt, supersession WorktreeMergeValidationFailureSupersession, currentTarget string, sources []WorktreeMergeSource) []WorktreeMergeValidationFailureSealRoot {
-	roots := []WorktreeMergeValidationFailureSealRoot{{Kind: "failed_candidate_claim_base", SHA: claimBase}, {Kind: "receipt_target", SHA: receipt.TargetSHA}, {Kind: "self_supersession_current_target", SHA: supersession.CurrentTargetSHA}, {Kind: "current_remote_target", SHA: currentTarget}}
+	roots := make([]WorktreeMergeValidationFailureSealRoot, 0, len(sources)+4+len(receipt.Sources))
+	// Merge complete current repair sources first. They commonly already retain
+	// the historical roots, avoiding content merges from obsolete side trees.
+	for _, source := range sources {
+		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "current_repair_source:" + source.Task, SHA: source.SHA})
+	}
+	roots = append(roots, []WorktreeMergeValidationFailureSealRoot{{Kind: "failed_candidate_claim_base", SHA: claimBase}, {Kind: "receipt_target", SHA: receipt.TargetSHA}, {Kind: "self_supersession_current_target", SHA: supersession.CurrentTargetSHA}, {Kind: "current_remote_target", SHA: currentTarget}}...)
 	for _, source := range receipt.Sources {
 		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "receipted_source:" + source.Task, SHA: source.SHA})
 	}
@@ -384,9 +390,6 @@ func publishedForwardRepairRoots(claimBase string, receipt WorktreeMergeReceipt,
 		for _, source := range refresh.Sources {
 			roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "receipted_refresh_source:" + source.Task, SHA: source.SHA})
 		}
-	}
-	for _, source := range sources {
-		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "current_repair_source:" + source.Task, SHA: source.SHA})
 	}
 	return roots
 }
