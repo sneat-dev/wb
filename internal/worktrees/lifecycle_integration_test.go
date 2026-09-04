@@ -318,6 +318,9 @@ func TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval(t *testin
 	if remoteHead, remoteErr := remoteBranchHead(context.Background(), fixture.canonical, created.Branch); remoteErr != nil || remoteHead != "" {
 		t.Fatalf("interrupted cleanup remote head=%q err=%v", remoteHead, remoteErr)
 	}
+	if _, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "cleanup-resume-after-remove")); statErr != nil {
+		t.Fatalf("interrupted cleanup must retain its logical task namespace for backlog recovery: %v", statErr)
+	}
 
 	resumed, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-after-remove",
