@@ -13,6 +13,7 @@ wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
+wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
 wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>
@@ -62,6 +63,15 @@ tree equality with its receipted squash landing. It then advances the retained
 candidate without rewriting published history, records the failed attempt in
 `forward_repairs`, and opens a fresh PR.
 Do not edit or terminalize the failed receipt by hand.
+
+If a `prepare/conflict` receipt lost only WB's publication fields after its
+candidate was externally pushed and an open pull request was created, use
+`adopt-published-candidate` before retrying prepare. First run it without
+`--apply`; apply only after it proves the exact receipt repository, target,
+candidate branch and SHA, active claims, clean worktrees, and remote branch.
+It writes an append-only acknowledgement, never force-pushes or rewrites the
+receipt. A normal prepare can then consume that proof when one source advances
+cleanly by descent, preserving the published predecessor and pull request.
 
 For the one audited preparing-receipt collision recovery, use
 `acknowledge-receipt-collision` only with all six explicit expected digests and
