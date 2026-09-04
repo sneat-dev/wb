@@ -2007,12 +2007,29 @@ func gitCanonicalPolicyBytes(ctx context.Context, canonical *canonicalRepository
 	return output, nil
 }
 
-// init makes the narrow read-only placement helper available from every Go
-// binary that imports worktrees. Existing lifecycle helpers remain explicitly
-// dispatched by cmd/wb or their package TestMain because they can mutate Git.
+// init makes every package-owned descriptor helper available from any Go binary
+// that imports worktrees. Lifecycle APIs are also used by packages such as
+// deps, which have no WB-specific TestMain to dispatch a re-executed helper.
+// Each runner independently validates its arguments and inherited descriptors
+// before it permits Git to run.
 func init() {
-	if len(os.Args) > 1 && os.Args[1] == SecureCanonicalPolicyGitHelperArgument {
-		os.Exit(RunSecureCanonicalPolicyGitHelper(os.Args[2:]))
+	if len(os.Args) < 2 {
+		return
+	}
+	arguments := os.Args[2:]
+	switch os.Args[1] {
+	case SecureCleanupGitHelperArgument:
+		os.Exit(RunSecureCleanupGitHelper(arguments))
+	case SecureStageGitHelperArgument:
+		os.Exit(RunSecureStageGitHelper(arguments))
+	case SecureCanonicalGitHelperArgument:
+		os.Exit(RunSecureCanonicalGitHelper(arguments))
+	case SecureCanonicalPolicyGitHelperArgument:
+		os.Exit(RunSecureCanonicalPolicyGitHelper(arguments))
+	case SecureStageCanonicalGitHelperArgument:
+		os.Exit(RunSecureStageCanonicalGitHelper(arguments))
+	case SecureRenameGitHelperArgument:
+		os.Exit(RunSecureRenameGitHelper(arguments))
 	}
 }
 
