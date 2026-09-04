@@ -211,3 +211,137 @@ func TestMaybeWarnSkillsDriftNeverFiresForTheSkillsCommandFamily(t *testing.T) {
 		t.Errorf("`wb skills sync` must never warn about the drift it is itself fixing; stderr=%q", stderr.String())
 	}
 }
+
+func TestNewSkillsSyncCmdHarnessFlagInstallsIntoCursor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+
+	command := newSkillsSyncCmd()
+	command.SetArgs([]string{"--harness", "cursor"})
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cursorSkill := filepath.Join(home, ".cursor", "skills", "wb-worktrees", "SKILL.md")
+	if _, err := os.Stat(cursorSkill); err != nil {
+		t.Fatalf("cursor skill was not installed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "skills", "wb-worktrees", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatal("--harness cursor must not also install into Claude")
+	}
+	if !strings.Contains(out.String(), filepath.Join(home, ".cursor", "skills")) {
+		t.Errorf("output = %q, want the cursor skills dir", out.String())
+	}
+}
+
+func TestNewSkillsSyncCmdJSONReportsMultipleHarnessTargets(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+
+	command := newSkillsSyncCmd()
+	command.SetArgs([]string{"--harness", "cursor,codex", "--format", "json"})
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var payload skillsSyncMultiJSON
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("multi-target output is not a targets wrapper: %v\n%s", err, out.String())
+	}
+	if len(payload.Targets) != 2 {
+		t.Fatalf("targets = %+v, want cursor and codex", payload.Targets)
+	}
+	if payload.Targets[0].Harness != harnessCursor || payload.Targets[1].Harness != harnessCodex {
+		t.Errorf("harness ids = %+v", payload.Targets)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cursor", "skills", "wb-worktrees", "SKILL.md")); err != nil {
+		t.Fatalf("cursor skill missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "wb-worktrees", "SKILL.md")); err != nil {
+		t.Fatalf("codex skill missing: %v", err)
+	}
+}
+
+func TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	for _, name := range []string{".claude", ".cursor"} {
+		if err := os.Mkdir(filepath.Join(home, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	command := newSkillsSyncCmd()
+	var out bytes.Buffer
+	command.SetOut(&out)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		filepath.Join(".claude", "skills", "wb-worktrees", "SKILL.md"),
+		filepath.Join(".cursor", "skills", "wb-worktrees", "SKILL.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(home, rel)); err != nil {
+			t.Errorf("present-harness default did not install %s: %v", rel, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "wb-worktrees", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatal("absent Codex must not be created by the present-harness default")
+	}
+}
+
+func TestMaybeWarnSkillsDriftWarnsForEachPresentHarness(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+	for _, name := range []string{".claude", ".cursor"} {
+		if err := os.Mkdir(filepath.Join(home, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	buildinfo.Set("1.2.3")
+	t.Cleanup(func() { buildinfo.Set("") })
+
+	root := newRootCmd()
+	root.SetArgs([]string{"commands", "--format", "json"})
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	text := stderr.String()
+	for _, dir := range []string{
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(home, ".cursor", "skills"),
+	} {
+		if !strings.Contains(text, dir) {
+			t.Errorf("drift banner missing %s; stderr=%q", dir, text)
+		}
+	}
+	if strings.Contains(text, filepath.Join(home, ".codex", "skills")) {
+		t.Errorf("absent Codex must not appear in the drift banner; stderr=%q", text)
+	}
+}
+
+func TestNewSkillsSyncCmdRejectsDirAndHarnessTogether(t *testing.T) {
+	command := newSkillsSyncCmd()
+	command.SetArgs([]string{"--dir", t.TempDir(), "--harness", "cursor"})
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("expected --dir and --harness together to fail")
+	}
+	var coded *exitError
+	if !errors.As(err, &coded) || coded.code != exitUsage {
+		t.Fatalf("err = %v, want exitUsage", err)
+	}
+}

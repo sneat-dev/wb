@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,9 +11,9 @@ import (
 
 // newSkillsCmd groups everything about installing WB's own Agent Skills
 // (embedded from ai/skills, see package ai) into a harness's skills
-// directory -- today Claude Code's ~/.claude/skills -- so an orchestrating
-// agent has them available in any project, not only inside a checkout of
-// sneat-dev/wb.
+// directory -- Claude Code's ~/.claude/skills, Cursor's ~/.cursor/skills,
+// Codex's ~/.codex/skills -- so an orchestrating agent has them available
+// in any project, not only inside a checkout of sneat-dev/wb.
 //
 // See ai/skills/wb-skills/SKILL.md for the agent-facing walkthrough this
 // command family exists to make discoverable in the first place: the defect
@@ -34,25 +32,14 @@ checkout. A session orchestrating any other repository, with wb installed
 globally, has never had them at all -- there is nothing to auto-discover
 outside a wb checkout.
 
-'wb skills sync' closes that gap by copying every shipped skill into the
-harness's own skills directory (default ~/.claude/skills) once, so it is
-available everywhere wb is. It runs automatically after 'wb self-update'.`,
+'wb skills sync' closes that gap by copying every shipped skill into each
+present harness's skills directory (Claude Code, Cursor, Codex) once, so
+it is available everywhere wb is. It runs automatically after
+'wb self-update'.`,
 	}
 	command.AddCommand(newSkillsSyncCmd())
 	command.AddCommand(newSkillsHookCmd())
 	return command
-}
-
-// defaultHarnessSkillsDir resolves the Claude Code skills directory this
-// command family targets by default. It is the only harness wb integrates
-// with today; a future harness would add its own default here rather than
-// widen this one's meaning.
-func defaultHarnessSkillsDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".claude", "skills"), nil
 }
 
 // skillsBannerSuppressedCommands are persistentCommandID values that must
@@ -70,18 +57,19 @@ var skillsBannerSuppressedCommands = map[string]bool{
 	"hooks agent pre-tool-use": true,
 }
 
-// maybeWarnSkillsDrift prints a single low-noise line to stderr when the
-// installed Agent Skills were synced by a different wb version than the one
-// running now (REQ: skills-drift-banner) -- including "never synced at
-// all", which is exactly the failure this whole command family exists to
-// close: an orchestrator missing a skill because nothing ever installed it.
+// maybeWarnSkillsDrift prints one low-noise line per present harness when
+// that harness's installed Agent Skills were synced by a different wb
+// version than the one running now (REQ: skills-drift-banner) -- including
+// "never synced at all", which is exactly the failure this whole command
+// family exists to close: an orchestrator missing a skill because nothing
+// ever installed it.
 //
 // It is called from the root command's PersistentPreRunE, so it runs before
 // almost every wb invocation. Every failure mode here -- no home directory,
-// no ~/.claude on this machine at all, an unreadable or corrupt marker --
-// is treated as "say nothing", never as a reason to fail the real command
-// the caller actually asked for; a recover() backstops even a coding
-// mistake in this best-effort path from ever taking wb down with it.
+// no Claude/Cursor/Codex config directory on this machine, an unreadable or
+// corrupt marker -- is treated as "say nothing", never as a reason to fail
+// the real command the caller actually asked for; a recover() backstops even
+// a coding mistake in this best-effort path from ever taking wb down with it.
 func maybeWarnSkillsDrift(cmd *cobra.Command) {
 	defer func() { _ = recover() }()
 
@@ -89,25 +77,24 @@ func maybeWarnSkillsDrift(cmd *cobra.Command) {
 	if strings.HasPrefix(id, "skills") || skillsBannerSuppressedCommands[id] {
 		return
 	}
-	dir, err := defaultHarnessSkillsDir()
-	if err != nil {
-		return
-	}
-	// No ~/.claude at all means no Claude Code on this machine (or a HOME
-	// that resolves somewhere unusual); never nag a caller who was never
-	// going to use this harness's skills directory.
-	if info, statErr := os.Stat(filepath.Dir(dir)); statErr != nil || !info.IsDir() {
-		return
-	}
-	status, err := skills.ReadStatus(dir)
-	if err != nil {
+	targets, err := presentSkillsTargets()
+	if err != nil || len(targets) == 0 {
+		// No present harness config directory means no Claude/Cursor/Codex
+		// on this machine (or a HOME that resolves somewhere unusual);
+		// never nag a caller who was never going to use those skills dirs.
 		return
 	}
 	current := collectVersion().Version
-	if !status.Drifted(current) {
-		return
+	for _, target := range targets {
+		status, statusErr := skills.ReadStatus(target.Dir)
+		if statusErr != nil {
+			continue
+		}
+		if !status.Drifted(current) {
+			continue
+		}
+		fmt.Fprintln(cmd.ErrOrStderr(), skillsDriftMessage(target.Dir, status, current)) //nolint:errcheck
 	}
-	fmt.Fprintln(cmd.ErrOrStderr(), skillsDriftMessage(dir, status, current)) //nolint:errcheck
 }
 
 // skillsDriftMessage is the one line maybeWarnSkillsDrift and 'wb skills
