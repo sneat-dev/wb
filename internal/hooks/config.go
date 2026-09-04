@@ -453,7 +453,13 @@ esac
 if [ "$tier" -eq 0 ]; then
     exit 0
 fi
-"$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- go vet ./...
+if "$WB_EXECUTABLE" run --help 2>/dev/null | grep -q 'run -- <command>'; then
+    "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- go vet ./...
+else
+    # One-release bootstrap: an installed WB predating the command gateway
+    # must still be able to push the release that introduces it.
+    go vet ./...
+fi
 `, true
 	case BuiltinNodePrePush:
 		return `#!/bin/sh
@@ -478,7 +484,11 @@ fi
 run_if_present() {
     script_name="$1"
     if node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts[process.argv[1]] ? 0 : 1)' "$script_name"; then
-        "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- "$package_manager" run "$script_name"
+        if "$WB_EXECUTABLE" run --help 2>/dev/null | grep -q 'run -- <command>'; then
+            "$WB_EXECUTABLE" --projects-root "$WB_PROJECTS_ROOT" run -- "$package_manager" run "$script_name"
+        else
+            "$package_manager" run "$script_name"
+        fi
     fi
 }
 # See the go-pre-push template for the full tiering contract: 'wb hooks
