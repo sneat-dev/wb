@@ -17,6 +17,11 @@ import (
 // ErrNotFound is returned when no stream with that name exists.
 var ErrNotFound = errors.New("stream not found")
 
+// reservedFleetMetadataDirectory holds append-only events for verbs that run
+// outside a stream. It is not a stream state directory and must not make the
+// stream inventory fail closed as an unreadable stream.
+const reservedFleetMetadataDirectory = ".fleet"
+
 // Store reads and writes stream state under WB's home directory.
 //
 // Every mutation goes through Update, which takes an exclusive lock, re-reads
@@ -121,6 +126,9 @@ func (store *Store) List() ([]Stream, []Unreadable, error) {
 	var unreadable []Unreadable
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+		if entry.Name() == reservedFleetMetadataDirectory {
 			continue
 		}
 		stream, err := store.Load(entry.Name())
