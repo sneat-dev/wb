@@ -22,7 +22,7 @@ and where wb's contract deviates.
 ## Synopsis
 
 ```
-wb self-update                          # detect, then self-replace (manual) or redirect (Homebrew)
+wb self-update                          # detect, then self-replace (manual) or upgrade through Homebrew
 wb self-update --check                  # report availability only; never modifies
 wb self-update --check --format json    # machine-readable verdict
 wb self-update --yes                    # skip the confirmation prompt
@@ -99,9 +99,13 @@ rather than attempting a swap wb publishes no asset for.
 #### REQ: wb-homebrew-cask
 
 wb MUST configure Homebrew as its managing package manager, with the upgrade
-command `brew upgrade --cask wb`. wb ships as a cask, not a formula, so the
-printed command MUST carry `--cask`. Scoop and WinGet MUST NOT be configured
-while wb publishes no Windows build.
+command `brew upgrade --cask wb` and structured executable argv `brew`,
+`upgrade`, `--cask`, `wb`. wb ships as a cask, not a formula, so the command
+MUST carry `--cask`. After confirmation it MUST run that argv through the
+shared updater, then probe the stable `wb` launcher using `version --json`.
+Homebrew remains the only writer of its cask binary. `--dry-run` MUST not run
+the manager and a managed version pin MUST be refused. Scoop and WinGet MUST
+NOT be configured while wb publishes no Windows build.
 
 #### REQ: wb-version-identity
 
@@ -123,7 +127,7 @@ spelling.
 
 The command MUST report through wb's documented three exit codes and MUST NOT
 introduce a fourth, mapping the library's outcomes and failure kinds onto them.
-`0` means success: the swap completed, the Homebrew redirect was printed, or the
+`0` means success: the swap completed, the Homebrew manager command completed, or the
 binary is already current. `1` means the command ran and reported a finding or a
 failure: an update is available under `--check`, or the run failed (ambiguous
 install, network, checksum, permission, non-interactive without `--yes`, unknown
@@ -164,13 +168,18 @@ for a wb user specifically.
 **When** the self-update command is built
 **Then** detection, release resolution, verification, and replacement come from `github.com/strongo/selfupdate`, wb supplies only its release identity, version and undetermined placeholder, and no copy of that logic exists in wb's own tree.
 
-### AC: homebrew-is-redirected-never-overwritten
+### AC: homebrew-updates-through-manager-never-overwritten
 
 **Requirements:** self-update#req:wb-homebrew-cask
 
 **Given** a wb binary whose resolved path is inside a Homebrew Caskroom or Cellar
 **When** the user runs `wb self-update`, including with `--yes` and with `--version <tag>`
-**Then** wb prints `brew upgrade --cask wb`, exits `0`, and performs no download, no write, and no replacement.
+**Then** it asks for confirmation (unless `--yes`), runs `brew upgrade --cask wb`
+with structured argv, exits `0` after a successful manager command, and performs
+no download, no direct write, and no replacement. A managed version pin is
+refused, and `--dry-run` reports the manager command without running it. After
+the upgrade, skill sync resolves the stable `wb` launcher again rather than a
+removed old Caskroom binary.
 
 ### AC: wb-exit-codes-and-json-verdict
 
