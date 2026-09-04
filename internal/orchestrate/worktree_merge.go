@@ -953,6 +953,29 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, err
 	}
 	if options.StopBeforeMerge && receipt.PullRequest != "" {
+		if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+			remoteRef := "refs/heads/" + receipt.Candidate.Branch
+			reportWorktreeMergeProgress(options.Progress, "pre_push_gate", progress.Started, remoteRef)
+			receipt.PushGate, err = runWorktreeMergePrePushGate(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, options.Timeout, options.Retry)
+			if err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
+			}
+			if receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA))
+			}
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			if err := pushWorktreeMergeRef(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, remoteRef, true, options.Timeout, options.Retry); err != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("candidate descendant push failed without force: %w", err))
+			}
+			reportWorktreeMergeProgress(options.Progress, "publish_candidate", progress.Completed, remoteRef+"@"+shortMergeRevision(receipt.Candidate.SHA))
+			receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+		}
 		if err := verifyPublishedWorktreeMergePullRequest(ctx, receipt, options); err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
@@ -1849,9 +1872,6 @@ func pullRequestLandingReceipt(ctx context.Context, receipt WorktreeMergeReceipt
 func verifyPublishedWorktreeMergePullRequest(ctx context.Context, receipt WorktreeMergeReceipt, options WorktreeMergeLandOptions) error {
 	if receipt.PullRequest == "" {
 		return errors.New("published handoff has no pull request")
-	}
-	if receipt.PublishedCandidateSHA != "" && receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
-		return fmt.Errorf("published candidate %s does not match preserved candidate %s", receipt.PublishedCandidateSHA, receipt.Candidate.SHA)
 	}
 	viewOutput, err := githubRead(ctx, "", "pr", "view", receipt.PullRequest,
 		"--repo", receipt.Repository, "--json", "state,headRefOid,baseRefName")
