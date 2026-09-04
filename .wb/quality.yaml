@@ -4,3 +4,4 @@ go_test:
   shards: 8
   packages:
     - ./internal/worktrees
+    - ./internal/orchestrate

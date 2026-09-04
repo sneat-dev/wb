@@ -83,6 +83,7 @@ jobs:
           go run ./cmd/wb coverage .
           --test-shards 8
           --shard-package ./internal/worktrees
+          --shard-package ./internal/orchestrate
           --coverage-profile profile.cov
           --minimum=58
           --format json

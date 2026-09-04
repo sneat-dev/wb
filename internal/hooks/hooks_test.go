@@ -1194,6 +1194,7 @@ func TestRepositoryPolicyUsesShardedCoverageForGoPrePush(t *testing.T) {
 		"go run ./cmd/wb coverage .",
 		"--test-shards 8",
 		"--shard-package ./internal/worktrees",
+		"--shard-package ./internal/orchestrate",
 		"--minimum 58",
 		"--format summary",
 		"--report-dir",
