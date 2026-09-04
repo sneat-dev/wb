@@ -386,7 +386,7 @@ func TestRenameApplyMovesWorktreePreservesExplicitCacheAndSwitchesBranch(t *test
 		t.Fatalf("rename outcome = %#v", outcome.Results)
 	}
 	result := outcome.Results[0]
-	wantNewWorktree := filepath.Join(fixture.home, "worktrees", "new-task", "acme", "app")
+	wantNewWorktree := filepath.Join(fixture.canonical, ".worktrees", "new-task")
 	if result.NewWorktreeDir != wantNewWorktree {
 		t.Fatalf("new worktree dir = %s, want %s", result.NewWorktreeDir, wantNewWorktree)
 	}
@@ -532,8 +532,14 @@ func TestRenameSecondRepositoryFailureRollsItBackAndPreservesPartialEvidence(t *
 			t.Fatalf("%s automatic recovery execution identity = %#v", create.Repository, recovery)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(fixture.home, "worktrees", "multi-recycle-new")); !os.IsNotExist(err) {
-		t.Fatalf("coordinated rollback stranded destination task: %v", err)
+	for _, create := range created {
+		canonical := fixture.canonical
+		if create.Repository == "acme/storage" {
+			canonical = storageCanonical
+		}
+		if _, err := os.Stat(filepath.Join(canonical, ".worktrees", "multi-recycle-new")); !os.IsNotExist(err) {
+			t.Fatalf("coordinated rollback stranded local destination for %s: %v", create.Repository, err)
+		}
 	}
 
 	// The same operation is retryable without manually deleting a partial
@@ -722,7 +728,7 @@ func TestRenameRollsBackDirectoryMoveAfterRepairOrRegistrationFailure(t *testing
 			if _, err := os.Stat(created[0].WorktreeDir); err != nil {
 				t.Fatalf("partial move was not restored to source: %v", err)
 			}
-			newPath := filepath.Join(fixture.home, "worktrees", "partial-move-destination", "acme", "app")
+			newPath := filepath.Join(fixture.canonical, ".worktrees", "partial-move-destination")
 			if _, err := os.Stat(newPath); !os.IsNotExist(err) {
 				t.Fatalf("partial move stranded destination checkout: %v", err)
 			}
@@ -911,7 +917,7 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 	if len(outcome.Results) != 1 || outcome.Results[0].Eligible || !strings.Contains(outcome.Results[0].Reason, "already exists") {
 		t.Fatalf("collision rename outcome = %#v", outcome.Results)
 	}
-	source := filepath.Join(fixture.home, "worktrees", "source-task", "acme", "app")
+	source := filepath.Join(fixture.canonical, ".worktrees", "source-task")
 	if _, statErr := os.Stat(source); statErr != nil {
 		t.Fatalf("source worktree was moved despite collision refusal: %v", statErr)
 	}
