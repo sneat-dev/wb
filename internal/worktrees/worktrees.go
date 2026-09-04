@@ -704,7 +704,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if plan.branchExists {
 			if occupied, path, branchErr := branchWorktreeCanonical(ctx, plan.canonical, branch); branchErr != nil {
 				return nil, branchErr
-			} else if occupied && !(normalized.Resume && plan.placement.Local && isTaskBoundLocalStageCheckout(path, normalized.Operation)) {
+			} else if occupied && (!normalized.Resume || !plan.placement.Local || !isTaskBoundLocalStageCheckout(path, normalized.Operation)) {
 				return nil, fmt.Errorf("branch %q is already checked out at %s", branch, path)
 			}
 		}
@@ -722,7 +722,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				return nil, rootErr
 			}
 			plan.localRoot, plan.localRootDir = root, directory
-			defer directory.Close()
+			defer func() { _ = directory.Close() }()
 			continue
 		}
 		if sharedOperation != nil {
@@ -2986,7 +2986,7 @@ func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalReposit
 	if err != nil {
 		return false, err
 	}
-	defer rootDirectory.Close()
+	defer func() { _ = rootDirectory.Close() }()
 	var checkout string
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), taskBoundLocalStagePrefix(task)) {
