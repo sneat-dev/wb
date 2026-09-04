@@ -83,6 +83,8 @@ wb worktree merge seal-validation-failed <validation-failed-receipt>
   [--apply --actor <identity> --reason <reason>]
 wb worktree merge supersede-validation-failed <validation-failed-receipt>
   <replacement-worktree> [--apply --actor <identity> --reason <reason>]
+wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request>
+  [--apply --actor <identity> --reason <reason>]
 ```
 
 Bare `wb worktree merge` composes prepare and land. `prepare` is the deliberate
@@ -117,6 +119,20 @@ file with that name is preserved unchanged.
   candidate in the replacement DAG for receipt-gated cleanup, and writes a
   separate append-only rebatch acknowledgement; it never edits the old receipt
   or candidate.
+- An unlanded `prepare/conflict` receipt that lost only its local publication acknowledgement may
+  adopt one already-open pull request after an explicit dry run and audited
+  apply. Adoption re-reads the receipt, candidate worktree, Work Log claim,
+  remote branch, and GitHub pull-request identity under the exclusive lane
+  lock. It accepts only an open pull request in the receipt repository, headed
+  by the receipt candidate branch at the exact receipted candidate SHA and
+  targeted at the exact receipt target. It refuses merged or closed pull
+  requests, wrong repositories, targets, heads, branches, dirty worktrees,
+  claim drift, and remote drift; it neither force-pushes nor rewrites the
+  immutable receipt. The append-only adoption acknowledgement becomes the
+  publication proof consumed by ordinary `merge prepare`, so a clean
+  descendant source repair can create a new candidate and update the existing
+  pull request with a normal non-force push while retaining the published
+  predecessor in the replacement history.
 - Merge, revert, validation, policy, authentication, target-drift, CI, and
   canonical synchronization failures are typed non-terminal states with an
   exact resume command.
@@ -207,6 +223,21 @@ advances the candidate without rewriting published history, records every
 failed landing, and prepares a fresh repair PR. A changed source identity,
 non-descendant advance, moved candidate, tree mismatch, or missing target
 containment refuses without state mutation.
+
+### AC: published-candidate-adoption-recovers-a-missing-local-acknowledgement
+
+Given an unlanded `prepare/conflict` receipt with multiple exact clean sources and a
+candidate branch that was published outside WB, when an operator supplies its
+open pull-request identity to `merge adopt-published-candidate`, then the dry
+run makes no mutation and the audited apply appends only adoption evidence
+after proving the exact repository, target, candidate branch, candidate SHA,
+remote ref, candidate worktree, and Work Log claim. Normal `merge prepare`
+then accepts a same-source clean descendant repair, retains the published
+predecessor and pull-request identity, and advances that pull request through
+an ordinary non-force update. A merged, closed, wrong-repository,
+wrong-target, wrong-branch, wrong-head, dirty, claim-drifted, or
+remote-drifted identity refuses without changing the receipt, remote branch,
+or source worktrees.
 
 ### AC: cleanup-is-explicit-and-receipt-gated
 

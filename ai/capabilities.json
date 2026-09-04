@@ -10284,6 +10284,13 @@
       "notes": "This recovers a land/conflict receipt whose own landing-result read failed on I/O or environment error, typically because the candidate worktree was already removed before a resume could confirm the server landing. Unlike acknowledge-landed-failed it depends on no local worktree at all; containment is proved purely against GitHub's remote state and rechecked live under the lane lock at apply time."
     },
     {
+      "id": "wb.worktree.merge.adopt-published-candidate",
+      "feature_refs": ["spec/features/mechanical-worktree-merge/README.md"],
+      "since": "unreleased",
+      "surfaces": {"runtime":{"status":"Full","commands":[{"path":"wb worktree merge adopt-published-candidate","flags":["--actor","--apply","--format","--initiator","--mode","--reason"],"modes":["Dry-run is the default; --apply requires --actor and --reason","Accepts only an open same-repository pull request at the exact receipted candidate branch and SHA, exact target, active claims, clean worktrees, and exact remote ref","Writes an append-only acknowledgement and never force-pushes or rewrites the historical receipt"]}],"limitation":null},"help":{"status":"Full","anchors":[{"command":"wb worktree merge adopt-published-candidate --help","contains":["open","exact","dry-run","--apply","--actor","--initiator","--mode","--reason"]}],"limitation":null},"ai_skill":{"status":"Full","skills":[{"path":"ai/skills/wb-merge/references/worktree-merge.md","marker":"# Mechanical worktree merge","examples":["wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>"]}],"limitation":null},"tests":{"status":"Full","references":[{"path":"internal/orchestrate/worktree_merge_adopt_published_test.go","name":"TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh","kind":"integration"},{"path":"cmd/wb/worktree_merge_test.go","name":"TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney","kind":"integration"}],"limitation":null}},
+      "notes": "Adoption recovers only a lost local publication acknowledgement; ordinary prepare consumes the append-only proof and can advance a clean descendant with a non-force PR branch update."
+    },
+    {
       "id": "wb.worktree.merge.correct-self-supersession",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
