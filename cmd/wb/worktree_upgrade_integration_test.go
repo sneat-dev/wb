@@ -18,6 +18,21 @@ import (
 // a workstation upgrade would. This catches incompatibilities that unit tests
 // of either the resolver or the hook manager cannot see in isolation.
 func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
+	for _, placement := range []struct {
+		name   string
+		shared bool
+	}{
+		{name: "repository-local-default"},
+		{name: "explicit-shared-root", shared: true},
+	} {
+		t.Run(placement.name, func(t *testing.T) {
+			testPreviousReleaseWorktreeUpgrade(t, placement.shared)
+		})
+	}
+}
+
+func testPreviousReleaseWorktreeUpgrade(t *testing.T, sharedPlacement bool) {
+	t.Helper()
 	binary := buildWB(t)
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
@@ -31,6 +46,11 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	upgradeEnv := wbUpgradeEnv(home)
 	hookEnv := append(append([]string(nil), upgradeEnv...), "WB_EXECUTABLE="+binary)
 	mustUpgradeMkdir(t, home)
+	sharedRoot := ""
+	if sharedPlacement {
+		sharedRoot = filepath.Join(root, "shared-worktrees")
+		mustUpgradeWrite(t, filepath.Join(home, ".config", "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+	}
 	resolvedHome, err := filepath.EvalSymlinks(home)
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +59,10 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	upgradeGit(t, root, nil, "init", "--bare", "--initial-branch=main", remote)
 	mustUpgradeMkdir(t, filepath.Dir(canonical))
 	upgradeGit(t, root, nil, "clone", remote, canonical)
+	resolvedCanonical, err := filepath.EvalSymlinks(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
 	configureUpgradeGitUser(t, canonical)
 	mustUpgradeWrite(t, filepath.Join(canonical, "README.md"), "initial\n")
 	mustUpgradeWrite(t, filepath.Join(canonical, ".wb", "hooks.yaml"), "version: 1\nprofiles:\n  include: [worktree]\nmetrics:\n  enabled: false\n")
@@ -57,9 +81,16 @@ func TestPreviousReleaseWorktreeUpgrade(t *testing.T) {
 	if created.exitCode != exitOK {
 		t.Fatalf("candidate create failed: %s", created.stderr)
 	}
-	worktree := filepath.Join(resolvedHome, ".wb", "worktrees", "upgrade", "acme", "app")
+	worktree := filepath.Join(resolvedCanonical, ".worktrees", "upgrade")
+	if sharedPlacement {
+		resolvedSharedParent, resolveErr := filepath.EvalSymlinks(filepath.Dir(sharedRoot))
+		if resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+		worktree = filepath.Join(resolvedSharedParent, filepath.Base(sharedRoot), "upgrade", "acme", "app")
+	}
 	if !strings.Contains(created.stdout, worktree) {
-		t.Fatalf("candidate create did not use default home %s:\n%s", worktree, created.stdout)
+		t.Fatalf("candidate create did not use selected worktree root %s:\n%s", worktree, created.stdout)
 	}
 	if strings.Contains(created.stdout, filepath.Join(projects, ".wb")) {
 		t.Fatalf("candidate create silently reused legacy home:\n%s", created.stdout)
