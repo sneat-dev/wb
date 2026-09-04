@@ -217,17 +217,62 @@ func hostedRemote(remote string) bool {
 // directory, which is a different tree than the Landlock write root computed
 // for the canonical clone — mkdir then fails with EPERM and create dies
 // mid-add.
+//
+// This must not spawn Git. Hooks run inside `git worktree add`, which already
+// holds the repository lock; `git rev-parse --git-common-dir` from here
+// deadlocks the add (orchestrate -race then times out waiting on the helper).
 func canonicalCheckoutSlug(repoRoot string) string {
-	if common, err := gitCommonDir(repoRoot); err == nil {
-		canonical := strings.TrimSuffix(common, string(filepath.Separator))
-		if filepath.Base(canonical) == ".git" {
-			canonical = filepath.Dir(canonical)
-		}
-		if canonical != "" && canonical != "." {
-			return checkoutSlug(canonical)
-		}
+	if canonical := canonicalRootFromCheckout(repoRoot); canonical != "" {
+		return checkoutSlug(canonical)
 	}
 	return checkoutSlug(repoRoot)
+}
+
+func canonicalRootFromCheckout(repoRoot string) string {
+	gitPath := filepath.Join(repoRoot, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		return ""
+	}
+	if info.IsDir() {
+		return repoRoot
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return ""
+	}
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return ""
+	}
+	return canonicalRootFromGitfile(repoRoot, string(data))
+}
+
+func canonicalRootFromGitfile(repoRoot, contents string) string {
+	for _, line := range strings.Split(contents, "\n") {
+		rest, found := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
+		if !found {
+			continue
+		}
+		gitdir := strings.TrimSpace(rest)
+		if gitdir == "" {
+			continue
+		}
+		if !filepath.IsAbs(gitdir) {
+			gitdir = filepath.Join(repoRoot, gitdir)
+		}
+		gitdir = filepath.Clean(gitdir)
+		// Linked worktree: <canonical>/.git/worktrees/<name>
+		if filepath.Base(filepath.Dir(gitdir)) == "worktrees" {
+			dotGit := filepath.Dir(filepath.Dir(gitdir))
+			if filepath.Base(dotGit) == ".git" {
+				return filepath.Dir(dotGit)
+			}
+		}
+		if filepath.Base(gitdir) == ".git" {
+			return filepath.Dir(gitdir)
+		}
+	}
+	return ""
 }
 
 // checkoutSlug derives owner/repository from WB's own layout, which is
