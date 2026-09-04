@@ -337,6 +337,44 @@ func TestCommandErrorRetainsFailureTailWhenOutputIsLong(t *testing.T) {
 	}
 }
 
+func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *testing.T) {
+	jobs := []goCoverageJob{
+		{label: "example.test/serial shard 2/2"},
+		{label: "unsharded packages"},
+	}
+	results := []goCoverageJobResult{
+		{output: "--- FAIL: TestJourney (0.01s)\n    --- FAIL: TestJourney/remote_resume (0.00s)\nFAIL", err: errors.New("exit status 1")},
+		{output: "package compile error", err: errors.New("exit status 1")},
+	}
+	summary := summarizeCoverageFailures(jobs, results)
+	for _, expected := range []string{
+		"[example.test/serial shard 2/2] TestJourney",
+		"[example.test/serial shard 2/2] TestJourney/remote_resume",
+		"[unsharded packages] command failed without a named Go test",
+	} {
+		if !strings.Contains(summary, expected) {
+			t.Fatalf("failure summary missing %q: %q", expected, summary)
+		}
+	}
+
+	full := summary + coverageRawOutputHeader + strings.Repeat("uninteresting passing output\n", 200) + "terminal raw failure"
+	detail := commandError("go test", full, errors.New("exit status 1"))
+	for _, expected := range []string{
+		"[example.test/serial shard 2/2] TestJourney",
+		"[example.test/serial shard 2/2] TestJourney/remote_resume",
+		"[unsharded packages] command failed without a named Go test",
+		coverageRawOutputHeader,
+		"terminal raw failure",
+	} {
+		if !strings.Contains(detail, expected) {
+			t.Fatalf("bounded detail missing %q: %q", expected, detail)
+		}
+	}
+	if strings.Index(detail, "TestJourney/remote_resume") > strings.Index(detail, coverageRawOutputHeader) {
+		t.Fatalf("failure index followed raw output: %q", detail)
+	}
+}
+
 func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
 	module := t.TempDir()
 	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")
