@@ -3664,6 +3664,13 @@ func attestedAbsorbedReceipt(
 		if rejection, err := verifyAttestedSquashPullRequest(ctx, repository, head, target, absorbedBy, pullRequest); err != nil || rejection != "" {
 			return nil, rejection, err
 		}
+		// A numbered PR has a stronger, topology-aware squash proof: the exact
+		// source head is in the fetched PR head, that head has the landing tree,
+		// and the reported merge is in the fresh target. A three-way merge of a
+		// source into its squash landing can legitimately conflict after the
+		// integration branch amended the source's files, so generic patch
+		// containment would reject a receipt the PR evidence already proves.
+		return &absorbedReceipt{LandingSHA: landingSHA, PullRequest: pullRequest}, "", nil
 	}
 	landed, err := isAncestor(ctx, repository, landingSHA, target)
 	if err != nil {
