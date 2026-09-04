@@ -6,6 +6,7 @@ package worktrees
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -2945,7 +2946,10 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 	return "", fmt.Errorf("create collision-free secure staging directory")
 }
 
-func taskBoundLocalStagePrefix(task string) string { return fmt.Sprintf(".wb-stage-task-%x-", task) }
+func taskBoundLocalStagePrefix(task string) string {
+	sum := sha256.Sum256([]byte(task))
+	return fmt.Sprintf(".wb-stage-task-%x-", sum[:12])
+}
 
 func isTaskBoundLocalStageCheckout(path, task string) bool {
 	return strings.HasPrefix(filepath.Base(filepath.Dir(path)), taskBoundLocalStagePrefix(task)) && filepath.Base(path) == "checkout"
