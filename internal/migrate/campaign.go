@@ -1313,6 +1313,10 @@ func campaignTaskFromBranch(branch string) string {
 }
 
 func registeredCampaignWorktree(canonical, branch string) (string, error) {
+	physicalCanonical, resolveCanonicalErr := filepath.EvalSymlinks(canonical)
+	if resolveCanonicalErr != nil {
+		return "", resolveCanonicalErr
+	}
 	output, err := runIn(canonical, "git", "worktree", "list", "--porcelain")
 	if err != nil {
 		return "", err
@@ -1324,6 +1328,10 @@ func registeredCampaignWorktree(canonical, branch string) (string, error) {
 			continue
 		}
 		if line == "branch refs/heads/"+branch {
+			physicalPath, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr == nil && filepath.Clean(physicalPath) == filepath.Clean(physicalCanonical) {
+				return "", nil
+			}
 			return filepath.Clean(path), nil
 		}
 	}

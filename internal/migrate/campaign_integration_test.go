@@ -156,6 +156,27 @@ func TestCampaignUsesConfiguredSharedRootAndKeepsRegisteredResumePath(t *testing
 	}
 }
 
+func TestCampaignCleanupIgnoresCanonicalBranchCheckout(t *testing.T) {
+	test := newCampaignIntegrationFixture(t)
+	canonical := filepath.Join(test.githubDir, "acme", "consumer")
+	if err := os.MkdirAll(filepath.Dir(canonical), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runCampaignGit(t, filepath.Dir(canonical), "clone", test.cloneURL("github.com/acme/consumer"), canonical)
+	runCampaignGit(t, canonical, "checkout", "-b", "wb/migrate/"+test.spec.ID)
+	before := mustReadCampaignFile(t, filepath.Join(canonical, "consumer.go"))
+	removed, err := CleanupCampaignWorktrees(test.githubDir, test.spec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("cleanup selected canonical checkout: %v", removed)
+	}
+	if after := mustReadCampaignFile(t, filepath.Join(canonical, "consumer.go")); after != before {
+		t.Fatalf("cleanup changed canonical bytes: before=%q after=%q", before, after)
+	}
+}
+
 func TestOpenCampaignPRDoesNotReuseMergedPullRequest(t *testing.T) {
 	worktree := t.TempDir()
 	binDir := filepath.Join(t.TempDir(), "bin")

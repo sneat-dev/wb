@@ -522,6 +522,10 @@ func registeredWorktreeForBranch(ctx context.Context, canonical, branch string, 
 			continue
 		}
 		if line == "branch refs/heads/"+branch {
+			physicalPath, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr == nil && filepath.Clean(physicalPath) == filepath.Clean(canonical) {
+				return "", fmt.Errorf("operation branch %q is checked out in canonical repository %s", branch, canonical)
+			}
 			return filepath.Clean(path), nil
 		}
 	}
