@@ -1147,15 +1147,21 @@ func listCanonicalLocalLayout(
 		path := filepath.Join(layout.WorktreesRoot, entry.Name())
 		if artifact, internal := inspectLifecycleArtifact(ctx, layout.WorktreesRoot, "", path, entry); internal {
 			// Local placement has no task namespace between .worktrees and the
-			// checkout. A sibling stage therefore cannot be tied to an exact
-			// authoritative WB_HOME lock. In particular an empty active stage may
-			// be between mkdir and git worktree add, so neither active nor retired
-			// local siblings are eligible for implicit archival here.
-			artifact.Eligible = false
-			artifact.Disposition = "unscoped_local_stage"
-			artifact.Reason = "canonical local sibling stage has no task lock identity; preserve it until its owning WB_HOME task recovery is explicit"
+			// checkout. An active sibling stage may be between mkdir and git
+			// worktree add, so it cannot be retired without its authoritative
+			// WB_HOME task lock. A nofollow-verified empty retired stage is the
+			// terminal state creation itself leaves behind; report it without
+			// blocking an unrelated task's rename or cleanup.
+			if artifact.State == "staging" || !artifact.Eligible {
+				artifact.Eligible = false
+				artifact.Disposition = "unscoped_local_stage"
+				artifact.Reason = "canonical local sibling stage has no task lock identity; preserve it until its owning WB_HOME task recovery is explicit"
+				rootArtifacts = append(rootArtifacts, artifact)
+			} else {
+				artifact.Disposition = "empty_unscoped_local_retired_stage"
+				artifact.Reason = "empty retired canonical local sibling stage is terminal residue; no task cleanup action is authorized"
+			}
 			artifacts = append(artifacts, artifact)
-			rootArtifacts = append(rootArtifacts, artifact)
 			continue
 		}
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || !taskSelectionMatches(tasks, entry.Name()) {
