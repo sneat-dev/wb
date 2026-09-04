@@ -44,7 +44,11 @@ func ResolveExecutionLayout(repoRoot, projectsRoot string) (ExecutionLayout, err
 	if err != nil {
 		return ExecutionLayout{}, err
 	}
-	slug := originSlug(repoRoot)
+	// Runtime paths must remain stable while Git creates a linked worktree.
+	// Staging hooks cannot spawn Git (the worktree lock is held), so use the
+	// canonical checkout path identity here rather than the hosted-origin
+	// identity used for metrics.
+	slug := canonicalCheckoutSlug(repoRoot)
 	segments := strings.Split(strings.Trim(slug, "/"), "/")
 	pathSegments := make([]string, 0, len(segments)+2)
 	pathSegments = append(pathSegments, home, "hook-runtime")
