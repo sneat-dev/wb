@@ -70,24 +70,29 @@ func TestLogicalCleanupTaskResolvesSessionResumeNamespace(t *testing.T) {
 	}
 }
 
-func relocateMergedTaskToSessionResume(t *testing.T, fixture *gitFixture, result CreateResult, logical, physical string) CreateResult {
-	t.Helper()
-	oldDir := result.WorktreeDir
-	newDir := filepath.Join(fixture.home, "worktrees", physical, "acme", "app")
-	if err := os.MkdirAll(filepath.Dir(newDir), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	gitTest(t, fixture.canonical, "worktree", "move", oldDir, newDir)
-	_ = os.RemoveAll(filepath.Join(fixture.home, "worktrees", logical))
-	result.WorktreeDir = newDir
-	return result
-}
-
 func TestCleanupLogicalSessionResumeApplyReportsPhysicalResolvedTasks(t *testing.T) {
 	const logical = "logical-session-cleanup"
 	const physical = "session-resume-resume-apply-m-001-abcdef01"
-	fixture, result, head, mergedAt := prepareMergedTask(t, logical)
-	result = relocateMergedTaskToSessionResume(t, fixture, result, logical, physical)
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    physical,
+		WorkLog:      WorkLogOptions{EffortID: logical, Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(logical+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
 	installMergedPullRequestFixture(t, head, mergedAt)
 	now := mergedAt.Add(48 * time.Hour)
 	relocatedRemote := filepath.Join(fixture.canonical, ".wb-test-remote.git")
