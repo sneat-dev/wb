@@ -37,9 +37,10 @@ repository. A session orchestrating any other repository, with `wb` installed
 globally, gets none of it -- there is no checkout of `sneat-dev/wb` to
 recurse into. `wb skills sync` (`wb-skills`) is the separate mechanism for
 that case: it embeds these same skills in the `wb` binary itself and installs
-them into the harness's own skills directory (e.g. `~/.claude/skills`), so
-they resolve in every project. `wb self-update` runs it automatically; `wb`
-warns on stderr when the two drift apart.
+them into each harness's own skills directory (`~/.claude/skills`,
+`~/.cursor/skills`, `~/.codex/skills`), so they resolve in every project.
+`wb self-update` runs it automatically; `wb` warns on stderr when the two
+drift apart.
 
 ## Completion contract
 

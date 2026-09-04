@@ -81,7 +81,7 @@ type Options struct {
 	// "<name>/...". Ordinarily fs.Sub(ai.SkillsFS, "skills").
 	Source fs.FS
 	// Dir is the harness skills directory to install into, e.g.
-	// ~/.claude/skills.
+	// ~/.claude/skills, ~/.cursor/skills, or ~/.codex/skills.
 	Dir string
 	// WBVersion is the running wb build's version, recorded in the marker.
 	WBVersion string

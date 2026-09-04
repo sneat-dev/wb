@@ -6312,10 +6312,12 @@
               "flags": [
                 "--dir",
                 "--dry-run",
-                "--format"
+                "--format",
+                "--harness"
               ],
               "modes": [
-                "Installs every Agent Skill embedded in this wb build into a harness skills directory (default ~/.claude/skills), reading nothing from a source checkout.",
+                "Installs every Agent Skill embedded in this wb build into each targeted harness skills directory (Claude ~/.claude/skills, Cursor ~/.cursor/skills, Codex ~/.codex/skills), reading nothing from a source checkout.",
+                "With no --dir or --harness, every present harness is synced; --harness names claude, cursor, codex, or all; --dir targets an explicit path.",
                 "Idempotent: unchanged skills are reported and left untouched; a skill this build no longer ships, previously installed by an earlier sync, is removed.",
                 "A directory occupying a shipped skill's name that was never installed by wb is reported as a conflict (exit code 1) and left untouched rather than overwritten.",
                 "Records the wb version that performed the sync in a marker file next to the installed skills, which the running wb compares against on every invocation."
@@ -6333,6 +6335,7 @@
                 "--dir",
                 "--dry-run",
                 "--format",
+                "--harness",
                 "harness skills directory"
               ]
             }
@@ -6346,7 +6349,8 @@
               "path": "ai/skills/wb-skills/SKILL.md",
               "marker": "## Keep this session's skills current",
               "examples": [
-                "wb skills sync"
+                "wb skills sync",
+                "wb skills sync --harness cursor"
               ]
             }
           ],
@@ -6362,7 +6366,17 @@
             },
             {
               "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncCmdHarnessFlagInstallsIntoCursor",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/skills_sync_test.go",
               "name": "TestNewSkillsSyncCmdReportsConflictsAsFindings",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/skills_harness_test.go",
+              "name": "TestResolveSkillsSyncTargetsDefaultsToPresentHarnesses",
               "kind": "unit"
             },
             {

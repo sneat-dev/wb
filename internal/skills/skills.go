@@ -1,16 +1,16 @@
 // Package skills installs WB's Agent Skills (embedded from ai/skills, see
-// package ai) into a harness's own skills directory -- for example Claude
-// Code's ~/.claude/skills -- so they are discoverable in every project, not
-// only inside a checkout of sneat-dev/wb.
+// package ai) into a harness's own skills directory -- Claude Code's
+// ~/.claude/skills, Cursor's ~/.cursor/skills, Codex's ~/.codex/skills --
+// so they are discoverable in every project, not only inside a checkout of
+// sneat-dev/wb.
 //
 // The gap this closes: WB ships agent-facing skills under ai/skills/ in its
-// own repository, and Claude Code auto-discovers them there through
-// .claude-plugin/plugin.json -- but only for a session working inside that
-// repository. A session orchestrating a different repository, with wb
-// installed globally (Homebrew, go install, self-update), has never had
-// those skills at all. `wb skills sync` is the fix: it copies every shipped
-// skill into the harness's own skills directory once, so it is available
-// everywhere wb is.
+// own repository, and a checkout-local plugin manifest auto-discovers them
+// there -- but only for a session working inside that repository. A session
+// orchestrating a different repository, with wb installed globally
+// (Homebrew, go install, self-update), has never had those skills at all.
+// `wb skills sync` is the fix: it copies every shipped skill into the
+// harness's own skills directory once, so it is available everywhere wb is.
 package skills
 
 import (

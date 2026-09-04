@@ -7,7 +7,8 @@
 // as a standalone CLI (Homebrew, go install, a release archive) and run from
 // an arbitrary project directory that is not, and has never been, a checkout
 // of sneat-dev/wb. `wb skills sync` (internal/skills) exists to install these
-// same skills into a harness's own skills directory (e.g. ~/.claude/skills)
+// same skills into a harness's own skills directory (Claude Code
+// ~/.claude/skills, Cursor ~/.cursor/skills, Codex ~/.codex/skills)
 // so they are available everywhere wb is, and it must work from the
 // installed binary alone -- so the source of truth is embedded here rather
 // than read from disk at a repository path that may not exist.
