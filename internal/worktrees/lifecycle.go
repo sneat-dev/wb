@@ -1852,7 +1852,15 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// manifest retains the logical effort, which is what an operator naturally
 	// supplies to cleanup. Resolve that alias before inventory so the existing
 	// descriptor-anchored cleanup transaction remains the only removal path.
-	normalized.Tasks, err = resolveLogicalCleanupTasks(resolution.Read, normalized.Tasks)
+	aliasLayouts, err := appendConfiguredSharedWorktreesLayout(resolution.Read)
+	if err != nil {
+		return CleanupOutcome{}, err
+	}
+	// The authoritative inventory below reports discovery diagnostics with
+	// task scope. Alias expansion itself only uses roots it could validate.
+	localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, normalized.ProjectsRoot)
+	aliasLayouts = append(aliasLayouts, localLayouts...)
+	normalized.Tasks, err = resolveLogicalCleanupTasks(aliasLayouts, normalized.Tasks)
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -2121,11 +2129,23 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			task = acquired
 		}
 		defer func() {
+			retireNamespace := true
+			if selection.WorktreesRoot == filepath.Join(resolution.Write.Home, "worktrees") {
+				// A filtered cleanup may leave physical members in other canonical
+				// repositories. Check the whole task while its lock is still held;
+				// an empty coordination directory alone does not prove terminality.
+				inventory, inventoryErr := ListWithDiagnostics(ctx, ListOptions{
+					ProjectsRoot: normalized.ProjectsRoot, Task: selection.Task, Workers: 1,
+				})
+				retireNamespace = inventoryErr == nil && len(inventory.Results) == 0 && len(inventory.Diagnostics) == 0
+			}
 			if recoveredTransaction && (recovery == nil || !recovery.Applied) {
 				task.preserveLock()
 			} else if releaseErr := task.lock.release(); releaseErr == nil {
 				purgeTerminalTaskLockDebris(task)
-				removeEmptyTaskDirectory(task)
+				if retireNamespace {
+					removeEmptyTaskDirectory(task)
+				}
 			}
 			task.close()
 		}()
@@ -4220,14 +4240,24 @@ func acquireCleanupTaskAtReclaimingInterrupted(
 // task. The retained descriptor is kept through cleanup, which makes a late
 // replacement fail closed rather than turning validation into a pathname race.
 func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName string) (*cleanupTaskHandle, *InterruptedLockRecovery, error) {
+	// A default-local or relocated-shared checkout keeps its task lock in
+	// WB_HOME, not below its physical checkout root. Search the distinct logical
+	// lock roots so an explicit recovery reaches the same inode normal cleanup
+	// and Create serialize through. Legacy layouts retain their physical root.
 	roots := make([]string, 0, 1)
+	seenRoots := make(map[string]bool)
 	for _, layout := range resolution.Read {
-		worktrees, err := openAbsoluteDirectoryNoFollow(layout.WorktreesRoot, false)
+		root := filepath.Clean(lifecycleTaskLockRoot(resolution.Write.Home, layout))
+		if seenRoots[root] {
+			continue
+		}
+		seenRoots[root] = true
+		worktrees, err := openAbsoluteDirectoryNoFollow(root, false)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return nil, nil, fmt.Errorf("open recovery worktrees root %s: %w", layout.WorktreesRoot, err)
+			return nil, nil, fmt.Errorf("open recovery worktrees root %s: %w", root, err)
 		}
 		fd, openErr := unix.Openat(int(worktrees.Fd()), taskName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 		_ = worktrees.Close()
@@ -4238,7 +4268,7 @@ func reclaimNamedInterruptedCleanupTask(resolution wbhome.Resolution, taskName s
 			return nil, nil, fmt.Errorf("open recovery task %s without following links: %w", taskName, openErr)
 		}
 		_ = unix.Close(fd)
-		roots = append(roots, layout.WorktreesRoot)
+		roots = append(roots, root)
 	}
 	if len(roots) != 1 {
 		return nil, nil, fmt.Errorf("interrupted recovery for task %q requires exactly one WB task directory, found %d", taskName, len(roots))
