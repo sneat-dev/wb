@@ -531,7 +531,7 @@ func commitCampaignRepository(t *testing.T, source, remote string) {
 	if err := os.MkdirAll(filepath.Dir(remote), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runCampaignGit(t, filepath.Dir(source), "init", "--bare", remote)
+	runCampaignGit(t, filepath.Dir(source), "init", "--bare", "--initial-branch=main", remote)
 	runCampaignGit(t, source, "init", "--initial-branch=main")
 	runCampaignGit(t, source, "add", ".")
 	runCampaignGit(t, source, "-c", "user.name=WB Test", "-c", "user.email=wb@example.test", "commit", "-m", "initial")
