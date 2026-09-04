@@ -4530,11 +4530,11 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 	}
 	relative, err := filepath.Rel(task.taskPath, result.WorktreeDir)
 	if err != nil {
-		return nil, fmt.Errorf("resolve cleanup worktree relative path: %w", err)
+		return openRelocatedManagedCleanupWorktree(task, result.WorktreeDir)
 	}
 	parts := strings.Split(filepath.ToSlash(relative), "/")
 	if len(parts) == 0 || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || relative == ".." {
-		return nil, fmt.Errorf("cleanup worktree %s is outside held task %s", result.WorktreeDir, task.taskPath)
+		return openRelocatedManagedCleanupWorktree(task, result.WorktreeDir)
 	}
 	handle := &cleanupWorktreeHandle{task: task, worktreePath: result.WorktreeDir}
 	var repository string
@@ -4578,6 +4578,39 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		_ = unix.Close(worktreeFD)
 		handle.close()
 		return nil, fmt.Errorf("wrap cleanup worktree %s", result.WorktreeDir)
+	}
+	if err := handle.validate(); err != nil {
+		handle.close()
+		return nil, err
+	}
+	return handle, nil
+}
+
+// openRelocatedManagedCleanupWorktree opens a shared-root checkout whose
+// coordination lock lives in WB_HOME. Its physical parent is retained for
+// Git removal, but is not retired through the logical task descriptor.
+func openRelocatedManagedCleanupWorktree(task *cleanupTaskHandle, worktreePath string) (*cleanupWorktreeHandle, error) {
+	worktreePath = filepath.Clean(worktreePath)
+	parentPath := filepath.Dir(worktreePath)
+	leaf := filepath.Base(worktreePath)
+	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
+		return nil, fmt.Errorf("relocated managed worktree path %s has no checkout segment", worktreePath)
+	}
+	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("open relocated managed worktree parent %s without following links: %w", parentPath, err)
+	}
+	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, ownParent: true}
+	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		handle.close()
+		return nil, fmt.Errorf("open relocated managed worktree %s without following links: %w", worktreePath, err)
+	}
+	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-relocated-managed-worktree")
+	if handle.worktree == nil {
+		_ = unix.Close(worktreeFD)
+		handle.close()
+		return nil, fmt.Errorf("wrap relocated managed worktree %s", worktreePath)
 	}
 	if err := handle.validate(); err != nil {
 		handle.close()
