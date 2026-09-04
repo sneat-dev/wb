@@ -7,9 +7,34 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
+
+func installAdoptedCandidateResumeGH(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	script := filepath.Join(bin, "gh")
+	body := `#!/bin/sh
+set -eu
+head_sha="$(git --git-dir="$WB_TEST_REMOTE" rev-parse "refs/heads/$WB_TEST_PR_BRANCH")"
+case "$*" in
+  'pr view 7 --repo acme/app --json state,mergedAt,mergeCommit,headRefOid,baseRefName')
+    printf '{"state":"OPEN","mergedAt":"","headRefOid":"%s","baseRefName":"main","mergeCommit":{"oid":""}}\n' "$head_sha" ;;
+  'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":true,"protection":{"required_pull_request_reviews":{}}}' ;;
+  'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
+  'pr view 7 --repo acme/app --json state,headRefOid,baseRefName')
+    printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main"}\n' "$head_sha" ;;
+  *) echo "unexpected gh command: $*" >&2; exit 2 ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
 
 func installPublishedCandidateAdoptionGH(t *testing.T) {
 	t.Helper()
@@ -112,10 +137,25 @@ func TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh(t *test
 	if !strings.HasPrefix(remote, receipt.Candidate.SHA+"\t") {
 		t.Fatalf("prepare changed published remote ref: %q", remote)
 	}
-	runEngineGit(t, refreshed.Candidate.Worktree, "push", "origin", refreshed.Candidate.SHA+":refs/heads/"+refreshed.Candidate.Branch)
+	installAdoptedCandidateResumeGH(t)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	t.Setenv("WB_TEST_PR_BRANCH", refreshed.Candidate.Branch)
+	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: refreshed.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("resume did not publish adopted candidate descendant: receipt=%+v err=%v", published, err)
+	}
+	if published.Status != WorktreeMergePublished || published.PullRequest != "7" || published.PublishedCandidateSHA != refreshed.Candidate.SHA {
+		t.Fatalf("published descendant receipt = %+v", published)
+	}
+	if published.PushGate == nil || published.PushGate.Status != "passed" || published.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA || published.PushGate.LocalSHA != refreshed.Candidate.SHA {
+		t.Fatalf("published descendant push gate = %+v", published.PushGate)
+	}
 	remote = strings.TrimSpace(runEngineGit(t, refreshed.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+refreshed.Candidate.Branch))
 	if !strings.HasPrefix(remote, refreshed.Candidate.SHA+"\t") {
-		t.Fatalf("normal non-force update did not advance remote ref: %q", remote)
+		t.Fatalf("resume did not advance remote ref without force: %q", remote)
 	}
 }
 

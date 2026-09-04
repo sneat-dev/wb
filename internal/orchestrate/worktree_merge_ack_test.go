@@ -1322,24 +1322,76 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 		}
 	})
 
-	t.Run("recorded target", func(t *testing.T) {
+	t.Run("advanced target remains superseded without mutating historical replacement", func(t *testing.T) {
 		fixture, receipt, _, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "target drift\n")
 		runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
 		runEngineGit(t, fixture.canonical, "commit", "-m", "test: drift target after correction")
 		runEngineGit(t, fixture.canonical, "push", "origin", "main")
-		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "target drifted") {
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
 			t.Fatalf("target drift = superseded=%t err=%v", superseded, err)
 		}
 	})
 
-	t.Run("recorded replacement candidate", func(t *testing.T) {
+	t.Run("non-descendant target remains a refusal", func(t *testing.T) {
+		fixture, receipt, correction, _ := newCorrected(t)
+		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", correction.CurrentTargetSHA+"^{tree}"))
+		unrelatedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-m", "test: unrelated rewritten target"))
+		runEngineGit(t, fixture.canonical, "push", "--force", "origin", unrelatedTarget+":main")
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "corrected self-supersession target ancestry") {
+			t.Fatalf("non-descendant target = superseded=%t err=%v", superseded, err)
+		}
+	})
+
+	t.Run("recorded replacement descendant", func(t *testing.T) {
 		fixture, receipt, correction, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(correction.CorrectedReplacement.Worktree, "replacement-drift.txt"), "replacement drift\n")
 		runEngineGit(t, correction.CorrectedReplacement.Worktree, "add", "replacement-drift.txt")
 		runEngineGit(t, correction.CorrectedReplacement.Worktree, "commit", "-m", "test: drift replacement after correction")
-		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "replacement identity") {
-			t.Fatalf("replacement drift = superseded=%t err=%v", superseded, err)
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+			t.Fatalf("replacement descendant = superseded=%t err=%v", superseded, err)
+		}
+	})
+
+	t.Run("target and replacement descendants retain every root", func(t *testing.T) {
+		fixture, receipt, correction, _ := newCorrected(t)
+		writeEngineFile(t, filepath.Join(fixture.canonical, "target-descendant.go"), "package app\n\nfunc TargetDescendant() {}\n")
+		runEngineGit(t, fixture.canonical, "add", "target-descendant.go")
+		runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance corrected target")
+		runEngineGit(t, fixture.canonical, "push", "origin", "main")
+		currentTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", "HEAD"))
+		runEngineGit(t, correction.CorrectedReplacement.Worktree, "merge", "--no-edit", currentTarget)
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+			t.Fatalf("root-complete descendants = superseded=%t err=%v", superseded, err)
+		}
+	})
+
+	t.Run("sibling replacement remains an exact identity refusal", func(t *testing.T) {
+		fixture, receipt, correction, _ := newCorrected(t)
+		sibling := createMergeSource(t, fixture, "self-supersession-sibling", "feature/self-supersession-sibling", "sibling.go", "package app\n\nfunc Sibling() {}\n")
+		// Make the sibling ancestry-complete first. The correction writer must
+		// still reject a different managed identity after all root checks pass.
+		runEngineGit(t, sibling.WorktreeDir, "merge", "--no-edit", correction.CorrectedReplacement.SHA)
+		supersessionHash, err := worktreeMergeReceiptSHA256(correction.SupersessionPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		originalClaim, err := validateMergeAcknowledgementCandidate(context.Background(), fixture.githubDir, receipt, receipt.Candidate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimBytes, err := os.ReadFile(originalClaim.ClaimPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claimDigest := sha256.Sum256(claimBytes)
+		_, err = CorrectValidationFailedSelfSupersession(context.Background(), WorktreeMergeSelfSupersessionCorrectionOptions{
+			ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: sibling.WorktreeDir,
+			ExpectedSupersessionSHA256: supersessionHash, ExpectedImmutableClaimSHA256: hex.EncodeToString(claimDigest[:]),
+			Apply: true, Actor: "reviewer", Reason: "sibling must not replace corrected identity",
+		})
+		if err == nil || !strings.Contains(err.Error(), "binds different immutable evidence") {
+			t.Fatalf("sibling replacement correction = %v", err)
 		}
 	})
 
