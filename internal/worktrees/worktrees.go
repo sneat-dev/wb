@@ -297,6 +297,7 @@ type createdWorktreePublication struct {
 
 type createAttempt struct {
 	plan        *createPlan
+	operation   preparedOperationRoot
 	publication *createdWorktreePublication
 	workLog     WorkLogPublicationOutcome
 }
@@ -768,8 +769,8 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			continue
 		}
 		var publication *createdWorktreePublication
+		physicalOperation := operation
 		if !plan.resumed && !plan.recoveredStage {
-			physicalOperation := operation
 			owner, repository := plan.owner, plan.repository
 			if plan.placement.Local {
 				if plan.localRootDir == nil {
@@ -809,7 +810,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				if len(attempts) == 0 {
 					return nil, err
 				}
-				outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, operation, attempts, err)
+				outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, attempts, err)
 				publicationErr := &CreatePublicationError{Outcomes: outcomes, Err: fmt.Errorf("create worktree for %s: %w", plan.result.Repository, err)}
 				if recoveryErr != nil {
 					publicationErr.Err = fmt.Errorf("%w; coordinated publication recovery: %v", publicationErr.Err, recoveryErr)
@@ -817,7 +818,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				return nil, publicationErr
 			}
 		}
-		attempts = append(attempts, createAttempt{plan: plan, publication: publication})
+		attempts = append(attempts, createAttempt{plan: plan, operation: physicalOperation, publication: publication})
 		attempt := &attempts[len(attempts)-1]
 		hooks := workLogPublicationHooks{}
 		if normalized.afterWorkLogClaim != nil {
@@ -829,7 +830,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		attempt.workLog, err = recordWorkLogWithHooks(home, normalized.Operation, plan.result, normalized.WorkLog, hooks)
 		plan.result.WorkLogPath = attempt.workLog.ClaimPath
 		if err != nil {
-			outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, operation, attempts, err)
+			outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, attempts, err)
 			publicationErr := &CreatePublicationError{Outcomes: outcomes, Err: fmt.Errorf("record work log for %s: %w", plan.result.Repository, err)}
 			if recoveryErr != nil {
 				publicationErr.Err = fmt.Errorf("%w; coordinated publication recovery: %v", publicationErr.Err, recoveryErr)
@@ -3464,7 +3465,6 @@ func recoverFailedCreatePublications(
 	ctx context.Context,
 	home string,
 	options CreateOptions,
-	operation preparedOperationRoot,
 	attempts []createAttempt,
 	publicationErr error,
 ) ([]CreateRecoveryOutcome, error) {
@@ -3488,8 +3488,14 @@ func recoverFailedCreatePublications(
 		listed := ListResult{
 			Task: options.Operation, Repository: result.Repository,
 			CanonicalDir: result.CanonicalDir, WorktreeDir: result.WorktreeDir,
-			WorktreesRoot: filepath.Dir(operation.Path), Branch: result.Branch,
-			Base: result.Base, HeadSHA: attempt.publication.headSHA,
+			// The operation directory is WB_HOME coordination state. Durable
+			// recovery must retain the physical placement where the checkout was
+			// published, or validation rejects a repository-local record and loses
+			// the rollback receipt needed to resume safely.
+			WorktreesRoot: attempt.plan.placement.Root,
+			Local:         attempt.plan.placement.Local,
+			Branch:        result.Branch,
+			Base:          result.Base, HeadSHA: attempt.publication.headSHA,
 		}
 		backlog := newLifecycleBacklogRecord(options.ProjectsRoot, listed, "removed")
 		backlog.RecoveryKind = "create_work_log_failed"
@@ -3520,7 +3526,7 @@ func recoverFailedCreatePublications(
 			rollbackErr = options.beforeWorkLogRollback(result)
 		}
 		if rollbackErr == nil {
-			rollbackErr = rollbackPublishedCreate(ctx, attempt.plan.canonical, operation, attempt.publication)
+			rollbackErr = rollbackPublishedCreate(ctx, attempt.plan.canonical, attempt.operation, attempt.publication)
 		}
 		if rollbackErr != nil {
 			outcome.Result.Action = "cleanup_required"

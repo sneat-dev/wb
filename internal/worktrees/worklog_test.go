@@ -793,6 +793,46 @@ func TestCreateRollsBackPublishedGitAfterWorkLogStageFailure(t *testing.T) {
 	}
 }
 
+func TestCreateWorkLogRollbackBacklogRetainsConfiguredSharedPlacement(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "alternate-shared-worktrees")
+	resolvedSharedRoot, resolveErr := resolveSharedWorktreesRoot(sharedRoot)
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "shared-worklog-rollback",
+		WorkLog:      WorkLogOptions{RunID: "shared-worklog-rollback-run", Model: "unknown"},
+		afterWorkLogClaim: func(CreateResult) error {
+			return errors.New("injected shared placement Work Log failure")
+		},
+	})
+	var publicationErr *CreatePublicationError
+	if !errors.As(err, &publicationErr) || len(publicationErr.Outcomes) != 1 {
+		t.Fatalf("typed publication error = %#v err=%v", publicationErr, err)
+	}
+	outcome := publicationErr.Outcomes[0]
+	if !outcome.BacklogPersisted || !outcome.RollbackCompleted {
+		t.Fatalf("shared placement recovery outcome = %#v", outcome)
+	}
+	contents, readErr := os.ReadFile(outcome.CleanupBacklogPath)
+	var backlog lifecycleBacklogRecord
+	if readErr == nil {
+		readErr = json.Unmarshal(contents, &backlog)
+	}
+	if readErr != nil || filepath.Clean(backlog.WorktreesRoot) != filepath.Clean(resolvedSharedRoot) || backlog.Local {
+		t.Fatalf("shared placement backlog = %#v err=%v", backlog, readErr)
+	}
+	if _, statErr := os.Stat(outcome.Result.WorktreeDir); !os.IsNotExist(statErr) {
+		t.Fatalf("shared placement rollback left checkout: %v", statErr)
+	}
+}
+
 func TestCreatePublicationErrorRetainsExactRecoveryWhenBacklogStorageAndRollbackFail(t *testing.T) {
 	fixture := newGitFixture(t)
 	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
