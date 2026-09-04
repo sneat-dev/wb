@@ -139,14 +139,14 @@ func TestReceiveSessionBundleUsesConfiguredSharedRoot(t *testing.T) {
 	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
 	t.Setenv("XDG_CONFIG_HOME", configHome)
 	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
-	planned, err := SessionReceiveWorktreePath(fixture.projectsRoot, fixture.request)
+	planned, planErr := SessionReceiveWorktreePath(fixture.projectsRoot, fixture.request)
 	physicalSharedRoot, err := resolvePlacementPath(sharedRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(physicalSharedRoot, "session-"+fixture.request.HandoffID, "acme", "app")
-	if err != nil || !sameSessionReceivePath(planned, want) {
-		t.Fatalf("planned worktree = %q, err = %v, want configured shared path %q", planned, err, want)
+	if planErr != nil || !sameSessionReceivePath(planned, want) {
+		t.Fatalf("planned worktree = %q, err = %v, want configured shared path %q", planned, planErr, want)
 	}
 
 	created, err := ReceiveSessionBundle(context.Background(), SessionReceiveOptions{
