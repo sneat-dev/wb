@@ -605,6 +605,91 @@ func TestCleanupMergedTaskWithRealGitData(t *testing.T) {
 	}
 }
 
+func TestCleanupRecoversMergedPRTargetAfterRecordedTargetDeleted(t *testing.T) {
+	fixture := newGitFixture(t)
+	// Model a checkout created against a feature target. Its target PR then
+	// lands in main and GitHub deletes that source ref, while the checkout's
+	// own immutable manifest still records the deleted target.
+	gitTest(t, fixture.canonical, "branch", "deleted-target", "main")
+	gitTest(t, fixture.canonical, "push", "origin", "deleted-target")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "cleanup-deleted-recorded-target",
+		Base:         "deleted-target",
+		WorkLog:      WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte("landed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	gitTest(t, fixture.canonical, "push", "origin", ":deleted-target")
+	if got := remoteBranchForTest(t, fixture.canonical, "deleted-target"); got != "" {
+		t.Fatalf("deleted recorded target still exists remotely at %s", got)
+	}
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+
+	listed, err := List(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-deleted-recorded-target",
+		Base:         "main",
+		GitHub:       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Base != "main" || !listed[0].IntegratedAtOrigin ||
+		listed[0].MergedPullRequest == nil || listed[0].MergedPullRequest.HeadSHA != head {
+		t.Fatalf("merged PR target recovery = %#v", listed)
+	}
+
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         "cleanup-deleted-recorded-target",
+		Base:         "main",
+		OlderThan:    0,
+		Now:          func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].Base != "main" {
+		t.Fatalf("cleanup plan after deleted recorded target = %#v", planned)
+	}
+}
+
+func TestMergedPullRequestTargetRequiresUnambiguousExactHead(t *testing.T) {
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	const head = "0123456789012345678901234567890123456789"
+	merged := func(base, sha string) githubPullRequest {
+		return githubPullRequest{
+			Base:     githubRef{Ref: base},
+			Head:     githubRef{SHA: sha},
+			MergedAt: &mergedAt,
+		}
+	}
+	if target, ok := mergedPullRequestTarget(context.Background(), []githubPullRequest{merged("main", head)}, head, "deleted-target"); !ok || target != "main" {
+		t.Fatalf("exact merged PR target = %q, %t; want main, true", target, ok)
+	}
+	if target, ok := mergedPullRequestTarget(context.Background(), []githubPullRequest{
+		merged("main", head), merged("release", head),
+	}, head, "deleted-target"); ok || target != "" {
+		t.Fatalf("ambiguous merged PR target = %q, %t; want empty, false", target, ok)
+	}
+	if target, ok := mergedPullRequestTarget(context.Background(), []githubPullRequest{merged("main", "unrelated")}, head, "deleted-target"); ok || target != "" {
+		t.Fatalf("unrelated merged PR target = %q, %t; want empty, false", target, ok)
+	}
+}
+
 // TestCleanupRetiresTaskNamespaceResidueOnTerminalApply is the regression
 // for the founder's fleet audit: after an otherwise fully successful
 // `wb worktree cleanup <task> --apply --remote` (worktree removed, local
