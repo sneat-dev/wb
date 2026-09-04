@@ -2612,9 +2612,18 @@ func inspectLifecycleWorktree(
 	if err != nil {
 		return ListResult{}, err
 	}
-	locallyMerged, err := isAncestor(ctx, canonical, head, "origin/"+base)
-	if err != nil {
-		return ListResult{}, err
+	// The immutable manifest may name a feature branch that was used as the
+	// checkout's target. Once that branch's PR lands, GitHub/ Renovate can
+	// delete the source ref. In GitHub mode the exact target fetch below is the
+	// authoritative integration check and can recover the merged PR's target;
+	// do not fail early by asking Git for the deleted tracking ref. Offline
+	// inspection has no PR evidence to widen the target, so it remains strict.
+	locallyMerged := false
+	if !withGitHub {
+		locallyMerged, err = isAncestor(ctx, canonical, head, "origin/"+base)
+		if err != nil {
+			return ListResult{}, err
+		}
 	}
 	lastCommitValue, err := git(ctx, worktree, "show", "-s", "--format=%cI", "HEAD")
 	if err != nil {
@@ -2659,10 +2668,30 @@ func inspectLifecycleWorktree(
 		}
 	}
 	if withGitHub {
-		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, base)
-		if err != nil {
-			return ListResult{}, err
+		pullRequests, known, pullRequestErr := githubPullRequestsForCommit(ctx, worktree, slug, head)
+		if pullRequestErr != nil {
+			return ListResult{}, pullRequestErr
 		}
+		integrationBase := base
+		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
+		if err != nil {
+			// A deleted recorded target is recoverable only when GitHub's
+			// immutable commit index supplies one unambiguous merged PR for this
+			// exact head. The PR target is then fetched freshly and all ordinary
+			// containment/tree checks below still run against that target.
+			var ok bool
+			integrationBase, ok = mergedPullRequestTarget(ctx, pullRequests, head, base)
+			if !ok {
+				return ListResult{}, err
+			}
+			result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
+			if err != nil {
+				return ListResult{}, err
+			}
+			result.Base = integrationBase
+		}
+		base = integrationBase
+		result.Base = base
 		result.IntegratedAtOrigin, err = isAncestor(ctx, canonical, head, result.RemoteTargetSHA)
 		if err != nil {
 			return ListResult{}, err
@@ -2677,10 +2706,6 @@ func inspectLifecycleWorktree(
 			if err != nil {
 				return ListResult{}, err
 			}
-		}
-		pullRequests, known, err := githubPullRequestsForCommit(ctx, worktree, slug, head)
-		if err != nil {
-			return ListResult{}, err
 		}
 		result.HeadUnknownToRemote = !known
 		result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
@@ -2918,6 +2943,27 @@ func matchingPullRequests(pullRequests []githubPullRequest, repository, base, he
 		}
 	}
 	return open, merged
+}
+
+// mergedPullRequestTarget returns the target branch of an exact-head merged
+// PR when the recorded lifecycle target no longer exists. It deliberately
+// refuses ambiguity: two merged PRs for the same head targeting different
+// branches do not identify which remote target should authorize cleanup.
+func mergedPullRequestTarget(ctx context.Context, pullRequests []githubPullRequest, head, recordedBase string) (string, bool) {
+	target := ""
+	for _, candidate := range pullRequests {
+		if candidate.Head.SHA != head || candidate.MergedAt == nil || candidate.Base.Ref == recordedBase {
+			continue
+		}
+		if !validBranch(ctx, candidate.Base.Ref) {
+			continue
+		}
+		if target != "" && target != candidate.Base.Ref {
+			return "", false
+		}
+		target = candidate.Base.Ref
+	}
+	return target, target != ""
 }
 
 // rebaseMergedPullRequestIntegrated recognizes the one case in which a
