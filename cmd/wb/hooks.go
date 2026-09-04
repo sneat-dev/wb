@@ -389,7 +389,7 @@ func newHooksRunCmd() *cobra.Command {
 func newHooksPushTierCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "push-tier",
-		Short:  "Classify a pending push into tier 0 (skip), 1 (lint only), or 2 (lint + test)",
+		Short:  "Classify a pending push into tier 0 (skip), 1 (feature), or 2 (publication)",
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -423,11 +423,6 @@ func newHooksMetricsCmd() *cobra.Command {
 			policy, err := hooks.LoadPolicy(argumentOrCurrent(args), configPath)
 			if err != nil {
 				return err
-			}
-			if metricsFile == "" {
-				if _, err := hooks.ReplayPendingMetrics(argumentOrCurrent(args), configPath, projectsRoot); err != nil {
-					return err
-				}
 			}
 			if metricsFile == "" {
 				metricsFile = policy.Metrics.Path
@@ -492,9 +487,6 @@ wb hooks measure . --days 30 --json`,
 				return err
 			}
 			if metricsFile == "" {
-				if _, err := hooks.ReplayPendingMetrics(argumentOrCurrent(args), configPath, projectsRoot); err != nil {
-					return err
-				}
 				metricsFile = policy.Metrics.Path
 			}
 			events, err := hooks.ReadEvents(metricsFile)

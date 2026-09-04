@@ -137,7 +137,7 @@ func TestSkillsDriftMessageNamesTheDirAndBothVersionsOrTheMissingInstall(t *test
 	}
 }
 
-func TestMaybeWarnSkillsDriftIsSilentWithoutAClaudeDirectory(t *testing.T) {
+func TestOrdinaryCommandsNeverPrintSkillsDrift(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // no ~/.claude at all: no Claude Code on this machine
 	buildinfo.Set("1.2.3")
 	t.Cleanup(func() { buildinfo.Set("") })
@@ -155,7 +155,7 @@ func TestMaybeWarnSkillsDriftIsSilentWithoutAClaudeDirectory(t *testing.T) {
 	}
 }
 
-func TestMaybeWarnSkillsDriftPrintsOnceWhenNeverSynced(t *testing.T) {
+func TestOrdinaryCommandsStaySilentWhenSkillsAreStale(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
@@ -165,7 +165,7 @@ func TestMaybeWarnSkillsDriftPrintsOnceWhenNeverSynced(t *testing.T) {
 	t.Cleanup(func() { buildinfo.Set("") })
 
 	root := newRootCmd()
-	root.SetArgs([]string{"version"})
+	root.SetArgs([]string{"commands", "--format", "json"})
 	var stdout, stderr bytes.Buffer
 	root.SetOut(&stdout)
 	root.SetErr(&stderr)
@@ -173,20 +173,7 @@ func TestMaybeWarnSkillsDriftPrintsOnceWhenNeverSynced(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(stderr.String(), "wb skills sync") {
-		t.Errorf("`wb version` is on the suppression list and must never print the drift banner; stderr=%q", stderr.String())
-	}
-
-	root = newRootCmd()
-	root.SetArgs([]string{"commands", "--format", "json"})
-	stdout.Reset()
-	stderr.Reset()
-	root.SetOut(&stdout)
-	root.SetErr(&stderr)
-	if err := root.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(stderr.String(), "wb skills sync") {
-		t.Errorf("an ordinary command with skills never synced under an existing ~/.claude must print the drift banner on stderr; stderr=%q", stderr.String())
+		t.Errorf("ordinary commands must leave skills drift to SessionStart; stderr=%q", stderr.String())
 	}
 }
 

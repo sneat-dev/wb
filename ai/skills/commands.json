@@ -19,6 +19,9 @@
     "coverage": [
       "wb-fleet"
     ],
+    "daemon": [
+      "wb-daemon"
+    ],
     "deps": [
       "wb-deps",
       "wb-dependency-campaign"

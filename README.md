@@ -550,7 +550,23 @@ wb sync -o your-org            # sync only one org
 wb sync -j 16                  # more parallelism
 ```
 
-### `wb run` — config-driven recipes
+### `wb run` — governed commands and config-driven recipes
+
+Use `--` to execute a command through WB. The command keeps its stdin, stdout,
+stderr, and exit code. This synchronous gateway is compatible with future WB
+scheduling and operation receipts, so agents do not need to change command
+syntax when those controls are enabled. In a managed worktree it records
+privacy-safe requested/terminal events under `.wb/local/run/events.jsonl`,
+including wall/CPU duration and an argument digest but never raw arguments or
+command output. The child receives its operation ID as `WB_OPERATION_ID`.
+CPU-heavy commands share a machine-wide `CPUCount-1` budget through leases under
+the projects root, leaving one logical CPU responsive for the harness and OS.
+
+```sh
+wb run -- go test ./internal/worktrees -run TestCreate
+wb run -- git status --short
+wb run --history --days 7
+```
 
 `wb run <recipe>` applies one recipe, defined in a YAML config, across every
 repo it matches. **Dry-run by default** — pass `--apply` to commit & push.
@@ -568,7 +584,12 @@ Flags:
 |------|---------|---------|
 | `--apply` | off (dry-run) | Commit & push changes. Without it, only reports what would change. |
 | `--config PATH` | `~/.config/wb/wb.yaml` | Path to the recipe config. |
+| `--days` | `14` | History window; requires `--history`. |
+| `--history` | off | Summarize governed command cost in the current worktree. |
+| `--json` | off | Emit the history summary as JSON. |
 | `--list` | off | Print configured recipe names and exit. |
+
+Recipe-only flags are rejected in command mode.
 
 #### Config format
 
@@ -698,7 +719,9 @@ go_test:
   packages: [./internal/worktrees]
 ```
 
-`wb worktree merge` validates the candidate first using this policy. It runs
+`wb worktree land` validates the candidate first using this policy, proves the
+remote landing receipt, and cleans the source by default. The legacy
+`wb worktree merge` spelling keeps cleanup opt-in. Candidate validation runs
 the exact target snapshot only if the candidate fails and inherited-failure
 comparison is needed, avoiding a redundant full baseline on green candidates.
 Verification runs `go vet ./...`, `go test ./...`,
@@ -1839,15 +1862,16 @@ With `profiles.auto: true`, the built-in detectors currently contribute:
 
 | Profile | Detection | Pre-commit block | Pre-push block |
 |---|---|---|---|
-| `go` | `go.mod` | `gofmt` on staged Go files | `go vet ./...`, then `go test ./...` |
-| `node` | `package.json` | — | run `lint` and `test` scripts when present, using the detected lockfile's package manager |
+| `go` | `go.mod` | `gofmt` plus touched-package `go vet` | `go vet ./...`; tests and coverage run during landing/CI |
+| `node` | `package.json` | configured changed-file formatting/lint | run `lint` when present; tests and builds run during landing/CI |
 
 A Go-only repository therefore runs the base and Go blocks, a Node-only
 repository runs the base and Node blocks, and a mixed repository runs all
 relevant blocks. A pure remote-ref deletion has no Go object to publish, so
-the Go block records success without running vet/test; base, worktree, custom,
-and metrics policy still run, and any mixed or non-deletion push runs the full
-Go checks. General deterministic cache and durable metrics write authority for
+the Go block records success without running vet; base, worktree, custom, and
+metrics policy still run, and any mixed or non-deletion push runs static Go
+checks. The classifier retains publication identity for telemetry without
+duplicating CI's tests. General deterministic cache and durable metrics write authority for
 secure hook execution remains tracked in [#61](https://github.com/sneat-dev/wb/issues/61).
 Custom definitions use repository-relative `any_files` and
 `all_files` detectors; standard glob patterns are supported. A definition with
@@ -2144,6 +2168,23 @@ reminds a new session to register itself (`wb session register`) and repeats
 the drift warning above in its opening context; `wb skills hook install`
 merges that hook into `~/.claude/settings.json` (`--dry-run` to preview).
 `wb` never edits that file on its own outside this explicit subcommand.
+
+## Operations dashboard
+
+`wb daemon serve` starts the embedded read-only dashboard and versioned JSON
+API at `http://127.0.0.1:8766` by default. It shows managed worktrees and
+privacy-safe `wb run --` cost from the last 14 days.
+
+```sh
+wb daemon serve
+curl http://127.0.0.1:8766/api/v1/health
+curl http://127.0.0.1:8766/api/v1/overview
+```
+
+The command refuses non-loopback listeners. For access from another registered
+machine, publish the loopback service through an authenticated Cloudflare
+Tunnel. The MVP API is read-only and does not expose arbitrary command
+execution.
 
 ## Build from source
 

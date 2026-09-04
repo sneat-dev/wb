@@ -1,6 +1,6 @@
 # Merge and land completed worktrees
 
-Use `wb worktree merge` as soon as one or more clean WB worktrees are ready and
+Use `wb worktree land` as soon as one or more clean WB worktrees are ready and
 their integration requires no behavioral judgment. It is the normal terminal
 counterpart to `wb worktree create`, and a target may receive many such batches.
 
@@ -12,8 +12,10 @@ canonical clone, clean the worktree, resume a merge, or revert a bad landing.
 ## One-command default
 
 ```sh
+wb worktree land <source-worktree...> --format json
+wb worktree land <source-worktree...> --progress --format json
+# Legacy spelling with explicit cleanup:
 wb worktree merge <source-worktree...> --route auto --cleanup --format json
-wb worktree merge <source-worktree...> --route auto --cleanup --progress --format json
 ```
 
 The default target is the repository's remote default branch. Pass
@@ -25,9 +27,10 @@ fast-forwards a clean canonical checkout already on the target.
 Use `--progress` from non-terminal agent tools so stderr reports the current
 stage and exact-check poll without contaminating the terminal JSON on stdout.
 
-`--cleanup` is deliberately explicit. Include it for terminal work; omit it
-when another agent still needs the source/candidate assets, then later run the
-receipt with `merge resume ... --cleanup`.
+Cleanup defaults on for `wb worktree land`. Pass `--cleanup=false` only when
+another agent still needs the proved source/candidate assets, then later run the
+receipt with `merge resume ... --cleanup`. The legacy `wb worktree merge`
+spelling keeps cleanup opt-in.
 
 ## Two phases
 

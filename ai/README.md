@@ -12,6 +12,7 @@
 | `wb-ci` | Audit CI/CD policy |
 | `wb-migrate` | Run declarative source migrations |
 | `wb-run` | Preview and apply reusable recipes |
+| `wb-daemon` | Serve the local operations API and dashboard |
 | `wb-fleet` | Sync, inspect, and verify repository fleets |
 | `wb-change` | Deliver a safe multi-step code change |
 | `wb-dependency-campaign` | Propagate releases with minimal CI builds |

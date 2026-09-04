@@ -24,8 +24,8 @@ func TestPushToAStreamBranchRunsNoLocalVerification(t *testing.T) {
 	if classification.Tier != TierSkip {
 		t.Fatalf("tier = %d, want %d (skip)", classification.Tier, TierSkip)
 	}
-	if classification.RunLint() || classification.RunTest() {
-		t.Fatalf("a stream-branch push ran verification: lint=%t test=%t", classification.RunLint(), classification.RunTest())
+	if classification.RunLint() || classification.IsPublication() {
+		t.Fatalf("a stream-branch push ran verification: lint=%t publication=%t", classification.RunLint(), classification.IsPublication())
 	}
 	if !strings.Contains(classification.Reason, "stream pull request is the gate") {
 		t.Errorf("reason = %q, want it to name CI on the stream pull request", classification.Reason)
@@ -39,8 +39,8 @@ func TestPushToANonStreamBranchKeepsTheCurrentProfile(t *testing.T) {
 		LocalRef: "refs/heads/feature/x", LocalSHA: "abc",
 		RemoteRef: "refs/heads/feature/x", RemoteSHA: "def",
 	}}, "main", alwaysOpenPR{})
-	if classification.Tier != TierFull {
-		t.Fatalf("tier = %d, want %d (full) for a branch with an open pull request", classification.Tier, TierFull)
+	if classification.Tier != TierPublication {
+		t.Fatalf("tier = %d, want %d (publication) for a branch with an open pull request", classification.Tier, TierPublication)
 	}
 }
 
@@ -64,8 +64,8 @@ func TestAMixedPushKeepsTheHighestTier(t *testing.T) {
 		{RemoteRef: "refs/heads/stream/checkout", LocalRef: "refs/heads/stream/checkout", LocalSHA: "a", RemoteSHA: "b"},
 		{RemoteRef: "refs/heads/main", LocalRef: "refs/heads/main", LocalSHA: "c", RemoteSHA: "d"},
 	}, "main", nil)
-	if classification.Tier != TierFull {
-		t.Fatalf("tier = %d, want %d; the stream exemption must not lower a publication push", classification.Tier, TierFull)
+	if classification.Tier != TierPublication {
+		t.Fatalf("tier = %d, want %d; the stream exemption must not lower a publication push", classification.Tier, TierPublication)
 	}
 }
 

@@ -74,30 +74,53 @@ wb worktree merge seal-validation-failed /path/to/merge-receipt --apply --actor 
 wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/replacement --apply --actor operator --reason "audited replacement candidate"`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
-			if err := validateWorktreeMergeFlags(flags); err != nil {
-				return err
-			}
-			// A live local link builds this worktree against an unpublished
-			// working tree, so it must never be pushed or landed. The guard
-			// runs before any candidate is prepared.
-			if err := refuseLinkedWorktrees(args); err != nil {
-				return err
-			}
-			campaign := newWorktreeMergeProgress(command, flags)
-			receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(flags, args, campaign.reporter()), landMergeOptions(flags, "", campaign.reporter()))
-			finishWorktreeMergeProgress(campaign, receipt, err)
-			if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
-				return writeErr
-			}
-			return err
+			return runCombinedWorktreeMerge(command, args, &flags)
 		},
 	}
 	setDiscoveryTerms(command, "finish work merge land deliver ship integrate complete cleanup agent worktree branch pull request main")
 	markLandingGuard(command, landingGuardByWorktree)
-	bindWorktreeMergeFlags(command, &flags, true, true)
+	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
 	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd())
 	return command
+}
+
+func newWorktreeLandCmd() *cobra.Command {
+	flags := worktreeMergeFlags{cleanup: true}
+	command := &cobra.Command{
+		Use:   "land <source-worktree...>",
+		Short: "Validate, land, prove, and clean completed WB worktrees",
+		Long: `Run the complete WB worktree landing journey. WB prepares and validates
+one isolated candidate, selects an authorized direct-push or pull-request route,
+waits for exact checks, proves the remote target receipt, and cleans terminal
+source worktrees and branches. Pass --cleanup=false only to retain the proved
+sources deliberately.`,
+		Example: "wb worktree land .\nwb worktree land /path/to/one /path/to/two --format json",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(command *cobra.Command, args []string) error {
+			return runCombinedWorktreeMerge(command, args, &flags)
+		},
+	}
+	setDiscoveryTerms(command, "finish work land deliver ship integrate complete cleanup agent worktree branch pull request main")
+	markLandingGuard(command, landingGuardByWorktree)
+	bindWorktreeMergeFlags(command, &flags, true, true, true)
+	return command
+}
+
+func runCombinedWorktreeMerge(command *cobra.Command, args []string, flags *worktreeMergeFlags) error {
+	if err := validateWorktreeMergeFlags(*flags); err != nil {
+		return err
+	}
+	if err := refuseLinkedWorktrees(args); err != nil {
+		return err
+	}
+	campaign := newWorktreeMergeProgress(command, *flags)
+	receipt, err := orchestrate.RunWorktreeMerge(command.Context(), prepareMergeOptions(*flags, args, campaign.reporter()), landMergeOptions(*flags, "", campaign.reporter()))
+	finishWorktreeMergeProgress(campaign, receipt, err)
+	if writeErr := writeWorktreeMergeReceipt(command.OutOrStdout(), flags.format, receipt); writeErr != nil && err == nil {
+		return writeErr
+	}
+	return err
 }
 
 func newWorktreeMergeSealValidationFailedCmd() *cobra.Command {
@@ -195,7 +218,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 		},
 	}
 	markLandingGuard(command, landingGuardByWorktree)
-	bindWorktreeMergeFlags(command, &flags, true, false)
+	bindWorktreeMergeFlags(command, &flags, true, false, false)
 	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable prepared receipt to replace with an additive source-set rebatch")
 	return command
 }
@@ -226,7 +249,7 @@ func newWorktreeMergeLandCmd(name string) *cobra.Command {
 		},
 	}
 	markLandingGuard(command, landingGuardByReceipt)
-	bindWorktreeMergeFlags(command, &flags, false, true)
+	bindWorktreeMergeFlags(command, &flags, false, true, false)
 	if name == "resume" {
 		command.Flags().BoolVar(&flags.stopBeforeMerge, "stop-before-merge", false, "PR-only: validate and publish the exact candidate, prove the open PR, then stop before checks or merge")
 	}
@@ -255,7 +278,7 @@ func newWorktreeMergeRevertCmd() *cobra.Command {
 			return err
 		},
 	}
-	bindWorktreeMergeFlags(command, &flags, false, true)
+	bindWorktreeMergeFlags(command, &flags, false, true, false)
 	return command
 }
 
@@ -622,7 +645,7 @@ and --reason and creates only the new WB candidate and Work Log.`,
 	return command
 }
 
-func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, prepare, land bool) {
+func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, prepare, land, cleanupDefault bool) {
 	if prepare {
 		command.Flags().StringVar(&flags.target, "target", "", "target branch; defaults to the remote default branch")
 		command.Flags().StringVar(&flags.model, "model", "unknown", "model identity recorded in the candidate Work Log")
@@ -633,7 +656,7 @@ func bindWorktreeMergeFlags(command *cobra.Command, flags *worktreeMergeFlags, p
 	}
 	if land {
 		command.Flags().StringVar(&flags.route, "route", "auto", "landing route: auto, direct, or pr")
-		command.Flags().BoolVar(&flags.cleanup, "cleanup", false, "after remote receipt and canonical synchronization, retire absorbed managed assets")
+		command.Flags().BoolVar(&flags.cleanup, "cleanup", cleanupDefault, "after remote receipt and canonical synchronization, retire absorbed managed assets")
 		command.Flags().StringVar(&flags.onFailure, "on-failure", "stop", "post-landing failure action: stop or prepare a forward revert")
 		command.Flags().DurationVar(&flags.interval, "check-interval", orchestrate.DefaultCheckPollInterval, "foreground interval between exact GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	}

@@ -225,9 +225,36 @@ successful subprocesses.
 
 ### Four-Core Resource Scheduler
 
-WB stores an append-only intent queue under `WB_HOME` and launches short-lived
-workers. Existing typed packages continue to own Git descriptors, task locks,
-claims, Work Logs, merge receipts, and recovery.
+Every WB-owned operation is submitted to one local daemon, which stores an
+append-only intent queue and launches short-lived workers. Synchronous CLI calls
+wait for the same receipt that `--async` returns immediately. Existing typed
+packages continue to own Git descriptors, task locks, claims, Work Logs, merge
+receipts, and recovery; the daemon owns admission, scheduling, and delivery.
+Immediate exact-path formatting may run directly because it uses no CPU queue.
+
+The CLI uses protobuf contracts through ConnectRPC over a user-restricted local
+transport: `<projects-root>/.wb/runtime/daemon.sock`, a mode-0600 Unix domain
+socket on macOS/Linux, or `\\.\pipe\wb-<user-SID>`, a current-user-only named
+pipe on Windows. A custom dialer changes only the transport; generated request,
+receipt, enum, error, deadline, and cancellation contracts remain identical.
+The local channel accepts typed lifecycle operations and the local-only raw
+`wb run -- <argv>` compatibility gateway. `SubmitOperation` carries an
+idempotency key; `GetOperation`, `WaitOperation`, and `CancelOperation` own the
+lifecycle. `WaitOperation` accepts an opaque `after_cursor` and bounded wait so
+a dropped stream or daemon restart resumes without losing progress.
+`GetDaemonInfo` reports daemon build, protocol version, queue schema, scheduler
+generation, and `ready` or `draining` state.
+
+If the daemon is absent, the CLI starts the registered launchd, systemd user,
+or Windows per-user service and retries within a bounded startup window. An explicit recovery mode
+may execute locally under the same cross-process CPU leases, but silent daemon
+bypass is forbidden because it would create a second scheduler.
+WB installation registers the per-user service; normal users and agents do not
+start it manually. Help, version, daemon install/status/repair, and exact-path
+formatting are bootstrap-safe without the daemon. If supervised startup fails,
+other governed or mutating operations refuse with the exact repair command.
+`--local-recovery` is an explicit, receipted emergency path rather than an
+automatic fallback.
 
 The four-vCPU default has three CPU units, preserving one core for interactive
 work:
@@ -285,6 +312,53 @@ alive; it never force-kills a Git mutation. After a crash the supervisor
 restarts immediately and rebuilds from durable queue and lifecycle receipts.
 Private feature builds neither replace the shared binary nor restart the shared
 scheduler.
+
+### Cross-machine synchronization
+
+Each registered machine runs its own local scheduler and keeps durable queue
+authority local. Cross-machine coordination distributes immutable events and
+remote receipts; it does not migrate a running process or lease between
+machines.
+
+When a PR lands, WB publishes the repository, target ref, and exact observed
+remote SHA. Every online registered machine fetches that repository promptly.
+It fast-forwards the canonical target only when the checkout is clean, has no
+local commits, and no local repository writer holds a lease. Otherwise WB
+records `target_update_pending` and applies the fast-forward when the lease
+clears. Active feature worktrees are never silently rebased or reset; only new
+worktrees consume the synchronized target automatically.
+
+The default transport is outbound HTTPS from each daemon to an event relay or
+authoritative receipt feed, which avoids exposing a laptop or VM to unsolicited
+inbound traffic. A local or mutually authenticated HTTPS ConnectRPC API exposes
+typed enqueue, status, wait, wake, and health operations. SSH is a supported adapter for a
+user-controlled registered machine. Delivery is at least once and processing
+is idempotent on `(repository, target ref, remote SHA, machine)`.
+
+A machine may optionally publish that API through Cloudflare Tunnel. The WB
+daemon binds only to loopback or a Unix socket; `cloudflared` creates the
+outbound tunnel and Cloudflare Access requires a distinct, revocable service
+identity for each calling machine. The published API is typed: it accepts
+allow-listed operations and bounded repository/ref/SHA inputs with idempotency
+keys. It never exposes the generic local `wb run -- <argv>` surface as remote
+arbitrary command execution. WB validates authorization again at the daemon and
+records the caller machine on every accepted intent.
+
+The loopback/HTTPS listener never exposes the local raw-command endpoint.
+Connect's browser-compatible protocol lets the future dashboard use the same
+generated service without a separate REST gateway.
+Read models expose machines and heartbeats, repositories and target freshness,
+queued/running/terminal operations, validation cost percentiles, dependency
+waves, streams, and worktree lifecycle alerts. Event delivery uses opaque
+cursors so a dashboard can resume without replaying the full log. Read-only
+dashboard credentials cannot enqueue or cancel work; operator actions use a
+separate scope and idempotency key. CLI reports, the MCP adapter, and the web
+dashboard consume these contracts instead of reading daemon database files.
+
+Repository synchronization follows every verified landing receipt. Replacing
+the shared WB executable and restarting its daemon happens only for a verified
+WB release installation; a merge to the WB repository's `main` is not itself
+an executable upgrade.
 
 ### Validation Identity and Notifications
 
@@ -432,14 +506,16 @@ branch, push, claim, or deletion.
 2. Introduce governed execution in observe-only mode.
 3. Add the local scheduler, sync/async receipts, resource caps, coalescing, and
    stale-result suppression.
-4. Move broad non-stream pre-push validation into scheduler/landing policy.
+4. Add registered-machine receipt fan-out, fetch, and guarded canonical
+   fast-forward; keep queue authority local to each machine.
+5. Move broad non-stream pre-push validation into scheduler/landing policy.
    Keep diff/worktree guards and cheap commit checks.
-5. Add `wb worktree land` over existing merge/receipt/sync/cleanup machinery.
-6. Add dependency debounce and shared downstream integration branches to the
+6. Add `wb worktree land` over existing merge/receipt/sync/cleanup machinery.
+7. Add dependency debounce and shared downstream integration branches to the
    existing stream/campaign engine.
-7. Trial one explicit recycle slot per selected repository and compare it with
+8. Trial one explicit recycle slot per selected repository and compare it with
    always-create and manual recycle.
-8. Add a thin MCP adapter only after CLI/API receipts stabilize.
+9. Add a thin MCP adapter only after CLI/API receipts stabilize.
 
 Existing create, merge, quality, manual recycle, and both placement layouts
 remain valid during migration. Older clients may inspect but cannot mutate
@@ -460,6 +536,14 @@ outside WB's budget.
 Given three sessions request the same test for the same exact tree, toolchain,
 dependencies, scope, policy, and environment, then one subprocess runs and all
 three consume its receipt. A later request reuses the success.
+
+### AC: landed-target-reaches-registered-machines
+
+Given laptop and VM schedulers are registered and a PR lands on `origin/main`,
+then both machines fetch the exact landed SHA. A clean idle canonical checkout
+fast-forwards promptly; a busy or dirty canonical checkout records a pending
+update and advances only after its local writer lease clears. Existing feature
+worktrees are unchanged, and duplicate delivery creates no duplicate mutation.
 
 ### AC: changed-tree-invalidates-result
 
@@ -483,11 +567,12 @@ A release install updates both from one exact verified revision.
 ### AC: verified-install-drains-and-restarts-scheduler
 
 Given an old scheduler has queued work and a mutating worker in flight, when a
-verified WB release is installed, then new admission stops, the mutating worker
-reaches a durable boundary, the queue generation is checkpointed, one new
-scheduler starts from the installed revision, and every queued intent is either
-resumed once or given an exact incompatible-schema disposition. No second
-independent scheduler admits work during the transition.
+verified WB release is installed, then new worker dispatch stops while durable
+request intake continues, the mutating worker reaches a durable boundary, the
+queue generation is checkpointed, one new scheduler starts from the installed
+revision, and every queued intent is either resumed once or given an exact
+incompatible-schema disposition. No second independent scheduler dispatches
+work during the transition.
 
 ### AC: formatting-follows-the-edit
 
@@ -546,17 +631,15 @@ Enforced rules.
    while interactive human commands wait, or must `--async` always be explicit?
 2. Is the default priority recovery, interactive human, ready-to-land,
    blocking focused test, dependency preparation, background validation?
-3. Is the first scheduler local to one VM with rebuild from `WB_HOME`, or
-   must queued authority migrate between machines immediately?
-4. Which cache paths, size/age caps, and eviction policy may recyclable slots
+3. Which cache paths, size/age caps, and eviction policy may recyclable slots
    retain? Is automatic acquisition opt-in until measured?
-5. Does WB generate operation IDs from caller idempotency keys, or may trusted
+4. Does WB generate operation IDs from caller idempotency keys, or may trusted
    adapters supply final IDs?
-6. How long are raw operation events retained, and may aggregate
+5. How long are raw operation events retained, and may aggregate
    timing/resource/token metrics leave the machine?
-7. After observe-only rollout, are direct heavy agent commands refused always
+6. After observe-only rollout, are direct heavy agent commands refused always
    or only while the scheduler service is available?
-8. Which conditions force synchronous lesson curation beyond safety-critical,
+7. Which conditions force synchronous lesson curation beyond safety-critical,
    repeated, or currently blocking gaps?
 
 ## Dependencies
