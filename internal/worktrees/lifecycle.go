@@ -179,7 +179,7 @@ func gitCommonDir(ctx context.Context, worktreePath string) string {
 	return worktreePath
 }
 
-// listProgressReporter carries the shared candidate counter across layouts so// listProgressReporter carries the shared candidate counter across layouts so
+// listProgressReporter carries the shared candidate counter across layouts so
 // the index a caller sees is continuous over the whole run, not per layout.
 //
 // Every worker reports through one reporter, so the counter and the callback
@@ -1960,7 +1960,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// A task directory with no repositories under it yields no candidate and no
 	// diagnostic, so it is invisible to inventory. Discover it here, before any
 	// apply, so a dry run states it and an apply acts only on what was planned.
-	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter)
+	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter, resolution.Write.Home)
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
@@ -2114,7 +2114,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			}
 			recoveredTransaction = true
 		} else {
-			acquired, acquireErr := acquireCleanupTaskAt(selection.WorktreesRoot, selection.Task)
+			acquired, acquireErr := acquireCleanupTaskAtOrCreate(selection.WorktreesRoot, selection.Task)
 			if acquireErr != nil {
 				return acquireErr
 			}
@@ -2759,6 +2759,13 @@ func resolveLogicalCleanupTasks(layouts []wbhome.Layout, tasks []string) ([]stri
 					continue
 				}
 				taskRoot := filepath.Join(layout.WorktreesRoot, taskEntry.Name())
+				if layout.Local {
+					manifest, manifestErr := ReadManifest(taskRoot)
+					if manifestErr == nil && manifest.EffortID == logical {
+						matches = append(matches, taskEntry.Name())
+					}
+					continue
+				}
 				owners, readErr := os.ReadDir(taskRoot)
 				if readErr != nil {
 					if errors.Is(readErr, os.ErrNotExist) {
@@ -4093,6 +4100,27 @@ func preflightCleanupRepository(
 
 func acquireCleanupTaskAt(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
 	return acquireCleanupTaskAtReclaimingInterrupted(worktreesRoot, taskName, false)
+}
+
+// acquireCleanupTaskAtOrCreate creates only the WB_HOME coordination shell
+// when an older/manual local checkout has no prior lifecycle metadata there.
+// The returned descriptors remain held for the full transaction.
+func acquireCleanupTaskAtOrCreate(worktreesRoot, taskName string) (*cleanupTaskHandle, error) {
+	task, err := acquireCleanupTaskAt(worktreesRoot, taskName)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return task, err
+	}
+	home := filepath.Dir(filepath.Clean(worktreesRoot))
+	op, prepareErr := prepareOperationRoot(home, taskName, nil)
+	if prepareErr != nil {
+		return nil, prepareErr
+	}
+	lock, lockErr := acquireLockAt(op.Directory, taskName)
+	if lockErr != nil {
+		op.close()
+		return nil, lockErr
+	}
+	return &cleanupTaskHandle{worktreesPath: filepath.Clean(worktreesRoot), taskPath: op.Path, worktrees: op.Worktrees, task: op.Directory, lock: lock}, nil
 }
 
 // purgeTerminalTaskLockDebris removes every retired operation lock left
