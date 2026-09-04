@@ -542,15 +542,17 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if sharedRoot != "" {
 			worktree = filepath.Join(sharedRoot, normalized.Operation, owner, name)
 		}
-		if normalized.Resume {
-			resumedPath, resumeErr := locateResumableWorktree(ctx, canonicalHandle, home, normalized.Operation, repository, worktree)
-			if resumeErr != nil {
-				canonicalHandle.close()
-				return nil, resumeErr
-			}
-			if resumedPath != "" {
-				worktree = resumedPath
-			}
+		// A task survives placement changes by its claim, not by whatever root
+		// today's configuration predicts. This runs for both create and resume:
+		// without it a non-resume create after a config flip could duplicate an
+		// already-active task/branch in the same canonical repository.
+		resumedPath, resumeErr := locateResumableWorktree(ctx, canonicalHandle, home, normalized.Operation, repository, worktree)
+		if resumeErr != nil {
+			canonicalHandle.close()
+			return nil, resumeErr
+		}
+		if resumedPath != "" {
+			worktree = resumedPath
 		}
 		exists, existsErr := directoryExistsNoFollow(worktree)
 		if existsErr != nil {
@@ -1056,11 +1058,25 @@ func locateResumableWorktree(ctx context.Context, canonical *canonicalRepository
 			matched = path // legacy checkout under the predicted historical path.
 			continue
 		}
-		if !errors.Is(claimErr, errWorkLogProjectionNotFound) {
+		if !errors.Is(claimErr, errWorkLogProjectionNotFound) && likelyTaskWorktreePath(path, predicted, task) {
 			return "", fmt.Errorf("read active work-log claim for registered worktree %s: %w", path, claimErr)
 		}
 	}
 	return matched, nil
+}
+
+// likelyTaskWorktreePath limits malformed-claim errors to the requested task.
+// Git may retain unrelated legacy worktrees indefinitely; a named resume must
+// not be blocked by corruption in one of those unrelated checkouts.
+func likelyTaskWorktreePath(path, predicted, task string) bool {
+	if filepath.Clean(path) == filepath.Clean(predicted) {
+		return true
+	}
+	parent := filepath.Dir(path)
+	if filepath.Base(parent) == ".worktrees" && filepath.Base(path) == task {
+		return true
+	}
+	return filepath.Base(filepath.Dir(parent)) == task
 }
 
 // locateCanonicalLocalWorktree recognizes the default one-repository layout
