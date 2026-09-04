@@ -2133,6 +2133,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 			}
 			task = acquired
 		}
+		// Every record is sealed before cleanup deletes its checkout. If this
+		// transaction stops before a record reaches complete, retain the logical
+		// task shell and its retired lock: resumeLifecycleBacklog needs that exact
+		// coordination boundary before it may retire the surviving branch.
+		pendingLifecycleBacklogs := 0
 		defer func() {
 			retireNamespace := true
 			if selection.WorktreesRoot == filepath.Join(resolution.Write.Home, "worktrees") {
@@ -2144,10 +2149,18 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				})
 				retireNamespace = inventoryErr == nil && len(inventory.Results) == 0 && len(inventory.Diagnostics) == 0
 			}
+			if pendingLifecycleBacklogs > 0 {
+				// release below deliberately retires the held lock in place. Do not
+				// reap it or the task shell: it is the durable coordination handle
+				// for the incomplete records this transaction published.
+				retireNamespace = false
+			}
 			if recoveredTransaction && (recovery == nil || !recovery.Applied) {
 				task.preserveLock()
 			} else if releaseErr := task.lock.release(); releaseErr == nil {
-				purgeTerminalTaskLockDebris(task)
+				if pendingLifecycleBacklogs == 0 {
+					purgeTerminalTaskLockDebris(task)
+				}
 				if retireNamespace {
 					removeEmptyTaskDirectory(task)
 				}
@@ -2275,6 +2288,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				worktree.close()
 				return err
 			}
+			pendingLifecycleBacklogs++
 			outcome.Results[index].BacklogID = backlogRecord.ID
 			if normalized.DeleteRemote && refreshed.RemoteHeadSHA != "" {
 				if err := persistLifecycleBacklog(resolution.Write.Home, &backlogRecord, lifecycleStageRetiringRemote); err != nil {
@@ -2439,6 +2453,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				worktree.close()
 				return err
 			}
+			pendingLifecycleBacklogs--
 			worktree.close()
 			closeCanonical()
 			outcome.Results[index].Applied = true
