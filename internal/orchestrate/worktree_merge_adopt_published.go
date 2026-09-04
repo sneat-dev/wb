@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/gitremote"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -116,14 +117,18 @@ func validatePublishedCandidateAdoptionReceipt(r WorktreeMergeReceipt, path stri
 }
 
 func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeReceipt, selector string) error {
-	v, err := ReadPullRequest(ctx, r.Repository, selector)
+	hostedRepository, err := hostedRepositoryForCandidate(ctx, r)
+	if err != nil {
+		return err
+	}
+	v, err := ReadPullRequest(ctx, hostedRepository, selector)
 	if err != nil {
 		return err
 	}
 	if !strings.EqualFold(v.State, "open") {
 		return fmt.Errorf("pull request %s is %s, not open", selector, v.State)
 	}
-	if v.Base.Ref != r.Target || v.Head.Ref != r.Candidate.Branch || v.Head.SHA != r.Candidate.SHA || v.Head.Repo == nil || v.Head.Repo.FullName != r.Repository || v.Base.Repo == nil || v.Base.Repo.FullName != r.Repository {
+	if v.Base.Ref != r.Target || v.Head.Ref != r.Candidate.Branch || v.Head.SHA != r.Candidate.SHA || v.Head.Repo == nil || v.Head.Repo.FullName != hostedRepository || v.Base.Repo == nil || v.Base.Repo.FullName != hostedRepository {
 		return fmt.Errorf("pull request %s does not match exact repository, target, candidate branch, and candidate SHA", selector)
 	}
 	remote, _, err := runCommand(ctx, 0, 0, r.Candidate.Worktree, "git", "ls-remote", "--heads", "origin", "refs/heads/"+r.Candidate.Branch)
@@ -134,6 +139,31 @@ func provePublishedCandidatePullRequest(ctx context.Context, r WorktreeMergeRece
 		return fmt.Errorf("candidate remote branch %s does not match receipted candidate %s", r.Candidate.Branch, r.Candidate.SHA)
 	}
 	return nil
+}
+
+// hostedRepositoryForCandidate takes GitHub identity from the candidate's
+// authenticated origin, never from the historical Work Log repository name.
+// Renames preserve the latter for WB lifecycle identity while GitHub PR reads
+// must address the repository that currently hosts the branch.
+func hostedRepositoryForCandidate(ctx context.Context, r WorktreeMergeReceipt) (string, error) {
+	origin, _, err := runCommand(ctx, 0, 0, r.Candidate.Worktree, "git", "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("read candidate origin: %w", err)
+	}
+	remote, err := gitremote.Parse(strings.TrimSpace(origin))
+	if err != nil {
+		return "", fmt.Errorf("parse candidate origin: %w", err)
+	}
+	if remote.Identity.Host() == "github.com" {
+		return remote.Identity.Repository, nil
+	}
+	// Test fixtures intentionally use local bare remotes. Production hosted
+	// candidates must present github.com; never derive a hosted identity from a
+	// filesystem path.
+	if remote.Identity.Host() == "" && r.Repository != "" {
+		return r.Repository, nil
+	}
+	return "", errors.New("candidate origin is not a github.com repository")
 }
 
 func publishedCandidateAdoptionPath(path string) string {
