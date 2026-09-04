@@ -87,10 +87,19 @@ jobs:
           --test-shards 8
           --shard-package ./internal/worktrees
           --coverage-profile profile.cov
+          --report-dir coverage-diagnostics
           --minimum=58
           --format json
           --non-interactive
           --timeout 7m30s
+      - name: Upload coverage diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: wb-coverage-diagnostics
+          path: coverage-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload coverage profile
         uses: actions/upload-artifact@v7
         with:
