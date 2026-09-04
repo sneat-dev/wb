@@ -385,11 +385,15 @@ fi
 # Vet only the packages the commit touches. Vetting ./... would compile the
 # whole module and turn a save point into a release gate.
 packages="$(printf '%s\n' "$changed" | while IFS= read -r file; do
-    dir="$(dirname "$file")"
-    case "$dir" in
-        .) printf '%s\n' "." ;;
-        *) printf './%s\n' "$dir" ;;
-    esac
+    # Avoid nested command-substitution/case parsing differences in macOS
+    # /bin/sh while preserving paths that contain spaces.
+    dir=${file%/*}
+    [ "$dir" != "$file" ] || dir=.
+    if [ "$dir" = "." ]; then
+        printf '%s\n' "."
+    else
+        printf './%s\n' "$dir"
+    fi
 done | sort -u)"
 if [ -z "$packages" ]; then
     exit 0
