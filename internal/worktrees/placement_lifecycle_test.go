@@ -9,6 +9,48 @@ import (
 	"time"
 )
 
+func TestCreateLocalPlacementRejectsUnsafeRoot(t *testing.T) {
+	for _, kind := range []string{"symlink", "tracked"} {
+		t.Run(kind, func(t *testing.T) {
+			fixture := newGitFixture(t)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			root := filepath.Join(fixture.canonical, ".worktrees")
+			var protected string
+			if kind == "symlink" {
+				outside := t.TempDir()
+				protected = filepath.Join(outside, "existing.txt")
+				if err := os.Symlink(outside, root); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				protected = filepath.Join(root, "existing.txt")
+			}
+			if err := os.WriteFile(protected, []byte("preserve me\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "tracked" {
+				gitTest(t, fixture.canonical, "add", "-f", ".worktrees/existing.txt")
+				gitTest(t, fixture.canonical, "commit", "-m", "existing tracked worktrees content")
+				gitTest(t, fixture.canonical, "push", "origin", "main")
+			}
+			if _, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+				ProjectsRoot: fixture.projectsRoot, Operation: "unsafe-local-root", WorkLog: WorkLogOptions{Model: "unknown"},
+			}); err == nil {
+				t.Fatal("unsafe local root was accepted")
+			}
+			if data, err := os.ReadFile(protected); err != nil || string(data) != "preserve me\n" {
+				t.Fatalf("protected file changed: %q, %v", data, err)
+			}
+			if exists, err := localBranchExists(context.Background(), fixture.canonical, "unsafe-local-root"); err != nil || exists {
+				t.Fatalf("refused create left branch: %t, %v", exists, err)
+			}
+		})
+	}
+}
+
 func TestCleanupResumesRemovedCheckoutAfterSharedRootChanges(t *testing.T) {
 	fixture := newGitFixture(t)
 	config := filepath.Join(t.TempDir(), "wb", "worktrees.yaml")
