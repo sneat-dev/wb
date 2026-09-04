@@ -236,6 +236,17 @@ verification MUST refuse only its own candidate, with the failing verification
 reported as that candidate's reason, and MUST NOT be reported as a malformed
 worktree or abort a fleet sweep.
 
+When `wb worktree abort --disposition discarded --absorbed-by <PR>` uses a
+merged pull request as that receipt, WB MUST read the authoritative PR number,
+merged timestamp, base target, head SHA, and merge SHA; fetch the exact PR head
+from the configured origin without updating a branch ref; prove the exact
+source head is an ancestor of that PR head; prove the merge SHA is contained in
+the freshly fetched base target; and prove the PR-head tree equals the merge
+tree. It MUST then retain the ordinary content/revert, clean-worktree, and
+branch-unchanged checks through the removal boundary. Missing metadata, target
+drift, source advancement, non-containment, or unequal trees MUST refuse the
+one candidate. Commit messages, PR titles, and branch names are not evidence.
+
 #### REQ: coordinated-task-safety
 
 If any repository in a task is ineligible, cleanup MUST mark every repository
@@ -422,6 +433,9 @@ publishes anything, its creator MUST supply the successor's exact model or
 explicit `unknown`, plus independently known optional CLI/provider route
 identifiers; WB MUST NOT copy the predecessor's route. Automatic recycle
 rollback recovery MUST use explicit unknown model/provenance and no route.
+An `--absorbed-by` discarded abort MUST be clean and must persist the verified
+PR and landing identity in its ordinary lifecycle result/receipt projection so
+the terminal record names evidence rather than an operator assertion.
 
 #### REQ: dirty-discard-sealing
 

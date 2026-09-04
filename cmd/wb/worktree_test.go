@@ -56,7 +56,7 @@ func TestWorktreeIdentityHelpAndCreatePreflightRequireExplicitModel(t *testing.T
 		}
 	}
 	abort := newWorktreeAbortCmd()
-	for _, flag := range []string{"model", "cli", "provider"} {
+	for _, flag := range []string{"model", "cli", "provider", "absorbed-by"} {
 		if abort.Flags().Lookup(flag) == nil {
 			t.Fatalf("abort is missing --%s", flag)
 		}

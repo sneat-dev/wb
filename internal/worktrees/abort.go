@@ -42,6 +42,11 @@ type AbortOptions struct {
 	All         bool
 	Disposition AbortDisposition
 	Successor   string
+	// AbsorbedBy selects the merged GitHub pull request whose immutable
+	// metadata proves this clean source was carried by a squash landing. It is
+	// accepted only by the terminal discarded path and is re-proved before
+	// removal; it never turns a human assertion into deletion authority.
+	AbsorbedBy string
 	// ClaimID, Actor, and Reason form the explicit authority boundary for an
 	// orphaned terminal record. Orphaned claims have no live checkout from
 	// which task/repository identity can be reconstructed, so apply always
@@ -128,12 +133,16 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		return nil, fmt.Errorf("disposition must be handoff, not_landed, discarded, or orphaned")
 	}
 	options.Successor = strings.TrimSpace(options.Successor)
+	options.AbsorbedBy = strings.TrimSpace(options.AbsorbedBy)
 	terminalWithoutSuccessor := options.Disposition == AbortDiscarded || options.Disposition == AbortOrphaned
 	if !terminalWithoutSuccessor && (options.Successor == "" || len(options.Successor) > 200 || strings.ContainsAny(options.Successor, "\x00\r\n")) {
 		return nil, fmt.Errorf("--successor is required exactly once for %s", options.Disposition)
 	}
 	if terminalWithoutSuccessor && options.Successor != "" {
 		return nil, fmt.Errorf("--successor cannot be used with %s", options.Disposition)
+	}
+	if options.AbsorbedBy != "" && options.Disposition != AbortDiscarded {
+		return nil, fmt.Errorf("--absorbed-by is valid only with discarded")
 	}
 	identitySupplied := strings.TrimSpace(options.SuccessorIdentity.Model) != "" || strings.TrimSpace(options.SuccessorIdentity.CLI) != "" || strings.TrimSpace(options.SuccessorIdentity.Provider) != ""
 	if !terminalWithoutSuccessor && (options.Apply || identitySupplied) {
@@ -191,6 +200,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	// shape it was named for.
 	listed, err := ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot: projectsRoot, Task: task, Base: base, IncludeDetached: true,
+		AbsorbedBy: options.AbsorbedBy, GitHub: options.AbsorbedBy != "",
 	})
 	if err != nil {
 		return nil, err
@@ -206,6 +216,17 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 			// Abort has no recovery authority of its own; point at the one
 			// command that does rather than leaving a dead lock unexplained.
 			reason = lockedReason(entry, resumeInterruptedCommand(task))
+		}
+		if options.AbsorbedBy != "" && !entry.AbsorbedAtOrigin {
+			eligible = false
+			reason = "--absorbed-by proof did not verify"
+			if entry.AbsorbedByRejection != "" {
+				reason += ": " + entry.AbsorbedByRejection
+			}
+		}
+		if options.AbsorbedBy != "" && !entry.Clean {
+			eligible = false
+			reason = "--absorbed-by requires a clean worktree"
 		}
 		excluded := abortRepositoryExcludedByFilter(filter, entry.Repository, entry.WorktreeDir)
 		results[i] = AbortResult{ListResult: entry, Disposition: options.Disposition, Successor: options.Successor, Eligible: eligible, Excluded: excluded, Reason: reason}
@@ -360,8 +381,8 @@ func preflightAbortRepository(
 		result.Task,
 		result.WorktreeDir,
 		result.Base,
-		"", // Abort discards work outright; no landing receipt applies.
-		false,
+		options.AbsorbedBy,
+		options.AbsorbedBy != "",
 		false,
 		result.External,
 		inspectPolicy{includeDetached: true},
@@ -374,6 +395,9 @@ func preflightAbortRepository(
 	}
 	if refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch || refreshed.Repository != result.Repository {
 		return ListResult{}, "", nil, fmt.Errorf("abort safety changed for %s: checkout identity or branch head moved", result.Repository)
+	}
+	if err := absorbedAbortSafety(result.ListResult, refreshed, options.AbsorbedBy); err != nil {
+		return ListResult{}, "", nil, fmt.Errorf("abort safety changed for %s: %w", result.Repository, err)
 	}
 	canonical, err := openCanonicalRepository(refreshed.CanonicalDir)
 	if err != nil {
@@ -441,8 +465,8 @@ func applyDiscardedAbort(
 		result.Task,
 		result.WorktreeDir,
 		result.Base,
-		"",
-		false,
+		options.AbsorbedBy,
+		options.AbsorbedBy != "",
 		false,
 		result.External,
 		inspectPolicy{includeDetached: true},
@@ -452,6 +476,9 @@ func applyDiscardedAbort(
 	}
 	if refreshed.HeadSHA != result.HeadSHA || refreshed.Branch != result.Branch {
 		return fmt.Errorf("abort safety changed for %s immediately before removal: branch head moved", result.Repository)
+	}
+	if err := absorbedAbortSafety(result.ListResult, refreshed, options.AbsorbedBy); err != nil {
+		return fmt.Errorf("abort safety changed for %s immediately before removal: %w", result.Repository, err)
 	}
 	if err := worktree.validate(); err != nil {
 		return err
@@ -570,6 +597,42 @@ func (d AbortDisposition) String() string { return strings.TrimSpace(string(d)) 
 // nothing, preserving today's all-repositories behavior exactly.
 func abortRepositoryExcludedByFilter(filter, repository, worktreeDir string) bool {
 	return !filterMatches(filter, repository, worktreeDir)
+}
+
+// absorbedAbortSafety keeps the destructive abort path bound to the exact
+// proof it showed in its plan. inspectLifecycleWorktree has just fetched the
+// target again and re-read GitHub's PR metadata, so a source advance, target
+// rewrite, or changed PR receipt cannot reuse a prior dry-run decision.
+func absorbedAbortSafety(planned, refreshed ListResult, absorbedBy string) error {
+	if strings.TrimSpace(absorbedBy) == "" {
+		return nil
+	}
+	if !refreshed.Clean {
+		return fmt.Errorf("--absorbed-by requires a clean worktree")
+	}
+	if !refreshed.AbsorbedAtOrigin {
+		if refreshed.AbsorbedByRejection != "" {
+			return fmt.Errorf("--absorbed-by proof no longer verifies: %s", refreshed.AbsorbedByRejection)
+		}
+		return fmt.Errorf("--absorbed-by proof no longer verifies")
+	}
+	if refreshed.AbsorbedBySHA != planned.AbsorbedBySHA {
+		return fmt.Errorf("--absorbed-by landing changed from %s to %s", planned.AbsorbedBySHA, refreshed.AbsorbedBySHA)
+	}
+	if !sameAbsorbedPullRequest(planned.MergedPullRequest, refreshed.MergedPullRequest) {
+		return fmt.Errorf("--absorbed-by pull request evidence changed")
+	}
+	return nil
+}
+
+func sameAbsorbedPullRequest(left, right *PullRequest) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.Number == right.Number && left.Repository == right.Repository &&
+		left.Base == right.Base && left.BaseSHA == right.BaseSHA &&
+		left.HeadSHA == right.HeadSHA && left.MergeSHA == right.MergeSHA &&
+		left.Merged != nil && right.Merged != nil && left.Merged.Equal(*right.Merged)
 }
 
 // firstFilterMatchingDiagnosticPath returns the first malformed-candidate

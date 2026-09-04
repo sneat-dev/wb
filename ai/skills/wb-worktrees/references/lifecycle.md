@@ -202,12 +202,14 @@ wb worktree abort <task> --disposition not_landed --successor <agent-or-session>
   --model <exact-successor-model-or-unknown> --cli <invoking-cli-if-known> \
   --provider <routing-or-billing-provider-if-known> --apply
 wb worktree abort <task> --disposition discarded --apply --remote
+wb worktree abort <task> --disposition discarded --absorbed-by <merged-pr> --apply --remote
 wb worktree abort <task> --disposition orphaned --claim <claim-id> \
   --actor <approving-person-or-agent> --reason <audit-reason>
 wb worktree abort <task> --disposition orphaned --claim <claim-id> \
   --actor <approving-person-or-agent> --reason <audit-reason> --apply
 wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown
 wb worktree abort fair-split --disposition discarded --apply --remote
+wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote
 wb worktree abort fair-split --disposition discarded --all --apply --remote
 wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply
 ```
@@ -223,6 +225,12 @@ authorization to seal first, retire an exact unchanged remote source branch,
 then remove a clean unlocked worktree and its exact local branch. WB repeats
 the clean/head/registration checks at the removal boundary; a concurrent write
 makes it refuse.
+
+For a clean source retained after a squash merge, add `--absorbed-by <merged-pr>`.
+WB fetches the PR head from the configured origin and proves the source ancestry,
+the landed merge in the fresh target, and matching PR/merge trees before it
+removes anything. A PR title, branch name, or commit-message reference is never
+proof.
 `orphaned` is an append-only terminalization for a claim whose checkout and
 refs have already vanished. It never deletes Git or filesystem state. Select
 one exact immutable claim and name the approving actor and reason; inspect the

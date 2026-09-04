@@ -7536,6 +7536,7 @@
                 "--all",
                 "--apply",
                 "--actor",
+				"--absorbed-by",
                 "--base",
                 "--claim",
                 "--cli",
@@ -7549,6 +7550,7 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+				"discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
                 "multi-repository terminal transitions require an explicit member --filter or --all acknowledgement",
@@ -7573,6 +7575,7 @@
                 "--cli",
                 "--provider",
                 "--remote",
+				"--absorbed-by",
                 "--all",
                 "resumable",
                 "discarded",
@@ -7591,6 +7594,7 @@
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
+				"wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
             }
@@ -7602,7 +7606,22 @@
           "references": [
             {
               "path": "internal/worktrees/abort_test.go",
-              "name": "TestAbortDiscardedUnusedWorktreesIsAudited",
+				"name": "TestAbortDiscardedAcceptsStrictSquashAbsorptionPullRequest",
+				"kind": "integration"
+			},
+			{
+				"path": "internal/worktrees/abort_test.go",
+				"name": "TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs",
+				"kind": "integration"
+			},
+			{
+				"path": "internal/worktrees/abort_test.go",
+				"name": "TestAbortDiscardedRefusesSquashSourceAdvanceAtRemovalBoundary",
+				"kind": "integration"
+			},
+			{
+				"path": "internal/worktrees/abort_test.go",
+                "name": "TestAbortDiscardedUnusedWorktreesIsAudited",
               "kind": "integration"
             },
             {
