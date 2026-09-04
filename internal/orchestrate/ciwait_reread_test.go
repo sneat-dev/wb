@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,24 +79,30 @@ echo "unexpected gh args: $*" >&2; exit 30
 
 func TestWaitForCommitChecksShortensOnlyTheChecksBearingConfirmingReread(t *testing.T) {
 	state := installRereadTestGH(t, checksBearingRereadScript(`https://ci.example/run/1`))
-	started := time.Now()
-	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var nextPolls []time.Duration
+	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: rereadTestHead,
 		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
 		StableRereadDelay: 100 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				nextPolls = append(nextPolls, progress.NextPoll)
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	elapsed := time.Since(started)
 	if result.Status != PullRequestWaitPassed || result.StableObservations != 2 {
 		t.Fatalf("result = %+v", result)
 	}
 	if observations := rereadTestObservations(t, state); observations != 2 {
 		t.Fatalf("observed the exact head %d times, want one terminal observation plus one confirming reread", observations)
 	}
-	if elapsed >= 4*time.Second {
-		t.Fatalf("confirming reread of a checks-bearing terminal set took %s; the shortened delay was not applied", elapsed)
+	if got, want := nextPolls, []time.Duration{100 * time.Millisecond}; !slices.Equal(got, want) {
+		t.Fatalf("requested waits = %v, want %v", got, want)
 	}
 }
 
@@ -122,8 +129,10 @@ fi
 echo "unexpected gh args: $*" >&2; exit 30
 `)
 	interval := 700 * time.Millisecond
-	started := time.Now()
-	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var nextPolls []time.Duration
+	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: "acme/docs", Target: "main", Head: rereadTestHead,
 		Slice: 30 * time.Second, CheckPollInterval: interval,
 		// A misapplied shortened delay would confirm in single-digit
@@ -131,40 +140,61 @@ echo "unexpected gh args: $*" >&2; exit 30
 		// wait the full poll interval, because that gap is its only
 		// time-based guard against CI that simply has not registered yet.
 		StableRereadDelay: 5 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				nextPolls = append(nextPolls, progress.NextPoll)
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	elapsed := time.Since(started)
 	if result.Status != PullRequestWaitPassed || result.StableObservations != 2 || len(result.Checks) != 0 {
 		t.Fatalf("result = %+v", result)
 	}
 	if observations := rereadTestObservations(t, state); observations != 2 {
 		t.Fatalf("observed the exact head %d times, want exactly two full-cadence observations", observations)
 	}
-	if elapsed < interval {
-		t.Fatalf("no-applicable-checks receipt confirmed after %s, sooner than the full poll interval %s", elapsed, interval)
+	if got, want := nextPolls, []time.Duration{interval}; !slices.Equal(got, want) {
+		t.Fatalf("requested waits = %v, want %v", got, want)
 	}
 }
 
 func TestWaitForCommitChecksFallsBackToPollCadenceOnFingerprintChurn(t *testing.T) {
 	state := installRereadTestGH(t, checksBearingRereadScript(`"https://ci.example/run/$count"`))
-	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var nextPolls []time.Duration
+	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: rereadTestHead,
-		Slice: 5 * time.Second, CheckPollInterval: 3 * time.Second,
+		Slice: 30 * time.Second, CheckPollInterval: 3 * time.Second,
 		StableRereadDelay: 50 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				nextPolls = append(nextPolls, progress.NextPoll)
+				if len(nextPolls) == 2 {
+					// The live waiter reports NextPoll immediately before its
+					// production timer. Cancel at that point: the requested second
+					// full-cadence wait is the behavior under test, not its duration.
+					cancel()
+				}
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != PullRequestWaitPending {
-		t.Fatalf("churning terminal fingerprints must stay pending, got %+v", result)
+	if result.Status != PullRequestWaitFailed || !strings.Contains(result.Reason, context.Canceled.Error()) {
+		t.Fatalf("churning waiter must stop only because the test canceled its second full-cadence wait, got %+v", result)
 	}
 	// One shortened reread is allowed after the first terminal observation;
 	// once the fingerprint churns, every later wait must return to the full
-	// poll cadence, so only two or three observations fit in this slice.
-	// Re-observing on the shortened delay without bound would fit dozens.
-	if observations := rereadTestObservations(t, state); observations < 2 || observations > 3 {
-		t.Fatalf("observed the exact head %d times; churn did not fall back to the poll cadence", observations)
+	// poll cadence. Cancellation immediately after the second reported wait
+	// makes the exact production sequence deterministic under subprocess load.
+	if observations := rereadTestObservations(t, state); observations != 2 {
+		t.Fatalf("observed the exact head %d times, want two observations before the full-cadence wait", observations)
+	}
+	if got, want := nextPolls, []time.Duration{50 * time.Millisecond, 3 * time.Second}; !slices.Equal(got, want) {
+		t.Fatalf("requested waits = %v, want %v", got, want)
 	}
 }
