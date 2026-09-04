@@ -117,7 +117,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 	if !ok {
 		t.Fatal("go-ci release job missing")
 	}
-	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@93ab2d8c37c5780f5bf0fb37af0e5b360b431154" {
+	if got := release["uses"]; got != "strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c" {
 		t.Fatalf("release uses=%v", got)
 	}
 	assert("release prerequisites", release["needs"], []any{"test", "release-eligibility"})

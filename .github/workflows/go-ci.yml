@@ -213,7 +213,7 @@ jobs:
       cancel-in-progress: false
     # Resolve smoke-test metadata alongside the artifact build, then verify
     # published artifacts and Homebrew installs in parallel after promotion.
-    uses: strongo/cicd/.github/workflows/release.yml@93ab2d8c37c5780f5bf0fb37af0e5b360b431154
+    uses: strongo/cicd/.github/workflows/release.yml@19adc5f9e479df1861aea3ee9e1037c746628e4c
     permissions:
       contents: write
     with:
