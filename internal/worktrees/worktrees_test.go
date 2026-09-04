@@ -93,7 +93,7 @@ func TestCreateAgentModeRequiresLiveRegisteredSessionBeforeMutation(t *testing.T
 	}
 }
 
-func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
+func TestCreateSynchronizesCanonicalAndCreatesRepositoryLocalWorktree(t *testing.T) {
 	fixture := newGitFixture(t)
 	canonicalHeadBefore := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	fixture.pushRemoteCommit(t, "remote change")
@@ -114,7 +114,7 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 		t.Fatalf("results = %#v", results)
 	}
 	result := results[0]
-	wantWorktree := filepath.Join(fixture.home, "worktrees", "issue-123", "acme", "app")
+	wantWorktree := filepath.Join(fixture.canonical, ".worktrees", "issue-123")
 	if result.WorktreeDir != wantWorktree || result.Branch != "issue-123" || result.Action != "created" {
 		t.Fatalf("result = %#v", result)
 	}
@@ -126,6 +126,13 @@ func TestCreateSynchronizesCanonicalAndCreatesCentralWorktree(t *testing.T) {
 	}
 	if got := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD"); got != remoteHead {
 		t.Fatalf("new worktree head = %s, want fetched origin/main %s", got, remoteHead)
+	}
+	if status := gitTestOutput(t, fixture.canonical, "status", "--porcelain"); status != "" {
+		t.Fatalf("canonical status = %q, want clean with .worktrees locally excluded", status)
+	}
+	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "issue-123", Workers: 1})
+	if err != nil || len(listed) != 1 || listed[0].WorktreeDir != wantWorktree {
+		t.Fatalf("repository-local list = %#v, err=%v", listed, err)
 	}
 
 	guarded, err := Guard(context.Background(), result.WorktreeDir, GuardOptions{ProjectsRoot: fixture.projectsRoot})

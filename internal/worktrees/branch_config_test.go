@@ -111,6 +111,41 @@ func TestDirectBranchNamingOptionsKeepNonemptyValuesWithoutPresenceBits(t *testi
 	}
 }
 
+func TestCreateUsesConfiguredSharedWorktreesRoot(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mustWriteBranchConfig(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "shared-root", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create shared-root = %#v, err=%v", created, err)
+	}
+	resolvedRoot, resolveErr := resolveSharedWorktreesRoot(sharedRoot)
+	if resolveErr != nil {
+		t.Fatal(resolveErr)
+	}
+	want := filepath.Join(resolvedRoot, "shared-root", "acme", "app")
+	if created[0].WorktreeDir != want {
+		t.Fatalf("shared worktree = %q, want %q", created[0].WorktreeDir, want)
+	}
+	if _, err := Guard(context.Background(), want, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
+		t.Fatalf("guard explicit shared worktree: %v", err)
+	}
+	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "shared-root", Workers: 1})
+	if err != nil || len(listed) != 1 || listed[0].WorktreeDir != want || listed[0].External {
+		t.Fatalf("list explicit shared worktree = %#v, err=%v", listed, err)
+	}
+}
+
+func TestSharedWorktreeRootRejectsRelativePath(t *testing.T) {
+	if _, err := resolveSharedWorktreesRoot("relative/worktrees"); err == nil {
+		t.Fatal("relative shared root was accepted")
+	}
+}
+
 func TestCreateResumeRecoversClaimBranchAcrossNamingPolicyDrift(t *testing.T) {
 	tests := []struct {
 		name          string

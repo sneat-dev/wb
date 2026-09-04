@@ -35,6 +35,9 @@ type Layout struct {
 	Home          string
 	WorktreesRoot string
 	Legacy        bool
+	// Local is true only for a canonical repository's default
+	// <canonical>/.worktrees root. Home remains WB_HOME authority.
+	Local bool
 }
 
 // Resolution makes the migration policy explicit. Write is the only layout

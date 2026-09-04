@@ -289,6 +289,9 @@ type ListResult struct {
 	// itself — lives under the WB task directory. See openAdoptedCleanupWorktree
 	// and locateAdoptedWorktree.
 	External bool `json:"external,omitempty"`
+	// Local marks WB's default <canonical>/.worktrees/<task> placement.
+	// It is managed by WB (unlike External) but uses WB_HOME for the task lock.
+	Local bool `json:"local,omitempty"`
 	// Detached marks a checkout with no current branch. Branch is empty for
 	// one, so every branch-shaped operation must skip it rather than act on an
 	// empty ref. It is populated only when ListOptions.IncludeDetached is set.
@@ -960,6 +963,10 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	if err != nil {
 		return ListOutcome{}, err
 	}
+	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
+	if err != nil {
+		return ListOutcome{}, err
+	}
 	outcome := ListOutcome{SchemaVersion: 1}
 	// One inventory walk asks the same question once per worktree, and a fleet
 	// keeps many worktrees per repository — 262 worktrees across 71 repositories
@@ -994,6 +1001,16 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
 		outcome.Purged = append(outcome.Purged, purged...)
 	}
+	for _, layout := range discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot) {
+		results, diagnostics, listErr := listCanonicalLocalLayout(
+			ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter, policy,
+		)
+		if listErr != nil {
+			return ListOutcome{}, listErr
+		}
+		outcome.Results = append(outcome.Results, results...)
+		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
+	}
 	if options.OwnerState != "" {
 		filtered := outcome.Results[:0]
 		for _, result := range outcome.Results {
@@ -1021,6 +1038,88 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	sort.Slice(outcome.Artifacts, func(i, j int) bool { return outcome.Artifacts[i].Path < outcome.Artifacts[j].Path })
 	sort.Slice(outcome.Purged, func(i, j int) bool { return outcome.Purged[i].Path < outcome.Purged[j].Path })
 	return outcome, nil
+}
+
+// discoverCanonicalLocalWorktreeLayouts finds only `<owner>/<repository>`
+// canonical clones that already contain the default `.worktrees` root. It
+// does not descend through repositories, so a task checkout can never be
+// discovered as another canonical clone.
+func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot string) []wbhome.Layout {
+	owners, err := os.ReadDir(projectsRoot)
+	if err != nil {
+		return nil
+	}
+	layouts := make([]wbhome.Layout, 0)
+	for _, owner := range owners {
+		if !owner.IsDir() || !validSafeSegment(owner.Name()) {
+			continue
+		}
+		repositories, readErr := os.ReadDir(filepath.Join(projectsRoot, owner.Name()))
+		if readErr != nil {
+			continue
+		}
+		for _, repository := range repositories {
+			if !repository.IsDir() || !validRepositorySegment(repository.Name()) {
+				continue
+			}
+			canonical := filepath.Join(projectsRoot, owner.Name(), repository.Name())
+			root := filepath.Join(canonical, ".worktrees")
+			info, statErr := os.Lstat(root)
+			if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			gitDir, commonDir, gitErr := gitDirectories(ctx, canonical)
+			if gitErr != nil || filepath.Clean(gitDir) != filepath.Clean(commonDir) || filepath.Clean(commonDir) != filepath.Join(canonical, ".git") {
+				continue
+			}
+			layouts = append(layouts, wbhome.Layout{WorktreesRoot: root, Local: true})
+		}
+	}
+	sort.Slice(layouts, func(i, j int) bool { return layouts[i].WorktreesRoot < layouts[j].WorktreesRoot })
+	return layouts
+}
+
+func listCanonicalLocalLayout(
+	ctx context.Context,
+	projectsRoot, home string,
+	layout wbhome.Layout,
+	tasks map[string]bool,
+	base, filter, absorbedBy string,
+	withGitHub bool,
+	workers int,
+	reporter *listProgressReporter,
+	policy inspectPolicy,
+) ([]ListResult, []ListDiagnostic, error) {
+	entries, err := os.ReadDir(layout.WorktreesRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read canonical local worktrees under %s: %w", layout.WorktreesRoot, err)
+	}
+	pending := make([]pendingInspect, 0)
+	diagnostics := make([]ListDiagnostic, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || !taskSelectionMatches(tasks, entry.Name()) {
+			continue
+		}
+		if !validSafeSegment(entry.Name()) {
+			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, entry.Name(), filepath.Join(layout.WorktreesRoot, entry.Name()), "invalid task directory name"))
+			continue
+		}
+		path := filepath.Join(layout.WorktreesRoot, entry.Name())
+		if !hasGitMetadata(path) || !isGitRoot(ctx, path) {
+			diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, entry.Name(), path, "canonical local task is not a Git worktree root"))
+			continue
+		}
+		locked := false
+		if _, lockErr := os.Stat(filepath.Join(home, "worktrees", entry.Name(), ".lock")); lockErr == nil {
+			locked = true
+		}
+		pending = append(pending, pendingInspect{task: entry.Name(), path: path, locked: locked, commonDir: gitCommonDir(ctx, path)})
+	}
+	results, inspectDiagnostics := runInspections(ctx, pending, projectsRoot, home, layout, base, filter, absorbedBy, withGitHub, workers, reporter, policy)
+	return results, append(diagnostics, inspectDiagnostics...), nil
 }
 
 // cleanupInspectPolicy is the one place a cleanup transaction's widenings
@@ -1683,7 +1782,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// cleanupApplyEntry: a task that re-scanned the whole outcome to find its
 	// own rows would, under concurrency, be reading the fields its neighbours
 	// are writing.
-	entries := planCleanupApply(outcome)
+	entries := planCleanupApply(outcome, resolution.Write.Home)
 	repositoryLocks := newCloneLocks()
 	remoteGate := newRemoteBranchDeletionGate(normalized.Workers)
 	applyTask := func(entry cleanupApplyEntry) error {
@@ -1759,7 +1858,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				ctx,
 				normalized.ProjectsRoot,
 				resolution.Write.Home,
-				wbhome.Layout{WorktreesRoot: outcome.Results[index].WorktreesRoot},
+				wbhome.Layout{WorktreesRoot: outcome.Results[index].WorktreesRoot, Local: outcome.Results[index].Local},
 				outcome.Results[index].Task,
 				outcome.Results[index].WorktreeDir,
 				normalized.Base,
@@ -2099,14 +2198,26 @@ type cleanupTaskSelection struct {
 	Task          string
 }
 
-func cleanupTaskSelections(outcome CleanupOutcome) []cleanupTaskSelection {
+func logicalCleanupTaskKey(result ListResult, home string) string {
+	root := result.WorktreesRoot
+	if result.Local {
+		root = filepath.Join(home, "worktrees")
+	}
+	return cleanupTaskKey(root, result.Task)
+}
+
+func cleanupTaskSelections(outcome CleanupOutcome, home string) []cleanupTaskSelection {
 	byKey := make(map[string]cleanupTaskSelection)
 	for _, result := range outcome.Results {
 		if result.BacklogID != "" {
 			continue
 		}
-		key := cleanupTaskKey(result.WorktreesRoot, result.Task)
-		byKey[key] = cleanupTaskSelection{WorktreesRoot: result.WorktreesRoot, Task: result.Task}
+		key := logicalCleanupTaskKey(result.ListResult, home)
+		root := result.WorktreesRoot
+		if result.Local {
+			root = filepath.Join(home, "worktrees")
+		}
+		byKey[key] = cleanupTaskSelection{WorktreesRoot: root, Task: result.Task}
 	}
 	for _, artifact := range outcome.Artifacts {
 		key := cleanupTaskKey(artifact.WorktreesRoot, artifact.Task)
@@ -2123,10 +2234,10 @@ func cleanupTaskSelections(outcome CleanupOutcome) []cleanupTaskSelection {
 	return selections
 }
 
-func cleanupTaskCanApply(outcome CleanupOutcome, taskKey string) bool {
+func cleanupTaskCanApply(outcome CleanupOutcome, taskKey, home string) bool {
 	hasPending := false
 	for _, result := range outcome.Results {
-		if result.BacklogID != "" || cleanupTaskKey(result.WorktreesRoot, result.Task) != taskKey {
+		if result.BacklogID != "" || logicalCleanupTaskKey(result.ListResult, home) != taskKey {
 			continue
 		}
 		if !result.Eligible {
@@ -2154,9 +2265,9 @@ func cleanupTaskCanApply(outcome CleanupOutcome, taskKey string) bool {
 // from artifact-only work. Interrupted-lock recovery is deliberately narrower:
 // it must preserve the exact recovered lock unless that named task's present
 // worktree has passed the ordinary eligibility gates.
-func cleanupTaskHasEligibleWorktree(outcome CleanupOutcome, taskKey string) bool {
+func cleanupTaskHasEligibleWorktree(outcome CleanupOutcome, taskKey, home string) bool {
 	for _, result := range outcome.Results {
-		if result.BacklogID == "" && !result.WorktreeGone && cleanupTaskKey(result.WorktreesRoot, result.Task) == taskKey && result.Eligible {
+		if result.BacklogID == "" && !result.WorktreeGone && logicalCleanupTaskKey(result.ListResult, home) == taskKey && result.Eligible {
 			return true
 		}
 	}
@@ -2647,7 +2758,7 @@ func inspectLifecycleWorktree(
 		Branch:        branch, Base: base, HeadSHA: head,
 		Clean: clean, LocallyMerged: locallyMerged, Locked: locked,
 		LockOwner: lockOwner, LockOwnerPID: lockOwnerPID, LastCommit: lastCommit,
-		External: external, Detached: detached,
+		External: external, Local: layout.Local, Detached: detached,
 	}
 	owners, ownerErr := lifecycleOwnerViews(home, worktree)
 	if ownerErr != nil {
@@ -3624,7 +3735,7 @@ func preflightCleanupRepository(
 		ctx,
 		options.ProjectsRoot,
 		home,
-		wbhome.Layout{WorktreesRoot: entry.WorktreesRoot},
+		wbhome.Layout{WorktreesRoot: entry.WorktreesRoot, Local: entry.Local},
 		entry.Task,
 		entry.WorktreeDir,
 		options.Base,
@@ -4106,6 +4217,9 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 	if err := task.validate(); err != nil {
 		return nil, err
 	}
+	if result.Local {
+		return openCanonicalLocalCleanupWorktree(task, result.WorktreeDir)
+	}
 	if result.External {
 		// An adopted worktree was never relocated under this held task, so it
 		// carries no path relationship to task.taskPath to open descriptor-
@@ -4165,6 +4279,36 @@ func openCleanupWorktree(task *cleanupTaskHandle, result CleanupResult) (*cleanu
 		_ = unix.Close(worktreeFD)
 		handle.close()
 		return nil, fmt.Errorf("wrap cleanup worktree %s", result.WorktreeDir)
+	}
+	if err := handle.validate(); err != nil {
+		handle.close()
+		return nil, err
+	}
+	return handle, nil
+}
+
+func openCanonicalLocalCleanupWorktree(task *cleanupTaskHandle, worktreePath string) (*cleanupWorktreeHandle, error) {
+	worktreePath = filepath.Clean(worktreePath)
+	parentPath := filepath.Dir(worktreePath)
+	leaf := filepath.Base(worktreePath)
+	if leaf == "" || leaf == "." || leaf == string(filepath.Separator) {
+		return nil, fmt.Errorf("canonical local worktree path %s has no task segment", worktreePath)
+	}
+	parent, err := openAbsoluteDirectoryNoFollow(parentPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("open canonical local worktree parent %s without following links: %w", parentPath, err)
+	}
+	handle := &cleanupWorktreeHandle{task: task, worktreePath: worktreePath, parent: parent, parentPath: parentPath, closeParent: false, ownParent: true}
+	worktreeFD, err := unix.Openat(int(parent.Fd()), leaf, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		handle.close()
+		return nil, fmt.Errorf("open canonical local worktree %s without following links: %w", worktreePath, err)
+	}
+	handle.worktree = os.NewFile(uintptr(worktreeFD), "wb-cleanup-canonical-local-worktree")
+	if handle.worktree == nil {
+		_ = unix.Close(worktreeFD)
+		handle.close()
+		return nil, fmt.Errorf("wrap canonical local worktree %s", worktreePath)
 	}
 	if err := handle.validate(); err != nil {
 		handle.close()

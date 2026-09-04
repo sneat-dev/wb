@@ -92,21 +92,25 @@ type cleanupApplyEntry struct {
 }
 
 // planCleanupApply resolves every task's apply plan from the pre-apply outcome.
-func planCleanupApply(outcome CleanupOutcome) []cleanupApplyEntry {
-	selections := cleanupTaskSelections(outcome)
+func planCleanupApply(outcome CleanupOutcome, homes ...string) []cleanupApplyEntry {
+	home := ""
+	if len(homes) > 0 {
+		home = homes[0]
+	}
+	selections := cleanupTaskSelections(outcome, home)
 	entries := make([]cleanupApplyEntry, 0, len(selections))
 	for _, selection := range selections {
 		key := cleanupTaskKey(selection.WorktreesRoot, selection.Task)
 		entry := cleanupApplyEntry{
 			selection:           selection,
-			canApply:            cleanupTaskCanApply(outcome, key),
-			hasEligibleWorktree: cleanupTaskHasEligibleWorktree(outcome, key),
+			canApply:            cleanupTaskCanApply(outcome, key, home),
+			hasEligibleWorktree: cleanupTaskHasEligibleWorktree(outcome, key, home),
 		}
 		repositories := make(map[string]bool)
 		for index := range outcome.Results {
 			result := &outcome.Results[index]
 			if !result.Eligible || result.BacklogID != "" ||
-				cleanupTaskKey(result.WorktreesRoot, result.Task) != key {
+				logicalCleanupTaskKey(result.ListResult, home) != key {
 				continue
 			}
 			entry.resultIndices = append(entry.resultIndices, index)

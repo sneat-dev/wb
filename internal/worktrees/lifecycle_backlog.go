@@ -49,6 +49,7 @@ type lifecycleBacklogRecord struct {
 	// ListResult.External. It changes only which shape
 	// validateLifecycleBacklog accepts for WorktreeDir.
 	External bool `json:"external,omitempty"`
+	Local    bool `json:"local,omitempty"`
 	// Detached marks a record for a checkout with no branch of its own — the
 	// shape every pull-request review creates. It changes only which branch
 	// operations the record owes: a detached checkout has no ref to retire, so
@@ -82,7 +83,7 @@ func newLifecycleBacklogRecord(projectsRoot string, result ListResult, dispositi
 		Task: result.Task, Repository: result.Repository, ProjectsRoot: filepath.Clean(projectsRoot),
 		CanonicalDir: result.CanonicalDir, WorktreesRoot: result.WorktreesRoot, WorktreeDir: result.WorktreeDir,
 		Branch: result.Branch, Base: result.Base, HeadSHA: result.HeadSHA, RemoteHeadSHA: result.RemoteHeadSHA,
-		External: result.External, Detached: result.Detached,
+		External: result.External, Local: result.Local, Detached: result.Detached,
 		Disposition: disposition, Stage: lifecycleStageSealed, CreatedAt: now, UpdatedAt: now,
 	}
 }
@@ -149,7 +150,12 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	if filepath.Clean(record.CanonicalDir) != filepath.Join(filepath.Clean(record.ProjectsRoot), owner, repository) {
 		return fmt.Errorf("lifecycle backlog canonical path does not match repository")
 	}
-	if record.External {
+	if record.Local {
+		if filepath.Clean(record.WorktreesRoot) != filepath.Join(filepath.Clean(record.CanonicalDir), ".worktrees") ||
+			filepath.Clean(record.WorktreeDir) != filepath.Join(filepath.Clean(record.WorktreesRoot), record.Task) {
+			return fmt.Errorf("lifecycle backlog local worktree path does not match canonical layout")
+		}
+	} else if record.External {
 		// An adopted worktree was never relocated under WorktreesRoot — see
 		// ListResult.External — so it has no <task>/<owner>/<repository>
 		// shape to check here. The one thing recovery can and must still
