@@ -69,6 +69,13 @@ func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireS
 	var results []RetiredShell
 	for _, layout := range resolution.Read {
 		root := filepath.Clean(layout.WorktreesRoot)
+		// WB_HOME/worktrees is also the coordination namespace for local and
+		// relocated shared checkouts. An empty shell here cannot prove those
+		// physical members are terminal, so this legacy-retirement sweep never
+		// removes it; their owning lifecycle transaction does so when safe.
+		if root == filepath.Join(filepath.Clean(resolution.Write.Home), "worktrees") {
+			continue
+		}
 		if seenRoots[root] {
 			continue // Write and a discovered legacy layout may resolve to the same root.
 		}
