@@ -13,7 +13,7 @@ status: Implementing
 
 `wb self-update` (alias `wb update`) brings a running `wb` binary to the latest
 release. The behavior is not specified here: wb binds the shared
-[strongo/selfupdate](https://specscore.studio/app/github.com/strongo/selfupdate/spec/features/self-update?op=explore)
+[strongo/cli-helpers](https://specscore.studio/app/github.com/strongo/cli-helpers/spec/features/self-update?op=explore)
 library, whose Feature owns detection, release resolution, checksum
 verification, atomic replacement, and every failure rule. This Feature specifies
 only what is wb's own — the command surface, wb's configuration of the library,
@@ -58,7 +58,7 @@ because in a CLI whose verbs act on other repositories (`wb sync`, `wb deps`,
 
 #### REQ: library-provided-behavior
 
-The command MUST obtain its behavior from `github.com/strongo/selfupdate` rather
+The command MUST obtain its behavior from `github.com/strongo/cli-helpers/selfupdate` rather
 than reimplementing it. Install-method detection, stable-release resolution,
 version comparison, pinned targets and the downgrade guard, asset download,
 sha256 verification before extraction, atomic replacement, the post-swap version
@@ -83,6 +83,20 @@ cannot distinguish "an update is available" from "the release lookup failed"
 (see [REQ: exit-code-mapping](#req-exit-code-mapping)), this document is the
 channel that MUST make them distinguishable. Human-readable output stays the
 default, matching `wb status` and `wb check`.
+
+#### REQ: readable-version-summary
+
+Normal self-update and dry-run output MUST identify the running WB version and
+latest published WB release for both direct and Homebrew installations. Release
+lookup failure MUST display the latest version as unavailable, not imply that
+WB is current or prevent Homebrew from performing its own upgrade. A pinned
+release MUST be labelled as a target, not misrepresented as the latest release.
+
+The shared library owns the ASCII layout and terminal-aware colors. Redirected
+output and `NO_COLOR` MUST remain readable without color, and JSON stdout MUST
+remain a single unstyled document. The summary precedes confirmation and any
+installer execution; Homebrew command completion alone MUST NOT claim that the
+latest published WB version was installed.
 
 ### wb's configuration of the library
 
@@ -147,7 +161,7 @@ for a wb user specifically.
 
 | Feature | Interaction |
 |---|---|
-| [strongo/selfupdate: Self-Update Library](https://specscore.studio/app/github.com/strongo/selfupdate/spec/features/self-update?op=explore) | Owns the behavior contract this Feature binds. wb is a consumer; behavior changes belong there. |
+| [strongo/cli-helpers: Self-Update Library](https://specscore.studio/app/github.com/strongo/cli-helpers/spec/features/self-update?op=explore) | Owns the behavior contract this Feature binds. wb is a consumer; behavior changes belong there. |
 | [Fleet Status](../fleet-status/README.md) | Unrelated in mechanism. Self-update is the one wb command that deliberately writes to the wb install itself. |
 
 ## Acceptance Criteria
@@ -166,7 +180,7 @@ for a wb user specifically.
 
 **Given** the wb source tree
 **When** the self-update command is built
-**Then** detection, release resolution, verification, and replacement come from `github.com/strongo/selfupdate`, wb supplies only its release identity, version and undetermined placeholder, and no copy of that logic exists in wb's own tree.
+**Then** detection, release resolution, verification, and replacement come from `github.com/strongo/cli-helpers/selfupdate`, wb supplies only its release identity, version and undetermined placeholder, and no copy of that logic exists in wb's own tree.
 
 ### AC: homebrew-updates-through-manager-never-overwritten
 
@@ -180,6 +194,19 @@ no download, no direct write, and no replacement. A managed version pin is
 refused, and `--dry-run` reports the manager command without running it. After
 the upgrade, skill sync resolves the stable `wb` launcher again rather than a
 removed old Caskroom binary.
+
+### AC: homebrew-version-summary-is-readable-and-machine-safe
+
+**Requirements:** self-update#req:readable-version-summary, self-update#req:check-json-format, self-update#req:wb-homebrew-cask
+
+**Given** a Homebrew installation with a known current version and a newer
+published WB release
+**When** the user runs `wb self-update --dry-run` in text and JSON modes
+**Then** the command resolves release availability once, reports the current and
+latest versions and `brew upgrade --cask wb`, and does not run Homebrew. Text
+uses labelled ASCII rows with terminal-aware color; redirected output has no
+ANSI escapes. JSON stdout contains one document with the version and manager
+fields, while any human-readable preview goes to stderr.
 
 ### AC: wb-exit-codes-and-json-verdict
 
