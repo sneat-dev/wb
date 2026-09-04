@@ -438,8 +438,14 @@ func revalidatePublishedForwardRepairEvidence(ctx context.Context, options Workt
 	if err != nil {
 		return err
 	}
-	if current, hashErr := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath); hashErr != nil || current != supersessionHash || current != options.ExpectedSupersessionSHA256 || supersession.CurrentTargetSHA != currentTarget {
+	if current, hashErr := worktreeMergeReceiptSHA256(supersession.AcknowledgementPath); hashErr != nil || current != supersessionHash || current != options.ExpectedSupersessionSHA256 {
 		return errors.New("self-supersession acknowledgement changed during published forward-repair construction")
+	}
+	if supersession.CurrentTargetSHA != currentTarget {
+		contains, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, supersession.CurrentTargetSHA, currentTarget)
+		if ancestorErr != nil || !contains {
+			return errors.New("current target no longer descends from the self-supersession target during published forward-repair construction")
+		}
 	}
 	if currentCorrection, correctionErr := readSelfSupersessionCorrection(selfSupersessionCorrectionPath(receiptPath), receipt, supersession); correctionErr == nil {
 		if correctionHash == "" {
