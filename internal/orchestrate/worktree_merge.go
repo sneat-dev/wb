@@ -2640,7 +2640,12 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			}
 			rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(receipt)
 			if rebatchErr != nil {
-				return nil, rebatchErr
+				// A sidecar that cannot be authenticated is not evidence of an
+				// in-flight merge. Skipping it keeps one abandoned
+				// `.prepared.rebatched.ack.json` from taking the whole
+				// (repository, target) lane offline (wb#319). Land and other
+				// verbs that name this receipt still see the same error.
+				continue
 			}
 			if rebatched {
 				continue

@@ -1979,6 +1979,45 @@ func TestPrepareWorktreeMergeRebatchesPreparedReceiptAdditivelyAndPreservesOldEv
 	}
 }
 
+func TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar(t *testing.T) {
+	fixture := newEngineFixture(t)
+	staleSource := createMergeSource(t, fixture, "stale-sidecar-source", "feature/stale-sidecar", "stale.txt", "stale\n")
+	stale, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{staleSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := rebatchPath(stale.ReceiptPath)
+	if err := os.WriteFile(sidecar, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hasPreparedWorktreeMergeRebatch(stale); err == nil {
+		t.Fatal("planted sidecar must fail authentication")
+	}
+	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: stale.ReceiptPath}); err == nil ||
+		!(strings.Contains(err.Error(), "invalid immutable identity") || strings.Contains(err.Error(), "decode prepared rebatch")) {
+		t.Fatalf("land of the receipt that owns the sidecar = %v, want sidecar authentication failure", err)
+	}
+	otherSource := createMergeSource(t, fixture, "other-lane-source", "feature/other-lane", "other.txt", "other\n")
+	prepared, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{otherSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatalf("prepare for a different source on the same lane: %v", err)
+	}
+	if prepared.ReceiptPath == stale.ReceiptPath {
+		t.Fatalf("new prepare reused the stale receipt %s", stale.ReceiptPath)
+	}
+	active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(stale.ReceiptPath), stale.Lane)
+	if err != nil {
+		t.Fatalf("lane scan aborted on the unusable sidecar: %v", err)
+	}
+	if active == nil || active.ReceiptPath != prepared.ReceiptPath {
+		t.Fatalf("active lane after skipping unusable sidecar = %+v", active)
+	}
+}
+
 func TestPrepareWorktreeMergeRebatchRefusesSourceRemovalTargetDriftAndDirtyEvidence(t *testing.T) {
 	newPrepared := func(t *testing.T) (engineFixture, worktrees.CreateResult, WorktreeMergeReceipt) {
 		t.Helper()
