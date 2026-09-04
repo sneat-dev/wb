@@ -2010,6 +2010,10 @@ func prepareAbsorbedCandidate(t *testing.T, task string) (*gitFixture, CreateRes
 	gitTest(t, fixture.canonical, "commit", "-m", "sibling candidate")
 	integrationTip := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 	gitTest(t, fixture.canonical, "push", "-u", "origin", integrationBranch)
+	// GitHub exposes a stable numbered pull-head ref independently of any
+	// contributor branch name. Mirror that contract in the local bare origin so
+	// attested --absorbed-by tests exercise the exact production fetch path.
+	gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", integrationTip)
 
 	// Land the whole batch as one squash commit, exactly as a PR-required,
 	// merge-commit-rejecting target branch demands.
@@ -2074,6 +2078,37 @@ exit 2
 	t.Setenv("WB_TEST_SINGLE_PULL", string(single))
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestFetchExactRemotePullRequestHeadUsesStableRefWithoutFetchHead(t *testing.T) {
+	expected := strings.Repeat("a", 40)
+	var calls [][]string
+	run := func(ctx context.Context, args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		switch args[0] {
+		case "ls-remote":
+			return expected + "\trefs/pull/77/head\n", nil
+		case "fetch":
+			return "", nil
+		case "rev-parse":
+			return expected, nil
+		default:
+			t.Fatalf("unexpected Git command: %q", args)
+			return "", nil
+		}
+	}
+	fetched, err := fetchExactRemotePullRequestHeadWithRun(context.Background(), "/unused", 77, expected, run)
+	if err != nil || fetched != expected {
+		t.Fatalf("fetch PR head = %q, %v", fetched, err)
+	}
+	want := [][]string{
+		{"ls-remote", "--exit-code", "origin", "refs/pull/77/head"},
+		{"fetch", "--no-tags", "--no-write-fetch-head", "--", "origin", "refs/pull/77/head"},
+		{"rev-parse", "--verify", "--end-of-options", expected + "^{commit}"},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("Git commands = %#v, want %#v", calls, want)
+	}
 }
 
 func TestCleanupAcceptsAbsorbedIntegrationBranchSquashReceipt(t *testing.T) {

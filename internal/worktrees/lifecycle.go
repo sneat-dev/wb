@@ -3728,8 +3728,12 @@ func verifyAttestedSquashPullRequest(
 		strings.TrimSpace(pullRequest.Base) == "" || !isGitObjectID(pullRequest.HeadSHA) || !isGitObjectID(pullRequest.MergeSHA) {
 		return fmt.Sprintf("--absorbed-by %s has incomplete merged pull request metadata", absorbedBy), nil
 	}
-	if _, err := fetchExactRemoteCommit(ctx, repository, pullRequest.HeadSHA); err != nil {
-		return "", fmt.Errorf("fetch pull request head %s for --absorbed-by %s: %w", pullRequest.HeadSHA, absorbedBy, err)
+	if _, err := fetchExactRemotePullRequestHead(ctx, repository, pullRequest.Number, pullRequest.HeadSHA); err != nil {
+		var mismatch *pullRequestHeadMismatchError
+		if errors.As(err, &mismatch) {
+			return mismatch.Error(), nil
+		}
+		return "", fmt.Errorf("fetch pull request %d head %s for --absorbed-by %s: %w", pullRequest.Number, pullRequest.HeadSHA, absorbedBy, err)
 	}
 	sourceInPullRequest, err := isAncestor(ctx, repository, sourceHead, pullRequest.HeadSHA)
 	if err != nil {
@@ -3759,23 +3763,55 @@ func verifyAttestedSquashPullRequest(
 	return "", nil
 }
 
-// fetchExactRemoteCommit obtains the immutable pull-request head from origin
-// before using it as ancestry or tree evidence. A commit merely mentioned by
-// an API response is not proof that the repository's configured origin can
-// supply the object being attested.
-func fetchExactRemoteCommit(ctx context.Context, repository, sha string) (string, error) {
-	if !isGitObjectID(sha) {
-		return "", fmt.Errorf("invalid commit %q", sha)
+// fetchExactRemotePullRequestHead obtains GitHub's stable numbered pull-head
+// ref without creating a local ref or touching FETCH_HEAD. An API-reported SHA
+// alone is not proof that the configured origin exposes the named pull request;
+// conversely, fetching an arbitrary object SHA relies on server configuration
+// and can accidentally accept an unrelated reachable object.
+type pullRequestHeadMismatchError struct{ message string }
+
+func (err *pullRequestHeadMismatchError) Error() string { return err.message }
+
+func fetchExactRemotePullRequestHead(ctx context.Context, repository string, number int, expectedSHA string) (string, error) {
+	return fetchExactRemotePullRequestHeadWithRun(ctx, repository, number, expectedSHA, func(runCtx context.Context, args ...string) (string, error) {
+		return git(runCtx, repository, args...)
+	})
+}
+
+func fetchExactRemotePullRequestHeadWithRun(
+	ctx context.Context,
+	repository string,
+	number int,
+	expectedSHA string,
+	run func(context.Context, ...string) (string, error),
+) (string, error) {
+	if number <= 0 {
+		return "", fmt.Errorf("invalid pull request number %d", number)
 	}
-	if _, err := git(ctx, repository, "fetch", "--no-tags", "origin", sha); err != nil {
-		return "", err
+	if !isGitObjectID(expectedSHA) {
+		return "", fmt.Errorf("invalid expected pull request head %q", expectedSHA)
 	}
-	fetched, err := git(ctx, repository, "rev-parse", "--verify", "--end-of-options", sha+"^{commit}")
+	ref := "refs/pull/" + strconv.Itoa(number) + "/head"
+	remote, err := run(ctx, "ls-remote", "--exit-code", "origin", ref)
 	if err != nil {
 		return "", err
 	}
-	if fetched != sha {
-		return "", fmt.Errorf("origin returned %s for requested commit %s", fetched, sha)
+	fields := strings.Fields(remote)
+	if len(fields) != 2 || fields[1] != ref || !isGitObjectID(fields[0]) {
+		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("origin returned malformed %s response %q", ref, remote)}
+	}
+	if fields[0] != expectedSHA {
+		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("origin advertises %s as %s, expected exact API head %s", ref, fields[0], expectedSHA)}
+	}
+	if _, err := run(ctx, "fetch", "--no-tags", "--no-write-fetch-head", "--", "origin", ref); err != nil {
+		return "", err
+	}
+	fetched, err := run(ctx, "rev-parse", "--verify", "--end-of-options", expectedSHA+"^{commit}")
+	if err != nil {
+		return "", err
+	}
+	if fetched != expectedSHA {
+		return "", &pullRequestHeadMismatchError{message: fmt.Sprintf("fetched %s resolved to %s, expected exact API head %s", ref, fetched, expectedSHA)}
 	}
 	return fetched, nil
 }

@@ -72,6 +72,14 @@ func TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs(t *testing.T) {
 			want: "does not contain exact source head",
 		},
 		{
+			name: "PR ref does not match GitHub head metadata",
+			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string) {
+				gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", squashSHA)
+				installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
+			},
+			want: "origin advertises refs/pull/77/head",
+		},
+		{
 			name: "PR is not merged",
 			mutate: func(t *testing.T, fixture *gitFixture, created CreateResult, squashSHA, integrationHead string) {
 				installAbsorbingPullRequestFixture(t, integrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
@@ -98,6 +106,7 @@ func TestAbortDiscardedRefusesInvalidSquashAbsorptionProofs(t *testing.T) {
 				gitTest(t, fixture.canonical, "commit", "-m", "post PR head drift")
 				updatedIntegrationHead := gitTestOutput(t, fixture.canonical, "rev-parse", "HEAD")
 				gitTest(t, fixture.canonical, "push", "origin", "HEAD:refs/heads/integration/abort-absorbed-refusal")
+				gitTest(t, fixture.remote, "update-ref", "refs/pull/77/head", updatedIntegrationHead)
 				gitTest(t, fixture.canonical, "checkout", "main")
 				installAbsorbingPullRequestFixture(t, updatedIntegrationHead, squashSHA, time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC))
 			},
