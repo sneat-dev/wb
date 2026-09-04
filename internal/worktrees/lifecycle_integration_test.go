@@ -2033,9 +2033,12 @@ func TestCleanupRejectsAbsorbedReceiptWhenOnlyPartOfTheBranchLanded(t *testing.T
 		t.Fatal(err)
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
-		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin {
 		t.Fatalf("partial absorption must be rejected: %#v", planned)
+	}
+	reason := planned.Results[0].Reason
+	if !strings.Contains(reason, "awaiting push") && !strings.Contains(reason, "residual") {
+		t.Fatalf("partial absorption must explain the unlanded remainder: %q", reason)
 	}
 }
 

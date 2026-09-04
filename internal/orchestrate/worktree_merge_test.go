@@ -1996,7 +1996,7 @@ func TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar(t *testing.T) {
 		t.Fatal("planted sidecar must fail authentication")
 	}
 	if _, err := LandWorktreeMerge(context.Background(), WorktreeMergeLandOptions{ProjectsRoot: fixture.githubDir, Receipt: stale.ReceiptPath}); err == nil ||
-		!(strings.Contains(err.Error(), "invalid immutable identity") || strings.Contains(err.Error(), "decode prepared rebatch")) {
+		(!strings.Contains(err.Error(), "invalid immutable identity") && !strings.Contains(err.Error(), "decode prepared rebatch")) {
 		t.Fatalf("land of the receipt that owns the sidecar = %v, want sidecar authentication failure", err)
 	}
 	otherSource := createMergeSource(t, fixture, "other-lane-source", "feature/other-lane", "other.txt", "other\n")
