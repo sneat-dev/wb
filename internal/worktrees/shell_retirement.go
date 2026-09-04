@@ -60,7 +60,6 @@ type RetireShellsOutcome struct {
 // directories that are provably empty shells and, under --apply, retires
 // them. It is read-only unless Apply is explicit.
 func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireShellsOutcome, error) {
-	_ = ctx // no network or subprocess I/O: this is a pure local filesystem sweep.
 	resolution, err := wbhome.Resolve(options.ProjectsRoot)
 	if err != nil {
 		return RetireShellsOutcome{}, err
@@ -69,13 +68,6 @@ func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireS
 	var results []RetiredShell
 	for _, layout := range resolution.Read {
 		root := filepath.Clean(layout.WorktreesRoot)
-		// WB_HOME/worktrees is also the coordination namespace for local and
-		// relocated shared checkouts. An empty shell here cannot prove those
-		// physical members are terminal, so this legacy-retirement sweep never
-		// removes it; their owning lifecycle transaction does so when safe.
-		if root == filepath.Join(filepath.Clean(resolution.Write.Home), "worktrees") {
-			continue
-		}
 		if seenRoots[root] {
 			continue // Write and a discovered legacy layout may resolve to the same root.
 		}
@@ -99,6 +91,17 @@ func RetireTaskShells(ctx context.Context, options RetireShellsOptions) (RetireS
 			info, infoErr := entry.Info()
 			if infoErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 				continue // never treat a non-directory or symlinked entry as a task.
+			}
+			if root == filepath.Join(filepath.Clean(resolution.Write.Home), "worktrees") {
+				inventory, inventoryErr := ListWithDiagnostics(ctx, ListOptions{ProjectsRoot: options.ProjectsRoot, Task: task, GitHub: false})
+				if inventoryErr != nil || len(inventory.Results) > 0 {
+					reason := "logical task shell still has physical members"
+					if inventoryErr != nil {
+						reason = "inspect logical task shell: " + inventoryErr.Error()
+					}
+					results = append(results, RetiredShell{WorktreesRoot: root, Task: task, Path: filepath.Join(root, task), Reason: reason})
+					continue
+				}
 			}
 			result := inspectTaskShell(root, task)
 			if options.Apply && result.Eligible {
