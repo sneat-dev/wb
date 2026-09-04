@@ -44,6 +44,21 @@ stage, commit, push, change HEAD, or remove user work. Continuation artifacts
 MUST be mode `0600` outside every worktree and MUST NOT appear in normal
 text/JSON output, command arguments, diagnostics, journals, or Work Log prompts.
 
+#### REQ: park-registers-an-unregistered-session
+
+`wb session park` MUST resolve the calling session, and when none is registered
+it MUST register one from what it can observe or infer — the agent PID from
+`--pid`, an existing environment declaration, or the nearest recognised harness
+in the process tree; the runtime from `--runtime`, the environment, or the
+observed parent process name; the model from `--model` or the environment; the
+machine from this hostname — record `registered_at_park` on both the session
+record and the park output, and then continue. A runtime or model that can
+neither be declared nor observed MUST be recorded as `unknown`; missing
+identity metadata MUST NOT refuse a park. An explicit `--wb-session-id` MUST
+still target an already-registered session and MUST NOT create a registration.
+Registration MUST NOT overwrite a session record already projected as parked or
+resumed, and the existing fail-closed member checks MUST remain unchanged.
+
 #### REQ: coordinator-starts-one-local-successor
 
 Local `wb session resume <parked-session-id>` MUST preflight every member's
@@ -147,6 +162,12 @@ registry, or custody mutation.
 **Given** one registered session owns two worktrees and one has uncommitted changes
 **When** the coordinator runs `wb session park --context-file <private-file>`
 **Then** a stable parked ID is returned, both exact Git and Work Log custody records are stored, the dirty checkout remains dirty, the source is reported parked, and continuation is absent from output, argv, and Work Logs.
+
+### AC: unregistered-session-can-park (verifies REQ:park-registers-an-unregistered-session)
+
+**Given** no session is registered for the calling process
+**When** the coordinator runs `wb session park --context-file <private-file>`
+**Then** a session record exists carrying the inferred identity, the park completes, and the output names the new `wb_session_id` and that it was registered at park.
 
 ### AC: local-resume-launches-one-successor (verifies REQ:coordinator-starts-one-local-successor, REQ:no-later-session-custody-theft)
 

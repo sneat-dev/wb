@@ -5408,9 +5408,14 @@
               "flags": [
                 "--context-file",
                 "--format",
+                "--pid",
+                "--runtime",
+                "--model",
+                "--wb-session-id",
                 "--override-secret"
               ],
               "modes": [
+                "Resolves the calling session and, when none is registered, registers one from the declared --pid/--runtime/--model, an existing WB_AGENT_* declaration, or the nearest recognised harness in the process tree -- recording an undeducible runtime or model as unknown, never refusing a park for missing metadata, and reporting registered_at_park with the new wb_session_id; --wb-session-id targets an already-registered session and creates none.",
                 "Scans the continuation against gitleaks-derived named secret patterns before storing anything; a match refuses fail-closed with the rule ID, location, and a redacted fingerprint, never the matched value, unless acknowledged one finding at a time via --override-secret.",
                 "Preflights and captures every currently owned member in deterministic order through the hardened Git, remote, Work Log, and owner-evidence snapshot before storing one immutable checkpoint.",
                 "Prompts the agent on stderr for the judgment WB cannot observe -- uncommitted rationale, proven ordering constraints, human-blocked decisions, dispatched lanes, and corrections -- both when the continuation is missing and after the checkpoint seals; stdout stays the machine-readable record."
@@ -5428,7 +5433,10 @@
                 "--context-file",
                 "bounded agent-authored continuation file",
                 "--format",
-                "--override-secret"
+                "--override-secret",
+                "Registration is not a precondition",
+                "--wb-session-id",
+                "registered_at_park"
               ]
             }
           ],
@@ -5439,7 +5447,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Park and resume a registered session",
+              "marker": "## Park and resume an agent session",
               "examples": [
                 "wb session park --context-file <file>"
               ]
@@ -5500,6 +5508,26 @@
             {
               "path": "internal/secretscan/scan_test.go",
               "name": "TestNeverEchoesMatchedSecret",
+              "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkRegistersAnUnregisteredSessionBeforeParking",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/session_park_test.go",
+              "name": "TestSessionParkTargetsAnExplicitWBSessionIDWithoutRegistering",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/session/autoregister_test.go",
+              "name": "TestResolveOrRegisterRegistersAnUnregisteredProcessWithInferredIdentity",
+              "kind": "unit"
+            },
+            {
+              "path": "internal/session/autoregister_test.go",
+              "name": "TestInferRecordPrefersDeclarationsThenEnvironmentThenUnknown",
               "kind": "unit"
             }
           ],
@@ -6019,7 +6047,7 @@
           "skills": [
             {
               "path": "ai/skills/wb-worktrees/references/ownership.md",
-              "marker": "## Park and resume a registered session",
+              "marker": "## Park and resume an agent session",
               "examples": [
                 "wb session resume <parked-session-id>"
               ]
