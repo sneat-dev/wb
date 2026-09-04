@@ -60,11 +60,22 @@ func removeEmptyTaskDirectory(task *cleanupTaskHandle) bool {
 // that would have selected them are long gone. Discovery is read-only and
 // happens before any apply, so a namespace a concurrent `wb worktree create`
 // makes after this scan can never appear in the list an apply acts on.
-func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter string) ([]LifecycleArtifact, error) {
+func emptyTaskNamespaces(layouts []wbhome.Layout, tasks map[string]bool, filter string, homes ...string) ([]LifecycleArtifact, error) {
+	logicalRoot := ""
+	if len(homes) > 0 && homes[0] != "" {
+		logicalRoot = filepath.Join(filepath.Clean(homes[0]), "worktrees")
+	}
 	artifacts := make([]LifecycleArtifact, 0)
 	seen := make(map[string]bool, len(layouts))
 	for _, layout := range layouts {
 		root := filepath.Clean(layout.WorktreesRoot)
+		// New local and relocated shared placements use this directory only for
+		// logical locks/claims. Its empty task shell is not proof that every
+		// physical member is terminal, so only a transaction that inspected the
+		// physical members may retire it.
+		if logicalRoot != "" && root == logicalRoot {
+			continue
+		}
 		if seen[root] {
 			continue
 		}

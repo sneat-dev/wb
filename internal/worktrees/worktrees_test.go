@@ -2417,6 +2417,35 @@ func configureGitUser(t *testing.T, dir string) {
 	gitTest(t, dir, "config", "user.email", "wb@example.test")
 }
 
+func TestCreateResumeRecoversTaskBoundLocalStage(t *testing.T) {
+	fixture := newGitFixture(t)
+	root := filepath.Join(fixture.canonical, ".worktrees")
+	stage := filepath.Join(root, taskBoundLocalStagePrefix("crash-local")+"fixture")
+	checkout := filepath.Join(stage, "checkout")
+	if err := os.MkdirAll(stage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// This is the process-crash boundary: Git registered the staged checkout,
+	// but WB never reached descriptor publication or Work Log binding.
+	gitTest(t, fixture.canonical, "worktree", "add", "-b", "crash-local", checkout, "main")
+	resumed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "crash-local", Resume: true, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil || len(resumed) != 1 || resumed[0].Action != "recovered" {
+		t.Fatalf("recover staged local create = %#v, err=%v", resumed, err)
+	}
+	final := filepath.Join(root, "crash-local")
+	if resumed[0].WorktreeDir != final {
+		t.Fatalf("recovered path = %s, want %s", resumed[0].WorktreeDir, final)
+	}
+	if _, err := os.Stat(checkout); !os.IsNotExist(err) {
+		t.Fatalf("staged checkout remains after recovery: %v", err)
+	}
+	if _, err := Guard(context.Background(), final, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
+		t.Fatalf("guard recovered local stage: %v", err)
+	}
+}
+
 func gitTest(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", dir}, args...)...)

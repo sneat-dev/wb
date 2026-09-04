@@ -295,7 +295,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		return results, nil
 	}
 	lockRoot := lifecycleTaskLockRoot(resolution.Write.Home, abortResultLayout(resolution, results[0].ListResult))
-	taskHandle, err := acquireCleanupTaskAt(lockRoot, results[0].Task)
+	taskHandle, err := acquireCleanupTaskAtOrCreate(lockRoot, results[0].Task)
 	if err != nil {
 		return results, err
 	}
