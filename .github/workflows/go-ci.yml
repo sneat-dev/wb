@@ -67,12 +67,14 @@ jobs:
           install-mode: goinstall
 
   coverage:
-    name: Sharded coverage
+    name: Tests and coverage (8 shards)
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
     # integration suite grows.
-    timeout-minutes: 8
+    # The inner command bounds test execution at 7m30s. Keep setup and failure
+    # diagnostic upload outside that budget so a timeout still leaves evidence.
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -136,13 +138,13 @@ jobs:
           ./internal/fleetsync/...
 
   test:
-    name: Build, vet, test
+    name: Required Go checks
     if: ${{ always() }}
     needs: [static, lint, coverage, race]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
-      - name: Require every parallel Go gate
+      - name: Require every parallel Go check
         env:
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -150,9 +152,11 @@ jobs:
           RACE_RESULT: ${{ needs.race.result }}
         run: |
           set -eu
-          for result in "$STATIC_RESULT" "$LINT_RESULT" "$COVERAGE_RESULT" "$RACE_RESULT"; do
+          for check in "static:$STATIC_RESULT" "lint:$LINT_RESULT" "coverage:$COVERAGE_RESULT" "race:$RACE_RESULT"; do
+            name=${check%%:*}
+            result=${check#*:}
             if [ "$result" != "success" ]; then
-              echo "A required parallel Go gate concluded: $result" >&2
+              echo "Required Go check '$name' concluded: $result" >&2
               exit 1
             fi
           done
