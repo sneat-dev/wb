@@ -200,6 +200,11 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if err != nil {
 		return failResult(result, err)
 	}
+	canonical, err = filepath.EvalSymlinks(canonical)
+	if err != nil {
+		return failResult(result, fmt.Errorf("resolve canonical repository path: %w", err))
+	}
+	result.CanonicalDir = canonical
 	result.Ref = resolvedBase.Ref
 	base := "origin/" + resolvedBase.Ref
 	phase("inspect")
@@ -227,16 +232,22 @@ func processRepository[T any](ctx context.Context, repository Repository, handle
 	if err != nil {
 		return failResult(result, err)
 	}
-	worktree := filepath.Join(home, "worktrees", options.Operation, owner, name)
+	worktree, placement, baseSHA, registeredResume, err := operationWorktreePath(ctx, canonical, repository.Slug, options, resolvedBase)
+	if err != nil {
+		return failResult(result, err)
+	}
 	result.WorktreeDir = worktree
 	result.Branch = options.Branch
 	phase("prepare_worktree")
-	if err := prepareWorktree(ctx, canonical, worktree, options.Branch, base, options); err != nil {
+	created, err := prepareWorktree(ctx, canonical, repository.Slug, worktree, placement, baseSHA, registeredResume, options.Branch, base, options)
+	if err != nil {
 		return failResult(result, err)
 	}
 	if err := recordWorktreeManifest(ctx, home, canonical, worktree, repository, resolvedBase, options); err != nil {
+		created.Close()
 		return failResult(result, err)
 	}
+	created.Close()
 	phase("apply")
 	metadata, err := handler.Apply(ctx, worktree, repository)
 	result.Metadata = metadata
@@ -473,34 +484,75 @@ func parseLsRemoteSymref(output string) (string, error) {
 	return "", fmt.Errorf("origin HEAD symref not found in ls-remote output")
 }
 
-func prepareWorktree(ctx context.Context, canonical, worktree, branch, base string, options Options) error {
+func operationWorktreePath(ctx context.Context, canonical, repository string, options Options, resolvedBase ResolvedBase) (string, worktrees.WorktreePlacement, string, bool, error) {
+	if options.Resume {
+		registered, err := registeredWorktreeForBranch(ctx, canonical, options.Branch, options)
+		if err != nil {
+			return "", worktrees.WorktreePlacement{}, "", false, err
+		}
+		if registered != "" {
+			return registered, worktrees.WorktreePlacement{}, "", true, nil
+		}
+	}
+	baseSHA, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "rev-parse", "--verify", "origin/"+resolvedBase.Ref+"^{commit}")
+	if err != nil {
+		return "", worktrees.WorktreePlacement{}, "", false, err
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	placement, err := worktrees.ResolveWorktreePlacement(ctx, canonical, baseSHA)
+	if err != nil {
+		return "", worktrees.WorktreePlacement{}, "", false, err
+	}
+	worktree, err := placement.Path(options.Operation, repository)
+	if err != nil {
+		return "", worktrees.WorktreePlacement{}, "", false, err
+	}
+	return worktree, placement, baseSHA, false, nil
+}
+
+func registeredWorktreeForBranch(ctx context.Context, canonical, branch string, options Options) (string, error) {
+	output, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	var path string
+	for _, line := range strings.Split(output, "\n") {
+		if candidate, ok := strings.CutPrefix(line, "worktree "); ok {
+			path = candidate
+			continue
+		}
+		if line == "branch refs/heads/"+branch {
+			return filepath.Clean(path), nil
+		}
+	}
+	return "", nil
+}
+
+func prepareWorktree(ctx context.Context, canonical, repository, worktree string, placement worktrees.WorktreePlacement, baseSHA string, registeredResume bool, branch, base string, options Options) (*worktrees.PlacementWorktree, error) {
 	if _, err := os.Stat(worktree); err == nil {
 		if !options.Resume {
-			return fmt.Errorf("operation worktree already exists: %s (use --resume or choose a different operation)", worktree)
+			return nil, fmt.Errorf("operation worktree already exists: %s (use --resume or choose a different operation)", worktree)
 		}
 		current, _, err := runCommand(ctx, options.Timeout, options.Retry, worktree, "git", "branch", "--show-current")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if strings.TrimSpace(current) != branch {
-			return fmt.Errorf("cannot resume worktree branch %q; want %q", strings.TrimSpace(current), branch)
+			return nil, fmt.Errorf("cannot resume worktree branch %q; want %q", strings.TrimSpace(current), branch)
 		}
-		return nil
+		return nil, nil
 	} else if !os.IsNotExist(err) {
-		return err
+		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
-		return err
+	if registeredResume {
+		return nil, fmt.Errorf("registered resume worktree disappeared: %s", worktree)
 	}
 	if _, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
 		if !options.Resume {
-			return fmt.Errorf("operation branch already exists: %s (use --resume)", branch)
+			return nil, fmt.Errorf("operation branch already exists: %s (use --resume)", branch)
 		}
-		_, _, err = runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "worktree", "add", "--quiet", worktree, branch)
-		return err
 	}
-	_, _, err := runCommand(ctx, options.Timeout, options.Retry, canonical, "git", "worktree", "add", "--quiet", "-b", branch, worktree, base)
-	return err
+	return worktrees.CreateWorktreeAtPlacement(ctx, canonical, placement, options.Operation, repository, branch, strings.TrimPrefix(base, "origin/"), baseSHA)
 }
 
 // recordWorktreeManifest gives every worktree this engine creates the WB

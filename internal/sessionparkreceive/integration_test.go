@@ -86,7 +86,7 @@ func TestReceiveTwoMemberBundleUsesRealGitAndWorkLogBarrier(t *testing.T) {
 				return sessionlaunch.Result{}, err
 			}
 			for _, member := range request.Members {
-				path := sessionMemberPath(t, home, request.ResumeID+"-"+member.MemberID, member.Repository)
+				path := sessionMemberPath(t, projectsRoot, request.ResumeID+"-"+member.MemberID, member.Repository)
 				assertPreparedParkedMember(t, projectsRoot, path, request, member, record)
 			}
 			barrierChecked = true
@@ -208,13 +208,17 @@ func gitRefExists(directory, reference string) bool {
 	return command.Run() == nil
 }
 
-func sessionMemberPath(t *testing.T, home, resumeID, repository string) string {
+func sessionMemberPath(t *testing.T, projectsRoot, resumeID, repository string) string {
 	t.Helper()
 	owner, name, found := strings.Cut(repository, "/")
 	if !found {
 		t.Fatalf("repository = %q", repository)
 	}
-	return filepath.Join(home, "worktrees", "session-"+resumeID, owner, name)
+	canonical, err := filepath.EvalSymlinks(filepath.Join(projectsRoot, owner, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(canonical, ".worktrees", "session-"+resumeID)
 }
 
 func assertPreparedParkedMember(t *testing.T, projectsRoot, path string, request sessionpark.RemoteRequest, member sessionpark.RemoteMember, record session.Record) {
