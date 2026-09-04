@@ -175,6 +175,9 @@ func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
 	if _, err := store.Create(Stream{Name: "healthy", Phase: PhaseOpen}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.EventLog(reservedFleetMetadataDirectory).Append(Event{Verb: "pr land", Outcome: "findings"}); err != nil {
+		t.Fatalf("append fleet event: %v", err)
+	}
 	if err := os.MkdirAll(store.Dir("broken"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +192,6 @@ func TestRepositoryStreamSurfacesUnreadableRecords(t *testing.T) {
 		t.Fatal("no readable stream holds acme/app")
 	}
 	if len(unreadable) != 1 || unreadable[0].Name != "broken" {
-		t.Fatalf("unreadable = %#v, want the truncated record surfaced to the caller", unreadable)
+		t.Fatalf("unreadable = %#v, want only the truncated stream record surfaced to the caller", unreadable)
 	}
 }

@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/strongo/selfupdate"
-	"github.com/strongo/selfupdate/cobracmd"
+	"github.com/strongo/cli-helpers/selfupdate"
+	"github.com/strongo/cli-helpers/selfupdate/cobracmd"
 )
 
-// wb binds the shared github.com/strongo/selfupdate library rather than
+// wb binds the shared github.com/strongo/cli-helpers/selfupdate library rather than
 // reimplementing any of it: install-method detection, release resolution,
 // checksum verification, atomic replacement, and every failure rule are
 // that library's Feature, not wb's. This file supplies only what is
@@ -105,7 +105,10 @@ func newSelfUpdateConfig() selfupdate.Config {
 // function's only job is to describe wb to that library and to translate
 // its outcomes onto wb's own three-code exit contract, via selfUpdateErrors.
 func newSelfUpdateCmd() *cobra.Command {
-	cfg := newSelfUpdateConfig()
+	return newSelfUpdateCmdWithConfig(newSelfUpdateConfig())
+}
+
+func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
 	command := cobracmd.New(cfg, cobracmd.CommandOptions{
 		Short:      "Update the installed wb binary to the latest release",
 		Aliases:    []string{"update"},
@@ -266,7 +269,7 @@ func syncSkillsAfterSelfUpdate(cmd *cobra.Command, cfg selfupdate.Config) {
 	_, _ = cmd.OutOrStdout().Write(stdout.Bytes())
 }
 
-// selfUpdateErrors maps github.com/strongo/selfupdate's outcomes onto wb's
+// selfUpdateErrors maps the shared selfupdate library's outcomes onto wb's
 // own three documented exit codes (see the const block in main.go). wb does
 // not reserve a fourth code for "update available" the way some other
 // consumers of this library do: that would grow wb's exit contract past the
