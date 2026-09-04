@@ -113,7 +113,9 @@ jobs:
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
     # integration suite grows.
-    timeout-minutes: 8
+    # The inner command bounds test execution at 7m30s. Keep setup and failure
+    # diagnostic upload outside that budget so a timeout still leaves evidence.
+    timeout-minutes: 12
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -128,10 +130,19 @@ jobs:
           --test-shards 8
           --shard-package ./internal/worktrees
           --coverage-profile profile.cov
+          --report-dir coverage-diagnostics
           --minimum=58
           --format json
           --non-interactive
           --timeout 7m30s
+      - name: Upload coverage diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: wb-coverage-diagnostics
+          path: coverage-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload coverage profile
         uses: actions/upload-artifact@v7
         with:
