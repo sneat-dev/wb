@@ -42,7 +42,7 @@ func initGCFixture(t *testing.T) (projectsRoot, home, worktree string) {
 	if created.exitCode != exitOK {
 		t.Fatalf("create exit = %d stderr=%s stdout=%s", created.exitCode, created.stderr, created.stdout)
 	}
-	worktree = filepath.Join(home, "worktrees", "gc-cli", "acme", "app")
+	worktree = filepath.Join(canonical, ".worktrees", "gc-cli")
 	if err := os.WriteFile(filepath.Join(worktree, "wip.txt"), []byte("in progress\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -76,11 +76,11 @@ func installGCFakeGh(t *testing.T) {
 
 func TestWorktreeGCCLIPlansAndRefuses(t *testing.T) {
 	// Not t.Parallel(): t.Setenv for PATH and WB_HOME forbids it.
-	projectsRoot, home, worktree := initGCFixture(t)
+	projectsRoot, _, worktree := initGCFixture(t)
 
 	// A stale terminal artefact under the task must be purged on the read path
 	// itself, silently, and counted in the footer.
-	stage := filepath.Join(home, "worktrees", "gc-cli", ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	stage := filepath.Join(projectsRoot, "acme", "app", ".worktrees", ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.Mkdir(stage, 0o700); err != nil {
 		t.Fatal(err)
 	}
