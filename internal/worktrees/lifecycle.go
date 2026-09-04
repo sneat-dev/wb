@@ -2525,6 +2525,12 @@ func cleanupTaskSelections(outcome CleanupOutcome, home string) []cleanupTaskSel
 		byKey[key] = cleanupTaskSelection{WorktreesRoot: root, Task: result.Task}
 	}
 	for _, artifact := range outcome.Artifacts {
+		// An unscoped local stage is intentionally fail-closed inventory, not a
+		// task transaction. It has no lock namespace to acquire and must never
+		// synthesize an empty-task cleanup apply entry.
+		if artifact.Task == "" {
+			continue
+		}
 		key := cleanupTaskKey(artifact.WorktreesRoot, artifact.Task)
 		byKey[key] = cleanupTaskSelection{WorktreesRoot: artifact.WorktreesRoot, Task: artifact.Task}
 	}

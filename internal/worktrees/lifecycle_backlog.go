@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"golang.org/x/sys/unix"
 )
 
@@ -351,7 +352,13 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	// and branch head must already be gone or unchanged, and every one of them
 	// is revalidated below before anything is deleted. A live operation in
 	// another process is still refused.
-	task, err := acquireCleanupTaskAtReclaimingInterrupted(record.WorktreesRoot, record.Task, true)
+	layout := wbhome.Layout{
+		WorktreesRoot: record.WorktreesRoot,
+		Local:         record.Local,
+		Legacy:        filepath.Clean(record.WorktreesRoot) == filepath.Join(filepath.Clean(record.ProjectsRoot), ".wb", "worktrees"),
+	}
+	lockRoot := lifecycleTaskLockRoot(home, layout)
+	task, err := acquireCleanupTaskAtReclaimingInterrupted(lockRoot, record.Task, true)
 	if err != nil {
 		lockErr := fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 		if !errors.Is(err, os.ErrNotExist) {
