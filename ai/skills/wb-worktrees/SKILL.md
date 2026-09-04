@@ -24,6 +24,15 @@ path (with `~` expansion, for example `~/.wb/worktrees`) for the shared form
 Existing linked worktrees governed by the same `WB_HOME` remain discoverable
 during migration.
 
+## Validation
+
+During implementation, format changed files and run focused named tests plus
+focused vet or lint for the affected packages. Before a push, run at most one
+warranted full static or test gate. Leave broad race, coverage, and fleet checks
+to CI unless a deliberate final local run is necessary because CI cannot cover
+the risk. When a broad gate finds a failure, rerun that named failure to
+diagnose it; do not repeat the whole gate.
+
 ## Route
 
 - Read [create.md](references/create.md) to start or resume a task.
