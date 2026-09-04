@@ -63,7 +63,7 @@ type WorktreeMergePublishedForwardRepairOptions struct {
 // guessing a branch from mutable filesystem state.
 func (options WorktreeMergePublishedForwardRepairOptions) RepairTask() string {
 	hash := sha256.New()
-	for _, value := range append([]string{strings.TrimSpace(options.ExpectedReceiptSHA256), strings.TrimSpace(options.ExpectedSupersessionSHA256)}, options.ExpectedSourceSHAs...) {
+	for _, value := range append([]string{strings.TrimSpace(options.ExpectedReceiptSHA256), strings.TrimSpace(options.ExpectedSupersessionSHA256), strings.TrimSpace(options.ExpectedCurrentTargetSHA)}, options.ExpectedSourceSHAs...) {
 		_, _ = hash.Write([]byte(value))
 		_, _ = hash.Write([]byte{0})
 	}
