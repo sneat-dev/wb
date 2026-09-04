@@ -63,6 +63,15 @@ is a path prefix.
 A push that mixes a stream branch with the default branch or a tag is still a
 publication push. The stream exemption never lowers the overall decision.
 
+The `go` profile matches on `go.mod` at the repository root. A throwaway
+fixture without one never activates it, so the tier classifier never runs.
+The Go commit hook then runs `gofmt` and `go vet` over the packages that
+commit touches — never `./...`, never `go test`.
+
+Recorded pre-push events carry the pushed **ref** and the classified **tier**.
+`wb hooks measure` keys stream pushes on the ref, falling back to the
+checked-out branch only for events written before those fields existed.
+
 Moving cost to CI obliges WB to bound CI, which is why `wb stream start` checks
 that each member's pull-request workflow carries a `concurrency` group keyed to
 the ref with `cancel-in-progress: true`, and reports every member that does not.
