@@ -211,7 +211,9 @@ jobs:
     concurrency:
       group: wb-release-${{ github.ref }}
       cancel-in-progress: false
-    uses: strongo/cicd/.github/workflows/release.yml@v1.14.14
+    # Resolve smoke-test metadata alongside the artifact build, then verify
+    # published artifacts and Homebrew installs in parallel after promotion.
+    uses: strongo/cicd/.github/workflows/release.yml@93ab2d8c37c5780f5bf0fb37af0e5b360b431154
     permissions:
       contents: write
     with:
