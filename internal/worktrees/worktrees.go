@@ -268,18 +268,19 @@ type managedWorktreeLocation struct {
 }
 
 type createPlan struct {
-	result       CreateResult
-	owner        string
-	repository   string
-	canonical    *canonicalRepository
-	baseRevision string
-	branchExists bool
-	resumed      bool
-	needsWorkLog bool
-	resumeClaim  *workLogClaim
-	placement    worktreePlacement
-	localRoot    string
-	localRootDir *os.File
+	result         CreateResult
+	owner          string
+	repository     string
+	canonical      *canonicalRepository
+	baseRevision   string
+	branchExists   bool
+	resumed        bool
+	needsWorkLog   bool
+	resumeClaim    *workLogClaim
+	placement      worktreePlacement
+	localRoot      string
+	localRootDir   *os.File
+	recoveredStage bool
 }
 
 type createdWorktreePublication struct {
@@ -702,7 +703,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if plan.branchExists {
 			if occupied, path, branchErr := branchWorktreeCanonical(ctx, plan.canonical, branch); branchErr != nil {
 				return nil, branchErr
-			} else if occupied {
+			} else if occupied && !(normalized.Resume && plan.placement.Local && isTaskBoundLocalStageCheckout(path, normalized.Operation)) {
 				return nil, fmt.Errorf("branch %q is already checked out at %s", branch, path)
 			}
 		}
@@ -739,6 +740,20 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if sharedOperation != nil && sharedOperation != &operation {
 		defer sharedOperation.close()
 	}
+	for index := range plans {
+		plan := &plans[index]
+		if !normalized.Resume || plan.resumed || !plan.placement.Local {
+			continue
+		}
+		recovered, recoverErr := recoverTaskBoundLocalStage(ctx, plan.canonical, plan.localRoot, normalized.Operation, plan.result.Branch)
+		if recoverErr != nil {
+			return nil, recoverErr
+		}
+		if recovered {
+			plan.recoveredStage = true
+			plan.result.Action = "recovered"
+		}
+	}
 
 	attempts := make([]createAttempt, 0, len(plans))
 	defer func() {
@@ -752,7 +767,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			continue
 		}
 		var publication *createdWorktreePublication
-		if !plan.resumed {
+		if !plan.resumed && !plan.recoveredStage {
 			physicalOperation := operation
 			owner, repository := plan.owner, plan.repository
 			if plan.placement.Local {
@@ -2301,6 +2316,9 @@ func addWorktreeAtSecureDestination(
 		return err
 	}
 	stageName, err := makeSecureStageDirectory(operationDirectory)
+	if owner == "" {
+		stageName, err = makeTaskBoundLocalStageDirectory(operationDirectory, repository)
+	}
 	if err != nil {
 		return fmt.Errorf("create secure worktree staging directory: %w", err)
 	}
@@ -2923,6 +2941,70 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("create collision-free secure staging directory")
+}
+
+func taskBoundLocalStagePrefix(task string) string { return ".wb-stage-task-" + task + "-" }
+
+func isTaskBoundLocalStageCheckout(path, task string) bool {
+	return strings.HasPrefix(filepath.Base(filepath.Dir(path)), taskBoundLocalStagePrefix(task)) && filepath.Base(path) == "checkout"
+}
+
+func makeTaskBoundLocalStageDirectory(parent *os.File, task string) (string, error) {
+	if !validSafeSegment(task) {
+		return "", fmt.Errorf("invalid local stage task %q", task)
+	}
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return "", err
+		}
+		name := taskBoundLocalStagePrefix(task) + fmt.Sprintf("%x", token[:])
+		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
+			return name, nil
+		} else if !errors.Is(err, unix.EEXIST) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("create collision-free task-bound local stage")
+}
+
+// recoverTaskBoundLocalStage publishes only the exact stage left by this task.
+// Git registration and branch identity corroborate the stage before its
+// descriptor-relative move; an ambiguous or substituted stage is preserved.
+func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalRepository, root, task, branch string) (bool, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false, err
+	}
+	var checkout string
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), taskBoundLocalStagePrefix(task)) {
+			continue
+		}
+		candidate := filepath.Join(root, entry.Name(), "checkout")
+		registered, regErr := registeredBranchNameCanonical(ctx, canonical, candidate)
+		if regErr != nil || registered != branch {
+			continue
+		}
+		if checkout != "" {
+			return false, fmt.Errorf("multiple task-bound local stages require explicit recovery for task %q", task)
+		}
+		checkout = candidate
+	}
+	if checkout == "" {
+		return false, nil
+	}
+	final := filepath.Join(root, task)
+	if exists, err := directoryExistsNoFollow(final); err != nil || exists {
+		if err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("local recovery destination already exists: %s", final)
+	}
+	if _, err := moveWorktree(ctx, canonical.path, root, checkout, final, worktreeMoveHooks{}); err != nil {
+		return false, fmt.Errorf("recover task-bound local stage: %w", err)
+	}
+	return true, nil
 }
 
 func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err error) {
