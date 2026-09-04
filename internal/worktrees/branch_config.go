@@ -80,6 +80,29 @@ func ResolveWorktreePlacement(ctx context.Context, canonicalPath, baseRevision s
 	return WorktreePlacement{Root: placement.Root, RepositoryLocal: placement.Local}, nil
 }
 
+// ResolveUserWorktreePlacement resolves only the machine-local placement
+// setting. It performs no Git reads, so callers that merely display a planned
+// path do not fetch or treat a mutable checkout as repository policy.
+// Mutating lifecycle operations must use ResolveWorktreePlacement instead.
+func ResolveUserWorktreePlacement(canonicalPath string) (WorktreePlacement, error) {
+	if !filepath.IsAbs(canonicalPath) {
+		return WorktreePlacement{}, fmt.Errorf("canonical repository path must be absolute: %s", canonicalPath)
+	}
+	canonicalPath = filepath.Clean(canonicalPath)
+	global, found, globalPath, err := configuredUserWorktreesConfig()
+	if err != nil {
+		return WorktreePlacement{}, err
+	}
+	if found && global.Worktrees.Root != nil {
+		root, resolveErr := resolveSharedWorktreesRoot(*global.Worktrees.Root)
+		if resolveErr != nil {
+			return WorktreePlacement{}, fmt.Errorf("worktrees config %s root: %w", globalPath, resolveErr)
+		}
+		return WorktreePlacement{Root: root}, nil
+	}
+	return WorktreePlacement{Root: filepath.Join(canonicalPath, ".worktrees"), RepositoryLocal: true}, nil
+}
+
 // branchNamingOptions carries only precedence inputs. Agent provenance is
 // deliberately absent: Work Logs, not branch spelling, own that data.
 type branchNamingOptions struct {
@@ -174,10 +197,6 @@ func configuredWorktreePlacement(ctx context.Context, canonical *canonicalReposi
 	if canonical == nil || !isGitObjectID(baseRevision) {
 		return worktreePlacement{}, fmt.Errorf("worktree placement requires a fetched canonical target-base revision")
 	}
-	global, globalFound, globalPath, err := configuredUserWorktreesConfig()
-	if err != nil {
-		return worktreePlacement{}, err
-	}
 	contents, found, err := repositoryBranchConfigAt(ctx, canonical, baseRevision)
 	if err != nil {
 		return worktreePlacement{}, err
@@ -191,14 +210,11 @@ func configuredWorktreePlacement(ctx context.Context, canonical *canonicalReposi
 			return worktreePlacement{}, fmt.Errorf("repository worktrees policy at %s must not set worktrees.root; placement is a user-local setting", baseRevision)
 		}
 	}
-	if globalFound && global.Worktrees.Root != nil {
-		root, resolveErr := resolveSharedWorktreesRoot(*global.Worktrees.Root)
-		if resolveErr != nil {
-			return worktreePlacement{}, fmt.Errorf("worktrees config %s root: %w", globalPath, resolveErr)
-		}
-		return worktreePlacement{Root: root}, nil
+	placement, err := ResolveUserWorktreePlacement(canonical.path)
+	if err != nil {
+		return worktreePlacement{}, err
 	}
-	return worktreePlacement{Root: filepath.Join(canonical.path, ".worktrees"), Local: true}, nil
+	return worktreePlacement{Root: placement.Root, Local: placement.RepositoryLocal}, nil
 }
 
 func configuredUserWorktreesConfig() (branchConfigFile, bool, string, error) {

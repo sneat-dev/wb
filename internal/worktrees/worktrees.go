@@ -431,10 +431,11 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err := requireGitFilesystemCapability(); err != nil {
 		return nil, err
 	}
-	home, err := wbhome.Root(normalized.ProjectsRoot)
+	resolution, err := wbhome.Resolve(normalized.ProjectsRoot)
 	if err != nil {
 		return nil, err
 	}
+	home := resolution.Write.Home
 	userConfig, userConfigFound, userConfigPath, err := configuredUserWorktreesConfig()
 	if err != nil {
 		return nil, err
@@ -540,6 +541,16 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		worktree := filepath.Join(canonical, ".worktrees", normalized.Operation)
 		if sharedRoot != "" {
 			worktree = filepath.Join(sharedRoot, normalized.Operation, owner, name)
+		}
+		if normalized.Resume {
+			resumedPath, resumeErr := locateResumableWorktree(ctx, canonicalHandle, home, normalized.Operation, repository, worktree)
+			if resumeErr != nil {
+				canonicalHandle.close()
+				return nil, resumeErr
+			}
+			if resumedPath != "" {
+				worktree = resumedPath
+			}
 		}
 		exists, existsErr := directoryExistsNoFollow(worktree)
 		if existsErr != nil {
@@ -1002,6 +1013,54 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 		result.Publication = inspectPublication(ctx, root, branch)
 	}
 	return result, nil
+}
+
+// locateResumableWorktree reads the canonical Git registration rather than
+// today's placement policy. A user may switch between local and any explicit
+// shared root while a task is active; its active WB_HOME claim remains the
+// durable authority for resume.
+func locateResumableWorktree(ctx context.Context, canonical *canonicalRepository, home, task, repository, predicted string) (string, error) {
+	registered, err := gitCanonical(ctx, canonical, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("list registered worktrees for resume: %w", err)
+	}
+	candidates := map[string]bool{filepath.Clean(predicted): true}
+	for _, line := range strings.Split(registered, "\n") {
+		path, found := strings.CutPrefix(line, "worktree ")
+		if !found || !filepath.IsAbs(path) || filepath.Clean(path) == canonical.path {
+			continue
+		}
+		candidates[filepath.Clean(path)] = true
+	}
+	matched := ""
+	for path := range candidates {
+		exists, existsErr := directoryExistsNoFollow(path)
+		if existsErr != nil {
+			return "", existsErr
+		}
+		if !exists {
+			continue
+		}
+		claim, _, _, claimErr := activeWorkLogClaim(home, path)
+		if claimErr == nil {
+			if claim.Task != task || claim.Repository != repository {
+				continue
+			}
+			if matched != "" && matched != path {
+				return "", fmt.Errorf("cannot resume task %q in %s: active work-log claims select more than one worktree (%s and %s)", task, repository, matched, path)
+			}
+			matched = path
+			continue
+		}
+		if errors.Is(claimErr, errWorkLogProjectionNotFound) && path == filepath.Clean(predicted) {
+			matched = path // legacy checkout under the predicted historical path.
+			continue
+		}
+		if !errors.Is(claimErr, errWorkLogProjectionNotFound) {
+			return "", fmt.Errorf("read active work-log claim for registered worktree %s: %w", path, claimErr)
+		}
+	}
+	return matched, nil
 }
 
 // locateCanonicalLocalWorktree recognizes the default one-repository layout
