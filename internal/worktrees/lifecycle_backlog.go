@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/wbhome"
 	"golang.org/x/sys/unix"
 )
 
@@ -49,6 +50,7 @@ type lifecycleBacklogRecord struct {
 	// ListResult.External. It changes only which shape
 	// validateLifecycleBacklog accepts for WorktreeDir.
 	External bool `json:"external,omitempty"`
+	Local    bool `json:"local,omitempty"`
 	// Detached marks a record for a checkout with no branch of its own — the
 	// shape every pull-request review creates. It changes only which branch
 	// operations the record owes: a detached checkout has no ref to retire, so
@@ -82,7 +84,7 @@ func newLifecycleBacklogRecord(projectsRoot string, result ListResult, dispositi
 		Task: result.Task, Repository: result.Repository, ProjectsRoot: filepath.Clean(projectsRoot),
 		CanonicalDir: result.CanonicalDir, WorktreesRoot: result.WorktreesRoot, WorktreeDir: result.WorktreeDir,
 		Branch: result.Branch, Base: result.Base, HeadSHA: result.HeadSHA, RemoteHeadSHA: result.RemoteHeadSHA,
-		External: result.External, Detached: result.Detached,
+		External: result.External, Local: result.Local, Detached: result.Detached,
 		Disposition: disposition, Stage: lifecycleStageSealed, CreatedAt: now, UpdatedAt: now,
 	}
 }
@@ -149,7 +151,12 @@ func validateLifecycleBacklog(record lifecycleBacklogRecord) error {
 	if filepath.Clean(record.CanonicalDir) != filepath.Join(filepath.Clean(record.ProjectsRoot), owner, repository) {
 		return fmt.Errorf("lifecycle backlog canonical path does not match repository")
 	}
-	if record.External {
+	if record.Local {
+		if filepath.Clean(record.WorktreesRoot) != filepath.Join(filepath.Clean(record.CanonicalDir), ".worktrees") ||
+			filepath.Clean(record.WorktreeDir) != filepath.Join(filepath.Clean(record.WorktreesRoot), record.Task) {
+			return fmt.Errorf("lifecycle backlog local worktree path does not match canonical layout")
+		}
+	} else if record.External {
 		// An adopted worktree was never relocated under WorktreesRoot — see
 		// ListResult.External — so it has no <task>/<owner>/<repository>
 		// shape to check here. The one thing recovery can and must still
@@ -252,10 +259,12 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("read lifecycle cleanup backlog: %w", err)
 	}
-	allowedRoots := make(map[string]bool, len(worktreesRoots))
-	for _, root := range worktreesRoots {
-		allowedRoots[filepath.Clean(root)] = true
-	}
+	// A checked-out task can disappear before a user changes the configured
+	// shared root. The immutable WB_HOME backlog is then the only authority
+	// left for its former physical root. Keep the argument for call-site
+	// compatibility, but never make current placement policy a prerequisite
+	// for validating that durable record.
+	_ = worktreesRoots
 	var records []lifecycleBacklogRecord
 	var quarantined []LifecycleBacklogQuarantine
 	for _, entry := range entries {
@@ -282,7 +291,7 @@ func loadResumableLifecycleBacklog(ctx context.Context, home, projectsRoot strin
 		// this run's projects root, worktrees root, disposition, task and
 		// repository, and is not already finished.
 		if entry.Name() != record.ID+".json" || record.Stage == lifecycleStageComplete || record.Disposition != disposition ||
-			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) || !allowedRoots[filepath.Clean(record.WorktreesRoot)] {
+			filepath.Clean(record.ProjectsRoot) != filepath.Clean(projectsRoot) {
 			continue
 		}
 		if !taskSelectionMatches(tasks, record.Task) || !filterMatches(filter, record.Repository) {
@@ -345,7 +354,13 @@ func resumeLifecycleBacklog(ctx context.Context, home string, record *lifecycleB
 	// and branch head must already be gone or unchanged, and every one of them
 	// is revalidated below before anything is deleted. A live operation in
 	// another process is still refused.
-	task, err := acquireCleanupTaskAtReclaimingInterrupted(record.WorktreesRoot, record.Task, true)
+	layout := wbhome.Layout{
+		WorktreesRoot: record.WorktreesRoot,
+		Local:         record.Local,
+		Legacy:        filepath.Clean(record.WorktreesRoot) == filepath.Join(filepath.Clean(record.ProjectsRoot), ".wb", "worktrees"),
+	}
+	lockRoot := lifecycleTaskLockRoot(home, layout)
+	task, err := acquireCleanupTaskAtReclaimingInterrupted(lockRoot, record.Task, true)
 	if err != nil {
 		lockErr := fmt.Errorf("lock lifecycle backlog task %s: %w", record.Task, err)
 		if !errors.Is(err, os.ErrNotExist) {

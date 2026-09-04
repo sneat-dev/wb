@@ -3,6 +3,7 @@ package worktrees
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/sneat-dev/wb/internal/wbhome"
@@ -63,6 +64,20 @@ type AbortOptions struct {
 	// beforeOrphanSeal is a test-only race seam after the read-only plan and
 	// claim lock acquisition but before every absence predicate is reread.
 	beforeOrphanSeal func()
+}
+
+// abortResultLayout restores the provenance needed to choose the one logical
+// task lock. ListResult carries the physical root for deletion, while
+// wbhome.Resolution knows whether that root is the historic readable layout
+// or a relocated user placement coordinated from WB_HOME.
+func abortResultLayout(resolution wbhome.Resolution, result ListResult) wbhome.Layout {
+	for _, layout := range resolution.Read {
+		if filepath.Clean(layout.WorktreesRoot) == filepath.Clean(result.WorktreesRoot) {
+			layout.Local = layout.Local || result.Local
+			return layout
+		}
+	}
+	return wbhome.Layout{WorktreesRoot: result.WorktreesRoot, Local: result.Local}
 }
 
 type AbortResult struct {
@@ -146,6 +161,21 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 	if options.Disposition == AbortDiscarded {
 		recognizedWorktreesRoots := make([]string, 0, len(resolution.Read))
 		for _, layout := range resolution.Read {
+			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
+		}
+		// A removed local checkout leaves its canonical .worktrees parent in
+		// place, while the durable backlog is still authoritative for retiring
+		// the exact branch. Include those physical roots even though no live
+		// task remains for List to discover.
+		localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot)
+		for _, layout := range localLayouts {
+			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
+		}
+		configuredLayouts, configErr := appendConfiguredSharedWorktreesLayout(nil)
+		if configErr != nil {
+			return nil, configErr
+		}
+		for _, layout := range configuredLayouts {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}
 		var quarantined []LifecycleBacklogQuarantine
@@ -264,7 +294,8 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		// mutates nothing.
 		return results, nil
 	}
-	taskHandle, err := acquireCleanupTaskAt(results[0].WorktreesRoot, results[0].Task)
+	lockRoot := lifecycleTaskLockRoot(resolution.Write.Home, abortResultLayout(resolution, results[0].ListResult))
+	taskHandle, err := acquireCleanupTaskAtOrCreate(lockRoot, results[0].Task)
 	if err != nil {
 		return results, err
 	}
@@ -325,7 +356,7 @@ func preflightAbortRepository(
 		ctx,
 		projectsRoot,
 		home,
-		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
+		wbhome.Layout{WorktreesRoot: result.WorktreesRoot, Local: result.Local},
 		result.Task,
 		result.WorktreeDir,
 		result.Base,
@@ -406,7 +437,7 @@ func applyDiscardedAbort(
 		ctx,
 		projectsRoot,
 		home,
-		wbhome.Layout{WorktreesRoot: result.WorktreesRoot},
+		wbhome.Layout{WorktreesRoot: result.WorktreesRoot, Local: result.Local},
 		result.Task,
 		result.WorktreeDir,
 		result.Base,

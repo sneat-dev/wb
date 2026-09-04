@@ -6,6 +6,7 @@ package worktrees
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/checkoutmarker"
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"golang.org/x/sys/unix"
@@ -36,6 +38,11 @@ const SecureStageGitHelperArgument = "--wb-internal-stage-git"
 // that validates retained canonical root and Git-directory descriptors before
 // executing a canonical-clone Git operation.
 const SecureCanonicalGitHelperArgument = "--wb-internal-canonical-git"
+
+// SecureCanonicalPolicyGitHelperArgument is the read-only counterpart used by
+// placement policy lookup. It has a package-level dispatcher so importing Go
+// packages do not need to duplicate WB's private helper TestMain plumbing.
+const SecureCanonicalPolicyGitHelperArgument = "--wb-internal-canonical-policy-git"
 
 // SecureStageCanonicalGitHelperArgument selects the private WB child-process
 // path that combines an inherited private stage with an inherited canonical
@@ -267,15 +274,19 @@ type managedWorktreeLocation struct {
 }
 
 type createPlan struct {
-	result       CreateResult
-	owner        string
-	repository   string
-	canonical    *canonicalRepository
-	baseRevision string
-	branchExists bool
-	resumed      bool
-	needsWorkLog bool
-	resumeClaim  *workLogClaim
+	result         CreateResult
+	owner          string
+	repository     string
+	canonical      *canonicalRepository
+	baseRevision   string
+	branchExists   bool
+	resumed        bool
+	needsWorkLog   bool
+	resumeClaim    *workLogClaim
+	placement      worktreePlacement
+	localRoot      string
+	localRootDir   *os.File
+	recoveredStage bool
 }
 
 type createdWorktreePublication struct {
@@ -291,6 +302,7 @@ type createdWorktreePublication struct {
 
 type createAttempt struct {
 	plan        *createPlan
+	operation   preparedOperationRoot
 	publication *createdWorktreePublication
 	workLog     WorkLogPublicationOutcome
 }
@@ -427,9 +439,21 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 	if err := requireGitFilesystemCapability(); err != nil {
 		return nil, err
 	}
-	home, err := wbhome.Root(normalized.ProjectsRoot)
+	resolution, err := wbhome.Resolve(normalized.ProjectsRoot)
 	if err != nil {
 		return nil, err
+	}
+	home := resolution.Write.Home
+	userConfig, userConfigFound, userConfigPath, err := configuredUserWorktreesConfig()
+	if err != nil {
+		return nil, err
+	}
+	sharedRoot := ""
+	if userConfigFound && userConfig.Worktrees.Root != nil {
+		sharedRoot, err = resolveSharedWorktreesRoot(*userConfig.Worktrees.Root)
+		if err != nil {
+			return nil, fmt.Errorf("worktrees config %s root: %w", userConfigPath, err)
+		}
 	}
 	workLogPrepared := false
 	// prepareWorkLogOptions only validates and snapshots the caller's exact
@@ -522,10 +546,26 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			return nil, err
 		}
 		canonicalHandle.afterValidation = normalized.afterCanonicalGitAuthorization
-		worktree, exists, err := prepareWorktreeDestination(operation.Path, operation.Directory, owner, name)
-		if err != nil {
+		worktree := filepath.Join(canonical, ".worktrees", normalized.Operation)
+		if sharedRoot != "" {
+			worktree = filepath.Join(sharedRoot, normalized.Operation, owner, name)
+		}
+		// A task survives placement changes by its claim, not by whatever root
+		// today's configuration predicts. This runs for both create and resume:
+		// without it a non-resume create after a config flip could duplicate an
+		// already-active task/branch in the same canonical repository.
+		resumedPath, resumeErr := locateResumableWorktree(ctx, canonicalHandle, home, normalized.Operation, repository, worktree)
+		if resumeErr != nil {
 			canonicalHandle.close()
-			return nil, err
+			return nil, resumeErr
+		}
+		if resumedPath != "" {
+			worktree = resumedPath
+		}
+		exists, existsErr := directoryExistsNoFollow(worktree)
+		if existsErr != nil {
+			canonicalHandle.close()
+			return nil, existsErr
 		}
 		plan := createPlan{owner: owner, repository: name, canonical: canonicalHandle, result: CreateResult{
 			Repository: repository, CanonicalDir: canonical, WorktreeDir: worktree,
@@ -643,6 +683,14 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			plan.result.BaseSHA = mergeBase
 			continue
 		}
+		placement, placementErr := configuredWorktreePlacement(ctx, plan.canonical, baseRevision)
+		if placementErr != nil {
+			return nil, placementErr
+		}
+		if placement.Local != (sharedRoot == "") || (!placement.Local && filepath.Clean(placement.Root) != filepath.Clean(sharedRoot)) {
+			return nil, fmt.Errorf("worktree placement changed while creating %s; retry so every task path is planned from one policy snapshot", plan.result.Repository)
+		}
+		plan.placement = placement
 		branch, branchErr := deriveBranchName(ctx, branchNamingOptions{
 			Task: normalized.Operation, ExactBranch: normalized.Branch, ExactBranchChosen: normalized.BranchChosen,
 			CLIPrefix: normalized.BranchPrefix, CLIPrefixChosen: normalized.BranchPrefixChosen,
@@ -662,9 +710,55 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		if plan.branchExists {
 			if occupied, path, branchErr := branchWorktreeCanonical(ctx, plan.canonical, branch); branchErr != nil {
 				return nil, branchErr
-			} else if occupied {
+			} else if occupied && (!normalized.Resume || !plan.placement.Local || !isTaskBoundLocalStageCheckout(path, normalized.Operation)) {
 				return nil, fmt.Errorf("branch %q is already checked out at %s", branch, path)
 			}
+		}
+	}
+
+	var sharedOperation *preparedOperationRoot
+	for index := range plans {
+		plan := &plans[index]
+		if plan.resumed {
+			continue
+		}
+		if plan.placement.Local {
+			root, directory, rootErr := prepareCanonicalWorktreesRoot(ctx, plan.canonical, plan.baseRevision)
+			if rootErr != nil {
+				return nil, rootErr
+			}
+			plan.localRoot, plan.localRootDir = root, directory
+			defer func() { _ = directory.Close() }()
+			continue
+		}
+		if sharedOperation != nil {
+			continue
+		}
+		if filepath.Clean(plan.placement.Root) == filepath.Join(home, "worktrees") {
+			sharedOperation = &operation
+			continue
+		}
+		prepared, prepareErr := prepareOperationRootAt(plan.placement.Root, normalized.Operation)
+		if prepareErr != nil {
+			return nil, prepareErr
+		}
+		sharedOperation = &prepared
+	}
+	if sharedOperation != nil && sharedOperation != &operation {
+		defer sharedOperation.close()
+	}
+	for index := range plans {
+		plan := &plans[index]
+		if !normalized.Resume || plan.resumed || !plan.placement.Local {
+			continue
+		}
+		recovered, recoverErr := recoverTaskBoundLocalStage(ctx, plan.canonical, plan.localRoot, normalized.Operation, plan.result.Branch)
+		if recoverErr != nil {
+			return nil, recoverErr
+		}
+		if recovered {
+			plan.recoveredStage = true
+			plan.result.Action = "recovered"
 		}
 	}
 
@@ -680,14 +774,25 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 			continue
 		}
 		var publication *createdWorktreePublication
-		if !plan.resumed {
+		physicalOperation := operation
+		if !plan.resumed && !plan.recoveredStage {
+			owner, repository := plan.owner, plan.repository
+			if plan.placement.Local {
+				if plan.localRootDir == nil {
+					return nil, fmt.Errorf("local worktree root was not prepared for %s", plan.result.Repository)
+				}
+				physicalOperation = preparedOperationRoot{Path: plan.localRoot, Worktrees: plan.localRootDir, Directory: plan.localRootDir}
+				owner, repository = "", normalized.Operation
+			} else if sharedOperation != nil {
+				physicalOperation = *sharedOperation
+			}
 			err = addWorktreeAtSecureDestination(
 				ctx,
 				plan.canonical,
-				operation.Path,
-				operation.Directory,
-				plan.owner,
-				plan.repository,
+				physicalOperation.Path,
+				physicalOperation.Directory,
+				owner,
+				repository,
 				plan.result.Branch,
 				plan.result.Base,
 				plan.baseRevision,
@@ -710,7 +815,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				if len(attempts) == 0 {
 					return nil, err
 				}
-				outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, operation, attempts, err)
+				outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, attempts, err)
 				publicationErr := &CreatePublicationError{Outcomes: outcomes, Err: fmt.Errorf("create worktree for %s: %w", plan.result.Repository, err)}
 				if recoveryErr != nil {
 					publicationErr.Err = fmt.Errorf("%w; coordinated publication recovery: %v", publicationErr.Err, recoveryErr)
@@ -718,7 +823,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 				return nil, publicationErr
 			}
 		}
-		attempts = append(attempts, createAttempt{plan: plan, publication: publication})
+		attempts = append(attempts, createAttempt{plan: plan, operation: physicalOperation, publication: publication})
 		attempt := &attempts[len(attempts)-1]
 		hooks := workLogPublicationHooks{}
 		if normalized.afterWorkLogClaim != nil {
@@ -730,7 +835,7 @@ func Create(ctx context.Context, repositories []string, options CreateOptions) (
 		attempt.workLog, err = recordWorkLogWithHooks(home, normalized.Operation, plan.result, normalized.WorkLog, hooks)
 		plan.result.WorkLogPath = attempt.workLog.ClaimPath
 		if err != nil {
-			outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, operation, attempts, err)
+			outcomes, recoveryErr := recoverFailedCreatePublications(ctx, home, normalized, attempts, err)
 			publicationErr := &CreatePublicationError{Outcomes: outcomes, Err: fmt.Errorf("record work log for %s: %w", plan.result.Repository, err)}
 			if recoveryErr != nil {
 				publicationErr.Err = fmt.Errorf("%w; coordinated publication recovery: %v", publicationErr.Err, recoveryErr)
@@ -861,9 +966,16 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	if err != nil {
 		return GuardResult{}, err
 	}
-	location, err := locateManagedWorktree(ctx, projectsRoot, root, resolution.Read)
-	external := false
+	resolution.Read, err = appendConfiguredSharedWorktreesLayout(resolution.Read)
 	if err != nil {
+		return GuardResult{}, err
+	}
+	external := false
+	location, local := locateCanonicalLocalWorktree(projectsRoot, root, commonDir)
+	if !local {
+		location, err = locateManagedWorktree(ctx, projectsRoot, root, resolution.Read)
+	}
+	if !local && err != nil {
 		// A worktree `wb worktree adopt` registered was never relocated under
 		// a WB worktrees root, so the path-shaped resolution above can never
 		// succeed for it — that is adoption's whole point. Its task lives in
@@ -927,6 +1039,91 @@ func Guard(ctx context.Context, path string, options GuardOptions) (GuardResult,
 	return result, nil
 }
 
+// locateResumableWorktree reads the canonical Git registration rather than
+// today's placement policy. A user may switch between local and any explicit
+// shared root while a task is active; its active WB_HOME claim remains the
+// durable authority for resume.
+func locateResumableWorktree(ctx context.Context, canonical *canonicalRepository, home, task, repository, predicted string) (string, error) {
+	registered, err := gitCanonical(ctx, canonical, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", fmt.Errorf("list registered worktrees for resume: %w", err)
+	}
+	candidates := map[string]bool{filepath.Clean(predicted): true}
+	for _, line := range strings.Split(registered, "\n") {
+		path, found := strings.CutPrefix(line, "worktree ")
+		if !found || !filepath.IsAbs(path) || filepath.Clean(path) == canonical.path {
+			continue
+		}
+		candidates[filepath.Clean(path)] = true
+	}
+	matched := ""
+	for path := range candidates {
+		exists, existsErr := directoryExistsNoFollow(path)
+		if existsErr != nil {
+			return "", existsErr
+		}
+		if !exists {
+			continue
+		}
+		claim, _, _, claimErr := activeWorkLogClaim(home, path)
+		if claimErr == nil {
+			if claim.Task != task || claim.Repository != repository {
+				continue
+			}
+			if matched != "" && matched != path {
+				return "", fmt.Errorf("cannot resume task %q in %s: active work-log claims select more than one worktree (%s and %s)", task, repository, matched, path)
+			}
+			matched = path
+			continue
+		}
+		if errors.Is(claimErr, errWorkLogProjectionNotFound) && path == filepath.Clean(predicted) {
+			matched = path // legacy checkout under the predicted historical path.
+			continue
+		}
+		if !errors.Is(claimErr, errWorkLogProjectionNotFound) && likelyTaskWorktreePath(path, predicted, task) {
+			return "", fmt.Errorf("read active work-log claim for registered worktree %s: %w", path, claimErr)
+		}
+	}
+	return matched, nil
+}
+
+// likelyTaskWorktreePath limits malformed-claim errors to the requested task.
+// Git may retain unrelated legacy worktrees indefinitely; a named resume must
+// not be blocked by corruption in one of those unrelated checkouts.
+func likelyTaskWorktreePath(path, predicted, task string) bool {
+	if filepath.Clean(path) == filepath.Clean(predicted) {
+		return true
+	}
+	parent := filepath.Dir(path)
+	if filepath.Base(parent) == ".worktrees" && filepath.Base(path) == task {
+		return true
+	}
+	return filepath.Base(filepath.Dir(parent)) == task
+}
+
+// locateCanonicalLocalWorktree recognizes the default one-repository layout
+// <canonical>/.worktrees/<task>. Git's common directory is the authority for
+// the canonical path; merely resembling this pathname is insufficient.
+func locateCanonicalLocalWorktree(projectsRoot, root, commonDir string) (managedWorktreeLocation, bool) {
+	canonical := filepath.Dir(commonDir)
+	owner, repository, err := canonicalCoordinates(projectsRoot, canonical)
+	if err != nil {
+		return managedWorktreeLocation{}, false
+	}
+	worktreesRoot := filepath.Join(canonical, ".worktrees")
+	relative, err := filepath.Rel(worktreesRoot, root)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return managedWorktreeLocation{}, false
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	if len(parts) != 1 || !validSafeSegment(parts[0]) {
+		return managedWorktreeLocation{}, false
+	}
+	return managedWorktreeLocation{
+		Layout: wbhome.Layout{WorktreesRoot: worktreesRoot, Local: true}, Task: parts[0], Owner: owner, Repository: repository, Worktree: root,
+	}, true
+}
+
 func locateManagedWorktree(
 	ctx context.Context,
 	projectsRoot, root string,
@@ -940,6 +1137,16 @@ func locateManagedWorktree(
 		parts := strings.Split(filepath.ToSlash(relative), "/")
 		location := managedWorktreeLocation{Layout: layout, Worktree: root}
 		switch len(parts) {
+		case 1:
+			if !layout.Local || !validSafeSegment(parts[0]) {
+				continue
+			}
+			owner, repository, coordinatesErr := managedWorktreeCanonicalCoordinates(ctx, projectsRoot, root)
+			if coordinatesErr != nil {
+				return managedWorktreeLocation{}, coordinatesErr
+			}
+			location.Task, location.Owner, location.Repository = parts[0], owner, repository
+			return location, nil
 		case 3:
 			staging := isWorktreeStagingDirectory(parts[1])
 			if !validSafeSegment(parts[0]) || (!validSafeSegment(parts[1]) && !staging) {
@@ -1029,6 +1236,16 @@ func isWorktreeStagingDirectory(name string) bool {
 
 func isRetiredWorktreeStagingDirectory(name string) bool {
 	return strings.HasPrefix(name, ".wb-retired-stage-") && len(name) > len(".wb-retired-stage-")
+}
+
+func isMatchingRetiredStageDirectory(name, prefix string) bool {
+	if !strings.HasPrefix(name, prefix) || len(name) == len(prefix) {
+		return false
+	}
+	// A generic shared-root allocator must never consume a task-bound local
+	// retirement. Its task hash is the evidence that limits reuse to the exact
+	// local task that created it.
+	return prefix != ".wb-retired-stage-" || !strings.HasPrefix(name, ".wb-retired-stage-task-")
 }
 
 func managedWorktreeCanonicalCoordinates(ctx context.Context, projectsRoot, root string) (owner, repository string, err error) {
@@ -1750,6 +1967,153 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 	return output, nil
 }
 
+// gitCanonicalPolicyBytes reads an exact repository policy blob through the
+// retained canonical and common-Git descriptors. The helper is dispatched by
+// this package itself, so placement resolution also works from importing test
+// binaries that have no WB-specific TestMain.
+func gitCanonicalPolicyBytes(ctx context.Context, canonical *canonicalRepository, args ...string) ([]byte, error) {
+	if !canonicalPolicyGitArgumentsAllowed(args) {
+		return nil, fmt.Errorf("unsupported canonical policy Git query")
+	}
+	if err := canonical.authorizeForGit(); err != nil {
+		return nil, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	gitExecutable, err := trustedGitExecutable()
+	if err != nil {
+		return nil, err
+	}
+	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalPolicyGitHelperArgument, canonical.path, gitExecutable}, args...)...)
+	command.Env = console.Env()
+	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
+	output, err := command.Output()
+	if validateErr := canonical.validate(); validateErr != nil {
+		return nil, validateErr
+	}
+	if err != nil {
+		detail := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			detail = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("canonical policy Git %s: %s", strings.Join(args, " "), detail)
+	}
+	return output, nil
+}
+
+// init makes every package-owned descriptor helper available from any Go binary
+// that imports worktrees. Lifecycle APIs are also used by packages such as
+// deps, which have no WB-specific TestMain to dispatch a re-executed helper.
+// Each runner independently validates its arguments and inherited descriptors
+// before it permits Git to run.
+func init() {
+	if len(os.Args) < 2 {
+		return
+	}
+	arguments := os.Args[2:]
+	switch os.Args[1] {
+	case SecureCleanupGitHelperArgument:
+		os.Exit(RunSecureCleanupGitHelper(arguments))
+	case SecureStageGitHelperArgument:
+		os.Exit(RunSecureStageGitHelper(arguments))
+	case SecureCanonicalGitHelperArgument:
+		os.Exit(RunSecureCanonicalGitHelper(arguments))
+	case SecureCanonicalPolicyGitHelperArgument:
+		os.Exit(RunSecureCanonicalPolicyGitHelper(arguments))
+	case SecureStageCanonicalGitHelperArgument:
+		os.Exit(RunSecureStageCanonicalGitHelper(arguments))
+	case SecureRenameGitHelperArgument:
+		os.Exit(RunSecureRenameGitHelper(arguments))
+	}
+}
+
+func canonicalPolicyGitArgumentsAllowed(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "ls-tree":
+		return len(args) == 5 && args[1] == "--full-tree" && isGitObjectID(args[2]) && args[3] == "--" && args[4] == ".wb/worktrees.yaml"
+	case "cat-file":
+		return len(args) == 3 && args[1] == "-s" && isGitObjectID(args[2])
+	case "show":
+		return len(args) == 2 && isGitObjectID(args[1])
+	default:
+		return false
+	}
+}
+
+// RunSecureCanonicalPolicyGitHelper serves only the three tree/object reads
+// placement policy needs. It enters inherited descriptors before Git starts,
+// so Git never resolves the canonical path or .git directory by pathname.
+func RunSecureCanonicalPolicyGitHelper(args []string) int {
+	if len(args) < 3 || !filepath.IsAbs(args[0]) || !canonicalPolicyGitArgumentsAllowed(args[2:]) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: invalid read-only query")
+		return 1
+	}
+	root := os.NewFile(uintptr(3), "wb-canonical-policy-root")
+	common := os.NewFile(uintptr(4), "wb-canonical-policy-git-directory")
+	if root == nil || common == nil {
+		if root != nil {
+			_ = root.Close()
+		}
+		if common != nil {
+			_ = common.Close()
+		}
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: inherited canonical descriptors are unavailable")
+		return 1
+	}
+	defer func() { _ = root.Close() }()
+	defer func() { _ = common.Close() }()
+	if err := unix.Fchdir(int(root.Fd())); err != nil || !directoryEntryStillMatches(root, ".git", common) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: canonical Git directory changed before policy read")
+		return 1
+	}
+	if err := unix.Fchdir(int(common.Fd())); err != nil || !directoryStillMatches(args[0], root) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: canonical repository path changed before policy read")
+		return 1
+	}
+	command := exec.Command(args[1], args[2:]...)
+	command.Env = gitCanonicalPolicyEnvironment()
+	output, err := command.Output()
+	if !directoryStillMatches(args[0], root) || !directoryEntryStillMatches(root, ".git", common) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: canonical repository changed during policy read")
+		return 1
+	}
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			_, _ = os.Stderr.Write(exitErr.Stderr)
+		} else {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
+		return 1
+	}
+	_, _ = os.Stdout.Write(output)
+	return 0
+}
+
+func gitCanonicalPolicyEnvironment() []string {
+	environment := make([]string, 0, len(console.Env())+5)
+	for _, entry := range console.Env() {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			switch key {
+			case "GIT_DIR", "GIT_WORK_TREE", "TMPDIR", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL":
+				continue
+			}
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment,
+		"GIT_DIR=.", "GIT_WORK_TREE=..", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+}
+
 // RunSecureCanonicalGitHelper runs Git from the inherited canonical root only
 // after opening and comparing its `.git` entry with the inherited Git
 // directory descriptor. This prevents Git's own discovery from treating a
@@ -1888,6 +2252,79 @@ func prepareOperationRoot(home, operation string, beforeHomeOpen func()) (prepar
 	}, nil
 }
 
+// prepareOperationRootAt opens one explicit shared worktrees root and creates
+// its task namespace. Unlike prepareOperationRoot, the supplied path is the
+// worktrees root itself rather than WB_HOME/worktrees. WB_HOME remains the
+// authority for Work Logs and task coordination.
+func prepareOperationRootAt(worktreesRoot, operation string) (preparedOperationRoot, error) {
+	root, err := openAbsoluteDirectoryNoFollow(worktreesRoot, true)
+	if err != nil {
+		return preparedOperationRoot{}, err
+	}
+	operationFD, err := openOrCreateNoFollowDirectory(int(root.Fd()), operation)
+	if err != nil {
+		_ = root.Close()
+		return preparedOperationRoot{}, err
+	}
+	directory := os.NewFile(uintptr(operationFD), "wb-worktree-operation")
+	if directory == nil {
+		_ = unix.Close(operationFD)
+		_ = root.Close()
+		return preparedOperationRoot{}, fmt.Errorf("wrap secure worktree operation directory")
+	}
+	return preparedOperationRoot{Path: filepath.Join(worktreesRoot, operation), Worktrees: root, Directory: directory}, nil
+}
+
+// prepareCanonicalWorktreesRoot creates only the canonical repository's
+// private .worktrees parent. The final task checkout is published directly as
+// one child below it, so staging stays a sibling and can never be mistaken for
+// a completed task. A tracked .worktrees entry is an upstream-owned surface;
+// no local ignore rule makes it safe for WB to repurpose.
+func prepareCanonicalWorktreesRoot(ctx context.Context, canonical *canonicalRepository, revision string) (string, *os.File, error) {
+	entry, err := gitCanonical(ctx, canonical, "ls-tree", "--full-tree", revision, "--", ".worktrees")
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect .worktrees at fetched base %s: %w", revision, err)
+	}
+	if strings.TrimSpace(entry) != "" {
+		return "", nil, fmt.Errorf("canonical repository %s tracks .worktrees at fetched base %s; WB refuses to create a local worktree root there", canonical.path, revision)
+	}
+	if _, err := checkoutmarker.EnsureExclude(filepath.Join(canonical.path, ".git", "info", "exclude")); err != nil {
+		return "", nil, fmt.Errorf("exclude canonical .worktrees root from Git status: %w", err)
+	}
+	fd, err := openOrCreateNoFollowDirectory(int(canonical.root.Fd()), ".worktrees")
+	if err != nil {
+		return "", nil, fmt.Errorf("create canonical .worktrees root: %w", err)
+	}
+	directory := os.NewFile(uintptr(fd), "wb-canonical-worktrees-root")
+	if directory == nil {
+		_ = unix.Close(fd)
+		return "", nil, fmt.Errorf("wrap canonical .worktrees root")
+	}
+	path := filepath.Join(canonical.path, ".worktrees")
+	if !directoryStillMatches(path, directory) {
+		_ = directory.Close()
+		return "", nil, fmt.Errorf("canonical .worktrees root changed before creation")
+	}
+	return path, directory, nil
+}
+
+func directoryExistsNoFollow(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect worktree destination %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("refusing symlinked worktree destination %s", path)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("worktree destination is not a directory: %s", path)
+	}
+	return true, nil
+}
+
 // prepareWorktreeDestination walks from the held operation descriptor. It
 // never calls MkdirAll, Stat, or EvalSymlinks on the mutable WB hierarchy.
 // The returned path is display/result text only; descriptor-relative add owns
@@ -1895,6 +2332,30 @@ func prepareOperationRoot(home, operation string, beforeHomeOpen func()) (prepar
 func prepareWorktreeDestination(operationRoot string, operationDirectory *os.File, owner, repository string) (string, bool, error) {
 	if !directoryStillMatches(operationRoot, operationDirectory) {
 		return "", false, fmt.Errorf("secure worktree operation path changed before planning; refusing redirected checkout")
+	}
+	if owner == "" {
+		worktree := filepath.Join(operationRoot, repository)
+		fd, err := unix.Openat(int(operationDirectory.Fd()), repository, unix.O_RDONLY|unix.O_NOFOLLOW, 0)
+		if errors.Is(err, unix.ENOENT) {
+			return worktree, false, nil
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, err)
+		}
+		destination := os.NewFile(uintptr(fd), "wb-direct-worktree-destination-plan")
+		if destination == nil {
+			_ = unix.Close(fd)
+			return "", false, fmt.Errorf("wrap secure worktree destination %s", worktree)
+		}
+		defer func() { _ = destination.Close() }()
+		info, statErr := destination.Stat()
+		if statErr != nil || !info.IsDir() || !directoryStillMatches(worktree, destination) {
+			if statErr != nil {
+				return "", false, fmt.Errorf("inspect secure worktree destination %s: %w", worktree, statErr)
+			}
+			return "", false, fmt.Errorf("worktree destination is not a directory: %s", worktree)
+		}
+		return worktree, true, nil
 	}
 	ownerFD, err := openOrCreateNoFollowDirectory(int(operationDirectory.Fd()), owner)
 	if err != nil {
@@ -1994,20 +2455,36 @@ func addWorktreeAtSecureDestination(
 	if err != nil {
 		return err
 	}
-	ownerFD, err := openOrCreateNoFollowDirectory(operationFD, owner)
-	if err != nil {
-		return err
-	}
-	ownerDirectory := os.NewFile(uintptr(ownerFD), "wb-worktree-owner")
-	if ownerDirectory == nil {
-		_ = unix.Close(ownerFD)
-		return fmt.Errorf("wrap secure worktree owner directory %s", owner)
+	ownerPath := operationRoot
+	var ownerDirectory *os.File
+	ownerFD := operationFD
+	if owner == "" {
+		ownerDirectory, err = duplicateDirectoryDescriptor(operationDirectory, "wb-direct-worktree-parent")
+		if err != nil {
+			return fmt.Errorf("retain direct worktree parent: %w", err)
+		}
+	} else {
+		ownerFD, err = openOrCreateNoFollowDirectory(operationFD, owner)
+		if err != nil {
+			return err
+		}
+		ownerDirectory = os.NewFile(uintptr(ownerFD), "wb-worktree-owner")
+		if ownerDirectory == nil {
+			_ = unix.Close(ownerFD)
+			return fmt.Errorf("wrap secure worktree owner directory %s", owner)
+		}
+		ownerPath = filepath.Join(operationRoot, owner)
 	}
 	defer func() { _ = ownerDirectory.Close() }()
 	if err := requireAbsentNoFollowChild(ownerFD, repository); err != nil {
 		return err
 	}
-	stageName, err := makeSecureStageDirectory(operationDirectory)
+	var stageName string
+	if owner == "" {
+		stageName, err = makeTaskBoundLocalStageDirectory(operationDirectory, repository)
+	} else {
+		stageName, err = makeSecureStageDirectory(operationDirectory)
+	}
 	if err != nil {
 		return fmt.Errorf("create secure worktree staging directory: %w", err)
 	}
@@ -2120,7 +2597,6 @@ func addWorktreeAtSecureDestination(
 	if afterStageVerification != nil {
 		afterStageVerification()
 	}
-	ownerPath := filepath.Join(operationRoot, owner)
 	if !directoryStillMatches(ownerPath, ownerDirectory) {
 		return rollback(fmt.Errorf("secure worktree owner path changed during creation; refusing redirected checkout"), "", checkoutDirectory)
 	}
@@ -2612,7 +3088,7 @@ func OpenOperationLockDirectory(path string) (*os.File, error) {
 // operations therefore converge on a reusable bounded pool instead of adding
 // one inert stage directory forever.
 func makeSecureStageDirectory(parent *os.File) (string, error) {
-	if name, claimed, err := claimRetiredStageDirectory(parent); err != nil {
+	if name, claimed, err := claimRetiredStageDirectory(parent, ".wb-stage-", ".wb-retired-stage-"); err != nil {
 		return "", err
 	} else if claimed {
 		return name, nil
@@ -2633,7 +3109,115 @@ func makeSecureStageDirectory(parent *os.File) (string, error) {
 	return "", fmt.Errorf("create collision-free secure staging directory")
 }
 
-func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err error) {
+func taskBoundLocalStagePrefix(task string) string {
+	sum := sha256.Sum256([]byte(task))
+	return fmt.Sprintf(".wb-stage-task-%x-", sum[:12])
+}
+
+func taskBoundLocalRetiredStagePrefix(task string) string {
+	sum := sha256.Sum256([]byte(task))
+	return fmt.Sprintf(".wb-retired-stage-task-%x-", sum[:12])
+}
+
+func isTaskBoundLocalStageCheckout(path, task string) bool {
+	return strings.HasPrefix(filepath.Base(filepath.Dir(path)), taskBoundLocalStagePrefix(task)) && filepath.Base(path) == "checkout"
+}
+
+func makeTaskBoundLocalStageDirectory(parent *os.File, task string) (string, error) {
+	if !validSafeSegment(task) {
+		return "", fmt.Errorf("invalid local stage task %q", task)
+	}
+	activePrefix := taskBoundLocalStagePrefix(task)
+	if name, claimed, err := claimRetiredStageDirectory(parent, activePrefix, taskBoundLocalRetiredStagePrefix(task)); err != nil {
+		return "", err
+	} else if claimed {
+		return name, nil
+	}
+	for attempt := 0; attempt < 16; attempt++ {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return "", err
+		}
+		name := activePrefix + fmt.Sprintf("%x", token[:])
+		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err == nil {
+			return name, nil
+		} else if !errors.Is(err, unix.EEXIST) {
+			return "", err
+		}
+	}
+	return "", fmt.Errorf("create collision-free task-bound local stage")
+}
+
+// recoverTaskBoundLocalStage publishes only the exact stage left by this task.
+// Git registration and branch identity corroborate the stage before its
+// descriptor-relative move; an ambiguous or substituted stage is preserved.
+func recoverTaskBoundLocalStage(ctx context.Context, canonical *canonicalRepository, root, task, branch string) (bool, error) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false, err
+	}
+	rootDirectory, err := openAbsoluteDirectoryNoFollow(root, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rootDirectory.Close() }()
+	var checkout string
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), taskBoundLocalStagePrefix(task)) {
+			continue
+		}
+		candidate := filepath.Join(root, entry.Name(), "checkout")
+		registered, regErr := registeredBranchNameCanonical(ctx, canonical, candidate)
+		if regErr != nil || registered != branch {
+			// A crash before Git add leaves an empty task-bound stage. Retire it
+			// descriptor-relatively so the next create does not inherit a blocker.
+			fd, openErr := unix.Openat(int(rootDirectory.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+			if openErr == nil {
+				stage := os.NewFile(uintptr(fd), "wb-empty-local-stage")
+				if stage != nil {
+					empty, emptyErr := directoryEmpty(stage)
+					if emptyErr == nil && empty {
+						_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
+					}
+					_ = stage.Close()
+				}
+			}
+			continue
+		}
+		if checkout != "" {
+			return false, fmt.Errorf("multiple task-bound local stages require explicit recovery for task %q", task)
+		}
+		checkout = candidate
+	}
+	if checkout == "" {
+		return false, nil
+	}
+	final := filepath.Join(root, task)
+	if exists, err := directoryExistsNoFollow(final); err != nil || exists {
+		if err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("local recovery destination already exists: %s", final)
+	}
+	if _, err := moveWorktree(ctx, canonical.path, root, checkout, final, worktreeMoveHooks{}); err != nil {
+		return false, fmt.Errorf("recover task-bound local stage: %w", err)
+	}
+	stageName := filepath.Base(filepath.Dir(checkout))
+	fd, openErr := unix.Openat(int(rootDirectory.Fd()), stageName, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
+	if openErr == nil {
+		stage := os.NewFile(uintptr(fd), "wb-recovered-local-stage")
+		if stage != nil {
+			empty, emptyErr := directoryEmpty(stage)
+			if emptyErr == nil && empty {
+				_ = quarantineMatchingStageDirectoryAt(rootDirectory, stage)
+			}
+			_ = stage.Close()
+		}
+	}
+	return true, nil
+}
+
+func claimRetiredStageDirectory(parent *os.File, activePrefix, retiredPrefix string) (name string, claimed bool, err error) {
 	if _, err := parent.Seek(0, 0); err != nil {
 		return "", false, fmt.Errorf("rewind secure staging parent for retirement reap: %w", err)
 	}
@@ -2642,7 +3226,7 @@ func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err
 		return "", false, fmt.Errorf("read secure staging parent for retirement reap: %w", err)
 	}
 	for _, entry := range entries {
-		if !isRetiredWorktreeStagingDirectory(entry.Name()) {
+		if !isMatchingRetiredStageDirectory(entry.Name(), retiredPrefix) {
 			continue
 		}
 		fd, openErr := unix.Openat(int(parent.Fd()), entry.Name(), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
@@ -2669,7 +3253,7 @@ func claimRetiredStageDirectory(parent *os.File) (name string, claimed bool, err
 				_ = retired.Close()
 				return "", false, fmt.Errorf("generate reclaimed staging name: %w", err)
 			}
-			name = fmt.Sprintf(".wb-stage-%x", token[:])
+			name = activePrefix + fmt.Sprintf("%x", token[:])
 			moved, moveErr := moveExpectedDirectoryNoReplace(parent, entry.Name(), parent, name, retired, nil)
 			if errors.Is(moveErr, unix.EEXIST) {
 				continue
@@ -2980,11 +3564,38 @@ func quarantineStageDirectoryAt(operationDirectory *os.File, name string, expect
 	if err != nil || actual != expected {
 		return fmt.Errorf("%w: secure staging directory %s changed before quarantine", errDirectoryMoveIdentityChanged, name)
 	}
-	retired, err := quarantineDirectoryEntry(operationDirectory, name, stage, ".wb-retired-stage-")
+	retired, err := quarantineDirectoryEntry(operationDirectory, name, stage, retiredStagePrefixForActiveStage(name))
 	if err != nil {
 		return err
 	}
 	return retired.Close()
+}
+
+func retiredStagePrefixForActiveStage(name string) string {
+	const activePrefix = ".wb-stage-task-"
+	const retiredPrefix = ".wb-retired-stage-task-"
+	if !strings.HasPrefix(name, activePrefix) {
+		return ".wb-retired-stage-"
+	}
+	rest := strings.TrimPrefix(name, activePrefix)
+	parts := strings.Split(rest, "-")
+	if len(parts) != 2 || len(parts[0]) != 24 || len(parts[1]) != 32 || !isLowerHex(parts[0]) || !isLowerHex(parts[1]) {
+		return ".wb-retired-stage-"
+	}
+	return retiredPrefix + parts[0] + "-"
+}
+
+func isLowerHex(value string) bool {
+	for _, character := range value {
+		if character >= '0' && character <= '9' {
+			continue
+		}
+		if character >= 'a' && character <= 'f' {
+			continue
+		}
+		return false
+	}
+	return value != ""
 }
 
 const rollbackCleanupTimeout = 30 * time.Second
@@ -3054,7 +3665,6 @@ func recoverFailedCreatePublications(
 	ctx context.Context,
 	home string,
 	options CreateOptions,
-	operation preparedOperationRoot,
 	attempts []createAttempt,
 	publicationErr error,
 ) ([]CreateRecoveryOutcome, error) {
@@ -3078,8 +3688,14 @@ func recoverFailedCreatePublications(
 		listed := ListResult{
 			Task: options.Operation, Repository: result.Repository,
 			CanonicalDir: result.CanonicalDir, WorktreeDir: result.WorktreeDir,
-			WorktreesRoot: filepath.Dir(operation.Path), Branch: result.Branch,
-			Base: result.Base, HeadSHA: attempt.publication.headSHA,
+			// The operation directory is WB_HOME coordination state. Durable
+			// recovery must retain the physical placement where the checkout was
+			// published, or validation rejects a repository-local record and loses
+			// the rollback receipt needed to resume safely.
+			WorktreesRoot: attempt.plan.placement.Root,
+			Local:         attempt.plan.placement.Local,
+			Branch:        result.Branch,
+			Base:          result.Base, HeadSHA: attempt.publication.headSHA,
 		}
 		backlog := newLifecycleBacklogRecord(options.ProjectsRoot, listed, "removed")
 		backlog.RecoveryKind = "create_work_log_failed"
@@ -3110,7 +3726,7 @@ func recoverFailedCreatePublications(
 			rollbackErr = options.beforeWorkLogRollback(result)
 		}
 		if rollbackErr == nil {
-			rollbackErr = rollbackPublishedCreate(ctx, attempt.plan.canonical, operation, attempt.publication)
+			rollbackErr = rollbackPublishedCreate(ctx, attempt.plan.canonical, attempt.operation, attempt.publication)
 		}
 		if rollbackErr != nil {
 			outcome.Result.Action = "cleanup_required"

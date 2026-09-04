@@ -49,8 +49,9 @@ target that moved during the check. JSON output carries the same receipt under
 WB rejects:
 
 - feature branches or changes in canonical clones;
-- linked worktrees outside a resolver-recognized `.wb/worktrees` hierarchy —
-  **unless** the worktree carries an active Work Log claim from
+- linked worktrees outside a resolver-recognized canonical
+  `.worktrees/<task>` path or configured shared checkout root — **unless** the
+  worktree carries an active Work Log claim from
   `wb worktree adopt --apply` (see [cleanup.md](cleanup.md)). Adoption's whole
   point is never relocating the checkout, so guard resolves that one exact
   case from the worktree's own claim instead of its path, then applies every

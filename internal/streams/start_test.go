@@ -81,6 +81,26 @@ func TestStartGroupsWorktreesUnderOneNameWithDraftPullRequests(t *testing.T) {
 	}
 }
 
+func TestStartDoesNotReserveAStreamWhenWorktreePlanningFails(t *testing.T) {
+	engine, _, _, worktrees := newTestEngine(t)
+	writeCanonical(t, engine.ProjectsRoot, "acme/library", map[string]string{
+		".github/workflows/ci.yml": cancellingWorkflow,
+	})
+	worktrees.planErr = errors.New("worktrees config root: must be an absolute path")
+
+	if _, err := engine.Start(context.Background(), StartOptions{
+		Name: "invalid-placement", Repositories: []string{"acme/library"},
+	}, nil); err == nil || !strings.Contains(err.Error(), "plan worktree") {
+		t.Fatalf("start error = %v, want planning refusal", err)
+	}
+	if _, err := engine.Store.Load("invalid-placement"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("invalid placement reserved a stream: %v", err)
+	}
+	if len(worktrees.created) != 0 {
+		t.Fatalf("invalid placement created %d worktrees", len(worktrees.created))
+	}
+}
+
 // AC: a-second-stream-and-a-stale-lease-are-both-refused (the start half): a
 // repository that already carries an open stream refuses, names the holding
 // stream, and names the sanctioned commands.

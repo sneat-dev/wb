@@ -70,6 +70,29 @@ func TestLogicalCleanupTaskResolvesSessionResumeNamespace(t *testing.T) {
 	}
 }
 
+func TestLogicalCleanupTaskResolvesRepositoryLocalSessionResumeNamespace(t *testing.T) {
+	fixture := newGitFixture(t)
+	physical := "session-resume-local-abc-m-001-abcdef01"
+	root := filepath.Join(fixture.canonical, ".worktrees")
+	worktree := filepath.Join(root, physical)
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := newCreatedManifest("logical-local-session-effort")
+	manifest.Worktree = worktree
+	manifest.Repository = "acme/app"
+	if err := WriteManifest(worktree, manifest); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveLogicalCleanupTasks([]wbhome.Layout{{WorktreesRoot: root, Local: true}}, []string{"logical-local-session-effort"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0] != physical {
+		t.Fatalf("resolved local logical cleanup task = %#v, want %q", resolved, physical)
+	}
+}
+
 func TestCleanupLogicalSessionResumeApplyReportsPhysicalResolvedTasks(t *testing.T) {
 	const logical = "logical-session-cleanup"
 	const physical = "session-resume-resume-apply-m-001-abcdef01"
@@ -295,6 +318,9 @@ func TestCleanupResumesExactBranchAfterFailureFollowingWorktreeRemoval(t *testin
 	if remoteHead, remoteErr := remoteBranchHead(context.Background(), fixture.canonical, created.Branch); remoteErr != nil || remoteHead != "" {
 		t.Fatalf("interrupted cleanup remote head=%q err=%v", remoteHead, remoteErr)
 	}
+	if _, statErr := os.Stat(filepath.Join(fixture.home, "worktrees", "cleanup-resume-after-remove")); statErr != nil {
+		t.Fatalf("interrupted cleanup must retain its logical task namespace for backlog recovery: %v", statErr)
+	}
 
 	resumed, err := Cleanup(context.Background(), CleanupOptions{
 		ProjectsRoot: fixture.projectsRoot, Task: "cleanup-resume-after-remove",
@@ -417,7 +443,7 @@ func TestCreateListAndCleanupCanonicalDotPrefixedRepository(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(created) != 1 || created[0].WorktreeDir != filepath.Join(fixture.home, "worktrees", "dot-repository", "acme", ".github") {
+	if len(created) != 1 || created[0].WorktreeDir != filepath.Join(fixture.canonical, ".worktrees", "dot-repository") {
 		t.Fatalf("dot-prefixed repository creation = %#v", created)
 	}
 	worktree := created[0].WorktreeDir
@@ -826,7 +852,9 @@ func TestCleanupChildRefusesWorktreeSwapAfterFinalGitAuthorization(t *testing.T)
 }
 
 func TestCleanupUsesRetainedCanonicalRepositoryAfterFinalAuthorization(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-canonical-authorization")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-canonical-authorization")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	movedCanonical := fixture.canonical + "-moved"
 	external := t.TempDir()
@@ -863,7 +891,9 @@ func TestCleanupUsesRetainedCanonicalRepositoryAfterFinalAuthorization(t *testin
 }
 
 func TestCleanupPreservesOwnerReplacementAfterFinalAuthorization(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-owner-double-swap")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-owner-double-swap")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	parent := filepath.Dir(result.WorktreeDir)
 	parkedParent := parent + "-parked"
@@ -979,7 +1009,9 @@ func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
 }
 
 func TestCleanupRefusesTaskSwapBeforeLockWithoutMutatingExternalTarget(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-lock-swap")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-lock-swap")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	taskRoot := filepath.Join(fixture.home, "worktrees", "cleanup-lock-swap")
 	movedTaskRoot := taskRoot + "-moved"
@@ -1266,7 +1298,9 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 // --filter scopes what gets validated, not merely what gets acted on: the
 // mismatched candidate must never even surface as a diagnostic.
 func TestCleanupFilterExcludesMismatchedCandidateOutsideSelection(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-in-scope")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-filter-in-scope")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	stale := createMismatchedWorktree(t, fixture, "cleanup-filter-stale", "acme", "renamed-repo", "old-repo-name")
 
@@ -1408,7 +1442,9 @@ func TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository(
 
 func TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog(t *testing.T) {
 	const task = "cleanup-retired-stage-backlog"
-	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
 	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-nonempty")
 	if err := os.Mkdir(retired, 0o700); err != nil {
@@ -1539,7 +1575,9 @@ func TestCleanupKeepsNonEmptyArtifactOnlyTaskAsBlockingBacklog(t *testing.T) {
 // (Diagnostics) rather than aborting the command, and the run must still
 // complete cleanup for every other matching, eligible task.
 func TestCleanupWarnsAndSkipsMismatchedCandidateInsideSelectionButCompletesOtherTasks(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-warn-elsewhere")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-filter-warn-elsewhere")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	stale := createMismatchedWorktree(t, fixture, "cleanup-filter-warn-stale", "acme", "renamed-repo", "old-repo-name")
 
@@ -1582,7 +1620,9 @@ func TestCleanupWarnsAndSkipsMismatchedCandidateInsideSelectionButCompletesOther
 // be blocked (not just the malformed entry itself), while a sibling task
 // elsewhere is unaffected.
 func TestCleanupBlocksOnlyCoordinatedTaskOfMismatchedCandidate(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-warn-elsewhere-2")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-filter-warn-elsewhere-2")
 	sharedTaskResult, sharedHead, sharedMergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-shared-task")
 	installMergedPullRequestFixtures(t, []string{head, sharedHead}, mergedAt)
 	stale := createMismatchedWorktree(t, fixture, "cleanup-shared-task", "acme", "renamed-repo", "old-repo-name")
@@ -2249,6 +2289,21 @@ func TestCleanupReportsUnresolvableAbsorbedByPointerAsCandidateRefusal(t *testin
 func simulateProcessDeathLeavingLock(t *testing.T, taskDir string) {
 	t.Helper()
 	entries, err := os.ReadDir(taskDir)
+	if errors.Is(err, os.ErrNotExist) {
+		// Repository-local cleanup can finish removing its physical checkout
+		// before the process is killed, leaving no old shared task namespace.
+		// Recreate the logical WB_HOME shell with the exact retired-lock shape
+		// a killed lifecycle operation leaves for recovery.
+		if err := os.MkdirAll(taskDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		retired := filepath.Join(taskDir, ".wb-retired-lock-fixture")
+		contents := fmt.Sprintf("operation=%s\npid=%d\n", filepath.Base(taskDir), killedLifecycleProcessPID(t))
+		if err := os.WriteFile(retired, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		entries, err = os.ReadDir(taskDir)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2276,7 +2331,7 @@ func TestCleanupResumesAfterProcessDeathLeftItsLockBehind(t *testing.T) {
 	}); !errors.Is(err, injected) {
 		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
 	}
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-resume-after-death")
 	simulateProcessDeathLeavingLock(t, taskDir)
 
 	resumed, err := Cleanup(context.Background(), CleanupOptions{
@@ -2311,7 +2366,7 @@ func TestCleanupRefusesWhileAnotherProcessHoldsTheTaskLock(t *testing.T) {
 	}); !errors.Is(err, injected) {
 		t.Fatalf("cleanup interruption = %v, want %v", err, injected)
 	}
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-live-lock-holder")
 	simulateProcessDeathLeavingLock(t, taskDir)
 
 	// A live holder keeps the kernel lock. Liveness, not mere existence, is
@@ -2343,7 +2398,7 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 	installMergedPullRequestFixture(t, head, mergedAt)
 	// No interruption happened, so there is no durable record of what remains.
 	// A stray .lock must still block: only a describable remnant is resumable.
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", "cleanup-interrupted-no-backlog")
 	if err := os.WriteFile(filepath.Join(taskDir, ".lock"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2380,9 +2435,9 @@ func TestCleanupRefusesInterruptedLockWithoutBacklogRecord(t *testing.T) {
 
 func TestCleanupResumeInterruptedNamedTaskPlansThenAppliesExactDeadLock(t *testing.T) {
 	const task = "cleanup-named-interrupted-recovery"
-	fixture, created, head, mergedAt := prepareMergedTask(t, task)
+	fixture, _, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Join(fixture.home, "worktrees", task)
 	contents := fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))
 	lockPath := filepath.Join(taskDir, ".lock")
 	if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
@@ -2472,7 +2527,7 @@ func TestCleanupResumeInterruptedNamedTaskPreservesAmbiguousLock(t *testing.T) {
 			task := "cleanup-ambiguous-" + strings.ReplaceAll(test.name, " ", "-")
 			fixture, created, head, mergedAt := prepareMergedTask(t, task)
 			installMergedPullRequestFixture(t, head, mergedAt)
-			lockPath := filepath.Join(filepath.Dir(filepath.Dir(created.WorktreeDir)), ".lock")
+			lockPath := logicalTaskLockPathForTest(t, fixture, created, task)
 			contents := test.setup(t, lockPath, task)
 			if _, err := Cleanup(context.Background(), CleanupOptions{
 				ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true, OlderThan: 0,
@@ -2494,7 +2549,7 @@ func TestCleanupResumeInterruptedNamedTaskRejectsLateSuccessor(t *testing.T) {
 	const task = "cleanup-named-late-successor"
 	fixture, created, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
-	taskDir := filepath.Dir(filepath.Dir(created.WorktreeDir))
+	taskDir := filepath.Dir(logicalTaskLockPathForTest(t, fixture, created, task))
 	lockPath := filepath.Join(taskDir, ".lock")
 	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))), 0o600); err != nil {
 		t.Fatal(err)
@@ -2529,7 +2584,7 @@ func TestCleanupResumeInterruptedNamedTaskRejectsSuccessorBeforeRemoteDeletion(t
 	const task = "cleanup-named-successor-before-remote"
 	fixture, created, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
-	contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+	contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created, task)
 	heldPath := lockPath + ".held-before-successor"
 	successor := "operation=successor\npid=1\n"
 	reportDir := filepath.Join(t.TempDir(), "audit")
@@ -2562,7 +2617,7 @@ func TestCleanupResumeInterruptedNamedTaskRejectsSuccessorBeforeWorktreeRemoval(
 	const task = "cleanup-named-successor-before-worktree-removal"
 	fixture, created, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
-	contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+	contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created, task)
 	heldPath := lockPath + ".held-before-successor"
 	successor := "operation=successor\npid=1\n"
 	reportDir := filepath.Join(t.TempDir(), "audit")
@@ -2594,7 +2649,7 @@ func TestCleanupResumeInterruptedNamedTaskReportsFailedQuarantineTruthfully(t *t
 	const task = "cleanup-named-quarantine-failure"
 	fixture, created, head, mergedAt := prepareMergedTask(t, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
-	contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+	contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created, task)
 	heldPath := lockPath + ".held-before-successor"
 	successor := "operation=successor\npid=1\n"
 	reportDir := filepath.Join(t.TempDir(), "audit")
@@ -2665,7 +2720,7 @@ func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(
 		const task = "cleanup-recovery-dirty-merged"
 		fixture, created, head, mergedAt := prepareMergedTask(t, task)
 		installMergedPullRequestFixture(t, head, mergedAt)
-		contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created, task)
 		if err := os.WriteFile(filepath.Join(created.WorktreeDir, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -2699,7 +2754,7 @@ func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(
 		gitTest(t, created[0].WorktreeDir, "commit", "-m", "unmerged")
 		gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", created[0].Branch)
 		installMergedPullRequestFixtures(t, nil, time.Time{})
-		contents, lockPath := writeDeadInterruptedTaskLock(t, created[0].WorktreeDir, task)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created[0], task)
 		outcome, cleanupErr := Cleanup(context.Background(), CleanupOptions{
 			ProjectsRoot: fixture.projectsRoot, Task: task, ResumeInterrupted: true,
 			Apply: true, DeleteRemote: true, OlderThan: 0,
@@ -2715,7 +2770,7 @@ func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(
 		const task = "cleanup-recovery-filtered"
 		fixture, created, head, mergedAt := prepareMergedTask(t, task)
 		installMergedPullRequestFixture(t, head, mergedAt)
-		contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created, task)
 		outcome, err := Cleanup(context.Background(), CleanupOptions{
 			ProjectsRoot: fixture.projectsRoot, Task: task, Filter: "does-not-match", ResumeInterrupted: true,
 			Apply: true, DeleteRemote: true, OlderThan: 0,
@@ -2750,7 +2805,7 @@ func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(
 		const task = "cleanup-recovery-report-directory-error"
 		fixture, created, head, mergedAt := prepareMergedTask(t, task)
 		installMergedPullRequestFixture(t, head, mergedAt)
-		contents, lockPath := writeDeadInterruptedTaskLock(t, created.WorktreeDir, task)
+		contents, lockPath := writeDeadInterruptedTaskLock(t, fixture, created, task)
 		reportFile := filepath.Join(t.TempDir(), "not-a-directory")
 		if err := os.WriteFile(reportFile, []byte("not a directory\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -2767,14 +2822,40 @@ func TestCleanupResumeInterruptedNamedTaskPreservesLockUntilEligibleTransaction(
 	})
 }
 
-func writeDeadInterruptedTaskLock(t *testing.T, worktree, task string) (string, string) {
+func writeDeadInterruptedTaskLock(t *testing.T, fixture *gitFixture, created CreateResult, task string) (string, string) {
 	t.Helper()
 	contents := fmt.Sprintf("operation=%s\npid=%d\n", task, killedLifecycleProcessPID(t))
-	lockPath := filepath.Join(filepath.Dir(filepath.Dir(worktree)), ".lock")
+	lockPath := logicalTaskLockPathForTest(t, fixture, created, task)
 	if err := os.WriteFile(lockPath, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return contents, lockPath
+}
+
+// logicalTaskLockPathForTest follows the same placement split as Cleanup:
+// repo-local and configured-shared checkouts coordinate through WB_HOME, while
+// historic roots retain their physical task lock. Resolving List's observed
+// layout keeps these recovery tests valid for both placement modes.
+func logicalTaskLockPathForTest(t *testing.T, fixture *gitFixture, created CreateResult, task string) string {
+	t.Helper()
+	listed, err := ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Workers: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, result := range listed.Results {
+		if filepath.Clean(result.WorktreeDir) != filepath.Clean(created.WorktreeDir) {
+			continue
+		}
+		root := lifecycleTaskLockRoot(fixture.home, wbhome.Layout{
+			WorktreesRoot: result.WorktreesRoot,
+			Local:         result.Local,
+		})
+		return filepath.Join(root, task, ".lock")
+	}
+	t.Fatalf("created worktree %s was not listed for task %s: %#v", created.WorktreeDir, task, listed.Results)
+	return ""
 }
 
 func assertInterruptedLockPreserved(t *testing.T, path, want string) {

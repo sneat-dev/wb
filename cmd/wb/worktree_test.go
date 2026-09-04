@@ -25,13 +25,13 @@ func writeOriginalPromptFixture(t *testing.T, contents string) string {
 	return path
 }
 
-func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
+func TestWorktreeHelpExplainsDefaultAndSharedLayout(t *testing.T) {
 	command := newWorktreeCreateCmd()
 	for _, wanted := range []string{
 		"dirty or off-base canonical clone",
 		"fetches",
 		"without switching or updating any local branch",
-		"<wb-home>/worktrees/<task>/<owner>/<repository>",
+		"<canonical-repository>/.worktrees/<task>",
 		"WB_HOME",
 		"--resume",
 		"wb worktree merge <worktree...> --route auto --cleanup",
@@ -217,6 +217,9 @@ func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	const task = "artifact-json"
 	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.MkdirAll(retired, 0o700); err != nil {
@@ -528,8 +531,7 @@ func TestWorktreeRenameCLIAppliesMoveAndReportsExitOK(t *testing.T) {
 	if !strings.Contains(stdout.String(), "renamed cli-old acme/app ->") {
 		t.Fatalf("rename stdout = %s", stdout.String())
 	}
-	home := os.Getenv(wbhome.EnvOverride)
-	newWorktree := filepath.Join(home, "worktrees", "cli-new", "acme", "app")
+	newWorktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-new")
 	if info, statErr := os.Stat(newWorktree); statErr != nil || !info.IsDir() {
 		t.Fatalf("renamed worktree missing at %s: %v", newWorktree, statErr)
 	}
@@ -603,7 +605,7 @@ func TestWorktreeInfoCLIRedactsPromptBodies(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-info", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-info", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-info")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"--projects-root", projects, "worktree", "info", worktree}, &stdout, &stderr); code != exitOK {
@@ -657,7 +659,7 @@ func TestWorktreeInfoCLIReportsAnActiveMergerLaneClaim(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-claimed", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-claimed", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-claimed")
 	if err := os.WriteFile(filepath.Join(worktree, "claimed.txt"), []byte("claimed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +719,7 @@ func TestWorktreeWorkLogCLIDumpsInitialPromptAndClaim(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-worklog", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-worklog", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-worklog")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {
@@ -760,7 +762,7 @@ func TestWorktreeLogMutatingVerbsCLI(t *testing.T) {
 	if code := run([]string{"--projects-root", projects, "worktree", "create", "cli-log-verbs", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	worktree := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-log-verbs", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-log-verbs")
 
 	var checkpointOutput string
 	for _, args := range [][]string{
@@ -849,7 +851,7 @@ func TestWorktreeCreateCLIResumePreservesImplicitActiveRun(t *testing.T) {
 	if code := run(args, &stdout, &stderr); code != exitOK {
 		t.Fatalf("initial create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
-	projectionPath := filepath.Join(os.Getenv(wbhome.EnvOverride), "worktrees", "cli-resume", "acme", "app", ".wb-worklog", "recovery.json")
+	projectionPath := filepath.Join(projects, "acme", "app", ".worktrees", "cli-resume", ".wb-worklog", "recovery.json")
 	before, err := os.ReadFile(projectionPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1196,7 +1198,7 @@ func TestWorktreeCreateAcceptsOriginalPromptFromStdin(t *testing.T) {
 		t.Fatalf("archived stdin prompt = %q, want %q", content, prompt)
 	}
 
-	worktree := filepath.Join(home, "worktrees", "cli-stdin-prompt", "acme", "app")
+	worktree := filepath.Join(projects, "acme", "app", ".worktrees", "cli-stdin-prompt")
 	stdout.Reset()
 	stderr.Reset()
 	if code := run([]string{"--projects-root", projects, "worktree", "log", worktree}, &stdout, &stderr); code != exitOK {

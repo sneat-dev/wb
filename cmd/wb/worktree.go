@@ -974,19 +974,25 @@ func newWorktreeCreateCmd() *cobra.Command {
 	var effortID, runID, initiator, agentID, agentRuntime, model, cli, provider, originalPrompt string
 	command := &cobra.Command{
 		Use:   "create <task> [owner/repository...]",
-		Short: "Create feature branches below WB's home worktrees directory",
+		Short: "Create isolated feature branches in the selected checkout root",
 		Long: `Create one isolated feature worktree per repository.
 
 WB reads even a dirty or off-base canonical clone without switching or updating any local branch, index, or working tree. It fetches the exact requested base
-from origin, then creates each
-worktree from that verified commit at:
+from origin, then creates each worktree from that verified commit. By default the
+checkout is created at:
 
-  <wb-home>/worktrees/<task>/<owner>/<repository>
+  <canonical-repository>/.worktrees/<task>
 
-<wb-home> is ~/.wb by default. Set $WB_HOME to use a different directory.
-New work never silently falls back to <projects-root>/.wb; when WB_HOME is not
-explicit, existing legacy worktrees there remain guardable, listable, and
-cleanable during migration.
+To select a shared checkout root, set ~/.config/wb/worktrees.yaml:
+
+  version: 1
+  worktrees:
+    root: /absolute/shared/root
+
+That creates <root>/<task>/<owner>/<repository>. WB_HOME remains the private
+authority for Work Logs, locks, and receipts; setting $WB_HOME does not change
+the default checkout location. Existing legacy worktrees remain guardable,
+listable, and cleanable during migration.
 
 If no repository is supplied, WB derives owner/repository from the current
 checkout's origin remote. Existing branches or worktrees are never reused
