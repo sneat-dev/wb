@@ -2094,8 +2094,11 @@ binary itself (`go:embed`), so it installs them from any installed `wb`, in
 any project, without a source checkout:
 
 ```sh
-wb skills sync                        # install/update into ~/.claude/skills
-wb skills sync --dir <path>           # target a different harness skills dir
+wb skills sync                        # install/update into every present harness
+wb skills sync --harness cursor       # Cursor: ~/.cursor/skills
+wb skills sync --harness codex        # Codex: ~/.codex/skills
+wb skills sync --harness all          # Claude, Cursor, and Codex
+wb skills sync --dir <path>           # target an explicit skills directory
 wb skills sync --dry-run              # preview added/updated/removed/conflicts
 wb skills sync --format json          # machine-readable report
 ```
@@ -2107,7 +2110,8 @@ reported as a `conflict` (exit code 1) and left untouched. A marker file
 next to the installed skills records which `wb` version performed the last
 sync. `wb self-update` runs `wb skills sync` automatically right after a
 successful update; every other `wb` command prints a single line on stderr
-when the installed skills and the running `wb` version disagree:
+when the installed skills and the running `wb` version disagree (one line
+per present harness):
 
 ```
 wb: Agent Skills in ~/.claude/skills were synced by wb 0.74.0, this is wb 0.75.1 -- run `wb skills sync`

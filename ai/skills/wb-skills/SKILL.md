@@ -1,6 +1,6 @@
 ---
 name: wb-skills
-description: Install WB's own Agent Skills into this harness's skills directory (e.g. ~/.claude/skills) and keep them current. Use at the start of any session where a wb-related skill (wb-worktrees, wb-merge, wb-hooks, wb-install, and the rest) seems to be missing, when `wb` prints a line asking to run `wb skills sync`, right after `wb self-update`, or when setting up a new machine or harness for WB.
+description: Install WB's own Agent Skills into this harness's skills directory (Claude Code ~/.claude/skills, Cursor ~/.cursor/skills, Codex ~/.codex/skills) and keep them current. Use at the start of any session where a wb-related skill (wb-worktrees, wb-merge, wb-hooks, wb-install, and the rest) seems to be missing, when `wb` prints a line asking to run `wb skills sync`, right after `wb self-update`, or when setting up a new machine or harness for WB.
 ---
 
 # WB skills
@@ -20,10 +20,28 @@ hand-rolled parking instead.
 wb skills sync
 ```
 
-Copies every skill this exact `wb` build ships into the harness's skills
-directory (default `~/.claude/skills`), one subdirectory per skill. It reads
-nothing from a source checkout -- the skills are embedded in the `wb` binary
-itself -- so it works from any installed `wb`, in any project, every time.
+Copies every skill this exact `wb` build ships into each harness's skills
+directory, one subdirectory per skill. It reads nothing from a source
+checkout -- the skills are embedded in the `wb` binary itself -- so it
+works from any installed `wb`, in any project, every time.
+
+Known harnesses:
+
+| Harness | Skills directory |
+|---|---|
+| `claude` | `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`) |
+| `cursor` | `~/.cursor/skills` |
+| `codex` | `~/.codex/skills` (or `$CODEX_HOME/skills`) |
+
+With no flags, every *present* harness is synced (its config directory
+already exists). If none are present, `claude` is the fallback. Name
+harnesses explicitly to set one up that is not installed yet:
+
+```sh
+wb skills sync --harness cursor
+wb skills sync --harness codex
+wb skills sync --harness all
+```
 
 It is idempotent: run it whenever in doubt. A second run with nothing new to
 ship reports every skill `unchanged` and writes nothing. It reports
