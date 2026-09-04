@@ -1250,7 +1250,7 @@ func listClaimedRegistryWorktrees(
 			if claimErr != nil {
 				// Most Git worktrees are not WB-managed. A real local manifest
 				// makes a claim failure material evidence rather than absence.
-				if manifest, manifestErr := ReadManifest(path); manifestErr == nil && validSafeSegment(manifest.EffortID) {
+				if manifest, manifestErr := ReadManifest(path); manifestErr == nil && validSafeSegment(manifest.EffortID) && taskSelectionMatches(tasks, manifest.EffortID) {
 					diagnostics = append(diagnostics, listDiagnostic("", manifest.EffortID, path, fmt.Sprintf("corroborate managed registry worktree claim: %v", claimErr)))
 				}
 				continue
@@ -1969,7 +1969,11 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	// A task directory with no repositories under it yields no candidate and no
 	// diagnostic, so it is invisible to inventory. Discover it here, before any
 	// apply, so a dry run states it and an apply acts only on what was planned.
-	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter, resolution.Write.Home)
+	liveTasks := make(map[string]bool, len(listed.Results))
+	for _, result := range listed.Results {
+		liveTasks[result.Task] = true
+	}
+	namespaces, err := emptyTaskNamespaces(resolution.Read, taskSelectionSet(normalized.Tasks), normalized.Filter, resolution.Write.Home, liveTasks)
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
