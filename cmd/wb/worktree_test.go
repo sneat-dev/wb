@@ -25,7 +25,7 @@ func writeOriginalPromptFixture(t *testing.T, contents string) string {
 	return path
 }
 
-func TestWorktreeHelpExplainsCanonicalAndCentralLayout(t *testing.T) {
+func TestWorktreeHelpExplainsDefaultAndSharedLayout(t *testing.T) {
 	command := newWorktreeCreateCmd()
 	for _, wanted := range []string{
 		"dirty or off-base canonical clone",
@@ -217,6 +217,9 @@ func TestWorktreeListPurgesEmptyStageSilentlyAndRecordsIt(t *testing.T) {
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
 	projects := filepath.Join(root, "projects")
+	if err := os.MkdirAll(projects, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	const task = "artifact-json"
 	retired := filepath.Join(home, "worktrees", task, ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.MkdirAll(retired, 0o700); err != nil {
