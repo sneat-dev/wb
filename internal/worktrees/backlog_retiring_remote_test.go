@@ -33,9 +33,9 @@ func strandAtRetiringRemote(t *testing.T, fixture *gitFixture, task string) life
 
 	record := newLifecycleBacklogRecord(fixture.projectsRoot, ListResult{
 		Task: task, Repository: "acme/app",
-		CanonicalDir: fixture.canonical, WorktreesRoot: filepath.Join(fixture.home, "worktrees"),
+		CanonicalDir: fixture.canonical, WorktreesRoot: filepath.Join(fixture.canonical, ".worktrees"),
 		WorktreeDir: result.WorktreeDir, Branch: result.Branch, Base: "main",
-		HeadSHA: head, RemoteHeadSHA: head,
+		HeadSHA: head, RemoteHeadSHA: head, Local: true,
 	}, "removed")
 	if err := persistLifecycleBacklog(fixture.home, &record, lifecycleStageRetiringRemote); err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ func TestRetiringRemoteBacklogIsResumable(t *testing.T) {
 
 	found, _, err := loadResumableLifecycleBacklog(
 		context.Background(), fixture.home, fixture.projectsRoot,
-		[]string{filepath.Join(fixture.home, "worktrees")}, taskSelectionSet([]string{record.Task}), "", "removed",
+		[]string{filepath.Join(fixture.canonical, ".worktrees")}, taskSelectionSet([]string{record.Task}), "", "removed",
 	)
 	if err != nil {
 		t.Fatal(err)

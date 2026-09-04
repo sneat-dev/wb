@@ -39,6 +39,11 @@ const SecureStageGitHelperArgument = "--wb-internal-stage-git"
 // executing a canonical-clone Git operation.
 const SecureCanonicalGitHelperArgument = "--wb-internal-canonical-git"
 
+// SecureCanonicalPolicyGitHelperArgument is the read-only counterpart used by
+// placement policy lookup. It has a package-level dispatcher so importing Go
+// packages do not need to duplicate WB's private helper TestMain plumbing.
+const SecureCanonicalPolicyGitHelperArgument = "--wb-internal-canonical-policy-git"
+
 // SecureStageCanonicalGitHelperArgument selects the private WB child-process
 // path that combines an inherited private stage with an inherited canonical
 // Git capability. It is deliberately separate from SecureStageGitHelper so
@@ -1960,6 +1965,136 @@ func gitCanonicalBytes(ctx context.Context, canonical *canonicalRepository, args
 		return nil, fmt.Errorf("canonical Git %s: %s", strings.Join(args, " "), detail)
 	}
 	return output, nil
+}
+
+// gitCanonicalPolicyBytes reads an exact repository policy blob through the
+// retained canonical and common-Git descriptors. The helper is dispatched by
+// this package itself, so placement resolution also works from importing test
+// binaries that have no WB-specific TestMain.
+func gitCanonicalPolicyBytes(ctx context.Context, canonical *canonicalRepository, args ...string) ([]byte, error) {
+	if !canonicalPolicyGitArgumentsAllowed(args) {
+		return nil, fmt.Errorf("unsupported canonical policy Git query")
+	}
+	if err := canonical.authorizeForGit(); err != nil {
+		return nil, err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	gitExecutable, err := trustedGitExecutable()
+	if err != nil {
+		return nil, err
+	}
+	command := exec.CommandContext(ctx, executable, append([]string{SecureCanonicalPolicyGitHelperArgument, canonical.path, gitExecutable}, args...)...)
+	command.Env = console.Env()
+	command.ExtraFiles = []*os.File{canonical.root, canonical.common}
+	output, err := command.Output()
+	if validateErr := canonical.validate(); validateErr != nil {
+		return nil, validateErr
+	}
+	if err != nil {
+		detail := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			detail = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		if detail == "" {
+			detail = err.Error()
+		}
+		return nil, fmt.Errorf("canonical policy Git %s: %s", strings.Join(args, " "), detail)
+	}
+	return output, nil
+}
+
+// init makes the narrow read-only placement helper available from every Go
+// binary that imports worktrees. Existing lifecycle helpers remain explicitly
+// dispatched by cmd/wb or their package TestMain because they can mutate Git.
+func init() {
+	if len(os.Args) > 1 && os.Args[1] == SecureCanonicalPolicyGitHelperArgument {
+		os.Exit(RunSecureCanonicalPolicyGitHelper(os.Args[2:]))
+	}
+}
+
+func canonicalPolicyGitArgumentsAllowed(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "ls-tree":
+		return len(args) == 5 && args[1] == "--full-tree" && isGitObjectID(args[2]) && args[3] == "--" && args[4] == ".wb/worktrees.yaml"
+	case "cat-file":
+		return len(args) == 3 && args[1] == "-s" && isGitObjectID(args[2])
+	case "show":
+		return len(args) == 2 && isGitObjectID(args[1])
+	default:
+		return false
+	}
+}
+
+// RunSecureCanonicalPolicyGitHelper serves only the three tree/object reads
+// placement policy needs. It enters inherited descriptors before Git starts,
+// so Git never resolves the canonical path or .git directory by pathname.
+func RunSecureCanonicalPolicyGitHelper(args []string) int {
+	if len(args) < 3 || !filepath.IsAbs(args[0]) || !canonicalPolicyGitArgumentsAllowed(args[2:]) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: invalid read-only query")
+		return 1
+	}
+	root := os.NewFile(uintptr(3), "wb-canonical-policy-root")
+	common := os.NewFile(uintptr(4), "wb-canonical-policy-git-directory")
+	if root == nil || common == nil {
+		if root != nil {
+			_ = root.Close()
+		}
+		if common != nil {
+			_ = common.Close()
+		}
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: inherited canonical descriptors are unavailable")
+		return 1
+	}
+	defer func() { _ = root.Close() }()
+	defer func() { _ = common.Close() }()
+	if err := unix.Fchdir(int(root.Fd())); err != nil || !directoryEntryStillMatches(root, ".git", common) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: canonical Git directory changed before policy read")
+		return 1
+	}
+	if err := unix.Fchdir(int(common.Fd())); err != nil || !directoryStillMatches(args[0], root) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: canonical repository path changed before policy read")
+		return 1
+	}
+	command := exec.Command(args[1], args[2:]...)
+	command.Env = gitCanonicalPolicyEnvironment()
+	output, err := command.Output()
+	if !directoryStillMatches(args[0], root) || !directoryEntryStillMatches(root, ".git", common) {
+		_, _ = fmt.Fprintln(os.Stderr, "wb secure canonical policy helper: canonical repository changed during policy read")
+		return 1
+	}
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			_, _ = os.Stderr.Write(exitErr.Stderr)
+		} else {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+		}
+		return 1
+	}
+	_, _ = os.Stdout.Write(output)
+	return 0
+}
+
+func gitCanonicalPolicyEnvironment() []string {
+	environment := make([]string, 0, len(console.Env())+5)
+	for _, entry := range console.Env() {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			switch key {
+			case "GIT_DIR", "GIT_WORK_TREE", "TMPDIR", "GIT_OPTIONAL_LOCKS", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL":
+				continue
+			}
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment,
+		"GIT_DIR=.", "GIT_WORK_TREE=..", "GIT_OPTIONAL_LOCKS=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 }
 
 // RunSecureCanonicalGitHelper runs Git from the inherited canonical root only

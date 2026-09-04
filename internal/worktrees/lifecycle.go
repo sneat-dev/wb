@@ -1003,16 +1003,54 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 	}
 	localLayouts, localDiscoveryDiagnostics := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot)
 	outcome.Diagnostics = append(outcome.Diagnostics, localDiscoveryDiagnostics...)
-	for _, layout := range localLayouts {
-		results, diagnostics, artifacts, listErr := listCanonicalLocalLayout(
-			ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, options.Workers, reporter, policy,
-		)
-		if listErr != nil {
-			return ListOutcome{}, listErr
+	// A repository-local root contains candidates for only one canonical clone.
+	// Walking roots serially would therefore serialize every exact-target fetch
+	// across repositories, even when the caller requested parallel inspection.
+	// Bound outer local-root walks to Workers and give each one inspection worker:
+	// that preserves the global ceiling while allowing independent canonicals to
+	// fetch concurrently.
+	type localLayoutOutcome struct {
+		results     []ListResult
+		diagnostics []ListDiagnostic
+		artifacts   []LifecycleArtifact
+		err         error
+	}
+	if len(localLayouts) > 0 {
+		workers := options.Workers
+		if workers > len(localLayouts) {
+			workers = len(localLayouts)
 		}
-		outcome.Results = append(outcome.Results, results...)
-		outcome.Diagnostics = append(outcome.Diagnostics, diagnostics...)
-		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
+		jobs := make(chan wbhome.Layout)
+		inspected := make(chan localLayoutOutcome, len(localLayouts))
+		var localWalkers sync.WaitGroup
+		for index := 0; index < workers; index++ {
+			localWalkers.Add(1)
+			go func() {
+				defer localWalkers.Done()
+				for layout := range jobs {
+					results, diagnostics, artifacts, listErr := listCanonicalLocalLayout(
+						ctx, projectsRoot, resolution.Write.Home, layout, taskSelectionSet(tasks), base, filter, options.AbsorbedBy, options.GitHub, 1, reporter, policy,
+					)
+					inspected <- localLayoutOutcome{results: results, diagnostics: diagnostics, artifacts: artifacts, err: listErr}
+				}
+			}()
+		}
+		go func() {
+			for _, layout := range localLayouts {
+				jobs <- layout
+			}
+			close(jobs)
+			localWalkers.Wait()
+			close(inspected)
+		}()
+		for inspectedLayout := range inspected {
+			if inspectedLayout.err != nil {
+				return ListOutcome{}, inspectedLayout.err
+			}
+			outcome.Results = append(outcome.Results, inspectedLayout.results...)
+			outcome.Diagnostics = append(outcome.Diagnostics, inspectedLayout.diagnostics...)
+			outcome.Artifacts = append(outcome.Artifacts, inspectedLayout.artifacts...)
+		}
 	}
 	// A user-scoped shared root is a placement preference, not an ownership
 	// boundary. Once it changes, an existing managed checkout must remain
@@ -1063,6 +1101,12 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 // discovered as another canonical clone.
 func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot string) ([]wbhome.Layout, []ListDiagnostic) {
 	owners, err := os.ReadDir(projectsRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		// An empty projects root is a normal filtered-inventory input. Legacy
+		// shared layouts can still be inspected from WB_HOME, so absence is not
+		// corruption; unreadable roots remain visible diagnostics below.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, []ListDiagnostic{listDiagnostic("", "", projectsRoot, fmt.Sprintf("read projects root for canonical local worktrees: %v", err))}
 	}
@@ -1258,6 +1302,12 @@ func listClaimedRegistryWorktrees(
 			if !taskSelectionMatches(tasks, claim.Task) {
 				continue
 			}
+			if _, localErr := claimedLocalWorktreeLayout(projectsRoot, path, claim); localErr == nil {
+				// The canonical-local walk already owns this deterministic path.
+				// If its inspection failed (for example a GitHub query did), do not
+				// add a misleading second diagnostic that calls it shared.
+				continue
+			}
 			layout, layoutErr := claimedSharedWorktreeLayout(path, claim)
 			if layoutErr != nil {
 				diagnostics = append(diagnostics, listDiagnostic("", claim.Task, path, layoutErr.Error()))
@@ -1402,6 +1452,23 @@ func claimedSharedWorktreeLayout(path string, claim workLogClaim) (wbhome.Layout
 		return wbhome.Layout{}, fmt.Errorf("active WB claim does not corroborate shared worktree layout")
 	}
 	return wbhome.Layout{WorktreesRoot: root}, nil
+}
+
+// claimedLocalWorktreeLayout recognizes the one deterministic default-local
+// shape from immutable claim identity. It is used only to keep registry
+// recovery from reclassifying a candidate the canonical-local walk already
+// owns; that walk independently verifies Git/common-dir identity.
+func claimedLocalWorktreeLayout(projectsRoot, path string, claim workLogClaim) (wbhome.Layout, error) {
+	owner, repository, err := splitRepository(claim.Repository)
+	if err != nil || !validSafeSegment(claim.Task) {
+		return wbhome.Layout{}, fmt.Errorf("managed registry claim has invalid repository or task identity")
+	}
+	canonical := filepath.Join(filepath.Clean(projectsRoot), owner, repository)
+	root := filepath.Join(canonical, ".worktrees")
+	if filepath.Clean(path) != filepath.Join(root, claim.Task) {
+		return wbhome.Layout{}, fmt.Errorf("active WB claim does not corroborate local worktree layout")
+	}
+	return wbhome.Layout{WorktreesRoot: root, Local: true}, nil
 }
 
 // lifecycleTaskLockRoot keeps physical placement separate from WB's logical

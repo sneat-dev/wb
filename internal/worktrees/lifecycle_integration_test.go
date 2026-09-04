@@ -852,7 +852,9 @@ func TestCleanupChildRefusesWorktreeSwapAfterFinalGitAuthorization(t *testing.T)
 }
 
 func TestCleanupUsesRetainedCanonicalRepositoryAfterFinalAuthorization(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-canonical-authorization")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-canonical-authorization")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	movedCanonical := fixture.canonical + "-moved"
 	external := t.TempDir()
@@ -889,7 +891,9 @@ func TestCleanupUsesRetainedCanonicalRepositoryAfterFinalAuthorization(t *testin
 }
 
 func TestCleanupPreservesOwnerReplacementAfterFinalAuthorization(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-owner-double-swap")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-owner-double-swap")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	parent := filepath.Dir(result.WorktreeDir)
 	parkedParent := parent + "-parked"
@@ -1005,7 +1009,9 @@ func TestCleanupAllMergedLocksOnlyCurrentTask(t *testing.T) {
 }
 
 func TestCleanupRefusesTaskSwapBeforeLockWithoutMutatingExternalTarget(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-lock-swap")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-lock-swap")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	taskRoot := filepath.Join(fixture.home, "worktrees", "cleanup-lock-swap")
 	movedTaskRoot := taskRoot + "-moved"
@@ -1292,7 +1298,9 @@ func TestCleanupRejectsBranchAdvancedAfterMergedPullRequest(t *testing.T) {
 // --filter scopes what gets validated, not merely what gets acted on: the
 // mismatched candidate must never even surface as a diagnostic.
 func TestCleanupFilterExcludesMismatchedCandidateOutsideSelection(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-in-scope")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-filter-in-scope")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	stale := createMismatchedWorktree(t, fixture, "cleanup-filter-stale", "acme", "renamed-repo", "old-repo-name")
 
@@ -1434,7 +1442,9 @@ func TestReadPathPurgesExactEmptyRetiredStageWithoutPoisoningFilteredRepository(
 
 func TestCleanupKeepsNonEmptyRetiredStageAsExplicitBlockingBacklog(t *testing.T) {
 	const task = "cleanup-retired-stage-backlog"
-	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, task)
 	installMergedPullRequestFixture(t, head, mergedAt)
 	retired := filepath.Join(fixture.home, "worktrees", task, ".wb-retired-stage-nonempty")
 	if err := os.Mkdir(retired, 0o700); err != nil {
@@ -1565,7 +1575,9 @@ func TestCleanupKeepsNonEmptyArtifactOnlyTaskAsBlockingBacklog(t *testing.T) {
 // (Diagnostics) rather than aborting the command, and the run must still
 // complete cleanup for every other matching, eligible task.
 func TestCleanupWarnsAndSkipsMismatchedCandidateInsideSelectionButCompletesOtherTasks(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-warn-elsewhere")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-filter-warn-elsewhere")
 	installMergedPullRequestFixture(t, head, mergedAt)
 	stale := createMismatchedWorktree(t, fixture, "cleanup-filter-warn-stale", "acme", "renamed-repo", "old-repo-name")
 
@@ -1608,7 +1620,9 @@ func TestCleanupWarnsAndSkipsMismatchedCandidateInsideSelectionButCompletesOther
 // be blocked (not just the malformed entry itself), while a sibling task
 // elsewhere is unaffected.
 func TestCleanupBlocksOnlyCoordinatedTaskOfMismatchedCandidate(t *testing.T) {
-	fixture, result, head, mergedAt := prepareMergedTask(t, "cleanup-filter-warn-elsewhere-2")
+	fixture := newGitFixture(t)
+	configureFixtureSharedWorktrees(t, fixture)
+	result, head, mergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-filter-warn-elsewhere-2")
 	sharedTaskResult, sharedHead, sharedMergedAt := prepareMergedTaskInFixture(t, fixture, "cleanup-shared-task")
 	installMergedPullRequestFixtures(t, []string{head, sharedHead}, mergedAt)
 	stale := createMismatchedWorktree(t, fixture, "cleanup-shared-task", "acme", "renamed-repo", "old-repo-name")
