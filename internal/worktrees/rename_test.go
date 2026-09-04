@@ -923,6 +923,33 @@ func TestRenameRefusesDestinationCollision(t *testing.T) {
 	}
 }
 
+func TestRenameRefusesDestinationTaskInAnotherCanonicalRepository(t *testing.T) {
+	fixture := newGitFixture(t)
+	storageCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
+	gitTest(t, fixture.projectsRoot, "clone", fixture.remote, storageCanonical)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "source-local-task", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(context.Background(), []string{"acme/storage"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "taken-local-task", WorkLog: WorkLogOptions{Model: "unknown"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := Rename(context.Background(), RenameOptions{
+		ProjectsRoot: fixture.projectsRoot, OldTask: "source-local-task", NewTask: "taken-local-task",
+		DeleteRemote: true, Apply: true, WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err == nil || len(outcome.Results) != 1 || outcome.Results[0].Applied {
+		t.Fatalf("cross-canonical destination collision = %#v, err=%v", outcome.Results, err)
+	}
+	if _, statErr := os.Stat(created[0].WorktreeDir); statErr != nil {
+		t.Fatalf("source moved into active task from another repository: %v", statErr)
+	}
+}
+
 // TestRenameDeleteOldBranchRequiresForceUnlessMerged is the regression test
 // for the founder's explicit "unmerged work must never be silently lost"
 // requirement: recycle refuses an unmerged branch before any move unless
