@@ -557,6 +557,12 @@ type CleanupOutcome struct {
 	// one record WB cannot validate must not refuse everybody else's cleanup.
 	Quarantined []LifecycleBacklogQuarantine `json:"quarantined,omitempty"`
 	Recovery    *InterruptedLockRecovery     `json:"recovery,omitempty"`
+	// ResolvedTasks are the physical task namespaces Cleanup actually
+	// inspected after expanding any logical effort aliases (session-resume-*
+	// member directories). A named `wb worktree cleanup <effort>` invocation
+	// must judge apply success against these identities, not the pre-resolution
+	// selector that produced them.
+	ResolvedTasks []string `json:"resolved_tasks,omitempty"`
 }
 
 // InterruptedLockRecovery is durable operator-visible evidence for the one
@@ -1601,7 +1607,8 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	blockUnsafeTasks(results)
 	blockEffortsWithLiveDescendants(results, recognizedWorktreesRoots)
 	outcome := CleanupOutcome{Results: results, Diagnostics: listed.Diagnostics, Artifacts: listed.Artifacts,
-		Purged: listed.Purged, Quarantined: backlogQuarantine, Recovery: recovery}
+		Purged: listed.Purged, Quarantined: backlogQuarantine, Recovery: recovery,
+		ResolvedTasks: append([]string(nil), normalized.Tasks...)}
 	// A cleanup plan is read-only even when a caller supplies ReportDir. Audit
 	// artifacts are created only for an apply attempt, after the platform
 	// capability preflight has succeeded.

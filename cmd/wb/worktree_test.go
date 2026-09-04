@@ -306,6 +306,30 @@ func TestNamedCleanupApplyFailsWhenNothingWasRetired(t *testing.T) {
 	}
 }
 
+func TestNamedCleanupApplySatisfiedUsesResolvedPhysicalTasks(t *testing.T) {
+	logical := "logical-session-effort"
+	physical := []string{
+		"session-resume-resume-cli-m-002-bbbbbbbb",
+		"session-resume-resume-cli-m-001-aaaaaaaa",
+	}
+	outcome := worktrees.CleanupOutcome{
+		ResolvedTasks: physical,
+		Results: []worktrees.CleanupResult{
+			{ListResult: worktrees.ListResult{Task: physical[0]}, Applied: true, WorktreeGone: true, BranchDeleted: true},
+			{ListResult: worktrees.ListResult{Task: physical[1]}, Applied: true, WorktreeGone: true, BranchDeleted: true},
+		},
+	}
+	if !namedCleanupApplySatisfied([]string{logical}, outcome) {
+		t.Fatal("logical selector whose resolved session-resume members all applied must satisfy named cleanup")
+	}
+	if namedCleanupApplySatisfied([]string{logical}, worktrees.CleanupOutcome{ResolvedTasks: physical}) {
+		t.Fatal("logical selector with no applied members must not satisfy named cleanup")
+	}
+	if namedCleanupApplySatisfied([]string{"delivered-task"}, worktrees.CleanupOutcome{}) {
+		t.Fatal("an unresolved named selector that applied nothing must not satisfy named cleanup")
+	}
+}
+
 func TestWorktreeCreatePreflightsFormatAndPromptBeforeMutation(t *testing.T) {
 	for _, test := range []struct {
 		name string

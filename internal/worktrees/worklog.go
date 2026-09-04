@@ -1687,23 +1687,32 @@ func sealWorkLogForCleanup(home, worktree, finalCommit string) error {
 	if err != nil {
 		return err
 	}
-	if projection.Lifecycle == "terminal" {
-		return acceptExistingCleanupTerminal(home, worktree, finalCommit)
-	}
-	sealErr := sealWorkLogForRecycle(home, worktree, finalCommit, "removed")
-	if sealErr == nil {
+	acceptErr := acceptExistingCleanupTerminal(home, worktree, finalCommit)
+	if acceptErr == nil {
 		return nil
 	}
-	// Finalize and cleanup use the same claim fence but not the same outer task
-	// lock. If finalize won after the first projection read, accept only the
-	// exact landed authority it published; every other sealing error survives.
-	projection, projectionErr := readWorkLogProjectionForClaim(home, worktree)
-	if projectionErr == nil && projection.Lifecycle == "terminal" {
-		if acceptErr := acceptExistingCleanupTerminal(home, worktree, finalCommit); acceptErr == nil {
-			return nil
-		}
+	// A sealed terminal is exclusive authority. Trying to rewrite it as
+	// "removed" produces "immutable terminal conflicts with requested
+	// transition" and used to mask the real accept error (wb#313).
+	if hasExistingWorkLogTerminal(home, projection) {
+		return acceptErr
 	}
-	return sealErr
+	return sealWorkLogForRecycle(home, worktree, finalCommit, "removed")
+}
+
+func hasExistingWorkLogTerminal(home string, projection workLogProjection) bool {
+	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = runDir.Close() }()
+	terminals, err := openPrivateChild(runDir, "terminals", false)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = terminals.Close() }()
+	var terminal workLogTerminalRecord
+	return readJSONAt(terminals, projection.ClaimID+".json", &terminal) == nil
 }
 
 // acceptExistingCleanupTerminal lets cleanup compose with the public
@@ -1711,6 +1720,9 @@ func sealWorkLogForCleanup(home, worktree, finalCommit string) error {
 // immutable claim as landed, so cleanup must corroborate that exact authority
 // instead of trying to rewrite it as removed. An exact removed terminal is
 // accepted too, making a cleanup interrupted after sealing safely retryable.
+// A hybrid pointer that still reads active is repaired after the terminal
+// file authorizes cleanup — that lag is how finalize-then-cleanup used to
+// surface as "immutable terminal conflicts with requested transition" (wb#313).
 func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	projection, err := readWorkLogProjectionForClaim(home, worktree)
 	if errors.Is(err, errWorkLogProjectionNotFound) {
@@ -1718,9 +1730,6 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	}
 	if err != nil {
 		return err
-	}
-	if projection.Lifecycle != "terminal" {
-		return fmt.Errorf("existing cleanup terminal requires a terminal work-log projection")
 	}
 	runDir, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
 	if err != nil {
@@ -1782,6 +1791,15 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 		Lifecycle: "terminal", Disposition: terminal.Disposition}
 	if !reflect.DeepEqual(event, expectedEvent) {
 		return fmt.Errorf("immutable terminal outbox does not corroborate cleanup authority")
+	}
+	if projection.Lifecycle != "terminal" {
+		projection.Lifecycle = "terminal"
+		if err := writeWorkLogProjection(worktree, projection); err != nil {
+			return fmt.Errorf("repair terminal work-log projection after finalize: %w", err)
+		}
+		if _, err := repairCurrentLocalProjection(worktree); err != nil {
+			return fmt.Errorf("repair local work-log projection after finalize: %w", err)
+		}
 	}
 	return nil
 }

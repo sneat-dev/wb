@@ -904,6 +904,11 @@ func LogFinalize(ctx context.Context, options LogFinalizeOptions) (LogVerbResult
 		}
 		applied = true
 		notes = append(notes, "hybrid claim sealed terminal")
+		repaired, repairErr := repairCurrentLocalProjection(root)
+		if repairErr != nil {
+			return LogVerbResult{}, fmt.Errorf("repair local work-log projection after finalize: %w", repairErr)
+		}
+		projection = repaired
 	} else {
 		notes = append(notes, "pass --apply to seal the hybrid claim")
 	}
@@ -968,6 +973,11 @@ func LogArchive(ctx context.Context, options LogArchiveOptions) (LogVerbResult, 
 	projection, err := readLocalProjection(root)
 	if err != nil {
 		return LogVerbResult{}, fmt.Errorf("archive requires a local projection: %w", err)
+	}
+	if projection.Lifecycle != "terminal" && !options.Force {
+		if repaired, repairErr := repairCurrentLocalProjection(root); repairErr == nil {
+			projection = repaired
+		}
 	}
 	if projection.Lifecycle != "terminal" && !options.Force {
 		return LogVerbResult{}, fmt.Errorf("archive requires a terminal local projection; pass --force only for explicit operator override")

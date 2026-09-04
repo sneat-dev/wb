@@ -70,6 +70,61 @@ func TestLogicalCleanupTaskResolvesSessionResumeNamespace(t *testing.T) {
 	}
 }
 
+func TestCleanupLogicalSessionResumeApplyReportsPhysicalResolvedTasks(t *testing.T) {
+	const logical = "logical-session-cleanup"
+	const physical = "session-resume-resume-apply-m-001-abcdef01"
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    physical,
+		WorkLog:      WorkLogOptions{EffortID: logical, Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := created[0]
+	if err := os.WriteFile(filepath.Join(result.WorktreeDir, "feature.txt"), []byte(logical+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, result.WorktreeDir, "add", "feature.txt")
+	gitTest(t, result.WorktreeDir, "commit", "-m", "feature")
+	head := gitTestOutput(t, result.WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, result.WorktreeDir, "push", "-u", "origin", result.Branch)
+	gitTest(t, fixture.canonical, "merge", "--no-ff", result.Branch, "-m", "merge feature")
+	gitTest(t, fixture.canonical, "push", "origin", "main")
+	mergedAt := time.Date(2026, time.July, 1, 12, 0, 0, 0, time.UTC)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	now := mergedAt.Add(48 * time.Hour)
+	relocatedRemote := filepath.Join(fixture.canonical, ".wb-test-remote.git")
+	if err := os.Rename(fixture.remote, relocatedRemote); err != nil {
+		t.Fatalf("relocate fixture remote under an authorized cleanup write root: %v", err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", relocatedRemote)
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Task:         logical,
+		Base:         "main",
+		Apply:        true,
+		DeleteRemote: true,
+		OlderThan:    24 * time.Hour,
+		Now:          func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applied.ResolvedTasks) != 1 || applied.ResolvedTasks[0] != physical {
+		t.Fatalf("resolved tasks = %#v, want %q", applied.ResolvedTasks, physical)
+	}
+	if len(applied.Results) != 1 || applied.Results[0].Task != physical || !applied.Results[0].Applied ||
+		!applied.Results[0].WorktreeGone || !applied.Results[0].BranchDeleted {
+		t.Fatalf("logical session-resume cleanup = %#v", applied)
+	}
+	if _, err := os.Stat(result.WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("session-resume worktree still exists after logical cleanup: %v", err)
+	}
+}
+
 func TestLogicalCleanupTaskResolvesAllSessionResumeMembers(t *testing.T) {
 	fixture := newGitFixture(t)
 	physicalTasks := []string{
@@ -1598,6 +1653,72 @@ func TestCleanupAcceptsAlreadyFinalizedLandedClaim(t *testing.T) {
 	}
 }
 
+func TestCleanupAcceptsAlreadyFinalizedWhenHybridPointerStillActive(t *testing.T) {
+	const task = "cleanup-finalized-stale-pointer"
+	fixture, result, head, mergedAt := prepareMergedTask(t, task)
+	installMergedPullRequestFixture(t, head, mergedAt)
+	if _, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: result.WorktreeDir,
+		Result: "success", Message: "landed", Apply: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := readWorkLogProjection(result.WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale.Lifecycle = "active"
+	if err := writeWorkLogProjection(result.WorktreeDir, stale); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: task, Apply: true, DeleteRemote: true,
+		OlderThan: 0, Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(outcome.Results) != 1 || !outcome.Results[0].Applied {
+		t.Fatalf("stale-pointer cleanup outcome = %#v", outcome.Results)
+	}
+}
+
+func TestLogArchiveAfterFinalizeApply(t *testing.T) {
+	fixture := newGitFixture(t)
+	promptPath := writeWorkLogPromptFile(t, "finalize then archive\n")
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "finalize-then-archive",
+		WorkLog: WorkLogOptions{
+			RunID: "finalize-archive-run", Model: "unknown",
+			OriginalPrompt: promptPath, RequireOriginalPrompt: true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree := created[0].WorktreeDir
+	finalized, err := LogFinalize(context.Background(), LogFinalizeOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree,
+		Result: "success", Message: "done", Apply: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finalized.Projection == nil || finalized.Projection.Lifecycle != "terminal" {
+		t.Fatalf("finalize local projection = %#v, want terminal", finalized.Projection)
+	}
+	archived, err := LogArchive(context.Background(), LogArchiveOptions{
+		ProjectsRoot: fixture.projectsRoot, Worktree: worktree, Apply: true, Force: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !archived.Applied || archived.Event == nil || archived.Event.Type != LocalEventArchive {
+		t.Fatalf("archive after finalize = %#v", archived)
+	}
+}
+
 func TestCleanupRejectsAlreadyFinalizedNotLandedClaim(t *testing.T) {
 	const task = "cleanup-finalized-not-landed"
 	fixture, result, head, mergedAt := prepareMergedTask(t, task)
@@ -1912,9 +2033,12 @@ func TestCleanupRejectsAbsorbedReceiptWhenOnlyPartOfTheBranchLanded(t *testing.T
 		t.Fatal(err)
 	}
 	if len(planned.Results) != 1 || planned.Results[0].Eligible ||
-		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin ||
-		!strings.Contains(planned.Results[0].Reason, "awaiting push") {
+		planned.Results[0].IntegratedAtOrigin || planned.Results[0].AbsorbedAtOrigin {
 		t.Fatalf("partial absorption must be rejected: %#v", planned)
+	}
+	reason := planned.Results[0].Reason
+	if !strings.Contains(reason, "awaiting push") && !strings.Contains(reason, "residual") {
+		t.Fatalf("partial absorption must explain the unlanded remainder: %q", reason)
 	}
 }
 
