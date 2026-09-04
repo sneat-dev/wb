@@ -68,9 +68,9 @@ wb self-update --version 0.24.0 # install an exact release instead of the latest
 ```
 
 `wb self-update` first detects how the running binary was installed. A
-Homebrew-managed install (`brew install --cask sneat-dev/tap/wb`) is never
-overwritten — it prints `brew upgrade --cask wb` instead of touching the
-binary. A manual install (release archive or `go install`) is downloaded,
+Homebrew-managed install (`brew install --cask sneat-dev/tap/wb`) runs the
+equivalent managed command `brew upgrade --cask wb` after confirmation; the
+cask remains its install authority and wb never overwrites its binary. A manual install (release archive or `go install`) is downloaded,
 sha256-verified against the release checksums, and swapped in atomically. If
 the install method is ambiguous, it refuses rather than guessing — fall back
 to the `go install` recipe above in that case. `--check --format json` gives

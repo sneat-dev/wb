@@ -2057,9 +2057,10 @@ wb self-update --dry-run --format json  # report what would happen; never modifi
 
 The command first decides how the running binary was installed. A
 Homebrew-managed install (Caskroom or Cellar path, reached through any number
-of symlinks) is never overwritten — self-update prints the exact
-`brew upgrade --cask wb` command instead of touching the binary, under every
-flag combination. A manual install (release archive or `go install`, detected
+of symlinks) runs the exact `brew upgrade --cask wb` command after confirmation;
+Homebrew remains the only writer of its cask binary. `--dry-run` reports that
+command without executing it, and a version pin is refused because Homebrew
+cannot reliably install an arbitrary release. A manual install (release archive or `go install`, detected
 by a `go/bin` or `bin/`-suffixed path) downloads the release asset matching
 the host OS/architecture, verifies its sha256 against that release's
 published checksums *before* extracting anything, and swaps it in atomically
@@ -2106,7 +2107,8 @@ not itself install: a name collision with something already there is
 reported as a `conflict` (exit code 1) and left untouched. A marker file
 next to the installed skills records which `wb` version performed the last
 sync. `wb self-update` runs `wb skills sync` automatically right after a
-successful update; every other `wb` command prints a single line on stderr
+successful update, resolving the stable `wb` launcher again after a Homebrew
+cask transition; every other `wb` command prints a single line on stderr
 when the installed skills and the running `wb` version disagree:
 
 ```
