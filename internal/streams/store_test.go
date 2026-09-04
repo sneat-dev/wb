@@ -37,6 +37,51 @@ func TestStoreLoadDistinguishesMissingFromUnreadable(t *testing.T) {
 	}
 }
 
+// .fleet is the reserved event-only directory for landings outside a stream.
+// It has no stream.json, so inventory must not mistake it for corrupt stream
+// state. A state file there, however, is malformed state and must still be
+// surfaced rather than hidden by the reservation.
+func TestStoreListIgnoresOnlyTheEventOnlyFleetDirectory(t *testing.T) {
+	store := OpenAt(filepath.Join(t.TempDir(), "streams"))
+	if err := os.MkdirAll(store.Dir(".fleet"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.Dir(".fleet"), "events.jsonl"), []byte("event\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	streams, unreadable, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streams) != 0 || len(unreadable) != 0 {
+		t.Fatalf("event-only .fleet inventory = streams %#v, unreadable %#v; want neither", streams, unreadable)
+	}
+
+	if err := os.WriteFile(filepath.Join(store.Dir(".fleet"), "stream.json"), []byte("{truncated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, unreadable, err = store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unreadable) != 1 || unreadable[0].Name != ".fleet" {
+		t.Fatalf("inventory with .fleet/stream.json = %#v, want the malformed state fail-closed", unreadable)
+	}
+	if err := os.Remove(filepath.Join(store.Dir(".fleet"), "stream.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("missing-stream.json", filepath.Join(store.Dir(".fleet"), "stream.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, unreadable, err = store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unreadable) != 1 || unreadable[0].Name != ".fleet" {
+		t.Fatalf("inventory with dangling .fleet/stream.json = %#v, want the unsafe state surfaced", unreadable)
+	}
+}
+
 // A newer schema is refused rather than partially interpreted: stream state
 // carries the only record of the versions a link replaced.
 func TestStoreRefusesANewerSchema(t *testing.T) {
