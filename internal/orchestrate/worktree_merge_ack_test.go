@@ -1322,14 +1322,24 @@ func TestCorrectedSelfSupersessionReaderRefusesLiveEvidenceDrift(t *testing.T) {
 		}
 	})
 
-	t.Run("advanced target missing from replacement", func(t *testing.T) {
+	t.Run("advanced target remains superseded without mutating historical replacement", func(t *testing.T) {
 		fixture, receipt, _, _ := newCorrected(t)
 		writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "target drift\n")
 		runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
 		runEngineGit(t, fixture.canonical, "commit", "-m", "test: drift target after correction")
 		runEngineGit(t, fixture.canonical, "push", "origin", "main")
-		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "does not contain recorded immutable root") {
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
 			t.Fatalf("target drift = superseded=%t err=%v", superseded, err)
+		}
+	})
+
+	t.Run("non-descendant target remains a refusal", func(t *testing.T) {
+		fixture, receipt, correction, _ := newCorrected(t)
+		tree := strings.TrimSpace(runEngineGit(t, fixture.canonical, "rev-parse", correction.CurrentTargetSHA+"^{tree}"))
+		unrelatedTarget := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", tree, "-m", "test: unrelated rewritten target"))
+		runEngineGit(t, fixture.canonical, "push", "--force", "origin", unrelatedTarget+":main")
+		if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || superseded || !strings.Contains(err.Error(), "corrected self-supersession target ancestry") {
+			t.Fatalf("non-descendant target = superseded=%t err=%v", superseded, err)
 		}
 	})
 
