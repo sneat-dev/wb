@@ -1250,7 +1250,7 @@ func listClaimedRegistryWorktrees(
 			if claimErr != nil {
 				// Most Git worktrees are not WB-managed. A real local manifest
 				// makes a claim failure material evidence rather than absence.
-				if manifest, manifestErr := ReadManifest(path); manifestErr == nil && validSafeSegment(manifest.EffortID) {
+				if manifest, manifestErr := ReadManifest(path); manifestErr == nil && validSafeSegment(manifest.EffortID) && taskSelectionMatches(tasks, manifest.EffortID) {
 					diagnostics = append(diagnostics, listDiagnostic("", manifest.EffortID, path, fmt.Sprintf("corroborate managed registry worktree claim: %v", claimErr)))
 				}
 				continue
