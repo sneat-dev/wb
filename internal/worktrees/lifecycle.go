@@ -2668,13 +2668,23 @@ func inspectLifecycleWorktree(
 		}
 	}
 	if withGitHub {
-		pullRequests, known, pullRequestErr := githubPullRequestsForCommit(ctx, worktree, slug, head)
-		if pullRequestErr != nil {
-			return ListResult{}, pullRequestErr
-		}
+		var pullRequests []githubPullRequest
+		var known bool
 		integrationBase := base
 		result.RemoteTargetSHA, err = fetchRemoteTargetHead(ctx, canonical, integrationBase)
 		if err != nil {
+			// A timeout or other transport failure is not evidence that the
+			// recorded target was deleted. Keep it diagnostic and fail closed;
+			// only Git's explicit missing-ref response may widen the target from
+			// an immutable merged-PR receipt.
+			if !isMissingRemoteTargetError(err) {
+				return ListResult{}, err
+			}
+			var pullRequestErr error
+			pullRequests, known, pullRequestErr = githubPullRequestsForCommit(ctx, worktree, slug, head)
+			if pullRequestErr != nil {
+				return ListResult{}, pullRequestErr
+			}
 			// A deleted recorded target is recoverable only when GitHub's
 			// immutable commit index supplies one unambiguous merged PR for this
 			// exact head. The PR target is then fetched freshly and all ordinary
@@ -2689,6 +2699,16 @@ func inspectLifecycleWorktree(
 				return ListResult{}, err
 			}
 			result.Base = integrationBase
+			result.HeadUnknownToRemote = !known
+			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, integrationBase, head)
+		} else {
+			var pullRequestErr error
+			pullRequests, known, pullRequestErr = githubPullRequestsForCommit(ctx, worktree, slug, head)
+			if pullRequestErr != nil {
+				return ListResult{}, pullRequestErr
+			}
+			result.HeadUnknownToRemote = !known
+			result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
 		}
 		base = integrationBase
 		result.Base = base
@@ -2707,8 +2727,6 @@ func inspectLifecycleWorktree(
 				return ListResult{}, err
 			}
 		}
-		result.HeadUnknownToRemote = !known
-		result.OpenPullRequest, result.MergedPullRequest = matchingPullRequests(pullRequests, slug, base, head)
 		if !result.IntegratedAtOrigin {
 			result.RebaseMergedAtOrigin, err = rebaseMergedPullRequestIntegrated(ctx, canonical, head, result.RemoteTargetSHA, result.MergedPullRequest)
 			if err != nil {
@@ -2841,6 +2859,27 @@ func fetchRemoteTargetHead(ctx context.Context, repository, branch string) (stri
 //
 // It is a var so tests can shorten it.
 var remoteTargetFetchTimeout = 90 * time.Second
+
+func isMissingRemoteTargetError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	// These are the explicit missing-ref diagnostics emitted by Git's fetch
+	// transport. Do not broaden on generic network, authentication, or timeout
+	// failures: those must remain non-recoverable for cleanup safety.
+	for _, marker := range []string{
+		"couldn't find remote ref",
+		"could not find remote ref",
+		"remote ref does not exist",
+		"no such ref",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 func fetchRemoteTargetHeadUncached(ctx context.Context, repository, branch string) (string, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, remoteTargetFetchTimeout)
