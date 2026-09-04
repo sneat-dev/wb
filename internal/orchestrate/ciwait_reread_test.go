@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,24 +79,30 @@ echo "unexpected gh args: $*" >&2; exit 30
 
 func TestWaitForCommitChecksShortensOnlyTheChecksBearingConfirmingReread(t *testing.T) {
 	state := installRereadTestGH(t, checksBearingRereadScript(`https://ci.example/run/1`))
-	started := time.Now()
+	var waits []time.Duration
 	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
 		Repository: "acme/app", Target: "main", Head: rereadTestHead,
 		Slice: 30 * time.Second, CheckPollInterval: 8 * time.Second,
 		StableRereadDelay: 100 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				waits = append(waits, progress.NextPoll)
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	elapsed := time.Since(started)
 	if result.Status != PullRequestWaitPassed || result.StableObservations != 2 {
 		t.Fatalf("result = %+v", result)
 	}
 	if observations := rereadTestObservations(t, state); observations != 2 {
 		t.Fatalf("observed the exact head %d times, want one terminal observation plus one confirming reread", observations)
 	}
-	if elapsed >= 4*time.Second {
-		t.Fatalf("confirming reread of a checks-bearing terminal set took %s; the shortened delay was not applied", elapsed)
+	// Assert the actual timer duration, not total runtime: fake gh subprocesses
+	// can be slow under coverage or a busy machine without changing the cadence.
+	if !slices.Equal(waits, []time.Duration{100 * time.Millisecond}) {
+		t.Fatalf("confirming reread waits = %v, want only the shortened delay", waits)
 	}
 }
 
@@ -122,7 +129,7 @@ fi
 echo "unexpected gh args: $*" >&2; exit 30
 `)
 	interval := 700 * time.Millisecond
-	started := time.Now()
+	var waits []time.Duration
 	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
 		Repository: "acme/docs", Target: "main", Head: rereadTestHead,
 		Slice: 30 * time.Second, CheckPollInterval: interval,
@@ -131,19 +138,23 @@ echo "unexpected gh args: $*" >&2; exit 30
 		// wait the full poll interval, because that gap is its only
 		// time-based guard against CI that simply has not registered yet.
 		StableRereadDelay: 5 * time.Millisecond,
+		Progress: func(progress PullRequestWaitProgress) {
+			if progress.NextPoll > 0 {
+				waits = append(waits, progress.NextPoll)
+			}
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	elapsed := time.Since(started)
 	if result.Status != PullRequestWaitPassed || result.StableObservations != 2 || len(result.Checks) != 0 {
 		t.Fatalf("result = %+v", result)
 	}
 	if observations := rereadTestObservations(t, state); observations != 2 {
 		t.Fatalf("observed the exact head %d times, want exactly two full-cadence observations", observations)
 	}
-	if elapsed < interval {
-		t.Fatalf("no-applicable-checks receipt confirmed after %s, sooner than the full poll interval %s", elapsed, interval)
+	if !slices.Equal(waits, []time.Duration{interval}) {
+		t.Fatalf("no-applicable-checks reread waits = %v, want only the full poll interval %s", waits, interval)
 	}
 }
 
