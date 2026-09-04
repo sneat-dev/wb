@@ -533,7 +533,12 @@ func TestRunWithOptionsCancellationTerminatesForkedProcessTree(t *testing.T) {
 			}
 			parentGroupID = qualityOwnedProcessGroup(t, recordedPIDs[0])
 			cancel()
-			outcome := <-resultCh
+			var outcome result
+			select {
+			case outcome = <-resultCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("forking process did not return within five seconds of cancellation")
+			}
 			if ctx.Err() != context.Canceled || outcome.err == nil || strings.Contains(outcome.err.Error(), "timed out after") || outcome.attempts != 1 {
 				t.Fatalf("cancellation result = context %v, err %v, attempts %d, output %q", ctx.Err(), outcome.err, outcome.attempts, outcome.output)
 			}
