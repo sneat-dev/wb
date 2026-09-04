@@ -177,9 +177,7 @@ for a wb user specifically.
 **Then** it asks for confirmation (unless `--yes`), runs `brew upgrade --cask wb`
 with structured argv, exits `0` after a successful manager command, and performs
 no download, no direct write, and no replacement. A managed version pin is
-refused, and `--dry-run` reports the manager command without running it. After
-the upgrade, skill sync resolves the stable `wb` launcher again rather than a
-removed old Caskroom binary.
+refused, and `--dry-run` reports the manager command without running it.
 
 ### AC: wb-exit-codes-and-json-verdict
 

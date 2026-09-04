@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -122,8 +121,7 @@ func newSelfUpdateCmd() *cobra.Command {
 		if err := originalRunE(cmd, args); err != nil {
 			return err
 		}
-		if installedVersion, changed := selfUpdateInstalledVersionChanged(cmd, cfg); changed {
-			selfUpdateWriteVerifiedVersion(cmd, cfg.CurrentVersion, installedVersion)
+		if selfUpdateShouldSyncSkills(cmd) {
 			syncSkillsAfterSelfUpdate(cmd, cfg)
 		}
 		return nil
@@ -134,93 +132,22 @@ func newSelfUpdateCmd() *cobra.Command {
 // selfUpdateShouldSyncSkills reports whether this invocation is the kind
 // that can have changed the on-disk binary: neither --check (read-only) nor
 // --dry-run (plans without writing) ever does, so neither runs the sync.
-func selfUpdateShouldSyncSkills(cmd *cobra.Command, cfg selfupdate.Config) bool {
+func selfUpdateShouldSyncSkills(cmd *cobra.Command) bool {
 	if checkOnly, _ := cmd.Flags().GetBool("check"); checkOnly {
 		return false
 	}
 	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
 		return false
 	}
-	_, changed := selfUpdateInstalledVersionChanged(cmd, cfg)
-	return changed
+	return true
 }
 
-// selfUpdateDetect is the fallback for a wb installation that cannot be found
-// on PATH. In the normal case skills must be synchronized with the stable
-// launcher (for example /opt/homebrew/bin/wb), not os.Executable's resolved
-// Caskroom target, because Homebrew may remove the old target while upgrading.
+// selfUpdateDetect is a seam over selfupdate.Config.DetectSelf, exactly like
+// cobracmd's own unexported detectFunc, so a test can supply a fake install
+// path without needing a real installed binary at a resolvable
+// os.Executable() location.
 var selfUpdateDetect = func(cfg selfupdate.Config) (selfupdate.Detection, error) {
 	return cfg.DetectSelf()
-}
-
-// selfUpdateLookPath is a seam over exec.LookPath. Keeping it separate from
-// selfUpdateDetect lets tests model a Homebrew upgrade that removes the old
-// Caskroom binary while leaving its stable launcher pointed at the new one.
-var selfUpdateLookPath = exec.LookPath
-
-// selfUpdateBinaryVersionChanged verifies a new process through the stable
-// launcher before claiming an update by synchronizing skills. In particular,
-// an old redirect-only build, an aborted confirmation, and an already-current
-// manager run must not make a user infer that the CLI itself changed.
-func selfUpdateInstalledVersionChanged(cmd *cobra.Command, cfg selfupdate.Config) (string, bool) {
-	if checkOnly, _ := cmd.Flags().GetBool("check"); checkOnly {
-		return "", false
-	}
-	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
-		return "", false
-	}
-	binary, ok := selfUpdateSyncBinary(cfg)
-	if !ok {
-		return "", false
-	}
-	parent := cmd.Context()
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, binary, "version", "--json").Output() //nolint:gosec // binary is resolved by selfUpdateSyncBinary
-	if err != nil {
-		return "", false
-	}
-	var version struct {
-		Version string `json:"version"`
-	}
-	if err := json.Unmarshal(output, &version); err != nil || version.Version == "" || version.Version == cfg.CurrentVersion {
-		return "", false
-	}
-	return version.Version, true
-}
-
-func selfUpdateWriteVerifiedVersion(cmd *cobra.Command, previous, installed string) {
-	out := cmd.OutOrStdout()
-	if format, _ := cmd.Flags().GetString("format"); format == "json" {
-		out = cmd.ErrOrStderr()
-	}
-	_, _ = fmt.Fprintf(out, "Verified installed wb version: %s (was %s).\n", installed, previous)
-}
-
-func selfUpdateSyncBinary(cfg selfupdate.Config) (string, bool) {
-	detection, detectErr := selfUpdateDetect(cfg)
-	if detectErr != nil || detection.Path == "" {
-		return "", false
-	}
-	// A manual install is an explicit binary location. Do not let an unrelated
-	// wb earlier on PATH receive its skills just because this process happened
-	// to be launched from a custom location.
-	if detection.Method == selfupdate.Manual {
-		return detection.Path, true
-	}
-	if detection.Method != selfupdate.Managed {
-		return "", false
-	}
-	// Homebrew's Caskroom target can disappear during the upgrade. Its stable
-	// launcher on PATH is the authority for the new cask.
-	binary, err := selfUpdateLookPath(cfg.BinaryName)
-	if err == nil && binary != "" {
-		return binary, true
-	}
-	return detection.Path, true
 }
 
 // syncSkillsAfterSelfUpdate runs `skills sync` against the on-disk wb binary
@@ -230,17 +157,17 @@ func selfUpdateSyncBinary(cfg selfupdate.Config) (string, bool) {
 // this process: when self-update actually swapped the executable, this
 // process is still running the OLD build in memory (replacing the file on
 // disk does not reload an already-running process), so only a fresh child
-// process sees the newly embedded skills. It resolves the configured binary
-// name on PATH first: Homebrew's stable launcher survives a cask upgrade,
-// whereas os.Executable can still name the deleted old Caskroom target.
+// process sees the newly embedded skills. For every other outcome —
+// ActionAlreadyCurrent, ActionRedirected, ActionAborted — the detected path
+// is this same binary, and the sync is simply the ordinary idempotent no-op.
 //
 // A failure here is never fatal to self-update: the update itself already
 // succeeded (or there was nothing to do), so a sync that cannot run --
 // offline, a permissions issue, no harness present yet -- is reported as a
 // warning on stderr rather than turned into a self-update failure.
 func syncSkillsAfterSelfUpdate(cmd *cobra.Command, cfg selfupdate.Config) {
-	binary, ok := selfUpdateSyncBinary(cfg)
-	if !ok {
+	detection, err := selfUpdateDetect(cfg)
+	if err != nil || detection.Path == "" {
 		return
 	}
 	// cmd.Context() is nil for any *cobra.Command that was never run through
@@ -253,20 +180,13 @@ func syncSkillsAfterSelfUpdate(cmd *cobra.Command, cfg selfupdate.Config) {
 	}
 	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
-	child := exec.CommandContext(ctx, binary, "skills", "sync") //nolint:gosec // binary is either the PATH-resolved wb launcher or the resolved installed wb binary itself
+	child := exec.CommandContext(ctx, detection.Path, "skills", "sync") //nolint:gosec // detection.Path is the resolved installed wb binary itself
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	if err := child.Run(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), //nolint:errcheck
 			"self-update: skills sync failed (%v); run `wb skills sync` to install/update WB's Agent Skills manually\n%s", err, stderr.String())
-		return
-	}
-	// cobracmd deliberately keeps stdout to one JSON document. A successful
-	// nested skills sync is informational, so send it to stderr in JSON mode
-	// rather than corrupting the caller's machine-readable update outcome.
-	if format, _ := cmd.Flags().GetString("format"); format == "json" {
-		_, _ = cmd.ErrOrStderr().Write(stdout.Bytes())
 		return
 	}
 	_, _ = cmd.OutOrStdout().Write(stdout.Bytes())

@@ -2107,8 +2107,7 @@ not itself install: a name collision with something already there is
 reported as a `conflict` (exit code 1) and left untouched. A marker file
 next to the installed skills records which `wb` version performed the last
 sync. `wb self-update` runs `wb skills sync` automatically right after a
-successful update, resolving the stable `wb` launcher again after a Homebrew
-cask transition; every other `wb` command prints a single line on stderr
+successful update; every other `wb` command prints a single line on stderr
 when the installed skills and the running `wb` version disagree:
 
 ```
