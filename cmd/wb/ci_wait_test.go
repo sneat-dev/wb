@@ -752,7 +752,10 @@ echo "unexpected gh args: $*" >&2; exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	// This is a synchronous identity rejection, not a five-second latency
+	// contract. Keep the fake GitHub process inside the existing loaded-runner
+	// budget before asserting that checks are never reached.
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
@@ -784,7 +787,9 @@ echo "unexpected gh args: $*" >&2; exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "5s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	// The strict-fence assertion is likewise synchronous; use the suite's
+	// loaded-runner budget so process contention cannot bypass the receipt.
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", ciWaitSliceBudget.String(), "--interval", "100ms", "--json"}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
