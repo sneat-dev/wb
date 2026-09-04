@@ -9,15 +9,20 @@ Keep canonical clones clean and available for synchronization when possible;
 prefer `main`, but never mutate a dirty or off-base canonical checkout to make
 it eligible. WB creation leaves its current branch, index, and working tree
 untouched while it fetches and pins the requested remote base.
-Make feature changes only below the authoritative WB home:
+Make feature changes only in a WB-created worktree. The default checkout is
+inside its canonical repository directory:
 
 ```txt
-~/.wb/worktrees/<task>/<owner>/<repository>
+<canonical-repository>/.worktrees/<task>
 ```
 
-Set `WB_HOME` only when an explicit isolated home is intended. New work never
-falls back to `<projects-root>/.wb`; without an explicit override, WB still
-recognizes legacy linked worktrees there during migration.
+`WB_HOME` is the private authority for Work Logs, task locks, receipts, and
+reports; it does not choose the default checkout path, even when explicit. A
+user may set `worktrees.root` in `~/.config/wb/worktrees.yaml` to an absolute
+path (with `~` expansion, for example `~/.wb/worktrees`) for the shared form
+`<root>/<task>/<owner>/<repository>`. Repository policy cannot set that root.
+Existing linked worktrees governed by the same `WB_HOME` remain discoverable
+during migration.
 
 ## Route
 

@@ -648,10 +648,18 @@ func computeReconstructedManifest(ctx context.Context, worktree string) (Manifes
 	return manifest, nil
 }
 
-// effortFromWorktreePath recovers the effort segment of a managed worktree path
-// laid out as <worktrees-root>/<effort>/<owner>/<repository>.
+// effortFromWorktreePath recovers an effort from either supported physical
+// placement: the default <canonical-repository>/.worktrees/<effort>, or a
+// shared <worktrees-root>/<effort>/<owner>/<repository> path.
 func effortFromWorktreePath(worktree string) string {
 	parts := strings.Split(filepath.ToSlash(filepath.Clean(worktree)), "/")
+	if len(parts) >= 2 && parts[len(parts)-2] == ".worktrees" {
+		candidate := parts[len(parts)-1]
+		if ValidEffortPath(candidate) {
+			return candidate
+		}
+		return ""
+	}
 	if len(parts) < 3 {
 		return ""
 	}

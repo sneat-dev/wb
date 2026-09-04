@@ -89,7 +89,7 @@ wb skills hook print|install # print or merge a Claude Code SessionStart hook
 Keep canonical clones at `<projects-root>/<owner>/<repository>` clean when
 possible, but never mutate one to make it eligible for creation. WB leaves its
 currently checked-out branch, index, and working tree untouched while it
-creates every feature branch in its shared worktree hierarchy:
+creates every feature branch in its managed worktree location:
 
 ```sh
 # From any checkout of sneat-bots; owner/repository is derived from origin.
@@ -110,12 +110,31 @@ Before branching, WB fetches the exact `refs/heads/<base>` from `origin`
 creates the new branch from that verified commit without switching, pulling,
 resetting, or fast-forwarding the canonical checkout or any local base branch;
 this is safe when local `main` is stale, checked out in another worktree, or
-contains active local work. Worktrees are created at
-`~/.wb/worktrees/<task>/<owner>/<repository>` by default. Set `WB_HOME` to an
-explicit alternative. New work never silently falls back to the historic
-`<projects-root>/.wb` directory; when `WB_HOME` is not explicit, WB still
-guards, lists, and cleans linked worktrees there during migration. Existing
-branches and worktrees are rejected unless `--resume` is explicit.
+contains active local work. By default, a worktree is created at
+`<canonical-repository>/.worktrees/<task>`. `WB_HOME` remains the private
+authority for Work Logs, task locks, receipts, and reports; setting it never
+changes the default checkout placement. To use one shared checkout root across
+repositories, set a user-only root in `~/.config/wb/worktrees.yaml`:
+
+```yaml
+version: 1
+worktrees:
+  root: ~/.wb/worktrees
+```
+
+WB expands `~` and creates that checkout at
+`<root>/<task>/<owner>/<repository>`. The root must be absolute after
+expansion; repository policy can configure branch naming but cannot choose a
+checkout root. The account running WB therefore needs access to both its
+`WB_HOME` state and the selected checkout root. New
+work never silently falls back to the historic `<projects-root>/.wb` directory;
+existing linked worktrees governed by the same `WB_HOME` remain discoverable
+and manageable during migration, and WB never relocates them merely because the
+default changed. WB adds a local
+Git exclude for the untracked `.worktrees/` directory so Git status stays
+clean; scanners and build tools that do not honor Git excludes must still avoid
+that directory deliberately.
+Existing branches and worktrees are rejected unless `--resume` is explicit.
 
 Resume recovers the registered branch and active Work Log claim before reading
 today's branch-prefix policy, so a policy change cannot strand or split an
@@ -820,9 +839,10 @@ wb deps bump go --fleet \
 ```
 
 Canonical clones remain untouched, including dirty clones. WB fetches
-`origin/<ref>` (`main` by default) and creates branches and worktrees below
-`<wb-home>/worktrees/<operation>/<org>/<repo>` (normally
-`~/.wb/worktrees/...`). Without publication
+`origin/<ref>` (`main` by default) and creates branches with a checkout at
+`<canonical-repository>/.worktrees/<operation>` by default. A user-only
+`worktrees.root` setting selects `<root>/<operation>/<org>/<repo>` instead;
+`WB_HOME` still holds private lifecycle state. Without publication
 flags, verified changes remain in those local worktrees. `--push` implies
 `--commit`; `--pr` implies push and commit; and `--merge` implies all prior
 stages. Local lint, test, and build checks are enabled by default; use
