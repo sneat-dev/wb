@@ -76,11 +76,11 @@ func installGCFakeGh(t *testing.T) {
 
 func TestWorktreeGCCLIPlansAndRefuses(t *testing.T) {
 	// Not t.Parallel(): t.Setenv for PATH and WB_HOME forbids it.
-	projectsRoot, _, worktree := initGCFixture(t)
+	projectsRoot, home, worktree := initGCFixture(t)
 
 	// A stale terminal artefact under the task must be purged on the read path
 	// itself, silently, and counted in the footer.
-	stage := filepath.Join(projectsRoot, "acme", "app", ".worktrees", ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
+	stage := filepath.Join(home, "worktrees", "gc-cli", ".wb-retired-stage-6b0995eef65f84dace22d24df2644b32")
 	if err := os.Mkdir(stage, 0o700); err != nil {
 		t.Fatal(err)
 	}
