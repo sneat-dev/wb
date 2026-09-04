@@ -48,7 +48,7 @@ checksum:
 # `spctl --assess`, and executes (rc=0).
 #
 # `enabled` is gated on the MACOS_SIGN_P12 env var, forwarded by
-# .github/workflows/release.yml (pinned to strongo/cicd@v1.14.14 with
+# .github/workflows/go-ci.yml (pinned to strongo/cicd@v1.14.14 with
 # require_notarized_macos: true).
 notarize:
   macos:
@@ -81,8 +81,8 @@ changelog:
 # $GORELEASER_GITHUB_TOKEN, forwarded by the shared strongo/cicd release
 # workflow from the WB_GORELEASER_GITHUB_TOKEN secret. The tap repo must
 # exist at sneat-dev/homebrew-tap with a main branch before this step
-# succeeds — see release.yml's comment for the manual one-time setup this
-# depends on.
+# succeeds. One-time setup requires that tap and a token with Contents write
+# access to it, stored as WB_GORELEASER_GITHUB_TOKEN in this repository.
 homebrew_casks:
   - name: wb
     ids:

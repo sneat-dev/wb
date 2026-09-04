@@ -3,6 +3,7 @@ name: Go CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -10,8 +11,10 @@ permissions:
   contents: read
 
 concurrency:
+  # A newer PR revision supersedes its older validation. Main/tag runs may
+  # publish, so they must never cancel an in-progress release.
   group: go-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   static:
@@ -120,7 +123,6 @@ jobs:
         run: >-
           go test -race -timeout 15m
           ./internal/deps/...
-          ./internal/orchestrate/...
           ./internal/githubobserver/...
           ./internal/fleetsync/...
 
@@ -145,3 +147,61 @@ jobs:
               exit 1
             fi
           done
+
+  release-eligibility:
+    name: Release eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      eligible: ${{ steps.eligibility.outputs.eligible }}
+    steps:
+      # The eligibility script is repository content, so every event that
+      # reaches this job checks out the exact SHA it will consider publishing.
+      # Full history makes a main push's before..sha path comparison valid
+      # even when it spans more than one commit.
+      - name: Checkout eligibility source and history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Determine eligible publication ref
+        id: eligibility
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          .github/scripts/release-eligible.sh "$EVENT_NAME" "$REF" "$BEFORE" "$SHA" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    if: >-
+      ${{
+        !cancelled() &&
+        needs.test.result == 'success' &&
+        needs.release-eligibility.result == 'success' &&
+        needs.release-eligibility.outputs.eligible == 'true'
+      }}
+    needs: [test, release-eligibility]
+    # Serialize publication without cancelling a signing/notarization run.
+    concurrency:
+      group: wb-release-${{ github.ref }}
+      cancel-in-progress: false
+    uses: strongo/cicd/.github/workflows/release.yml@v1.14.14
+    permissions:
+      contents: write
+    with:
+      go_version: '1.27'
+      allow_major_version_bump: false
+      # A CLI-changing merge without a conventional terminal title must still
+      # produce a patch release.
+      default_bump: patch
+      require_notarized_macos: true
+    secrets:
+      GORELEASER_GITHUB_TOKEN: ${{ secrets.WB_GORELEASER_GITHUB_TOKEN }}
+      MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+      MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+      NOTARIZE_ISSUER_ID: ${{ secrets.NOTARIZE_ISSUER_ID }}
+      NOTARIZE_KEY_ID: ${{ secrets.NOTARIZE_KEY_ID }}
+      NOTARIZE_KEY: ${{ secrets.NOTARIZE_KEY }}

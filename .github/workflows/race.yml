@@ -1,0 +1,32 @@
+name: Full race detector
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-race-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  race:
+    name: Full Go race detector
+    runs-on: ubuntu-latest
+    # This deliberately runs outside the release coordinator. It covers every
+    # package, including expensive worktree orchestration races, but never
+    # delays or authorizes a publication. Failures remain ordinary red checks.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -race (all packages)
+        run: go test -count=1 -race -timeout 40m ./...
