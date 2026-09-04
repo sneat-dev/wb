@@ -121,6 +121,41 @@ func TestCampaignUsesIsolatedWorktreesAndCanResumeAndClean(t *testing.T) {
 	}
 }
 
+func TestCampaignUsesConfiguredSharedRootAndKeepsRegisteredResumePath(t *testing.T) {
+	test := newCampaignIntegrationFixture(t)
+	configHome := t.TempDir()
+	sharedRoot := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	writeCampaignFile(t, filepath.Join(configHome, "wb", "worktrees.yaml"), "version: 1\nworktrees:\n  root: "+sharedRoot+"\n")
+	report, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
+		GitHubDir: test.githubDir, Apply: true, Verify: VerifyNone, CloneURL: test.cloneURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumer := campaignRepositoryByName(t, report, "github.com/acme/consumer")
+	resolvedShared, err := filepath.EvalSymlinks(sharedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedShared, test.spec.ID, "acme", "consumer")
+	if consumer.WorktreeDir != want {
+		t.Fatalf("configured campaign worktree = %q, want %q", consumer.WorktreeDir, want)
+	}
+	if err := os.Remove(filepath.Join(configHome, "wb", "worktrees.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := RunCampaign(test.spec, test.sourceRoot, CampaignOptions{
+		GitHubDir: test.githubDir, Apply: true, Resume: true, Verify: VerifyNone, CloneURL: test.cloneURL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := campaignRepositoryByName(t, resumed, "github.com/acme/consumer").WorktreeDir; got != want {
+		t.Fatalf("resume replanned registered worktree = %q, want %q", got, want)
+	}
+}
+
 func TestOpenCampaignPRDoesNotReuseMergedPullRequest(t *testing.T) {
 	worktree := t.TempDir()
 	binDir := filepath.Join(t.TempDir(), "bin")
@@ -271,7 +306,7 @@ func TestCampaignResumeDiscoversDependencyAddedInRootWorktree(t *testing.T) {
 	writeCampaignFile(t, filepath.Join(lateSource, "late.go"), "package late\n\nimport \"github.com/acme/provider\"\n\nconst Package = \"github.com/acme/provider/pkg\"\nvar _ = provider.Package\n")
 	commitCampaignRepository(t, lateSource, test.cloneURL("github.com/acme/late"))
 
-	consumerWorktree := filepath.Join(test.githubDir, ".wb", "worktrees", test.spec.ID, "acme", "consumer")
+	consumerWorktree := campaignFixtureWorktree(t, test, "consumer")
 	consumerGoMod := mustReadCampaignFile(t, filepath.Join(consumerWorktree, "go.mod"))
 	consumerGoMod += "\nrequire github.com/acme/late v0.0.0\n\nreplace github.com/acme/late => " + lateSource + "\n"
 	writeCampaignFile(t, filepath.Join(consumerWorktree, "go.mod"), consumerGoMod)
@@ -312,7 +347,7 @@ func TestLocalCampaignContinuesVerificationAfterProviderFailure(t *testing.T) {
 	writeCampaignFile(t, filepath.Join(adapterSource, "failure_test.go"), "package adapter\n\nimport \"testing\"\n\nfunc TestFailure(t *testing.T) { t.Fatal(\"intentional adapter failure\") }\n")
 	commitCampaignRepository(t, adapterSource, test.cloneURL("github.com/acme/adapter"))
 
-	consumerWorktree := filepath.Join(test.githubDir, ".wb", "worktrees", test.spec.ID, "acme", "consumer")
+	consumerWorktree := campaignFixtureWorktree(t, test, "consumer")
 	consumerGoMod := mustReadCampaignFile(t, filepath.Join(consumerWorktree, "go.mod"))
 	consumerGoMod += "\nrequire github.com/acme/adapter v0.0.0\n\nreplace github.com/acme/adapter => " + adapterSource + "\n"
 	writeCampaignFile(t, filepath.Join(consumerWorktree, "go.mod"), consumerGoMod)
@@ -377,7 +412,7 @@ func TestCampaignPRRequiresPublishedVersionsBeforePush(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "go_module_release") {
 		t.Fatalf("campaign error = %v, want missing go_module_release", err)
 	}
-	consumerWorktree := filepath.Join(test.githubDir, ".wb", "worktrees", test.spec.ID, "acme", "consumer")
+	consumerWorktree := campaignFixtureWorktree(t, test, "consumer")
 	if output := runCampaignGit(t, consumerWorktree, "log", "--format=%s", "origin/main..HEAD"); strings.TrimSpace(output) != "" {
 		t.Fatalf("consumer was committed before the publishability gate: %s", output)
 	}
@@ -440,6 +475,15 @@ func newCampaignIntegrationFixture(t *testing.T) campaignIntegrationFixture {
 			return filepath.Join(remotes, strings.TrimPrefix(repository, "github.com/")+".git")
 		},
 	}
+}
+
+func campaignFixtureWorktree(t *testing.T, fixture campaignIntegrationFixture, repository string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(filepath.Join(fixture.githubDir, "acme", repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(canonical, ".worktrees", fixture.spec.ID)
 }
 
 func writeCampaignFile(t *testing.T, path, contents string) {
