@@ -943,6 +943,94 @@ func supersessionFixture(t *testing.T) (engineFixture, WorktreeMergeReceipt, wor
 	return fixture, receipt, replacement
 }
 
+func TestLegacyValidationFailureSupersessionGlobalLaneUsesPersistedIdentity(t *testing.T) {
+	fixture, receipt, replacement := supersessionFixture(t)
+	receipt.Candidate.SHA = ""
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		Apply: true, Actor: "reviewer", Reason: "record legacy identity before global scan",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	identityPath := legacyValidationFailureIdentityPath(receipt.ReceiptPath)
+	identityBefore, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, receiptBefore) {
+		t.Fatalf("legacy receipt changed while recording sidecars: err=%v", readErr)
+	}
+
+	if active, err := activeWorktreeMergeLaneReceipt(context.Background(), fixture.githubDir, filepath.Dir(receipt.ReceiptPath), receipt.Lane); err != nil || active != nil {
+		t.Fatalf("global lane scan did not accept persisted legacy identity: active=%+v err=%v", active, err)
+	}
+	if claim, err := ActiveMergeLaneClaim(fixture.githubDir, fixture.repository.Slug, receipt.Sources[0].Branch); err != nil || claim != nil {
+		t.Fatalf("global branch backlog scan did not accept persisted legacy identity: claim=%+v err=%v", claim, err)
+	}
+
+	t.Run("missing identity fails closed", func(t *testing.T) {
+		if err := os.Remove(identityPath); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || !strings.Contains(err.Error(), "read legacy validation-failed identity") {
+			t.Fatalf("missing identity result = %v", err)
+		}
+		if err := os.WriteFile(identityPath, identityBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("tampered identity fails closed", func(t *testing.T) {
+		tampered := strings.Replace(string(identityBefore), receipt.ID, "tampered", 1)
+		if tampered == string(identityBefore) {
+			t.Fatal("identity fixture did not contain receipt ID")
+		}
+		if err := os.WriteFile(identityPath, []byte(tampered), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || !strings.Contains(err.Error(), "invalid immutable evidence") {
+			t.Fatalf("tampered identity result = %v", err)
+		}
+		if err := os.WriteFile(identityPath, identityBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("mismatched identity fails closed", func(t *testing.T) {
+		var identity WorktreeMergeLegacyValidationFailureIdentity
+		if err := json.Unmarshal(identityBefore, &identity); err != nil {
+			t.Fatal(err)
+		}
+		identity.Candidate.SHA = strings.Repeat("0", 40)
+		identity.ID = legacyValidationFailureIdentityID(identity)
+		contents, err := json.MarshalIndent(identity, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents = append(contents, '\n')
+		if err := os.WriteFile(identityPath, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err == nil || !strings.Contains(err.Error(), "mismatched candidate identity") {
+			t.Fatalf("mismatched identity result = %v", err)
+		}
+		if err := os.WriteFile(identityPath, identityBefore, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+		t.Fatalf("restored legacy identity = superseded=%t err=%v", superseded, err)
+	}
+}
+
 func TestSupersedeValidationFailedWorktreeMergeRefusesSelfReplacementWithoutMutation(t *testing.T) {
 	fixture, receipt, _ := supersessionFixture(t)
 	receiptBytes, err := os.ReadFile(receipt.ReceiptPath)
