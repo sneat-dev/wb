@@ -831,8 +831,9 @@ declare the successor's exact --model or explicit unknown; --cli and
 known, never credentials. --apply with
 discarded removes only unlocked worktrees, retaining a bounded private capture
 of tracked and untracked bytes before deleting dirty ones, and removes their
-exact local branch refs only after that archive has been sealed. A discarded apply requires --remote;
-an exact matching remote source branch is then retired with force-with-lease.
+exact local branch refs only after that archive has been sealed. A discarded apply requires --remote,
+except for a proven pre-apply recycle reservation with no checkout, branch, or remote ref; an
+exact matching remote source branch is otherwise retired with force-with-lease.
 If interruption happens after worktree removal, the same command inspects and
 resumes the durable exact local-branch cleanup backlog.
 

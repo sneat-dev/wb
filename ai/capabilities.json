@@ -7698,6 +7698,7 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "a proven unclaimed pre-apply recycle reservation is terminalized without --remote while its immutable prompt archive remains retained",
                 "discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
@@ -7742,6 +7743,7 @@
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
+                "wb worktree abort next-task --disposition discarded --apply",
                 "wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
