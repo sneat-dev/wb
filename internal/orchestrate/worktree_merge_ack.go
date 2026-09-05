@@ -1293,7 +1293,7 @@ func validateValidationFailedSupersessionReceipt(receipt WorktreeMergeReceipt, r
 	if receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeValidationFailed || receipt.LandingSHA != "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 ||
 		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
-		receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
+		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
 		return fmt.Errorf("receipt %s lacks a complete exact validation_failed immutable identity", receiptPath)
 	}
 	for _, source := range receipt.Sources {
@@ -1435,7 +1435,7 @@ func validateLegacyValidationFailedReceiptShape(receipt WorktreeMergeReceipt, re
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 ||
 		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA != "" ||
 		receipt.Validation.Repository != receipt.Repository || receipt.Validation.Path != receipt.Candidate.Worktree || receipt.Validation.Revision == "" ||
-		receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
+		!worktreeMergeOperationIDMatchesRecordedSourceSet(receipt) || receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
 		return fmt.Errorf("receipt %s is not the exact legacy validation_failed missing-candidate-SHA shape", receiptPath)
 	}
 	for _, source := range receipt.Sources {

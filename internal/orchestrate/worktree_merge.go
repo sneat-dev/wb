@@ -3068,6 +3068,32 @@ func worktreeMergeOperationID(lane string, sources []WorktreeMergeSource) string
 	return lane + "-" + hex.EncodeToString(hash.Sum(nil)[:6])
 }
 
+// worktreeMergeOperationIDMatchesRecordedSourceSet accepts the original
+// source-derived operation identity when a later append-only source refresh
+// replaced the current source heads. No identity other than the current set
+// or one complete recorded refresh set is accepted.
+func worktreeMergeOperationIDMatchesRecordedSourceSet(receipt WorktreeMergeReceipt) bool {
+	if receipt.ID == worktreeMergeOperationID(receipt.Lane, receipt.Sources) {
+		return true
+	}
+	for _, refresh := range receipt.SourceRefreshes {
+		if len(refresh.Sources) == 0 || refresh.RecordedAt.IsZero() {
+			continue
+		}
+		complete := true
+		for _, source := range refresh.Sources {
+			if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+				complete = false
+				break
+			}
+		}
+		if complete && receipt.ID == worktreeMergeOperationID(receipt.Lane, refresh.Sources) {
+			return true
+		}
+	}
+	return false
+}
+
 func worktreeMergeSupersededOperationID(operation, receiptPath string) string {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte(operation))
