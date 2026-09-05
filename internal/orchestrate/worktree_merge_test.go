@@ -685,15 +685,30 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if receipt.ValidationIdentity == nil || receipt.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA || receipt.ValidationIdentity.TargetSHA != receipt.TargetSHA {
+		t.Fatalf("prepare did not publish exact validation identity: %+v", receipt.ValidationIdentity)
+	}
+	reusable, identityErr := preparedValidationStillValid(context.Background(), receipt)
+	if identityErr != nil || !reusable {
+		t.Fatalf("unchanged prepared validation was not reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	drifted := receipt
+	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", Toolchain: receipt.ValidationIdentity.Toolchain, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
+	reusable, identityErr = preparedValidationStillValid(context.Background(), drifted)
+	if identityErr != nil || reusable {
+		t.Fatalf("validation identity drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
 	installWorktreeMergePublishOnlyPRGH(t)
 	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
 	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 	t.Setenv("WB_TEST_GH_LOG", logPath)
+	var resumeEvents []progress.Event
 
 	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
 		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		Progress: func(event progress.Event) { resumeEvents = append(resumeEvents, event) },
 	})
 	if err != nil {
 		t.Fatalf("publish-only resume failed: receipt=%+v err=%v", published, err)
@@ -701,6 +716,11 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if published.Status != WorktreeMergePublished || published.PullRequest != "https://example.test/acme/app/pull/41" ||
 		published.PublishedCandidateSHA != receipt.Candidate.SHA || published.LandingSHA != "" || published.Checks.Status != "" {
 		t.Fatalf("published handoff receipt = %+v", published)
+	}
+	for _, event := range resumeEvents {
+		if event.Phase == "validate_preserved_candidate" && event.State == progress.Started {
+			t.Fatal("exact prepared validation was rerun during unchanged stop-before-merge resume")
+		}
 	}
 	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, receipt.Candidate.SHA+"\t") {
 		t.Fatalf("remote candidate = %q, want exact %s", got, receipt.Candidate.SHA)

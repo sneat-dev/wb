@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -111,6 +112,17 @@ type WorktreeMergePushGateReceipt struct {
 	ObservedAt        time.Time `json:"observed_at"`
 }
 
+// WorktreeMergeValidationIdentity binds a successful prepare validation to
+// every cheap input that can make rerunning it produce a different result.
+// Missing identity is deliberately treated as a cache miss for old receipts.
+type WorktreeMergeValidationIdentity struct {
+	CandidateSHA     string   `json:"candidate_sha"`
+	TargetSHA        string   `json:"target_sha"`
+	SourceSHAs       []string `json:"source_shas"`
+	QualityPolicySHA string   `json:"quality_policy_sha"`
+	Toolchain        string   `json:"toolchain"`
+}
+
 // WorktreeMergeForwardRepairReceipt preserves the exact landed attempt whose
 // failed target CI required a new forward repair. The active lane reuses its
 // candidate and receipt instead of abandoning either or pretending the prior
@@ -146,6 +158,7 @@ type WorktreeMergeReceipt struct {
 	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
 	Validation            quality.VerificationReport          `json:"validation,omitempty"`
 	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
+	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
 	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
 	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
 	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
@@ -1007,11 +1020,19 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if options.StopBeforeMerge {
-		reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
+		reusable, identityErr := preparedValidationStillValid(ctx, receipt)
+		if identityErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("recheck prepared validation identity: %w", identityErr))
 		}
-		reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
+		if !reusable {
+			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
+			}
+			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
+		} else {
+			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, "reused exact prepared validation")
+		}
 	}
 
 	decision, err := ResolveWorktreeMergeRoute(ctx, receipt.Repository, receipt.Target, options.Route)
@@ -2516,6 +2537,11 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 // evaluated lazily only when candidate failure evidence needs comparison.
 // Any new or changed candidate failure remains a hard gate.
 func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
+	identity, err := worktreeMergeValidationIdentity(ctx, *receipt)
+	if err != nil {
+		return fmt.Errorf("capture validation identity: %w", err)
+	}
+	receipt.ValidationIdentity = &identity
 	runOptions, err := quality.RepositoryRunOptions(receipt.Candidate.Worktree, quality.RunOptions{
 		Timeout: timeout, Retry: retry, Progress: reportWorktreeMergeQualityProgress(reporter),
 	})
@@ -2547,6 +2573,48 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return err
 	}
 	return nil
+}
+
+func worktreeMergeValidationIdentity(ctx context.Context, receipt WorktreeMergeReceipt) (WorktreeMergeValidationIdentity, error) {
+	policyPath := filepath.Join(receipt.Candidate.Worktree, ".wb", "quality.yaml")
+	policy, err := os.ReadFile(policyPath)
+	if errors.Is(err, os.ErrNotExist) {
+		policy = []byte("absent")
+	} else if err != nil {
+		return WorktreeMergeValidationIdentity{}, err
+	}
+	policyDigest := sha256.Sum256(policy)
+	toolchain, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "go", "version")
+	if err != nil {
+		return WorktreeMergeValidationIdentity{}, err
+	}
+	sourceSHAs := make([]string, len(receipt.Sources))
+	for index, source := range receipt.Sources {
+		sourceSHAs[index] = source.SHA
+	}
+	return WorktreeMergeValidationIdentity{
+		CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA,
+		SourceSHAs: sourceSHAs, QualityPolicySHA: hex.EncodeToString(policyDigest[:]),
+		Toolchain: strings.TrimSpace(toolchain),
+	}, nil
+}
+
+func preparedValidationStillValid(ctx context.Context, receipt WorktreeMergeReceipt) (bool, error) {
+	if receipt.Status != WorktreeMergePrepared || (receipt.Validation.Status != quality.StatusPassed && receipt.Validation.Status != quality.StatusFailed) ||
+		receipt.Validation.Revision != receipt.Candidate.SHA || !receipt.Validation.WorkspaceClean ||
+		receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.BaselineValidation.Status == "" || receipt.ValidationIdentity == nil {
+		return false, nil
+	}
+	if receipt.Validation.Status == quality.StatusFailed {
+		if err := worktreeMergeValidationRegression(receipt.BaselineValidation, receipt.Validation); err != nil {
+			return false, nil
+		}
+	}
+	identity, err := worktreeMergeValidationIdentity(ctx, receipt)
+	if err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(*receipt.ValidationIdentity, identity), nil
 }
 
 // verifyWorktreeMergeTarget materializes the exact fetched target revision in
