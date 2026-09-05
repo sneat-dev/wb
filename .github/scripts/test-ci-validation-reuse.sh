@@ -30,6 +30,19 @@ valid_output=$temp/valid.output
 assert_output "$valid_output" 'reuse=true'
 assert_output "$valid_output" 'reason=exact-trusted-receipt'
 
+unavailable_output=$temp/unavailable.output
+(
+  cd "$root"
+  GITHUB_REPOSITORY=sneat-dev/wb CI_REUSE_RUN_ID=44 CI_REUSE_PULL_NUMBER=17 CI_REUSE_HEAD_SHA=head-sha \
+    sh .github/scripts/ci-reuse-verify.sh "$unavailable_output" "$temp/missing.json"
+)
+assert_output "$unavailable_output" 'reuse=false'
+assert_output "$unavailable_output" 'reason=receipt-unavailable'
+if ! awk '/name: Download selected validation receipt/{found=1} found && /continue-on-error: true/{ok=1; exit} END {exit !ok}' "$root/.github/workflows/go-ci.yml"; then
+  printf 'download fallback must continue to verification\n' >&2
+  exit 1
+fi
+
 mismatch_receipt=$temp/mismatch.json
 jq '.tested_tree = "wrong-tree"' "$valid_receipt" > "$mismatch_receipt"
 mismatch_output=$temp/mismatch.output

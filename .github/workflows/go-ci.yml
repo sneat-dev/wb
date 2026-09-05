@@ -36,6 +36,9 @@ jobs:
         run: .github/scripts/ci-reuse-select.sh "$GITHUB_OUTPUT"
       - name: Download selected validation receipt
         if: steps.select.outputs.candidate == 'true'
+        # An expired or transiently unavailable artifact must take the ordinary
+        # full-validation path; it is not an authorization failure.
+        continue-on-error: true
         uses: actions/download-artifact@v7
         with:
           name: wb-ci-validation-receipt
