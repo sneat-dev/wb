@@ -744,6 +744,25 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 		strings.Contains(string(logContents), "pr merge") {
 		t.Fatalf("ordinary resume did not continue from the published handoff at checks without merging:\n%s", logContents)
 	}
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "published-repair.txt"), "repair\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "published-repair.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: advance published candidate after failed checks")
+	descendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	t.Setenv("WB_TEST_CANDIDATE_SHA", descendant)
+	advanced, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil || advanced.Status != WorktreeMergeChecksFailed {
+		t.Fatalf("published descendant resume did not reach exact-head checks: receipt=%+v err=%v", advanced, err)
+	}
+	if advanced.Candidate.SHA != descendant || advanced.PublishedCandidateSHA != descendant || advanced.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA {
+		t.Fatalf("published descendant receipt = %+v", advanced)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
+		t.Fatalf("remote descendant = %q, want %s", got, descendant)
+	}
 }
 
 func TestResumeWorktreeMergeStopBeforeMergeRefusesTargetOrSourceDrift(t *testing.T) {

@@ -838,6 +838,19 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
+		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, &receipt)
+		if advanceErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
+		}
+		if advanced {
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
+		}
+	}
+	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
 		if observeErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, observeErr)
@@ -1078,6 +1091,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
+		if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA))
+		}
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			return receipt, err
 		}
@@ -1193,6 +1209,28 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, err
 	}
 	return receipt, nil
+}
+
+func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt) (bool, error) {
+	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("read published candidate HEAD: %w", err)
+	}
+	if head == receipt.Candidate.SHA {
+		return false, nil
+	}
+	if receipt.PublishedCandidateSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		return false, fmt.Errorf("candidate head drifted from %s to %s without an exact published predecessor", receipt.Candidate.SHA, head)
+	}
+	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, head)
+	if err != nil {
+		return false, fmt.Errorf("verify published candidate descendant: %w", err)
+	}
+	if !contains {
+		return false, fmt.Errorf("candidate HEAD %s is not a descendant of published candidate %s", head, receipt.Candidate.SHA)
+	}
+	receipt.Candidate.SHA = head
+	return true, nil
 }
 
 // recoverResolvedWorktreeMergeCandidate repairs the one durable prepare gap
