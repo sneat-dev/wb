@@ -802,6 +802,35 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
 		}
 	}
+	advanced, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
+	if advanceErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
+	}
+	if advanced {
+		reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+	}
+	advancedNeedsValidation, advanceValidationErr := conflictCandidateAdvanceNeedsValidation(receipt)
+	if advanceValidationErr != nil {
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceValidationErr)
+	}
+	if advanced || advancedNeedsValidation {
+		if receipt.Status != WorktreeMergePreparing {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("advanced conflict candidate %s is %s without a completed exact validation", receipt.Candidate.SHA, receipt.Status))
+		}
+		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("advanced conflict candidate validation failed: %w", validationErr))
+		}
+		receipt.Status = WorktreeMergePrepared
+		receipt.Failure = ""
+		receipt.UpdatedAt = time.Now().UTC()
+		if err := persistWorktreeMergeReceipt(receipt); err != nil {
+			return receipt, err
+		}
+		reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
+	}
 	if retainWorktreeMergeLandIntent(&receipt, &options) {
 		receipt.UpdatedAt = time.Now().UTC()
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
@@ -1256,6 +1285,153 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 	receipt.Failure = ""
 	receipt.UpdatedAt = time.Now().UTC()
 	return true, nil
+}
+
+// advanceResolvedConflictWorktreeMergeCandidate records the only permitted
+// non-empty candidate movement after prepare has stopped at a conflict. A
+// human may commit a clean resolution into WB's preserved candidate worktree;
+// this proves that exact descendant before the mutable receipt can name it.
+func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
+	if receipt == nil || receipt.Candidate.SHA == "" || receipt.Status != WorktreeMergeConflict {
+		return false, nil
+	}
+	if receipt.Phase != WorktreeMergePhasePrepare || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
+		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
+		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
+		return false, fmt.Errorf("receipt %s has no recoverable conflict candidate", receipt.ReceiptPath)
+	}
+	guard, err := worktrees.Guard(ctx, receipt.Candidate.Worktree, worktrees.GuardOptions{ProjectsRoot: projectsRoot, Base: receipt.Target})
+	if err != nil {
+		return false, fmt.Errorf("guard receipted conflict candidate: %w", err)
+	}
+	if guard.Kind != "linked" || guard.Transient || filepath.Clean(guard.Path) != filepath.Clean(receipt.Candidate.Worktree) || guard.Branch != receipt.Candidate.Branch {
+		return false, errors.New("receipted conflict candidate worktree or branch does not match WB Guard")
+	}
+	expectedCanonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	guardCanonical := guard.CanonicalDir
+	if resolved, resolveErr := filepath.EvalSymlinks(expectedCanonical); resolveErr == nil {
+		expectedCanonical = resolved
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(guardCanonical); resolveErr == nil {
+		guardCanonical = resolved
+	}
+	if filepath.Clean(guardCanonical) != filepath.Clean(expectedCanonical) {
+		return false, fmt.Errorf("receipted conflict candidate canonical repository does not match %s", expectedCanonical)
+	}
+	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: guard.Path})
+	if err != nil {
+		return false, fmt.Errorf("load Work Log for receipted conflict candidate: %w", err)
+	}
+	if view.Claim == nil || view.Claim.Lifecycle != "active" || view.Claim.Task != receipt.Candidate.Task ||
+		view.Claim.Repository != receipt.Repository || filepath.Clean(view.Claim.Worktree) != filepath.Clean(guard.Path) ||
+		view.Claim.Branch != receipt.Candidate.Branch || view.Claim.Base != receipt.Target || view.Claim.BaseSHA != receipt.TargetSHA {
+		return false, errors.New("receipted conflict candidate Work Log claim does not match its exact receipt identity and target")
+	}
+	if err := requireCleanMergeWorktree(ctx, guard.Path); err != nil {
+		return false, fmt.Errorf("receipted conflict candidate: %w", err)
+	}
+	head, err := mergeRevision(ctx, guard.Path, "HEAD")
+	if err != nil {
+		return false, err
+	}
+	if head == receipt.Candidate.SHA {
+		return false, nil
+	}
+	containsOriginal, err := isMergeAncestor(ctx, guard.Path, receipt.Candidate.SHA, head)
+	if err != nil {
+		return false, fmt.Errorf("verify receipted candidate ancestry: %w", err)
+	}
+	if !containsOriginal {
+		return false, fmt.Errorf("candidate HEAD %s is not a descendant of receipted candidate %s", head, receipt.Candidate.SHA)
+	}
+	remoteCandidate, _, err := runCommand(ctx, timeout, retry, guard.Path, "git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return false, fmt.Errorf("inspect receipted conflict candidate publication state: %w", err)
+	}
+	if strings.TrimSpace(remoteCandidate) != "" {
+		return false, fmt.Errorf("receipted conflict candidate branch %s is already published without a consistent published predecessor", receipt.Candidate.Branch)
+	}
+	if err := recheckWorktreeMergeSources(ctx, receipt.Sources); err != nil {
+		return false, err
+	}
+	currentTarget, err := fetchExactMergeTarget(ctx, guard.Path, receipt.Target)
+	if err != nil {
+		return false, err
+	}
+	if currentTarget != receipt.TargetSHA {
+		return false, fmt.Errorf("target drifted from recorded %s to %s while conflict candidate was resolved", receipt.TargetSHA, currentTarget)
+	}
+	for _, root := range append([]string{receipt.TargetSHA}, sourceSHAs(receipt.Sources)...) {
+		contains, ancestorErr := isMergeAncestor(ctx, guard.Path, root, head)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("resolved candidate %s does not contain required immutable root %s", head, root)
+			}
+			return false, ancestorErr
+		}
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return false, err
+	}
+	ackPath := conflictCandidateAdvancePath(receipt.ReceiptPath)
+	ack := WorktreeMergeConflictCandidateAdvance{
+		SchemaVersion: worktreeMergeConflictCandidateAdvanceSchemaVersion, Status: "conflict_candidate_advanced",
+		ReceiptPath: receipt.ReceiptPath, AcknowledgementPath: ackPath, ReceiptSHA256: receiptHash,
+		ReceiptID: receipt.ID, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target,
+		ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: currentTarget, OriginalCandidate: receipt.Candidate,
+		AdvancedCandidateSHA: head, ClaimBaseSHA: view.Claim.BaseSHA, Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), RecordedAt: time.Now().UTC(),
+	}
+	ack.ID = conflictCandidateAdvanceID(ack)
+	if existing, readErr := readConflictCandidateAdvance(ackPath); readErr == nil {
+		if existing.ID != ack.ID {
+			return false, fmt.Errorf("conflict-candidate advance %s binds different immutable evidence", ackPath)
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return false, readErr
+	} else if err := persistConflictCandidateAdvance(ackPath, ack); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return false, err
+		}
+		existing, readErr := readConflictCandidateAdvance(ackPath)
+		if readErr != nil || existing.ID != ack.ID {
+			if readErr != nil {
+				return false, readErr
+			}
+			return false, fmt.Errorf("concurrent conflict-candidate advance %s binds different immutable evidence", ackPath)
+		}
+	}
+	receipt.Candidate.SHA = head
+	receipt.Status = WorktreeMergePreparing
+	receipt.Failure = ""
+	receipt.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
+// conflictCandidateAdvanceNeedsValidation closes the interruption window after
+// the acknowledgement is durable but before validation has become terminal.
+func conflictCandidateAdvanceNeedsValidation(receipt WorktreeMergeReceipt) (bool, error) {
+	ack, err := readConflictCandidateAdvance(conflictCandidateAdvancePath(receipt.ReceiptPath))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.Lane != receipt.Lane ||
+		ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.ReceiptTargetSHA != receipt.TargetSHA ||
+		ack.CurrentTargetSHA != receipt.TargetSHA || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) ||
+		ack.OriginalCandidate.Task != receipt.Candidate.Task || ack.OriginalCandidate.Worktree != receipt.Candidate.Worktree ||
+		ack.OriginalCandidate.Branch != receipt.Candidate.Branch || ack.AdvancedCandidateSHA != receipt.Candidate.SHA {
+		return false, fmt.Errorf("conflict-candidate advance %s does not match the current receipt", ack.AcknowledgementPath)
+	}
+	if receipt.Status == WorktreeMergePrepared {
+		if receipt.Validation.Revision != receipt.Candidate.SHA || receipt.Validation.Status != quality.StatusPassed {
+			return false, fmt.Errorf("advanced conflict candidate %s has no matching successful validation", receipt.Candidate.SHA)
+		}
+		return false, nil
+	}
+	return receipt.Status == WorktreeMergePreparing, nil
 }
 
 // proveConflictResolvedCandidateTargetNormalization permits the one explicit
