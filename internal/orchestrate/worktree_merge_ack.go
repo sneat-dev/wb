@@ -28,6 +28,8 @@ const (
 	worktreeMergePreparedRebatchSuffix                        = ".prepared.rebatched.ack.json"
 	worktreeMergeReceiptCollisionAcknowledgementSchemaVersion = 1
 	worktreeMergeReceiptCollisionAcknowledgementSuffix        = ".receipt-collision.ack.json"
+	worktreeMergeMissingCleanupAcknowledgementSchemaVersion   = 1
+	worktreeMergeMissingCleanupAcknowledgementSuffix          = ".missing-cleanup.ack.json"
 )
 
 // linkSelfSupersessionCorrection publishes a fully synced temporary file without
@@ -38,6 +40,40 @@ var linkSelfSupersessionCorrection = os.Link
 // linkLegacyValidationFailureIdentity publishes a derived legacy identity
 // without replacing the historical receipt or a prior acknowledgement.
 var linkLegacyValidationFailureIdentity = os.Link
+
+// linkMissingCleanupAcknowledgement publishes audited legacy cleanup evidence
+// without replacing either the historical receipt or missing Work Logs.
+var linkMissingCleanupAcknowledgement = os.Link
+
+// WorktreeMergeMissingCleanupAcknowledgement records the narrow legacy case
+// where a landed receipt's exact worktrees and branches were already removed,
+// but the historical cleanup did not retain terminal Work Log evidence.
+type WorktreeMergeMissingCleanupAcknowledgement struct {
+	SchemaVersion       int                                    `json:"schema_version"`
+	ID                  string                                 `json:"id"`
+	Status              string                                 `json:"status"`
+	ReceiptPath         string                                 `json:"receipt_path"`
+	AcknowledgementPath string                                 `json:"acknowledgement_path"`
+	ReceiptSHA256       string                                 `json:"receipt_sha256"`
+	ReceiptID           string                                 `json:"receipt_id"`
+	Lane                string                                 `json:"lane"`
+	Repository          string                                 `json:"repository"`
+	Target              string                                 `json:"target"`
+	LandingSHA          string                                 `json:"landing_sha"`
+	CurrentTargetSHA    string                                 `json:"current_target_sha"`
+	Assets              []worktrees.TerminalWorkLogExpectation `json:"absent_assets"`
+	Actor               string                                 `json:"actor"`
+	Reason              string                                 `json:"reason"`
+	RecordedAt          time.Time                              `json:"recorded_at"`
+}
+
+type WorktreeMergeMissingCleanupAcknowledgementOptions struct {
+	ProjectsRoot string
+	Receipt      string
+	Apply        bool
+	Actor        string
+	Reason       string
+}
 
 // WorktreeMergeReceiptCollisionAcknowledgement is the narrowly scoped,
 // append-only recovery record for a receipt that was historically rewritten by
@@ -1521,6 +1557,226 @@ func worktreeMergeReceiptSHA256(path string) (string, error) {
 	}
 	digest := sha256.Sum256(contents)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// AcknowledgeMissingWorktreeMergeCleanup records independently reproducible
+// evidence for legacy cleanup which removed every exact asset but lost one or
+// more terminal Work Logs. It never creates replacement Work Log evidence.
+func AcknowledgeMissingWorktreeMergeCleanup(ctx context.Context, options WorktreeMergeMissingCleanupAcknowledgementOptions) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	receiptPath, err := resolveWorktreeMergeReceiptPath(options.ProjectsRoot, options.Receipt)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	receipt, err := readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	if receipt.Lane == "" {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("receipt %s has no lane identity", receiptPath)
+	}
+	if options.Apply && (strings.TrimSpace(options.Actor) == "" || strings.TrimSpace(options.Reason) == "") {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, errors.New("--actor and --reason are required with --apply")
+	}
+	lock, err := AcquireOperationLock(options.ProjectsRoot, receipt.Lane, true)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	defer func() { _ = lock.Release() }()
+	receipt, err = readWorktreeMergeReceipt(receiptPath)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	ack, err := inspectMissingWorktreeMergeCleanup(ctx, options.ProjectsRoot, receipt, strings.TrimSpace(options.Actor), strings.TrimSpace(options.Reason), 0, 0)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	if !options.Apply {
+		return ack, nil
+	}
+	if err := persistMissingCleanupAcknowledgement(ack.AcknowledgementPath, ack); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, err
+		}
+		existing, readErr := validateMissingCleanupAcknowledgement(ctx, options.ProjectsRoot, receipt, ack.AcknowledgementPath, 0, 0)
+		if readErr != nil {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, readErr
+		}
+		return existing, nil
+	}
+	return ack, nil
+}
+
+func inspectMissingWorktreeMergeCleanup(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, actor, reason string, timeout time.Duration, retry int) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	if receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhaseLand || receipt.Status != WorktreeMergeLanded ||
+		!receipt.Cleanup || receipt.ID == "" || receipt.Lane == "" || receipt.Repository == "" || receipt.Target == "" || receipt.LandingSHA == "" ||
+		receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) || receipt.Candidate.Task != receipt.ID {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("receipt %s is not an exact landed cleanup-pending receipt", receipt.ReceiptPath)
+	}
+	if receipt.Checks.Status != PullRequestWaitPassed || (receipt.CanonicalSync != "fast_forwarded" && receipt.CanonicalSync != "not_checked_out") {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("receipt %s lacks completed exact checks or canonical synchronization", receipt.ReceiptPath)
+	}
+	assets, err := terminalWorkLogExpectations(receipt)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	for _, asset := range assets {
+		if _, statErr := os.Lstat(asset.Worktree); statErr == nil {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("missing-cleanup acknowledgement refuses task %s because worktree %s remains", asset.Task, asset.Worktree)
+		} else if !os.IsNotExist(statErr) {
+			return WorktreeMergeMissingCleanupAcknowledgement{}, fmt.Errorf("inspect receipted cleanup worktree %s: %w", asset.Worktree, statErr)
+		}
+	}
+	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	currentTarget, err := fetchExactMergeTarget(ctx, canonical, receipt.Target)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	contains, err := isMergeAncestor(ctx, canonical, receipt.LandingSHA, currentTarget)
+	if err != nil || !contains {
+		if err == nil {
+			err = fmt.Errorf("exact current remote target %s does not contain receipted landing %s", currentTarget, receipt.LandingSHA)
+		}
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, receipt, assets, timeout, retry); err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	ack := WorktreeMergeMissingCleanupAcknowledgement{
+		SchemaVersion: worktreeMergeMissingCleanupAcknowledgementSchemaVersion,
+		Status:        "missing_cleanup_acknowledged", ReceiptPath: receipt.ReceiptPath,
+		AcknowledgementPath: receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix,
+		ReceiptSHA256:       receiptHash, ReceiptID: receipt.ID, Lane: receipt.Lane,
+		Repository: receipt.Repository, Target: receipt.Target, LandingSHA: receipt.LandingSHA,
+		CurrentTargetSHA: currentTarget, Assets: append([]worktrees.TerminalWorkLogExpectation(nil), assets...),
+		Actor: actor, Reason: reason, RecordedAt: time.Now().UTC(),
+	}
+	ack.ID = missingCleanupAcknowledgementID(ack)
+	return ack, nil
+}
+
+func missingCleanupAcknowledgementID(ack WorktreeMergeMissingCleanupAcknowledgement) string {
+	hash := sha256.New()
+	for _, value := range []string{ack.ReceiptPath, ack.ReceiptSHA256, ack.ReceiptID, ack.Lane, ack.Repository, ack.Target, ack.LandingSHA, ack.CurrentTargetSHA, ack.Actor, ack.Reason} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, asset := range ack.Assets {
+		for _, value := range []string{asset.Task, asset.Repository, asset.Worktree, asset.Branch, asset.Base, asset.FinalCommit} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func sameMissingCleanupAcknowledgement(left, right WorktreeMergeMissingCleanupAcknowledgement) bool {
+	return left.ID == right.ID && left.Status == right.Status && left.ReceiptPath == right.ReceiptPath &&
+		left.AcknowledgementPath == right.AcknowledgementPath && left.ReceiptSHA256 == right.ReceiptSHA256 &&
+		left.ReceiptID == right.ReceiptID && left.Lane == right.Lane && left.Repository == right.Repository && left.Target == right.Target &&
+		left.LandingSHA == right.LandingSHA && left.CurrentTargetSHA == right.CurrentTargetSHA &&
+		sameTerminalCleanupAssets(left.Assets, right.Assets) && left.Actor == right.Actor && left.Reason == right.Reason
+}
+
+func sameTerminalCleanupAssets(left, right []worktrees.TerminalWorkLogExpectation) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func persistMissingCleanupAcknowledgement(path string, ack WorktreeMergeMissingCleanupAcknowledgement) error {
+	contents, err := json.MarshalIndent(ack, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".missing-cleanup-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return linkMissingCleanupAcknowledgement(temporaryPath, path)
+}
+
+func readMissingCleanupAcknowledgement(path string, receipt WorktreeMergeReceipt) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeMissingCleanupAcknowledgement{}, err
+	}
+	var ack WorktreeMergeMissingCleanupAcknowledgement
+	if err := json.Unmarshal(contents, &ack); err != nil {
+		return ack, fmt.Errorf("decode missing-cleanup acknowledgement %s: %w", path, err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		return ack, err
+	}
+	expectedAssets, err := terminalWorkLogExpectations(receipt)
+	if err != nil {
+		return ack, err
+	}
+	if ack.SchemaVersion != worktreeMergeMissingCleanupAcknowledgementSchemaVersion || ack.Status != "missing_cleanup_acknowledged" ||
+		ack.AcknowledgementPath != path || ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptSHA256 != receiptHash || ack.ReceiptID != receipt.ID ||
+		ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.LandingSHA != receipt.LandingSHA ||
+		ack.CurrentTargetSHA == "" || !sameTerminalCleanupAssets(ack.Assets, expectedAssets) || ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || ack.ID != missingCleanupAcknowledgementID(ack) {
+		return ack, fmt.Errorf("missing-cleanup acknowledgement %s has invalid immutable evidence", path)
+	}
+	return ack, nil
+}
+
+func validateMissingCleanupAcknowledgement(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, path string, timeout time.Duration, retry int) (WorktreeMergeMissingCleanupAcknowledgement, error) {
+	ack, err := readMissingCleanupAcknowledgement(path, receipt)
+	if err != nil {
+		return ack, err
+	}
+	observed, err := inspectMissingWorktreeMergeCleanup(ctx, projectsRoot, receipt, ack.Actor, ack.Reason, timeout, retry)
+	if err != nil {
+		return ack, err
+	}
+	canonical := filepath.Join(projectsRoot, filepath.FromSlash(receipt.Repository))
+	containsAcknowledgedTarget, ancestorErr := isMergeAncestor(ctx, canonical, ack.CurrentTargetSHA, observed.CurrentTargetSHA)
+	if ancestorErr != nil || !containsAcknowledgedTarget {
+		if ancestorErr == nil {
+			ancestorErr = fmt.Errorf("current remote target %s no longer contains acknowledged target %s", observed.CurrentTargetSHA, ack.CurrentTargetSHA)
+		}
+		return ack, ancestorErr
+	}
+	// A forward target advance is benign. Preserve and compare the exact target
+	// which the immutable acknowledgement originally observed.
+	observed.CurrentTargetSHA = ack.CurrentTargetSHA
+	observed.ID = missingCleanupAcknowledgementID(observed)
+	if !sameMissingCleanupAcknowledgement(ack, observed) {
+		return ack, fmt.Errorf("missing-cleanup acknowledgement %s no longer matches its receipt or absent assets", path)
+	}
+	return ack, nil
 }
 
 func persistValidationFailureSupersession(path string, ack WorktreeMergeValidationFailureSupersession) error {

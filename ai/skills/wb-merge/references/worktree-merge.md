@@ -11,6 +11,7 @@ wb worktree merge land <candidate-worktree-or-receipt> --route auto --progress -
 wb worktree merge resume <candidate-worktree-or-receipt> --progress --format json
 wb worktree merge revert <landing-receipt> --route auto --progress --format json
 wb worktree merge acknowledge-landed-failed <merge-receipt> --apply --actor <operator> --reason <reason>
+wb worktree merge acknowledge-missing-cleanup <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-stranded-landing <merge-receipt> --apply --actor <operator> --reason <reason>
 wb worktree merge acknowledge-receipt-collision <merge-receipt> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-target <sha> --expected-candidate <sha> --expected-current-source <sha> --expected-historical-refresh-source <sha> --apply --actor <operator> --reason <reason>
 wb worktree merge adopt-published-candidate <unlanded-receipt> <pull-request> --apply --actor <operator> --reason <reason>
@@ -54,6 +55,15 @@ post-target checks, and required canonical synchronization. On interruption,
 run the receipt's exact `resume_args`. A landed failure retains before/after
 target identities; `revert` creates and lands a forward inverse candidate and
 never resets or force-pushes shared history.
+
+If a legacy landed cleanup removed every receipted worktree and local and
+remote branch but failed to retain terminal Work Log evidence, first run
+`acknowledge-missing-cleanup` without `--apply`. It re-fetches the exact remote
+target, proves the receipted landing is still contained, and checks every exact
+asset is absent. Applying with an actor and reason writes a separate immutable
+acknowledgement. A subsequent `merge resume --cleanup` revalidates the receipt,
+target ancestry, acknowledgement, and absent assets before completing. It never
+creates replacement Work Logs or weakens cleanup for live or partial assets.
 
 When post-target CI fails but a forward fix is preferable to a revert, commit
 the fix on the same preserved source and rerun `merge prepare`. WB accepts only

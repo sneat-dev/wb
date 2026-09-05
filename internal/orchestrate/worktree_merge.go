@@ -744,6 +744,27 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			_ = lock.Release()
 		}
 	}()
+	if receipt.Status == WorktreeMergeLanded && receipt.LandingSHA != "" && receipt.Cleanup && options.Cleanup {
+		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
+		if _, statErr := os.Stat(ackPath); statErr == nil {
+			terminalized, recoveryErr := recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
+			if recoveryErr != nil {
+				return receipt, recoveryErr
+			}
+			if !terminalized {
+				return receipt, fmt.Errorf("missing-cleanup acknowledgement %s did not prove every cleanup asset terminal", ackPath)
+			}
+			receipt.Status = WorktreeMergeComplete
+			receipt.Failure = ""
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			return receipt, nil
+		} else if !os.IsNotExist(statErr) {
+			return receipt, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
+		}
+	}
 	if receipt.Candidate.SHA == "" {
 		recovered, recoverErr := recoverResolvedWorktreeMergeCandidate(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry)
 		if recoverErr != nil {
@@ -1581,7 +1602,7 @@ func resolveWorktreeMergeReceiptPath(projectsRoot, input string) (string, error)
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeLegacyValidationFailureIdentitySuffix) || strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) {
+		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeLegacyValidationFailureIdentitySuffix) || strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeReceiptCollisionAcknowledgementSuffix) || strings.HasSuffix(entry.Name(), worktreeMergeMissingCleanupAcknowledgementSuffix) {
 			continue
 		}
 		path := filepath.Join(reports, entry.Name())
@@ -2051,7 +2072,13 @@ func recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx context.Context, project
 		return false, errors.New("receipt cleanup assets are only partially terminalized; refusing to infer the missing cleanup")
 	}
 	if err := worktrees.ValidateRemovedTerminalWorkLogs(projectsRoot, expectations); err != nil {
-		return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w", err)
+		}
+		ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
+		if _, ackErr := validateMissingCleanupAcknowledgement(ctx, projectsRoot, *receipt, ackPath, timeout, retry); ackErr != nil {
+			return false, fmt.Errorf("exact removed Work Log evidence does not corroborate completed cleanup: %w; audited missing-cleanup recovery unavailable: %v", err, ackErr)
+		}
 	}
 	if err := requireTerminalCleanupBranchesAbsent(ctx, projectsRoot, *receipt, expectations, timeout, retry); err != nil {
 		return false, err
@@ -2637,6 +2664,7 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 		}
 		if strings.HasSuffix(entry.Name(), worktreeMergeLandedFailureAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeValidationFailureSupersessionSuffix) ||
+			strings.HasSuffix(entry.Name(), worktreeMergeMissingCleanupAcknowledgementSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeLegacyValidationFailureIdentitySuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergeSelfSupersessionCorrectionSuffix) ||
 			strings.HasSuffix(entry.Name(), worktreeMergePreparedRebatchSuffix) ||

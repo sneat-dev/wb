@@ -1129,6 +1129,156 @@ func TestResumeWorktreeMergeCompletesAlreadyTerminalizedCleanup(t *testing.T) {
 	}
 }
 
+func TestAcknowledgeMissingCleanupRecoversOnlyAfterExactAssetsAreGone(t *testing.T) {
+	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+	intent := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, Cleanup: true, OnFailure: "stop"}
+	retainWorktreeMergeLandIntent(&landed, &intent)
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeMissingWorktreeMergeCleanup(context.Background(), WorktreeMergeMissingCleanupAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath,
+	}); err == nil || (!strings.Contains(err.Error(), "worktree") && !strings.Contains(err.Error(), "partially terminalized")) {
+		t.Fatalf("live asset acknowledgement = %v, want worktree refusal", err)
+	}
+
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	missingTask := landed.Sources[0].Task
+	if err := os.Remove(terminalWorkLogPath(claims[missingTask])); err != nil {
+		t.Fatal(err)
+	}
+	ack, err := AcknowledgeMissingWorktreeMergeCleanup(context.Background(), WorktreeMergeMissingCleanupAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Apply: true,
+		Actor: "reviewer", Reason: "legacy cleanup removed assets before terminal evidence was retained",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Status != "missing_cleanup_acknowledged" || ack.ReceiptSHA256 == "" || len(ack.Assets) != 2 {
+		t.Fatalf("missing cleanup acknowledgement = %+v", ack)
+	}
+	candidateTerminalPath := terminalWorkLogPath(claims[landed.Candidate.Task])
+	candidateTerminal, err := os.ReadFile(candidateTerminalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(candidateTerminalPath, []byte(strings.Replace(string(candidateTerminal), landed.Candidate.SHA, strings.Repeat("f", len(landed.Candidate.SHA)), 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	}); err == nil || !strings.Contains(err.Error(), "does not exactly corroborate") {
+		t.Fatalf("mismatched retained terminal resume = %v, want refusal", err)
+	}
+	if err := os.WriteFile(candidateTerminalPath, candidateTerminal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(landed.Candidate.Worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	}); err == nil || (!strings.Contains(err.Error(), "worktree") && !strings.Contains(err.Error(), "partially terminalized")) {
+		t.Fatalf("reappeared worktree resume = %v, want refusal", err)
+	}
+	if err := os.Remove(landed.Candidate.Worktree); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "branch", landed.Sources[0].Branch, landed.Sources[0].SHA)
+	if _, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	}); err == nil || !strings.Contains(err.Error(), "local branch") {
+		t.Fatalf("reappeared branch resume = %v, want refusal", err)
+	}
+	runEngineGit(t, fixture.canonical, "branch", "-D", landed.Sources[0].Branch)
+	if err := os.WriteFile(filepath.Join(fixture.canonical, "target-advance.txt"), []byte("advance\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "add", "target-advance.txt")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "target advances after cleanup acknowledgement")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	replayed, err := AcknowledgeMissingWorktreeMergeCleanup(context.Background(), WorktreeMergeMissingCleanupAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Apply: true,
+		Actor: "reviewer", Reason: "legacy cleanup removed assets before terminal evidence was retained",
+	})
+	if err != nil || replayed.ID != ack.ID || replayed.CurrentTargetSHA != ack.CurrentTargetSHA {
+		t.Fatalf("acknowledgement replay after target advance = %+v err=%v", replayed, err)
+	}
+	resumed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil {
+		afterHash, _ := worktreeMergeReceiptSHA256(landed.ReceiptPath)
+		t.Fatalf("%v (receipt hash before=%s after=%s)", err, ack.ReceiptSHA256, afterHash)
+	}
+	if resumed.Status != WorktreeMergeComplete || strings.Join(resumed.CleanedTasks, ",") != strings.Join(sortedUniqueMergeTasks(landed), ",") {
+		t.Fatalf("acknowledged cleanup resume = %+v", resumed)
+	}
+	next := createMergeSource(t, fixture, "after-missing-cleanup", "feature/after-missing-cleanup", "after.txt", "after\n")
+	if prepared, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{next.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	}); err != nil || prepared.Status != WorktreeMergePrepared {
+		t.Fatalf("prepare after acknowledged cleanup = %+v err=%v", prepared, err)
+	}
+}
+
+func TestMissingCleanupAcknowledgementFailsClosedAfterReceiptTamper(t *testing.T) {
+	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+	intent := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, Cleanup: true, OnFailure: "stop"}
+	retainWorktreeMergeLandIntent(&landed, &intent)
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	if err := os.Remove(terminalWorkLogPath(claims[landed.Sources[0].Task])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeMissingWorktreeMergeCleanup(context.Background(), WorktreeMergeMissingCleanupAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "legacy evidence gap",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	landed.Failure = "tampered after acknowledgement"
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	}); err == nil || !strings.Contains(err.Error(), "invalid immutable evidence") {
+		t.Fatalf("tampered receipt resume = %v", err)
+	}
+}
+
+func TestMissingCleanupAcknowledgementRefusesRemoteTargetRewind(t *testing.T) {
+	fixture, _, landed, claims := landedTerminalCleanupFixture(t)
+	intent := WorktreeMergeLandOptions{Route: WorktreeMergeRouteAuto, Cleanup: true, OnFailure: "stop"}
+	retainWorktreeMergeLandIntent(&landed, &intent)
+	if err := persistWorktreeMergeReceipt(landed); err != nil {
+		t.Fatal(err)
+	}
+	externallyTerminalizeMergeCleanup(t, fixture, &landed)
+	if err := os.Remove(terminalWorkLogPath(claims[landed.Sources[0].Task])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AcknowledgeMissingWorktreeMergeCleanup(context.Background(), WorktreeMergeMissingCleanupAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "legacy evidence gap",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "push", "--force", "origin", landed.TargetSHA+":main")
+	if _, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: landed.ReceiptPath, Cleanup: true, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	}); err == nil || (!strings.Contains(err.Error(), "does not contain receipted landing") && !strings.Contains(err.Error(), "no longer contains acknowledged target")) {
+		t.Fatalf("rewound target resume = %v, want ancestry refusal", err)
+	}
+}
+
 func TestResumeWorktreeMergeRefusesIncompleteTerminalizedCleanupEvidence(t *testing.T) {
 	tests := []struct {
 		name          string
