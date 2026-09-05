@@ -376,6 +376,26 @@ func TestShardedCoverageFailureIndexPrecedesRawOutputAndSurvivesTruncation(t *te
 	}
 }
 
+func TestBoundedCoverageParallelismLeavesOneEffectiveCPUForOtherAgents(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name                       string
+		requested, jobs, cpu, want int
+	}{
+		{name: "four core host", requested: 8, jobs: 17, cpu: 4, want: 3},
+		{name: "single core host", requested: 8, jobs: 17, cpu: 1, want: 1},
+		{name: "request below cpu limit", requested: 2, jobs: 17, cpu: 8, want: 2},
+		{name: "jobs below cpu limit", requested: 8, jobs: 2, cpu: 8, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := boundedCoverageParallelism(tc.requested, tc.jobs, tc.cpu); got != tc.want {
+				t.Fatalf("boundedCoverageParallelism(%d, %d, %d) = %d, want %d", tc.requested, tc.jobs, tc.cpu, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCoverWithOptionsDurablyStoresOversizedShardedOutput(t *testing.T) {
 	module := t.TempDir()
 	writeQualityFile(t, filepath.Join(module, "go.mod"), "module example.test/durable\n\ngo 1.26\n")

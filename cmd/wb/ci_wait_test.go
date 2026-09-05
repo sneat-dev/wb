@@ -173,7 +173,12 @@ if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then
-  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","app":{"id":42}}]}'
+  echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"failure","html_url":"https://github.com/acme/app/actions/runs/123/job/456","app":{"id":42}}]}'
+  exit 0
+fi
+if [ "$1" = run ] && [ "$2" = view ]; then
+  echo 'compile error: unexpected type'
+  echo 'token ghp_notForOutput'
   exit 0
 fi
 if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then
@@ -195,7 +200,7 @@ exit 30
 	writeCIWaitExecutable(t, filepath.Join(bin, "gh"), script)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--json"}, &stdout, &stderr)
+	code := run([]string{"ci", "wait", "--repo", "acme/app", "--pr", "17", "--target", "main", "--head", ciWaitHead, "--slice", "20s", "--interval", "100ms", "--format=json"}, &stdout, &stderr)
 	var output ciWaitOutput
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
 		t.Fatal(err)
@@ -203,6 +208,11 @@ exit 30
 	if code != exitFindings || output.Status != "failed" || len(output.Checks) != 1 ||
 		output.Checks[0].Bucket != "fail" || output.Checks[0].Name != "check-run:CI" {
 		t.Fatalf("failed-check receipt = code %d output=%+v stderr=%s", code, output, stderr.String())
+	}
+	if len(output.FailureDetails) != 1 || output.FailureDetails[0].RunURL != "https://github.com/acme/app/actions/runs/123" ||
+		output.FailureDetails[0].JobURL != "https://github.com/acme/app/actions/runs/123/job/456" ||
+		!strings.Contains(output.FailureDetails[0].Excerpt, "compile error") || strings.Contains(output.FailureDetails[0].Excerpt, "ghp_notForOutput") {
+		t.Fatalf("failed job diagnostic = %+v", output.FailureDetails)
 	}
 }
 func TestCIWaitResumesDirectTargetSlicesUntilExactHeadPasses(t *testing.T) {
@@ -1151,6 +1161,31 @@ func TestPrintCIWaitShellQuotesResumeArguments(t *testing.T) {
 	for _, quoted := range []string{`'feature/$(touch-pwned)'`, `'https://example.test/pr/1?x='"'"'y'"'"''`} {
 		if !strings.Contains(got, quoted) {
 			t.Fatalf("human resume command is not shell-safe; missing %q in %q", quoted, got)
+		}
+	}
+}
+
+func TestPrintCIWaitIncludesFailureDiagnosticLinksAndExcerpt(t *testing.T) {
+	command := newCIWaitCmd()
+	var output bytes.Buffer
+	command.SetOut(&output)
+	err := printCIWait(command, ciWaitOutput{PullRequestWaitResult: orchestrate.PullRequestWaitResult{
+		Status:     orchestrate.PullRequestWaitFailed,
+		Repository: "acme/app",
+		Target:     "main",
+		Head:       ciWaitHead,
+		Reason:     "check failed",
+		FailureDetails: []orchestrate.CIFailureDetail{{
+			Check: "check-run:test", RunURL: "https://github.com/acme/app/actions/runs/123",
+			JobURL: "https://github.com/acme/app/actions/runs/123/job/456", Excerpt: "compile failed",
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"failed check-run:test", "run: https://github.com/acme/app/actions/runs/123", "job: https://github.com/acme/app/actions/runs/123/job/456", "failed-step tail:\ncompile failed"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("failure output missing %q: %s", want, output.String())
 		}
 	}
 }

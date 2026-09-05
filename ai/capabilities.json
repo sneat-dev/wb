@@ -472,6 +472,7 @@
             {
               "path": "wb ci wait",
               "flags": [
+                "--format",
                 "--head",
                 "--interval",
                 "--json",
@@ -1320,6 +1321,18 @@
       "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
     },
     {
+      "id": "wb.daemon.restart",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon restart", "flags": ["--format", "--if-running", "--json"], "modes": ["Restarts with a durable queue ownership handoff", "--if-running is safe after verified self-update"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon restart --help", "contains": ["--format", "--if-running", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon restart --if-running"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "A verified self-update invokes restart only when a managed daemon was already running."
+    },
+    {
       "id": "wb.daemon.serve",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md"
@@ -1386,6 +1399,42 @@
         }
       },
       "notes": "Cloudflare Tunnel is a transport option; authorization remains separate and remote arbitrary argv is excluded."
+    },
+    {
+      "id": "wb.daemon.start",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon start", "flags": ["--format", "--json", "--listen"], "modes": ["Idempotently starts the loopback daemon and hands off an older installed executable"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon start --help", "contains": ["--format", "--json", "--listen"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon start"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The state record pins executable SHA-256, version, revision, and queue generation before a replacement starts."
+    },
+    {
+      "id": "wb.daemon.status",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon status --help", "contains": ["--format", "--json", "provenance"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon status --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Status is bootstrap-safe and does not auto-start the daemon."
+    },
+    {
+      "id": "wb.daemon.stop",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon stop", "flags": ["--format", "--json"], "modes": ["Marks queue ownership draining before requesting process termination"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon stop --help", "contains": ["--format", "--json", "Drain"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon stop"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The loopback MVP preserves the durable handoff record while draining."
     },
     {
       "id": "wb.deps.bump",
@@ -5100,6 +5149,15 @@
               "modes": [
                 "Filters coordinated recycle candidates."
               ]
+            },
+            {
+              "path": "wb worktree relocate",
+              "flags": [
+                "--filter"
+              ],
+              "modes": [
+                "Filters coordinated relocation candidates."
+              ]
             }
           ],
           "limitation": null
@@ -6041,7 +6099,7 @@
           "limitation": null
         }
       },
-      "notes": "The PID must be the agent process, not the shell running the command; $PPID from a harness tool call is correct. A start-up hook cannot supply it, because a hook's parent is an intermediate shell rather than the agent."
+      "notes": "The PID must be the live harness process, not WB itself or an intermediate shell. $PPID from a harness tool call is correct; when shell tail-exec makes the live Codex app-server WB's direct parent, WB accepts it only with kernel evidence for the codex executable and app-server role. A shell-safe form for older builds is `wb session register --pid \"$PPID\" --runtime codex --model <exact-model>; status=$?; exit \"$status\"`. A start-up hook cannot supply the PID because its parent is an intermediate shell."
     },
     {
       "id": "wb.session.request-handoff",
@@ -7698,6 +7756,7 @@
               ],
               "modes": [
                 "discarded seals before lease-safe remote and descriptor-safe local exact-ref removal",
+                "a proven unclaimed pre-apply recycle reservation is terminalized without --remote while its immutable prompt archive remains retained",
                 "discarded --absorbed-by verifies the named merged pull request's fetched head ancestry, merge containment in the fresh target, and exact head/merge tree equality before a clean source is removed",
                 "orphaned seals one exact absent claim only after actor/reason authorization and an under-lock reread of worktree, registration, local-ref, remote-ref, and terminal absence",
                 "discarded dirty worktrees retain a bounded hook-independent private byte capture before deletion",
@@ -7742,6 +7801,7 @@
               "examples": [
                 "wb worktree abort fair-split --disposition handoff --successor codex-run-2 --model unknown",
                 "wb worktree abort fair-split --disposition discarded --apply --remote",
+                "wb worktree abort next-task --disposition discarded --apply",
                 "wb worktree abort fair-split --disposition discarded --absorbed-by <merged-pr> --apply --remote",
                 "wb worktree abort fair-split --disposition orphaned --claim <claim-id> --actor founder --reason <audit-reason> --apply"
               ]
@@ -11576,6 +11636,88 @@
         }
       },
       "notes": "Prompt text must never enter source Git, generic operational events/projections, a Git fallback/mirror, or normal output; public state carries only a digest and authorized receipt."
+    },
+    {
+      "id": "wb.worktree.relocate",
+      "feature_refs": [
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb worktree relocate",
+              "flags": [
+                "--apply",
+                "--format",
+                "--initiator",
+                "--json",
+                "--mode",
+                "--to"
+              ],
+              "modes": [
+                "Dry-run is the default and --apply is required to move a checkout",
+                "--to=local selects the canonical repository .worktrees root; --to=shared requires the current user-configured worktrees.root",
+                "The task, branch, immutable Work Log claim, and checkout contents are preserved",
+                "WB rechecks cleanliness, ownership lock, branch/head, Git registration, source, and destination while holding the task lock",
+                "Descriptor-anchored no-replace move repairs and verifies Git registration before an append-only relocation receipt is recorded",
+                "An adopted external worktree is reported but never moved",
+                "A retry at an already relocated destination is a no-op and returns the existing receipt"
+              ]
+            }
+          ],
+          "limitation": "A partial physical move that fails before its receipt is recorded remains visible in Git's registry and requires the supported recovery path; automatic crash replay is not implemented."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree relocate --help",
+              "contains": [
+                "--to=local",
+                "--to=shared",
+                "--apply",
+                "descriptor-anchored",
+                "append-only relocation receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Relocate a still-active task deliberately",
+              "examples": [
+                "wb worktree relocate <task> --to local",
+                "wb worktree relocate <task> --to shared --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/relocate_test.go",
+              "name": "TestRelocateMovesManagedSharedWorktreeToLocalAndPreservesClaim",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/relocate_test.go",
+              "name": "TestRelocateRefusesExternalAndDirtyWorktrees",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Changing layout configuration only chooses new checkout placement. Existing managed worktrees remain discoverable until an explicit relocation applies."
     },
     {
       "id": "wb.worktree.rename",
