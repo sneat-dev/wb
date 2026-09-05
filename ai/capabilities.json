@@ -6041,7 +6041,7 @@
           "limitation": null
         }
       },
-      "notes": "The PID must be the agent process, not the shell running the command; $PPID from a harness tool call is correct. A start-up hook cannot supply it, because a hook's parent is an intermediate shell rather than the agent."
+      "notes": "The PID must be the live harness process, not WB itself or an intermediate shell. $PPID from a harness tool call is correct; when shell tail-exec makes the live Codex app-server WB's direct parent, WB accepts it only with kernel evidence for the codex executable and app-server role. A shell-safe form for older builds is `wb session register --pid \"$PPID\" --runtime codex --model <exact-model>; status=$?; exit \"$status\"`. A start-up hook cannot supply the PID because its parent is an intermediate shell."
     },
     {
       "id": "wb.session.request-handoff",

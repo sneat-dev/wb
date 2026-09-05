@@ -149,7 +149,16 @@ wb worktree create <task> --mode agent --model <exact-model> \
 ```
 
 `$PPID` from the harness tool-call shell identifies the live agent; `$$` is an
-intermediate shell and is rejected. For intentional human CLI work, use
+intermediate shell and is rejected. If the shell tail-execs its final command,
+WB may see a Codex app-server as its direct parent; WB accepts that parent only
+when kernel process evidence confirms the `codex` executable and `app-server`
+role. To keep the shell alive for older builds, use:
+
+```sh
+wb session register --pid "$PPID" --runtime codex --model <exact-model>; status=$?; exit "$status"
+```
+
+Registering WB's own PID remains rejected. For intentional human CLI work, use
 `--mode manual --initiator <human>` so the exception is explicit and audited.
 
 With no prefix, WB uses the task slug itself as the branch name. Use
