@@ -767,6 +767,42 @@
       "notes": "Prefer the wb.layout.* leaf rows for the shipped CLI. Future work is admission refusal at create/sync, which WB cannot enforce against arbitrary external git clone."
     },
     {
+      "id": "wb.codegrapher.install",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher install", "flags": ["--dry-run", "--format", "--json", "--version", "--yes"], "modes": ["Requires --yes before mutation; --dry-run emits structured platform-specific argv.", "macOS/Linux use the CodeGrapher Homebrew cask; Windows uses the published Go module and accepts an exact version.", "Re-probes the executable after success and refuses a false verification claim."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher install --help", "contains": ["--yes", "--dry-run", "--version"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher install --dry-run --format=json", "wb codegrapher install --yes"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherDryRunUsesPlatformSpecificCommands", "kind": "unit"}, {"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherInstallRequiresExplicitApproval", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "CodeGrapher is WB's default preconfigured local-tool plugin; install does not index a repository."
+    },
+    {
+      "id": "wb.codegrapher.status",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher status", "flags": ["--format", "--json"], "modes": ["Runs the discovered executable's version command and reports resolved path, exact version, available build provenance, repository, module path, manager classification, and platform.", "A missing or non-runnable executable is a machine-readable finding."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher status --help", "contains": ["exact provenance", "--format", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher status --format=json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherStatusReportsInstalledBinaryProvenance", "kind": "unit"}, {"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherStatusMissingIsMachineReadableFinding", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Status observes the executable an agent would invoke rather than trusting a package-manager database."
+    },
+    {
+      "id": "wb.codegrapher.update",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb codegrapher update", "flags": ["--dry-run", "--format", "--json", "--version", "--yes"], "modes": ["Requires --yes before mutation and uses the same platform channel and post-command executable proof as install."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb codegrapher update --help", "contains": ["--yes", "--dry-run", "--version"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb codegrapher update --yes"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherDryRunUsesPlatformSpecificCommands", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Update is explicit and never runs as part of WB sync or daemon activity."
+    },
+    {
       "id": "wb.commands",
       "feature_refs": [
         "spec/features/modern-cli-help-discovery/README.md"
@@ -4088,6 +4124,18 @@
         }
       },
       "notes": "The planned coordination.migration-scope capability is separate from this declarative source-migration runtime."
+    },
+    {
+      "id": "wb.plugin.list",
+      "feature_refs": ["spec/features/tool-plugins/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb plugin list", "flags": ["--format", "--json"], "modes": ["Lists every typed built-in plugin with its stable ID, default-enabled state, command path, lifecycle verbs, and summary."]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb plugin list --help", "contains": ["preconfigured", "--format", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-fleet/references/codegrapher.md", "marker": "# CodeGrapher plugin", "examples": ["wb plugin list --format=json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/codegrapher_test.go", "name": "TestCodeGrapherIsTheDefaultTypedPlugin", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The initial registry contains the CodeGrapher reference plugin only; registration itself carries no background behavior."
     },
     {
       "id": "wb.pr.land",
