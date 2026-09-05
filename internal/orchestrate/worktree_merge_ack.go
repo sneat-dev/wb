@@ -1841,11 +1841,11 @@ func persistValidationFailureSupersession(path string, ack WorktreeMergeValidati
 }
 
 func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt) (WorktreeMergeValidationFailureSupersession, error) {
-	if err := validatePrepareFailureSupersessionReceipt(receipt, receipt.ReceiptPath); err != nil {
-		return WorktreeMergeValidationFailureSupersession{}, err
-	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, err
+	}
+	if err := validatePrepareFailureSupersessionReceipt(receipt, receipt.ReceiptPath); err != nil {
 		return WorktreeMergeValidationFailureSupersession{}, err
 	}
 	var ack WorktreeMergeValidationFailureSupersession
