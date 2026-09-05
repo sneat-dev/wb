@@ -252,7 +252,14 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	reportsDir := filepath.Join(home, "reports", "worktree-merge")
 	receiptPath := filepath.Join(reportsDir, operation+".json")
 	var prior *WorktreeMergeReceipt
-	if existing, readErr := readWorktreeMergeReceipt(receiptPath); readErr == nil {
+	for {
+		existing, readErr := readWorktreeMergeReceipt(receiptPath)
+		if errors.Is(readErr, os.ErrNotExist) {
+			break
+		}
+		if readErr != nil {
+			return WorktreeMergeReceipt{}, readErr
+		}
 		if !sameWorktreeMergeSources(existing.Sources, sources) || existing.Repository != repository || existing.Target != target {
 			return existing, fmt.Errorf("merger lane %s already owns a different candidate at %s", lane, receiptPath)
 		}
@@ -269,81 +276,87 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 		if superseded, supersessionErr := hasValidationFailureSupersession(ctx, projectsRoot, existing); supersessionErr != nil {
 			return existing, supersessionErr
 		} else if superseded {
-			return existing, fmt.Errorf("merge receipt %s was superseded by an audited replacement candidate; prepare a new source candidate", receiptPath)
-		}
-		if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(existing); rebatchErr != nil {
-			return existing, rebatchErr
-		} else if rebatched {
-			return existing, fmt.Errorf("merge receipt %s was rebatched into an audited replacement candidate; prepare the replacement receipt", receiptPath)
-		}
-		if strandedAcknowledged, strandedErr := hasStrandedLandingAcknowledgement(existing); strandedErr != nil {
-			return existing, strandedErr
-		} else if strandedAcknowledged {
-			return existing, fmt.Errorf("merge receipt %s was acknowledged as a proved stranded landing; prepare a new source candidate", receiptPath)
-		}
-		if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, existing); adoptionErr != nil {
-			return existing, fmt.Errorf("validate published-candidate adoption for %s: %w", receiptPath, adoptionErr)
-		} else if adopted {
-			existing.PullRequest, existing.PublishedCandidateSHA = adoption.PullRequest, existing.Candidate.SHA
-		}
-		if rebatch != nil && existing.RebatchOf == rebatch.ReceiptPath && existing.Status == WorktreeMergePrepared {
-			lock, lockErr := AcquireOperationLock(projectsRoot, lane, true)
-			if lockErr != nil {
-				return existing, lockErr
+			// A verified, append-only supersession retires this immutable receipt
+			// from lane selection. The same source set may be prepared again, but
+			// it must get a successor operation rather than rewrite the historical
+			// receipt or reuse its candidate worktree.
+			operation = worktreeMergeSupersededOperationID(operation, existing.ReceiptPath)
+			receiptPath = filepath.Join(reportsDir, operation+".json")
+			continue
+		} else {
+			if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(existing); rebatchErr != nil {
+				return existing, rebatchErr
+			} else if rebatched {
+				return existing, fmt.Errorf("merge receipt %s was rebatched into an audited replacement candidate; prepare the replacement receipt", receiptPath)
 			}
-			defer func() { _ = lock.Release() }()
-			// Re-read all evidence under the lane lock. This is the only recovery
-			// permitted after a crash or write failure between durable replacement
-			// receipt creation and append-only acknowledgement persistence.
-			current, currentErr := readWorktreeMergeReceipt(receiptPath)
-			if currentErr != nil {
-				return existing, currentErr
+			if strandedAcknowledged, strandedErr := hasStrandedLandingAcknowledgement(existing); strandedErr != nil {
+				return existing, strandedErr
+			} else if strandedAcknowledged {
+				return existing, fmt.Errorf("merge receipt %s was acknowledged as a proved stranded landing; prepare a new source candidate", receiptPath)
 			}
-			rechecked, recheckErr := validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources)
-			if recheckErr != nil {
-				return existing, recheckErr
+			if adoption, adopted, adoptionErr := adoptedPublishedCandidate(ctx, existing); adoptionErr != nil {
+				return existing, fmt.Errorf("validate published-candidate adoption for %s: %w", receiptPath, adoptionErr)
+			} else if adopted {
+				existing.PullRequest, existing.PublishedCandidateSHA = adoption.PullRequest, existing.Candidate.SHA
 			}
-			if current.RebatchOf != rechecked.ReceiptPath || current.Candidate.SHA == "" || len(current.RebatchedCandidates) != 1 || current.RebatchedCandidates[0] != rechecked.OriginalCandidate || !sameWorktreeMergeSources(current.Sources, sources) {
-				return existing, fmt.Errorf("existing replacement receipt %s no longer matches the requested immutable rebatch", receiptPath)
-			}
-			if _, candidateErr := validateMergeAcknowledgementCandidate(ctx, projectsRoot, current, current.Candidate); candidateErr != nil {
-				return existing, fmt.Errorf("validate replacement candidate before rebatch acknowledgement recovery: %w", candidateErr)
-			}
-			containsOriginal, ancestorErr := isMergeAncestor(ctx, current.Candidate.Worktree, rechecked.OriginalCandidate.SHA, current.Candidate.SHA)
-			if ancestorErr != nil || !containsOriginal {
-				if ancestorErr == nil {
-					ancestorErr = fmt.Errorf("replacement candidate %s does not retain original rebatch candidate %s", current.Candidate.SHA, rechecked.OriginalCandidate.SHA)
+			if rebatch != nil && existing.RebatchOf == rebatch.ReceiptPath && existing.Status == WorktreeMergePrepared {
+				lock, lockErr := AcquireOperationLock(projectsRoot, lane, true)
+				if lockErr != nil {
+					return existing, lockErr
 				}
-				return existing, ancestorErr
+				defer func() { _ = lock.Release() }()
+				// Re-read all evidence under the lane lock. This is the only recovery
+				// permitted after a crash or write failure between durable replacement
+				// receipt creation and append-only acknowledgement persistence.
+				current, currentErr := readWorktreeMergeReceipt(receiptPath)
+				if currentErr != nil {
+					return existing, currentErr
+				}
+				rechecked, recheckErr := validatePreparedWorktreeMergeRebatch(ctx, projectsRoot, rebatch.ReceiptPath, repository, target, sources)
+				if recheckErr != nil {
+					return existing, recheckErr
+				}
+				if current.RebatchOf != rechecked.ReceiptPath || current.Candidate.SHA == "" || len(current.RebatchedCandidates) != 1 || current.RebatchedCandidates[0] != rechecked.OriginalCandidate || !sameWorktreeMergeSources(current.Sources, sources) {
+					return existing, fmt.Errorf("existing replacement receipt %s no longer matches the requested immutable rebatch", receiptPath)
+				}
+				if _, candidateErr := validateMergeAcknowledgementCandidate(ctx, projectsRoot, current, current.Candidate); candidateErr != nil {
+					return existing, fmt.Errorf("validate replacement candidate before rebatch acknowledgement recovery: %w", candidateErr)
+				}
+				containsOriginal, ancestorErr := isMergeAncestor(ctx, current.Candidate.Worktree, rechecked.OriginalCandidate.SHA, current.Candidate.SHA)
+				if ancestorErr != nil || !containsOriginal {
+					if ancestorErr == nil {
+						ancestorErr = fmt.Errorf("replacement candidate %s does not retain original rebatch candidate %s", current.Candidate.SHA, rechecked.OriginalCandidate.SHA)
+					}
+					return existing, ancestorErr
+				}
+				if err := ensurePreparedWorktreeMergeRebatch(rechecked, current); err != nil {
+					return existing, err
+				}
+				return current, nil
 			}
-			if err := ensurePreparedWorktreeMergeRebatch(rechecked, current); err != nil {
-				return existing, err
+			if existing.Status == WorktreeMergeValidationFailed {
+				// A published PR candidate is already immutable and exact-source retry is
+				// idempotent: return its receipt rather than reconstructing or rewriting
+				// it. Descendant sources still take the active-lane refusal below.
+				replay, replayErr := isExactPublishedValidationFailureReplay(ctx, projectsRoot, existing, sources)
+				if replayErr != nil {
+					return existing, fmt.Errorf("verify published validation failure replay for %s: %w", receiptPath, replayErr)
+				}
+				if replay {
+					return existing, nil
+				}
+				return existing, fmt.Errorf("merge receipt %s is validation_failed; only an exact preparing receipt may resume", receiptPath)
 			}
-			return current, nil
-		}
-		if existing.Status == WorktreeMergeValidationFailed {
-			// A published PR candidate is already immutable and exact-source retry is
-			// idempotent: return its receipt rather than reconstructing or rewriting
-			// it. Descendant sources still take the active-lane refusal below.
-			replay, replayErr := isExactPublishedValidationFailureReplay(ctx, projectsRoot, existing, sources)
-			if replayErr != nil {
-				return existing, fmt.Errorf("verify published validation failure replay for %s: %w", receiptPath, replayErr)
-			}
-			if replay {
+			if existing.Status == WorktreeMergePreparing {
+				if err := validateExactPreparingWorktreeMergeReceipt(ctx, existing, lane, operation, sources); err != nil {
+					return existing, fmt.Errorf("merge receipt %s cannot resume: %w", receiptPath, err)
+				}
+				prior = &existing
+			} else if existing.Status != WorktreeMergeConflict {
 				return existing, nil
 			}
-			return existing, fmt.Errorf("merge receipt %s is validation_failed; only an exact preparing receipt may resume", receiptPath)
 		}
-		if existing.Status == WorktreeMergePreparing {
-			if err := validateExactPreparingWorktreeMergeReceipt(ctx, existing, lane, operation, sources); err != nil {
-				return existing, fmt.Errorf("merge receipt %s cannot resume: %w", receiptPath, err)
-			}
-			prior = &existing
-		} else if existing.Status != WorktreeMergeConflict {
-			return existing, nil
-		}
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return WorktreeMergeReceipt{}, readErr
+		break
 	}
 	forwardRepair := false
 	activeExcept := []string{receiptPath}
@@ -2641,6 +2654,14 @@ func worktreeMergeOperationID(lane string, sources []WorktreeMergeSource) string
 		_, _ = hash.Write([]byte(source.SHA))
 	}
 	return lane + "-" + hex.EncodeToString(hash.Sum(nil)[:6])
+}
+
+func worktreeMergeSupersededOperationID(operation, receiptPath string) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(operation))
+	_, _ = hash.Write([]byte{0})
+	_, _ = hash.Write([]byte(filepath.Clean(receiptPath)))
+	return operation + "-superseded-" + hex.EncodeToString(hash.Sum(nil)[:6])
 }
 
 func mergeOperationSuffix(operation string) string {
