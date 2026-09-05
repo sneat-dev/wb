@@ -81,6 +81,12 @@ A read-only September 4, 2026 scan found:
 | `wb pr land` exact-CI waits | about 5–6 min each | One command absorbed 8 manual calls and about 3,400 estimated tokens, but emitted no progress while waiting. |
 | Provider receipt-backed landing | 6 min 30.2 s | Merge and target CI were visible; cleanup spent about 3 min 48 s repeating the already-completed canonical-sync phase. |
 | `wb ci wait` exact-head observations | about 2–5 min | JSON mode emitted no stderr heartbeat until its terminal result. |
+| WB shared skills-sync focused test | 8.6 s | Named affected tests gave useful local feedback without running the integration-heavy `cmd/wb` package broadly. |
+| WB shared skills-sync ordinary pushes | 4.38 s and 3.67 s | The fast publication lane kept both author pushes below five seconds. |
+| WB shared skills-sync pull-request CI | 5 min 6 s | One exact candidate run carried build, vet, lint, race, and coverage; the agent did not repeat race or broad coverage locally. |
+| WB shared skills-sync main/release CI | 6 min 16 s | The exact landed SHA passed 14 checks including release assets and platform smoke tests. |
+| `wb pr land --timeout 20m` | refused before network access | The command exposed a total-timeout flag but forwarded it as a CI slice whose hidden maximum was nine minutes, wasting a deterministic retry. |
+| WB shared skills-sync landing | about 6 min 30 s | Progress stayed visible at ten-second intervals, but preflight cleanup cost about 31 s and terminal cleanup exceeded 48 s before the caller transport closed. Remote and local receipts nevertheless proved cleanup completed. |
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -567,6 +573,12 @@ a worktree.
   keep full race/coverage in CI or deliberate final gates.
 - [x] Measure laptop and VM Work Logs, hook latency, lifecycle tails,
   dependency revisits, and worker-context volume.
+- [x] Publish `strongo/cli-helpers v0.9.0` and replace WB's duplicated skills
+  synchronization engine with the shared immutable-plugin implementation.
+- [ ] Make `wb pr land --timeout` a usable total wait budget over bounded
+  exact-CI slices, with working defaults and no hidden nine-minute refusal.
+- [ ] Complete shared skills synchronization across the remaining inventoried
+  CLIs, preserving explicit publication holds and repository-owned decisions.
 - [ ] Enforce the universal ten-second progress contract across every
   long-running command and daemon operation.
 - [ ] Persist command telemetry for queue, subprocess, cache, CPU, memory,

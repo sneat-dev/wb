@@ -25,7 +25,7 @@ func newPRLandCmd() *cobra.Command {
 	var format, approvedBy, subject, reason, mergeMethod string
 	var keepCommits []string
 	var keep, allowUnfenced, nonInteractive bool
-	var pollInterval, slice time.Duration
+	var pollInterval, totalTimeout time.Duration
 	command := &cobra.Command{
 		Use:   "land <owner/repository#number>",
 		Short: "Verify, land, and tidy up after one pull request",
@@ -113,7 +113,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				KeepCommits:       splitCommaSeparated(keepCommits),
 				Reason:            reason,
 				AllowUnfenced:     allowUnfenced,
-				Slice:             slice,
+				Slice:             totalTimeout,
 				CheckPollInterval: pollInterval,
 				Progress:          progress.report,
 				OperationProgress: progress.operationReporter(),
@@ -159,8 +159,8 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; recorded in the aggregated commit and the receipt")
 	command.Flags().StringVar(&mergeMethod, "merge-method", "squash", "squash, merge, or rebase")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
-	command.Flags().DurationVar(&pollInterval, "poll-interval", 0, "interval between check observations")
-	command.Flags().DurationVar(&slice, "timeout", 0, "bound on this foreground wait; a pending result is resumable")
+	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
+	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
 	command.Flags().BoolVar(&nonInteractive, "non-interactive", false, "never use a terminal UI, and suppress the savings footer")
 	setDiscoveryTerms(command, "land merge pull request pr squash aggregate keep commits cleanup worktree claim checks green approve review bump")

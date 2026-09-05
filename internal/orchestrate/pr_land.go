@@ -87,7 +87,11 @@ type PullRequestLandOptions struct {
 	// checks prove the head was green, not that it is still green against the
 	// target the merge will use, so this is an explicit widening rather than a
 	// default — and the receipt records that it was used.
-	AllowUnfenced     bool
+	AllowUnfenced bool
+	// Slice is the total foreground wait budget retained under its historical
+	// name for API compatibility. A landing may outlive the bounded CI waiter:
+	// WB divides this budget into exact-identity observation slices instead of
+	// rejecting an otherwise valid long-running landing.
 	Slice             time.Duration
 	CheckPollInterval time.Duration
 	Progress          func(PullRequestWaitProgress)
@@ -307,7 +311,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		Progress:          options.Progress,
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
-	waited, err := WaitForPullRequestChecks(ctx, waitOptions)
+	waited, err := waitForPullRequestLandChecks(ctx, waitOptions)
 	if err != nil {
 		return result, err
 	}
@@ -401,7 +405,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		// the head-SHA lease exists to prevent. Wait for its own.
 		rewritten := waitOptions
 		rewritten.Head = keptHead
-		reobserved, waitErr := WaitForPullRequestChecks(ctx, rewritten)
+		reobserved, waitErr := waitForPullRequestLandChecks(ctx, rewritten)
 		if waitErr != nil {
 			return result, waitErr
 		}
@@ -511,6 +515,53 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
+}
+
+// pullRequestLandWaitSlice selects the next bounded slice from a user-facing
+// landing timeout. Returning one slice at a time avoids allocating from an
+// attacker-controlled duration while preserving the full final remainder.
+func pullRequestLandWaitSlice(remaining time.Duration) (time.Duration, error) {
+	if remaining <= 0 {
+		return 0, fmt.Errorf("pull request landing timeout must be positive")
+	}
+	return min(remaining, MaxForegroundCheckWaitSlice), nil
+}
+
+// waitForPullRequestLandChecks keeps one CLI call alive for its requested
+// total budget while every individual observation remains resumable and below
+// the harness-safe ceiling. Each slice reuses the same repository, PR, target,
+// and exact head; any drift is therefore still refused by the underlying
+// observer.
+func waitForPullRequestLandChecks(ctx context.Context, options PullRequestWaitOptions) (PullRequestWaitResult, error) {
+	return waitForPullRequestLandChecksWith(ctx, options, WaitForPullRequestChecks)
+}
+
+func waitForPullRequestLandChecksWith(
+	ctx context.Context,
+	options PullRequestWaitOptions,
+	wait func(context.Context, PullRequestWaitOptions) (PullRequestWaitResult, error),
+) (PullRequestWaitResult, error) {
+	if options.Slice <= 0 {
+		return PullRequestWaitResult{}, fmt.Errorf("pull request landing timeout must be positive")
+	}
+	var waited PullRequestWaitResult
+	for remaining := options.Slice; remaining > 0; {
+		slice, err := pullRequestLandWaitSlice(remaining)
+		if err != nil {
+			return PullRequestWaitResult{}, err
+		}
+		current := options
+		current.Slice = slice
+		if current.CheckPollInterval >= slice {
+			return PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the total foreground timeout")
+		}
+		waited, err = wait(ctx, current)
+		if err != nil || waited.Status != PullRequestWaitPending {
+			return waited, err
+		}
+		remaining -= slice
+	}
+	return waited, nil
 }
 
 func reportPullRequestLandProgress(reporter progress.Reporter, phase string, state progress.State, detail string, completed, total int) {

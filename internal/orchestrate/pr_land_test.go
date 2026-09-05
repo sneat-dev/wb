@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +238,61 @@ func landOptions(fixture *landFixture) PullRequestLandOptions {
 	return PullRequestLandOptions{
 		Repository: "acme/app", PullRequest: "7", ProjectsRoot: fixture.projects,
 		Keep: true, CheckPollInterval: time.Millisecond, Slice: 10 * time.Second,
+	}
+}
+
+func TestPullRequestLandPartitionsLongTimeoutIntoBoundedSlices(t *testing.T) {
+	var got []time.Duration
+	for remaining := 20 * time.Minute; remaining > 0; {
+		slice, err := pullRequestLandWaitSlice(remaining)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, slice)
+		remaining -= slice
+	}
+	want := []time.Duration{9 * time.Minute, 9 * time.Minute, 2 * time.Minute}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wait slices = %v, want %v", got, want)
+	}
+	for _, slice := range got {
+		if slice > MaxForegroundCheckWaitSlice {
+			t.Fatalf("slice %s exceeds %s", slice, MaxForegroundCheckWaitSlice)
+		}
+	}
+}
+
+func TestPullRequestLandContinuesPendingBoundedSlicesWithinTotalBudget(t *testing.T) {
+	options := PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "7", Target: "main", Head: strings.Repeat("a", 40),
+		Slice: 20 * time.Minute, CheckPollInterval: time.Minute,
+	}
+	var observed []time.Duration
+	result, err := waitForPullRequestLandChecksWith(context.Background(), options, func(_ context.Context, current PullRequestWaitOptions) (PullRequestWaitResult, error) {
+		observed = append(observed, current.Slice)
+		status := PullRequestWaitPending
+		if len(observed) == 3 {
+			status = PullRequestWaitPassed
+		}
+		return PullRequestWaitResult{Status: status}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed {
+		t.Fatalf("status = %s, want %s", result.Status, PullRequestWaitPassed)
+	}
+	want := []time.Duration{9 * time.Minute, 9 * time.Minute, 2 * time.Minute}
+	if !slices.Equal(observed, want) {
+		t.Fatalf("observed slices = %v, want %v", observed, want)
+	}
+}
+
+func TestPullRequestLandRejectsNonPositiveTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{0, -time.Second} {
+		if _, err := pullRequestLandWaitSlice(timeout); err == nil {
+			t.Fatalf("timeout %s was accepted", timeout)
+		}
 	}
 }
 
