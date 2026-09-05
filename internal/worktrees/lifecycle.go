@@ -1222,7 +1222,12 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 					continue
 				}
 				expected := filepath.Join(projectsRoot, owner, repository, ".worktrees")
-				if filepath.Clean(claim.Worktree) != filepath.Join(expected, claim.Task) || seen[expected] {
+				// The immutable claim's logical task may differ from the
+				// physical directory for parked-session members. The
+				// canonical-local root is still proven by the repository
+				// identity and the exact parent layout; the physical task
+				// name is resolved later from its manifest.
+				if filepath.Clean(filepath.Dir(claim.Worktree)) != filepath.Clean(expected) || seen[expected] {
 					continue
 				}
 				if info, statErr := os.Stat(expected); statErr != nil || !info.IsDir() {
@@ -1505,6 +1510,9 @@ func listTaskScopedClaimedRegistryWorktrees(
 					continue
 				}
 				if _, statErr := os.Stat(claim.Worktree); statErr != nil {
+					if hasExistingWorkLogTerminal(home, workLogProjection{EffortID: claim.EffortID, RunID: claim.RunID, ClaimID: claim.ClaimID}) {
+						continue
+					}
 					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, task, claim.Worktree, "Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
 					continue
 				}
