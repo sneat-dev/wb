@@ -194,6 +194,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		}
 		if failed {
 			failedResult := failedCommitWaitResult(result, "observed GitHub checks failed or were cancelled")
+			failedResult.FailureDetails = failedCheckDetails(sliceCtx, options.Repository, checks)
 			reportPullRequestWaitProgress(options, observations, failedResult, 0)
 			return failedResult, nil
 		}
@@ -905,6 +906,7 @@ type githubCommitStatus struct {
 }
 
 type githubCheckRun struct {
+	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
@@ -912,6 +914,93 @@ type githubCheckRun struct {
 	App        struct {
 		ID int64 `json:"id"`
 	} `json:"app"`
+}
+
+const maxFailedJobLogLines = 24
+
+// failedCheckDetails obtains one compact failed-step tail for each failed
+// Actions job. Third-party check runs retain their precise link and an honest
+// explanation rather than pretending their logs are available through Actions.
+func failedCheckDetails(ctx context.Context, repository string, checks []RemoteCheck) []CIFailureDetail {
+	details := make([]CIFailureDetail, 0)
+	for _, check := range checks {
+		if check.Bucket != "fail" && check.Bucket != "cancel" {
+			continue
+		}
+		detail := CIFailureDetail{Check: check.Name, JobURL: check.Link}
+		runID, jobID, ok := githubActionsRunAndJob(check.Link)
+		if !ok {
+			detail.Reason = "GitHub Actions run/job identifiers were not available for this check"
+			details = append(details, detail)
+			continue
+		}
+		detail.RunURL = fmt.Sprintf("https://github.com/%s/actions/runs/%s", repository, runID)
+		response := githubExecute(ctx, "", "run", "view", runID, "--repo", repository, "--job", jobID, "--log-failed")
+		if response.Err != nil || response.ExitCode != 0 {
+			detail.Reason = "retrieve failed-job log: " + strings.TrimSpace(string(response.Stderr))
+			if detail.Reason == "retrieve failed-job log: " {
+				if response.Err != nil {
+					detail.Reason = "retrieve failed-job log: " + response.Err.Error()
+				} else {
+					detail.Reason = "retrieve failed-job log: GitHub command exited non-zero"
+				}
+			}
+			details = append(details, detail)
+			continue
+		}
+		detail.Excerpt = failedJobLogExcerpt(string(response.Stdout), maxFailedJobLogLines)
+		if detail.Excerpt == "" {
+			detail.Reason = "GitHub returned no failed-step log lines"
+		}
+		details = append(details, detail)
+	}
+	return details
+}
+
+func githubActionsRunAndJob(rawURL string) (runID, jobID string, ok bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host != "github.com" {
+		return "", "", false
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	for index := 0; index+4 < len(parts); index++ {
+		if parts[index] == "actions" && parts[index+1] == "runs" && parts[index+3] == "job" && parts[index+2] != "" && parts[index+4] != "" {
+			return parts[index+2], parts[index+4], true
+		}
+	}
+	return "", "", false
+}
+
+func failedJobLogExcerpt(raw string, maximumLines int) string {
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			filtered = append(filtered, redactFailedJobLogLine(line))
+		}
+	}
+	if maximumLines > 0 && len(filtered) > maximumLines {
+		filtered = append([]string{"… earlier failed-job log lines omitted …"}, filtered[len(filtered)-maximumLines:]...)
+	}
+	return strings.Join(filtered, "\n")
+}
+
+func redactFailedJobLogLine(line string) string {
+	for _, marker := range []string{"ghp_", "github_pat_"} {
+		for {
+			start := strings.Index(line, marker)
+			if start < 0 {
+				break
+			}
+			end := start + len(marker)
+			for end < len(line) && ((line[end] >= 'a' && line[end] <= 'z') || (line[end] >= 'A' && line[end] <= 'Z') || (line[end] >= '0' && line[end] <= '9') || line[end] == '_') {
+				end++
+			}
+			line = line[:start] + "[REDACTED]" + line[end:]
+		}
+	}
+	return line
 }
 
 func checkRunBucket(status, conclusion string) string {
