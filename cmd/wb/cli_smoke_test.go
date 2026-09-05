@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,9 @@ func buildWB(t *testing.T) string {
 		t.Fatalf("temp dir: %v", err)
 	}
 	binary := filepath.Join(directory, "wb")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if output, err := build.CombinedOutput(); err != nil {
 		smokeBuildErr = errors.New(string(output))

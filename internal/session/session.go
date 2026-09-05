@@ -328,7 +328,7 @@ func MarkResumed(dir string, pid int, parkedID, successorWBSessionID string) (Re
 	if err != nil {
 		return Record{}, err
 	}
-	err = directory.Sync()
+	err = syncDirectory(directory)
 	_ = directory.Close()
 	if err != nil {
 		return Record{}, err

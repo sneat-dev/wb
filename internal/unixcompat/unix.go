@@ -26,7 +26,6 @@ const (
 	F_GETFD             = unix.F_GETFD
 	F_SETFD             = unix.F_SETFD
 	FD_CLOEXEC          = unix.FD_CLOEXEC
-	RENAME_EXCL         = unix.RENAME_EXCL
 )
 
 type Stat_t = unix.Stat_t
@@ -43,7 +42,6 @@ var Openat = unix.Openat
 var Fstatat = unix.Fstatat
 var Fchdir = unix.Fchdir
 var FcntlInt = unix.FcntlInt
-var RenameatxNp = unix.RenameatxNp
 var Renameat = unix.Renameat
 var Close = unix.Close
 var Fstat = unix.Fstat

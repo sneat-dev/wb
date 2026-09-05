@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -228,6 +229,9 @@ func buildJourneyWB(t *testing.T) string {
 	t.Helper()
 	repoRoot := filepath.Clean(filepath.Join("..", ".."))
 	binary := filepath.Join(t.TempDir(), "wb")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	command := exec.Command("go", "build", "-o", binary, "./cmd/wb")
 	command.Dir = repoRoot
 	if output, err := command.CombinedOutput(); err != nil {

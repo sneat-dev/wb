@@ -114,6 +114,7 @@ func Fstat(fd int, stat *Stat_t) error {
 		stat.Mode |= S_IFDIR
 	} else {
 		stat.Mode |= S_IFREG
+		stat.Mode = (stat.Mode & S_IFMT) | 0o644
 	}
 	stat.Nlink = 1
 	return nil
@@ -129,6 +130,7 @@ func Lstat(path string, stat *Stat_t) error {
 		stat.Mode |= S_IFLNK
 	} else if info.Mode().IsRegular() {
 		stat.Mode |= S_IFREG
+		stat.Mode = (stat.Mode & S_IFMT) | 0o644
 	}
 	stat.Nlink = 1
 	return nil
