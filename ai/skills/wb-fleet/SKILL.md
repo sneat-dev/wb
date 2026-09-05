@@ -5,6 +5,8 @@ description: Synchronize, inspect, test, build, and measure local repository fle
 
 # WB fleet
 
+For the preconfigured CodeGrapher local-tool plugin, see [CodeGrapher](references/codegrapher.md). It installs, updates, and reports the executable only; it does not refresh repository graphs.
+
 Choose one command that answers the question:
 
 | Need | Command | Reference |

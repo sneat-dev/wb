@@ -343,6 +343,10 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 	if options.AllowUnfenced {
 		result.Evidence["fence"] = "none; landed on observed checks under --allow-unfenced"
+		result.Evidence["allow_unfenced"] = "true"
+		if waited.PolicyAuthorityUnavailable != "" {
+			result.Evidence["required_check_policy"] = "unavailable: " + waited.PolicyAuthorityUnavailable
+		}
 	}
 
 	// Pre-flight the cleanup now, while refusing is still free. Discovering

@@ -129,7 +129,7 @@ func writeSkillsSyncReports(out io.Writer, results []skillscmd.TargetResult, for
 		return writeSkillsSyncJSON(out, results)
 	}
 	for _, result := range results {
-		if err := writeSkillsSyncText(out, result.Report); err != nil {
+		if err := writeSkillsSyncText(out, result); err != nil {
 			return err
 		}
 	}
@@ -156,7 +156,15 @@ func writeSkillsSyncJSON(out io.Writer, results []skillscmd.TargetResult) error 
 	})
 }
 
-func writeSkillsSyncText(out io.Writer, report skillsync.Report) error {
+func writeSkillsSyncText(out io.Writer, result skillscmd.TargetResult) error {
+	report := result.Report
+	if result.Err != nil {
+		if _, err := fmt.Fprintf(out, "wb skills sync failed: %s\n", result.Dir); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(out, "  error: %v\n", result.Err)
+		return err
+	}
 	verb := "synced"
 	if report.DryRun {
 		verb = "would sync"
@@ -191,9 +199,9 @@ func writeSkillsSyncText(out io.Writer, report skillsync.Report) error {
 
 func skillsSyncPayload(result skillscmd.TargetResult) skillsSyncJSON {
 	report := result.Report
-	return skillsSyncJSON{
+	payload := skillsSyncJSON{
 		Harness:        result.Harness,
-		Dir:            report.Dir,
+		Dir:            result.Dir,
 		DryRun:         report.DryRun,
 		PriorWBVersion: priorSkillsWBVersion(report),
 		WBVersion:      report.CLIVersion,
@@ -203,6 +211,18 @@ func skillsSyncPayload(result skillscmd.TargetResult) skillsSyncJSON {
 		Removed:        report.Names(skillsync.Removed),
 		Conflicts:      report.Names(skillsync.Conflict),
 	}
+	switch {
+	case result.Err != nil:
+		payload.Status = "failed"
+		payload.Error = result.Err.Error()
+	case len(payload.Conflicts) > 0:
+		payload.Status = "conflict"
+	case report.Changed():
+		payload.Status = "changed"
+	default:
+		payload.Status = "unchanged"
+	}
+	return payload
 }
 
 func priorSkillsWBVersion(report skillsync.Report) string {
@@ -215,6 +235,7 @@ func priorSkillsWBVersion(report skillsync.Report) string {
 }
 
 type skillsSyncJSON struct {
+	Status         string   `json:"status"`
 	Harness        string   `json:"harness,omitempty"`
 	Dir            string   `json:"dir"`
 	DryRun         bool     `json:"dry_run"`
@@ -225,6 +246,7 @@ type skillsSyncJSON struct {
 	Unchanged      []string `json:"unchanged,omitempty"`
 	Removed        []string `json:"removed,omitempty"`
 	Conflicts      []string `json:"conflicts,omitempty"`
+	Error          string   `json:"error,omitempty"`
 }
 
 type skillsSyncMultiJSON struct {
