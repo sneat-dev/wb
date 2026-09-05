@@ -13,3 +13,10 @@ import (
 func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	return commandContext(ctx, name, args...)
 }
+
+// CommandContextInteractive preserves the caller's foreground terminal process
+// group when interactive is true. Noninteractive commands retain tree-owned
+// cancellation.
+func CommandContextInteractive(ctx context.Context, interactive bool, name string, args ...string) *exec.Cmd {
+	return commandContextInteractive(ctx, interactive, name, args...)
+}
