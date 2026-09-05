@@ -530,6 +530,25 @@ func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
 	if code == exitOK || conflictingStdout != "" || !strings.Contains(conflictingStderr, "--json cannot be combined with --format=text") {
 		t.Fatalf("conflicting JSON flags exit=%d stdout=%q stderr=%q", code, conflictingStdout, conflictingStderr)
 	}
+
+	// A malformed candidate turns into a List diagnostic. JSON mode must keep
+	// that operator-facing warning on stderr while stdout remains one document.
+	diagnosticRoot := t.TempDir()
+	diagnosticProjects, _ := setUpMismatchedWorktreeFixture(t, diagnosticRoot)
+	stdout.Reset()
+	stderr.Reset()
+	diagnosticArgs := []string{"--projects-root", diagnosticProjects, "worktree", "relocate", "stale-task", "--to=local", "--format=json"}
+	if code := run(diagnosticArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("relocate with diagnostic exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var diagnosticEnvelope worktrees.RelocateOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &diagnosticEnvelope); err != nil {
+		t.Fatalf("relocate diagnostic JSON is not parseable: %v\n%s", err, stdout.String())
+	}
+	if len(diagnosticEnvelope.Diagnostics) != 1 || strings.Contains(stdout.String(), "warning:") ||
+		!strings.Contains(stderr.String(), "warning: relocate skipped malformed candidate") {
+		t.Fatalf("relocate diagnostic streams stdout=%q stderr=%q envelope=%#v", stdout.String(), stderr.String(), diagnosticEnvelope)
+	}
 }
 
 // setUpRenameCLIFixture creates a real canonical repository with a working
