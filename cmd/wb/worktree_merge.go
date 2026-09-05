@@ -540,8 +540,8 @@ func newWorktreeMergeSupersedeValidationFailedCmd() *cobra.Command {
 	var actor, reason, format string
 	command := &cobra.Command{
 		Use:   "supersede-validation-failed <merge-receipt> <replacement-worktree>",
-		Short: "Supersede an unlanded failed prepare receipt with a proved replacement",
-		Long: `Prove that a prepare validation_failed receipt never landed and that
+		Short: "Supersede an unlanded prepare failure with a proved replacement",
+		Long: `Prove that a prepare validation_failed or conflict receipt never landed and that
 one exact clean replacement candidate contains the immutable failed-candidate
 claim base, receipt target, freshly fetched current remote target, and every
 exact clean receipted source. The failed candidate itself need not be an

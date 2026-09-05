@@ -11213,7 +11213,7 @@
               ],
               "modes": [
                 "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",
-                "Accepts only prepare validation_failed receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
+                "Accepts only unpublished prepare validation_failed or conflict receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
               ]
             }
           ],
@@ -11255,6 +11255,11 @@
             {
               "path": "internal/orchestrate/worktree_merge_ack_test.go",
               "name": "TestSupersedeValidationFailedWorktreeMergeBindsReplacementWithoutRewritingReceipt",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_ack_test.go",
+              "name": "TestSupersedeConflictWorktreeMergeRoundTripsToNextPrepare",
               "kind": "integration"
             },
             {
