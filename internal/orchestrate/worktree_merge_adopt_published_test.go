@@ -157,6 +157,23 @@ func TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh(t *test
 	if !strings.HasPrefix(remote, refreshed.Candidate.SHA+"\t") {
 		t.Fatalf("resume did not advance remote ref without force: %q", remote)
 	}
+
+	writeEngineFile(t, filepath.Join(second.WorktreeDir, "second-repair.txt"), "second repair\n")
+	runEngineGit(t, second.WorktreeDir, "add", "second-repair.txt")
+	runEngineGit(t, second.WorktreeDir, "commit", "-m", "fix: second native check repair")
+	installPublishedCandidateAdoptionGH(t)
+	t.Setenv("WB_TEST_PR_SHA", published.Candidate.SHA)
+	secondRefresh, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+	if err != nil {
+		t.Fatalf("prepare second descendant after published adoption = %v", err)
+	}
+	if secondRefresh.PullRequest != "7" || secondRefresh.PublishedCandidateSHA != published.Candidate.SHA || secondRefresh.Candidate.SHA == published.Candidate.SHA {
+		t.Fatalf("second refresh lost published descendant: %+v", secondRefresh)
+	}
+	remote = strings.TrimSpace(runEngineGit(t, secondRefresh.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+secondRefresh.Candidate.Branch))
+	if !strings.HasPrefix(remote, published.Candidate.SHA+"\t") {
+		t.Fatalf("second prepare changed published remote ref: %q", remote)
+	}
 }
 
 func TestPublishedCandidateAdoptionRefusesDriftedPullRequestIdentity(t *testing.T) {

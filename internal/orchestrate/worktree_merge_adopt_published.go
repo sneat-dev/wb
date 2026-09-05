@@ -265,8 +265,10 @@ func readPublishedCandidateAdoption(path string, r WorktreeMergeReceipt) (Worktr
 	if err != nil {
 		return a, err
 	}
-	materialized := r.PullRequest == a.PullRequest && r.PublishedCandidateSHA == a.Candidate.SHA && r.Candidate.SHA != a.Candidate.SHA
-	if a.SchemaVersion != 1 || a.Status != "published_candidate_adopted" || a.AcknowledgementPath != path || a.ReceiptPath != r.ReceiptPath || (!materialized && a.ReceiptSHA256 != digest) || a.ReceiptID != r.ID || a.Lane != r.Lane || a.Repository != r.Repository || a.Target != r.Target || (!materialized && a.Candidate != r.Candidate) || a.PullRequest == "" || a.Actor == "" || a.Reason == "" || a.RecordedAt.IsZero() || a.ID != publishedCandidateAdoptionID(a) {
+	descendantTransition := r.PullRequest == a.PullRequest && r.Candidate.SHA != a.Candidate.SHA &&
+		r.Candidate.Task == a.Candidate.Task && filepath.Clean(r.Candidate.Worktree) == filepath.Clean(a.Candidate.Worktree) && r.Candidate.Branch == a.Candidate.Branch &&
+		(r.PublishedCandidateSHA == a.Candidate.SHA || r.PublishedCandidateSHA == r.Candidate.SHA)
+	if a.SchemaVersion != 1 || a.Status != "published_candidate_adopted" || a.AcknowledgementPath != path || a.ReceiptPath != r.ReceiptPath || (!descendantTransition && a.ReceiptSHA256 != digest) || a.ReceiptID != r.ID || a.Lane != r.Lane || a.Repository != r.Repository || a.Target != r.Target || (!descendantTransition && a.Candidate != r.Candidate) || a.PullRequest == "" || a.Actor == "" || a.Reason == "" || a.RecordedAt.IsZero() || a.ID != publishedCandidateAdoptionID(a) {
 		return a, fmt.Errorf("published-candidate adoption %s has invalid immutable identity", path)
 	}
 	return a, nil
@@ -279,7 +281,7 @@ func adoptedPublishedCandidate(ctx context.Context, r WorktreeMergeReceipt) (Wor
 	if err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, false, err
 	}
-	if r.PullRequest == a.PullRequest && r.PublishedCandidateSHA == a.Candidate.SHA && r.Candidate.SHA != a.Candidate.SHA {
+	if r.PullRequest == a.PullRequest && r.Candidate.SHA != a.Candidate.SHA {
 		if r.Candidate.SHA == "" {
 			return a, false, nil
 		}
@@ -290,7 +292,9 @@ func adoptedPublishedCandidate(ctx context.Context, r WorktreeMergeReceipt) (Wor
 			}
 			return WorktreeMergePublishedCandidateAdoption{}, false, err
 		}
-		return a, false, nil
+		if r.PublishedCandidateSHA == a.Candidate.SHA {
+			return a, false, nil
+		}
 	}
 	if err := provePublishedCandidatePullRequest(ctx, r, a.PullRequest); err != nil {
 		return WorktreeMergePublishedCandidateAdoption{}, false, err
