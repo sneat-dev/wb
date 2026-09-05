@@ -1381,6 +1381,9 @@ type preApplyRenameReservationCandidate struct {
 // recoverable without deleting its immutable prompt archive. The normal claim
 // publication remains later in applyRename, once a real checkout exists.
 func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLogOptions) error {
+	if len(options.originalPromptContents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
+		return nil
+	}
 	if err := reserveOriginalPromptArchive(home, newTask, options); err != nil {
 		return err
 	}
