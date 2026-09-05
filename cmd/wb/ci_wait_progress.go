@@ -63,9 +63,9 @@ func (progress *ciWaitProgress) finishOperation(message string) {
 	progress.live.finish(message)
 }
 
-func (progress *ciWaitProgress) operationReporter() progresspkg.Reporter {
+func (progress *ciWaitProgress) operationReporter(operation string) progresspkg.Reporter {
 	return func(event progresspkg.Event) {
-		parts := []string{"pr land"}
+		parts := []string{operation}
 		if event.Phase != "" {
 			parts = append(parts, strings.ReplaceAll(event.Phase, "_", " "))
 		}

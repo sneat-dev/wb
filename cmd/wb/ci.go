@@ -86,7 +86,7 @@ it. This command never starts a detached watcher or background loop.`,
 			progress.start(repository, pullRequest, target, head)
 			result, err := orchestrate.WaitForCommitChecks(command.Context(), orchestrate.PullRequestWaitOptions{
 				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),
-				Slice: slice, CheckPollInterval: interval, Progress: progress.report,
+				Slice: slice, CheckPollInterval: interval, Progress: progress.report, OperationProgress: progress.operationReporter("ci wait"),
 			})
 			if err != nil {
 				progress.fail(err)

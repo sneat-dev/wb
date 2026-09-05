@@ -1691,6 +1691,7 @@ func waitForWorktreeMergeChecks(ctx context.Context, receipt WorktreeMergeReceip
 	result, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: receipt.Repository, PullRequest: pullRequest, Target: receipt.Target, Head: head, AllowTargetDescendant: allowTargetDescendant,
 		Slice: slice, CheckPollInterval: interval, Progress: reportWorktreeMergeCheckProgress(options.Progress, worktreeMergeCheckPhase(pullRequest)),
+		OperationProgress: options.Progress,
 	})
 	if err != nil {
 		return result, err
