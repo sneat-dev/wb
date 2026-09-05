@@ -26,6 +26,8 @@ jobs:
     outputs:
       required: ${{ steps.changes.outputs.required }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
         id: changes
         with:

@@ -92,11 +92,6 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("validate failed candidate: %w", err)
 	}
-	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, ""); err != nil {
-			return WorktreeMergeValidationFailureSeal{}, err
-		}
-	}
 	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, err
@@ -105,11 +100,21 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("read current target tree: %w", err)
 	}
+	observedSourceDescendants := make(map[string]string)
+	for _, source := range receipt.Sources {
+		observedHead, sourceErr := validateValidationFailureSealSource(ctx, options.ProjectsRoot, receipt, source, targetTree)
+		if sourceErr != nil {
+			return WorktreeMergeValidationFailureSeal{}, sourceErr
+		}
+		if observedHead != source.SHA {
+			observedSourceDescendants[source.Task] = observedHead
+		}
+	}
 	receiptHash, err := worktreeMergeReceiptSHA256(receiptPath)
 	if err != nil {
 		return WorktreeMergeValidationFailureSeal{}, err
 	}
-	roots := validationFailureSealRoots(originalClaim.BaseSHA, receipt, currentTarget)
+	roots := validationFailureSealRoots(originalClaim.BaseSHA, receipt, currentTarget, observedSourceDescendants)
 	task := receipt.ID + "-ancestry-seal"
 	branch := "wb/recovery/" + receipt.Target + "/" + mergeOperationSuffix(receipt.ID) + "-ancestry-seal"
 	result := WorktreeMergeValidationFailureSeal{
@@ -224,8 +229,15 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("failed candidate changed while sealing: %w", err)
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, ""); err != nil {
-			return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("receipted source changed while sealing: %w", err)
+		observedHead, sourceErr := validateValidationFailureSealSource(ctx, options.ProjectsRoot, receipt, source, targetTree)
+		if sourceErr != nil {
+			return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("receipted source changed while sealing: %w", sourceErr)
+		}
+		if want := observedSourceDescendants[source.Task]; observedHead != source.SHA && observedHead != want {
+			return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("receipted source %s advanced from observed %s to %s while sealing", source.Worktree, want, observedHead)
+		}
+		if observedHead == source.SHA && observedSourceDescendants[source.Task] != "" {
+			return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("receipted source %s no longer matches observed descendant %s", source.Worktree, observedSourceDescendants[source.Task])
 		}
 	}
 	refetchedTarget, err := fetchExactMergeTarget(ctx, replacement.Worktree, receipt.Target)
@@ -241,7 +253,7 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 	return result, nil
 }
 
-func validationFailureSealRoots(claimBase string, receipt WorktreeMergeReceipt, currentTarget string) []WorktreeMergeValidationFailureSealRoot {
+func validationFailureSealRoots(claimBase string, receipt WorktreeMergeReceipt, currentTarget string, observedSourceDescendants map[string]string) []WorktreeMergeValidationFailureSealRoot {
 	roots := []WorktreeMergeValidationFailureSealRoot{
 		{Kind: "failed_candidate_claim_base", SHA: claimBase},
 		{Kind: "receipt_target", SHA: receipt.TargetSHA},
@@ -249,8 +261,36 @@ func validationFailureSealRoots(claimBase string, receipt WorktreeMergeReceipt, 
 	}
 	for _, source := range receipt.Sources {
 		roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "receipted_source:" + source.Task, SHA: source.SHA})
+		if observed := observedSourceDescendants[source.Task]; observed != "" {
+			roots = append(roots, WorktreeMergeValidationFailureSealRoot{Kind: "landed_source_descendant:" + source.Task, SHA: observed})
+		}
 	}
 	return roots
+}
+
+func validateValidationFailureSealSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, targetTree string) (string, error) {
+	head, err := mergeRevision(ctx, source.Worktree, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
+	}
+	allowedDescendant := ""
+	if head != source.SHA {
+		allowedDescendant = head
+	}
+	if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, receipt, source, allowedDescendant); err != nil {
+		return "", err
+	}
+	if allowedDescendant == "" {
+		return head, nil
+	}
+	sourceTree, err := mergeTreeRevision(ctx, source.Worktree, head)
+	if err != nil {
+		return "", fmt.Errorf("read advanced receipted source tree: %w", err)
+	}
+	if sourceTree != targetTree {
+		return "", fmt.Errorf("advanced receipted source %s tree %s differs from landed target tree %s", source.Worktree, sourceTree, targetTree)
+	}
+	return head, nil
 }
 
 func writeValidationFailureSealPrompt(receipt WorktreeMergeReceipt, currentTarget, targetTree string, roots []WorktreeMergeValidationFailureSealRoot, actor, reason string) (string, error) {
