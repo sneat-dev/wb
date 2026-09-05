@@ -749,6 +749,11 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	runEngineGit(t, receipt.Candidate.Worktree, "add", "published-repair.txt")
 	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: advance published candidate after failed checks")
 	descendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	continued.Status = WorktreeMergeConflict
+	continued.Failure = "older WB rejected recoverable published candidate drift"
+	if err := persistWorktreeMergeReceipt(continued); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("WB_TEST_CANDIDATE_SHA", descendant)
 	advanced, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,

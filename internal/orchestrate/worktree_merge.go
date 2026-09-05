@@ -1333,6 +1333,13 @@ func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projects
 	if receipt == nil || receipt.Candidate.SHA == "" || receipt.Status != WorktreeMergeConflict {
 		return false, nil
 	}
+	// Older WB versions converted an otherwise recoverable published-candidate
+	// drift into conflict before the recorded-predecessor path could inspect it.
+	// Leave that state for advancePublishedWorktreeMergeCandidate below; this
+	// helper owns only unpublished prepare conflicts.
+	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.LandingSHA == "" {
+		return false, nil
+	}
 	if receipt.Phase != WorktreeMergePhasePrepare || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
 		receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" ||
 		receipt.Repository == "" || receipt.Target == "" || receipt.TargetSHA == "" || len(receipt.Sources) == 0 {
