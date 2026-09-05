@@ -118,10 +118,36 @@ func newSelfUpdateCmdWithConfig(cfg selfupdate.Config) *cobra.Command {
 		JSONFormat: true,
 		Errors:     selfUpdateErrors{},
 		AfterUpdate: func(ctx context.Context, update selfupdate.AfterUpdate) error {
+			// A running daemon retains the old executable image after an atomic
+			// replacement. The lifecycle command performs the durable drain and
+			// queue-generation handoff; --if-running avoids starting a daemon for
+			// users who only updated the CLI.
+			restartDaemonAfterSelfUpdate(command, ctx, update)
 			return syncSkillsAfterSelfUpdate(command, ctx, update)
 		},
 	})
 	return command
+}
+
+func restartDaemonAfterSelfUpdate(cmd *cobra.Command, parent context.Context, update selfupdate.AfterUpdate) {
+	if update.Outcome.Action == selfupdate.ActionAlreadyCurrent || update.Outcome.PostSwapWarning != nil {
+		return
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, update.Executable.Path, "daemon", "restart", "--if-running", "--format", "json") //nolint:gosec // verified post-swap executable.
+	var output bytes.Buffer
+	child.Stdout, child.Stderr = &output, &output
+	if err := child.Run(); err != nil {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: verified WB update completed, but daemon handoff could not run; use `wb daemon restart --if-running`: %v\n", err)
+		return
+	}
+	// The self-update command owns stdout (especially in JSON mode), so the
+	// child lifecycle receipt is diagnostic-only.
+	_, _ = cmd.ErrOrStderr().Write(output.Bytes())
 }
 
 func selfUpdateWriteVerifiedVersion(cmd *cobra.Command, previous, installed string) {

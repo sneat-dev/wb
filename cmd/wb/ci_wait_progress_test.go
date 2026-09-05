@@ -20,7 +20,10 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 		NextPoll:    30 * time.Second,
 		Result: orchestrate.PullRequestWaitResult{Checks: []orchestrate.RemoteCheck{
 			{Name: "lint", Bucket: "pass"},
-			{Name: "test", Bucket: "pending"},
+			{Name: "check-run:test", Bucket: "pending"},
+			{Name: "check-run:integration", Bucket: "pending"},
+			{Name: "check-run:package", Bucket: "pending"},
+			{Name: "check-run:release", Bucket: "pending"},
 		}},
 	})
 	progress.report(orchestrate.PullRequestWaitProgress{
@@ -35,8 +38,8 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 	rendered := out.String()
 	for _, want := range []string{
 		"ci wait: observing acme/app PR 42 → main@012345678901",
-		"poll 1; checks 1 passed, 1 pending, 0 failed; next poll in 30s",
-		"poll 2; checks 2 passed, 0 pending, 0 failed; stable 2/2",
+		"poll 1; checks 1/5 completed; running: test, integration, package, +1 more; 4 pending; next poll in 30s",
+		"poll 2; checks 2/2 completed; stable 2/2",
 		"ci wait: passed after 2 polls; 2 checks observed",
 	} {
 		if !strings.Contains(rendered, want) {

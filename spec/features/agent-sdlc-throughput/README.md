@@ -286,6 +286,33 @@ same queue under the new generation. These commands work through launchd,
 systemd user services, and Windows per-user service/task supervision rather
 than inferring ownership from a terminal or parent PID.
 
+### Lifecycle MVP: loopback ownership and handoff
+
+The first operational lifecycle slice is `wb daemon start|status|stop|restart`.
+Each command accepts canonical `--format=text|json`; `--json` is the shortcut
+for JSON. `start` is idempotent when a reachable loopback daemon has the exact
+installed executable provenance (path, SHA-256, WB version, and revision). If
+that provenance differs, it marks the old generation draining, waits for it to
+stop, then starts the installed executable with the next durable queue
+generation. `restart --if-running` is used only after a verified WB install so
+an update never starts a previously absent daemon.
+
+The lifecycle record is private local state, atomically written with a schema
+version, fenced queue generation, owner provenance/token, and predecessor
+handoff. This MVP does not yet dispatch asynchronous jobs, but the scheduler
+MUST attach every queued job to that durable queue generation and either resume
+it once or report an incompatible-schema disposition after handoff. Ordinary
+commands remain daemon-free; only an explicitly daemon-backed async operation
+may request startup. The foreground `serve` path emits an alive heartbeat to
+stderr at least every ten seconds while it runs.
+
+The existing loopback HTTP dashboard remains the transport in this slice.
+ConnectRPC/gRPC and MCP adapters will use the typed lifecycle/queue boundary,
+never the private state file. The lifecycle package includes a Windows process
+boundary, but existing Unix-only WB packages prevent a Windows binary today;
+port those dependencies before enabling the per-user Service Control
+Manager/task supervisor with this same contract.
+
 The four-vCPU default has three CPU units, preserving one core for interactive
 work:
 
@@ -965,6 +992,15 @@ When candidate validation transitions to target-baseline validation, or
 canonical synchronization transitions to cleanup, every subsequent heartbeat
 names the new active phase and never presents the completed predecessor as
 current. JSON stdout remains independently parseable.
+
+### AC: ci-wait
+
+Given an exact-head check run fails, `wb ci wait` reports the completed/total
+check count and a capped list of pending job names while it observes GitHub.
+On failure it prints each failed Actions check's exact run and job URLs plus a
+bounded, redacted tail of that job's failed-step log. `--format=json` emits the
+same structured receipt, and `--json` remains its shortcut; neither output
+mode contains the raw full job log.
 
 ### AC: transient-github-read-recovers-in-process
 
