@@ -1243,20 +1243,22 @@ func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim w
 		return fmt.Errorf("project current execution identity: %w", err)
 	}
 	for _, identity := range []struct {
-		name      string
-		requested string
-		existing  string
+		name               string
+		requested          string
+		existing           string
+		allowEmptyExisting bool
 	}{
 		{name: "effort", requested: requested.EffortID, existing: claim.EffortID},
 		{name: "run", requested: requested.RunID, existing: claim.RunID},
 		{name: "initiator", requested: requested.Initiator, existing: claim.Initiator},
 		{name: "agent", requested: requested.AgentID, existing: claim.AgentID},
-		{name: "agent runtime", requested: requested.AgentRuntime, existing: claim.AgentRuntime},
+		{name: "agent runtime", requested: requested.AgentRuntime, existing: claim.AgentRuntime, allowEmptyExisting: true},
 		{name: "model", requested: requested.Model, existing: identity.Model},
 		{name: "cli", requested: requested.CLI, existing: identity.CLI},
 		{name: "provider", requested: requested.Provider, existing: identity.Provider},
 	} {
-		if value := strings.TrimSpace(identity.requested); value != "" && value != identity.existing {
+		value := strings.TrimSpace(identity.requested)
+		if value != "" && value != identity.existing && !(identity.allowEmptyExisting && strings.TrimSpace(identity.existing) == "") {
 			return fmt.Errorf("cannot resume active work-log claim with different %s %q (existing %q); use an audited handoff instead", identity.name, value, identity.existing)
 		}
 	}

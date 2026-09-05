@@ -688,6 +688,70 @@ func TestCreateResumeRejectsSilentWorkLogReclaim(t *testing.T) {
 	}
 }
 
+func TestCreateResumeAcceptsRuntimeWhenHandoffClaimLeftItUnbound(t *testing.T) {
+	fixture := newGitFixture(t)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "unbound-runtime",
+		WorkLog: WorkLogOptions{
+			RunID: "handoff-run", AgentID: "successor", AgentRuntime: "", Model: "unknown",
+		},
+	})
+	if err != nil || len(created) != 1 {
+		t.Fatalf("create unbound runtime claim = %#v err=%v", created, err)
+	}
+
+	resumed, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "unbound-runtime",
+		Resume:       true,
+		WorkLog: WorkLogOptions{
+			RunID: "handoff-run", AgentID: "successor", AgentRuntime: "codex", Model: "unknown",
+		},
+	})
+	if err != nil || len(resumed) != 1 || resumed[0].Action != "resumed" {
+		t.Fatalf("resume unbound runtime claim = %#v err=%v", resumed, err)
+	}
+
+	claimBytes, err := os.ReadFile(created[0].WorkLogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claim workLogClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatal(err)
+	}
+	if claim.AgentRuntime != "" {
+		t.Fatalf("immutable claim runtime = %q, want unbound", claim.AgentRuntime)
+	}
+}
+
+func TestCreateResumeRejectsDifferentBoundRuntime(t *testing.T) {
+	fixture := newGitFixture(t)
+	_, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "bound-runtime",
+		WorkLog: WorkLogOptions{
+			RunID: "bound-run", AgentID: "agent-one", AgentRuntime: "claude-code", Model: "unknown",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot,
+		Operation:    "bound-runtime",
+		Resume:       true,
+		WorkLog: WorkLogOptions{
+			RunID: "bound-run", AgentID: "agent-one", AgentRuntime: "codex", Model: "unknown",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "different agent runtime") {
+		t.Fatalf("bound runtime mismatch error = %v", err)
+	}
+}
+
 func TestCreateResumePreservesIndependentActiveClaimsAcrossRepositories(t *testing.T) {
 	fixture := newGitFixture(t)
 	storageCanonical := filepath.Join(fixture.projectsRoot, "acme", "storage")
