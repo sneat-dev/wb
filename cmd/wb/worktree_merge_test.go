@@ -53,7 +53,7 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
 		t.Fatalf("--cleanup = %#v, want false", cleanup)
 	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-missing-cleanup", "acknowledge-receipt-collision", "adopt-published-candidate", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair"} {
+	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-missing-cleanup", "acknowledge-receipt-collision", "adopt-published-candidate", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair", "prepare-conflict-replacement"} {
 		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 			continue

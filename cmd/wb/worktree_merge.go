@@ -80,7 +80,7 @@ wb worktree merge supersede-validation-failed /path/to/merge-receipt /path/to/re
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, true, false)
 	command.AddCommand(newWorktreeMergePrepareCmd(), newWorktreeMergeLandCmd("land"), newWorktreeMergeLandCmd("resume"), newWorktreeMergeRevertCmd())
-	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd())
+	command.AddCommand(newWorktreeMergeAcknowledgeLandedFailedCmd(), newWorktreeMergeAcknowledgeStrandedLandingCmd(), newWorktreeMergeAcknowledgeMissingCleanupCmd(), newWorktreeMergeAcknowledgeReceiptCollisionCmd(), newWorktreeMergeAdoptPublishedCandidateCmd(), newWorktreeMergeSealValidationFailedCmd(), newWorktreeMergeSupersedeValidationFailedCmd(), newWorktreeMergeCorrectSelfSupersessionCmd(), newWorktreeMergePreparePublishedForwardRepairCmd(), newWorktreeMergePrepareConflictReplacementCmd())
 	return command
 }
 
@@ -723,6 +723,94 @@ and --reason and creates only the new WB candidate and Work Log.`,
 	command.Flags().StringVar(&agentID, "agent-id", "", "agent identity recorded in the new candidate Work Log")
 	command.Flags().StringVar(&cli, "cli", "wb", "CLI identity recorded in the new candidate Work Log")
 	command.Flags().StringVar(&provider, "provider", "", "routing or billing provider identity, never a credential")
+	command.Flags().DurationVar(&timeout, "timeout", 8*time.Minute, "bounded Git operation timeout")
+	command.Flags().IntVar(&retry, "retry", 0, "retry transient Git command failures")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")
+	addMutationAdmissionFlags(command)
+	return command
+}
+
+func newWorktreeMergePrepareConflictReplacementCmd() *cobra.Command {
+	var apply, showProgress bool
+	var actor, reason, format, receiptSHA, claimSHA, targetSHA string
+	var expectedSourceSHAs []string
+	var model, runtime, agentID, cli, provider string
+	var timeout time.Duration
+	var retry int
+	command := &cobra.Command{
+		Use:   "prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...>",
+		Short: "Create one receipt-bound replacement for an unlanded conflict",
+		Long: `Create one deterministic WB-managed replacement while an unpublished
+prepare conflict still owns its merger lane. This is the narrow cycle breaker
+for a clean observed conflict-candidate descendant that needs an exact missing
+receipted source before supersede-validation-failed can free the lane. The
+caller pins the immutable receipt and claim, current target, and every exact
+receipted source SHA. WB refuses a published candidate, target drift, dirty or
+wrong source/worktree identity, or any non-descendant observation. It writes no
+merge receipt or acknowledgement; pass its clean candidate to
+supersede-validation-failed. Dry-run is the default; --apply creates only the
+new candidate and Work Log. Use --progress for stderr progress while long Git
+operations run; JSON stdout remains stable.`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
+			identity, releaseAdmission, err := requireMutationAdmission(command, apply)
+			if err != nil {
+				return err
+			}
+			defer releaseAdmission()
+			if strings.TrimSpace(model) == "" {
+				model = identity.Model
+			}
+			if strings.TrimSpace(runtime) == "" {
+				runtime = identity.Runtime
+			}
+			if strings.TrimSpace(agentID) == "" {
+				agentID = identity.AgentID
+			}
+			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			campaign := newCampaignProgressWithHeartbeat(progressOutput(command.ErrOrStderr(), interactive), showProgress || interactive, "conflict replacement", universalProgressHeartbeat)
+			refresh, err := orchestrate.PrepareConflictWorktreeMergeReplacement(command.Context(), orchestrate.WorktreeMergeConflictCandidateRefreshOptions{
+				ProjectsRoot: projectsRoot, Receipt: args[0], Sources: args[1:], Apply: apply, Actor: actor, Reason: reason,
+				ExpectedReceiptSHA256: receiptSHA, ExpectedImmutableClaimSHA256: claimSHA, ExpectedCurrentTargetSHA: targetSHA, ExpectedSourceSHAs: expectedSourceSHAs,
+				Model: model, AgentRuntime: runtime, AgentID: agentID, Initiator: mutationInitiator(command), CLI: cli, Provider: provider,
+				SessionRequired: identity.Registered, Timeout: timeout, Retry: retry, Progress: campaign.reporter(),
+			})
+			status := refresh.Status
+			if status == "" {
+				status = "failed"
+			}
+			campaign.finish(status)
+			if err != nil {
+				return err
+			}
+			if format == "json" {
+				encoder := json.NewEncoder(command.OutOrStdout())
+				encoder.SetIndent("", "  ")
+				return encoder.Encode(refresh)
+			}
+			_, err = fmt.Fprintf(command.OutOrStdout(), "%-18s %s\n%-18s %s\n%-18s %s\n%-18s %s\n", "status:", refresh.Status, "conflict receipt:", refresh.ReceiptPath, "candidate:", refresh.Candidate.Worktree, "current target:", refresh.CurrentTargetSHA)
+			if !apply {
+				_, _ = fmt.Fprintln(command.OutOrStdout(), "dry-run only, pass --apply to create the receipt-bound replacement candidate")
+			}
+			return err
+		},
+	}
+	command.Flags().BoolVar(&apply, "apply", false, "create the distinct WB-managed replacement candidate")
+	command.Flags().StringVar(&actor, "actor", "", "required with --apply: trusted operator or agent identity")
+	command.Flags().StringVar(&reason, "reason", "", "required with --apply: bounded audited recovery reason")
+	command.Flags().StringVar(&receiptSHA, "expected-receipt-sha256", "", "required SHA256 of the immutable conflict receipt")
+	command.Flags().StringVar(&claimSHA, "expected-immutable-claim-sha256", "", "required SHA256 of the immutable conflict candidate Work Log claim")
+	command.Flags().StringVar(&targetSHA, "expected-current-target", "", "required exact current remote target SHA")
+	command.Flags().StringSliceVar(&expectedSourceSHAs, "expected-source-sha", nil, "required expected SHA for each receipted source, in argument order")
+	command.Flags().StringVar(&model, "model", "", "model identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&runtime, "agent-runtime", "", "agent runtime recorded in the new candidate Work Log")
+	command.Flags().StringVar(&agentID, "agent-id", "", "agent identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&cli, "cli", "wb", "CLI identity recorded in the new candidate Work Log")
+	command.Flags().StringVar(&provider, "provider", "", "routing or billing provider identity, never a credential")
+	command.Flags().BoolVar(&showProgress, "progress", false, "show progress on stderr while creating the replacement")
 	command.Flags().DurationVar(&timeout, "timeout", 8*time.Minute, "bounded Git operation timeout")
 	command.Flags().IntVar(&retry, "retry", 0, "retry transient Git command failures")
 	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json")

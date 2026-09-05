@@ -19,6 +19,7 @@ wb worktree merge seal-validation-failed <merge-receipt> --apply --actor <operat
 wb worktree merge supersede-validation-failed <merge-receipt> <replacement-worktree> --apply --actor <operator> --reason <reason>
 wb worktree merge correct-self-supersession <merge-receipt> <replacement-worktree> --expected-supersession-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --apply --actor <operator> --reason <reason>
 wb worktree merge prepare-published-forward-repair <failed-merge-receipt> <current-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-supersession-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason>
+wb worktree merge prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason> --progress
 ```
 
 Bare `wb worktree merge <source-worktree...>` performs both phases. Prepare
@@ -162,3 +163,12 @@ claim base, target, and current source is an ancestor; it writes no merge
 receipt and never changes the historical receipt, claim, acknowledgement, or
 collision evidence. Pass its candidate only to `correct-self-supersession`;
 normal `prepare` remains blocked.
+
+When an unlanded conflict receipt still owns the lane that a replacement needs,
+use `prepare-conflict-replacement`. Pin the immutable receipt and claim, the
+fresh target, and every receipted source in receipt order. It admits only an
+unpublished clean conflict candidate; an observed strict descendant is retained
+as a required root. The command creates no receipt or acknowledgement, so pass
+the resulting candidate to `supersede-validation-failed` to append the only
+lane-releasing transition. Use `--progress` for heartbeat updates during long
+Git operations while JSON output remains stable.

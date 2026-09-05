@@ -10846,6 +10846,111 @@
       "notes": "Prepared means local and validated, not remotely landed."
     },
     {
+      "id": "wb.worktree.merge.prepare-conflict-replacement",
+      "feature_refs": [
+        "spec/features/mechanical-worktree-merge/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Full",
+          "commands": [
+            {
+              "path": "wb worktree merge prepare-conflict-replacement",
+              "flags": [
+                "--actor",
+                "--agent-id",
+                "--agent-runtime",
+                "--apply",
+                "--cli",
+                "--expected-current-target",
+                "--expected-immutable-claim-sha256",
+                "--expected-receipt-sha256",
+                "--expected-source-sha",
+                "--format",
+                "--initiator",
+                "--mode",
+                "--model",
+                "--progress",
+                "--provider",
+                "--reason",
+                "--retry",
+                "--timeout"
+              ],
+              "modes": [
+                "Dry-runs exact receipt, immutable-claim, unpublished conflict candidate, current target, and receipted-source proof without creating a worktree",
+                "Creates one deterministic clean WB-managed replacement under the receipt-owned lane, retaining both the receipted candidate and a clean observed strict descendant as required roots without writing a receipt or acknowledgement"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree merge prepare-conflict-replacement --help",
+              "contains": [
+                "unpublished",
+                "supersede-validation-failed",
+                "--expected-receipt-sha256",
+                "--expected-immutable-claim-sha256",
+                "--expected-current-target",
+                "--expected-source-sha",
+                "--progress",
+                "--apply",
+                "--actor",
+                "--initiator",
+                "--mode",
+                "--reason"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-merge/references/worktree-merge.md",
+              "marker": "# Mechanical worktree merge",
+              "examples": [
+                "wb worktree merge prepare-conflict-replacement <conflict-receipt> <receipted-source-worktree...> --expected-receipt-sha256 <sha256> --expected-immutable-claim-sha256 <sha256> --expected-current-target <sha> --expected-source-sha <sha> --apply --actor <operator> --reason <reason> --progress"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/orchestrate/worktree_merge_conflict_replacement_test.go",
+              "name": "TestPrepareConflictWorktreeMergeReplacementBreaksReceiptOwnedLaneCycle",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_conflict_replacement_test.go",
+              "name": "TestPrepareConflictWorktreeMergeReplacementRefusesPublishedAndMismatchedSources",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/orchestrate/worktree_merge_conflict_replacement_test.go",
+              "name": "TestPrepareConflictWorktreeMergeReplacementRetiresNewCandidateAfterEvidenceDrift",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/worktree_merge_test.go",
+              "name": "TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney",
+              "kind": "integration"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "This recovery-only constructor leaves the historical conflict receipt and every Work Log immutable. It creates no merge receipt, so the existing supersede-validation-failed acknowledgement remains the only lane-releasing transition."
+    },
+    {
       "id": "wb.worktree.merge.prepare-published-forward-repair",
       "feature_refs": [
         "spec/features/mechanical-worktree-merge/README.md"
