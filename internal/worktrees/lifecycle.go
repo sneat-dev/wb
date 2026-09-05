@@ -1214,7 +1214,7 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 					continue
 				}
 				var claim workLogClaim
-				if json.Unmarshal(raw, &claim) != nil || claim.Lifecycle != "active" || claim.Task != task || claim.Worktree == "" {
+				if json.Unmarshal(raw, &claim) != nil || claim.Lifecycle != "active" || (claim.Task != task && claim.EffortID != task) || claim.Worktree == "" {
 					continue
 				}
 				owner, repository, splitErr := splitRepository(claim.Repository)
@@ -1222,7 +1222,7 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 					continue
 				}
 				expected := filepath.Join(projectsRoot, owner, repository, ".worktrees")
-				if filepath.Clean(claim.Worktree) != filepath.Join(expected, task) || seen[expected] {
+				if filepath.Clean(claim.Worktree) != filepath.Join(expected, claim.Task) || seen[expected] {
 					continue
 				}
 				if info, statErr := os.Stat(expected); statErr != nil || !info.IsDir() {
@@ -1230,6 +1230,34 @@ func discoverTaskScopedLocalWorktreeLayouts(projectsRoot string, tasks map[strin
 				}
 				seen[expected] = true
 				layouts = append(layouts, wbhome.Layout{WorktreesRoot: expected, Local: true})
+			}
+		}
+	}
+	// A legacy checkout can retain its manifest while its active claim is not
+	// readable. Probe only the requested task path under each canonical root;
+	// do not invoke Git or inspect any other worktree during this fallback.
+	owners, readErr := os.ReadDir(projectsRoot)
+	if readErr == nil {
+		for _, owner := range owners {
+			if !owner.IsDir() || !validSafeSegment(owner.Name()) {
+				continue
+			}
+			repositories, repoErr := os.ReadDir(filepath.Join(projectsRoot, owner.Name()))
+			if repoErr != nil {
+				continue
+			}
+			for _, repository := range repositories {
+				if !repository.IsDir() || !validRepositorySegment(repository.Name()) {
+					continue
+				}
+				root := filepath.Join(projectsRoot, owner.Name(), repository.Name(), ".worktrees")
+				for task := range tasks {
+					candidate := filepath.Join(root, task)
+					if _, statErr := os.Stat(candidate); statErr == nil && !seen[root] {
+						seen[root] = true
+						layouts = append(layouts, wbhome.Layout{WorktreesRoot: root, Local: true})
+					}
+				}
 			}
 		}
 	}
@@ -1473,7 +1501,14 @@ func listTaskScopedClaimedRegistryWorktrees(
 				if err != nil {
 					continue
 				}
-				if !filterMatches(filter, claim.Repository, claim.Worktree) || !hasGitMetadata(claim.Worktree) || !isGitRoot(ctx, claim.Worktree) {
+				if !filterMatches(filter, claim.Repository, claim.Worktree) {
+					continue
+				}
+				if _, statErr := os.Stat(claim.Worktree); statErr != nil {
+					diagnostics = append(diagnostics, listDiagnostic(layout.WorktreesRoot, task, claim.Worktree, "Git still registers this active WB-managed worktree but its working tree is missing; preserve the claim and recover or prune it explicitly"))
+					continue
+				}
+				if !hasGitMetadata(claim.Worktree) || !isGitRoot(ctx, claim.Worktree) {
 					continue
 				}
 				locked, err := inspectLifecycleTaskLock(home, layout, task)
