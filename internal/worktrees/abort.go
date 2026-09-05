@@ -2,7 +2,9 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -101,7 +103,11 @@ type AbortResult struct {
 	RemoteDeleted bool                   `json:"remote_deleted"`
 	BacklogID     string                 `json:"backlog_id,omitempty"`
 	DirtyCapture  *DirtyWorktreeEvidence `json:"dirty_capture,omitempty"`
-	Reason        string                 `json:"reason,omitempty"`
+	// ReservationRuns names immutable pre-apply Work Log reservations this
+	// result terminalized. They have no checkout, branch, or remote ref, so
+	// discarded recovery retains the prompt archive and needs no --remote.
+	ReservationRuns []string `json:"reservation_runs,omitempty"`
+	Reason          string   `json:"reason,omitempty"`
 	// Quarantined names durable cleanup records this run declined to act on.
 	// It is carried on the first result rather than aborting the run: the
 	// backlog directory is shared, and somebody else's unreadable record must
@@ -151,9 +157,6 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		}
 	} else if terminalWithoutSuccessor && identitySupplied {
 		return nil, fmt.Errorf("--model, --cli, and --provider cannot be used with %s", options.Disposition)
-	}
-	if options.Apply && options.Disposition == AbortDiscarded && !options.DeleteRemote {
-		return nil, fmt.Errorf("discarded abort requires remote branch retirement; rerun with --remote")
 	}
 	if options.Disposition == AbortOrphaned {
 		return abortOrphanedClaim(ctx, options)
@@ -206,7 +209,19 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		return nil, err
 	}
 	if len(listed.Results) == 0 && len(backlog) == 0 {
+		if options.Disposition == AbortDiscarded {
+			reservationResults, found, reservationErr := abortPreApplyRenameReservations(resolution, task, options)
+			if reservationErr != nil {
+				return reservationResults, reservationErr
+			}
+			if found {
+				return reservationResults, nil
+			}
+		}
 		return nil, fmt.Errorf("WB worktree task %q was not found", task)
+	}
+	if options.Apply && options.Disposition == AbortDiscarded && !options.DeleteRemote {
+		return nil, fmt.Errorf("discarded abort requires remote branch retirement; rerun with --remote")
 	}
 	results := make([]AbortResult, len(listed.Results))
 	for i, entry := range listed.Results {
@@ -355,6 +370,113 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		result.Applied = true
 	}
 	return results, nil
+}
+
+// abortPreApplyRenameReservations is the narrow recovery path for a process
+// that reserved a new recycle prompt but failed before it published the first
+// worktree claim. It never removes a checkout, branch, remote ref, or prompt
+// archive. A regular List result or lifecycle backlog bypasses this helper, so
+// normal abort safety remains unchanged.
+func abortPreApplyRenameReservations(resolution wbhome.Resolution, task string, options AbortOptions) ([]AbortResult, bool, error) {
+	reservations, err := findPreApplyRenameReservations(resolution.Write.Home, task)
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect pre-apply reservation for task %q: %w", task, err)
+	}
+	if len(reservations) == 0 {
+		return nil, false, nil
+	}
+	result := AbortResult{
+		ListResult: ListResult{Task: task}, Disposition: AbortDiscarded, Eligible: true,
+		ReservationRuns: reservationRunNames(reservations),
+		Reason:          "unclaimed pre-apply Work Log reservation; immutable prompt archive is retained",
+	}
+	if !options.Apply {
+		return []AbortResult{result}, true, nil
+	}
+
+	cleanup, cleanupErr := acquirePreApplyReservationTask(resolution, task)
+	if cleanupErr != nil {
+		return []AbortResult{result}, true, cleanupErr
+	}
+	if cleanup != nil {
+		defer cleanup.close()
+		if err := preApplyReservationShellOnly(cleanup); err != nil {
+			return []AbortResult{result}, true, err
+		}
+	}
+	for _, reservation := range reservations {
+		if err := terminalizePreApplyRenameReservation(resolution.Write.Home, reservation); err != nil {
+			return []AbortResult{result}, true, fmt.Errorf("terminalize pre-apply reservation %s: %w", reservation.RunID, err)
+		}
+	}
+	if cleanup != nil {
+		if err := cleanup.lock.release(); err != nil {
+			return []AbortResult{result}, true, fmt.Errorf("release pre-apply reservation task lock: %w", err)
+		}
+		cleanup.lock = operationLock{}
+		purgeTerminalTaskLockDebris(cleanup)
+		if !removeEmptyTaskDirectory(cleanup) {
+			return []AbortResult{result}, true, fmt.Errorf("pre-apply reservation task shell changed before terminal cleanup")
+		}
+	}
+	result.Applied = true
+	result.Reason = "terminalized unclaimed pre-apply Work Log reservation; immutable prompt archive retained"
+	return []AbortResult{result}, true, nil
+}
+
+func reservationRunNames(reservations []preApplyRenameReservationCandidate) []string {
+	runs := make([]string, 0, len(reservations))
+	for _, reservation := range reservations {
+		runs = append(runs, reservation.EffortID+"/"+reservation.RunID)
+	}
+	return runs
+}
+
+// acquirePreApplyReservationTask opens only WB_HOME's logical task shell. A
+// crashed rename can leave either a retired lock or its exact dead-owner lock;
+// the latter follows the existing interrupted-lock proof before reuse.
+func acquirePreApplyReservationTask(resolution wbhome.Resolution, task string) (*cleanupTaskHandle, error) {
+	root := filepath.Join(resolution.Write.Home, "worktrees")
+	if _, err := os.Lstat(filepath.Join(root, task)); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect pre-apply reservation task shell: %w", err)
+	}
+	cleanup, err := acquireCleanupTaskAt(root, task)
+	if err == nil {
+		return cleanup, nil
+	}
+	// Only the existing named interrupted-lock recovery may reclaim a live
+	// entry, and it independently proves the recorded owner is conclusively
+	// dead before returning the held descriptor.
+	recovered, _, recoveryErr := reclaimNamedInterruptedCleanupTask(resolution, task)
+	if recoveryErr != nil {
+		return nil, fmt.Errorf("recover pre-apply reservation task shell: %w", recoveryErr)
+	}
+	return recovered, nil
+}
+
+func preApplyReservationShellOnly(task *cleanupTaskHandle) error {
+	if task == nil || task.task == nil {
+		return fmt.Errorf("pre-apply reservation task shell is unavailable")
+	}
+	if err := task.validate(); err != nil {
+		return err
+	}
+	if _, err := task.task.Seek(0, 0); err != nil {
+		return err
+	}
+	entries, err := task.task.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == ".lock" || strings.HasPrefix(entry.Name(), ".wb-retired-lock-") {
+			continue
+		}
+		return fmt.Errorf("pre-apply reservation task shell contains %s; preserve it for explicit recovery", entry.Name())
+	}
+	return nil
 }
 
 func preflightAbortRepository(

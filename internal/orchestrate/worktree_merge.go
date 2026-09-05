@@ -838,6 +838,19 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
+		advanced, advanceErr := advancePublishedWorktreeMergeCandidate(ctx, &receipt)
+		if advanceErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, advanceErr)
+		}
+		if advanced {
+			receipt.UpdatedAt = time.Now().UTC()
+			if err := persistWorktreeMergeReceipt(receipt); err != nil {
+				return receipt, err
+			}
+			reportWorktreeMergeProgress(options.Progress, "recover_candidate", progress.Completed, shortMergeRevision(receipt.Candidate.SHA))
+		}
+	}
+	if receipt.PullRequest != "" && receipt.LandingSHA == "" {
 		serverLanding, merged, observeErr := pullRequestLandingReceipt(ctx, receipt, options)
 		if observeErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, observeErr)
@@ -1078,6 +1091,9 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		if err != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
 		}
+		if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.PushGate.PreviousRemoteSHA != receipt.PublishedCandidateSHA {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("published candidate ref %s moved from recorded predecessor %s to %s", receipt.Candidate.Branch, receipt.PublishedCandidateSHA, receipt.PushGate.PreviousRemoteSHA))
+		}
 		if err := persistWorktreeMergeReceipt(receipt); err != nil {
 			return receipt, err
 		}
@@ -1195,6 +1211,28 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 	return receipt, nil
 }
 
+func advancePublishedWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt) (bool, error) {
+	head, err := mergeRevision(ctx, receipt.Candidate.Worktree, "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("read published candidate HEAD: %w", err)
+	}
+	if head == receipt.Candidate.SHA {
+		return false, nil
+	}
+	if receipt.PublishedCandidateSHA == "" || receipt.PublishedCandidateSHA != receipt.Candidate.SHA {
+		return false, fmt.Errorf("candidate head drifted from %s to %s without an exact published predecessor", receipt.Candidate.SHA, head)
+	}
+	contains, err := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, head)
+	if err != nil {
+		return false, fmt.Errorf("verify published candidate descendant: %w", err)
+	}
+	if !contains {
+		return false, fmt.Errorf("candidate HEAD %s is not a descendant of published candidate %s", head, receipt.Candidate.SHA)
+	}
+	receipt.Candidate.SHA = head
+	return true, nil
+}
+
 // recoverResolvedWorktreeMergeCandidate repairs the one durable prepare gap
 // where a conflict receipt necessarily predates the human resolution commit.
 // It accepts only the exact receipted WB candidate and proves its Work Log,
@@ -1293,6 +1331,13 @@ func recoverResolvedWorktreeMergeCandidate(ctx context.Context, projectsRoot str
 // this proves that exact descendant before the mutable receipt can name it.
 func advanceResolvedConflictWorktreeMergeCandidate(ctx context.Context, projectsRoot string, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int) (bool, error) {
 	if receipt == nil || receipt.Candidate.SHA == "" || receipt.Status != WorktreeMergeConflict {
+		return false, nil
+	}
+	// Older WB versions converted an otherwise recoverable published-candidate
+	// drift into conflict before the recorded-predecessor path could inspect it.
+	// Leave that state for advancePublishedWorktreeMergeCandidate below; this
+	// helper owns only unpublished prepare conflicts.
+	if receipt.PullRequest != "" && receipt.PublishedCandidateSHA != "" && receipt.LandingSHA == "" {
 		return false, nil
 	}
 	if receipt.Phase != WorktreeMergePhasePrepare || receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" ||
@@ -2641,6 +2686,11 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 	}
 	matched := make([]bool, len(baselineFailures))
 	for _, candidateFailure := range candidateFailures {
+		if candidateFailure.Language == "go" && candidateFailure.Check == quality.CheckTest {
+			if matchGoCoverageBaselineFailure(baselineFailures, candidateFailure) {
+				continue
+			}
+		}
 		if candidateFailure.Language == "specscore" {
 			if matchSpecScoreBaselineFailure(baselineFailures, candidateFailure) {
 				continue
@@ -2660,6 +2710,81 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 		}
 	}
 	return nil
+}
+
+// matchGoCoverageBaselineFailure compares the failing-test identities emitted
+// by WB's compact coverage index. Process-isolated shard numbers are scheduler
+// placement, not failure identity, and can change when the package inventory
+// changes. A candidate may remove baseline failures but must not add a failing
+// test that was absent from the exact target baseline.
+func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
+	candidateIDs := goCoverageFailureIdentities(candidate.Detail)
+	if len(candidateIDs) == 0 {
+		return false
+	}
+	for _, baselineFailure := range baseline {
+		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || normalizeGoCoverageCommand(baselineFailure.Command) != normalizeGoCoverageCommand(candidate.Command) {
+			continue
+		}
+		baselineIDs := goCoverageFailureIdentities(baselineFailure.Detail)
+		if len(baselineIDs) == 0 {
+			continue
+		}
+		allKnown := true
+		for identity := range candidateIDs {
+			if _, ok := baselineIDs[identity]; !ok {
+				allKnown = false
+				break
+			}
+		}
+		if allKnown {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
+	goCoverageCommandShardsPattern  = regexp.MustCompile(`\s+\([0-9]+\s+process-isolated shards for [^)]*\)$`)
+)
+
+func normalizeGoCoverageCommand(command string) string {
+	return goCoverageCommandShardsPattern.ReplaceAllString(command, " (<process-isolated shards>)")
+}
+
+func goCoverageFailureIdentities(detail string) map[string]struct{} {
+	const (
+		failureIndexHeader = "WB coverage failure index:\n"
+		rawOutputHeader    = "WB coverage raw output\n"
+	)
+	identities := make(map[string]struct{})
+	indexStart := strings.Index(detail, failureIndexHeader)
+	if indexStart < 0 {
+		return identities
+	}
+	index := detail[indexStart+len(failureIndexHeader):]
+	if rawOutput := strings.Index(index, rawOutputHeader); rawOutput >= 0 {
+		index = index[:rawOutput]
+	}
+	for _, rawLine := range strings.Split(index, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		closing := strings.Index(line, "] ")
+		if closing < 0 {
+			continue
+		}
+		placement := strings.TrimPrefix(line[:closing], "- [")
+		placement = goCoverageShardPlacementPattern.ReplaceAllString(placement, "")
+		testName := strings.TrimSpace(line[closing+2:])
+		if placement == "" || testName == "" {
+			continue
+		}
+		identities[placement+"\x00"+testName] = struct{}{}
+	}
+	return identities
 }
 
 // matchSpecScoreBaselineFailure treats the exact violation identity set as the

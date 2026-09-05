@@ -381,6 +381,12 @@ only after merge to `main` and removal or audited recycle of every related
 worktree and branch; a task effort has the same requirement after merge to its
 feature branch. A validated branch is not terminal.
 
+If rename stops after reserving a destination prompt but before publishing its
+first checkout claim, recover that prompt-only reservation with `wb worktree
+abort <next-task> --disposition discarded --apply`. It retains the private
+prompt archive and does not require `--remote`, because that reservation has
+no branch or remote ref to retire.
+
 Use `wb worktree abort <task> --disposition handoff|not_landed --successor
 <agent-or-session> --model <exact-successor-model-or-unknown>` or explicit
 `--disposition discarded` for

@@ -327,6 +327,8 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 	}{
 		{name: "passing target and candidate", baseline: quality.VerificationReport{Status: quality.StatusPassed}, candidate: quality.VerificationReport{Status: quality.StatusPassed}},
 		{name: "same failure at different snapshot paths", baseline: failing("/tmp/target/app.go:3: undefined: missing"), candidate: failing("/tmp/candidate/app.go:3: undefined: missing")},
+		{name: "coverage failure subset with changed shard placement", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\n- [unsharded packages] TestRemoved\nWB coverage raw output\nbaseline output"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 6/8] TestStable\nWB coverage raw output\ncandidate output")},
+		{name: "coverage failure introduces test", baseline: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\nbaseline output"), candidate: failing("WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 6/8] TestStable\n- [unsharded packages] TestNew\nWB coverage raw output\ncandidate output"), wantError: true},
 		{name: "same Nx failure at different quoted snapshot paths", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"`)},
 		{name: "different Nx failure remains different", baseline: nodeFailing(`Could not find Nx modules at "/private/var/folders/aa/wb-worktree-merge-target-123/tree/frontend"`), candidate: nodeFailing(`Could not find Nx modules at "/private/var/folders/bb/wb-worktree-merge-target-456/tree/frontend"; install dependencies first`), wantError: true},
 		{name: "changed failure", baseline: failing("undefined: missing"), candidate: failing("undefined: other"), wantError: true},
@@ -340,6 +342,24 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 				t.Fatalf("regression error = %v, want error=%t", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t *testing.T) {
+	detail := "WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\noutput"
+	entry := func(command string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "go", Module: ".", Check: quality.CheckTest, Command: command, Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := entry("go test -coverprofile … ./... (8 process-isolated shards for ./internal/worktrees)")
+	candidate := entry("go test -coverprofile … ./... (8 process-isolated shards for ./cmd/wb,./internal/worktrees)")
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("coverage shard package placement changed failure identity: %v", err)
+	}
+	candidate.Results[0].Command = "go test -race ./..."
+	if err := worktreeMergeValidationRegression(baseline, candidate); err == nil {
+		t.Fatal("semantic coverage command change was accepted")
 	}
 }
 
@@ -723,6 +743,30 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 		!strings.Contains(string(logContents), "/check-runs?per_page=100") ||
 		strings.Contains(string(logContents), "pr merge") {
 		t.Fatalf("ordinary resume did not continue from the published handoff at checks without merging:\n%s", logContents)
+	}
+
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "published-repair.txt"), "repair\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "published-repair.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "fix: advance published candidate after failed checks")
+	descendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	continued.Status = WorktreeMergeConflict
+	continued.Failure = "older WB rejected recoverable published candidate drift"
+	if err := persistWorktreeMergeReceipt(continued); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WB_TEST_CANDIDATE_SHA", descendant)
+	advanced, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err == nil || advanced.Status != WorktreeMergeChecksFailed {
+		t.Fatalf("published descendant resume did not reach exact-head checks: receipt=%+v err=%v", advanced, err)
+	}
+	if advanced.Candidate.SHA != descendant || advanced.PublishedCandidateSHA != descendant || advanced.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA {
+		t.Fatalf("published descendant receipt = %+v", advanced)
+	}
+	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
+		t.Fatalf("remote descendant = %q, want %s", got, descendant)
 	}
 }
 
