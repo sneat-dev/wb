@@ -190,6 +190,24 @@ unchanged old remote source branch with force-with-lease and rolls every
 already-moved repository back if a later repository fails. Never copy a prior
 task's projection, prompt, or source state into the new task.
 
+## Relocate a still-active task deliberately
+
+Changing `worktrees.root` only affects new worktrees. To move an existing,
+clean, unlocked WB-managed task between the repository-local and current shared
+layout, inspect the plan and then apply the exact target:
+
+```sh
+wb worktree relocate <task> --to local
+wb worktree relocate <task> --to shared
+wb --filter acme/app worktree relocate <task> --to shared --format json
+wb worktree relocate <task> --to shared --apply
+```
+
+Relocation preserves the task, branch, and immutable Work Log claim. WB repairs
+and verifies Git's registry, then records an append-only relocation receipt.
+It never moves adopted external worktrees; resolve those explicitly before
+changing their location.
+
 ## Abort instead of abandoning
 
 An unused or interrupted worktree has no merged PR, so `cleanup` must refuse

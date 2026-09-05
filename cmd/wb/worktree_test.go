@@ -196,7 +196,7 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 	list := newWorktreeListCmd()
-	for _, wanted := range []string{"only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
+	for _, wanted := range []string{"resolver-recognized layout", "repository-local", "configured shared root", "worktree relocate", "only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
@@ -463,6 +463,23 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	}
 	if deleteOldBranch := command.Flags().Lookup("delete-old-branch"); deleteOldBranch != nil {
 		t.Fatalf("obsolete optional --delete-old-branch is still advertised: %#v", deleteOldBranch)
+	}
+}
+
+func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
+	command := newWorktreeRelocateCmd()
+	for _, wanted := range []string{"--to=local", "--to=shared", "descriptor-anchored", "append-only relocation receipt", "--format=json"} {
+		if !strings.Contains(command.Long, wanted) {
+			t.Errorf("relocate help does not mention %q", wanted)
+		}
+	}
+	for _, flag := range []string{"to", "apply", "format", "json"} {
+		if command.Flags().Lookup(flag) == nil {
+			t.Errorf("relocate is missing --%s", flag)
+		}
+	}
+	if apply := command.Flags().Lookup("apply"); apply == nil || apply.DefValue != "false" {
+		t.Fatalf("relocate --apply default = %#v, want false", apply)
 	}
 }
 

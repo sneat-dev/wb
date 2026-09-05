@@ -462,6 +462,32 @@ active recovery claims so the same coordinated rename is retryable. Durable
 terminal/outbox history MUST remain append-only. A process crash MAY require
 recovery from those records until automatic journal replay is implemented.
 
+#### REQ: explicit-layout-relocation
+
+`wb worktree relocate` MUST be the sole supported way to move an active
+WB-managed checkout between repository-local and configured shared placement.
+It MUST plan by default and require `--apply`; `--to=local` selects
+`<canonical>/.worktrees/<task>`, while `--to=shared` requires the current
+user-configured absolute shared root. Changing layout configuration MUST never
+move, hide, or implicitly select an existing checkout.
+
+The selector MUST resolve only registry-and-claim corroborated managed
+worktrees across repository-local, configured shared, and historic layouts.
+Adopted external worktrees MUST be reported but remain ineligible. Before each
+move WB MUST hold the task lock and recheck clean state, branch/head, registry
+membership, lock state, source path, and an absent destination. It MUST use the
+descriptor-anchored no-replace move plus Git repair and registration
+verification, preserving task, branch, immutable claim ID, and Work Log
+identity.
+
+Apply MUST append a durable relocation receipt before reporting success. The
+receipt binds the immutable claim, source and destination paths, branch, head,
+target layout, and timestamp, and makes an exact retry a no-op. A failed or
+partial move MUST remain recoverable from the receipt and Git registry; it MUST
+never rewrite or delete the original claim. For a batch or any operation that
+lasts over ten seconds, progress MUST be emitted to stderr at least every ten
+seconds while stdout remains parseable with `--format=json`.
+
 ## Interaction with Other Features
 
 [Fleet Status](../fleet-status/README.md) reports canonical repository health.
@@ -487,7 +513,7 @@ without the opt-in performs no remote access at all.
 
 ### AC: safe-real-git-lifecycle
 
-**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction
+**Requirements:** worktree-lifecycle#req:offline-list-default, worktree-lifecycle#req:nonmutating-verified-base, worktree-lifecycle#req:authoritative-write-home, worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:validated-identity, worktree-lifecycle#req:point-of-read-canonical-freshness, worktree-lifecycle#req:guarded-transient-rebase, worktree-lifecycle#req:hook-home-stability, worktree-lifecycle#req:hook-executable-stability, worktree-lifecycle#req:attested-canonical-rescue-push, worktree-lifecycle#req:dry-run-default, worktree-lifecycle#req:exact-remote-target-evidence, worktree-lifecycle#req:resumable-interrupted-operation-lock, worktree-lifecycle#req:absorbed-integration-containment-evidence, worktree-lifecycle#req:coordinated-task-safety, worktree-lifecycle#req:trusted-supersession-terminalization, worktree-lifecycle#req:incremental-sweep-progress, worktree-lifecycle#req:recheck-and-compare-delete, worktree-lifecycle#req:remote-opt-in, worktree-lifecycle#req:evidence-gated-remote-retirement, worktree-lifecycle#req:durable-audit, worktree-lifecycle#req:resumable-post-removal-backlog, worktree-lifecycle#req:unregistered-residue-removal, worktree-lifecycle#req:empty-task-namespace-retirement, worktree-lifecycle#req:internal-stage-terminalization, worktree-lifecycle#req:discarded-abort-boundary, worktree-lifecycle#req:recycle-transaction, worktree-lifecycle#req:explicit-layout-relocation
 
 Integration tests using real bare remotes, clones, commits, branches, merges,
 linked worktrees, rebases, and refs prove that creation fetches and pins the
@@ -512,6 +538,23 @@ non-empty ones remain blocking backlog; a terminal task leaves no namespace
 directory behind and an operation whose namespace is retired underneath it
 refuses instead of writing where nothing can reach; and apply writes durable evidence. Hosted PR metadata
 MAY be supplied by a deterministic test double.
+
+### AC: mixed-layout-relocation-preserves-active-identity
+
+**Requirements:** worktree-lifecycle#req:migration-layout-compatibility, worktree-lifecycle#req:legacy-mixed-inventory, worktree-lifecycle#req:explicit-layout-relocation
+
+**Given** managed local, configured shared, and historic registered worktrees
+with active immutable Work Log claims
+**When** an operator plans and applies a relocation to the other supported
+layout, then retries the same invocation
+**Then** the dry run leaves every checkout in place; apply moves only selected,
+clean, unlocked managed worktrees with Git registration repaired; task, branch,
+head, and immutable claim identity remain unchanged; the original claim stays
+readable through the new path via an append-only relocation receipt; retry is a
+no-op with the same receipt; and adopted external, dirty, locked, mismatched,
+or destination-colliding worktrees remain at their source with an explicit
+reason. JSON stdout remains one document while batch progress is sent to
+stderr.
 
 ## Open Questions
 
