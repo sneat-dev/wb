@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   # A newer PR revision supersedes its older validation. Main/tag runs may
@@ -17,6 +19,39 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  validation-reuse:
+    name: Decide validation reuse
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      reuse: ${{ steps.verify.outputs.reuse }}
+      reason: ${{ steps.verify.outputs.reason }}
+    steps:
+      - name: Checkout landed source
+        uses: actions/checkout@v6
+      - name: Select an exact trusted pull-request receipt
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/ci-reuse-select.sh "$GITHUB_OUTPUT"
+      - name: Download selected validation receipt
+        if: steps.select.outputs.candidate == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          name: wb-ci-validation-receipt
+          run-id: ${{ steps.select.outputs.run_id }}
+          path: .ci-validation-receipt
+          github-token: ${{ github.token }}
+      - name: Verify selected validation receipt
+        id: verify
+        env:
+          CI_REUSE_RUN_ID: ${{ steps.select.outputs.run_id }}
+          CI_REUSE_PULL_NUMBER: ${{ steps.select.outputs.pull_number }}
+          CI_REUSE_HEAD_SHA: ${{ steps.select.outputs.head_sha }}
+        run: >-
+          .github/scripts/ci-reuse-verify.sh "$GITHUB_OUTPUT"
+          .ci-validation-receipt/ci-validation-receipt.json
+
   release-eligibility:
     name: Determine release eligibility
     runs-on: ubuntu-latest
@@ -43,7 +78,8 @@ jobs:
 
   source:
     name: Check formatting and dependencies
-    needs: release-eligibility
+    needs: [release-eligibility, validation-reuse]
+    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -68,7 +104,8 @@ jobs:
 
   static:
     name: Build and vet
-    needs: release-eligibility
+    needs: [release-eligibility, validation-reuse]
+    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -86,7 +123,8 @@ jobs:
 
   lint:
     name: Lint (golangci-lint)
-    needs: release-eligibility
+    needs: [release-eligibility, validation-reuse]
+    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -108,7 +146,8 @@ jobs:
 
   coverage:
     name: Tests and coverage (8 shards)
-    needs: release-eligibility
+    needs: [release-eligibility, validation-reuse]
+    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     # The merged package set uses real repositories and worktrees. Keep the
     # command below bounded, but leave enough room for runner variance as the
@@ -153,7 +192,8 @@ jobs:
 
   race:
     name: Race tests
-    needs: release-eligibility
+    needs: [release-eligibility, validation-reuse]
+    if: github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -184,13 +224,15 @@ jobs:
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, source, static, lint, coverage, race]
+    needs: [release-eligibility, validation-reuse, source, static, lint, coverage, race]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
       - name: Summarize required check results (no build or tests)
         env:
           ELIGIBILITY_RESULT: ${{ needs.release-eligibility.result }}
+          REUSE_RESULT: ${{ needs.validation-reuse.outputs.reuse }}
+          REUSE_JOB_RESULT: ${{ needs.validation-reuse.result }}
           SOURCE_RESULT: ${{ needs.source.result }}
           STATIC_RESULT: ${{ needs.static.result }}
           LINT_RESULT: ${{ needs.lint.result }}
@@ -198,15 +240,57 @@ jobs:
           RACE_RESULT: ${{ needs.race.result }}
         run: |
           set -eu
+          if [ "$REUSE_JOB_RESULT" != "success" ]; then
+            echo "Validation reuse decision concluded: $REUSE_JOB_RESULT" >&2
+            exit 1
+          fi
+          if [ "$REUSE_RESULT" = "true" ]; then
+            expected=skipped
+          else
+            expected=success
+          fi
           for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT"; do
             name=${check%%:*}
             result=${check#*:}
-            if [ "$result" != "success" ]; then
-              echo "Required check '$name' concluded: $result" >&2
+            if [ "$name" = "Eligibility" ]; then
+              expected_for_check=success
+            else
+              expected_for_check=$expected
+            fi
+            if [ "$result" != "$expected_for_check" ]; then
+              echo "Required check '$name' concluded: $result; expected $expected_for_check" >&2
               exit 1
             fi
           done
-          echo "All required checks passed. This job only combines their results."
+          if [ "$REUSE_RESULT" = "true" ]; then
+            echo "Reused exact trusted pull-request validation."
+          else
+            echo "All required checks passed. This job only combines their results."
+          fi
+
+  validation-receipt:
+    name: Publish validation receipt
+    if: github.event_name == 'pull_request' && needs.test.result == 'success'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@v6
+      - name: Write exact validation receipt
+        env:
+          PULL_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: .github/scripts/ci-reuse-receipt.sh ci-validation-receipt.json
+      - name: Upload validation receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: wb-ci-validation-receipt
+          path: ci-validation-receipt.json
+          if-no-files-found: error
+          retention-days: 7
 
   release:
     name: Release
