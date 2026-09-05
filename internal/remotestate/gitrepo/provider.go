@@ -40,7 +40,7 @@ func SnapshotPath(login, machine string) string {
 
 const readme = `# WB remote state
 
-Machine snapshots published by [wb remote publish](https://wb.sneat.dev).
+Machine snapshots published by [wb remote publish](https://sneat.work/bench).
 One file per machine under machines/<login>/<machine>/snapshot.yaml.
 Do not edit by hand; run wb remote status to read it.
 `

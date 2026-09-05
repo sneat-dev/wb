@@ -156,7 +156,7 @@ func TestEnsureRootSeedsReadmeInHomeDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected README.md seeded in WB home: %v", err)
 	}
-	if !strings.Contains(string(contents), "https://sneat.dev/workbench") {
+	if !strings.Contains(string(contents), "https://sneat.work/bench") {
 		t.Fatalf("README.md missing workbench link, got: %s", contents)
 	}
 	readme := strings.Join(strings.Fields(string(contents)), " ")

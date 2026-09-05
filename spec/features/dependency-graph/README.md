@@ -242,7 +242,7 @@ instead of implementing another manifest scanner.
 
 [CodeGrapher](https://codegrapher.dev/) complements this fleet-level evidence
 with repository-level symbols, imports, calls, implementations, and impact.
-CodeGrapher can link back to `https://wb.sneat.dev/` with `repository`, `ref`,
+CodeGrapher can link back to `https://sneat.work/bench/` with `repository`, `ref`,
 and `view` query context plus the `#deps-graph` fragment. This public link is a
 navigation contract only: hosted WB graph publication remains a separate,
 explicit future capability.
