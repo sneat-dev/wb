@@ -11213,7 +11213,8 @@
               ],
               "modes": [
                 "Proves one exact clean replacement candidate contains the failed candidate claim base, receipt target, freshly fetched current target, and every exact clean receipted source",
-                "Accepts only unpublished prepare validation_failed or conflict receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs"
+                "Accepts only unpublished prepare validation_failed or conflict receipts and writes a separate receipt-hash-bound supersession acknowledgement without rewriting the receipt or Work Logs",
+                "For a clean unpublished conflict candidate that advanced after its receipt, binds the observed strict descendant and requires the replacement to contain both candidate revisions"
               ]
             }
           ],
