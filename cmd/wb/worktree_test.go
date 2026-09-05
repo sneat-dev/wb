@@ -483,6 +483,55 @@ func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
 	}
 }
 
+func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "relocate CLI JSON fixture")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	createArgs := []string{"--projects-root", projects, "worktree", "create", "cli-relocate", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
+	if code := run(createArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	runRelocateJSON := func(extra ...string) (string, string, int) {
+		stdout.Reset()
+		stderr.Reset()
+		args := append([]string{"--projects-root", projects, "worktree", "relocate", "cli-relocate", "--to=local"}, extra...)
+		code := run(args, &stdout, &stderr)
+		return stdout.String(), stderr.String(), code
+	}
+
+	formatJSON, formatStderr, code := runRelocateJSON("--format=json")
+	if code != exitOK {
+		t.Fatalf("relocate --format=json exit=%d stdout=%s stderr=%s", code, formatJSON, formatStderr)
+	}
+	if formatStderr != "" {
+		t.Fatalf("relocate JSON diagnostics/progress must use stderr only; stderr=%q", formatStderr)
+	}
+	var envelope worktrees.RelocateOutcome
+	if err := json.Unmarshal([]byte(formatJSON), &envelope); err != nil {
+		t.Fatalf("relocate --format=json must emit one parseable document: %v\n%s", err, formatJSON)
+	}
+	if envelope.SchemaVersion != 1 || len(envelope.Results) != 1 || !envelope.Results[0].AlreadyThere {
+		t.Fatalf("relocate JSON control-plane envelope = %#v", envelope)
+	}
+
+	shortcutJSON, shortcutStderr, code := runRelocateJSON("--json")
+	if code != exitOK || shortcutStderr != "" {
+		t.Fatalf("relocate --json exit=%d stdout=%s stderr=%s", code, shortcutJSON, shortcutStderr)
+	}
+	if shortcutJSON != formatJSON {
+		t.Fatalf("--json output differs from --format=json\n--format=json: %s\n--json: %s", formatJSON, shortcutJSON)
+	}
+
+	conflictingStdout, conflictingStderr, code := runRelocateJSON("--json", "--format=text")
+	if code == exitOK || conflictingStdout != "" || !strings.Contains(conflictingStderr, "--json cannot be combined with --format=text") {
+		t.Fatalf("conflicting JSON flags exit=%d stdout=%q stderr=%q", code, conflictingStdout, conflictingStderr)
+	}
+}
+
 // setUpRenameCLIFixture creates a real canonical repository with a working
 // origin remote — `worktree create`'s canonical sync needs one to pull from —
 // and points WB_HOME and related XDG state at an isolated root.

@@ -54,8 +54,9 @@ type RelocateResult struct {
 }
 
 type RelocateOutcome struct {
-	Results     []RelocateResult `json:"results"`
-	Diagnostics []ListDiagnostic `json:"diagnostics,omitempty"`
+	SchemaVersion int              `json:"schema_version"`
+	Results       []RelocateResult `json:"results"`
+	Diagnostics   []ListDiagnostic `json:"diagnostics,omitempty"`
 }
 
 // workLogRelocationReceipt is immutable, append-only evidence that changes the
@@ -107,7 +108,7 @@ func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, er
 	if len(listed.Results) == 0 && len(listed.Diagnostics) == 0 {
 		return RelocateOutcome{}, fmt.Errorf("WB worktree task %q was not found", options.Task)
 	}
-	outcome := RelocateOutcome{Diagnostics: listed.Diagnostics}
+	outcome := RelocateOutcome{SchemaVersion: 1, Diagnostics: listed.Diagnostics}
 	for _, entry := range listed.Results {
 		result, planErr := planRelocation(ctx, resolution.Write.Home, options, entry)
 		if planErr != nil {
