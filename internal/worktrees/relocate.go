@@ -330,7 +330,7 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 		if err != nil {
 			return err
 		}
-		defer directory.Close()
+		defer func() { _ = directory.Close() }()
 		if filepath.Clean(root) != filepath.Clean(filepath.Dir(destination)) || !directoryStillMatches(root, directory) {
 			return fmt.Errorf("local relocation destination root changed: %s", filepath.Dir(destination))
 		}
@@ -340,7 +340,7 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 	if err != nil {
 		return fmt.Errorf("open shared relocation root: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	if !directoryStillMatches(filepath.Dir(filepath.Dir(filepath.Dir(destination))), root) {
 		return fmt.Errorf("shared relocation root changed: %s", filepath.Dir(filepath.Dir(filepath.Dir(destination))))
 	}
@@ -351,13 +351,13 @@ func prepareRelocationDestination(ctx context.Context, entry ListResult, baseSHA
 		return err
 	}
 	taskDir := os.NewFile(uintptr(taskFD), "wb-relocate-task")
-	defer taskDir.Close()
+	defer func() { _ = taskDir.Close() }()
 	ownerFD, err := openOrCreateNoFollowDirectory(int(taskDir.Fd()), owner)
 	if err != nil {
 		return err
 	}
 	ownerDir := os.NewFile(uintptr(ownerFD), "wb-relocate-owner")
-	defer ownerDir.Close()
+	defer func() { _ = ownerDir.Close() }()
 	return requireAbsentNoFollowChild(int(ownerDir.Fd()), filepath.Base(destination))
 }
 
@@ -393,7 +393,7 @@ func openRelocationJournal(run *os.File, runPath string, claim workLogClaim) (re
 	if err != nil {
 		return journal, err
 	}
-	defer directory.Close()
+	defer func() { _ = directory.Close() }()
 	names, err := directory.Readdirnames(-1)
 	if err != nil {
 		return journal, err
@@ -490,7 +490,7 @@ func appendRelocationIntent(home string, claim workLogClaim, source, destination
 	if err != nil {
 		return nil, "", err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	unlock, err := lockClaim(run, claim.ClaimID)
 	if err != nil {
 		return nil, "", err
@@ -500,7 +500,7 @@ func appendRelocationIntent(home string, claim workLogClaim, source, destination
 	if err != nil {
 		return nil, "", err
 	}
-	defer receipts.Close()
+	defer func() { _ = receipts.Close() }()
 	journal, err := openRelocationJournal(run, runPath, claim)
 	if err != nil {
 		return nil, "", err
@@ -529,7 +529,7 @@ func appendRelocationReceipt(home string, claim workLogClaim, intent *workLogRel
 	if err != nil {
 		return nil, "", err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	unlock, err := lockClaim(run, claim.ClaimID)
 	if err != nil {
 		return nil, "", err
@@ -539,7 +539,7 @@ func appendRelocationReceipt(home string, claim workLogClaim, intent *workLogRel
 	if err != nil {
 		return nil, "", err
 	}
-	defer receipts.Close()
+	defer func() { _ = receipts.Close() }()
 	journal, err := openRelocationJournal(run, runPath, claim)
 	if err != nil {
 		return nil, "", err
@@ -576,7 +576,7 @@ func latestRelocationReceipt(home string, claim workLogClaim, destination string
 	if err != nil {
 		return nil, "", err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	journal, err := openRelocationJournal(run, runPath, claim)
 	if err != nil {
 		return nil, "", err
@@ -612,7 +612,7 @@ func pendingRelocationIntent(home string, claim workLogClaim, destination, branc
 	if err != nil {
 		return nil, "", err
 	}
-	defer run.Close()
+	defer func() { _ = run.Close() }()
 	journal, err := openRelocationJournal(run, runPath, claim)
 	if err != nil {
 		return nil, "", err
