@@ -2334,7 +2334,7 @@ func corroborateWorkLogProjection(home, worktree, finalCommit string, projection
 	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
-	return corroborateClaim(worktree, finalCommit, projection, claim)
+	return corroborateClaimAtPath(home, worktree, finalCommit, projection, claim)
 }
 
 func readWorkLogProjection(worktree string) (workLogProjection, error) {
@@ -2458,7 +2458,57 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 	if err != nil {
 		return err
 	}
-	return corroborateClaim(worktree, head, projection, claim)
+	return corroborateClaimAtPath(home, worktree, head, projection, claim)
+}
+
+// corroborateClaimAtPath preserves the immutable claim's original path while
+// accepting a later path only when a completed append-only relocation receipt
+// binds the exact active claim to it. In the narrow crash window after Git has
+// moved the checkout, a matching durable intent plus the registry's live HEAD
+// gives retry enough evidence to append that completion. A physical layout
+// move is not a new task or claim.
+func corroborateClaimAtPath(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
+	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
+		receipt, _, err := latestRelocationReceipt(home, claim, worktree)
+		if err != nil {
+			return err
+		}
+		if receipt == nil {
+			intent, _, intentErr := pendingRelocationIntent(home, claim, worktree, claim.Branch, finalCommit)
+			if intentErr != nil {
+				return intentErr
+			}
+			if intent == nil {
+				return fmt.Errorf("private work-log claim identity/path mismatch")
+			}
+		}
+		return corroborateRelocatedClaim(worktree, finalCommit, projection, claim)
+	}
+	return corroborateClaim(worktree, finalCommit, projection, claim)
+}
+
+func corroborateRelocatedClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
+	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" {
+		return fmt.Errorf("work-log projection does not match immutable active claim")
+	}
+	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
+		return err
+	}
+	branch, err := git(context.Background(), worktree, "branch", "--show-current")
+	if err != nil {
+		return fmt.Errorf("read the live branch of %s: %w", worktree, err)
+	}
+	if branch != "" && branch != claim.Branch {
+		return fmt.Errorf("live branch %q does not match private claim %q", branch, claim.Branch)
+	}
+	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
+	if err != nil || head != finalCommit {
+		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
+	}
+	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
+		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
+	}
+	return nil
 }
 
 func corroborateClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
