@@ -90,9 +90,12 @@ type Progress struct {
 	Module     string
 	Check      Check
 	Command    string
+	Detail     string
 	State      ProgressState
 	Status     Status
 	Attempts   int
+	Completed  int
+	Total      int
 }
 
 // VerificationReport records all conventional checks applicable to a

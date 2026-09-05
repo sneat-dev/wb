@@ -73,12 +73,38 @@ func TestBeta(t *testing.T) { if Value() != 1 { t.Fatal("value") } }
 	if err != nil {
 		t.Fatal(err)
 	}
+	var progress []Progress
+	options.Progress = func(event Progress) { progress = append(progress, event) }
 	report := VerifyWithOptions(context.Background(), "verify-shards", module, []Check{CheckTest}, options)
 	if report.Status != StatusPassed || len(report.Results) != 1 {
 		t.Fatalf("sharded verification = %+v", report)
 	}
 	if !strings.Contains(report.Results[0].Command, "2 process-isolated shards") {
 		t.Fatalf("verification command did not record sharding: %+v", report.Results[0])
+	}
+	jobEvents := make([]Progress, 0, len(progress))
+	for _, event := range progress {
+		if event.Total > 0 {
+			jobEvents = append(jobEvents, event)
+		}
+	}
+	if len(jobEvents) != 4 {
+		t.Fatalf("job progress events = %+v, want start and completion for two shards", jobEvents)
+	}
+	completed := 0
+	for _, event := range jobEvents {
+		if event.Detail == "" || event.Total != 2 {
+			t.Fatalf("incomplete job progress = %+v", event)
+		}
+		if event.State == ProgressCompleted {
+			completed++
+			if event.Status != StatusPassed || event.Completed < 1 {
+				t.Fatalf("completed job progress = %+v", event)
+			}
+		}
+	}
+	if completed != 2 {
+		t.Fatalf("completed job events = %d, want 2", completed)
 	}
 }
 
