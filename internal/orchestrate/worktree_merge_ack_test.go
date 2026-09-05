@@ -737,6 +737,9 @@ func TestSupersedeValidationFailedWorktreeMergeBindsCleanCandidateDescendant(t *
 	if ack.ObservedCandidateDescendantSHA != observedDescendant {
 		t.Fatalf("observed candidate descendant = %q, want %s", ack.ObservedCandidateDescendantSHA, observedDescendant)
 	}
+	if superseded, err := hasValidationFailureSupersession(context.Background(), fixture.githubDir, receipt); err != nil || !superseded {
+		t.Fatalf("validation repair supersession was not readable: superseded=%t err=%v", superseded, err)
+	}
 }
 
 func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
