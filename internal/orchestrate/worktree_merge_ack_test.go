@@ -1050,13 +1050,15 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 			want: "replacement is not clean",
 		},
 		{
-			name: "drifted old candidate",
+			name: "diverged old candidate",
 			mutate: func(t *testing.T, _ engineFixture, receipt *WorktreeMergeReceipt, _ worktrees.CreateResult) {
-				writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "advanced.txt"), "advanced\n")
-				runEngineGit(t, receipt.Candidate.Worktree, "add", "advanced.txt")
-				runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: advance failed candidate")
+				parent := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD^"))
+				runEngineGit(t, receipt.Candidate.Worktree, "reset", "--hard", parent)
+				writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "diverged.txt"), "diverged\n")
+				runEngineGit(t, receipt.Candidate.Worktree, "add", "diverged.txt")
+				runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: diverge failed candidate")
 			},
-			want: "does not match receipted candidate",
+			want: "is not a descendant of receipted candidate",
 		},
 		{
 			name: "drifted receipted source",
