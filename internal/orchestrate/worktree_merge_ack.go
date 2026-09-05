@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -834,7 +835,11 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 		return WorktreeMergeLandedFailureAcknowledgement{}, err
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+		if isLandedFailedValidationReceipt(receipt) {
+			if err := validatePreservedLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+				return WorktreeMergeLandedFailureAcknowledgement{}, err
+			}
+		} else if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, err
 		}
 		contains, sourceErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, source.SHA, head)
@@ -1258,10 +1263,19 @@ func validateLandedFailureAcknowledgementReceipt(receipt WorktreeMergeReceipt, r
 		if receipt.Phase != WorktreeMergePhaseLand || receipt.LandingSHA == "" || receipt.Checks.Status != PullRequestWaitFailed || receipt.Checks.Head != receipt.LandingSHA {
 			return fmt.Errorf("receipt %s is %s without an exact failed post-target CI receipt", receiptPath, receipt.Status)
 		}
+	case WorktreeMergeLanded:
+		if !isLandedFailedValidationReceipt(receipt) {
+			return fmt.Errorf("receipt %s is %s without an exact landed failed-validation receipt", receiptPath, receipt.Status)
+		}
 	default:
-		return fmt.Errorf("receipt %s is %s, want prepare validation_failed or landed_post_target_ci_failed", receiptPath, receipt.Status)
+		return fmt.Errorf("receipt %s is %s, want prepare validation_failed, landed failed-validation, or landed_post_target_ci_failed", receiptPath, receipt.Status)
 	}
 	return nil
+}
+
+func isLandedFailedValidationReceipt(receipt WorktreeMergeReceipt) bool {
+	return receipt.Status == WorktreeMergeLanded && receipt.Phase == WorktreeMergePhaseLand &&
+		receipt.LandingSHA != "" && receipt.LandingSHA == receipt.Candidate.SHA && receipt.Validation.Status == quality.StatusFailed
 }
 
 // validateValidationFailedSupersessionReceipt defines the immutable boundary
@@ -1429,6 +1443,14 @@ func validateLegacyValidationFailedReceiptShape(receipt WorktreeMergeReceipt, re
 }
 
 func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) error {
+	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, false)
+}
+
+func validatePreservedLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) error {
+	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, true)
+}
+
+func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowDescendant bool) error {
 	if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 		return errors.New("receipt contains an incomplete source identity")
 	}
@@ -1446,7 +1468,15 @@ func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoo
 	if err != nil {
 		return fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}
-	if head != source.SHA {
+	if allowDescendant {
+		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		if ancestorErr != nil || !contains {
+			if ancestorErr == nil {
+				ancestorErr = fmt.Errorf("current HEAD %s does not descend from receipted SHA %s", head, source.SHA)
+			}
+			return fmt.Errorf("receipted source %s was rewritten after landing: %w", source.Worktree, ancestorErr)
+		}
+	} else if head != source.SHA {
 		return fmt.Errorf("receipted source %s HEAD %s does not match %s", source.Worktree, head, source.SHA)
 	}
 	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: source.Worktree})
