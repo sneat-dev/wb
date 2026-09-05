@@ -2,12 +2,15 @@ package quality
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunShardedCoverageRunsEveryTestOnceAndMergesProfile(t *testing.T) {
@@ -127,6 +130,86 @@ func TestBetaFails(t *testing.T) { t.Fatal("terminal-shard-diagnostic") }
 	}
 	if strings.Contains(output, "PASS: TestAlphaPasses") || strings.Contains(output, "ok  \texample.test/failure/serial") {
 		t.Fatalf("successful shard output displaced the failure diagnostic:\n%s", output)
+	}
+}
+
+func TestRunShardedCoverageRetriesOnlyFailedShardsAndMergesFinalProfiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses POSIX-independent marker semantics but Windows test process startup is slower")
+	}
+	module := t.TempDir()
+	marker := filepath.Join(module, "flaky-marker")
+	t.Setenv("WB_SHARD_FLAKY_MARKER", marker)
+	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/selective-retry\n\ngo 1.24\n")
+	var tests strings.Builder
+	for _, name := range []string{"Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Flaky"} {
+		fmt.Fprintf(&tests, "func Test%s(t *testing.T) {\n", name)
+		if name == "Flaky" {
+			tests.WriteString(" f, err := os.OpenFile(os.Getenv(\"WB_SHARD_FLAKY_MARKER\"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600); if err == nil { _ = f.Close(); t.Fatal(\"retry this shard\") }; if !os.IsExist(err) { t.Fatal(err) }\n")
+		}
+		tests.WriteString(" if Covered() != 1 { t.Fatal(\"coverage\") }\n}\n")
+	}
+	writeGoShardFixturePackage(t, module, "serial", "package serial\nfunc Covered() int { return 1 }\n", "package serial\nimport (\"os\"; \"testing\")\n"+tests.String())
+
+	var progress []Progress
+	profile := filepath.Join(module, "merged.cov")
+	output, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, profile, []string{"./serial"}, 8, "", "", 5*time.Second, 1, func(event Progress) {
+		progress = append(progress, event)
+	})
+	if err != nil {
+		t.Fatalf("selective sharded retry: %v\n%s", err, output)
+	}
+	if attempts != 2 {
+		t.Fatalf("maximum attempts = %d, want flaky shard retry", attempts)
+	}
+	started := map[string]int{}
+	retriedLabel := ""
+	for _, event := range progress {
+		if event.State == ProgressStarted {
+			started[event.Detail]++
+		}
+		if event.State == ProgressRetrying && !strings.Contains(event.Detail, "TestFlaky") {
+			t.Fatalf("retry progress = %q, want indexed flaky test", event.Detail)
+		}
+		if event.State == ProgressRetrying {
+			retriedLabel = strings.Split(event.Detail, " attempt ")[0]
+		}
+	}
+	for label, count := range started {
+		want := 1
+		if label == retriedLabel {
+			want = 2
+		}
+		if count != want {
+			t.Errorf("%s started %d times, want %d", label, count, want)
+		}
+	}
+	if len(started) != 8 {
+		t.Fatalf("started shard labels = %d, want 8", len(started))
+	}
+	statements, covered, err := profileTotals(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statements == 0 || covered == 0 {
+		t.Fatalf("merged coverage totals = %d/%d, want non-zero final union", covered, statements)
+	}
+}
+
+func TestRunShardedCoverageStopsAStuckShardAtItsDeadline(t *testing.T) {
+	module := t.TempDir()
+	writeCoverageFixture(t, filepath.Join(module, "go.mod"), "module example.test/shard-timeout\n\ngo 1.24\n")
+	writeGoShardFixturePackage(t, module, "serial", "package serial\n", `package serial
+import ("testing"; "time")
+func TestStuck(t *testing.T) { time.Sleep(2 * time.Second) }
+`)
+	started := time.Now()
+	_, attempts, err := runShardedCoverageWithDiagnosticsAndProgressOptions(context.Background(), module, filepath.Join(module, "unused.cov"), []string{"./serial"}, 2, "", "", 30*time.Millisecond, 0, nil)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timeout error = %v, want deadline", err)
+	}
+	if attempts != 1 || time.Since(started) > 2*time.Second {
+		t.Fatalf("timeout attempts/duration = %d/%s, want one bounded attempt", attempts, time.Since(started))
 	}
 }
 

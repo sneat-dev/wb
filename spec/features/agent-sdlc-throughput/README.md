@@ -570,6 +570,15 @@ poll 2 with passed/pending/failed counts, or cleanup task 2/6. When a child
 process cannot expose finer progress, WB emits an explicit alive heartbeat for
 the active phase with elapsed time and the last completed boundary.
 
+Process-isolated coverage reports each shard as its own bounded unit. A retry
+reuses the existing plan and stable profile path, reruns only shards whose
+final attempt failed, and never merges profiles until every shard has passed.
+Each shard attempt has a child deadline inside the caller's overall validation
+deadline. Progress names completed/total jobs, the active shard, and its
+attempt; a failed attempt emits its indexed test or command failure before any
+retry begins. The requested timeout remains a total validation budget, so
+retries stop when the overall deadline expires.
+
 A completed phase is historical evidence, not the current phase. A heartbeat
 MUST NOT repeat `sync canonical: completed` while cleanup is running, repeat a
 candidate SpecScore result while target-baseline tests run, or leave `wb pr
