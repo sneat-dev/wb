@@ -2840,6 +2840,41 @@ func worktreeMergeSupersededOperationID(operation, receiptPath string) string {
 	return operation + "-superseded-" + hex.EncodeToString(hash.Sum(nil)[:6])
 }
 
+// validateWorktreeMergeSupersededOperationID proves that an unpublished
+// conflict receipt is either the source-derived root operation or a chain of
+// deterministic successors. Each successor names the exact predecessor path
+// from the same report directory, so an arbitrary suffix cannot impersonate a
+// receipt that PrepareWorktreeMerge would have created.
+func validateWorktreeMergeSupersededOperationID(operation, receiptPath, lane string, sources []WorktreeMergeSource) error {
+	root := worktreeMergeOperationID(lane, sources)
+	path := filepath.Clean(receiptPath)
+	if filepath.Base(path) != operation+".json" {
+		return fmt.Errorf("receipt path %s does not name operation %s", receiptPath, operation)
+	}
+	reportsDir := filepath.Dir(path)
+	for operation != root {
+		const marker = "-superseded-"
+		index := strings.LastIndex(operation, marker)
+		if index <= 0 {
+			return fmt.Errorf("operation %s does not descend from source-derived operation %s", operation, root)
+		}
+		suffix := operation[index+len(marker):]
+		if len(suffix) != 12 || suffix != strings.ToLower(suffix) {
+			return fmt.Errorf("operation %s has an invalid supersession suffix", operation)
+		}
+		if _, err := hex.DecodeString(suffix); err != nil {
+			return fmt.Errorf("operation %s has an invalid supersession suffix: %w", operation, err)
+		}
+		predecessor := operation[:index]
+		predecessorPath := filepath.Join(reportsDir, predecessor+".json")
+		if want := worktreeMergeSupersededOperationID(predecessor, predecessorPath); operation != want {
+			return fmt.Errorf("operation %s is not the deterministic successor of %s", operation, predecessorPath)
+		}
+		operation = predecessor
+	}
+	return nil
+}
+
 func mergeOperationSuffix(operation string) string {
 	if index := strings.LastIndex(operation, "-"); index >= 0 && index+1 < len(operation) {
 		return operation[index+1:]

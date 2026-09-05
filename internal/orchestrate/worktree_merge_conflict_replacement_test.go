@@ -101,6 +101,120 @@ func TestPrepareConflictWorktreeMergeReplacementBreaksReceiptOwnedLaneCycle(t *t
 	}
 }
 
+func TestPrepareConflictWorktreeMergeReplacementAcceptsDeterministicSupersededSuccessor(t *testing.T) {
+	fixture := newEngineFixture(t)
+	first := createMergeSource(t, fixture, "successor-conflict-first", "feature/successor-conflict-first", "shared.txt", "first\n")
+	second := createMergeSource(t, fixture, "successor-conflict-second", "feature/successor-conflict-second", "shared.txt", "second\n")
+	original, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || original.Status != WorktreeMergeConflict {
+		t.Fatalf("initial prepare = %+v err=%v, want conflict", original, err)
+	}
+
+	originalCandidate := original.Candidate.Worktree
+	merge := exec.Command("git", "merge", "--no-commit", original.Sources[1].SHA)
+	merge.Dir = originalCandidate
+	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
+		t.Fatalf("fixture merge unexpectedly succeeded: %s", output)
+	}
+	writeEngineFile(t, filepath.Join(originalCandidate, "shared.txt"), "resolved\n")
+	runEngineGit(t, originalCandidate, "add", "shared.txt")
+	runEngineGit(t, originalCandidate, "commit", "-m", "test: resolve original successor conflict")
+	claim, _, err := validatePrepareFailureSupersessionCandidate(context.Background(), fixture.githubDir, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := os.ReadFile(claim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(original.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := fetchExactMergeTarget(context.Background(), original.Candidate.Worktree, original.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := PrepareConflictWorktreeMergeReplacement(context.Background(), WorktreeMergeConflictCandidateRefreshOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: original.ReceiptPath, Sources: []string{first.WorktreeDir, second.WorktreeDir},
+		ExpectedSourceSHAs: []string{original.Sources[0].SHA, original.Sources[1].SHA}, ExpectedReceiptSHA256: receiptHash,
+		ExpectedImmutableClaimSHA256: sha256Hex(claimBytes), ExpectedCurrentTargetSHA: target, Actor: "reviewer", Reason: "construct the original replacement",
+	})
+	if err != nil || refresh.Status != "conflict_candidate_refresh_planned" {
+		t.Fatalf("initial conflict refresh dry-run = %+v err=%v", refresh, err)
+	}
+	refresh, err = PrepareConflictWorktreeMergeReplacement(context.Background(), WorktreeMergeConflictCandidateRefreshOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: original.ReceiptPath, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Apply: true,
+		ExpectedSourceSHAs: []string{original.Sources[0].SHA, original.Sources[1].SHA}, ExpectedReceiptSHA256: receiptHash,
+		ExpectedImmutableClaimSHA256: sha256Hex(claimBytes), ExpectedCurrentTargetSHA: target, Actor: "reviewer", Reason: "construct the original replacement",
+	})
+	if err != nil || refresh.Status != "conflict_candidate_refresh_prepared" {
+		t.Fatalf("initial conflict refresh apply = %+v err=%v", refresh, err)
+	}
+	if _, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: original.ReceiptPath, ReplacementWorktree: refresh.Candidate.Worktree, Apply: true, Actor: "reviewer", Reason: "supersede initial conflict",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	successor, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || successor.Status != WorktreeMergeConflict {
+		t.Fatalf("successor prepare = %+v err=%v, want conflict", successor, err)
+	}
+	if want := worktreeMergeSupersededOperationID(original.ID, original.ReceiptPath); successor.ID != want || successor.Candidate.Task != want {
+		t.Fatalf("successor identity = id=%s task=%s, want %s", successor.ID, successor.Candidate.Task, want)
+	}
+	successorBefore, err := os.ReadFile(successor.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorClaim, _, err := validatePrepareFailureSupersessionCandidate(context.Background(), fixture.githubDir, successor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorClaimBefore, err := os.ReadFile(successorClaim.ClaimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorHash, err := worktreeMergeReceiptSHA256(successor.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	successorTarget, err := fetchExactMergeTarget(context.Background(), successor.Candidate.Worktree, successor.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := WorktreeMergeConflictCandidateRefreshOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: successor.ReceiptPath, Sources: []string{first.WorktreeDir, second.WorktreeDir},
+		ExpectedSourceSHAs: []string{successor.Sources[0].SHA, successor.Sources[1].SHA}, ExpectedReceiptSHA256: successorHash,
+		ExpectedImmutableClaimSHA256: sha256Hex(successorClaimBefore), ExpectedCurrentTargetSHA: successorTarget, Actor: "reviewer", Reason: "plan successor replacement",
+	}
+	dryRun, err := PrepareConflictWorktreeMergeReplacement(context.Background(), options)
+	if err != nil || dryRun.Status != "conflict_candidate_refresh_planned" {
+		t.Fatalf("successor conflict refresh dry-run = %+v err=%v", dryRun, err)
+	}
+	if current, readErr := os.ReadFile(successor.ReceiptPath); readErr != nil || string(current) != string(successorBefore) {
+		t.Fatalf("dry-run changed successor receipt: err=%v", readErr)
+	}
+	if current, readErr := os.ReadFile(successorClaim.ClaimPath); readErr != nil || string(current) != string(successorClaimBefore) {
+		t.Fatalf("dry-run changed successor claim: err=%v", readErr)
+	}
+
+	tampered := successor
+	tampered.ID = successor.ID + "-tampered"
+	tampered.Candidate.Task = tampered.ID
+	if err := persistWorktreeMergeReceipt(tampered); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareConflictWorktreeMergeReplacement(context.Background(), options); err == nil {
+		t.Fatal("tampered successor ID was accepted")
+	}
+}
+
 func TestPrepareConflictWorktreeMergeReplacementRefusesPublishedAndMismatchedSources(t *testing.T) {
 	fixture, receipt, _ := supersessionFixture(t)
 	receipt.Status, receipt.Failure = WorktreeMergeConflict, "historical conflict"

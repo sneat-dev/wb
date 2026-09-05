@@ -1298,7 +1298,7 @@ func validatePrepareFailureSupersessionReceipt(receipt WorktreeMergeReceipt, rec
 		receipt.SchemaVersion != WorktreeMergeSchemaVersion || receipt.Phase != WorktreeMergePhasePrepare || receipt.Status != WorktreeMergeConflict ||
 		receipt.LandingSHA != "" || receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.Repository == "" || receipt.Target == "" ||
 		receipt.TargetSHA == "" || len(receipt.Sources) == 0 || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" ||
-		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || receipt.ID != worktreeMergeOperationID(receipt.Lane, receipt.Sources) ||
+		receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" ||
 		receipt.Candidate.Task != receipt.ID || receipt.CreatedAt.IsZero() || receipt.UpdatedAt.IsZero() {
 		return fmt.Errorf("receipt %s lacks a complete exact identity; want prepare validation_failed or unpublished conflict", receiptPath)
 	}
@@ -1306,6 +1306,9 @@ func validatePrepareFailureSupersessionReceipt(receipt WorktreeMergeReceipt, rec
 		if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 			return fmt.Errorf("receipt %s has an incomplete immutable source identity", receiptPath)
 		}
+	}
+	if err := validateWorktreeMergeSupersededOperationID(receipt.ID, receiptPath, receipt.Lane, receipt.Sources); err != nil {
+		return fmt.Errorf("receipt %s has an invalid superseded conflict identity: %w", receiptPath, err)
 	}
 	return nil
 }

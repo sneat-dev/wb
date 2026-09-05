@@ -85,6 +85,54 @@ func TestAcknowledgeWorktreeMergeReceiptCollisionIsAppendOnlyAndReplaySafe(t *te
 	}
 }
 
+func TestValidatePrepareFailureSupersessionReceiptAcceptsOnlyDeterministicSuccessorChains(t *testing.T) {
+	sources := []WorktreeMergeSource{{Task: "source", Worktree: "/worktrees/source", Branch: "feature/source", SHA: "0123456789abcdef"}}
+	lane := worktreeMergeLaneID("acme/app", "main")
+	root := worktreeMergeOperationID(lane, sources)
+	reportsDir := t.TempDir()
+	rootPath := filepath.Join(reportsDir, root+".json")
+	successor := worktreeMergeSupersededOperationID(root, rootPath)
+	successorPath := filepath.Join(reportsDir, successor+".json")
+
+	receipt := func(id, path string, receiptSources []WorktreeMergeSource) WorktreeMergeReceipt {
+		return WorktreeMergeReceipt{
+			SchemaVersion: WorktreeMergeSchemaVersion, ID: id, Lane: lane, Phase: WorktreeMergePhasePrepare, Status: WorktreeMergeConflict,
+			Repository: "acme/app", Target: "main", TargetSHA: "fedcba9876543210", Sources: receiptSources,
+			Candidate:   WorktreeMergeCandidate{Task: id, Worktree: "/worktrees/candidate", Branch: "wb/recovery/main/candidate", SHA: "aabbccddeeff0011"},
+			ReceiptPath: path, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+	}
+
+	if err := validatePrepareFailureSupersessionReceipt(receipt(successor, successorPath, sources), successorPath); err != nil {
+		t.Fatalf("deterministic successor = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		receipt WorktreeMergeReceipt
+	}{
+		{
+			name:    "arbitrary suffix",
+			receipt: receipt(root+"-superseded-000000000000", filepath.Join(reportsDir, root+"-superseded-000000000000.json"), sources),
+		},
+		{
+			name:    "wrong predecessor path hash",
+			receipt: receipt(worktreeMergeSupersededOperationID(root, filepath.Join(t.TempDir(), root+".json")), successorPath, sources),
+		},
+		{
+			name:    "wrong source identity",
+			receipt: receipt(successor, successorPath, []WorktreeMergeSource{{Task: "source", Worktree: "/worktrees/source", Branch: "feature/source", SHA: "deadbeefdeadbeef"}}),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validatePrepareFailureSupersessionReceipt(test.receipt, test.receipt.ReceiptPath); err == nil {
+				t.Fatal("invalid successor identity was accepted")
+			}
+		})
+	}
+}
+
 func TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebatchAndCleanup(t *testing.T) {
 	fixture, receipt, options := collisionAcknowledgementFixture(t)
 	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited historical prepare receipt collision"
