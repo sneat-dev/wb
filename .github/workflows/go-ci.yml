@@ -17,6 +17,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  windows-scope:
+    name: Decide native Windows coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      required: ${{ steps.changes.outputs.required }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            required:
+              - '**/*_windows.go'
+              - 'cmd/wb/**'
+              - 'internal/session/**'
+              - 'go.mod'
+              - 'go.sum'
+              - '.github/workflows/go-ci.yml'
+
   release-eligibility:
     name: Determine release eligibility
     runs-on: ubuntu-latest
@@ -179,12 +198,29 @@ jobs:
           ./internal/githubobserver/...
           ./internal/fleetsync/...
 
+  windows:
+    name: Native Windows compile and test
+    needs: windows-scope
+    if: needs.windows-scope.outputs.required == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Compile and test Windows-sensitive packages
+        run: go test ./cmd/wb ./internal/session
+
   test:
     # This job only combines results. Keep its name aligned with the required
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, source, static, lint, coverage, race]
+    needs: [release-eligibility, source, static, lint, coverage, race, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -196,6 +232,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           RACE_RESULT: ${{ needs.race.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
           set -eu
           for check in "Eligibility:$ELIGIBILITY_RESULT" "Formatting and dependencies:$SOURCE_RESULT" "Build and vet:$STATIC_RESULT" "Lint:$LINT_RESULT" "Tests and coverage:$COVERAGE_RESULT" "Race tests:$RACE_RESULT"; do
@@ -206,6 +243,10 @@ jobs:
               exit 1
             fi
           done
+          if [ "$WINDOWS_RESULT" != "success" ] && [ "$WINDOWS_RESULT" != "skipped" ]; then
+            echo "Required check 'Native Windows compile and test' concluded: $WINDOWS_RESULT" >&2
+            exit 1
+          fi
           echo "All required checks passed. This job only combines their results."
 
   release:

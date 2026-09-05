@@ -176,7 +176,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "source", "static", "lint", "coverage", "race"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "source", "static", "lint", "coverage", "race", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
 	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
 		job, ok := jobs[name].(map[string]any)
@@ -283,8 +283,8 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatal("required check must only summarize the validation results")
 	}
 	step := steps[0]
-	if len(step.Env) != 6 {
-		t.Fatalf("summary checks %d results, want all six prerequisites", len(step.Env))
+	if len(step.Env) != 7 {
+		t.Fatalf("summary checks %d results, want all seven prerequisites", len(step.Env))
 	}
 	run := func(failedKey, result string) error {
 		cmd := exec.Command("sh", "-c", step.Run)
@@ -301,8 +301,14 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 	if err := run("", ""); err != nil {
 		t.Fatalf("all successful prerequisites rejected: %v", err)
 	}
+	if err := run("WINDOWS_RESULT", "skipped"); err != nil {
+		t.Fatalf("path-scoped Windows check rejected a skipped result: %v", err)
+	}
 	for key := range step.Env {
 		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
+			if key == "WINDOWS_RESULT" && result == "skipped" {
+				continue
+			}
 			t.Run(key+"/"+result, func(t *testing.T) {
 				if err := run(key, result); err == nil {
 					t.Fatalf("summary accepted %s=%q", key, result)
