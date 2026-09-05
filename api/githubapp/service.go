@@ -227,10 +227,10 @@ func (service Service) ProcessWebhook(ctx context.Context, delivery WebhookDeliv
 		return false, ErrNoWebhook
 	}
 	if strings.TrimSpace(delivery.ID) == "" || strings.TrimSpace(delivery.Event) == "" {
-		return false, errors.New("GitHub delivery ID and event are required")
+		return false, errors.New("delivery ID and event are required")
 	}
 	if !verifySignature(service.WebhookSecret, delivery.Payload, signature) {
-		return false, errors.New("GitHub webhook signature is invalid")
+		return false, errors.New("webhook signature is invalid")
 	}
 	seen, err := service.Deliveries.HasDelivery(ctx, delivery.ID)
 	if err != nil || seen {
