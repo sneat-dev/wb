@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -72,7 +73,7 @@ func runCoverageWithOptions(ctx context.Context, options RunOptions, module, pro
 		if options.Timeout > 0 {
 			attemptCtx, cancel = context.WithTimeout(ctx, options.Timeout)
 		}
-		output, err := runShardedCoverageWithDiagnostics(attemptCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository)
+		output, err := runShardedCoverageWithDiagnosticsAndProgress(attemptCtx, module, profilePath, options.GoShardPackages, options.GoTestShards, options.CoverageDiagnosticsDir, options.CoverageDiagnosticsRepository, options.Progress)
 		timedOut := attemptCtx.Err() == context.DeadlineExceeded
 		cancel()
 		if timedOut {
@@ -89,6 +90,10 @@ func runShardedCoverage(ctx context.Context, module, outputProfile string, reque
 }
 
 func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string) (string, error) {
+	return runShardedCoverageWithDiagnosticsAndProgress(ctx, module, outputProfile, requestedPackages, shardCount, diagnosticsDir, repository, nil)
+}
+
+func runShardedCoverageWithDiagnosticsAndProgress(ctx context.Context, module, outputProfile string, requestedPackages []string, shardCount int, diagnosticsDir, repository string, reporter func(Progress)) (string, error) {
 	allPackages, err := goListPackages(ctx, module, "./...")
 	if err != nil {
 		return "", err
@@ -161,7 +166,7 @@ func runShardedCoverageWithDiagnostics(ctx context.Context, module, outputProfil
 		}
 	}
 
-	results := runGoCoverageJobs(ctx, module, jobs, shardCount)
+	results := runGoCoverageJobs(ctx, module, jobs, boundedCoverageParallelism(shardCount, len(jobs), runtime.GOMAXPROCS(0)), reporter)
 	var output strings.Builder
 	var failedOutput strings.Builder
 	profiles := make([]string, 0, len(jobs))
@@ -335,20 +340,43 @@ func discoverGoTests(ctx context.Context, module, packagePath string) ([]string,
 	return tests, nil
 }
 
-func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob, parallel int) []goCoverageJobResult {
+func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob, parallel int, reporter func(Progress)) []goCoverageJobResult {
 	if parallel > len(jobs) {
 		parallel = len(jobs)
 	}
 	results := make([]goCoverageJobResult, len(jobs))
 	indices := make(chan int)
 	var wait sync.WaitGroup
+	var progressMu sync.Mutex
+	completed := 0
+	report := func(index int, state ProgressState, status Status) {
+		if reporter == nil {
+			return
+		}
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		if state == ProgressCompleted {
+			completed++
+		}
+		reporter(Progress{
+			Language: "go", Module: module, Check: CheckTest,
+			Command: "go test", Detail: jobs[index].label,
+			State: state, Status: status, Completed: completed, Total: len(jobs),
+		})
+	}
 	for worker := 0; worker < parallel; worker++ {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
 			for index := range indices {
+				report(index, ProgressStarted, "")
 				output, err := run(ctx, module, "go", jobs[index].arguments...)
 				results[index] = goCoverageJobResult{output: output, err: err}
+				status := StatusPassed
+				if err != nil {
+					status = StatusFailed
+				}
+				report(index, ProgressCompleted, status)
 			}
 		}()
 	}
@@ -358,4 +386,21 @@ func runGoCoverageJobs(ctx context.Context, module string, jobs []goCoverageJob,
 	close(indices)
 	wait.Wait()
 	return results
+}
+
+func boundedCoverageParallelism(requested, jobs, effectiveCPU int) int {
+	if requested < 1 || jobs < 1 {
+		return 0
+	}
+	limit := effectiveCPU - 1
+	if limit < 1 {
+		limit = 1
+	}
+	if requested < limit {
+		limit = requested
+	}
+	if jobs < limit {
+		limit = jobs
+	}
+	return limit
 }

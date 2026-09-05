@@ -42,6 +42,18 @@ func (progress *qualityProgress) report(event quality.Progress) {
 		))
 		return
 	}
+	if event.Total > 0 {
+		state := string(event.State)
+		if event.State == quality.ProgressCompleted {
+			state = string(event.Status)
+		}
+		progress.live.update(fmt.Sprintf(
+			"%s: %d/%d repositories completed; go test jobs %d/%d; %s: %s",
+			progress.operation, progress.completed, progress.total,
+			event.Completed, event.Total, event.Detail, state,
+		))
+		return
+	}
 	module := event.Module
 	if module == "" {
 		module = "."
