@@ -137,6 +137,9 @@ func newCodeGrapherInstallCmd(deps codeGrapherDeps, verb string) *cobra.Command 
 				if !result.Status.Runnable {
 					return &exitError{code: exitFindings, message: "installer completed but CodeGrapher could not be re-probed on PATH"}
 				}
+				if (deps.goos == "darwin" || deps.goos == "linux") && result.Status.Manager != "homebrew" {
+					return &exitError{code: exitFindings, message: "Homebrew completed but PATH resolves a shadowing non-Homebrew CodeGrapher at " + result.Status.ResolvedPath + "; remove or reorder the stale executable, then rerun `wb codegrapher status`"}
+				}
 			}
 			return writeCodeGrapherInstall(command, result, format)
 		},
@@ -173,7 +176,7 @@ func runCodeGrapherInstall(ctx context.Context, deps codeGrapherDeps, verb, vers
 		}
 		args := []string{"install", "--cask", codeGrapherHomebrewCask}
 		if verb == "update" {
-			args = []string{"upgrade", "--cask", "codegrapher"}
+			args = []string{"upgrade", "--cask", codeGrapherHomebrewCask}
 		}
 		result.Commands = [][]string{{"brew", "update"}, append([]string{"brew"}, args...)}
 		if dryRun {

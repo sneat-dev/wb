@@ -196,7 +196,7 @@ func TestWorktreeCleanupRetireShellsPlansThenAppliesAnEmptyPreExistingShell(t *t
 
 func TestWorktreeLifecycleHelpExplainsNetworkAndCleanupSafety(t *testing.T) {
 	list := newWorktreeListCmd()
-	for _, wanted := range []string{"only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
+	for _, wanted := range []string{"resolver-recognized layout", "repository-local", "configured shared root", "worktree relocate", "only local Git data", "--github", "exact fetched origin-target", "versioned control-plane envelope", "lifecycle artifacts", "seven-day recent-history"} {
 		if !strings.Contains(list.Long, wanted) {
 			t.Errorf("worktree list help does not mention %q", wanted)
 		}
@@ -463,6 +463,91 @@ func TestWorktreeRenameHelpExplainsRecyclingAndBranchSafety(t *testing.T) {
 	}
 	if deleteOldBranch := command.Flags().Lookup("delete-old-branch"); deleteOldBranch != nil {
 		t.Fatalf("obsolete optional --delete-old-branch is still advertised: %#v", deleteOldBranch)
+	}
+}
+
+func TestWorktreeRelocateHelpAndFlags(t *testing.T) {
+	command := newWorktreeRelocateCmd()
+	for _, wanted := range []string{"--to=local", "--to=shared", "descriptor-anchored", "append-only relocation receipt", "--format=json"} {
+		if !strings.Contains(command.Long, wanted) {
+			t.Errorf("relocate help does not mention %q", wanted)
+		}
+	}
+	for _, flag := range []string{"to", "apply", "format", "json"} {
+		if command.Flags().Lookup(flag) == nil {
+			t.Errorf("relocate is missing --%s", flag)
+		}
+	}
+	if apply := command.Flags().Lookup("apply"); apply == nil || apply.DefValue != "false" {
+		t.Fatalf("relocate --apply default = %#v, want false", apply)
+	}
+}
+
+func TestWorktreeRelocateCLIJSONEnvelopeAndShortcut(t *testing.T) {
+	projects := setUpRenameCLIFixture(t)
+	prompt := writeOriginalPromptFixture(t, "relocate CLI JSON fixture")
+	previousProjectsRoot := projectsRoot
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	var stdout, stderr bytes.Buffer
+	createArgs := []string{"--projects-root", projects, "worktree", "create", "cli-relocate", "acme/app", "--model", "unknown", "--original-prompt-file", prompt}
+	if code := run(createArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("worktree create failed: code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	runRelocateJSON := func(extra ...string) (string, string, int) {
+		stdout.Reset()
+		stderr.Reset()
+		args := append([]string{"--projects-root", projects, "worktree", "relocate", "cli-relocate", "--to=local"}, extra...)
+		code := run(args, &stdout, &stderr)
+		return stdout.String(), stderr.String(), code
+	}
+
+	formatJSON, formatStderr, code := runRelocateJSON("--format=json")
+	if code != exitOK {
+		t.Fatalf("relocate --format=json exit=%d stdout=%s stderr=%s", code, formatJSON, formatStderr)
+	}
+	if formatStderr != "" {
+		t.Fatalf("relocate JSON diagnostics/progress must use stderr only; stderr=%q", formatStderr)
+	}
+	var envelope worktrees.RelocateOutcome
+	if err := json.Unmarshal([]byte(formatJSON), &envelope); err != nil {
+		t.Fatalf("relocate --format=json must emit one parseable document: %v\n%s", err, formatJSON)
+	}
+	if envelope.SchemaVersion != 1 || len(envelope.Results) != 1 || !envelope.Results[0].AlreadyThere {
+		t.Fatalf("relocate JSON control-plane envelope = %#v", envelope)
+	}
+
+	shortcutJSON, shortcutStderr, code := runRelocateJSON("--json")
+	if code != exitOK || shortcutStderr != "" {
+		t.Fatalf("relocate --json exit=%d stdout=%s stderr=%s", code, shortcutJSON, shortcutStderr)
+	}
+	if shortcutJSON != formatJSON {
+		t.Fatalf("--json output differs from --format=json\n--format=json: %s\n--json: %s", formatJSON, shortcutJSON)
+	}
+
+	conflictingStdout, conflictingStderr, code := runRelocateJSON("--json", "--format=text")
+	if code == exitOK || conflictingStdout != "" || !strings.Contains(conflictingStderr, "--json cannot be combined with --format=text") {
+		t.Fatalf("conflicting JSON flags exit=%d stdout=%q stderr=%q", code, conflictingStdout, conflictingStderr)
+	}
+
+	// A malformed candidate turns into a List diagnostic. JSON mode must keep
+	// that operator-facing warning on stderr while stdout remains one document.
+	diagnosticRoot := t.TempDir()
+	diagnosticProjects, _ := setUpMismatchedWorktreeFixture(t, diagnosticRoot)
+	stdout.Reset()
+	stderr.Reset()
+	diagnosticArgs := []string{"--projects-root", diagnosticProjects, "worktree", "relocate", "stale-task", "--to=local", "--format=json"}
+	if code := run(diagnosticArgs, &stdout, &stderr); code != exitOK {
+		t.Fatalf("relocate with diagnostic exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	var diagnosticEnvelope worktrees.RelocateOutcome
+	if err := json.Unmarshal(stdout.Bytes(), &diagnosticEnvelope); err != nil {
+		t.Fatalf("relocate diagnostic JSON is not parseable: %v\n%s", err, stdout.String())
+	}
+	if len(diagnosticEnvelope.Diagnostics) != 1 || strings.Contains(stdout.String(), "warning:") ||
+		!strings.Contains(stderr.String(), "warning: relocate skipped malformed candidate") {
+		t.Fatalf("relocate diagnostic streams stdout=%q stderr=%q envelope=%#v", stdout.String(), stderr.String(), diagnosticEnvelope)
 	}
 }
 

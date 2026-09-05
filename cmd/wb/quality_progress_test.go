@@ -37,3 +37,29 @@ func TestQualityProgressShowsCheckAndRepositoryCompletion(t *testing.T) {
 		}
 	}
 }
+
+func TestQualityProgressShowsShardedGoTestJobAndDenominator(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	progress := newQualityProgress(&out, true, "verify", 1)
+	progress.start()
+	progress.report(quality.Progress{
+		Language: "go", Module: ".", Command: "go test", Detail: "cmd/wb shard 2/8",
+		State: quality.ProgressStarted, Completed: 1, Total: 17,
+	})
+	progress.report(quality.Progress{
+		Language: "go", Module: ".", Command: "go test", Detail: "cmd/wb shard 2/8",
+		State: quality.ProgressCompleted, Status: quality.StatusPassed, Completed: 2, Total: 17,
+	})
+
+	rendered := out.String()
+	for _, want := range []string{
+		"go test jobs 1/17; cmd/wb shard 2/8: started",
+		"go test jobs 2/17; cmd/wb shard 2/8: passed",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("progress output missing %q: %q", want, rendered)
+		}
+	}
+	progress.finish()
+}

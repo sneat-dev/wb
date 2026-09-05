@@ -50,6 +50,7 @@ func newCIWaitCmd() *cobra.Command {
 	var repository, pullRequest, target, head string
 	var slice, interval time.Duration
 	var jsonOut bool
+	var format string
 	command := &cobra.Command{
 		Use:   "wait --repo <owner/repository> --target <branch> --head <sha> [--pr <number-or-url>]",
 		Short: "Wait one bounded foreground slice for checks on an exact head",
@@ -78,9 +79,13 @@ it. This command never starts a detached watcher or background loop.`,
 			if err := cobra.NoArgs(command, args); err != nil {
 				return err
 			}
+			if err := requireOutputFormat(format, "text", "json"); err != nil {
+				return err
+			}
 			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval)
 		},
 		RunE: func(command *cobra.Command, args []string) error {
+			machineOutput := jsonOut || format == "json"
 			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
 			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 			progress.start(repository, pullRequest, target, head)
@@ -95,9 +100,9 @@ it. This command never starts a detached watcher or background loop.`,
 			progress.finish(result)
 			output := ciWaitOutput{SchemaVersion: 1, ObservedAt: time.Now().UTC(), PullRequestWaitResult: result}
 			if result.Status == orchestrate.PullRequestWaitPending {
-				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, jsonOut)
+				output.ResumeArgs = ciWaitResumeArgs(repository, pullRequest, target, strings.ToLower(head), slice, interval, machineOutput)
 			}
-			if jsonOut {
+			if machineOutput {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
 				if err := encoder.Encode(output); err != nil {
@@ -119,6 +124,7 @@ it. This command never starts a detached watcher or background loop.`,
 	command.Flags().DurationVar(&slice, "slice", defaultCIWaitSlice, "maximum foreground observation slice (must be at most 9m)")
 	command.Flags().DurationVar(&interval, "interval", orchestrate.DefaultCheckPollInterval, "foreground interval between GitHub check observations (a checks-bearing terminal set's confirming reread waits at most 15s)")
 	command.Flags().BoolVar(&jsonOut, "json", false, "emit a versioned machine-readable result")
+	command.Flags().StringVar(&format, "format", "text", "stdout format: text or json (--json is a shortcut for --format=json)")
 	return command
 }
 
@@ -174,6 +180,31 @@ func printCIWait(command *cobra.Command, output ciWaitOutput) error {
 		}
 		_, err := fmt.Fprintf(command.OutOrStdout(), "resume: %s\n", strings.Join(quoted, " "))
 		return err
+	}
+	for _, detail := range output.FailureDetails {
+		if _, err := fmt.Fprintf(command.OutOrStdout(), "failed %s\n", detail.Check); err != nil {
+			return err
+		}
+		if detail.RunURL != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "run: %s\n", detail.RunURL); err != nil {
+				return err
+			}
+		}
+		if detail.JobURL != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "job: %s\n", detail.JobURL); err != nil {
+				return err
+			}
+		}
+		if detail.Excerpt != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "failed-step tail:\n%s\n", detail.Excerpt); err != nil {
+				return err
+			}
+		}
+		if detail.Reason != "" {
+			if _, err := fmt.Fprintf(command.OutOrStdout(), "diagnostic: %s\n", detail.Reason); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

@@ -2641,6 +2641,11 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 	}
 	matched := make([]bool, len(baselineFailures))
 	for _, candidateFailure := range candidateFailures {
+		if candidateFailure.Language == "go" && candidateFailure.Check == quality.CheckTest {
+			if matchGoCoverageBaselineFailure(baselineFailures, candidateFailure) {
+				continue
+			}
+		}
 		if candidateFailure.Language == "specscore" {
 			if matchSpecScoreBaselineFailure(baselineFailures, candidateFailure) {
 				continue
@@ -2660,6 +2665,74 @@ func worktreeMergeValidationRegression(baseline, candidate quality.VerificationR
 		}
 	}
 	return nil
+}
+
+// matchGoCoverageBaselineFailure compares the failing-test identities emitted
+// by WB's compact coverage index. Process-isolated shard numbers are scheduler
+// placement, not failure identity, and can change when the package inventory
+// changes. A candidate may remove baseline failures but must not add a failing
+// test that was absent from the exact target baseline.
+func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candidate quality.VerificationEntry) bool {
+	candidateIDs := goCoverageFailureIdentities(candidate.Detail)
+	if len(candidateIDs) == 0 {
+		return false
+	}
+	for _, baselineFailure := range baseline {
+		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || baselineFailure.Command != candidate.Command {
+			continue
+		}
+		baselineIDs := goCoverageFailureIdentities(baselineFailure.Detail)
+		if len(baselineIDs) == 0 {
+			continue
+		}
+		allKnown := true
+		for identity := range candidateIDs {
+			if _, ok := baselineIDs[identity]; !ok {
+				allKnown = false
+				break
+			}
+		}
+		if allKnown {
+			return true
+		}
+	}
+	return false
+}
+
+var goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
+
+func goCoverageFailureIdentities(detail string) map[string]struct{} {
+	const (
+		failureIndexHeader = "WB coverage failure index:\n"
+		rawOutputHeader    = "WB coverage raw output\n"
+	)
+	identities := make(map[string]struct{})
+	indexStart := strings.Index(detail, failureIndexHeader)
+	if indexStart < 0 {
+		return identities
+	}
+	index := detail[indexStart+len(failureIndexHeader):]
+	if rawOutput := strings.Index(index, rawOutputHeader); rawOutput >= 0 {
+		index = index[:rawOutput]
+	}
+	for _, rawLine := range strings.Split(index, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		closing := strings.Index(line, "] ")
+		if closing < 0 {
+			continue
+		}
+		placement := strings.TrimPrefix(line[:closing], "- [")
+		placement = goCoverageShardPlacementPattern.ReplaceAllString(placement, "")
+		testName := strings.TrimSpace(line[closing+2:])
+		if placement == "" || testName == "" {
+			continue
+		}
+		identities[placement+"\x00"+testName] = struct{}{}
+	}
+	return identities
 }
 
 // matchSpecScoreBaselineFailure treats the exact violation identity set as the
