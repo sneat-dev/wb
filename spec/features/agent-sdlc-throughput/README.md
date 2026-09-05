@@ -993,7 +993,7 @@ canonical synchronization transitions to cleanup, every subsequent heartbeat
 names the new active phase and never presents the completed predecessor as
 current. JSON stdout remains independently parseable.
 
-### AC: ci-wait failure is actionable in one invocation
+### AC: ci-wait
 
 Given an exact-head check run fails, `wb ci wait` reports the completed/total
 check count and a capped list of pending job names while it observes GitHub.

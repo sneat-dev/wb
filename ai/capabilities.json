@@ -472,6 +472,7 @@
             {
               "path": "wb ci wait",
               "flags": [
+                "--format",
                 "--head",
                 "--interval",
                 "--json",
