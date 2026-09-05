@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/streams"
 )
 
@@ -33,6 +34,19 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 		if _, _, err := splitPullRequestSelector(invalid); err == nil {
 			t.Errorf("splitPullRequestSelector(%q) accepted an ambiguous selector", invalid)
 		}
+	}
+}
+
+func TestPRLandDefaultsToAUsableBoundedWait(t *testing.T) {
+	command := newPRLandCmd()
+	if got := command.Flags().Lookup("timeout").DefValue; got != defaultCIWaitSlice.String() {
+		t.Fatalf("--timeout default = %s, want %s", got, defaultCIWaitSlice)
+	}
+	if got := command.Flags().Lookup("poll-interval").DefValue; got != orchestrate.DefaultCheckPollInterval.String() {
+		t.Fatalf("--poll-interval default = %s, want %s", got, orchestrate.DefaultCheckPollInterval)
+	}
+	if defaultCIWaitSlice <= orchestrate.DefaultCheckPollInterval {
+		t.Fatalf("default timeout %s must outlive poll interval %s", defaultCIWaitSlice, orchestrate.DefaultCheckPollInterval)
 	}
 }
 
