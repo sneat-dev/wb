@@ -34,5 +34,6 @@ var Syscall6 = unix.Syscall6
 var Exec = unix.Exec
 var Prctl = unix.Prctl
 var Renameat2 = unix.Renameat2
+var Gettid = unix.Gettid
 
 const RENAME_NOREPLACE = unix.RENAME_NOREPLACE
