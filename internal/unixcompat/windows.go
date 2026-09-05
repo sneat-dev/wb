@@ -10,13 +10,15 @@ import (
 )
 
 const (
-	O_RDONLY            = 0
-	O_WRONLY            = 1
-	O_RDWR              = 2
-	O_CREAT             = 0x40
-	O_EXCL              = 0x80
-	O_DIRECTORY         = 0
-	O_NOFOLLOW          = 0
+	O_RDONLY    = 0
+	O_WRONLY    = 1
+	O_RDWR      = 2
+	O_CREAT     = 0x40
+	O_EXCL      = 0x80
+	O_DIRECTORY = 0
+	// These flags are interpreted by the compatibility adapters. Keep
+	// O_NOFOLLOW non-zero so Openat can enforce it with Lstat before opening.
+	O_NOFOLLOW          = 0x200000
 	O_CLOEXEC           = 0
 	O_NONBLOCK          = 0
 	S_IFMT              = 0o170000

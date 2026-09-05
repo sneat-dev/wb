@@ -212,8 +212,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Compile and test Windows-sensitive packages
-        run: go test ./cmd/wb ./internal/session
+      - name: Compile all Go packages for Windows
+        run: go build ./...
+      - name: Test Windows-safe portability primitives
+        run: >-
+          go test ./internal/session ./internal/sessionpark ./internal/unixcompat
+          -run 'TestLookupExactRefusesLinkedRecordsAndRequiresLivePID|TestStore|TestTargetStore'
 
   test:
     # This job only combines results. Keep its name aligned with the required
