@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -299,7 +298,15 @@ func (controller daemonController) Status(ctx context.Context) (daemonResult, er
 	if !found {
 		return result, nil
 	}
-	result.Reachable = state.PID > 0 && controller.deps.alive(state.PID) && controller.deps.health(ctx, state.Listen)
+	alive := state.PID > 0 && controller.deps.alive(state.PID)
+	if !alive && (state.Status == daemon.StatusReady || state.Status == daemon.StatusDraining) {
+		state.MarkStopped(controller.deps.now())
+		if err := controller.store.Save(state); err != nil {
+			return daemonResult{}, err
+		}
+		result.State = publicDaemonState(state)
+	}
+	result.Reachable = alive && controller.deps.health(ctx, state.Listen)
 	current, err := controller.provenance()
 	if err != nil {
 		return daemonResult{}, err
@@ -552,23 +559,6 @@ func daemonOwnerToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
-}
-func startDaemonProcess(executable string, args []string, logPath string) (int, error) {
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return 0, err
-	}
-	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return 0, err
-	}
-	command := exec.Command(executable, args...)
-	command.Stdout, command.Stderr, command.Stdin = log, log, nil
-	if err := command.Start(); err != nil {
-		_ = log.Close()
-		return 0, err
-	}
-	_ = log.Close()
-	return command.Process.Pid, nil
 }
 func daemonHealthy(ctx context.Context, listen string) bool {
 	requestCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)

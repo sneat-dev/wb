@@ -51,6 +51,27 @@ func TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut(t *testing.T) {
 	}
 }
 
+func TestDaemonStatusMarksDeadReadyStateStopped(t *testing.T) {
+	root := t.TempDir()
+	deps := daemonTestDependencies(t, root)
+	state := daemon.NewStarting(nil, daemonDefaultListen, daemon.Provenance{Executable: "old", SHA256: "old", Version: "old"}, "owner", time.Now())
+	state.MarkReady(900, time.Now())
+	if err := (daemon.Store{Path: daemonStatePath(root)}).Save(state); err != nil {
+		t.Fatal(err)
+	}
+	result, err := newDaemonController(deps, root).Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State.Status != daemon.StatusStopped || result.State.PID != 0 || result.Reachable {
+		t.Fatalf("dead ready daemon status = %#v", result)
+	}
+	stored, found, err := (daemon.Store{Path: daemonStatePath(root)}).Load()
+	if err != nil || !found || stored.Status != daemon.StatusStopped {
+		t.Fatalf("persisted stale daemon state = %#v, %t, %v", stored, found, err)
+	}
+}
+
 func TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary(t *testing.T) {
 	root := t.TempDir()
 	deps := daemonTestDependencies(t, root)
