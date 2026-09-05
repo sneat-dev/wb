@@ -1169,7 +1169,7 @@ func TestSupersedeValidationFailedWorktreeMergeRefusesInvalidEvidence(t *testing
 				runEngineGit(t, source.Worktree, "add", "advanced.txt")
 				runEngineGit(t, source.Worktree, "commit", "-m", "test: advance receipted source")
 			},
-			want: "does not match",
+			want: "differs from landed target tree",
 		},
 		{
 			name: "missing replacement claim",
