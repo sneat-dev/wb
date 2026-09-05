@@ -685,15 +685,54 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if receipt.ValidationIdentity == nil || receipt.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA || receipt.ValidationIdentity.TargetSHA != receipt.TargetSHA {
+		t.Fatalf("prepare did not publish exact validation identity: %+v", receipt.ValidationIdentity)
+	}
+	reusable, identityErr := preparedValidationStillValid(receipt)
+	if identityErr != nil || !reusable {
+		t.Fatalf("unchanged prepared validation was not reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	drifted := receipt
+	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", WBBuild: receipt.ValidationIdentity.WBBuild, WBExecutableSHA: receipt.ValidationIdentity.WBExecutableSHA, Validators: receipt.ValidationIdentity.Validators, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
+	reusable, identityErr = preparedValidationStillValid(drifted)
+	if identityErr != nil || reusable {
+		t.Fatalf("validation identity drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	validatorDrifted := receipt
+	validatorIdentity := *receipt.ValidationIdentity
+	validatorIdentity.Validators = map[string]string{"go": "drifted"}
+	validatorDrifted.ValidationIdentity = &validatorIdentity
+	reusable, identityErr = preparedValidationStillValid(validatorDrifted)
+	if identityErr != nil || reusable {
+		t.Fatalf("validator executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	wbDrifted := receipt
+	wbIdentity := *receipt.ValidationIdentity
+	wbIdentity.WBExecutableSHA = "drifted"
+	wbDrifted.ValidationIdentity = &wbIdentity
+	reusable, identityErr = preparedValidationStillValid(wbDrifted)
+	if identityErr != nil || reusable {
+		t.Fatalf("WB executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	persistedPrepare, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if reusable, identityErr = preparedValidationStillValid(persistedPrepare); identityErr != nil || !reusable {
+		current, _ := worktreeMergeValidationIdentity(persistedPrepare)
+		t.Fatalf("persisted prepared validation was not reusable: reusable=%t err=%v status=%s phase=%s persisted=%+v current=%+v validation=%+v clean=%t", reusable, identityErr, persistedPrepare.Status, persistedPrepare.Phase, persistedPrepare.ValidationIdentity, current, persistedPrepare.Validation, persistedPrepare.Validation.WorkspaceClean)
+	}
 	installWorktreeMergePublishOnlyPRGH(t)
 	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
 	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
 	logPath := filepath.Join(t.TempDir(), "gh.log")
 	t.Setenv("WB_TEST_GH_LOG", logPath)
+	var resumeEvents []progress.Event
 
 	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
 		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		Progress: func(event progress.Event) { resumeEvents = append(resumeEvents, event) },
 	})
 	if err != nil {
 		t.Fatalf("publish-only resume failed: receipt=%+v err=%v", published, err)
@@ -701,6 +740,11 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if published.Status != WorktreeMergePublished || published.PullRequest != "https://example.test/acme/app/pull/41" ||
 		published.PublishedCandidateSHA != receipt.Candidate.SHA || published.LandingSHA != "" || published.Checks.Status != "" {
 		t.Fatalf("published handoff receipt = %+v", published)
+	}
+	for _, event := range resumeEvents {
+		if event.Phase == "validate_preserved_candidate" && event.State == progress.Started {
+			t.Fatal("exact prepared validation was rerun during unchanged stop-before-merge resume")
+		}
 	}
 	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, receipt.Candidate.SHA+"\t") {
 		t.Fatalf("remote candidate = %q, want exact %s", got, receipt.Candidate.SHA)
@@ -767,6 +811,24 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	}
 	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
 		t.Fatalf("remote descendant = %q, want %s", got, descendant)
+	}
+}
+
+func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktree(t *testing.T) {
+	candidate := t.TempDir()
+	receipt := WorktreeMergeReceipt{
+		Status:    WorktreeMergePrepared,
+		TargetSHA: "target", Candidate: WorktreeMergeCandidate{SHA: "candidate", Worktree: candidate},
+		Validation: quality.VerificationReport{Revision: "candidate", WorkspaceClean: true, Status: quality.StatusPassed},
+	}
+	identity, fingerprintable := worktreeMergeValidationIdentity(receipt)
+	if !fingerprintable {
+		t.Fatal("non-Go worktree identity was not fingerprintable")
+	}
+	receipt.ValidationIdentity = &identity
+	reusable, err := preparedValidationStillValid(receipt)
+	if err != nil || !reusable {
+		t.Fatalf("non-Go passed receipt was not reusable without baseline: reusable=%t err=%v", reusable, err)
 	}
 }
 

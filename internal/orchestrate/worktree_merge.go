@@ -11,12 +11,15 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
@@ -111,6 +114,19 @@ type WorktreeMergePushGateReceipt struct {
 	ObservedAt        time.Time `json:"observed_at"`
 }
 
+// WorktreeMergeValidationIdentity binds a successful prepare validation to
+// every cheap input that can make rerunning it produce a different result.
+// Missing identity is deliberately treated as a cache miss for old receipts.
+type WorktreeMergeValidationIdentity struct {
+	CandidateSHA     string            `json:"candidate_sha"`
+	TargetSHA        string            `json:"target_sha"`
+	SourceSHAs       []string          `json:"source_shas"`
+	QualityPolicySHA string            `json:"quality_policy_sha"`
+	WBBuild          string            `json:"wb_build"`
+	WBExecutableSHA  string            `json:"wb_executable_sha"`
+	Validators       map[string]string `json:"validators,omitempty"`
+}
+
 // WorktreeMergeForwardRepairReceipt preserves the exact landed attempt whose
 // failed target CI required a new forward repair. The active lane reuses its
 // candidate and receipt instead of abandoning either or pretending the prior
@@ -146,6 +162,7 @@ type WorktreeMergeReceipt struct {
 	CanonicalSync         string                              `json:"canonical_sync,omitempty"`
 	Validation            quality.VerificationReport          `json:"validation,omitempty"`
 	BaselineValidation    quality.VerificationReport          `json:"baseline_validation,omitempty"`
+	ValidationIdentity    *WorktreeMergeValidationIdentity    `json:"validation_identity,omitempty"`
 	Checks                PullRequestWaitResult               `json:"checks,omitempty"`
 	PushGate              *WorktreeMergePushGateReceipt       `json:"push_gate,omitempty"`
 	ForwardRepairs        []WorktreeMergeForwardRepairReceipt `json:"forward_repairs,omitempty"`
@@ -1007,11 +1024,19 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if options.StopBeforeMerge {
-		reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
-		if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
-			return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
+		reusable, identityErr := preparedValidationStillValid(receipt)
+		if identityErr != nil {
+			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("recheck prepared validation identity: %w", identityErr))
 		}
-		reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
+		if !reusable {
+			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Started, shortMergeRevision(receipt.Candidate.SHA))
+			if validationErr := validateWorktreeMergeCandidate(ctx, &receipt, options.Timeout, options.Retry, options.Progress); validationErr != nil {
+				return failWorktreeMergeReceipt(receipt, WorktreeMergeValidationFailed, fmt.Errorf("preserved candidate validation failed: %w", validationErr))
+			}
+			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, string(receipt.Validation.Status))
+		} else {
+			reportWorktreeMergeProgress(options.Progress, "validate_preserved_candidate", progress.Completed, "reused exact prepared validation")
+		}
 	}
 
 	decision, err := ResolveWorktreeMergeRoute(ctx, receipt.Repository, receipt.Target, options.Route)
@@ -2527,6 +2552,14 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		runOptions)
 	receipt.Validation.Revision = receipt.Candidate.SHA
 	receipt.Validation.WorkspaceClean = true
+	identity, identityOK := worktreeMergeValidationIdentity(*receipt)
+	if identityOK {
+		receipt.ValidationIdentity = &identity
+	} else {
+		// Validation remains authoritative, but an un-fingerprintable
+		// environment must be a cache miss rather than a failed prepare.
+		receipt.ValidationIdentity = nil
+	}
 	if receipt.Validation.Status == quality.StatusPassed {
 		receipt.BaselineValidation = quality.VerificationReport{
 			Repository: receipt.Repository, Path: "git:" + receipt.TargetSHA, Revision: receipt.TargetSHA,
@@ -2547,6 +2580,84 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		return err
 	}
 	return nil
+}
+
+func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMergeValidationIdentity, bool) {
+	policyPath := filepath.Join(receipt.Candidate.Worktree, ".wb", "quality.yaml")
+	policy, err := os.ReadFile(policyPath)
+	if errors.Is(err, os.ErrNotExist) {
+		policy = []byte("absent")
+	} else if err != nil {
+		return WorktreeMergeValidationIdentity{}, false
+	}
+	policyDigest := sha256.Sum256(policy)
+	executable, err := os.Executable()
+	if err != nil {
+		return WorktreeMergeValidationIdentity{}, false
+	}
+	executableSHA, err := fileSHA256(executable)
+	if err != nil {
+		return WorktreeMergeValidationIdentity{}, false
+	}
+	sourceSHAs := make([]string, len(receipt.Sources))
+	for index, source := range receipt.Sources {
+		sourceSHAs[index] = source.SHA
+	}
+	var validators map[string]string
+	for _, result := range receipt.Validation.Results {
+		fields := strings.Fields(result.Command)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if result.Language != "go" && result.Language != "node" && result.Language != "specscore" {
+			continue
+		}
+		path, err := exec.LookPath(name)
+		if err != nil {
+			return WorktreeMergeValidationIdentity{}, false
+		}
+		digest, err := fileSHA256(path)
+		if err != nil {
+			return WorktreeMergeValidationIdentity{}, false
+		}
+		if validators == nil {
+			validators = make(map[string]string)
+		}
+		validators[name] = digest
+	}
+	return WorktreeMergeValidationIdentity{
+		CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA,
+		SourceSHAs: sourceSHAs, QualityPolicySHA: hex.EncodeToString(policyDigest[:]),
+		WBBuild: buildinfo.Version() + "@" + buildinfo.Revision(), WBExecutableSHA: executableSHA, Validators: validators,
+	}, true
+}
+
+func preparedValidationStillValid(receipt WorktreeMergeReceipt) (bool, error) {
+	if receipt.Status != WorktreeMergePrepared || (receipt.Validation.Status != quality.StatusPassed && receipt.Validation.Status != quality.StatusFailed) ||
+		receipt.Validation.Revision != receipt.Candidate.SHA || !receipt.Validation.WorkspaceClean ||
+		receipt.ValidationIdentity == nil {
+		return false, nil
+	}
+	if receipt.Validation.Status == quality.StatusFailed {
+		if receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.BaselineValidation.Status != quality.StatusFailed {
+			return false, nil
+		}
+		if err := worktreeMergeValidationRegression(receipt.BaselineValidation, receipt.Validation); err != nil {
+			return false, nil
+		}
+	}
+	identity, fingerprintable := worktreeMergeValidationIdentity(receipt)
+	return fingerprintable && reflect.DeepEqual(*receipt.ValidationIdentity, identity), nil
+}
+
+func fileSHA256(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // verifyWorktreeMergeTarget materializes the exact fetched target revision in
@@ -2955,6 +3066,32 @@ func worktreeMergeOperationID(lane string, sources []WorktreeMergeSource) string
 		_, _ = hash.Write([]byte(source.SHA))
 	}
 	return lane + "-" + hex.EncodeToString(hash.Sum(nil)[:6])
+}
+
+// worktreeMergeOperationIDMatchesRecordedSourceSet accepts the original
+// source-derived operation identity when a later append-only source refresh
+// replaced the current source heads. No identity other than the current set
+// or one complete recorded refresh set is accepted.
+func worktreeMergeOperationIDMatchesRecordedSourceSet(receipt WorktreeMergeReceipt) bool {
+	if receipt.ID == worktreeMergeOperationID(receipt.Lane, receipt.Sources) {
+		return true
+	}
+	for _, refresh := range receipt.SourceRefreshes {
+		if len(refresh.Sources) == 0 || refresh.RecordedAt.IsZero() {
+			continue
+		}
+		complete := true
+		for _, source := range refresh.Sources {
+			if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
+				complete = false
+				break
+			}
+		}
+		if complete && receipt.ID == worktreeMergeOperationID(receipt.Lane, refresh.Sources) {
+			return true
+		}
+	}
+	return false
 }
 
 func worktreeMergeSupersededOperationID(operation, receiptPath string) string {
