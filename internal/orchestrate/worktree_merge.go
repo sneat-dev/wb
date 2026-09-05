@@ -2678,7 +2678,7 @@ func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candid
 		return false
 	}
 	for _, baselineFailure := range baseline {
-		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || baselineFailure.Command != candidate.Command {
+		if baselineFailure.Language != candidate.Language || baselineFailure.Module != candidate.Module || baselineFailure.Check != candidate.Check || normalizeGoCoverageCommand(baselineFailure.Command) != normalizeGoCoverageCommand(candidate.Command) {
 			continue
 		}
 		baselineIDs := goCoverageFailureIdentities(baselineFailure.Detail)
@@ -2699,7 +2699,14 @@ func matchGoCoverageBaselineFailure(baseline []quality.VerificationEntry, candid
 	return false
 }
 
-var goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
+var (
+	goCoverageShardPlacementPattern = regexp.MustCompile(`\s+shard\s+[0-9]+/[0-9]+$`)
+	goCoverageCommandShardsPattern  = regexp.MustCompile(`\s+\([0-9]+\s+process-isolated shards for [^)]*\)$`)
+)
+
+func normalizeGoCoverageCommand(command string) string {
+	return goCoverageCommandShardsPattern.ReplaceAllString(command, " (<process-isolated shards>)")
+}
 
 func goCoverageFailureIdentities(detail string) map[string]struct{} {
 	const (

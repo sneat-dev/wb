@@ -345,6 +345,24 @@ func TestWorktreeMergeValidationRegressionMatchesOnlyEquivalentBaselineFailures(
 	}
 }
 
+func TestWorktreeMergeValidationRegressionIgnoresCoverageShardPackagePlacement(t *testing.T) {
+	detail := "WB coverage failure index:\n- [github.com/sneat-dev/wb/internal/worktrees shard 2/8] TestStable\nWB coverage raw output\noutput"
+	entry := func(command string) quality.VerificationReport {
+		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
+			Language: "go", Module: ".", Check: quality.CheckTest, Command: command, Status: quality.StatusFailed, Detail: detail,
+		}}}
+	}
+	baseline := entry("go test -coverprofile … ./... (8 process-isolated shards for ./internal/worktrees)")
+	candidate := entry("go test -coverprofile … ./... (8 process-isolated shards for ./cmd/wb,./internal/worktrees)")
+	if err := worktreeMergeValidationRegression(baseline, candidate); err != nil {
+		t.Fatalf("coverage shard package placement changed failure identity: %v", err)
+	}
+	candidate.Results[0].Command = "go test -race ./..."
+	if err := worktreeMergeValidationRegression(baseline, candidate); err == nil {
+		t.Fatal("semantic coverage command change was accepted")
+	}
+}
+
 func TestWorktreeMergeValidationRegressionMatchesContactusVolatileBuildOutput(t *testing.T) {
 	nodeFailing := func(detail string) quality.VerificationReport {
 		return quality.VerificationReport{Status: quality.StatusFailed, Results: []quality.VerificationEntry{{
