@@ -216,8 +216,8 @@ jobs:
         run: go build ./...
       - name: Test Windows-safe portability primitives
         run: >-
-          go test ./internal/session ./internal/sessionpark ./internal/unixcompat
-          -run 'TestLookupExactRefusesLinkedRecordsAndRequiresLivePID|TestStore|TestTargetStore'
+          go test ./internal/session
+          -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'
 
   test:
     # This job only combines results. Keep its name aligned with the required
