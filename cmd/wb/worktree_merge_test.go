@@ -406,6 +406,26 @@ func TestWorktreeMergePrepareSelectsSuccessorAfterSupersededConflictReceipt(t *t
 		if successor.Status != orchestrate.WorktreeMergePrepared || successor.ReceiptPath == fixture.receiptPath || successor.Candidate.SHA == "" {
 			t.Fatalf("fresh prepare did not create a distinct prepared successor: %+v", successor)
 		}
+
+		var retryOutput, retryError bytes.Buffer
+		retry := newRootCmd()
+		retry.SetOut(&retryOutput)
+		retry.SetErr(&retryError)
+		retry.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "prepare", fixture.sources[0].WorktreeDir,
+			"--target", "main", "--model", "test-model", "--agent-runtime", "test", "--format", "json",
+		})
+		if err := retry.Execute(); err != nil {
+			t.Fatalf("retry prepare rejected existing successor %s: %v\nstderr: %s", successor.ReceiptPath, err, retryError.String())
+		}
+		var retried orchestrate.WorktreeMergeReceipt
+		if err := json.Unmarshal(retryOutput.Bytes(), &retried); err != nil {
+			t.Fatalf("decode retry output %q: %v", retryOutput.String(), err)
+		}
+		if retried.ID != successor.ID || retried.ReceiptPath != successor.ReceiptPath || retried.Candidate != successor.Candidate {
+			t.Fatalf("retry did not return the unchanged successor: got=%+v want=%+v", retried, successor)
+		}
 	})
 
 	t.Run("tampered acknowledgement leaves the conflict receipt blocking", func(t *testing.T) {

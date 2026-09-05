@@ -252,7 +252,14 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	reportsDir := filepath.Join(home, "reports", "worktree-merge")
 	receiptPath := filepath.Join(reportsDir, operation+".json")
 	var prior *WorktreeMergeReceipt
-	if existing, readErr := readWorktreeMergeReceipt(receiptPath); readErr == nil {
+	for {
+		existing, readErr := readWorktreeMergeReceipt(receiptPath)
+		if errors.Is(readErr, os.ErrNotExist) {
+			break
+		}
+		if readErr != nil {
+			return WorktreeMergeReceipt{}, readErr
+		}
 		if !sameWorktreeMergeSources(existing.Sources, sources) || existing.Repository != repository || existing.Target != target {
 			return existing, fmt.Errorf("merger lane %s already owns a different candidate at %s", lane, receiptPath)
 		}
@@ -275,6 +282,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 			// receipt or reuse its candidate worktree.
 			operation = worktreeMergeSupersededOperationID(operation, existing.ReceiptPath)
 			receiptPath = filepath.Join(reportsDir, operation+".json")
+			continue
 		} else {
 			if rebatched, rebatchErr := hasPreparedWorktreeMergeRebatch(existing); rebatchErr != nil {
 				return existing, rebatchErr
@@ -348,8 +356,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				return existing, nil
 			}
 		}
-	} else if !errors.Is(readErr, os.ErrNotExist) {
-		return WorktreeMergeReceipt{}, readErr
+		break
 	}
 	forwardRepair := false
 	activeExcept := []string{receiptPath}
