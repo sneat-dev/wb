@@ -759,9 +759,12 @@ the library — is the source of truth for reversal.
 #### REQ: merge-refuses-a-linked-worktree
 
 `wb worktree merge` MUST refuse to push or land a worktree that has a live link
-recorded in stream state, or a `go.work` containing a `use` entry, and MUST name
-the offending link and the command that clears it. The refusal MUST be based on
-both signals independently: state alone would miss a hand-written `go.work`, and
+recorded in stream state, or a `go.work` containing an unpublished `use` entry,
+and MUST name the offending link and the command that clears it. A relative
+entry is intrinsic rather than unpublished only when `go.work` is unchanged
+from `HEAD`, the entry remains physically inside the repository, and the
+module's `go.mod` is also tracked in `HEAD`. The refusal MUST be based on both
+signals independently: state alone would miss a hand-written `go.work`, and
 `go.work` alone would miss an npm link. There MUST be no flag that both bypasses
 this guard and pushes.
 
@@ -1879,12 +1882,14 @@ reading the removed library worktree.
 
 **Requirements:** dependency-streams#req:merge-refuses-a-linked-worktree
 
-**Given** a consumer worktree with a live link, and separately a worktree with a
-hand-written `go.work` containing a `use` entry and no stream record
-**When** `wb worktree merge` is run on either
+**Given** a consumer worktree with a live link, separately a worktree with a
+hand-written `go.work` containing a `use` entry and no stream record, and a
+repository with a committed `go.work` whose relative entries point only to
+committed modules in that repository
+**When** `wb worktree merge` is run on each
 **Then** it refuses before any push, names the link or the `use` entry and the
 command that clears it, and no flag combination both bypasses the guard and
-pushes.
+pushes; the committed intrinsic workspace is accepted.
 
 ### AC: ten-bumps-verify-once-then-prefix-re-apply
 
