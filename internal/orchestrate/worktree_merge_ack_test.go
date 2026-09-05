@@ -269,6 +269,18 @@ func collisionAcknowledgementFixture(t *testing.T) (engineFixture, WorktreeMerge
 	}
 }
 
+func TestValidationFailedSupersessionAcceptsRecordedSourceRefreshIdentity(t *testing.T) {
+	_, receipt, _ := collisionAcknowledgementFixture(t)
+	receipt.Status = WorktreeMergeValidationFailed
+	receipt.Failure = "candidate validation failed"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateValidationFailedSupersessionReceipt(receipt, receipt.ReceiptPath); err != nil {
+		t.Fatalf("recorded source refresh identity was rejected: %v", err)
+	}
+}
+
 func TestAcknowledgeLandedValidationFailureLeavesHistoricalReceiptUntouched(t *testing.T) {
 	fixture := newEngineFixture(t)
 	source := createMergeSource(t, fixture, "ack-source", "feature/ack", "ack.txt", "ack\n")
