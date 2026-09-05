@@ -1184,7 +1184,7 @@ func validateMergeAcknowledgementCandidate(ctx context.Context, projectsRoot str
 }
 
 func validatePrepareFailureSupersessionCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (*worktrees.WorkLogClaimView, string, error) {
-	if receipt.Status != WorktreeMergeConflict {
+	if receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed {
 		claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
 		return claim, "", err
 	}

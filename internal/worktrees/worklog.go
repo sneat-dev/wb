@@ -1344,6 +1344,256 @@ func reserveOriginalPromptArchive(home, task string, options WorkLogOptions) err
 	return err
 }
 
+const preApplyRenameReservationName = "pre-apply-rename.json"
+const preApplyRenameTerminalName = "pre-apply-rename-terminal.json"
+
+// preApplyRenameReservation records a prompt archive that was reserved for a
+// recycle before the first new worktree claim exists. It deliberately carries
+// no checkout or branch authority: Abort may terminalize this record only when
+// its normal inventory proves that the task has neither one.
+type preApplyRenameReservation struct {
+	Version      int       `json:"version"`
+	OldTask      string    `json:"old_task"`
+	NewTask      string    `json:"new_task"`
+	EffortID     string    `json:"effort_id"`
+	RunID        string    `json:"run_id"`
+	PromptSHA256 string    `json:"prompt_sha256"`
+	ReservedAt   time.Time `json:"reserved_at"`
+}
+
+type preApplyRenameTerminal struct {
+	Version      int       `json:"version"`
+	OldTask      string    `json:"old_task"`
+	NewTask      string    `json:"new_task"`
+	EffortID     string    `json:"effort_id"`
+	RunID        string    `json:"run_id"`
+	PromptSHA256 string    `json:"prompt_sha256"`
+	Disposition  string    `json:"disposition"`
+	SealedAt     time.Time `json:"sealed_at"`
+}
+
+type preApplyRenameReservationCandidate struct {
+	preApplyRenameReservation
+	terminalized bool
+}
+
+// reservePreApplyRenameWorkLog makes a failed or interrupted pre-apply rename
+// recoverable without deleting its immutable prompt archive. The normal claim
+// publication remains later in applyRename, once a real checkout exists.
+func reservePreApplyRenameWorkLog(home, oldTask, newTask string, options WorkLogOptions) error {
+	if len(options.originalPromptContents) == 0 && strings.TrimSpace(options.OriginalPrompt) == "" && !options.RequireOriginalPrompt {
+		return nil
+	}
+	if err := reserveOriginalPromptArchive(home, newTask, options); err != nil {
+		return err
+	}
+	effort, run, err := normalizeWorkLogOptions(newTask, options, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	runDir, _, err := openWorkLogRun(home, effort, run, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = runDir.Close() }()
+	reservation := preApplyRenameReservation{
+		Version: 1, OldTask: oldTask, NewTask: newTask, EffortID: effort, RunID: run,
+		PromptSHA256: options.originalPromptDigest, ReservedAt: time.Now().UTC(),
+	}
+	if reservation.PromptSHA256 == "" {
+		return fmt.Errorf("pre-apply rename reservation has no immutable prompt digest")
+	}
+	var existing preApplyRenameReservation
+	if err := readJSONAt(runDir, preApplyRenameReservationName, &existing); err == nil {
+		if existing.Version != reservation.Version || existing.OldTask != reservation.OldTask || existing.NewTask != reservation.NewTask ||
+			existing.EffortID != reservation.EffortID || existing.RunID != reservation.RunID || existing.PromptSHA256 != reservation.PromptSHA256 {
+			return fmt.Errorf("existing pre-apply rename reservation conflicts with this recycle")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect existing pre-apply rename reservation: %w", err)
+	}
+	return writeJSONImmutableAt(runDir, preApplyRenameReservationName, reservation, false)
+}
+
+// findPreApplyRenameReservations finds only unclaimed prompt reservations for
+// a named destination task. A terminal receipt remains returned so an abort
+// retried after interruption can finish its lock-only task shell. Old versions
+// wrote just the immutable prompt archive, so the narrowly validated legacy
+// form remains recoverable too.
+func findPreApplyRenameReservations(home, task string) ([]preApplyRenameReservationCandidate, error) {
+	worklogs, err := openAbsoluteDirectoryNoFollow(filepath.Join(home, "worklogs"), false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = worklogs.Close() }()
+	efforts, err := worklogs.Readdirnames(-1)
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(efforts)
+	candidates := make([]preApplyRenameReservationCandidate, 0)
+	for _, effort := range efforts {
+		if !validSafeSegment(effort) {
+			continue
+		}
+		effortDir, err := openPrivateChild(worklogs, effort, false)
+		if err != nil {
+			return nil, err
+		}
+		runs, err := openPrivateChild(effortDir, "runs", false)
+		_ = effortDir.Close()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		runNames, err := runs.Readdirnames(-1)
+		if err != nil {
+			_ = runs.Close()
+			return nil, err
+		}
+		sort.Strings(runNames)
+		for _, run := range runNames {
+			if !validSafeSegment(run) {
+				continue
+			}
+			runDir, err := openPrivateChild(runs, run, false)
+			if err != nil {
+				_ = runs.Close()
+				return nil, err
+			}
+			candidate, found, candidateErr := readPreApplyRenameReservation(runDir, effort, run, task)
+			_ = runDir.Close()
+			if candidateErr != nil {
+				_ = runs.Close()
+				return nil, candidateErr
+			}
+			if found {
+				candidates = append(candidates, candidate)
+			}
+		}
+		_ = runs.Close()
+	}
+	return candidates, nil
+}
+
+func readPreApplyRenameReservation(runDir *os.File, effort, run, task string) (preApplyRenameReservationCandidate, bool, error) {
+	if hasWorkLogClaimsOrTerminals(runDir) {
+		return preApplyRenameReservationCandidate{}, false, nil
+	}
+	var reservation preApplyRenameReservation
+	if err := readJSONAt(runDir, preApplyRenameReservationName, &reservation); err == nil {
+		if reservation.Version != 1 || reservation.NewTask != task || reservation.EffortID != effort || reservation.RunID != run ||
+			!validSafeSegment(reservation.OldTask) || reservation.PromptSHA256 == "" {
+			return preApplyRenameReservationCandidate{}, false, fmt.Errorf("pre-apply rename reservation has invalid immutable identity")
+		}
+		if err := validateReservationPrompt(runDir, reservation.PromptSHA256); err != nil {
+			return preApplyRenameReservationCandidate{}, false, fmt.Errorf("validate pre-apply rename prompt archive: %w", err)
+		}
+		if terminalizedPreApplyRenameReservation(runDir, reservation) {
+			return preApplyRenameReservationCandidate{preApplyRenameReservation: reservation, terminalized: true}, true, nil
+		}
+		return preApplyRenameReservationCandidate{preApplyRenameReservation: reservation}, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return preApplyRenameReservationCandidate{}, false, err
+	}
+	// Before this reservation receipt existed, a failed pre-claim writer left
+	// only these two immutable prompt files. Accept that exact bounded shape so
+	// existing residue gains the same audited terminal route.
+	if effort != task || !legacyUnclaimedPromptReservation(runDir) {
+		return preApplyRenameReservationCandidate{}, false, nil
+	}
+	var metadata workLogPromptMetadata
+	if err := readJSONAt(runDir, "original-prompt.json", &metadata); err != nil || metadata.Version != 1 || metadata.SHA256 == "" {
+		return preApplyRenameReservationCandidate{}, false, nil
+	}
+	if err := validateReservationPrompt(runDir, metadata.SHA256); err != nil {
+		return preApplyRenameReservationCandidate{}, false, fmt.Errorf("validate legacy pre-apply prompt archive: %w", err)
+	}
+	return preApplyRenameReservationCandidate{preApplyRenameReservation: preApplyRenameReservation{
+		Version: 1, OldTask: "legacy-unclaimed", NewTask: task, EffortID: effort, RunID: run, PromptSHA256: metadata.SHA256,
+	}}, true, nil
+}
+
+func validateReservationPrompt(runDir *os.File, wantDigest string) error {
+	contents, err := readBytesAt(runDir, "original-prompt.txt")
+	if err != nil {
+		return err
+	}
+	var metadata workLogPromptMetadata
+	if err := readJSONAt(runDir, "original-prompt.json", &metadata); err != nil {
+		return err
+	}
+	digest := sha256.Sum256(contents)
+	actual := hex.EncodeToString(digest[:])
+	if metadata.Version != 1 || metadata.SHA256 != actual || actual != wantDigest {
+		return fmt.Errorf("immutable prompt digest does not match its reservation")
+	}
+	return nil
+}
+
+func hasWorkLogClaimsOrTerminals(runDir *os.File) bool {
+	for _, name := range []string{"claims", "terminals"} {
+		directory, err := openPrivateChild(runDir, name, false)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return true
+		}
+		names, readErr := directory.Readdirnames(1)
+		_ = directory.Close()
+		if readErr == nil && len(names) > 0 {
+			return true
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return true
+		}
+	}
+	return false
+}
+
+func legacyUnclaimedPromptReservation(runDir *os.File) bool {
+	if _, err := readBytesAt(runDir, "original-prompt.txt"); err != nil {
+		return false
+	}
+	if _, err := readBytesAt(runDir, "run.json"); err == nil {
+		return false
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return true
+}
+
+func terminalizedPreApplyRenameReservation(runDir *os.File, reservation preApplyRenameReservation) bool {
+	var terminal preApplyRenameTerminal
+	if err := readJSONAt(runDir, preApplyRenameTerminalName, &terminal); err != nil {
+		return false
+	}
+	return terminal.Version == 1 && terminal.OldTask == reservation.OldTask && terminal.NewTask == reservation.NewTask &&
+		terminal.EffortID == reservation.EffortID && terminal.RunID == reservation.RunID && terminal.PromptSHA256 == reservation.PromptSHA256 && terminal.Disposition == string(AbortDiscarded)
+}
+
+func terminalizePreApplyRenameReservation(home string, candidate preApplyRenameReservationCandidate) error {
+	runDir, _, err := openWorkLogRun(home, candidate.EffortID, candidate.RunID, false)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = runDir.Close() }()
+	if terminalizedPreApplyRenameReservation(runDir, candidate.preApplyRenameReservation) {
+		return nil
+	}
+	terminal := preApplyRenameTerminal{Version: 1, OldTask: candidate.OldTask, NewTask: candidate.NewTask,
+		EffortID: candidate.EffortID, RunID: candidate.RunID, PromptSHA256: candidate.PromptSHA256,
+		Disposition: string(AbortDiscarded), SealedAt: time.Now().UTC()}
+	return writeJSONImmutableAt(runDir, preApplyRenameTerminalName, terminal, false)
+}
+
 func ensureOriginalPromptArchive(runDir *os.File, options WorkLogOptions, now time.Time) (archive, digest string, err error) {
 	if len(options.originalPromptContents) == 0 {
 		if err := snapshotOriginalPrompt(&options); err != nil {
@@ -2087,7 +2337,7 @@ func corroborateWorkLogProjection(home, worktree, finalCommit string, projection
 	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return err
 	}
-	return corroborateClaim(worktree, finalCommit, projection, claim)
+	return corroborateClaimAtPath(home, worktree, finalCommit, projection, claim)
 }
 
 func readWorkLogProjection(worktree string) (workLogProjection, error) {
@@ -2211,7 +2461,57 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 	if err != nil {
 		return err
 	}
-	return corroborateClaim(worktree, head, projection, claim)
+	return corroborateClaimAtPath(home, worktree, head, projection, claim)
+}
+
+// corroborateClaimAtPath preserves the immutable claim's original path while
+// accepting a later path only when a completed append-only relocation receipt
+// binds the exact active claim to it. In the narrow crash window after Git has
+// moved the checkout, a matching durable intent plus the registry's live HEAD
+// gives retry enough evidence to append that completion. A physical layout
+// move is not a new task or claim.
+func corroborateClaimAtPath(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
+	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
+		receipt, _, err := latestRelocationReceipt(home, claim, worktree)
+		if err != nil {
+			return err
+		}
+		if receipt == nil {
+			intent, _, intentErr := pendingRelocationIntent(home, claim, worktree, claim.Branch, finalCommit)
+			if intentErr != nil {
+				return intentErr
+			}
+			if intent == nil {
+				return fmt.Errorf("private work-log claim identity/path mismatch")
+			}
+		}
+		return corroborateRelocatedClaim(worktree, finalCommit, projection, claim)
+	}
+	return corroborateClaim(worktree, finalCommit, projection, claim)
+}
+
+func corroborateRelocatedClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
+	if (claim.Version != 1 && claim.Version != 2) || claim.EffortID != projection.EffortID || claim.RunID != projection.RunID || claim.ClaimID != projection.ClaimID || claim.Lifecycle != "active" {
+		return fmt.Errorf("work-log projection does not match immutable active claim")
+	}
+	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
+		return err
+	}
+	branch, err := git(context.Background(), worktree, "branch", "--show-current")
+	if err != nil {
+		return fmt.Errorf("read the live branch of %s: %w", worktree, err)
+	}
+	if branch != "" && branch != claim.Branch {
+		return fmt.Errorf("live branch %q does not match private claim %q", branch, claim.Branch)
+	}
+	head, err := git(context.Background(), worktree, "rev-parse", "HEAD")
+	if err != nil || head != finalCommit {
+		return fmt.Errorf("live HEAD %q does not match terminal commit %q", head, finalCommit)
+	}
+	if _, err := git(context.Background(), worktree, "merge-base", "--is-ancestor", claim.BaseSHA, head); err != nil {
+		return fmt.Errorf("live HEAD is not descended from claimed base %s: %w", claim.BaseSHA, err)
+	}
+	return nil
 }
 
 func corroborateClaim(worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {

@@ -156,8 +156,8 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
-		"daemon serve": true,
-		"deps graph":   true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
+		"daemon serve": true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"deps propagate local": true,
 		"ci audit":             true,
 		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,
@@ -170,7 +170,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"remote claim": true, "remote release": true, "remote claims": true,
 		"layout audit": true, "layout clean": true, "archive clean": true,
 		"worktree abort": true, "worktree create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
-		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree rename": true,
+		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"pr land":        true,
 		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
@@ -192,7 +192,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"hooks install": true, "hooks check": true, "hooks repair": true,
 		"coverage": true, "verify": true, "check": true, "status": true,
 		"fleet": true, "fleet overview": true, "fleet stats": true, "fleet status": true, "remote publish": true,
-		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree rename": true,
+		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree relocate": true, "worktree rename": true,
 		"worktree summary": true, "worktree abort": true, "worktree marker": true, "worktree rescue": true,
 		"branch list": true, "branch cleanup": true,
 		"archive clean": true,
