@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/discover"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/process"
@@ -162,13 +163,32 @@ func runExternalCommand(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: admitted %d/%d CPU units after %s\n", units, budget, waited.Round(10*time.Millisecond))
 	}
 
-	child := process.CommandContext(cmd.Context(), args[0], args[1:]...)
+	interactive := console.Interactive(cmd.ErrOrStderr(), false)
+	child := process.CommandContextInteractive(cmd.Context(), interactive, args[0], args[1:]...)
 	child.Stdin = cmd.InOrStdin()
 	child.Stdout = cmd.OutOrStdout()
 	child.Stderr = cmd.ErrOrStderr()
 	child.Env = governedEnvironment(os.Environ(), recorder.OperationID, args, units)
 
-	err = child.Run()
+	if err = child.Start(); err == nil {
+		done := make(chan struct{})
+		if interactive {
+			go func() {
+				ticker := time.NewTicker(10 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-done:
+						return
+					case <-ticker.C:
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\\n", strings.Join(args, " "))
+					}
+				}
+			}()
+		}
+		err = child.Wait()
+		close(done)
+	}
 	exitCode := 0
 	if err != nil {
 		exitCode = exitFindings
