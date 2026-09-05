@@ -92,16 +92,19 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			if err != nil {
 				return &exitError{code: exitUsage, message: err.Error()}
 			}
-			// The landing guard runs before anything else, including the
-			// GitHub read: a worktree of this repository still building against
-			// an unpublished tree makes every check observation meaningless.
-			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
-				return err
-			}
-			events, streamName := landingEventLog(repository)
 			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
 			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 			progress.start(repository, number, "", "")
+			// The landing guard runs before anything else, including the
+			// GitHub read: a worktree of this repository still building against
+			// an unpublished tree makes every check observation meaningless.
+			progress.live.update("pr land: local link preflight: " + repository + ": started")
+			if err := refuseLinkedRepositoryWorktrees(repository); err != nil {
+				progress.finishOperation("pr land: local link preflight: failed: " + err.Error())
+				return err
+			}
+			progress.live.update("pr land: local link preflight: " + repository + ": completed")
+			events, streamName := landingEventLog(repository)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:        repository,
 				PullRequest:       number,
