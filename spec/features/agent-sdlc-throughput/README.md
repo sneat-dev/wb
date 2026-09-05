@@ -94,6 +94,9 @@ A read-only September 4, 2026 scan found:
 | Exact-repository inventory candidate | 10.73 s, about 17.7 KB output | Applying the known repository before canonical and registry Git inspection cut the same real-fleet walk by 49.9% and reduced diagnostic volume by about 58%. |
 | WB exact-repository single-call landing | about 6 min wall | WB v0.96.1 absorbed 3 min 49 s of pull-request CI plus merge and cleanup in one call, but a local-link guard stayed silent for about 30 s before the progress clock began; reported landing time was 5 min 32 s. |
 | WB exact-repository main/release CI | 5 min 42 s | Fourteen exact-main checks passed and published WB v0.96.2. |
+| WB local-link progress landing | 6 min 17 s | Candidate CI consumed 5 min 27 s; exact-repository preflight cleanup took 10.5 s and terminal cleanup took about 34 s. The release smoke emitted immediately, heartbeated at 10 s, and finished the local-link preflight at 10.35 s. |
+| WB local-link progress main/release CI | 6 min 1 s | Fourteen exact-main checks passed and published WB v0.96.3. |
+| Shared self-update provider landing | 2 min | Exact candidate CI consumed 1 min 34 s; merge and remote verification took under 4 s; terminal cleanup took about 22 s. |
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -414,6 +417,45 @@ The dashboard surface is `https://sneat.work/bench/dashboard`, implemented in
 `sneat-co/workbench-web`; it remains after the scheduler, telemetry, and event
 contracts in delivery order.
 
+Each repository has a stable page at
+`https://sneat.work/bench/repo/github.com/<org>/<repo>` and each organization at
+`https://sneat.work/bench/org/github.com/<org>`. Anonymous pages include only
+public repositories that explicitly opt in through the root README WB section.
+Signed-in pages require GitHub App installation access before revealing a
+private repository's identity, count, status, or metrics. Public views expose
+non-sensitive CI/release/dependency and aggregate throughput evidence; private
+daemon and worktree details require a separate permission and explicit telemetry
+enablement. Organization pages aggregate the same repository event and metric
+contracts rather than maintaining a second data model.
+
+Signed-in users also receive a personal throughput view across repositories they
+may access. It reports landed tasks and pull requests, lead-time percentiles,
+queue/validation/CI/cleanup time, retries, dependency-wave reuse, changed files
+and lines, tool calls, tokens, and estimated provider cost. Token fields are
+optional and identify their harness/provider source because some runtimes do not
+expose authoritative usage. Derived measures include accepted changed lines per
+1,000 tokens and landed tasks per million tokens, always paired with scope type,
+merge acceptance, failures, and reverts. Lines per token is diagnostic evidence,
+not a performance target. Public per-user visibility is opt-in; private
+organization views require authorized membership and role access.
+
+The dashboard uses graphs whenever time, distribution, concurrency, or
+dependency structure is the question: stacked create-to-land timelines;
+queue/CPU concurrency series; CI and cleanup latency histograms; dependency-wave
+DAGs; token and cost trends; and accepted-lines-per-token scatter plots colored
+by landed, reverted, or failed outcome. Every graph has the same underlying
+table view and filters for user, repository, machine, model, time range, and
+task type so an operator can inspect the exact receipts behind a point.
+
+Leaderboards are separate receipt-backed views rather than one composite score:
+WB usage, landed contribution, review contribution, dependency-wave savings,
+CI time saved, cleanup debt resolved, and token efficiency. Each supports
+7-day, 30-day, 90-day, and all-time windows. Public participation is opt-in per
+user and includes only public opted-in repositories; private organization boards
+require membership. Contribution rankings count landed outcomes and display
+reverts and failed landings beside volume. Raw added lines and raw token spend
+never determine contribution rank on their own.
+
 Repository synchronization follows every verified landing receipt. Replacing
 the shared WB executable and restarting its daemon happens only for a verified
 WB release installation; a merge to the WB repository's `main` is not itself
@@ -470,6 +512,29 @@ WB maintains one queue per `(canonical repository, target ref)`. It batches
 compatible reviewed work, creates one integration candidate, validates it once,
 then reuses the existing mechanical merge receipt for push, pull request,
 checks, landing, canonical synchronization, and cleanup.
+
+Landing is a durable DAG rather than one foreground chain. After WB verifies the
+remote target receipt it immediately fast-forwards an eligible canonical target
+because new work and dependency discovery depend on it. It then durably queues
+remote-branch retirement, worktree cleanup, and optional recycle preparation.
+The agent may return at `landed_cleanup_queued`; the task is not terminal until
+the daemon records cleanup completion. `--wait=clean` retains synchronous
+behavior, and no-daemon mode performs cleanup synchronously. Once an exact
+package or tag release exists, consumer dependency preparation and cleanup run
+as sibling jobs under the global resource budget. A consumer's local link must
+be removed before the provider worktree it references is eligible for cleanup.
+Independent repositories and Work Logs may clean concurrently; mutations sharing
+a canonical repository, target, claim, or receipt remain serialized.
+
+When synchronization discovers that a canonical checkout's authoritative remote
+identity differs from its owner/name path, WB treats it as a durable repository
+relocation. It locks old and new identities, refuses destination collisions,
+preserves dirty and unpushed state plus append-only receipts, and refreshes the
+checkout marker. A checkout with no linked worktrees can relocate atomically. A
+checkout with live worktrees either repairs every Git administrative pointer and
+verifies them transactionally or creates the new canonical clone while retaining
+an old-to-new alias until the old worktrees drain. Reruns resume the receipt; they
+never leave the renamed repository undiscoverable.
 
 The orchestrator owns ordering and product decisions. WB owns the durable
 queue. A temporary AI merger handles only conflicts, semantic review, or
@@ -642,6 +707,12 @@ a worktree.
   exact-repository revalidation before every mutation.
 - [ ] Benchmark opt-in worktree recycling against fresh creation and retained
   dependency caches on laptop and VM; configure the policy per user/repository.
+- [ ] Move post-landing branch retirement, cleanup, and recycle preparation to
+  durable background jobs; fast-forward the canonical target immediately and
+  run released dependency waves in parallel with safe cleanup siblings.
+- [ ] Detect authoritative repository renames during sync and perform resumable,
+  collision-safe canonical relocation, using `strongo/selfupdate` to
+  `strongo/cli-helpers` as the acceptance fixture.
 - [ ] Complete shared skills synchronization across the remaining inventoried
   CLIs, preserving explicit publication holds and repository-owned decisions.
 - [ ] Enforce the universal ten-second progress contract across every
@@ -666,6 +737,17 @@ a worktree.
 - [ ] Add the read-only dashboard at `https://sneat.work/bench/dashboard` in
   `sneat-co/workbench-web` over the typed daemon API, then the thin MCP adapter
   after CLI/API receipts stabilize.
+- [ ] Add public-opt-in and private-authorized repository and organization pages
+  under `/bench/repo/github.com/<org>/<repo>` and
+  `/bench/org/github.com/<org>` using the same typed event contracts.
+- [ ] Add an access-scoped personal throughput view with optional attributed
+  token/cost telemetry and quality-paired lines-per-token metrics.
+- [ ] Add receipt-backed charts for lead time, concurrency, latency,
+  dependency waves, token/cost efficiency, and outcomes, with equivalent tables
+  and consistent repository/user/machine/model/time/task filters.
+- [ ] Add opt-in public and membership-scoped organization leaderboards for
+  usage, landed/review contribution, saved CI/dependency/cleanup work, and token
+  efficiency, with explicit time windows and quality context.
 - [ ] Publish the measured article “How I run a fleet of 150 repos in 10
   streams at once to build 20+ products in parallel” with before/after charts.
 
