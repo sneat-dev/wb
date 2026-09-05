@@ -53,13 +53,13 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	if cleanup := command.Flags().Lookup("cleanup"); cleanup == nil || cleanup.DefValue != "false" {
 		t.Fatalf("--cleanup = %#v, want false", cleanup)
 	}
-	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-receipt-collision", "adopt-published-candidate", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair"} {
+	for _, name := range []string{"prepare", "land", "resume", "revert", "acknowledge-landed-failed", "acknowledge-stranded-landing", "acknowledge-missing-cleanup", "acknowledge-receipt-collision", "adopt-published-candidate", "seal-validation-failed", "supersede-validation-failed", "correct-self-supersession", "prepare-published-forward-repair"} {
 		if child, _, err := command.Find([]string{name}); err != nil || child == nil || child.Name() != name {
 			t.Errorf("merge command is missing %s: child=%v err=%v", name, child, err)
 			continue
 		}
 		child, _, _ := command.Find([]string{name})
-		if name != "acknowledge-landed-failed" && name != "acknowledge-stranded-landing" && name != "acknowledge-receipt-collision" && name != "adopt-published-candidate" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
+		if name != "acknowledge-landed-failed" && name != "acknowledge-stranded-landing" && name != "acknowledge-missing-cleanup" && name != "acknowledge-receipt-collision" && name != "adopt-published-candidate" && name != "seal-validation-failed" && name != "supersede-validation-failed" && name != "correct-self-supersession" && name != "prepare-published-forward-repair" && child.Flags().Lookup("progress") == nil {
 			t.Errorf("merge %s is missing --progress", name)
 		}
 	}
@@ -86,6 +86,10 @@ func TestWorktreeMergeCommandExposesCombinedAndTwoPhaseJourney(t *testing.T) {
 	stranded, _, err := command.Find([]string{"acknowledge-stranded-landing"})
 	if err != nil || stranded == nil || stranded.Flags().Lookup("apply") == nil || stranded.Flags().Lookup("actor") == nil || stranded.Flags().Lookup("reason") == nil {
 		t.Fatalf("acknowledge-stranded-landing flags = %#v err=%v", stranded, err)
+	}
+	missingCleanup, _, err := command.Find([]string{"acknowledge-missing-cleanup"})
+	if err != nil || missingCleanup == nil || missingCleanup.Flags().Lookup("apply") == nil || missingCleanup.Flags().Lookup("actor") == nil || missingCleanup.Flags().Lookup("reason") == nil {
+		t.Fatalf("acknowledge-missing-cleanup flags = %#v err=%v", missingCleanup, err)
 	}
 	adoption, _, err := command.Find([]string{"adopt-published-candidate"})
 	if err != nil || adoption == nil || adoption.Flags().Lookup("apply") == nil || adoption.Flags().Lookup("actor") == nil || adoption.Flags().Lookup("reason") == nil {
