@@ -33,7 +33,7 @@ func init() {
 	if path := os.Getenv(listFilterGitHelperLogEnv); path != "" {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, _ = file.WriteString("git invoked\n")
+			_, _ = file.WriteString("git invoked " + strings.Join(os.Args[1:], " ") + "\n")
 			_ = file.Close()
 		}
 	}
@@ -86,6 +86,54 @@ func TestListWithFilterSkipsUnselectedGitCandidates(t *testing.T) {
 		t.Fatalf("unselected candidates invoked git %d times", strings.Count(string(content), "git invoked"))
 	} else if err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
+	}
+}
+
+// An exact repository landing must not pay one `git worktree list` per
+// canonical clone to recover a checkout from an old shared root. Repository
+// filtering is known before registry discovery, so unrelated clones stay off
+// the subprocess path entirely.
+func TestListWithFilterSkipsUnselectedCanonicalRegistryGit(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	projects := filepath.Join(root, "projects")
+	selected := filepath.Join(projects, "acme", "selected")
+	unrelated := filepath.Join(projects, "other", "repository")
+	for _, canonical := range []string{selected, unrelated} {
+		if err := os.MkdirAll(filepath.Join(canonical, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(canonical, ".worktrees"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	gitDirectory := t.TempDir()
+	gitExecutable := filepath.Join(gitDirectory, "git")
+	if runtime.GOOS == "windows" {
+		gitExecutable += ".exe"
+	}
+	copyTestBinary(t, gitExecutable)
+	logPath := filepath.Join(root, "git-invocations.log")
+	t.Setenv("PATH", gitDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv(listFilterGitHelperEnv, "1")
+	t.Setenv(listFilterGitHelperLogEnv, logPath)
+	t.Setenv(wbhome.EnvOverride, home)
+	t.Setenv(wbhome.EnvMigrationCompat, "")
+
+	_, _ = ListWithDiagnostics(context.Background(), ListOptions{
+		ProjectsRoot: projects,
+		Filter:       "acme/selected",
+	})
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), selected) {
+		t.Fatalf("selected canonical clone did not reach Git:\n%s", content)
+	}
+	if strings.Contains(string(content), unrelated) {
+		t.Fatalf("unselected canonical clone reached Git:\n%s", content)
 	}
 }
 

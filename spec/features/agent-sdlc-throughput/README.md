@@ -87,6 +87,11 @@ A read-only September 4, 2026 scan found:
 | WB shared skills-sync main/release CI | 6 min 16 s | The exact landed SHA passed 14 checks including release assets and platform smoke tests. |
 | `wb pr land --timeout 20m` | refused before network access | The command exposed a total-timeout flag but forwarded it as a CI slice whose hidden maximum was nine minutes, wasting a deterministic retry. |
 | WB shared skills-sync landing | about 6 min 30 s | Progress stayed visible at ten-second intervals, but preflight cleanup cost about 31 s and terminal cleanup exceeded 48 s before the caller transport closed. Remote and local receipts nevertheless proved cleanup completed. |
+| WB landing-timeout pull-request CI | 4 min 44 s | Eight exact-head checks passed; the agent ran only the named 1.2-second local regression and scoped static checks. |
+| WB landing-timeout landing | 2 min 6 s | Exact checks were reconfirmed in 27 s, preflight inventory cost 30 s, and terminal cleanup cost 65 s. Cleanup inventory, rather than test execution, dominated the WB-owned portion. |
+| WB landing-timeout main/release CI | 5 min 59 s | Fourteen exact-main checks passed and published WB v0.96.1. |
+| Released WB v0.96.1 repository-filtered inventory | 21.41 s, about 42 KB output | Registry recovery still invoked Git across unrelated canonical clones and emitted unrelated missing-worktree diagnostics. |
+| Exact-repository inventory candidate | 10.73 s, about 17.7 KB output | Applying the known repository before canonical and registry Git inspection cut the same real-fleet walk by 49.9% and reduced diagnostic volume by about 58%. |
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -575,8 +580,10 @@ a worktree.
   dependency revisits, and worker-context volume.
 - [x] Publish `strongo/cli-helpers v0.9.0` and replace WB's duplicated skills
   synchronization engine with the shared immutable-plugin implementation.
-- [ ] Make `wb pr land --timeout` a usable total wait budget over bounded
+- [x] Make `wb pr land --timeout` a usable total wait budget over bounded
   exact-CI slices, with working defaults and no hidden nine-minute refusal.
+- [ ] Narrow known-repository landing and cleanup inventory before subprocess
+  inspection; preserve shared-root recovery and exact cleanup receipts.
 - [ ] Complete shared skills synchronization across the remaining inventoried
   CLIs, preserving explicit publication holds and repository-owned decisions.
 - [ ] Enforce the universal ten-second progress contract across every

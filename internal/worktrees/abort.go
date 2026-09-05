@@ -176,7 +176,7 @@ func Abort(ctx context.Context, options AbortOptions) ([]AbortResult, error) {
 		// place, while the durable backlog is still authoritative for retiring
 		// the exact branch. Include those physical roots even though no live
 		// task remains for List to discover.
-		localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot)
+		localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot, "")
 		for _, layout := range localLayouts {
 			recognizedWorktreesRoots = append(recognizedWorktreesRoots, layout.WorktreesRoot)
 		}

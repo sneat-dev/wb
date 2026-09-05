@@ -761,6 +761,7 @@ func cleanupLandedWorktrees(ctx context.Context, projectsRoot, repository, headR
 	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
 		ProjectsRoot: projectsRoot,
 		Base:         base,
+		Filter:       repository,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -1081,6 +1082,7 @@ func preflightLandingCleanup(ctx context.Context, options PullRequestLandOptions
 	listed, err := worktrees.ListWithDiagnostics(ctx, worktrees.ListOptions{
 		ProjectsRoot: options.ProjectsRoot,
 		Base:         view.Base.Ref,
+		Filter:       options.Repository,
 	})
 	if err != nil {
 		// The inventory is unreadable, which is not the same as clean. Refuse
