@@ -615,6 +615,9 @@ while :; do sleep 1; done
 // command name park uses, so the controlled ssh shim resolves it from PATH.
 func linkJourneyRemoteWB(t *testing.T, path, binary string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		path += ".exe"
+	}
 	if err := os.Symlink(binary, path); err != nil {
 		t.Fatal(err)
 	}

@@ -1093,7 +1093,7 @@ func openPrivateStoreRoot(root string, create bool) (*os.File, error) {
 			_ = directory.Close()
 			return nil, err
 		}
-		if err := parent.Sync(); err != nil {
+		if err := unix.SyncDirectory(parent); err != nil {
 			_ = directory.Close()
 			return nil, err
 		}

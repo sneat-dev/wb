@@ -75,7 +75,17 @@ func Openat(dirfd int, name string, flags, mode uint32) (int, error) {
 	if dir == "" {
 		return -1, errors.New("unknown directory handle")
 	}
-	return Open(filepath.Join(dir, name), int(flags), int(mode))
+	path := filepath.Join(dir, name)
+	if flags&O_NOFOLLOW != 0 {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return -1, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return -1, errors.New("symbolic link refused")
+		}
+	}
+	return Open(path, int(flags), int(mode))
 }
 func openFlags(flags int) int {
 	result := os.O_RDONLY
@@ -167,3 +177,5 @@ func Unlinkat(dirfd int, name string, flags int) error {
 func Linkat(olddirfd int, oldname string, newdirfd int, newname string, flags int) error {
 	return os.Link(filepath.Join(pathOf(olddirfd), oldname), filepath.Join(pathOf(newdirfd), newname))
 }
+
+func SyncDirectory(file *os.File) error { return nil }

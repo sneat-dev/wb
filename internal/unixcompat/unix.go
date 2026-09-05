@@ -2,7 +2,11 @@
 
 package unix
 
-import "golang.org/x/sys/unix"
+import (
+	"os"
+
+	"golang.org/x/sys/unix"
+)
 
 const (
 	O_RDONLY            = unix.O_RDONLY
@@ -54,3 +58,5 @@ var CloseOnExec = unix.CloseOnExec
 var Mkdirat = unix.Mkdirat
 var Unlinkat = unix.Unlinkat
 var Linkat = unix.Linkat
+
+func SyncDirectory(file *os.File) error { return file.Sync() }
