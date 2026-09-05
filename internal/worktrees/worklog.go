@@ -1258,7 +1258,7 @@ func validateResumeWorkLogRequest(home string, requested WorkLogOptions, claim w
 		{name: "provider", requested: requested.Provider, existing: identity.Provider},
 	} {
 		value := strings.TrimSpace(identity.requested)
-		if value != "" && value != identity.existing && !(identity.allowEmptyExisting && strings.TrimSpace(identity.existing) == "") {
+		if value != "" && value != identity.existing && (!identity.allowEmptyExisting || strings.TrimSpace(identity.existing) != "") {
 			return fmt.Errorf("cannot resume active work-log claim with different %s %q (existing %q); use an audited handoff instead", identity.name, value, identity.existing)
 		}
 	}
