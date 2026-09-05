@@ -714,6 +714,31 @@ func TestSupersedeConflictWorktreeMergeBindsCleanCandidateDescendant(t *testing.
 	}
 }
 
+func TestSupersedeValidationFailedWorktreeMergeBindsCleanCandidateDescendant(t *testing.T) {
+	fixture, receipt, replacement := supersessionFixture(t)
+	receipt.Status = WorktreeMergeValidationFailed
+	receipt.Failure = "historical candidate validation failure"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "validation-repair.txt"), "repaired\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "validation-repair.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: preserve validation repair descendant")
+	observedDescendant := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+	runEngineGit(t, replacement.WorktreeDir, "merge", "--no-edit", observedDescendant)
+
+	ack, err := SupersedeValidationFailedWorktreeMerge(context.Background(), WorktreeMergeValidationFailureSupersessionOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, ReplacementWorktree: replacement.WorktreeDir,
+		Apply: true, Actor: "reviewer", Reason: "replacement preserves the clean validation repair descendant",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.ObservedCandidateDescendantSHA != observedDescendant {
+		t.Fatalf("observed candidate descendant = %q, want %s", ack.ObservedCandidateDescendantSHA, observedDescendant)
+	}
+}
+
 func TestSupersedeConflictWorktreeMergeRefusesUnsafeEvidence(t *testing.T) {
 	t.Run("dirty original candidate", func(t *testing.T) {
 		fixture, receipt, replacement := supersessionFixture(t)
