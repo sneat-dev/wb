@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/strongo/cli-helpers/skillsync"
+	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
 )
@@ -296,6 +297,90 @@ func TestNewSkillsSyncCmdJSONReportsMultipleHarnessTargets(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "skills", "wb-worktrees", "SKILL.md")); err != nil {
 		t.Fatalf("codex skill missing: %v", err)
+	}
+}
+
+func TestNewSkillsSyncCmdJSONReportsEveryCurrentHarnessAsUnchanged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+
+	first := newSkillsSyncCmd()
+	first.SetArgs([]string{"--harness", "cursor,codex"})
+	if err := first.Execute(); err != nil {
+		t.Fatalf("initial sync: %v", err)
+	}
+
+	second := newSkillsSyncCmd()
+	second.SetArgs([]string{"--harness", "cursor,codex", "--format", "json"})
+	var out bytes.Buffer
+	second.SetOut(&out)
+	if err := second.Execute(); err != nil {
+		t.Fatalf("already-current multi-harness sync: %v", err)
+	}
+	var payload skillsSyncMultiJSON
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if len(payload.Targets) != 2 {
+		t.Fatalf("targets = %+v, want cursor and codex", payload.Targets)
+	}
+	for _, target := range payload.Targets {
+		if target.Status != "unchanged" {
+			t.Errorf("%s status = %q, want unchanged; payload=%+v", target.Harness, target.Status, target)
+		}
+		if target.Error != "" {
+			t.Errorf("%s error = %q, want empty", target.Harness, target.Error)
+		}
+	}
+}
+
+func TestWriteSkillsSyncJSONIncludesTargetError(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncJSON(&out, []skillscmd.TargetResult{{
+		Harness: "codex",
+		Dir:     "/tmp/codex/skills",
+		Report: skillsync.Report{
+			Dir:        "/tmp/codex/skills",
+			CLIVersion: "0.96.6",
+		},
+		Err: errors.New("legacy marker content differs"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload skillsSyncJSON
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, out.String())
+	}
+	if payload.Status != "failed" {
+		t.Errorf("status = %q, want failed", payload.Status)
+	}
+	if payload.Error != "legacy marker content differs" {
+		t.Errorf("error = %q", payload.Error)
+	}
+	if payload.Harness != "codex" || payload.Dir != "/tmp/codex/skills" {
+		t.Errorf("target = %+v", payload)
+	}
+}
+
+func TestWriteSkillsSyncTextDoesNotDescribeAFailedTargetAsCurrent(t *testing.T) {
+	var out bytes.Buffer
+	err := writeSkillsSyncText(&out, skillscmd.TargetResult{
+		Dir: "/tmp/codex/skills",
+		Err: errors.New("invalid legacy wb_version"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "nothing to do") {
+		t.Errorf("failed target output = %q, must not claim it is current", out.String())
+	}
+	for _, want := range []string{"wb skills sync failed", "invalid legacy wb_version"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("failed target output = %q, missing %q", out.String(), want)
+		}
 	}
 }
 
