@@ -544,7 +544,9 @@ func newWorktreeMergeSupersedeValidationFailedCmd() *cobra.Command {
 		Long: `Prove that a prepare validation_failed or conflict receipt never landed and that
 one exact clean replacement candidate contains the immutable failed-candidate
 claim base, receipt target, freshly fetched current remote target, and every
-exact clean receipted source. The failed candidate itself need not be an
+exact clean receipted source. A receipted source may itself be the replacement
+after an ordinary clean strict-descendant repair; the replacement identity then
+binds its observed head while preserving the original source SHA. The failed candidate itself need not be an
 ancestor. When an unpublished conflict candidate has advanced to a clean strict
 descendant, the acknowledgement also binds that observed commit and the
 replacement must contain both candidate revisions. This is a dry-run by

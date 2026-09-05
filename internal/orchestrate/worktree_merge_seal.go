@@ -93,7 +93,7 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("validate failed candidate: %w", err)
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, ""); err != nil {
 			return WorktreeMergeValidationFailureSeal{}, err
 		}
 	}
@@ -224,7 +224,7 @@ func PrepareValidationFailedWorktreeMergeSeal(ctx context.Context, options Workt
 		return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("failed candidate changed while sealing: %w", err)
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, ""); err != nil {
 			return WorktreeMergeValidationFailureSeal{}, fmt.Errorf("receipted source changed while sealing: %w", err)
 		}
 	}
