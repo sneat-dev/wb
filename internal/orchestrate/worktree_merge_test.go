@@ -688,13 +688,13 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	if receipt.ValidationIdentity == nil || receipt.ValidationIdentity.CandidateSHA != receipt.Candidate.SHA || receipt.ValidationIdentity.TargetSHA != receipt.TargetSHA {
 		t.Fatalf("prepare did not publish exact validation identity: %+v", receipt.ValidationIdentity)
 	}
-	reusable, identityErr := preparedValidationStillValid(context.Background(), receipt)
+	reusable, identityErr := preparedValidationStillValid(receipt)
 	if identityErr != nil || !reusable {
 		t.Fatalf("unchanged prepared validation was not reusable: reusable=%t err=%v", reusable, identityErr)
 	}
 	drifted := receipt
 	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", Toolchain: receipt.ValidationIdentity.Toolchain, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
-	reusable, identityErr = preparedValidationStillValid(context.Background(), drifted)
+	reusable, identityErr = preparedValidationStillValid(drifted)
 	if identityErr != nil || reusable {
 		t.Fatalf("validation identity drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
 	}
@@ -787,6 +787,24 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 	}
 	if got := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+receipt.Candidate.Branch)); !strings.HasPrefix(got, descendant+"\t") {
 		t.Fatalf("remote descendant = %q, want %s", got, descendant)
+	}
+}
+
+func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktree(t *testing.T) {
+	candidate := t.TempDir()
+	receipt := WorktreeMergeReceipt{
+		Status:    WorktreeMergePrepared,
+		TargetSHA: "target", Candidate: WorktreeMergeCandidate{SHA: "candidate", Worktree: candidate},
+		Validation: quality.VerificationReport{Revision: "candidate", WorkspaceClean: true, Status: quality.StatusPassed},
+	}
+	identity, err := worktreeMergeValidationIdentity(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.ValidationIdentity = &identity
+	reusable, err := preparedValidationStillValid(receipt)
+	if err != nil || !reusable {
+		t.Fatalf("non-Go passed receipt was not reusable without baseline: reusable=%t err=%v", reusable, err)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -1020,7 +1021,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		}
 	}
 	if options.StopBeforeMerge {
-		reusable, identityErr := preparedValidationStillValid(ctx, receipt)
+		reusable, identityErr := preparedValidationStillValid(receipt)
 		if identityErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("recheck prepared validation identity: %w", identityErr))
 		}
@@ -2537,7 +2538,7 @@ func PrepareWorktreeMergeRevert(ctx context.Context, projectsRoot, input string,
 // evaluated lazily only when candidate failure evidence needs comparison.
 // Any new or changed candidate failure remains a hard gate.
 func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeReceipt, timeout time.Duration, retry int, reporter progress.Reporter) error {
-	identity, err := worktreeMergeValidationIdentity(ctx, *receipt)
+	identity, err := worktreeMergeValidationIdentity(*receipt)
 	if err != nil {
 		return fmt.Errorf("capture validation identity: %w", err)
 	}
@@ -2575,7 +2576,7 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 	return nil
 }
 
-func worktreeMergeValidationIdentity(ctx context.Context, receipt WorktreeMergeReceipt) (WorktreeMergeValidationIdentity, error) {
+func worktreeMergeValidationIdentity(receipt WorktreeMergeReceipt) (WorktreeMergeValidationIdentity, error) {
 	policyPath := filepath.Join(receipt.Candidate.Worktree, ".wb", "quality.yaml")
 	policy, err := os.ReadFile(policyPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -2584,10 +2585,6 @@ func worktreeMergeValidationIdentity(ctx context.Context, receipt WorktreeMergeR
 		return WorktreeMergeValidationIdentity{}, err
 	}
 	policyDigest := sha256.Sum256(policy)
-	toolchain, _, err := runCommand(ctx, 0, 0, receipt.Candidate.Worktree, "go", "version")
-	if err != nil {
-		return WorktreeMergeValidationIdentity{}, err
-	}
 	sourceSHAs := make([]string, len(receipt.Sources))
 	for index, source := range receipt.Sources {
 		sourceSHAs[index] = source.SHA
@@ -2595,22 +2592,28 @@ func worktreeMergeValidationIdentity(ctx context.Context, receipt WorktreeMergeR
 	return WorktreeMergeValidationIdentity{
 		CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA,
 		SourceSHAs: sourceSHAs, QualityPolicySHA: hex.EncodeToString(policyDigest[:]),
-		Toolchain: strings.TrimSpace(toolchain),
+		// WB does not have a repository-agnostic toolchain probe. Bind the
+		// reusable evidence to the WB runtime instead of invoking a possibly
+		// irrelevant language toolchain such as Go in a non-Go repository.
+		Toolchain: runtime.GOOS + "/" + runtime.GOARCH + "/" + runtime.Version(),
 	}, nil
 }
 
-func preparedValidationStillValid(ctx context.Context, receipt WorktreeMergeReceipt) (bool, error) {
+func preparedValidationStillValid(receipt WorktreeMergeReceipt) (bool, error) {
 	if receipt.Status != WorktreeMergePrepared || (receipt.Validation.Status != quality.StatusPassed && receipt.Validation.Status != quality.StatusFailed) ||
 		receipt.Validation.Revision != receipt.Candidate.SHA || !receipt.Validation.WorkspaceClean ||
-		receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.BaselineValidation.Status == "" || receipt.ValidationIdentity == nil {
+		receipt.ValidationIdentity == nil {
 		return false, nil
 	}
 	if receipt.Validation.Status == quality.StatusFailed {
+		if receipt.BaselineValidation.Revision != receipt.TargetSHA || receipt.BaselineValidation.Status != quality.StatusFailed {
+			return false, nil
+		}
 		if err := worktreeMergeValidationRegression(receipt.BaselineValidation, receipt.Validation); err != nil {
 			return false, nil
 		}
 	}
-	identity, err := worktreeMergeValidationIdentity(ctx, receipt)
+	identity, err := worktreeMergeValidationIdentity(receipt)
 	if err != nil {
 		return false, err
 	}
