@@ -447,6 +447,15 @@ by landed, reverted, or failed outcome. Every graph has the same underlying
 table view and filters for user, repository, machine, model, time range, and
 task type so an operator can inspect the exact receipts behind a point.
 
+Leaderboards are separate receipt-backed views rather than one composite score:
+WB usage, landed contribution, review contribution, dependency-wave savings,
+CI time saved, cleanup debt resolved, and token efficiency. Each supports
+7-day, 30-day, 90-day, and all-time windows. Public participation is opt-in per
+user and includes only public opted-in repositories; private organization boards
+require membership. Contribution rankings count landed outcomes and display
+reverts and failed landings beside volume. Raw added lines and raw token spend
+never determine contribution rank on their own.
+
 Repository synchronization follows every verified landing receipt. Replacing
 the shared WB executable and restarting its daemon happens only for a verified
 WB release installation; a merge to the WB repository's `main` is not itself
@@ -736,6 +745,9 @@ a worktree.
 - [ ] Add receipt-backed charts for lead time, concurrency, latency,
   dependency waves, token/cost efficiency, and outcomes, with equivalent tables
   and consistent repository/user/machine/model/time/task filters.
+- [ ] Add opt-in public and membership-scoped organization leaderboards for
+  usage, landed/review contribution, saved CI/dependency/cleanup work, and token
+  efficiency, with explicit time windows and quality context.
 - [ ] Publish the measured article “How I run a fleet of 150 repos in 10
   streams at once to build 20+ products in parallel” with before/after charts.
 
