@@ -5149,6 +5149,15 @@
               "modes": [
                 "Filters coordinated recycle candidates."
               ]
+            },
+            {
+              "path": "wb worktree relocate",
+              "flags": [
+                "--filter"
+              ],
+              "modes": [
+                "Filters coordinated relocation candidates."
+              ]
             }
           ],
           "limitation": null
@@ -11627,6 +11636,88 @@
         }
       },
       "notes": "Prompt text must never enter source Git, generic operational events/projections, a Git fallback/mirror, or normal output; public state carries only a digest and authorized receipt."
+    },
+    {
+      "id": "wb.worktree.relocate",
+      "feature_refs": [
+        "spec/features/worktree-lifecycle/README.md"
+      ],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {
+          "status": "Partial",
+          "commands": [
+            {
+              "path": "wb worktree relocate",
+              "flags": [
+                "--apply",
+                "--format",
+                "--initiator",
+                "--json",
+                "--mode",
+                "--to"
+              ],
+              "modes": [
+                "Dry-run is the default and --apply is required to move a checkout",
+                "--to=local selects the canonical repository .worktrees root; --to=shared requires the current user-configured worktrees.root",
+                "The task, branch, immutable Work Log claim, and checkout contents are preserved",
+                "WB rechecks cleanliness, ownership lock, branch/head, Git registration, source, and destination while holding the task lock",
+                "Descriptor-anchored no-replace move repairs and verifies Git registration before an append-only relocation receipt is recorded",
+                "An adopted external worktree is reported but never moved",
+                "A retry at an already relocated destination is a no-op and returns the existing receipt"
+              ]
+            }
+          ],
+          "limitation": "A partial physical move that fails before its receipt is recorded remains visible in Git's registry and requires the supported recovery path; automatic crash replay is not implemented."
+        },
+        "help": {
+          "status": "Full",
+          "anchors": [
+            {
+              "command": "wb worktree relocate --help",
+              "contains": [
+                "--to=local",
+                "--to=shared",
+                "--apply",
+                "descriptor-anchored",
+                "append-only relocation receipt"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "ai_skill": {
+          "status": "Full",
+          "skills": [
+            {
+              "path": "ai/skills/wb-worktrees/references/lifecycle.md",
+              "marker": "## Relocate a still-active task deliberately",
+              "examples": [
+                "wb worktree relocate <task> --to local",
+                "wb worktree relocate <task> --to shared --apply"
+              ]
+            }
+          ],
+          "limitation": null
+        },
+        "tests": {
+          "status": "Full",
+          "references": [
+            {
+              "path": "internal/worktrees/relocate_test.go",
+              "name": "TestRelocateMovesManagedSharedWorktreeToLocalAndPreservesClaim",
+              "kind": "integration"
+            },
+            {
+              "path": "internal/worktrees/relocate_test.go",
+              "name": "TestRelocateRefusesExternalAndDirtyWorktrees",
+              "kind": "unit"
+            }
+          ],
+          "limitation": null
+        }
+      },
+      "notes": "Changing layout configuration only chooses new checkout placement. Existing managed worktrees remain discoverable until an explicit relocation applies."
     },
     {
       "id": "wb.worktree.rename",

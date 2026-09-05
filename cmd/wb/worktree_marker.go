@@ -372,3 +372,23 @@ func markRenamedCheckouts(command *cobra.Command, base string, results []worktre
 		}
 	}
 }
+
+// markRelocatedCheckouts refreshes the generated location projection after a
+// successful physical move. Failure is a warning: the durable relocation
+// receipt and Git registration already establish the completed operation, and
+// a later `wb worktree marker --fleet` can safely repair this convenience file.
+func markRelocatedCheckouts(command *cobra.Command, results []worktrees.RelocateResult) {
+	options := checkoutmarker.DescribeOptions{
+		ProjectsRoot: projectsRoot,
+		BaseBranch:   "main",
+		Version:      "wb " + buildinfo.Version(),
+	}
+	for _, result := range results {
+		if !result.Applied {
+			continue
+		}
+		if outcome := applyCheckoutMarker(result.Destination, options, false); outcome.Error != "" {
+			_, _ = fmt.Fprintf(command.ErrOrStderr(), "warning: relocated worktree marker %s was not refreshed: %s\n", result.Destination, outcome.Error)
+		}
+	}
+}
