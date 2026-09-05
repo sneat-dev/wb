@@ -684,6 +684,11 @@ fresh task branch and Work Log, assigns the live session, and reconciles
 dependencies. Only declared repository-relative ignored caches survive. A
 second agent receives a new isolated worktree. Claimed, interrupted, dirty,
 unpushed, unlanded, or recovery-needed checkouts are never inferred available.
+If recycle stops after its destination prompt reservation but before a checkout
+claim, WB keeps that prompt archive as append-only evidence. The explicit
+discarded abort terminalizes only the proven unclaimed reservation and its
+lock-only task shell; it never treats the reservation as a branch, remote ref,
+or reusable slot.
 
 ```text
 absent -> provisioning -> released -> acquiring -> claimed
