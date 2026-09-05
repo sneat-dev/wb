@@ -189,6 +189,16 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		assert(name+" reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
 			"github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'")
 	}
+	windowsScope, ok := jobs["windows-scope"].(map[string]any)
+	if !ok {
+		t.Fatal("native Windows scope job missing")
+	}
+	windowsScopeSteps, ok := windowsScope["steps"].([]any)
+	if !ok || len(windowsScopeSteps) < 2 {
+		t.Fatalf("native Windows scope steps=%v", windowsScope["steps"])
+	}
+	windowsScopeCheckout, _ := windowsScopeSteps[0].(map[string]any)
+	assert("Windows scope checkout action", windowsScopeCheckout["uses"], "actions/checkout@v6")
 	windows, ok := jobs["windows"].(map[string]any)
 	if !ok {
 		t.Fatal("native Windows validation job missing")
