@@ -966,6 +966,15 @@ canonical synchronization transitions to cleanup, every subsequent heartbeat
 names the new active phase and never presents the completed predecessor as
 current. JSON stdout remains independently parseable.
 
+### AC: ci-wait failure is actionable in one invocation
+
+Given an exact-head check run fails, `wb ci wait` reports the completed/total
+check count and a capped list of pending job names while it observes GitHub.
+On failure it prints each failed Actions check's exact run and job URLs plus a
+bounded, redacted tail of that job's failed-step log. `--format=json` emits the
+same structured receipt, and `--json` remains its shortcut; neither output
+mode contains the raw full job log.
+
 ### AC: transient-github-read-recovers-in-process
 
 Given GitHub returns `502`, `503`, or `504` for an exact CI observation and a

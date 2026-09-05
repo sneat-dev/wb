@@ -39,10 +39,16 @@ func (progress *ciWaitProgress) start(repository, pullRequest, target, head stri
 func (progress *ciWaitProgress) report(event orchestrate.PullRequestWaitProgress) {
 	progress.observations = event.Observation
 	passed, pending, failed := checkBucketCounts(event.Result.Checks)
-	message := fmt.Sprintf(
-		"ci wait: poll %d; checks %d passed, %d pending, %d failed",
-		event.Observation, passed, pending, failed,
-	)
+	completed := passed + failed
+	message := fmt.Sprintf("ci wait: poll %d; checks %d/%d completed", event.Observation, completed, len(event.Result.Checks))
+	if names := activeCheckNames(event.Result.Checks, 3); names != "" {
+		message += "; running: " + names
+	}
+	if failed > 0 {
+		message += fmt.Sprintf("; %d failed", failed)
+	} else if pending > 0 {
+		message += fmt.Sprintf("; %d pending", pending)
+	}
 	if event.Result.StableObservations > 0 {
 		message += fmt.Sprintf("; stable %d/2", event.Result.StableObservations)
 	}
@@ -50,6 +56,27 @@ func (progress *ciWaitProgress) report(event orchestrate.PullRequestWaitProgress
 		message += "; next poll in " + event.NextPoll.String()
 	}
 	progress.live.update(message)
+}
+
+func activeCheckNames(checks []orchestrate.RemoteCheck, limit int) string {
+	names := make([]string, 0, limit)
+	remaining := 0
+	for _, check := range checks {
+		if check.Bucket == "pass" || check.Bucket == "skipping" || check.Bucket == "fail" || check.Bucket == "cancel" {
+			continue
+		}
+		name := strings.TrimPrefix(check.Name, "check-run:")
+		name = strings.TrimPrefix(name, "status:")
+		if len(names) < limit {
+			names = append(names, name)
+		} else {
+			remaining++
+		}
+	}
+	if remaining > 0 {
+		names = append(names, fmt.Sprintf("+%d more", remaining))
+	}
+	return strings.Join(names, ", ")
 }
 
 func (progress *ciWaitProgress) finish(result orchestrate.PullRequestWaitResult) {

@@ -12,6 +12,32 @@ import (
 	"time"
 )
 
+func TestFailedJobLogExcerptAndActionsLink(t *testing.T) {
+	t.Parallel()
+	runID, jobID, ok := githubActionsRunAndJob("https://github.com/acme/app/actions/runs/123456/job/7890")
+	if !ok || runID != "123456" || jobID != "7890" {
+		t.Fatalf("actions link parsed as run=%q job=%q ok=%t", runID, jobID, ok)
+	}
+	if _, _, ok := githubActionsRunAndJob("https://github.com/acme/app/checks/1"); ok {
+		t.Fatal("non-Actions check link was accepted")
+	}
+
+	lines := make([]string, 0, maxFailedJobLogLines+2)
+	for index := 0; index < maxFailedJobLogLines+2; index++ {
+		lines = append(lines, fmt.Sprintf("line %d", index))
+	}
+	lines = append(lines, "token ghp_secretTokenShouldNotAppear")
+	excerpt := failedJobLogExcerpt(strings.Join(lines, "\n"), maxFailedJobLogLines)
+	for _, want := range []string{"… earlier failed-job log lines omitted …", "line 2", "[REDACTED]"} {
+		if !strings.Contains(excerpt, want) {
+			t.Errorf("excerpt missing %q: %q", want, excerpt)
+		}
+	}
+	if strings.Contains(excerpt, "ghp_secretTokenShouldNotAppear") {
+		t.Fatalf("excerpt leaked token-shaped content: %q", excerpt)
+	}
+}
+
 func TestSortRemoteChecksUsesProducerAsFinalDeterministicKey(t *testing.T) {
 	checks := []RemoteCheck{
 		{Name: "build", Bucket: "pass", Link: "https://example.test/build", AppID: 22},
