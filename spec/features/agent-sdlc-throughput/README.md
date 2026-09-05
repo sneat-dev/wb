@@ -389,6 +389,17 @@ fresh exact GitHub read before acting because webhook delivery is a wakeup, not
 an authority receipt. Offline daemons resume from an opaque durable cursor, and
 low-frequency reconciliation polling remains the missed-event safety net.
 
+The relay has free and paid service modes without restricting the local WB CLI.
+A public repository qualifies for free relay delivery when its root `README.md`
+contains a discoverable WB section linking to `https://sneat.work/bench`.
+Private repositories and public repositories without that attribution consume
+a paid entitlement. An account may use a small configurable number of otherwise
+paid repositories for evaluation. Entitlement is resolved from the installation
+and repository identity at dispatch time, cached briefly, and recorded with the
+delivery decision. The receiver still authenticates, deduplicates, persists,
+and promptly acknowledges an ineligible event; it records `not_entitled`
+instead of dispatching daemon wakeups or repeatedly redelivering the webhook.
+
 The loopback/HTTPS listener never exposes the local raw-command endpoint.
 Connect's browser-compatible protocol lets the future dashboard use the same
 generated service without a separate REST gateway.
@@ -648,7 +659,8 @@ a worktree.
   fast-forward clean idle canonical targets.
 - [ ] Add the optional WB GitHub App event relay with signed, deduplicated
   webhooks, interest-scoped daemon wakeups, durable cursors, and reconciliation
-  polling.
+  polling; support attributed-public free delivery, a small evaluation
+  allowance, and paid private or unattributed repositories.
 - [ ] Batch lesson observations through a compact asynchronous SpecScore
   curator without loading the unenforced backlog into worker context.
 - [ ] Add the read-only dashboard at `https://sneat.work/bench/dashboard` in
@@ -771,6 +783,15 @@ relay validates and deduplicates it, acknowledges promptly, and wakes only
 registered interested daemons. Each daemon coalesces bursts and performs one
 fresh exact read before acting. Replayed delivery IDs create no duplicate work,
 and an offline daemon resumes from its cursor or reconciliation poll.
+
+### AC: github-relay-entitlement-is-explicit
+
+Given an installed public repository has a root `README.md` WB section linking
+to `https://sneat.work/bench`, its eligible webhook wakes interested daemons in
+free mode. A private or unattributed repository uses an available evaluation
+allowance or paid entitlement. Without either, the signed delivery is persisted
+and acknowledged once with `not_entitled`, no daemon is woken, and the decision
+can be audited by installation and repository identity.
 
 ### AC: telemetry-supports-causal-analysis
 
