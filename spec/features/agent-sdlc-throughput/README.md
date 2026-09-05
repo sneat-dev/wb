@@ -77,6 +77,10 @@ A read-only September 4, 2026 scan found:
 | Laptop dependency reports | 47 reports; 81 downstream repositories; 19 revisited | Shared consumers are repeatedly revisited across waves. |
 | Not-enforced lesson listing | 196 lines, 17,268 bytes | The whole improvement backlog is unsuitable worker preflight context. |
 | WB skill source | 67 files, 258,374 bytes | Skill routing and deduplication matter; this does not prove every harness loads every byte. |
+| Small WB candidate local gate | 21 min 24.8 s | A focused two-file repair paid a full candidate gate, then an unrelated target baseline, before CI. |
+| `wb pr land` exact-CI waits | about 5–6 min each | One command absorbed 8 manual calls and about 3,400 estimated tokens, but emitted no progress while waiting. |
+| Provider receipt-backed landing | 6 min 30.2 s | Merge and target CI were visible; cleanup spent about 3 min 48 s repeating the already-completed canonical-sync phase. |
+| `wb ci wait` exact-head observations | about 2–5 min | JSON mode emitted no stderr heartbeat until its terminal result. |
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -377,6 +381,34 @@ older queued check without cancelling a mutating worker. Success is silent and
 discoverable. Failure notifies subscribers once with the smallest actionable
 diagnostic. Obsolete results are recorded as stale and never reported current.
 
+### Universal Progress Contract
+
+Every WB operation that can run for ten seconds or longer MUST emit a progress
+event to stderr at least once every ten seconds from start until terminal
+result. Machine-readable stdout remains a single parseable document. A caller
+must never need a second status command merely to distinguish healthy work from
+a stuck process.
+
+When work has measurable units, each event names the active phase, current
+unit, and completed/total count. Examples include repository 4/17, check 3/8,
+poll 2 with passed/pending/failed counts, or cleanup task 2/6. When a child
+process cannot expose finer progress, WB emits an explicit alive heartbeat for
+the active phase with elapsed time and the last completed boundary.
+
+A completed phase is historical evidence, not the current phase. A heartbeat
+MUST NOT repeat `sync canonical: completed` while cleanup is running, repeat a
+candidate SpecScore result while target-baseline tests run, or leave `wb pr
+land` and `wb ci wait` silent during GitHub polling. The contract applies to
+worktree create/merge/land/cleanup, candidate and target-baseline validation,
+pull-request landing, CI waiting, fleet scans and recipes, dependency waves,
+daemon queue/admission/workers, cross-machine synchronization, and daemon
+upgrade draining.
+
+Interactive terminals may redraw one line. Non-terminal and forced-progress
+surfaces emit newline-delimited events so harnesses receive them promptly.
+Progress is bounded, contains no source or secrets, and never changes the
+operation receipt or its exit semantics.
+
 ### Durable Merger Lanes
 
 WB maintains one queue per `(canonical repository, target ref)`. It batches
@@ -521,6 +553,40 @@ Existing create, merge, quality, manual recycle, and both placement layouts
 remain valid during migration. Older clients may inspect but cannot mutate
 unknown newer operation states.
 
+## Durable Delivery Plan
+
+This checklist is the persistent resume point for the SDLC effort. A checked
+item means its remote receipt has been verified, not merely that code exists in
+a worktree.
+
+- [x] Make repository-local `.worktrees/` the default while retaining a
+  configurable shared worktree root.
+- [x] Add `wb run -- <argv>` so agents submit deterministic commands through
+  one auditable wrapper.
+- [x] Replace broad ordinary pre-push work with a fast publication lane and
+  keep full race/coverage in CI or deliberate final gates.
+- [x] Measure laptop and VM Work Logs, hook latency, lifecycle tails,
+  dependency revisits, and worker-context volume.
+- [ ] Enforce the universal ten-second progress contract across every
+  long-running command and daemon operation.
+- [ ] Persist command telemetry for queue, subprocess, cache, CPU, memory,
+  retries, CI, landing, cleanup, and saved agent calls/tokens.
+- [ ] Add the per-user daemon with durable async intents, three CPU units on a
+  four-vCPU host, fair queuing, deduplication, supersession, and controlled
+  version draining/restart.
+- [ ] Make `wb worktree land` consume focused receipts and escalate only
+  actionable failures or semantic decisions.
+- [ ] Add debounced provider-to-consumer dependency waves with one downstream
+  integration branch and CI run per repository per wave.
+- [ ] Fan verified landing receipts to registered machines and guardedly
+  fast-forward clean idle canonical targets.
+- [ ] Batch lesson observations through a compact asynchronous SpecScore
+  curator without loading the unenforced backlog into worker context.
+- [ ] Add the read-only dashboard over the typed daemon API, then the thin MCP
+  adapter after CLI/API receipts stabilize.
+- [ ] Publish the measured article “How I run a fleet of 150 repos in 10
+  streams at once to build 20+ products in parallel” with before/after charts.
+
 ## Acceptance Criteria
 
 ### AC: seven-agents-respect-four-core-budget
@@ -618,6 +684,17 @@ acquires it and the other receives a new isolated worktree.
 A create-to-land report separately measures queue, fetch/materialization,
 dependency, validation, push/CI, landing, and cleanup. CPU/RSS/cache/retry data
 is present where available, and private content is absent.
+
+### AC: long-operation-progress-never-goes-silent
+
+Given a fake child, GitHub observation, queue wait, or cleanup step blocks
+without producing output, WB emits newline-delimited stderr progress with no
+gap greater than ten seconds until terminal completion. Measurable work reports
+completed/total and the current unit; opaque work reports an alive heartbeat.
+When candidate validation transitions to target-baseline validation, or
+canonical synchronization transitions to cleanup, every subsequent heartbeat
+names the new active phase and never presents the completed predecessor as
+current. JSON stdout remains independently parseable.
 
 ### AC: lessons-are-curated-off-worker-path
 

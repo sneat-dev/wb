@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -740,43 +739,8 @@ func landMergeOptions(flags worktreeMergeFlags, receipt string, reporter progres
 
 func newWorktreeMergeProgress(command *cobra.Command, flags worktreeMergeFlags) *campaignProgress {
 	interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
-	out := command.ErrOrStderr()
-	heartbeat := time.Second
-	if flags.progress && !interactive {
-		out = &worktreeMergeLineWriter{out: out}
-		heartbeat = 30 * time.Second
-	}
-	return newCampaignProgressWithHeartbeat(out, flags.progress || interactive, "worktree merge", heartbeat)
-}
-
-// worktreeMergeLineWriter turns the live renderer's carriage-return updates
-// into newline-delimited diagnostics for non-terminal agent tools. Those tools
-// can otherwise buffer a healthy stage until the final newline and recreate
-// the silence --progress is meant to remove.
-type worktreeMergeLineWriter struct {
-	out     io.Writer
-	mu      sync.Mutex
-	started bool
-}
-
-func (writer *worktreeMergeLineWriter) Write(payload []byte) (int, error) {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	text := string(payload)
-	if strings.HasPrefix(text, "\r") {
-		text = strings.TrimPrefix(text, "\r")
-		if writer.started {
-			text = "\n" + text
-		}
-		writer.started = true
-	}
-	if text == "\n" {
-		writer.started = false
-	}
-	if _, err := io.WriteString(writer.out, text); err != nil {
-		return 0, err
-	}
-	return len(payload), nil
+	out := progressOutput(command.ErrOrStderr(), interactive)
+	return newCampaignProgressWithHeartbeat(out, true, "worktree merge", universalProgressHeartbeat)
 }
 
 func finishWorktreeMergeProgress(campaign *campaignProgress, receipt orchestrate.WorktreeMergeReceipt, err error) {

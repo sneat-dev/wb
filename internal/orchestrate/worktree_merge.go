@@ -407,6 +407,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if len(listed) > 0 {
 		resume = true
 	}
+	reportWorktreeMergeProgress(options.Progress, "acquire_lane", progress.Started, lane)
 	lock, err := AcquireOperationLock(projectsRoot, lane, resume)
 	if err != nil {
 		return WorktreeMergeReceipt{}, err
@@ -493,6 +494,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	if model == "" {
 		model = "unknown"
 	}
+	reportWorktreeMergeProgress(options.Progress, "create_candidate", progress.Started, operation)
 	created, err := worktrees.Create(ctx, []string{repository}, worktrees.CreateOptions{
 		ProjectsRoot: projectsRoot,
 		Operation:    operation,
@@ -834,6 +836,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 			reportWorktreeMergeProgress(options.Progress, "landed", progress.Completed, receipt.ReceiptPath)
 			return receipt, nil
 		}
+		reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Started, strings.Join(sortedUniqueMergeTasks(receipt), ", "))
 		if terminalized, terminalErr := recoverAlreadyTerminalizedWorktreeMergeCleanup(ctx, options.ProjectsRoot, &receipt, options.Timeout, options.Retry); terminalErr != nil {
 			return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, terminalErr)
 		} else if terminalized {
@@ -1116,6 +1119,7 @@ func LandWorktreeMerge(ctx context.Context, options WorktreeMergeLandOptions) (W
 		return receipt, err
 	}
 	locked = false
+	reportWorktreeMergeProgress(options.Progress, "cleanup", progress.Started, strings.Join(sortedUniqueMergeTasks(receipt), ", "))
 	if err := cleanupWorktreeMergeAssets(ctx, options.ProjectsRoot, &receipt); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeLanded, err)
 	}
@@ -2270,11 +2274,13 @@ func validateWorktreeMergeCandidate(ctx context.Context, receipt *WorktreeMergeR
 		}
 		return nil
 	}
+	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Started, shortMergeRevision(receipt.TargetSHA))
 	baseline, err := verifyWorktreeMergeTarget(ctx, receipt.Repository, receipt.Candidate.Worktree, receipt.TargetSHA, timeout, retry)
 	if err != nil {
 		return fmt.Errorf("capture exact target validation baseline after candidate failure: %w", err)
 	}
 	receipt.BaselineValidation = baseline
+	reportWorktreeMergeProgress(reporter, "validate_target_baseline", progress.Completed, string(baseline.Status))
 	if err := worktreeMergeValidationRegression(baseline, receipt.Validation); err != nil {
 		return err
 	}

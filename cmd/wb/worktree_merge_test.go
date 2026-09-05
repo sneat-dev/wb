@@ -18,7 +18,7 @@ import (
 
 func TestWorktreeMergeForcedProgressIsNewlineDelimited(t *testing.T) {
 	var output bytes.Buffer
-	writer := &worktreeMergeLineWriter{out: &output}
+	writer := &progressLineWriter{out: &output}
 	for _, text := range []string{"\rworktree merge: preparing", "\rworktree merge: waiting", "\n"} {
 		if _, err := writer.Write([]byte(text)); err != nil {
 			t.Fatal(err)

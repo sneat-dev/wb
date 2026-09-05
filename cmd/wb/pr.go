@@ -99,7 +99,9 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				return err
 			}
 			events, streamName := landingEventLog(repository)
-			progress := newCIWaitProgress(command.ErrOrStderr(), !nonInteractive)
+			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
+			progress.start(repository, number, "", "")
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
 				Repository:        repository,
 				PullRequest:       number,
@@ -114,15 +116,15 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				Slice:             slice,
 				CheckPollInterval: pollInterval,
 				Progress:          progress.report,
+				OperationProgress: progress.operationReporter(),
 				Events:            events,
 				Stream:            streamName,
 			})
 			if err != nil {
+				progress.fail(err)
 				return err
 			}
-			if result.Checks != nil {
-				progress.finish(*result.Checks)
-			}
+			progress.finishOperation("pr land: " + string(result.Outcome))
 			if format == "json" {
 				encoder := json.NewEncoder(command.OutOrStdout())
 				encoder.SetIndent("", "  ")
