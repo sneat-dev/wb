@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // PurgedArtefact records one terminal WB-owned artefact that a read path

@@ -6,9 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // LockOwnerState classifies the owner of a task's `.lock` without acquiring
@@ -68,7 +67,7 @@ func diagnoseTaskLock(taskRoot, task string) (LockOwnerState, int) {
 	}
 	// Only ESRCH proves the owner is gone. EPERM means a live process owned
 	// by another user; any other error is ambiguous. Both stay "live".
-	if err := syscall.Kill(pid, 0); err == syscall.ESRCH {
+	if processIsDead(pid) {
 		return LockOwnerDead, pid
 	}
 	return LockOwnerLive, pid

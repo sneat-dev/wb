@@ -19,6 +19,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  windows-scope:
+    name: Decide native Windows coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      required: ${{ steps.changes.outputs.required }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            required:
+              - '**/*_windows.go'
+              - 'cmd/wb/**'
+              - 'internal/session/**'
+              - 'go.mod'
+              - 'go.sum'
+              - '.github/workflows/go-ci.yml'
+
   validation-reuse:
     name: Decide validation reuse
     runs-on: ubuntu-latest
@@ -222,12 +241,35 @@ jobs:
           ./internal/githubobserver/...
           ./internal/fleetsync/...
 
+  windows:
+    name: Native Windows compile and test
+    needs: [windows-scope, validation-reuse]
+    if: >-
+      needs.windows-scope.outputs.required == 'true' &&
+      (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')
+    runs-on: windows-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Compile all Go packages for Windows
+        run: go build ./...
+      - name: Test Windows-safe portability primitives
+        run: >-
+          go test ./internal/session
+          -run '^TestLookupExactRefusesLinkedRecordsAndRequiresLivePID$'
+
   test:
     # This job only combines results. Keep its name aligned with the required
     # status check in branch protection when changing it.
     name: Required checks passed
     if: ${{ always() }}
-    needs: [release-eligibility, validation-reuse, source, static, lint, coverage, race]
+    needs: [release-eligibility, validation-reuse, source, static, lint, coverage, race, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
@@ -241,6 +283,7 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           RACE_RESULT: ${{ needs.race.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
           set -eu
           if [ "$REUSE_JOB_RESULT" != "success" ]; then
@@ -265,6 +308,10 @@ jobs:
               exit 1
             fi
           done
+          if [ "$WINDOWS_RESULT" != "success" ] && [ "$WINDOWS_RESULT" != "skipped" ]; then
+            echo "Required check 'Native Windows compile and test' concluded: $WINDOWS_RESULT" >&2
+            exit 1
+          fi
           if [ "$REUSE_RESULT" = "true" ]; then
             echo "Reused exact trusted pull-request validation."
           else

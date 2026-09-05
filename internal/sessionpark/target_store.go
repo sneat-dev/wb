@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/sessionmove"
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const (

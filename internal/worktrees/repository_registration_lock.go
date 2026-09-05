@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // repositoryRegistrationLockName is deliberately outside Git's worktree

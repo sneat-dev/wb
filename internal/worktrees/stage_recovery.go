@@ -17,8 +17,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 type RetiredStageRecoveryOptions struct {

@@ -14,13 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/githubobserver"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 // ListOptions selects WB-managed task worktrees and optional GitHub PR state.
@@ -4611,7 +4610,7 @@ func interruptedTaskLockPID(file *os.File, task string) (int, error) {
 	if err != nil || pid <= 0 || lines[1] != fmt.Sprintf("pid=%d", pid) {
 		return 0, fmt.Errorf("interrupted task %q lock metadata is invalid", task)
 	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+	if !processIsDead(pid) {
 		return 0, fmt.Errorf("interrupted task %q lock owner PID %d is live or ambiguous", task, pid)
 	}
 	return pid, nil

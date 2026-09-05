@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 type landlockRulesetAttr struct {

@@ -24,7 +24,7 @@ import (
 	"github.com/sneat-dev/wb/internal/session"
 	"github.com/sneat-dev/wb/internal/sessionauthority"
 	"github.com/sneat-dev/wb/internal/sessionmove"
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const (
@@ -1093,7 +1093,7 @@ func openPrivateStoreRoot(root string, create bool) (*os.File, error) {
 			_ = directory.Close()
 			return nil, err
 		}
-		if err := parent.Sync(); err != nil {
+		if err := unix.SyncDirectory(parent); err != nil {
 			_ = directory.Close()
 			return nil, err
 		}

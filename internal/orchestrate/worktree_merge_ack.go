@@ -839,7 +839,7 @@ func AcknowledgeLandedMergeFailure(ctx context.Context, options WorktreeMergeLan
 			if err := validatePreservedLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
 				return WorktreeMergeLandedFailureAcknowledgement{}, err
 			}
-		} else if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+		} else if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, ""); err != nil {
 			return WorktreeMergeLandedFailureAcknowledgement{}, err
 		}
 		contains, sourceErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, source.SHA, head)
@@ -950,7 +950,11 @@ func SupersedeValidationFailedWorktreeMerge(ctx context.Context, options Worktre
 		return WorktreeMergeValidationFailureSupersession{}, errors.New("replacement candidate must be distinct from the failed receipt candidate")
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source); err != nil {
+		allowedDescendantSHA := ""
+		if filepath.Clean(source.Worktree) == filepath.Clean(replacement.Worktree) {
+			allowedDescendantSHA = replacement.SHA
+		}
+		if err := validateLandedFailureAcknowledgementSource(ctx, options.ProjectsRoot, receipt, source, allowedDescendantSHA); err != nil {
 			return WorktreeMergeValidationFailureSupersession{}, err
 		}
 	}
@@ -1368,7 +1372,7 @@ func resolveValidationFailedSupersessionReceipt(ctx context.Context, projectsRoo
 		return WorktreeMergeReceipt{}, nil, false, ancestorErr
 	}
 	for _, source := range receipt.Sources {
-		if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, effective, source); err != nil {
+		if err := validateLandedFailureAcknowledgementSource(ctx, projectsRoot, effective, source, ""); err != nil {
 			return WorktreeMergeReceipt{}, nil, false, err
 		}
 		if contains, sourceErr := isMergeAncestor(ctx, candidate.Worktree, source.SHA, candidate.SHA); sourceErr != nil || !contains {
@@ -1442,15 +1446,15 @@ func validateLegacyValidationFailedReceiptShape(receipt WorktreeMergeReceipt, re
 	return nil
 }
 
-func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) error {
-	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, false)
+func validateLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string) error {
+	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, allowedDescendantSHA, false)
 }
 
 func validatePreservedLandedFailureAcknowledgementSource(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource) error {
-	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, true)
+	return validateLandedFailureAcknowledgementSourceHead(ctx, projectsRoot, receipt, source, "", true)
 }
 
-func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowDescendant bool) error {
+func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt, source WorktreeMergeSource, allowedDescendantSHA string, allowAnyDescendant bool) error {
 	if source.Task == "" || source.Worktree == "" || source.Branch == "" || source.SHA == "" {
 		return errors.New("receipt contains an incomplete source identity")
 	}
@@ -1468,7 +1472,7 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 	if err != nil {
 		return fmt.Errorf("read receipted source %s HEAD: %w", source.Worktree, err)
 	}
-	if allowDescendant {
+	if allowAnyDescendant {
 		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
 		if ancestorErr != nil || !contains {
 			if ancestorErr == nil {
@@ -1477,7 +1481,16 @@ func validateLandedFailureAcknowledgementSourceHead(ctx context.Context, project
 			return fmt.Errorf("receipted source %s was rewritten after landing: %w", source.Worktree, ancestorErr)
 		}
 	} else if head != source.SHA {
-		return fmt.Errorf("receipted source %s HEAD %s does not match %s", source.Worktree, head, source.SHA)
+		if allowedDescendantSHA == "" || head != allowedDescendantSHA {
+			return fmt.Errorf("receipted source %s HEAD %s does not match %s", source.Worktree, head, source.SHA)
+		}
+		contains, ancestorErr := isMergeAncestor(ctx, source.Worktree, source.SHA, head)
+		if ancestorErr != nil {
+			return fmt.Errorf("verify receipted source descendant ancestry: %w", ancestorErr)
+		}
+		if !contains {
+			return fmt.Errorf("receipted source %s HEAD %s is not a descendant of %s", source.Worktree, head, source.SHA)
+		}
 	}
 	view, err := worktrees.LoadWorkLogView(ctx, worktrees.LoadWorkLogOptions{ProjectsRoot: projectsRoot, Worktree: source.Worktree})
 	if err != nil {

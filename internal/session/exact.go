@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const maxExactSessionRecordBytes = 64 << 10

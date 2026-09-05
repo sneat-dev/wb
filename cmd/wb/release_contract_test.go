@@ -178,7 +178,7 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "source", "static", "lint", "coverage", "race"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "source", "static", "lint", "coverage", "race", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
 	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
 		job, ok := jobs[name].(map[string]any)
@@ -189,6 +189,13 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		assert(name+" reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
 			"github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'")
 	}
+	windows, ok := jobs["windows"].(map[string]any)
+	if !ok {
+		t.Fatal("native Windows validation job missing")
+	}
+	assert("Windows validation prerequisites", windows["needs"], []any{"windows-scope", "validation-reuse"})
+	assert("Windows validation reuse condition", strings.Join(strings.Fields(fmt.Sprint(windows["if"])), " "),
+		"needs.windows-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
 	if !ok {
 		t.Fatal("eligibility job missing")
@@ -284,8 +291,8 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatal("required check must only summarize the validation results")
 	}
 	step := steps[0]
-	if len(step.Env) != 8 {
-		t.Fatalf("summary receives %d environment values, want the eight eligibility/reuse/validation values", len(step.Env))
+	if len(step.Env) != 9 {
+		t.Fatalf("summary receives %d environment values, want the nine eligibility/reuse/validation/Windows values", len(step.Env))
 	}
 	runValues := func(values map[string]string) error {
 		cmd := exec.Command("sh", "-c", step.Run)
@@ -305,11 +312,17 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 	if err := run("", ""); err != nil {
 		t.Fatalf("all successful prerequisites rejected: %v", err)
 	}
+	if err := run("WINDOWS_RESULT", "skipped"); err != nil {
+		t.Fatalf("path-scoped Windows check rejected a skipped result: %v", err)
+	}
 	for key := range step.Env {
 		if key == "REUSE_RESULT" {
 			continue
 		}
 		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
+			if key == "WINDOWS_RESULT" && result == "skipped" {
+				continue
+			}
 			t.Run(key+"/"+result, func(t *testing.T) {
 				if err := run(key, result); err == nil {
 					t.Fatalf("summary accepted %s=%q", key, result)
@@ -327,6 +340,7 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			"LINT_RESULT":        "skipped",
 			"COVERAGE_RESULT":    "skipped",
 			"RACE_RESULT":        "skipped",
+			"WINDOWS_RESULT":     "skipped",
 		}
 		if err := runValues(values); err != nil {
 			t.Fatalf("trusted reuse was rejected: %v", err)
