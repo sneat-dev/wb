@@ -397,6 +397,31 @@ func TestAcknowledgeLandedFailedValidationPreservesAdvancedSources(t *testing.T)
 	if !bytes.Equal(receiptBefore, receiptAfter) {
 		t.Fatal("historical landed receipt was rewritten")
 	}
+	staleAdvancePath := conflictCandidateAdvancePath(receipt.ReceiptPath)
+	staleAdvance := WorktreeMergeConflictCandidateAdvance{
+		SchemaVersion: worktreeMergeConflictCandidateAdvanceSchemaVersion, ID: "historical-stale-id", Status: "conflict_candidate_advanced",
+		ReceiptPath: receipt.ReceiptPath, AcknowledgementPath: staleAdvancePath, ReceiptSHA256: "historical-receipt-digest",
+		ReceiptID: receipt.ID, Lane: receipt.Lane, Repository: receipt.Repository, Target: receipt.Target,
+		ReceiptTargetSHA: receipt.TargetSHA, CurrentTargetSHA: receipt.TargetSHA, OriginalCandidate: receipt.Candidate,
+		AdvancedCandidateSHA: receipt.Candidate.SHA, ClaimBaseSHA: receipt.TargetSHA,
+		Sources: append([]WorktreeMergeSource(nil), receipt.Sources...), RecordedAt: time.Now().UTC(),
+	}
+	staleContents, err := json.MarshalIndent(staleAdvance, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleAdvancePath, append(staleContents, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if claim, claimErr := ActiveMergeLaneClaim(fixture.githubDir, fixture.repository.Slug, receipt.Sources[0].Branch); claimErr != nil || claim != nil {
+		t.Fatalf("acknowledged landed receipt with stale conflict sidecar still owns lane: claim=%+v err=%v", claim, claimErr)
+	}
+	if err := os.Remove(ack.AcknowledgementPath); err != nil {
+		t.Fatal(err)
+	}
+	if claim, claimErr := ActiveMergeLaneClaim(fixture.githubDir, fixture.repository.Slug, receipt.Sources[0].Branch); claimErr != nil || claim == nil || claim.ReceiptPath != receipt.ReceiptPath {
+		t.Fatalf("stale conflict sidecar hid unacknowledged owning receipt: claim=%+v err=%v", claim, claimErr)
+	}
 
 	// A rewritten source is not forward progress and must not inherit the
 	// acknowledgement merely because the recorded candidate remains landed.
