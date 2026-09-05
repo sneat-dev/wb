@@ -172,7 +172,7 @@ var persistentFlagSupport = map[string]map[string]bool{
 		"worktree abort": true, "worktree create": true, "worktree guard": true, "worktree marker": true, "worktree rescue": true,
 		"worktree list": true, "worktree cleanup": true, "worktree gc": true, "worktree rename": true,
 		"pr land":        true,
-		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true,
+		"worktree merge": true, "worktree merge prepare": true, "worktree merge land": true, "worktree merge resume": true, "worktree merge revert": true, "worktree merge acknowledge-landed-failed": true, "worktree merge acknowledge-stranded-landing": true, "worktree merge seal-validation-failed": true, "worktree merge supersede-validation-failed": true, "worktree merge prepare-conflict-replacement": true,
 		"worktree orphans": true, "worktree backfill": true, "worktree log": true, "worktree info": true,
 		"worktree own": true,
 		"stream start": true, "stream join": true, "stream status": true, "stream end": true, "stream delete": true, "stream sync": true,
