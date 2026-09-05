@@ -120,9 +120,9 @@ is dry-run by default and requires an audited actor and reason to apply. It does
 not change the failed receipt or any existing Work Log and does not itself
 supersede the receipt.
 
-When an old prepare `validation_failed` candidate did not land and diverges
-from its replacement, use `supersede-validation-failed`. It admits only the
-prepare failure state and only when the old immutable candidate claim base,
+When an old unpublished prepare `validation_failed` or `conflict` candidate did
+not land and diverges from its replacement, use `supersede-validation-failed`.
+It admits only those prepare failure states and only when the old immutable candidate claim base,
 receipt target, freshly fetched current target, and every exact clean receipted
 source are ancestors of one exact clean replacement worktree with an active
 claim. The old failed candidate itself is deliberately not required to be an
