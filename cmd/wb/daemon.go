@@ -465,10 +465,9 @@ func (controller daemonController) launch(ctx context.Context, previous *daemon.
 		_ = controller.store.Save(starting)
 		return daemonResult{}, err
 	}
-	starting.PID = pid
-	if err := controller.store.Save(starting); err != nil {
-		return daemonResult{}, err
-	}
+	// The spawned child owns the Starting -> Ready transition. Do not save the
+	// parent's stale Starting value here: the child may have become ready before
+	// start returned, and overwriting that state would make this wait time out.
 	deadline := controller.deps.now().Add(daemonReadyTimeout)
 	for controller.deps.now().Before(deadline) {
 		state, found, loadErr := controller.store.Load()
