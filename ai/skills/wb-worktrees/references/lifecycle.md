@@ -190,6 +190,13 @@ unchanged old remote source branch with force-with-lease and rolls every
 already-moved repository back if a later repository fails. Never copy a prior
 task's projection, prompt, or source state into the new task.
 
+If a recycle stops after it reserves the new task prompt but before it creates
+the first destination checkout claim, use `wb worktree abort next-task --disposition discarded --apply`. This is the one no-`--remote` discarded
+case: WB proves the reservation has no checkout, branch, remote ref, or
+cleanup backlog, appends its terminal record, retains the private prompt
+archive, and removes only a lock-only WB task shell. Any real worktree or
+unrecognized task-shell content remains refused for its normal recovery path.
+
 ## Abort instead of abandoning
 
 An unused or interrupted worktree has no merged PR, so `cleanup` must refuse
