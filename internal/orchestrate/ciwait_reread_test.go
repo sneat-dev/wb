@@ -106,6 +106,36 @@ func TestWaitForCommitChecksShortensOnlyTheChecksBearingConfirmingReread(t *test
 	}
 }
 
+func TestWaitForCommitChecksAllowsPlanLimitedPolicyOnlyWhenExplicitlyUnfenced(t *testing.T) {
+	installRereadTestGH(t, `#!/bin/sh
+if [ "$1" = pr ] && [ "$2" = view ]; then echo '{"headRefOid":"0123456789012345678901234567890123456789","baseRefName":"main"}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/pulls/'; then echo '{"number":17,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"0123456789012345678901234567890123456789","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then echo '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/compare/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...0123456789012345678901234567890123456789'; then echo '{"status":"ahead","base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"merge_base_commit":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/check-runs?per_page=100'; then echo '{"total_count":1,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","app":{"id":42}}]}'; exit 0; fi
+if [ "$1" = api ] && echo "$2" | grep -q '/status?per_page=100'; then echo '{"total_count":0,"statuses":[]}'; exit 0; fi
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1; fi
+echo "unexpected gh args: $*" >&2; exit 30
+`)
+	result, err := WaitForCommitChecks(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main", Head: rereadTestHead,
+		AllowUnfenced: true, Slice: 30 * time.Second, CheckPollInterval: 100 * time.Millisecond,
+		StableRereadDelay: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != PullRequestWaitPassed || !result.UnfencedValidation || result.PolicyAuthorityUnavailable == "" {
+		t.Fatalf("result = %+v", result)
+	}
+	if !strings.Contains(result.PolicyAuthorityUnavailable, "HTTP 403") || !strings.Contains(result.RequiredChecksAuthority, "unavailable") {
+		t.Fatalf("policy receipt = authority %q unavailable %q", result.RequiredChecksAuthority, result.PolicyAuthorityUnavailable)
+	}
+	if !result.CandidateContainsTarget || result.ObservedHead != rereadTestHead || result.ObservedTargetHead != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || result.StableObservations != 2 {
+		t.Fatalf("exact validation receipt weakened: %+v", result)
+	}
+}
+
 func TestWaitForCommitChecksKeepsFullCadenceBeforeNoApplicableChecksReread(t *testing.T) {
 	state := installRereadTestGH(t, `#!/bin/sh
 if [ "$1" = api ] && echo "$2" | grep -q '/git/ref/heads/main'; then

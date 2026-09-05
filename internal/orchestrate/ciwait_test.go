@@ -33,6 +33,30 @@ func TestWaitForCommitChecksRejectsSliceAboveForegroundCeiling(t *testing.T) {
 	}
 }
 
+func TestRequiredChecksReceiptKeepsPlanLimitedPolicyFailClosedByDefault(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := `#!/bin/sh
+if [ "$1" = api ] && [ "$2" = 'repos/acme/app/branches/main' ]; then
+  echo 'gh: Upgrade to access branch protection (HTTP 403)' >&2; exit 1
+fi
+echo "unexpected gh args: $*" >&2; exit 30
+`
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, _, _, unavailable, reason := requiredChecksReceipt(context.Background(), PullRequestWaitOptions{
+		Repository: "acme/app", PullRequest: "17", Target: "main",
+	}, nil)
+	if unavailable != "" || !strings.Contains(reason, "HTTP 403") {
+		t.Fatalf("default policy receipt must fail closed: unavailable=%q reason=%q", unavailable, reason)
+	}
+}
+
 func TestGitHubChecksPollIntervalDefaultsToQuotaAwareCadence(t *testing.T) {
 	if got := githubChecksPollInterval(Options{}); got != DefaultCheckPollInterval {
 		t.Fatalf("default GitHub check poll interval = %s, want %s", got, DefaultCheckPollInterval)

@@ -82,10 +82,11 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		return PullRequestWaitResult{}, fmt.Errorf("check poll interval must be shorter than the foreground slice so a terminal snapshot can be reread")
 	}
 	result := PullRequestWaitResult{
-		Repository:  options.Repository,
-		PullRequest: options.PullRequest,
-		Target:      options.Target,
-		Head:        options.Head,
+		Repository:         options.Repository,
+		PullRequest:        options.PullRequest,
+		Target:             options.Target,
+		Head:               options.Head,
+		UnfencedValidation: options.AllowUnfenced,
 	}
 	deadline := time.Now().Add(options.Slice)
 	sliceCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -195,7 +196,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			return failedResult, nil
 		}
 
-		requiredChecks, authority, freshnessAuthority, authorityReason := requiredChecksReceipt(sliceCtx, options, &policyCache)
+		requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason := requiredChecksReceipt(sliceCtx, options, &policyCache)
 		if authorityReason != "" {
 			if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
 				return pendingCommitWaitResult(result), nil
@@ -206,6 +207,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 		result.RequiredChecks = requiredChecks
 		result.RequiredChecksAuthority = authority
 		result.TargetFreshnessAuthority = freshnessAuthority
+		result.PolicyAuthorityUnavailable = policyUnavailable
 		if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 			return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 		}
@@ -244,7 +246,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			// observation. Reusing their first receipt eliminates three REST
 			// requests from every pending poll, but a pass must still be based on
 			// a fresh authority receipt in case policy changed during the slice.
-			requiredChecks, authority, freshnessAuthority, authorityReason = requiredChecksReceipt(sliceCtx, options, nil)
+			requiredChecks, authority, freshnessAuthority, policyUnavailable, authorityReason = requiredChecksReceipt(sliceCtx, options, nil)
 			if authorityReason != "" {
 				if sliceCtx.Err() == context.DeadlineExceeded && strings.TrimSpace(result.Reason) != "" {
 					return pendingCommitWaitResult(result), nil
@@ -255,6 +257,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			result.RequiredChecks = requiredChecks
 			result.RequiredChecksAuthority = authority
 			result.TargetFreshnessAuthority = freshnessAuthority
+			result.PolicyAuthorityUnavailable = policyUnavailable
 			if options.PullRequest != "" && freshnessAuthority == "" && !options.AllowUnfenced {
 				return failedCommitWaitResult(result, "target policy has no nonempty server-enforced strict up-to-date fence; check observations cannot authorize an automatic merge"), nil
 			}
@@ -315,6 +318,8 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 			result.Status = PullRequestWaitPassed
 			if options.PullRequest != "" && !options.AllowUnfenced {
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, server-side target freshness was enforced, and the observed GitHub check set stayed terminal across a bounded stable reread"
+			} else if options.PullRequest != "" && result.PolicyAuthorityUnavailable != "" {
+				result.Reason = "GitHub branch-policy authority was unavailable under explicit --allow-unfenced (" + result.PolicyAuthorityUnavailable + "); the pull-request base, exact candidate head, target containment, and observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication"
 			} else if options.PullRequest != "" {
 				result.Reason = "GitHub's required-check policy was enumerated, every required check was present, the candidate contained the exact target, and the observed GitHub check set stayed terminal across a bounded stable reread for validation-only publication; server-side target freshness was intentionally not required because this path does not merge"
 			} else if noApplicableChecks {
@@ -522,25 +527,34 @@ type requiredChecksCache struct {
 	valid              bool
 	branchChecks       []RequiredRemoteCheck
 	freshnessAuthority string
+	policyUnavailable  string
 }
 
-func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string) {
+func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, cache *requiredChecksCache) ([]RequiredRemoteCheck, string, string, string, string) {
 	required := map[string]RequiredRemoteCheck{}
 	branchChecks := []RequiredRemoteCheck(nil)
 	freshnessAuthority := ""
+	policyUnavailable := ""
 	if cache != nil && cache.valid {
 		branchChecks = cache.branchChecks
 		freshnessAuthority = cache.freshnessAuthority
+		policyUnavailable = cache.policyUnavailable
 	} else {
 		var reason string
 		branchChecks, freshnessAuthority, reason = targetBranchRequiredChecks(ctx, options.Repository, options.Target, options.PullRequest != "" && !options.AllowUnfenced)
 		if reason != "" {
-			return nil, "", "", reason
+			if !options.AllowUnfenced || !isGitHubPolicyPlan403(reason) {
+				return nil, "", "", "", reason
+			}
+			branchChecks = nil
+			freshnessAuthority = ""
+			policyUnavailable = reason
 		}
 		if cache != nil {
 			cache.valid = true
 			cache.branchChecks = branchChecks
 			cache.freshnessAuthority = freshnessAuthority
+			cache.policyUnavailable = policyUnavailable
 		}
 	}
 	for _, expectation := range branchChecks {
@@ -549,16 +563,24 @@ func requiredChecksReceipt(ctx context.Context, options PullRequestWaitOptions, 
 	authority := "github-branch-protection+active-branch-rules"
 	if options.PullRequest != "" {
 		if reason := pullRequestTargetsBase(ctx, options.Repository, options.PullRequest, options.Target); reason != "" {
-			return nil, "", "", reason
+			return nil, "", "", "", reason
 		}
 		authority += "+pr-base-verified"
+	}
+	if policyUnavailable != "" {
+		authority = "github-branch-policy-unavailable-under-allow-unfenced+pr-base-verified"
 	}
 	checks := make([]RequiredRemoteCheck, 0, len(required))
 	for _, expectation := range required {
 		checks = append(checks, expectation)
 	}
 	sortRequiredChecks(checks)
-	return checks, authority, freshnessAuthority, ""
+	return checks, authority, freshnessAuthority, policyUnavailable, ""
+}
+
+func isGitHubPolicyPlan403(reason string) bool {
+	lower := strings.ToLower(reason)
+	return strings.Contains(lower, "http 403") && (strings.Contains(lower, "branch protection") || strings.Contains(lower, "branch rules") || strings.Contains(lower, "required-status-check policy"))
 }
 
 // pullRequestTargetsBase proves the pull request is landing where the

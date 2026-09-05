@@ -184,21 +184,23 @@ const (
 // PullRequestWaitResult is one terminating foreground observation slice.
 // Pending means resume is required, not that the merger is finished.
 type PullRequestWaitResult struct {
-	Status                   PullRequestWaitStatus `json:"status" yaml:"status"`
-	Repository               string                `json:"repository" yaml:"repository"`
-	PullRequest              string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
-	Target                   string                `json:"target" yaml:"target"`
-	Head                     string                `json:"head" yaml:"head"`
-	ObservedHead             string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
-	ObservedTargetHead       string                `json:"observed_target_head,omitempty" yaml:"observed_target_head,omitempty"`
-	CandidateContainsTarget  bool                  `json:"candidate_contains_target,omitempty" yaml:"candidate_contains_target,omitempty"`
-	TargetContainsHead       bool                  `json:"target_contains_head,omitempty" yaml:"target_contains_head,omitempty"`
-	TargetFreshnessAuthority string                `json:"target_freshness_authority,omitempty" yaml:"target_freshness_authority,omitempty"`
-	Checks                   []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
-	RequiredChecks           []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
-	RequiredChecksAuthority  string                `json:"required_checks_authority,omitempty" yaml:"required_checks_authority,omitempty"`
-	StableObservations       int                   `json:"stable_observations" yaml:"stable_observations"`
-	Reason                   string                `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Status                     PullRequestWaitStatus `json:"status" yaml:"status"`
+	Repository                 string                `json:"repository" yaml:"repository"`
+	PullRequest                string                `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	Target                     string                `json:"target" yaml:"target"`
+	Head                       string                `json:"head" yaml:"head"`
+	ObservedHead               string                `json:"observed_head,omitempty" yaml:"observed_head,omitempty"`
+	ObservedTargetHead         string                `json:"observed_target_head,omitempty" yaml:"observed_target_head,omitempty"`
+	CandidateContainsTarget    bool                  `json:"candidate_contains_target,omitempty" yaml:"candidate_contains_target,omitempty"`
+	TargetContainsHead         bool                  `json:"target_contains_head,omitempty" yaml:"target_contains_head,omitempty"`
+	TargetFreshnessAuthority   string                `json:"target_freshness_authority,omitempty" yaml:"target_freshness_authority,omitempty"`
+	Checks                     []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
+	RequiredChecks             []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
+	RequiredChecksAuthority    string                `json:"required_checks_authority,omitempty" yaml:"required_checks_authority,omitempty"`
+	PolicyAuthorityUnavailable string                `json:"policy_authority_unavailable,omitempty" yaml:"policy_authority_unavailable,omitempty"`
+	UnfencedValidation         bool                  `json:"unfenced_validation,omitempty" yaml:"unfenced_validation,omitempty"`
+	StableObservations         int                   `json:"stable_observations" yaml:"stable_observations"`
+	Reason                     string                `json:"reason,omitempty" yaml:"reason,omitempty"`
 }
 
 // Result records lifecycle state and typed adapter metadata for one repository.
