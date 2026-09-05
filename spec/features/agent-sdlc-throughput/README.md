@@ -493,13 +493,13 @@ future bidirectional operator controls such as cancel or reprioritize.
 
 `wb monitor` is the terminal view over that same source and supports repository,
 task, operation, session, severity, and `--since` filters.
-`wb monitor --output=jsonl` emits the stable machine stream; bounded snapshots
-use `--output=json`, and human output is `--output=text`. Every WB command uses
-the shared Cobra `--output=<text|json|jsonl>` contract for presentation; the
-cutover removes command-local `--json` booleans and `--format` variants from
-help, specifications, skills, capabilities, and tests in the same release.
-Commands that write an artifact use a specific name such as `--output-file`
-instead of overloading `--output`. JSONC is reserved for human-edited
+`wb monitor --format=jsonl` emits the stable machine stream; bounded snapshots
+use `--format=json`, and human output is `--format=text`. Every WB command uses
+the shared Cobra `--format=<text|json|jsonl>` contract for presentation; the
+cutover removes command-local `--json` booleans and other output-format variants
+from help, specifications, skills, capabilities, and tests in the same release.
+Commands that write an artifact retain `--output` or a more specific artifact
+path flag rather than overloading `--format`. JSONC is reserved for human-edited
 configuration, never command output or receipts. A bare `--` separator is reserved for commands that
 forward an arbitrary child argument vector, such as `wb run -- <command>` or
 `wb exec -- <command>`; daemon, monitor, lifecycle, CI, and other typed commands
