@@ -545,7 +545,10 @@ func newWorktreeMergeSupersedeValidationFailedCmd() *cobra.Command {
 one exact clean replacement candidate contains the immutable failed-candidate
 claim base, receipt target, freshly fetched current remote target, and every
 exact clean receipted source. The failed candidate itself need not be an
-ancestor. This is a dry-run by default; --apply requires --actor and --reason
+ancestor. When an unpublished conflict candidate has advanced to a clean strict
+descendant, the acknowledgement also binds that observed commit and the
+replacement must contain both candidate revisions. This is a dry-run by
+default; --apply requires --actor and --reason
 and writes only a separate append-only supersession acknowledgement. The
 historical merge receipt and every Work Log remain immutable. Any missing
 identity, active claim, cleanliness, receipt integrity, or ancestry proof
