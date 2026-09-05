@@ -2,33 +2,50 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/strongo/cli-helpers/skillsync"
+	skillscmd "github.com/strongo/cli-helpers/skillsync/cobracmd"
+	"github.com/strongo/cli-helpers/skillsync/githubrelease"
 
 	"github.com/sneat-dev/wb/ai"
-	"github.com/sneat-dev/wb/internal/skills"
+)
+
+const (
+	wbSkillsLegacyMarker  = ".wb-skills-sync.json"
+	wbSkillsPluginVersion = "0.0.0"
+	wbSkillsUnknownSource = "0000000000000000000000000000000000000000"
+)
+
+var (
+	wbSkillsCLI    = skillsync.Identity{Publisher: "sneat-dev", Name: "wb"}
+	wbSkillsPlugin = skillsync.PluginIdentity{Publisher: "sneat-dev", Name: "wb"}
 )
 
 func newSkillsSyncCmd() *cobra.Command {
-	var (
-		dir     string
-		harness []string
-		dryRun  bool
-		format  string
-	)
-	command := &cobra.Command{
-		Use:   "sync",
-		Short: "Install or update WB's Agent Skills in a harness skills directory",
-		Long: `Install or update WB's Agent Skills in a harness skills directory.
+	cfg, cfgErr := newSkillsSyncConfig()
+	options := skillscmd.CommandOptions{
+		Short:  "Install or update WB's Agent Skills in a harness skills directory",
+		Errors: skillsSyncErrors{},
+		Legacy: skillsync.LegacyImport{MarkerFile: wbSkillsLegacyMarker, Plugin: wbSkillsPlugin},
+		Resolver: skillsync.ReleaseResolver{
+			Source:         githubrelease.Source{},
+			CurrentVersion: cfg.CurrentVersion,
+		},
+		Renderer: writeSkillsSyncReports,
+	}
+	command := skillscmd.NewSync(cfg, options)
+	command.Long = `Install or update WB's Agent Skills in a harness skills directory.
 
-Copies every skill embedded in this wb build into each target directory,
-one subdirectory per skill, exactly as Agent Skills expect:
-<dir>/<skill-name>/SKILL.md plus its references/ and agents/.
-It never reads a source checkout -- the embedded copy is the only input --
-so it works from an installed binary alone.
+The default source is the immutable WB plugin revision embedded in this wb
+binary, so an ordinary sync needs no source checkout and no network access.
+Use --newer-compatible only to explicitly select a newer compatible plugin
+release from GitHub.
 
 Known harnesses and their skills directories:
 
@@ -36,173 +53,165 @@ Known harnesses and their skills directories:
   cursor  ~/.cursor/skills
   codex   ~/.codex/skills    (or $CODEX_HOME/skills)
 
-With no --dir or --harness, every present harness is synced (its config
-directory already exists). If none are present, claude is the fallback so
-a first sync on a fresh machine still has a well-defined target.
---harness names one or more of those even when the harness is not
-installed yet; --harness all selects every known harness.
+With no --dir or --harness, every present harness is synced. If none are
+present, Claude is the fallback. --harness names one or more targets even when
+the harness is not installed; --harness all selects every known harness.
 --dir targets an explicit path and cannot be combined with --harness.
 
-Idempotent: a second run with nothing new to ship reports every skill
-unchanged and writes nothing. A skill this build no longer ships, previously
-installed by an earlier sync, is removed; a directory that was never
-installed by wb -- a name collision this command did not create -- is
-reported as a conflict and left untouched rather than overwritten.
-
-A marker file recording the wb version that performed the sync is written
-next to the installed skills. 'wb' compares it against the running binary on
-every invocation and prints a one-line reminder on stderr when they diverge.
-
-Run this after 'wb self-update' picks up a new wb -- which it already does
-automatically -- or any time an agent's skills look stale.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			targets, err := resolveSkillsSyncTargets(dir, harness)
-			if err != nil {
-				return err
-			}
-			source, err := fs.Sub(ai.SkillsFS, "skills")
-			if err != nil {
-				return err
-			}
-			version := collectVersion().Version
-			reports := make([]skills.Report, 0, len(targets))
-			for _, target := range targets {
-				report, syncErr := skills.Sync(skills.Options{
-					Source:    source,
-					Dir:       target.Dir,
-					WBVersion: version,
-					DryRun:    dryRun,
-				})
-				if syncErr != nil {
-					return syncErr
-				}
-				reports = append(reports, report)
-			}
-			return writeSkillsSyncReports(cmd, targets, reports, format)
-		},
+The shared strongo/cli-helpers skillsync engine owns target locking, verified
+legacy-marker import, plugin-scoped ownership, conflict handling, crash-safe
+replacement, and provider-neutral state. WB supplies only its embedded plugin,
+command wording, JSON compatibility, and exit-code mapping.`
+	if cfgErr != nil {
+		command.RunE = func(*cobra.Command, []string) error {
+			return skillsSyncErrors{}.Failure(fmt.Errorf("prepare embedded WB skills: %w", cfgErr))
+		}
 	}
-	command.Flags().StringVar(&dir, "dir", "", "explicit harness skills directory (mutually exclusive with --harness)")
-	command.Flags().StringArrayVar(&harness, "harness", nil, "named harness to install into: claude, cursor, codex, or all (repeatable; default: every present harness)")
-	command.Flags().BoolVar(&dryRun, "dry-run", false, "report what would change without writing anything")
-	command.Flags().StringVar(&format, "format", "text", "output format: text or json")
 	return command
 }
 
-func writeSkillsSyncReports(cmd *cobra.Command, targets []skillsTarget, reports []skills.Report, format string) error {
+func newSkillsSyncConfig() (skillsync.Config, error) {
+	source, err := fs.Sub(ai.SkillsFS, "skills")
+	if err != nil {
+		return skillsync.Config{}, err
+	}
+	digest, err := skillsync.Digest(source)
+	if err != nil {
+		return skillsync.Config{}, err
+	}
+	build := collectVersion()
+	revision := build.Revision
+	if len(revision) != 40 {
+		revision = wbSkillsUnknownSource
+	}
+	pluginVersion := build.Version
+	if _, err := skillsync.CompareVersions(pluginVersion, pluginVersion); err != nil {
+		pluginVersion = wbSkillsPluginVersion
+	}
+	bundle, err := skillsync.EmbeddedBundle(skillsync.BundleDescriptor{
+		Plugin: wbSkillsPlugin,
+		Source: skillsync.Source{
+			Repository: "github.com/sneat-dev/wb",
+			Path:       "ai/skills",
+			Revision:   revision,
+			Version:    pluginVersion,
+			Digest:     digest,
+		},
+	}, source)
+	if err != nil {
+		return skillsync.Config{}, err
+	}
+	return skillsync.Config{
+		CLI:            wbSkillsCLI,
+		CurrentVersion: build.Version,
+		Bundles:        []skillsync.Bundle{bundle},
+	}, nil
+}
+
+type skillsSyncErrors struct{}
+
+func (skillsSyncErrors) Failure(err error) error {
+	var usage *skillscmd.UsageError
+	if errors.As(err, &usage) {
+		return &exitError{code: exitUsage, message: err.Error()}
+	}
+	return &exitError{code: exitFindings, message: "skills sync: " + err.Error()}
+}
+
+func (skillsSyncErrors) Conflict(report skillsync.Report) error {
+	return &exitError{code: exitFindings, message: fmt.Sprintf(
+		"skills sync: %d skill(s) could not be installed because another plugin or an unmanaged directory already owns the name; see %s",
+		len(report.Names(skillsync.Conflict)), report.Dir)}
+}
+
+func writeSkillsSyncReports(out io.Writer, results []skillscmd.TargetResult, format string) error {
 	if format == "json" {
-		if err := writeSkillsSyncJSON(cmd, targets, reports); err != nil {
-			return err
-		}
-	} else {
-		for _, report := range reports {
-			if err := writeSkillsSyncText(cmd, report); err != nil {
-				return err
-			}
-		}
+		return writeSkillsSyncJSON(out, results)
 	}
-	return skillsSyncConflictError(targets, reports)
-}
-
-func writeSkillsSyncJSON(cmd *cobra.Command, targets []skillsTarget, reports []skills.Report) error {
-	if len(reports) == 0 {
-		return nil
-	}
-	encoder := json.NewEncoder(cmd.OutOrStdout())
-	encoder.SetIndent("", "  ")
-	if len(reports) == 1 {
-		target := skillsTarget{}
-		if len(targets) > 0 {
-			target = targets[0]
-		}
-		return encoder.Encode(skillsSyncPayload(target, reports[0]))
-	}
-	payloads := make([]skillsSyncJSON, 0, len(reports))
-	for i, report := range reports {
-		payloads = append(payloads, skillsSyncPayload(targets[i], report))
-	}
-	return encoder.Encode(skillsSyncMultiJSON{
-		DryRun:    reports[0].DryRun,
-		WBVersion: reports[0].WBVersion,
-		Targets:   payloads,
-	})
-}
-
-func writeSkillsSyncText(cmd *cobra.Command, report skills.Report) error {
-	out := cmd.OutOrStdout()
-	verb := "synced"
-	if report.DryRun {
-		verb = "would sync"
-	}
-	if _, err := fmt.Fprintf(out, "%s %s: %s\n", "wb skills", verb, report.Dir); err != nil {
-		return err
-	}
-	for _, line := range []struct {
-		label  string
-		action skills.Action
-	}{
-		{"added", skills.Added},
-		{"updated", skills.Updated},
-		{"unchanged", skills.Unchanged},
-		{"removed", skills.Removed},
-		{"conflicts (left untouched)", skills.Conflict},
-	} {
-		names := report.Names(line.action)
-		if len(names) == 0 {
-			continue
-		}
-		if _, err := fmt.Fprintf(out, "  %s: %s\n", line.label, joinNames(names)); err != nil {
-			return err
-		}
-	}
-	if !report.Changed() && len(report.Names(skills.Conflict)) == 0 {
-		if _, err := fmt.Fprintln(out, "  nothing to do; skills already match this wb build"); err != nil {
+	for _, result := range results {
+		if err := writeSkillsSyncText(out, result.Report); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func skillsSyncConflictError(targets []skillsTarget, reports []skills.Report) error {
-	var dirs []string
-	total := 0
-	for i, report := range reports {
-		n := len(report.Names(skills.Conflict))
-		if n == 0 {
-			continue
-		}
-		total += n
-		dir := report.Dir
-		if i < len(targets) && targets[i].Dir != "" {
-			dir = targets[i].Dir
-		}
-		dirs = append(dirs, dir)
-	}
-	if total == 0 {
+func writeSkillsSyncJSON(out io.Writer, results []skillscmd.TargetResult) error {
+	if len(results) == 0 {
 		return nil
 	}
-	return &exitError{code: exitFindings, message: fmt.Sprintf(
-		"skills sync: %d skill(s) could not be installed because a pre-existing, non-wb-managed directory already uses that name; see %s",
-		total, strings.Join(dirs, ", "))}
+	encoder := json.NewEncoder(out)
+	encoder.SetIndent("", "  ")
+	if len(results) == 1 {
+		return encoder.Encode(skillsSyncPayload(results[0]))
+	}
+	payloads := make([]skillsSyncJSON, 0, len(results))
+	for _, result := range results {
+		payloads = append(payloads, skillsSyncPayload(result))
+	}
+	return encoder.Encode(skillsSyncMultiJSON{
+		DryRun:    results[0].Report.DryRun,
+		WBVersion: results[0].Report.CLIVersion,
+		Targets:   payloads,
+	})
 }
 
-func skillsSyncPayload(target skillsTarget, report skills.Report) skillsSyncJSON {
+func writeSkillsSyncText(out io.Writer, report skillsync.Report) error {
+	verb := "synced"
+	if report.DryRun {
+		verb = "would sync"
+	}
+	if _, err := fmt.Fprintf(out, "wb skills %s: %s\n", verb, report.Dir); err != nil {
+		return err
+	}
+	for _, line := range []struct {
+		label  string
+		action skillsync.Action
+	}{
+		{"added", skillsync.Added},
+		{"updated", skillsync.Updated},
+		{"unchanged", skillsync.Unchanged},
+		{"removed", skillsync.Removed},
+		{"conflicts (left untouched)", skillsync.Conflict},
+	} {
+		names := report.Names(line.action)
+		if len(names) == 0 {
+			continue
+		}
+		if _, err := fmt.Fprintf(out, "  %s: %s\n", line.label, strings.Join(names, ", ")); err != nil {
+			return err
+		}
+	}
+	if !report.Changed() && len(report.Names(skillsync.Conflict)) == 0 {
+		_, err := fmt.Fprintln(out, "  nothing to do; skills already match this wb build")
+		return err
+	}
+	return nil
+}
+
+func skillsSyncPayload(result skillscmd.TargetResult) skillsSyncJSON {
+	report := result.Report
 	return skillsSyncJSON{
-		Harness:        target.Harness,
+		Harness:        result.Harness,
 		Dir:            report.Dir,
 		DryRun:         report.DryRun,
-		PriorWBVersion: report.PriorWBVersion,
-		WBVersion:      report.WBVersion,
-		Added:          report.Names(skills.Added),
-		Updated:        report.Names(skills.Updated),
-		Unchanged:      report.Names(skills.Unchanged),
-		Removed:        report.Names(skills.Removed),
-		Conflicts:      report.Names(skills.Conflict),
+		PriorWBVersion: priorSkillsWBVersion(report),
+		WBVersion:      report.CLIVersion,
+		Added:          report.Names(skillsync.Added),
+		Updated:        report.Names(skillsync.Updated),
+		Unchanged:      report.Names(skillsync.Unchanged),
+		Removed:        report.Names(skillsync.Removed),
+		Conflicts:      report.Names(skillsync.Conflict),
 	}
 }
 
-func joinNames(names []string) string {
-	return strings.Join(names, ", ")
+func priorSkillsWBVersion(report skillsync.Report) string {
+	for _, bundle := range report.Bundles {
+		if bundle.Plugin == wbSkillsPlugin {
+			return bundle.PriorCLIVersion
+		}
+	}
+	return ""
 }
 
 type skillsSyncJSON struct {

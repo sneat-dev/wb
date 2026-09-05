@@ -6411,14 +6411,15 @@
                 "--dir",
                 "--dry-run",
                 "--format",
-                "--harness"
+                "--harness",
+                "--newer-compatible"
               ],
               "modes": [
-                "Installs every Agent Skill embedded in this wb build into each targeted harness skills directory (Claude ~/.claude/skills, Cursor ~/.cursor/skills, Codex ~/.codex/skills), reading nothing from a source checkout.",
+                "Installs the immutable WB plugin revision embedded in this wb build into each targeted harness skills directory through github.com/strongo/cli-helpers/skillsync, reading nothing from a source checkout or network by default.",
                 "With no --dir or --harness, every present harness is synced; --harness names claude, cursor, codex, or all; --dir targets an explicit path.",
-                "Idempotent: unchanged skills are reported and left untouched; a skill this build no longer ships, previously installed by an earlier sync, is removed.",
-                "A directory occupying a shipped skill's name that was never installed by wb is reported as a conflict (exit code 1) and left untouched rather than overwritten.",
-                "Records the wb version that performed the sync in a marker file next to the installed skills, which the running wb compares against on every invocation."
+                "--newer-compatible explicitly selects a newer compatible published plugin release; ordinary sync remains matched to the installed CLI.",
+                "The shared engine owns target locking, verified legacy-marker import, plugin-scoped ownership, idempotent updates, conflict refusal, and crash-safe replacement.",
+                "Records provider-neutral plugin provenance and the WB supplier version next to the installed skills, which the SessionStart hook compares with the running wb."
               ]
             }
           ],
@@ -6434,6 +6435,7 @@
                 "--dry-run",
                 "--format",
                 "--harness",
+                "--newer-compatible",
                 "harness skills directory"
               ]
             }
@@ -6473,20 +6475,20 @@
               "kind": "unit"
             },
             {
-              "path": "cmd/wb/skills_harness_test.go",
-              "name": "TestResolveSkillsSyncTargetsDefaultsToPresentHarnesses",
+              "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncCmdDefaultSyncsEveryPresentHarness",
               "kind": "unit"
             },
             {
-              "path": "internal/skills/sync_test.go",
-              "name": "TestSyncNeverOverwritesAPreExistingUnmanagedDirectory",
+              "path": "cmd/wb/skills_sync_test.go",
+              "name": "TestNewSkillsSyncConfigBindsTheEmbeddedWBPluginToThisBuild",
               "kind": "unit"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "This is the fix for an orchestrator session missing a wb skill entirely: wb installed globally has no source checkout for a harness to auto-discover ai/skills/ from, so this command embeds and installs them directly. 'wb self-update' runs it automatically after a successful update."
+      "notes": "This is the fix for an orchestrator session missing a wb skill entirely: wb installed globally has no source checkout for a harness to auto-discover ai/skills/ from. WB embeds its publishable plugin revision and delegates synchronization to strongo/cli-helpers v0.9.0; 'wb self-update' runs the CLI-matched sync automatically after a successful update."
     },
     {
       "id": "wb.status",
