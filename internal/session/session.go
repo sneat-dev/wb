@@ -472,11 +472,7 @@ func Lookup(dir string, pid int) (Record, bool) {
 }
 
 func state(pid int) string {
-	if pid <= 0 {
-		return StateGone
-	}
-	process, err := os.FindProcess(pid)
-	if err == nil && process != nil {
+	if processAlive(pid) {
 		return StateLive
 	}
 	return StateGone
