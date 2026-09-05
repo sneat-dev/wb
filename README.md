@@ -11,7 +11,7 @@ The canonical public Workbench site is [sneat.work/bench](https://sneat.work/ben
 
 ## Install
 
-On macOS, install the published Homebrew cask:
+On macOS or Linux, install the published Homebrew cask:
 
 ```sh
 brew install --cask sneat-dev/tap/wb
@@ -31,11 +31,12 @@ go install github.com/sneat-dev/wb/cmd/wb@latest
 ```
 
 On Windows, install [WSL](https://learn.microsoft.com/windows/wsl/install) from
-an administrator PowerShell session, restart if prompted, then run the same
-shell installer above inside the WSL terminal:
+an administrator PowerShell session and complete its one-time setup after any
+prompted restart. Then install the supported Linux release through WSL:
 
 ```powershell
 wsl --install
+wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'
 ```
 
 Native Windows releases are not currently published; the supported Windows

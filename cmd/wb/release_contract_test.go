@@ -77,13 +77,15 @@ func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
 			t.Errorf("README.md must document supported install command %q", command)
 		}
 	}
-	if !strings.Contains(contents, "On macOS, install the published Homebrew cask") {
-		t.Error("README.md must scope the Homebrew cask installation to macOS")
+	if !strings.Contains(contents, "On macOS or Linux, install the published Homebrew cask") {
+		t.Error("README.md must document the Homebrew cask for macOS and Linux")
 	}
 	if !strings.Contains(contents, "Native Windows releases are not currently published") {
 		t.Error("README.md must state the current Windows release limitation")
 	}
-	if !strings.Contains(contents, "wsl --install") || !strings.Contains(contents, "WB running in WSL") {
+	if !strings.Contains(contents, "wsl --install") ||
+		!strings.Contains(contents, "wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'") ||
+		!strings.Contains(contents, "WB running in WSL") {
 		t.Error("README.md must document WSL as the supported Windows installation path")
 	}
 }
