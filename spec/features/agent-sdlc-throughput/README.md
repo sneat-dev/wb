@@ -92,6 +92,8 @@ A read-only September 4, 2026 scan found:
 | WB landing-timeout main/release CI | 5 min 59 s | Fourteen exact-main checks passed and published WB v0.96.1. |
 | Released WB v0.96.1 repository-filtered inventory | 21.41 s, about 42 KB output | Registry recovery still invoked Git across unrelated canonical clones and emitted unrelated missing-worktree diagnostics. |
 | Exact-repository inventory candidate | 10.73 s, about 17.7 KB output | Applying the known repository before canonical and registry Git inspection cut the same real-fleet walk by 49.9% and reduced diagnostic volume by about 58%. |
+| WB exact-repository single-call landing | about 6 min wall | WB v0.96.1 absorbed 3 min 49 s of pull-request CI plus merge and cleanup in one call, but a local-link guard stayed silent for about 30 s before the progress clock began; reported landing time was 5 min 32 s. |
+| WB exact-repository main/release CI | 5 min 42 s | Fourteen exact-main checks passed and published WB v0.96.2. |
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -328,6 +330,23 @@ restarts immediately and rebuilds from durable queue and lifecycle receipts.
 Private feature builds neither replace the shared binary nor restart the shared
 scheduler.
 
+### Fleet Inventory Index
+
+Fleet-wide discovery remains available for unfiltered list, orphan, GC,
+`cleanup --all-merged`, collision, and displaced-worktree recovery journeys.
+Repository-scoped operations must apply their known owner/repository before
+starting Git subprocesses.
+
+The daemon maintains an incremental local inventory index. Canonical-clone
+discovery is keyed by projects-root directory identity and metadata; each
+clone's linked-worktree registry is keyed by `.git/worktrees` identity and
+metadata; active claims are keyed by their task Work Log generation; placement
+layouts are keyed by user configuration generation. Cache entries carry their
+source fingerprint and observation time. Before merge, branch deletion, or
+worktree removal, WB revalidates the exact selected repository, claim, Git
+registry, and remote SHA. A cache reduces discovery work but never authorizes a
+mutation by itself.
+
 ### Cross-machine synchronization
 
 Each registered machine runs its own local scheduler and keeps durable queue
@@ -359,6 +378,17 @@ keys. It never exposes the generic local `wb run -- <argv>` surface as remote
 arbitrary command execution. WB validates authorization again at the daemon and
 records the caller machine on every accepted intent.
 
+An optional WB GitHub App is the preferred remote change signal. It subscribes
+only to repository selection, push, pull request, check run/suite, workflow,
+and release events needed by installed WB features. The receiver validates the
+webhook signature, deduplicates the stable delivery ID, durably enqueues the
+event, and returns promptly. Registered daemons keep an outbound authenticated
+stream to the relay and receive a compact repository/SHA wakeup only when they
+have declared an interest. Burst events are coalesced; the daemon performs one
+fresh exact GitHub read before acting because webhook delivery is a wakeup, not
+an authority receipt. Offline daemons resume from an opaque durable cursor, and
+low-frequency reconciliation polling remains the missed-event safety net.
+
 The loopback/HTTPS listener never exposes the local raw-command endpoint.
 Connect's browser-compatible protocol lets the future dashboard use the same
 generated service without a separate REST gateway.
@@ -369,6 +399,9 @@ cursors so a dashboard can resume without replaying the full log. Read-only
 dashboard credentials cannot enqueue or cancel work; operator actions use a
 separate scope and idempotency key. CLI reports, the MCP adapter, and the web
 dashboard consume these contracts instead of reading daemon database files.
+The dashboard surface is `https://sneat.work/bench/dashboard`, implemented in
+`sneat-co/workbench-web`; it remains after the scheduler, telemetry, and event
+contracts in delivery order.
 
 Repository synchronization follows every verified landing receipt. Replacing
 the shared WB executable and restarting its daemon happens only for a verified
@@ -461,7 +494,7 @@ because they combine synchronization authority and private task ownership.
 | Always create/remove | Current strong isolation | Repeats local materialization | Baseline and concurrency fallback. |
 | Editable canonical | Conflated authority | Avoids creation | Reject. |
 | Explicit manual recycle | Existing guarded transaction | Preserves approved caches | Keep and instrument. |
-| Automatic recycle slot | Strong if separately fenced | Potentially fastest | Trial only after measurement. |
+| Automatic recycle slot | Strong if separately fenced | Potentially fastest | Configurable opt-in only after local measurement. |
 
 A slot binds canonical identity to the authoritative layout resolver. It has a
 stable path but no permanent warm branch, task claim, remote claim, or active
@@ -484,6 +517,14 @@ recovery_needed -> salvaging -> released|quarantined
 
 `wb sync` may refresh only `released`; acquisition still revalidates the
 remote target.
+
+Recycle policy is disabled by default and configurable per user and per
+repository because checkout size, dependency caches, filesystem, and machine
+cost vary. WB first benchmarks repeated fresh create/remove, explicit recycle,
+and fresh creation with declared dependency caches retained on both laptop and
+VM. It reports materialization, refresh, cache warming, contamination checks,
+and total create-to-ready time. Enabling recycle never follows from a global
+fleet average.
 
 ### Lessons Without Worker Context Spam
 
@@ -582,8 +623,14 @@ a worktree.
   synchronization engine with the shared immutable-plugin implementation.
 - [x] Make `wb pr land --timeout` a usable total wait budget over bounded
   exact-CI slices, with working defaults and no hidden nine-minute refusal.
-- [ ] Narrow known-repository landing and cleanup inventory before subprocess
+- [x] Narrow known-repository landing and cleanup inventory before subprocess
   inspection; preserve shared-root recovery and exact cleanup receipts.
+- [ ] Make every pre-orchestrator landing guard emit immediate progress and a
+  ten-second heartbeat, including local-link inventory.
+- [ ] Add the fingerprinted local fleet-inventory index while retaining fresh
+  exact-repository revalidation before every mutation.
+- [ ] Benchmark opt-in worktree recycling against fresh creation and retained
+  dependency caches on laptop and VM; configure the policy per user/repository.
 - [ ] Complete shared skills synchronization across the remaining inventoried
   CLIs, preserving explicit publication holds and repository-owned decisions.
 - [ ] Enforce the universal ten-second progress contract across every
@@ -599,10 +646,14 @@ a worktree.
   integration branch and CI run per repository per wave.
 - [ ] Fan verified landing receipts to registered machines and guardedly
   fast-forward clean idle canonical targets.
+- [ ] Add the optional WB GitHub App event relay with signed, deduplicated
+  webhooks, interest-scoped daemon wakeups, durable cursors, and reconciliation
+  polling.
 - [ ] Batch lesson observations through a compact asynchronous SpecScore
   curator without loading the unenforced backlog into worker context.
-- [ ] Add the read-only dashboard over the typed daemon API, then the thin MCP
-  adapter after CLI/API receipts stabilize.
+- [ ] Add the read-only dashboard at `https://sneat.work/bench/dashboard` in
+  `sneat-co/workbench-web` over the typed daemon API, then the thin MCP adapter
+  after CLI/API receipts stabilize.
 - [ ] Publish the measured article “How I run a fleet of 150 repos in 10
   streams at once to build 20+ products in parallel” with before/after charts.
 
@@ -697,6 +748,29 @@ resume/salvage uses existing exact lifecycle evidence.
 Given a released slot and a placement-root change, two concurrent acquisitions
 identify one logical slot through canonical identity and `WB_HOME`; one
 acquires it and the other receives a new isolated worktree.
+
+### AC: recycle-is-local-opt-in
+
+Given recycling is disabled, WB always creates a fresh isolated checkout.
+Given one user or repository enables it after a local benchmark, WB reports the
+measured create-to-ready saving, retains only declared ignored caches, refreshes
+the exact target, and creates a fresh claim and Work Log. Another machine keeps
+its own policy and measurements.
+
+### AC: inventory-cache-never-authorizes-mutation
+
+Given an indexed fleet inventory answers repository discovery without a full
+scan, when WB is about to merge, delete a branch, or remove a worktree, it
+freshly verifies the selected repository's Git registry, active claim, and
+remote SHA. Stale cache state can cause a refresh, never a mutation.
+
+### AC: github-event-wakes-only-interested-daemons
+
+Given one GitHub App delivery affects a repository used on laptop and VM, the
+relay validates and deduplicates it, acknowledges promptly, and wakes only
+registered interested daemons. Each daemon coalesces bursts and performs one
+fresh exact read before acting. Replayed delivery IDs create no duplicate work,
+and an offline daemon resumes from its cursor or reconciliation poll.
 
 ### AC: telemetry-supports-causal-analysis
 

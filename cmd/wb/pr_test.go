@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
 	"github.com/sneat-dev/wb/internal/streams"
+	"github.com/sneat-dev/wb/internal/wbhome"
 )
 
 // An operator holds a pull request in whichever form their source gave them:
@@ -34,6 +36,28 @@ func TestPRLandSelectorAcceptsEveryFormAnOperatorHolds(t *testing.T) {
 		if _, _, err := splitPullRequestSelector(invalid); err == nil {
 			t.Errorf("splitPullRequestSelector(%q) accepted an ambiguous selector", invalid)
 		}
+	}
+}
+
+func TestPRLandReportsLocalLinkPreflightBeforeGitHub(t *testing.T) {
+	t.Setenv(wbhome.EnvOverride, filepath.Join(t.TempDir(), "wb-home"))
+	t.Setenv("PATH", t.TempDir())
+	previousProjectsRoot := projectsRoot
+	projectsRoot = filepath.Join(t.TempDir(), "projects")
+	t.Cleanup(func() { projectsRoot = previousProjectsRoot })
+
+	command := newPRLandCmd()
+	var stderr bytes.Buffer
+	command.SetErr(&stderr)
+	command.SetArgs([]string{"acme/app#7", "--non-interactive"})
+	if err := command.Execute(); err == nil {
+		t.Fatal("missing gh unexpectedly let the landing continue")
+	}
+	output := stderr.String()
+	if !strings.Contains(output, "pr land: local link preflight: acme/app: started") ||
+		(!strings.Contains(output, ": completed") &&
+			!strings.Contains(output, "pr land: local link preflight: failed")) {
+		t.Fatalf("local-link preflight was silent before GitHub:\n%s", output)
 	}
 }
 
