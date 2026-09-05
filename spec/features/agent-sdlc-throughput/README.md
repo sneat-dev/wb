@@ -276,6 +276,16 @@ other governed or mutating operations refuse with the exact repair command.
 `--local-recovery` is an explicit, receipted emergency path rather than an
 automatic fallback.
 
+The lifecycle surface includes `wb daemon install`, `start`, `status`, `stop`,
+`restart`, `repair`, and `uninstall`. `stop` reports active and queued work and
+refuses while a mutating worker is between durable boundaries unless the caller
+selects an explicit bounded drain mode. `restart` is the ordinary upgrade and
+recovery operation: it persists new asynchronous requests while the old
+generation drains, restarts through the platform supervisor, and resumes the
+same queue under the new generation. These commands work through launchd,
+systemd user services, and Windows per-user service/task supervision rather
+than inferring ownership from a terminal or parent PID.
+
 The four-vCPU default has three CPU units, preserving one core for interactive
 work:
 
@@ -372,6 +382,14 @@ typed enqueue, status, wait, wake, and health operations. SSH is a supported ada
 user-controlled registered machine. Delivery is at least once and processing
 is idempotent on `(repository, target ref, remote SHA, machine)`.
 
+The hosted GitHub App, relay, and typed control-plane API use the dedicated
+origin `https://wb-github-app.sneat.dev`. That hostname is routed to the same
+existing sneat-go service on Cloud Run; it is a host boundary inside the shared
+deployment, not a separately deployed application service. sneat-go contains
+only the narrow route/configuration adapter and mounts the Workbench-owned
+module that implements the API. Human pages remain under
+`https://sneat.work/bench`.
+
 A machine may optionally publish that API through Cloudflare Tunnel. The WB
 daemon binds only to loopback or a Unix socket; `cloudflared` creates the
 outbound tunnel and Cloudflare Access requires a distinct, revocable service
@@ -456,6 +474,36 @@ require membership. Contribution rankings count landed outcomes and display
 reverts and failed landings beside volume. Raw added lines and raw token spend
 never determine contribution rank on their own.
 
+Repository, organization, and user views include a latest-merges feed backed by
+verified landing receipts. Each entry names the repository, exact merge commit,
+pull request and related issue links, author, merged time, CI duration,
+published product/repository tag or release, downstream dependency wave, and
+links to inspect the underlying receipt and artifacts. Private entries follow
+the same installation-membership authorization as the aggregate that contains
+them.
+
+The daemon and direct WB commands append to one sequenced operation event log.
+An open dashboard follows it through resumable Server-Sent Events with
+monotonic event IDs, a cursor, bounded replay, authorization filtering, and
+heartbeats; local pages may subscribe to the loopback daemon, while the hosted
+dashboard subscribes through `https://wb-github-app.sneat.dev`. Events cover
+queue admission, worker/phase progress, CI, cleanup, synchronization, terminal
+receipts, and daemon-generation changes. WebSocket transport is reserved for
+future bidirectional operator controls such as cancel or reprioritize.
+
+`wb monitor` is the terminal view over that same source and supports repository,
+task, operation, session, severity, and `--since` filters.
+`wb monitor --output=jsonl` emits the stable machine stream; bounded snapshots
+use `--output=json`, and human output is `--output=text`. New WB surfaces use
+the shared Cobra `--output=<text|json|jsonl>` contract instead of command-local
+boolean JSON flags. JSONC is reserved for human-edited configuration, never
+command output or receipts. A bare `--` separator is reserved for commands that
+forward an arbitrary child argument vector, such as `wb run -- <command>` or
+`wb exec -- <command>`; daemon, monitor, lifecycle, CI, and other typed commands
+use ordinary Cobra positions and named flags without that separator. Immutable task evidence remains under
+`wb worktree log`; any `wb log tail` spelling is an alias for the operation
+stream and MUST NOT silently reinterpret or mutate Work Logs.
+
 Repository synchronization follows every verified landing receipt. Replacing
 the shared WB executable and restarting its daemon happens only for a verified
 WB release installation; a merge to the WB repository's `main` is not itself
@@ -505,6 +553,15 @@ Interactive terminals may redraw one line. Non-terminal and forced-progress
 surfaces emit newline-delimited events so harnesses receive them promptly.
 Progress is bounded, contains no source or secrets, and never changes the
 operation receipt or its exit semantics.
+
+CI wait progress names queued and running jobs, and names the current running
+step when the provider exposes it. Repeated ten-second heartbeats may abbreviate
+an unchanged set, while every state change emits the full completed/total and
+active-name summary. On terminal failure WB retrieves each failed job log once,
+extracts a bounded redacted failing-step excerpt with useful surrounding lines,
+and prints it with the exact run/job URL and retry or resume command. Raw full
+logs require an explicit opt-in and never enter JSON stdout or the durable event
+log by default.
 
 ### Durable Merger Lanes
 
