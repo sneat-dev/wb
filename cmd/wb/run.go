@@ -181,7 +181,7 @@ func runExternalCommand(cmd *cobra.Command, args []string) error {
 					case <-done:
 						return
 					case <-ticker.C:
-						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\\n", strings.Join(args, " "))
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "wb: command still running: %s\n", strings.Join(args, " "))
 					}
 				}
 			}()
