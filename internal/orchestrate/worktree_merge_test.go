@@ -1801,6 +1801,145 @@ func TestResumeWorktreeMergeRecoversResolvedConflictWithEmptyCandidateSHA(t *tes
 	}
 }
 
+func TestResumeWorktreeMergeAdvancesResolvedConflictCandidateDescendant(t *testing.T) {
+	fixture := newEngineFixture(t)
+	writeEngineGoModule(t, fixture.canonical, "package app\n")
+	runEngineGit(t, fixture.canonical, "add", "go.mod", "app.go")
+	runEngineGit(t, fixture.canonical, "commit", "-m", "test: add Go validation fixture")
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	first := createMergeSource(t, fixture, "resolved-descendant-first", "feature/resolved-descendant-first", "shared.txt", "first\n")
+	second := createMergeSource(t, fixture, "resolved-descendant-second", "feature/resolved-descendant-second", "shared.txt", "second\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err == nil || receipt.Status != WorktreeMergeConflict || receipt.Candidate.SHA == "" {
+		t.Fatalf("initial prepare = %+v err=%v, want conflict with recorded candidate", receipt, err)
+	}
+	receiptedCandidate := receipt.Candidate.SHA
+	merge := exec.Command("git", "merge", "--no-commit", receipt.Sources[1].SHA)
+	merge.Dir = receipt.Candidate.Worktree
+	if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
+		t.Fatalf("manual conflict reproduction unexpectedly merged: %s", output)
+	}
+	writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "shared.txt"), "resolved\n")
+	runEngineGit(t, receipt.Candidate.Worktree, "add", "shared.txt")
+	runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: resolve receipted conflict")
+	resolved := strings.TrimSpace(runEngineGit(t, receipt.Candidate.Worktree, "rev-parse", "HEAD"))
+
+	// Simulate a crash after the append-only evidence is durable and before the
+	// mutable receipt is rewritten. A normal resume must consume that exact
+	// evidence and validate before it can publish.
+	inMemory := receipt
+	advanced, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(context.Background(), fixture.githubDir, &inMemory, 5*time.Second, 0)
+	if advanceErr != nil || !advanced || inMemory.Candidate.SHA != resolved {
+		t.Fatalf("advance conflict candidate = %+v advanced=%t err=%v", inMemory, advanced, advanceErr)
+	}
+	ack, err := readConflictCandidateAdvance(conflictCandidateAdvancePath(receipt.ReceiptPath))
+	if err != nil || ack.OriginalCandidate.SHA != receiptedCandidate || ack.AdvancedCandidateSHA != resolved || ack.CurrentTargetSHA != receipt.TargetSHA {
+		t.Fatalf("persisted conflict advance = %+v err=%v", ack, err)
+	}
+	unchanged, err := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if err != nil || unchanged.Candidate.SHA != receiptedCandidate || unchanged.Status != WorktreeMergeConflict {
+		t.Fatalf("crash-window receipt = %+v err=%v", unchanged, err)
+	}
+
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_TARGET_SHA", resolved)
+	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
+	landed, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil || landed.Status != WorktreeMergeLanded || landed.Candidate.SHA != resolved || landed.LandingSHA != resolved || landed.Validation.Revision != resolved {
+		t.Fatalf("resume resolved conflict descendant = %+v err=%v", landed, err)
+	}
+	retried, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Route: WorktreeMergeRouteAuto,
+		Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+	})
+	if err != nil || retried.Status != WorktreeMergeLanded || retried.Candidate.SHA != resolved || retried.LandingSHA != resolved {
+		t.Fatalf("idempotent resume = %+v err=%v", retried, err)
+	}
+}
+
+func TestAdvanceResolvedConflictCandidateRefusesUnsafeEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt)
+		want   string
+	}{
+		{
+			name: "dirty candidate",
+			mutate: func(t *testing.T, _ engineFixture, receipt *WorktreeMergeReceipt) {
+				writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "uncommitted.txt"), "dirty\n")
+			},
+			want: "dirty",
+		},
+		{
+			name: "unrelated candidate head",
+			mutate: func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt) {
+				unrelated := createMergeSource(t, fixture, "unrelated-resolved-candidate", "feature/unrelated-resolved-candidate", "unrelated.txt", "unrelated\n")
+				receipt.Candidate.SHA = strings.TrimSpace(runEngineGit(t, unrelated.WorktreeDir, "rev-parse", "HEAD"))
+				if err := persistWorktreeMergeReceipt(*receipt); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "is not a descendant",
+		},
+		{
+			name: "missing receipted source",
+			mutate: func(t *testing.T, fixture engineFixture, receipt *WorktreeMergeReceipt) {
+				const task = "missing-resolved-source"
+				missing := createMergeSource(t, fixture, task, "feature/missing-resolved-source", "missing.txt", "missing\n")
+				receipt.Sources = append(receipt.Sources, WorktreeMergeSource{Task: task, Worktree: missing.WorktreeDir, Branch: missing.Branch, SHA: strings.TrimSpace(runEngineGit(t, missing.WorktreeDir, "rev-parse", "HEAD"))})
+				if err := persistWorktreeMergeReceipt(*receipt); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "does not contain required immutable root",
+		},
+		{
+			name: "target drift",
+			mutate: func(t *testing.T, fixture engineFixture, _ *WorktreeMergeReceipt) {
+				writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "drift\n")
+				runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
+				runEngineGit(t, fixture.canonical, "commit", "-m", "test: advance target after conflict")
+				runEngineGit(t, fixture.canonical, "push", "origin", "main")
+			},
+			want: "target drifted",
+		},
+		{
+			name: "inconsistent published predecessor",
+			mutate: func(t *testing.T, _ engineFixture, receipt *WorktreeMergeReceipt) {
+				runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", receipt.Candidate.Branch)
+			},
+			want: "published without a consistent published predecessor",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			first := createMergeSource(t, fixture, "unsafe-resolved-first-"+strings.ReplaceAll(test.name, " ", "-"), "feature/unsafe-resolved-first-"+strings.ReplaceAll(test.name, " ", "-"), "shared.txt", "first\n")
+			second := createMergeSource(t, fixture, "unsafe-resolved-second-"+strings.ReplaceAll(test.name, " ", "-"), "feature/unsafe-resolved-second-"+strings.ReplaceAll(test.name, " ", "-"), "shared.txt", "second\n")
+			receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{first.WorktreeDir, second.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+			if err == nil || receipt.Status != WorktreeMergeConflict || receipt.Candidate.SHA == "" {
+				t.Fatalf("prepare = %+v err=%v", receipt, err)
+			}
+			merge := exec.Command("git", "merge", "--no-commit", receipt.Sources[1].SHA)
+			merge.Dir = receipt.Candidate.Worktree
+			if output, mergeErr := merge.CombinedOutput(); mergeErr == nil {
+				t.Fatalf("fixture merge unexpectedly succeeded: %s", output)
+			}
+			writeEngineFile(t, filepath.Join(receipt.Candidate.Worktree, "shared.txt"), "resolved\n")
+			runEngineGit(t, receipt.Candidate.Worktree, "add", "shared.txt")
+			runEngineGit(t, receipt.Candidate.Worktree, "commit", "-m", "test: resolve conflict before refusal")
+			test.mutate(t, fixture, &receipt)
+			if _, advanceErr := advanceResolvedConflictWorktreeMergeCandidate(context.Background(), fixture.githubDir, &receipt, 5*time.Second, 0); advanceErr == nil || !strings.Contains(advanceErr.Error(), test.want) {
+				t.Fatalf("advance error = %v, want %q", advanceErr, test.want)
+			}
+		})
+	}
+}
+
 // A candidate may be created from one immutable base, then have a target-drift
 // conflict resolved manually. The receipt records the newer target snapshot,
 // but the Work Log must retain its original claim base. Resume may normalize

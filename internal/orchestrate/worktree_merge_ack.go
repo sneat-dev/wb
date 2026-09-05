@@ -30,6 +30,8 @@ const (
 	worktreeMergeReceiptCollisionAcknowledgementSuffix        = ".receipt-collision.ack.json"
 	worktreeMergeMissingCleanupAcknowledgementSchemaVersion   = 1
 	worktreeMergeMissingCleanupAcknowledgementSuffix          = ".missing-cleanup.ack.json"
+	worktreeMergeConflictCandidateAdvanceSchemaVersion        = 1
+	worktreeMergeConflictCandidateAdvanceSuffix               = ".conflict-candidate-advanced.ack.json"
 )
 
 // linkSelfSupersessionCorrection publishes a fully synced temporary file without
@@ -44,6 +46,35 @@ var linkLegacyValidationFailureIdentity = os.Link
 // linkMissingCleanupAcknowledgement publishes audited legacy cleanup evidence
 // without replacing either the historical receipt or missing Work Logs.
 var linkMissingCleanupAcknowledgement = os.Link
+
+// linkConflictCandidateAdvance publishes the resolved conflict transition
+// without replacing the original conflict receipt. A retry either reads this
+// exact evidence or refuses a different manual resolution.
+var linkConflictCandidateAdvance = os.Link
+
+// WorktreeMergeConflictCandidateAdvance is the append-only bridge between a
+// conflict receipt's original candidate and the clean, manually resolved
+// descendant. It is written before the mutable receipt is advanced to that
+// descendant, so an interrupted resume cannot publish an unaudited head.
+type WorktreeMergeConflictCandidateAdvance struct {
+	SchemaVersion        int                    `json:"schema_version"`
+	ID                   string                 `json:"id"`
+	Status               string                 `json:"status"`
+	ReceiptPath          string                 `json:"receipt_path"`
+	AcknowledgementPath  string                 `json:"acknowledgement_path"`
+	ReceiptSHA256        string                 `json:"receipt_sha256"`
+	ReceiptID            string                 `json:"receipt_id"`
+	Lane                 string                 `json:"lane"`
+	Repository           string                 `json:"repository"`
+	Target               string                 `json:"target"`
+	ReceiptTargetSHA     string                 `json:"receipt_target_sha"`
+	CurrentTargetSHA     string                 `json:"current_target_sha"`
+	OriginalCandidate    WorktreeMergeCandidate `json:"original_candidate"`
+	AdvancedCandidateSHA string                 `json:"advanced_candidate_sha"`
+	ClaimBaseSHA         string                 `json:"claim_base_sha"`
+	Sources              []WorktreeMergeSource  `json:"sources"`
+	RecordedAt           time.Time              `json:"recorded_at"`
+}
 
 // WorktreeMergeMissingCleanupAcknowledgement records the narrow legacy case
 // where a landed receipt's exact worktrees and branches were already removed,
@@ -1531,6 +1562,92 @@ func validationFailureSupersessionID(ack WorktreeMergeValidationFailureSupersess
 
 func validationFailureSupersessionPath(receiptPath string) string {
 	return receiptPath + worktreeMergeValidationFailureSupersessionSuffix
+}
+
+func conflictCandidateAdvancePath(receiptPath string) string {
+	return receiptPath + worktreeMergeConflictCandidateAdvanceSuffix
+}
+
+func conflictCandidateAdvanceID(ack WorktreeMergeConflictCandidateAdvance) string {
+	hash := sha256.New()
+	for _, value := range []string{
+		ack.ReceiptPath, ack.ReceiptSHA256, ack.ReceiptID, ack.Lane, ack.Repository,
+		ack.Target, ack.ReceiptTargetSHA, ack.CurrentTargetSHA, ack.OriginalCandidate.Task,
+		ack.OriginalCandidate.Worktree, ack.OriginalCandidate.Branch, ack.OriginalCandidate.SHA,
+		ack.AdvancedCandidateSHA, ack.ClaimBaseSHA,
+	} {
+		_, _ = hash.Write([]byte(value))
+		_, _ = hash.Write([]byte{0})
+	}
+	for _, source := range ack.Sources {
+		for _, value := range []string{source.Task, source.Worktree, source.Branch, source.SHA} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func persistConflictCandidateAdvance(path string, ack WorktreeMergeConflictCandidateAdvance) error {
+	contents, err := json.MarshalIndent(ack, "", "  ")
+	if err != nil {
+		return err
+	}
+	contents = append(contents, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".conflict-candidate-advance-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := linkConflictCandidateAdvance(temporaryPath, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directory.Close() }()
+	return directory.Sync()
+}
+
+func readConflictCandidateAdvance(path string) (WorktreeMergeConflictCandidateAdvance, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return WorktreeMergeConflictCandidateAdvance{}, err
+	}
+	var ack WorktreeMergeConflictCandidateAdvance
+	if err := json.Unmarshal(contents, &ack); err != nil {
+		return ack, fmt.Errorf("decode conflict-candidate advance %s: %w", path, err)
+	}
+	if ack.SchemaVersion != worktreeMergeConflictCandidateAdvanceSchemaVersion ||
+		ack.Status != "conflict_candidate_advanced" || ack.AcknowledgementPath != path ||
+		ack.ReceiptPath == "" || ack.ReceiptSHA256 == "" || ack.ReceiptID == "" || ack.Lane == "" ||
+		ack.Repository == "" || ack.Target == "" || ack.ReceiptTargetSHA == "" || ack.CurrentTargetSHA == "" ||
+		ack.OriginalCandidate.Task == "" || ack.OriginalCandidate.Worktree == "" || ack.OriginalCandidate.Branch == "" || ack.OriginalCandidate.SHA == "" ||
+		ack.AdvancedCandidateSHA == "" || ack.AdvancedCandidateSHA == ack.OriginalCandidate.SHA || ack.ClaimBaseSHA == "" ||
+		len(ack.Sources) == 0 || ack.RecordedAt.IsZero() || ack.ID != conflictCandidateAdvanceID(ack) {
+		return ack, fmt.Errorf("conflict-candidate advance %s has invalid immutable identity", path)
+	}
+	return ack, nil
 }
 
 func legacyValidationFailureIdentityPath(receiptPath string) string {
