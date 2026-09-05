@@ -433,6 +433,10 @@ type RenameOptions struct {
 	// was deleted and before the fresh claim is bound. It proves rollback can
 	// recover a later repository without erasing earlier partial-result evidence.
 	beforeRenameBind func(repository string) error
+	// afterPreApplyReservation is a test-only interruption seam after the new
+	// prompt/reservation is durable and before any source claim is sealed or
+	// checkout path is moved.
+	afterPreApplyReservation func() error
 	// afterWorktreeMoveAuthorization is a test-only adversarial seam executed
 	// after the retained source identity and both parent descriptors have been
 	// authorized, immediately before the descriptor-relative no-replace move.
@@ -657,10 +661,20 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 			return fail(preflightErr)
 		}
 	}
-	if err := reserveOriginalPromptArchive(resolution.Write.Home, normalized.NewTask, normalized.WorkLog); err != nil {
-		return fail(fmt.Errorf("reserve new private Work Log prompt: %w", err))
+	// Inspect the destination before this transaction creates any new-task
+	// control-plane entry. This is the collision verdict reported to callers;
+	// a second inspection under the destination lock below closes the create
+	// race without letting our own lock or prompt reservation impersonate a
+	// foreign task.
+	newInventory, inventoryErr := ListWithDiagnostics(ctx, ListOptions{
+		ProjectsRoot: normalized.ProjectsRoot, Task: normalized.NewTask, Base: normalized.Base, GitHub: false,
+	})
+	if inventoryErr != nil {
+		return fail(fmt.Errorf("inspect destination task %q: %w", normalized.NewTask, inventoryErr))
 	}
-
+	if len(newInventory.Results) > 0 || len(newInventory.Diagnostics) > 0 {
+		return fail(fmt.Errorf("destination task already exists: %s", normalized.NewTask))
+	}
 	newOperation, err := prepareOperationRoot(resolution.Write.Home, normalized.NewTask, nil)
 	if err != nil {
 		return fail(err)
@@ -671,7 +685,7 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 		return fail(fmt.Errorf("lock task %q: %w", normalized.NewTask, err))
 	}
 	defer func() { _ = newLock.release() }()
-	newInventory, inventoryErr := ListWithDiagnostics(ctx, ListOptions{
+	newInventory, inventoryErr = ListWithDiagnostics(ctx, ListOptions{
 		ProjectsRoot: normalized.ProjectsRoot, Task: normalized.NewTask, Base: normalized.Base, GitHub: false,
 	})
 	if inventoryErr != nil {
@@ -679,6 +693,18 @@ func Rename(ctx context.Context, options RenameOptions) (RenameOutcome, error) {
 	}
 	if len(newInventory.Results) > 0 || len(newInventory.Diagnostics) > 0 {
 		return fail(fmt.Errorf("destination task already exists: %s", normalized.NewTask))
+	}
+	// The prompt reservation follows both destination inventories. It is durable
+	// WB_HOME state for this destination effort, so treating it as occupancy
+	// would make rename refuse on its own transaction. The held destination lock
+	// prevents a concurrent create from changing the empty verdict now.
+	if err := reservePreApplyRenameWorkLog(resolution.Write.Home, normalized.OldTask, normalized.NewTask, normalized.WorkLog); err != nil {
+		return fail(fmt.Errorf("reserve new private Work Log prompt: %w", err))
+	}
+	if normalized.afterPreApplyReservation != nil {
+		if err := normalized.afterPreApplyReservation(); err != nil {
+			return fail(fmt.Errorf("after pre-apply rename reservation: %w", err))
+		}
 	}
 	for index := range plans {
 		if !plans[index].result.Eligible {

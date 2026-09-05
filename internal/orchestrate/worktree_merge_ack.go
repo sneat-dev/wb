@@ -1184,7 +1184,7 @@ func validateMergeAcknowledgementCandidate(ctx context.Context, projectsRoot str
 }
 
 func validatePrepareFailureSupersessionCandidate(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (*worktrees.WorkLogClaimView, string, error) {
-	if receipt.Status != WorktreeMergeConflict {
+	if receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed {
 		claim, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate)
 		return claim, "", err
 	}
@@ -2018,7 +2018,7 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 	if ack.SchemaVersion != worktreeMergeValidationFailureSupersessionSchemaVersion || ack.Status != "validation_failure_superseded" || ack.AcknowledgementPath != path ||
 		ack.ReceiptPath != receipt.ReceiptPath || ack.ReceiptID != receipt.ID || ack.ReceiptSHA256 != receiptHash || ack.ReceiptStatus != receipt.Status ||
 		ack.Lane != receipt.Lane || ack.Repository != receipt.Repository || ack.Target != receipt.Target || ack.ReceiptTargetSHA != receipt.TargetSHA ||
-		ack.OriginalCandidate != receipt.Candidate || (ack.ObservedCandidateDescendantSHA != "" && (receipt.Status != WorktreeMergeConflict || ack.ObservedCandidateDescendantSHA == receipt.Candidate.SHA)) || ack.OriginalClaimBaseSHA == "" || ack.CurrentTargetSHA == "" || ack.Replacement.Task == "" || ack.Replacement.Worktree == "" || ack.Replacement.Branch == "" || ack.Replacement.SHA == "" || ack.ReplacementClaimBaseSHA == "" ||
+		ack.OriginalCandidate != receipt.Candidate || (ack.ObservedCandidateDescendantSHA != "" && ((receipt.Status != WorktreeMergeConflict && receipt.Status != WorktreeMergeValidationFailed) || ack.ObservedCandidateDescendantSHA == receipt.Candidate.SHA)) || ack.OriginalClaimBaseSHA == "" || ack.CurrentTargetSHA == "" || ack.Replacement.Task == "" || ack.Replacement.Worktree == "" || ack.Replacement.Branch == "" || ack.Replacement.SHA == "" || ack.ReplacementClaimBaseSHA == "" ||
 		ack.Actor == "" || ack.Reason == "" || ack.RecordedAt.IsZero() || !sameWorktreeMergeSources(ack.Sources, receipt.Sources) || ack.ID != validationFailureSupersessionID(ack) {
 		return WorktreeMergeValidationFailureSupersession{}, fmt.Errorf("validation-failed supersession %s has invalid immutable identity", path)
 	}

@@ -30,7 +30,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 |---|---:|---:|---:|---:|
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `run` | yes | yes | yes | yes |
-| `daemon serve` | yes | rejected | rejected | yes |
+| `daemon serve`, `start`, `status`, `stop`, `restart` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps propagate local` | yes | rejected | rejected | yes |
@@ -55,7 +55,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 | `layout audit`, `layout clean` | yes | rejected | rejected | yes |
 | `archive clean` | yes | yes | rejected | yes |
 | `repo status` | rejected | rejected | rejected | yes |
-| `worktree list`, `cleanup`, `gc`, `rename`, `summary` | yes | yes | rejected | yes |
+| `worktree list`, `cleanup`, `gc`, `relocate`, `rename`, `summary` | yes | yes | rejected | yes |
 | `pr land` | yes | rejected | rejected | yes |
 | `worktree marker`, `worktree rescue` | yes | yes | rejected | yes |
 | `worktree abort` | yes | yes | rejected | yes |

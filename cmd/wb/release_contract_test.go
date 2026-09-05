@@ -139,7 +139,9 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		"push":         map[string]any{"branches": []any{"main"}, "tags": []any{"v*"}},
 		"pull_request": nil, "workflow_dispatch": nil,
 	})
-	assert("CI permissions", workflow["permissions"], map[string]any{"contents": "read"})
+	assert("CI permissions", workflow["permissions"], map[string]any{
+		"actions": "read", "contents": "read", "pull-requests": "read",
+	})
 	assert("CI concurrency", workflow["concurrency"], map[string]any{
 		"group":              "go-ci-${{ github.workflow }}-${{ github.ref }}",
 		"cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
@@ -176,18 +178,24 @@ func TestGoCICoordinatesTheOnlyPublisherAndRaceInventory(t *testing.T) {
 		t.Fatalf("aggregate=%v", aggregate)
 	}
 	assert("required check name", aggregate["name"], "Required checks passed")
-	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "source", "static", "lint", "coverage", "race", "windows"})
+	assert("aggregate prerequisites", aggregate["needs"], []any{"release-eligibility", "validation-reuse", "source", "static", "lint", "coverage", "race", "windows"})
 	assert("aggregate failure reporting", aggregate["if"], "${{ always() }}")
 	for _, name := range []string{"source", "static", "lint", "coverage", "race"} {
 		job, ok := jobs[name].(map[string]any)
 		if !ok {
 			t.Fatalf("validation job %s missing", name)
 		}
-		assert(name+" starts after eligibility", job["needs"], "release-eligibility")
-		if _, conditional := job["if"]; conditional {
-			t.Errorf("%s must validate PRs even when publication is ineligible", name)
-		}
+		assert(name+" starts after eligibility and reuse", job["needs"], []any{"release-eligibility", "validation-reuse"})
+		assert(name+" reuse condition", strings.Join(strings.Fields(fmt.Sprint(job["if"])), " "),
+			"github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true'")
 	}
+	windows, ok := jobs["windows"].(map[string]any)
+	if !ok {
+		t.Fatal("native Windows validation job missing")
+	}
+	assert("Windows validation prerequisites", windows["needs"], []any{"windows-scope", "validation-reuse"})
+	assert("Windows validation reuse condition", strings.Join(strings.Fields(fmt.Sprint(windows["if"])), " "),
+		"needs.windows-scope.outputs.required == 'true' && (github.event_name != 'push' || needs.validation-reuse.outputs.reuse != 'true')")
 	eligibility, ok := jobs["release-eligibility"].(map[string]any)
 	if !ok {
 		t.Fatal("eligibility job missing")
@@ -283,20 +291,23 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatal("required check must only summarize the validation results")
 	}
 	step := steps[0]
-	if len(step.Env) != 7 {
-		t.Fatalf("summary checks %d results, want all seven prerequisites", len(step.Env))
+	if len(step.Env) != 9 {
+		t.Fatalf("summary receives %d environment values, want the nine eligibility/reuse/validation/Windows values", len(step.Env))
 	}
-	run := func(failedKey, result string) error {
+	runValues := func(values map[string]string) error {
 		cmd := exec.Command("sh", "-c", step.Run)
 		cmd.Env = os.Environ()
 		for key := range step.Env {
 			value := "success"
-			if key == failedKey {
-				value = result
+			if override, ok := values[key]; ok {
+				value = override
 			}
 			cmd.Env = append(cmd.Env, key+"="+value)
 		}
 		return cmd.Run()
+	}
+	run := func(failedKey, result string) error {
+		return runValues(map[string]string{failedKey: result})
 	}
 	if err := run("", ""); err != nil {
 		t.Fatalf("all successful prerequisites rejected: %v", err)
@@ -305,6 +316,9 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 		t.Fatalf("path-scoped Windows check rejected a skipped result: %v", err)
 	}
 	for key := range step.Env {
+		if key == "REUSE_RESULT" {
+			continue
+		}
 		for _, result := range []string{"failure", "cancelled", "skipped", ""} {
 			if key == "WINDOWS_RESULT" && result == "skipped" {
 				continue
@@ -316,6 +330,22 @@ func TestGoCIRequiredChecksRejectIncompleteValidation(t *testing.T) {
 			})
 		}
 	}
+	t.Run("trusted validation reuse", func(t *testing.T) {
+		values := map[string]string{
+			"ELIGIBILITY_RESULT": "success",
+			"REUSE_RESULT":       "true",
+			"REUSE_JOB_RESULT":   "success",
+			"SOURCE_RESULT":      "skipped",
+			"STATIC_RESULT":      "skipped",
+			"LINT_RESULT":        "skipped",
+			"COVERAGE_RESULT":    "skipped",
+			"RACE_RESULT":        "skipped",
+			"WINDOWS_RESULT":     "skipped",
+		}
+		if err := runValues(values); err != nil {
+			t.Fatalf("trusted reuse was rejected: %v", err)
+		}
+	})
 }
 
 func workflowContractTestCommands(t *testing.T, job map[string]any) []string {
