@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/buildinfo"
 	"github.com/sneat-dev/wb/internal/gitops"
 	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/quality"
@@ -2583,14 +2584,31 @@ func verifyWorktreeMergeTarget(ctx context.Context, repository, repositoryDir, t
 	if err != nil {
 		return quality.VerificationReport{}, fmt.Errorf("load target quality policy: %w", err)
 	}
-	report := quality.VerifyWithOptions(ctx, repository, snapshot,
-		[]quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec},
-		runOptions)
+	checks := []quality.Check{quality.CheckLint, quality.CheckTest, quality.CheckBuild, quality.CheckSpec}
+	cacheKey, err := quality.NewValidationCacheKey(repository, targetSHA, snapshot, buildinfo.Revision(), checks)
+	if err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("fingerprint target validation baseline: %w", err)
+	}
+	cacheRoot, err := os.UserHomeDir()
+	if err != nil {
+		return quality.VerificationReport{}, fmt.Errorf("resolve WB validation cache: %w", err)
+	}
+	if cached, ok, cacheErr := quality.LoadValidationCache(quality.ValidationCacheDir(filepath.Join(cacheRoot, ".wb")), cacheKey); cacheErr != nil {
+		return quality.VerificationReport{}, fmt.Errorf("read target validation baseline cache: %w", cacheErr)
+	} else if ok {
+		return cached, nil
+	}
+	report := quality.VerifyWithOptions(ctx, repository, snapshot, checks, runOptions)
 	// The transient snapshot is intentionally removed before this durable
 	// receipt is written. The exact revision remains the useful evidence.
 	report.Path = "git:" + targetSHA
 	report.Revision = targetSHA
 	report.WorkspaceClean = true
+	if report.Status != quality.StatusSkipped {
+		if cacheErr := quality.SaveValidationCache(quality.ValidationCacheDir(filepath.Join(cacheRoot, ".wb")), cacheKey, report); cacheErr != nil {
+			return quality.VerificationReport{}, fmt.Errorf("save target validation baseline cache: %w", cacheErr)
+		}
+	}
 	return report, nil
 }
 
