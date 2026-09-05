@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/quality"
 	"github.com/sneat-dev/wb/internal/wbhome"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -346,6 +347,77 @@ func TestAcknowledgeLandedValidationFailureLeavesHistoricalReceiptUntouched(t *t
 	}
 	if next.Status != WorktreeMergePrepared || next.Candidate.SHA == "" {
 		t.Fatalf("new merge preflight = %+v", next)
+	}
+}
+
+func TestAcknowledgeLandedFailedValidationPreservesAdvancedSources(t *testing.T) {
+	fixture := newEngineFixture(t)
+	source := createMergeSource(t, fixture, "ack-landed-source", "feature/ack-landed", "landed.txt", "landed\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{source.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt.Phase = WorktreeMergePhaseLand
+	receipt.Status = WorktreeMergeLanded
+	receipt.LandingSHA = receipt.Candidate.SHA
+	receipt.Validation.Status = quality.StatusFailed
+	receipt.Failure = "candidate validation failed after the target was pushed"
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptBefore, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, fixture.canonical, "update-ref", "refs/heads/main", receipt.Candidate.SHA)
+	runEngineGit(t, fixture.canonical, "push", "origin", "main")
+	writeEngineFile(t, filepath.Join(source.WorktreeDir, "advanced-after-landing.txt"), "advanced\n")
+	runEngineGit(t, source.WorktreeDir, "add", "advanced-after-landing.txt")
+	runEngineGit(t, source.WorktreeDir, "commit", "-m", "fix: advance source after landing")
+	advancedSource := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD"))
+
+	ack, err := AcknowledgeLandedMergeFailure(context.Background(), WorktreeMergeLandedFailureAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath, Apply: true, Actor: "reviewer", Reason: "exact failed candidate is already on the remote target",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.ReceiptStatus != WorktreeMergeLanded || ack.CandidateSHA != receipt.Candidate.SHA || ack.CurrentTargetSHA != receipt.Candidate.SHA {
+		t.Fatalf("landed failed-validation acknowledgement = %+v", ack)
+	}
+	if current := strings.TrimSpace(runEngineGit(t, source.WorktreeDir, "rev-parse", "HEAD")); current != advancedSource {
+		t.Fatalf("advanced source HEAD changed: got %s want %s", current, advancedSource)
+	}
+	receiptAfter, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(receiptBefore, receiptAfter) {
+		t.Fatal("historical landed receipt was rewritten")
+	}
+
+	// A rewritten source is not forward progress and must not inherit the
+	// acknowledgement merely because the recorded candidate remains landed.
+	runEngineGit(t, source.WorktreeDir, "reset", "--hard", receipt.TargetSHA)
+	_, err = AcknowledgeLandedMergeFailure(context.Background(), WorktreeMergeLandedFailureAcknowledgementOptions{
+		ProjectsRoot: fixture.githubDir, Receipt: receipt.ReceiptPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "was rewritten after landing") {
+		t.Fatalf("rewritten source acknowledgement error = %v", err)
+	}
+}
+
+func TestLandedFailureAcknowledgementRefusesLandedReceiptWithoutFailedValidation(t *testing.T) {
+	receipt := WorktreeMergeReceipt{
+		ReceiptPath: "/tmp/receipt.json", ID: "receipt", Repository: "acme/app", Target: "main",
+		Candidate: WorktreeMergeCandidate{SHA: strings.Repeat("a", 40)}, LandingSHA: strings.Repeat("a", 40),
+		Phase: WorktreeMergePhaseLand, Status: WorktreeMergeLanded,
+	}
+	receipt.Lane = worktreeMergeLaneID(receipt.Repository, receipt.Target)
+	if err := validateLandedFailureAcknowledgementReceipt(receipt, receipt.ReceiptPath); err == nil || !strings.Contains(err.Error(), "without an exact landed failed-validation receipt") {
+		t.Fatalf("landed receipt without failed validation error = %v", err)
 	}
 }
 

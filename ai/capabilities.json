@@ -10340,8 +10340,8 @@
                 "--reason"
               ],
               "modes": [
-                "Proves an exact clean candidate and every exact clean receipted source are contained in the freshly fetched remote target",
-                "Acknowledges only stale prepare validation_failed or landed_post_target_ci_failed receipts without falsely making either a successful landing"
+                "Proves an exact clean candidate and every receipted source commit are contained in the freshly fetched remote target; only the landed failed-validation form may preserve subsequently advanced source worktrees",
+                "Acknowledges only stale prepare validation_failed, landed failed-validation, or landed_post_target_ci_failed receipts without falsely making a failed validation successful"
               ]
             }
           ],

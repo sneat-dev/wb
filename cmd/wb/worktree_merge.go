@@ -42,7 +42,7 @@ forward revert. If exact post-target CI fails and the same source advances with 
 forward repair, rerunning merge advances the retained candidate onto the landed target,
 records the failed landing, and opens a new repair PR without rewriting history.
 Use acknowledge-landed-failed only for an audited historical
-validation_failed or landed_post_target_ci_failed receipt whose exact candidate
+validation_failed, landed failed-validation, or landed_post_target_ci_failed receipt whose exact candidate
 is already contained in the current remote target; it writes a separate
 acknowledgement rather than rewriting the failed receipt. Use
 acknowledge-stranded-landing only for a land conflict receipt whose published
@@ -370,11 +370,12 @@ func newWorktreeMergeAcknowledgeLandedFailedCmd() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "acknowledge-landed-failed <merge-receipt>",
 		Short: "Acknowledge a proved landed failure without rewriting its receipt",
-		Long: `Prove that either a validation_failed prepare receipt or a
-landed_post_target_ci_failed land receipt has its clean candidate and every
-receipted source contained in the exact current remote target, then record a
+		Long: `Prove that a validation_failed prepare receipt, a landed receipt
+with recorded failed validation, or a landed_post_target_ci_failed receipt has
+its clean candidate and every receipted source contained in the exact current remote target, then record a
 separate audited acknowledgement so a fresh forward repair can own the lane.
-Post-target CI receipts must also prove their exact failed landing. The immutable
+The landed failed-validation form may preserve source worktrees that advanced
+after landing; other forms still require their exact source heads. Post-target CI receipts must also prove their exact failed landing. The immutable
 Work Log and historical merge receipt are never rewritten. This is a dry-run by
 default; --apply requires --actor and --reason and writes only the new
 acknowledgement artifact. Any missing claim, target, ancestry, or cleanliness
