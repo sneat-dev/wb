@@ -1835,12 +1835,58 @@ func readValidationFailureSupersession(path string, receipt WorktreeMergeReceipt
 	return ack, nil
 }
 
+// readValidationFailureSupersessionWithLegacyIdentity authenticates a
+// supersession acknowledgement against the effective candidate identity. A
+// legacy receipt omitted candidate.SHA, so the immutable identity sidecar is
+// the only permitted source for that field when the supersession is read by a
+// global lane scanner. The historical receipt is never rewritten.
+func readValidationFailureSupersessionWithLegacyIdentity(path string, receipt WorktreeMergeReceipt) (WorktreeMergeValidationFailureSupersession, WorktreeMergeReceipt, error) {
+	ack, err := readValidationFailureSupersession(path, receipt)
+	if err == nil {
+		return ack, receipt, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, err
+	}
+	if legacyErr := validateLegacyValidationFailedReceiptShape(receipt, receipt.ReceiptPath); legacyErr != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, err
+	}
+
+	identityPath := legacyValidationFailureIdentityPath(receipt.ReceiptPath)
+	contents, readErr := os.ReadFile(identityPath)
+	if readErr != nil {
+		// A legacy receipt with a supersession acknowledgement requires its
+		// identity sidecar. Do not retain os.ErrNotExist here: the caller uses
+		// that sentinel only for an absent supersession acknowledgement.
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, fmt.Errorf("read legacy validation-failed identity %s: %v", identityPath, readErr)
+	}
+	var identity WorktreeMergeLegacyValidationFailureIdentity
+	if readErr := json.Unmarshal(contents, &identity); readErr != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, fmt.Errorf("decode legacy validation-failed identity %s: %w", identityPath, readErr)
+	}
+	candidate := identity.Candidate
+	if candidate.Task != receipt.Candidate.Task || filepath.Clean(candidate.Worktree) != filepath.Clean(receipt.Candidate.Worktree) ||
+		candidate.Branch != receipt.Candidate.Branch || candidate.SHA == "" || candidate.SHA != receipt.Validation.Revision {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, fmt.Errorf("legacy validation-failed identity %s has mismatched candidate identity", identityPath)
+	}
+	if _, readErr := readLegacyValidationFailureIdentity(identityPath, receipt, candidate); readErr != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, readErr
+	}
+	effective := receipt
+	effective.Candidate = candidate
+	ack, err = readValidationFailureSupersession(path, effective)
+	if err != nil {
+		return WorktreeMergeValidationFailureSupersession{}, WorktreeMergeReceipt{}, err
+	}
+	return ack, effective, nil
+}
+
 // hasValidationFailureSupersession refuses to treat a historical self-
 // supersession as effective until its separate correction still matches all
 // live receipt, claim, source, target, and candidate evidence.
 func hasValidationFailureSupersession(ctx context.Context, projectsRoot string, receipt WorktreeMergeReceipt) (bool, error) {
 	ackPath := validationFailureSupersessionPath(receipt.ReceiptPath)
-	ack, err := readValidationFailureSupersession(ackPath, receipt)
+	ack, effectiveReceipt, err := readValidationFailureSupersessionWithLegacyIdentity(ackPath, receipt)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
@@ -1848,7 +1894,7 @@ func hasValidationFailureSupersession(ctx context.Context, projectsRoot string, 
 		return false, err
 	}
 	if ack.Replacement == ack.OriginalCandidate {
-		if correctionErr := validateSelfSupersessionCorrection(ctx, projectsRoot, receipt, ack); correctionErr != nil {
+		if correctionErr := validateSelfSupersessionCorrection(ctx, projectsRoot, effectiveReceipt, ack); correctionErr != nil {
 			if errors.Is(correctionErr, os.ErrNotExist) {
 				return false, fmt.Errorf("validation-failed supersession %s is a self-supersession and requires an append-only correction", ackPath)
 			}
