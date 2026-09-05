@@ -342,6 +342,98 @@ func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
 	})
 }
 
+func TestWorktreeMergePrepareSelectsSuccessorAfterSupersededConflictReceipt(t *testing.T) {
+	prepareSupersededConflict := func(t *testing.T) (cliWorktreeMergeFixture, orchestrate.WorktreeMergeValidationFailureSupersession) {
+		t.Helper()
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		receipt := fixture.receipt
+		receipt.Status = orchestrate.WorktreeMergeConflict
+		receipt.Failure = "historical merge conflict"
+		receiptBytes, err := json.MarshalIndent(receipt, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fixture.receiptPath, append(receiptBytes, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runCLIWorktreeGit(t, fixture.sources[0].WorktreeDir, "push", "origin", fixture.sources[0].Branch)
+		writeCLIWorktreeFile(t, filepath.Join(fixture.canonical, "target.txt"), "target\n")
+		runCLIWorktreeGit(t, fixture.canonical, "add", "target.txt")
+		runCLIWorktreeGit(t, fixture.canonical, "commit", "-m", "test: advance target for conflict supersession")
+		runCLIWorktreeGit(t, fixture.canonical, "push", "origin", "main")
+		replacement := createCLIWorktreeSource(t, fixture, "conflict-supersede-replacement", "feature/conflict-supersede-replacement", "replacement.txt", "replacement\n")
+		runCLIWorktreeGit(t, replacement.WorktreeDir, "fetch", "origin")
+		runCLIWorktreeGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/"+fixture.sources[0].Branch)
+
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, replacement.WorktreeDir,
+			"--apply", "--actor", "test-operator", "--reason", "prepare successor after conflict supersession",
+			"--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("supersede conflict receipt: %v\nstderr: %s", err, stderr.String())
+		}
+		var acknowledgement orchestrate.WorktreeMergeValidationFailureSupersession
+		if err := json.Unmarshal(stdout.Bytes(), &acknowledgement); err != nil {
+			t.Fatalf("decode supersession output %q: %v", stdout.String(), err)
+		}
+		return fixture, acknowledgement
+	}
+
+	t.Run("valid acknowledgement permits a fresh prepare with the original source", func(t *testing.T) {
+		fixture, acknowledgement := prepareSupersededConflict(t)
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "prepare", fixture.sources[0].WorktreeDir,
+			"--target", "main", "--model", "test-model", "--agent-runtime", "test", "--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("fresh prepare rejected valid supersession %s: %v\nstderr: %s", acknowledgement.AcknowledgementPath, err, stderr.String())
+		}
+		var successor orchestrate.WorktreeMergeReceipt
+		if err := json.Unmarshal(stdout.Bytes(), &successor); err != nil {
+			t.Fatalf("decode prepare output %q: %v", stdout.String(), err)
+		}
+		if successor.Status != orchestrate.WorktreeMergePrepared || successor.ReceiptPath == fixture.receiptPath || successor.Candidate.SHA == "" {
+			t.Fatalf("fresh prepare did not create a distinct prepared successor: %+v", successor)
+		}
+	})
+
+	t.Run("tampered acknowledgement leaves the conflict receipt blocking", func(t *testing.T) {
+		fixture, acknowledgement := prepareSupersededConflict(t)
+		contents, err := os.ReadFile(acknowledgement.AcknowledgementPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tampered := strings.Replace(string(contents), acknowledgement.ID, "tampered", 1)
+		if tampered == string(contents) {
+			t.Fatal("fixture acknowledgement did not contain its ID")
+		}
+		if err := os.WriteFile(acknowledgement.AcknowledgementPath, []byte(tampered), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		root := newRootCmd()
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "prepare", fixture.sources[0].WorktreeDir,
+			"--target", "main", "--model", "test-model", "--agent-runtime", "test",
+		})
+		if err := root.Execute(); err == nil || !strings.Contains(err.Error(), "invalid immutable identity") {
+			t.Fatalf("tampered acknowledgement released the lane: %v", err)
+		}
+	})
+}
+
 type cliWorktreeMergeFixture struct {
 	projectsRoot string
 	canonical    string
