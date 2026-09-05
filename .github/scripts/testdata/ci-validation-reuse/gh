@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+fixture=${CI_REUSE_FIXTURE_DIR:?CI_REUSE_FIXTURE_DIR is required}
+case "$*" in
+  *"/commits/"*"/pulls"*) cat "$fixture/pulls.json" ;;
+  *"/pulls/"*"/files"*) cat "$fixture/${CI_REUSE_FILES:-files.json}" ;;
+  *"/pulls/"*) cat "$fixture/${CI_REUSE_PULL:-pull.json}" ;;
+  *"/actions/workflows/go-ci.yml/runs"*) cat "$fixture/runs.json" ;;
+  *"/actions/runs/"*"/artifacts"*) cat "$fixture/artifacts.json" ;;
+  *) printf 'unexpected gh invocation: %s\n' "$*" >&2; exit 1 ;;
+esac

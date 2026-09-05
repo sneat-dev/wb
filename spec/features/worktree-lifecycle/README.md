@@ -461,6 +461,13 @@ repository N MUST roll repositories 1..N back to their old paths/branches and
 active recovery claims so the same coordinated rename is retryable. Durable
 terminal/outbox history MUST remain append-only. A process crash MAY require
 recovery from those records until automatic journal replay is implemented.
+Before the first destination checkout claim exists, rename MUST inventory the
+locked destination before reserving its new prompt so its own reservation is
+never treated as a collision. An interrupted or refused pre-apply reservation
+MUST remain auditable and `wb worktree abort <destination> --disposition
+discarded --apply` MUST terminalize that reservation without `--remote`, while
+retaining its immutable prompt archive and refusing any non-WB task-shell
+content.
 
 ## Interaction with Other Features
 

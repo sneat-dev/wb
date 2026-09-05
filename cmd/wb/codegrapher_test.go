@@ -80,7 +80,7 @@ func TestCodeGrapherDryRunUsesPlatformSpecificCommands(t *testing.T) {
 		name, goos, verb, version, want string
 	}{
 		{"darwin install", "darwin", "install", "latest", "brew update && brew install --cask code-grapher/tap/codegrapher"},
-		{"linux update", "linux", "update", "latest", "brew update && brew upgrade --cask codegrapher"},
+		{"linux update", "linux", "update", "latest", "brew update && brew upgrade --cask code-grapher/tap/codegrapher"},
 		{"windows exact", "windows", "install", "0.2.2", "go install github.com/specscore/codegrapher/cmd/codegrapher@0.2.2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,6 +94,22 @@ func TestCodeGrapherDryRunUsesPlatformSpecificCommands(t *testing.T) {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestCodeGrapherInstallRejectsShadowingStalePATHBinary(t *testing.T) {
+	t.Parallel()
+	deps := fakeCodeGrapherDeps("darwin", map[string]string{
+		"brew":            "/opt/homebrew/bin/brew",
+		codeGrapherBinary: "/Users/alex/.local/bin/codegrapher",
+	}, map[string]string{
+		"/Users/alex/.local/bin/codegrapher version": "0.1.0\n",
+	})
+	command := newCodeGrapherInstallCmd(deps, "install")
+	command.SetArgs([]string{"--yes"})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "shadowing non-Homebrew") || !strings.Contains(err.Error(), "/Users/alex/.local/bin/codegrapher") {
+		t.Fatalf("install error = %v", err)
 	}
 }
 
