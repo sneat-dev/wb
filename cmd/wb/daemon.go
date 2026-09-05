@@ -581,7 +581,7 @@ func daemonHealthy(ctx context.Context, listen string) bool {
 	if err != nil {
 		return false
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	return response.StatusCode == http.StatusOK
 }
 func requireLoopbackAddress(address string) error {
