@@ -20,10 +20,11 @@ hand-rolled parking instead.
 wb skills sync
 ```
 
-Copies every skill this exact `wb` build ships into each harness's skills
-directory, one subdirectory per skill. It reads nothing from a source
-checkout -- the skills are embedded in the `wb` binary itself -- so it
-works from any installed `wb`, in any project, every time.
+Installs the immutable WB plugin revision embedded in this exact `wb` build
+into each harness's skills directory, one subdirectory per skill. Ordinary
+sync is offline and reads no source checkout. The shared
+`strongo/cli-helpers/skillsync` engine verifies the embedded digest, locks each
+target, records plugin-scoped ownership, and applies replacements crash-safely.
 
 Known harnesses:
 
@@ -43,8 +44,20 @@ wb skills sync --harness codex
 wb skills sync --harness all
 ```
 
-It is idempotent: run it whenever in doubt. A second run with nothing new to
-ship reports every skill `unchanged` and writes nothing. It reports
+Default sync deliberately stays matched to the installed CLI. To ask for a
+newer compatible published WB plugin release explicitly, use:
+
+```sh
+wb skills sync --newer-compatible
+```
+
+That mode queries release metadata and still verifies the selected immutable
+descriptor and bundle digest before writing. It is never selected implicitly.
+
+It is idempotent: run it whenever in doubt. The first shared-engine run
+verifies and imports WB's older `.wb-skills-sync.json` ownership marker rather
+than overwriting its directories as unmanaged content. A second run with
+nothing new to ship reports every skill `unchanged` and writes nothing. It reports
 `added`/`updated`/`removed` for what changed, and `conflicts` for a directory
 name it will never overwrite because something else already owns it.
 

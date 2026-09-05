@@ -6,7 +6,7 @@
 // repository. That does nothing for the far more common case: wb installed
 // as a standalone CLI (Homebrew, go install, a release archive) and run from
 // an arbitrary project directory that is not, and has never been, a checkout
-// of sneat-dev/wb. `wb skills sync` (internal/skills) exists to install these
+// of sneat-dev/wb. `wb skills sync` (strongo/cli-helpers/skillsync) installs these
 // same skills into a harness's own skills directory (Claude Code
 // ~/.claude/skills, Cursor ~/.cursor/skills, Codex ~/.codex/skills)
 // so they are available everywhere wb is, and it must work from the
@@ -18,7 +18,7 @@ import "embed"
 
 // SkillsFS holds every file under skills/ at build time: skills/<name>/
 // SKILL.md plus each skill's references/ and agents/ subdirectories. Keep
-// this the only //go:embed directive over ai/skills; internal/skills reads
+// this the only //go:embed directive over ai/skills; the shared sync adapter reads
 // exclusively through this var so there is one embedded copy to keep in
 // sync with the checked-in source.
 //

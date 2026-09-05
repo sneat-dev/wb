@@ -223,7 +223,7 @@ func selfUpdateSyncBinary(cfg selfupdate.Config) (string, bool) {
 // syncSkillsAfterSelfUpdate runs `skills sync` against the on-disk wb binary
 // immediately after self-update reports success.
 //
-// It re-execs the installed binary rather than calling internal/skills in
+// It re-execs the installed binary rather than calling the shared skillsync adapter in
 // this process: when self-update actually swapped the executable, this
 // process is still running the OLD build in memory (replacing the file on
 // disk does not reload an already-running process), so only a fresh child
