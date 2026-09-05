@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -64,14 +65,17 @@ func TestNewSelfUpdateConfigHomebrewOnly(t *testing.T) {
 	if manager.Name != "Homebrew" {
 		t.Errorf("Managers[0].Name = %q, want %q", manager.Name, "Homebrew")
 	}
-	if manager.UpgradeCommand != "brew upgrade --cask wb" {
-		t.Errorf("Managers[0].UpgradeCommand = %q, want %q", manager.UpgradeCommand, "brew upgrade --cask wb")
+	if manager.UpgradeCommand != selfUpdateHomebrewUpgradeCommand {
+		t.Errorf("Managers[0].UpgradeCommand = %q, want %q", manager.UpgradeCommand, selfUpdateHomebrewUpgradeCommand)
 	}
-	if manager.UpgradeExecutable != "brew" {
-		t.Errorf("Managers[0].UpgradeExecutable = %q, want brew", manager.UpgradeExecutable)
+	if manager.UpgradeExecutable != "" || manager.UpgradeArgs != nil {
+		t.Errorf("legacy manager command = %q %v, want ordered steps only", manager.UpgradeExecutable, manager.UpgradeArgs)
 	}
-	if want := []string{"upgrade", "--cask", "wb"}; !slices.Equal(manager.UpgradeArgs, want) {
-		t.Errorf("Managers[0].UpgradeArgs = %v, want %v", manager.UpgradeArgs, want)
+	if len(manager.UpgradeSteps) != 2 || manager.UpgradeSteps[0].Executable != "brew" ||
+		!slices.Equal(manager.UpgradeSteps[0].Args, []string{"update"}) ||
+		manager.UpgradeSteps[1].Executable != "brew" ||
+		!slices.Equal(manager.UpgradeSteps[1].Args, []string{"upgrade", "--cask", "wb"}) {
+		t.Errorf("Managers[0].UpgradeSteps = %+v, want brew update then brew cask upgrade", manager.UpgradeSteps)
 	}
 	if !manager.CanExecuteUpgrade() {
 		t.Error("Managers[0] is redirect-only; want executable Homebrew upgrade")
@@ -313,55 +317,8 @@ func TestSelfUpdateErrorsUpdateAvailableMapsToExitFindings(t *testing.T) {
 	}
 }
 
-// TestSelfUpdateShouldSyncSkillsSkipsCheckAndDryRun pins REQ:
-// skills-sync-on-self-update's own boundary: neither a read-only --check nor
-// a --dry-run plan can have changed the on-disk binary, so neither may
-// trigger the post-update skills sync.
-func TestSelfUpdateShouldSyncSkillsSkipsCheckAndDryRun(t *testing.T) {
-	tests := []struct {
-		name     string
-		check    bool
-		dryRun   bool
-		wantSync bool
-	}{
-		{"plain update", false, false, true},
-		{"check only", true, false, false},
-		{"dry run", false, true, false},
-		{"check and dry run", true, true, false},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			binary := fakeSelfUpdateBinary(t, `if [ "$1" = "version" ]; then echo '{"version":"new"}'; fi`)
-			withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-				return selfupdate.Detection{Method: selfupdate.Manual, Path: binary}, nil
-			})
-			cmd := &cobra.Command{Use: "self-update"}
-			cmd.Flags().Bool("check", false, "")
-			cmd.Flags().Bool("dry-run", false, "")
-			if err := cmd.Flags().Set("check", boolFlagValue(test.check)); err != nil {
-				t.Fatal(err)
-			}
-			if err := cmd.Flags().Set("dry-run", boolFlagValue(test.dryRun)); err != nil {
-				t.Fatal(err)
-			}
-			if got := selfUpdateShouldSyncSkills(cmd, selfupdate.Config{CurrentVersion: "old"}); got != test.wantSync {
-				t.Errorf("selfUpdateShouldSyncSkills() = %v, want %v", got, test.wantSync)
-			}
-		})
-	}
-}
-
-func boolFlagValue(v bool) string {
-	if v {
-		return "true"
-	}
-	return "false"
-}
-
 // fakeSelfUpdateBinary writes an executable POSIX shell script standing in
-// for a detected installed wb binary and returns its path. It ignores its
-// arguments (syncSkillsAfterSelfUpdate always calls it with "skills sync"),
-// so the fixture only needs to control stdout/stderr/exit code.
+// for the exact installed executable identity supplied by the shared provider.
 func fakeSelfUpdateBinary(t *testing.T, body string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-wb")
@@ -372,196 +329,73 @@ func fakeSelfUpdateBinary(t *testing.T, body string) string {
 	return path
 }
 
-// withSelfUpdateDetect overrides selfUpdateDetect for the duration of one
-// test, exactly like cobracmd's own detectFunc seam, and restores it
-// afterward so later tests are unaffected.
-func withSelfUpdateDetect(t *testing.T, detect func(selfupdate.Config) (selfupdate.Detection, error)) {
-	t.Helper()
-	original := selfUpdateDetect
-	selfUpdateDetect = detect
-	t.Cleanup(func() { selfUpdateDetect = original })
+func successfulSelfUpdate(binary string) selfupdate.AfterUpdate {
+	return selfupdate.AfterUpdate{
+		Outcome: selfupdate.Outcome{
+			Action: selfupdate.ActionManagerExecuted,
+			Result: selfupdate.CheckResult{Current: "0.96.2", Latest: "0.96.3"},
+		},
+		Executable: selfupdate.ExecutableIdentity{Path: binary, ResolvedPath: binary},
+	}
 }
 
-func withSelfUpdateLookPath(t *testing.T, lookPath func(string) (string, error)) {
-	t.Helper()
-	original := selfUpdateLookPath
-	selfUpdateLookPath = lookPath
-	t.Cleanup(func() { selfUpdateLookPath = original })
-}
-
-// TestSyncSkillsAfterSelfUpdateForwardsDetectedBinaryStdout proves the
-// process re-exec actually happens against the path selfUpdateDetect names,
-// not this test process itself, and that its stdout reaches the caller.
-func TestSyncSkillsAfterSelfUpdateForwardsStableLauncherStdout(t *testing.T) {
+func TestSyncSkillsAfterSelfUpdateUsesProviderExecutableAndReportsVerifiedTarget(t *testing.T) {
 	binary := fakeSelfUpdateBinary(t, `echo "synced: $1 $2"`)
-	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{Method: selfupdate.Managed, Path: "old-caskroom-wb"}, nil
-	})
-	withSelfUpdateLookPath(t, func(string) (string, error) {
-		return binary, nil
-	})
-
 	cmd := &cobra.Command{Use: "self-update"}
+	cmd.Flags().String("format", "text", "")
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 
-	syncSkillsAfterSelfUpdate(cmd, selfupdate.Config{})
-
-	if got := stdout.String(); got != "synced: skills sync\n" {
-		t.Errorf("stdout = %q, want the detected binary's own output forwarded", got)
+	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary)); err != nil {
+		t.Fatal(err)
 	}
-	if stderr.Len() != 0 {
-		t.Errorf("stderr = %q, want empty on success", stderr.String())
-	}
-}
-
-// TestSyncSkillsAfterHomebrewUpdateUsesStableLauncher covers the real cask
-// transition: os.Executable can still name a Caskroom binary that Homebrew
-// removed, but `wb` on PATH resolves through Homebrew's stable symlink to the
-// new cask. The sync must run the new build's embedded skills, not fail trying
-// the old target.
-func TestSyncSkillsAfterHomebrewUpdateUsesStableLauncher(t *testing.T) {
-	oldCaskroomBinary := filepath.Join(t.TempDir(), "removed-old-wb")
-	newLauncher := fakeSelfUpdateBinary(t, `echo "new cask: $1 $2"`)
-	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{Path: oldCaskroomBinary}, nil
-	})
-	withSelfUpdateLookPath(t, func(name string) (string, error) {
-		if name != "wb" {
-			t.Fatalf("LookPath name = %q, want wb", name)
+	for _, want := range []string{"Verified installed wb version: 0.96.3 (was 0.96.2).", "synced: skills sync"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout = %q, want %q", stdout.String(), want)
 		}
-		return newLauncher, nil
-	})
-
-	cmd := &cobra.Command{Use: "self-update"}
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	syncSkillsAfterSelfUpdate(cmd, newSelfUpdateConfig())
-
-	if got := stdout.String(); got != "new cask: skills sync\n" {
-		t.Errorf("stdout = %q, want skills from the stable post-upgrade launcher", got)
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("stderr = %q, want empty", stderr.String())
 	}
 }
 
-func TestSelfUpdateShouldSyncSkillsProbesNewHomebrewLauncherVersion(t *testing.T) {
-	oldCaskroomBinary := filepath.Join(t.TempDir(), "removed-old-wb")
-	newLauncher := fakeSelfUpdateBinary(t, `
-if [ "$1" = "version" ] && [ "$2" = "--json" ]; then
-  echo '{"version":"0.91.0"}'
-  exit 0
-fi
-exit 42`)
-	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{Method: selfupdate.Managed, Path: oldCaskroomBinary}, nil
-	})
-	withSelfUpdateLookPath(t, func(string) (string, error) { return newLauncher, nil })
+func TestSyncSkillsAfterSelfUpdateSkipsAlreadyCurrentAndUnverifiedManagerOutcome(t *testing.T) {
+	binary := fakeSelfUpdateBinary(t, `echo "unexpected invocation"`)
 	cmd := &cobra.Command{Use: "self-update"}
-	cmd.Flags().Bool("check", false, "")
-	cmd.Flags().Bool("dry-run", false, "")
+	cmd.Flags().String("format", "text", "")
 
-	if !selfUpdateShouldSyncSkills(cmd, selfupdate.Config{BinaryName: "wb", CurrentVersion: "0.80.0"}) {
-		t.Error("selfUpdateShouldSyncSkills() = false, want true after the new Homebrew launcher proves a changed version")
+	current := successfulSelfUpdate(binary)
+	current.Outcome.Action = selfupdate.ActionAlreadyCurrent
+	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), current); err != nil {
+		t.Fatalf("already-current callback = %v, want nil", err)
+	}
+
+	stale := successfulSelfUpdate(binary)
+	stale.Outcome.PostSwapWarning = errors.New("installed 0.96.2, want 0.96.3")
+	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), stale)
+	if err == nil || !strings.Contains(err.Error(), "not verified") {
+		t.Fatalf("stale callback error = %v, want verification refusal", err)
 	}
 }
 
-func TestSyncSkillsAfterSelfUpdateKeepsManualBinaryOverCompetingPATHWB(t *testing.T) {
-	manualBinary := fakeSelfUpdateBinary(t, `echo "manual: $1 $2"`)
-	otherPATHBinary := fakeSelfUpdateBinary(t, `echo "wrong PATH binary"`)
-	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{Method: selfupdate.Manual, Path: manualBinary}, nil
-	})
-	withSelfUpdateLookPath(t, func(string) (string, error) { return otherPATHBinary, nil })
-	cmd := &cobra.Command{Use: "self-update"}
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	syncSkillsAfterSelfUpdate(cmd, newSelfUpdateConfig())
-
-	if got := stdout.String(); got != "manual: skills sync\n" {
-		t.Errorf("stdout = %q, want the manually invoked binary's own skills", got)
-	}
-	if stderr.Len() != 0 {
-		t.Errorf("stderr = %q, want empty", stderr.String())
-	}
-}
-
-// TestSyncSkillsAfterSelfUpdateReportsFailureWithoutFailingSelfUpdate proves
-// a failed sync degrades to a warning: syncSkillsAfterSelfUpdate returns
-// nothing for its caller to fail on, so a sync problem never turns a
-// successful self-update into a reported failure.
-func TestSyncSkillsAfterSelfUpdateReportsFailureWithoutFailingSelfUpdate(t *testing.T) {
+func TestSyncSkillsAfterSelfUpdateReturnsActionableFailure(t *testing.T) {
 	binary := fakeSelfUpdateBinary(t, `echo "boom" 1>&2; exit 1`)
-	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{Method: selfupdate.Managed, Path: "old-caskroom-wb"}, nil
-	})
-	withSelfUpdateLookPath(t, func(string) (string, error) {
-		return binary, nil
-	})
-
 	cmd := &cobra.Command{Use: "self-update"}
-	var stdout, stderr bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-
-	syncSkillsAfterSelfUpdate(cmd, selfupdate.Config{})
-
-	if !strings.Contains(stderr.String(), "self-update: skills sync failed") {
-		t.Errorf("stderr = %q, want a skills-sync failure warning", stderr.String())
+	cmd.Flags().String("format", "text", "")
+	err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary))
+	if err == nil {
+		t.Fatal("skills sync error = nil, want warning source")
 	}
-	if !strings.Contains(stderr.String(), "wb skills sync") {
-		t.Errorf("stderr = %q, want the manual fallback command named", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "boom") {
-		t.Errorf("stderr = %q, want the child's own stderr surfaced", stderr.String())
-	}
-}
-
-// TestSyncSkillsAfterSelfUpdateNoOpWhenDetectionFails covers both ways
-// selfUpdateDetect can fail to name a binary: an error, and a zero-value
-// Detection with an empty Path. Neither may write anything or panic.
-func TestSyncSkillsAfterSelfUpdateNoOpWhenDetectionFails(t *testing.T) {
-	tests := []struct {
-		name   string
-		detect func(selfupdate.Config) (selfupdate.Detection, error)
-	}{
-		{"detection error", func(selfupdate.Config) (selfupdate.Detection, error) {
-			return selfupdate.Detection{}, errors.New("cannot resolve executable")
-		}},
-		{"empty path", func(selfupdate.Config) (selfupdate.Detection, error) {
-			return selfupdate.Detection{}, nil
-		}},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			withSelfUpdateLookPath(t, func(string) (string, error) { return "", os.ErrNotExist })
-			withSelfUpdateDetect(t, test.detect)
-			cmd := &cobra.Command{Use: "self-update"}
-			var stdout, stderr bytes.Buffer
-			cmd.SetOut(&stdout)
-			cmd.SetErr(&stderr)
-
-			syncSkillsAfterSelfUpdate(cmd, selfupdate.Config{})
-
-			if stdout.Len() != 0 || stderr.Len() != 0 {
-				t.Errorf("stdout=%q stderr=%q, want both empty when detection cannot name a binary", stdout.String(), stderr.String())
-			}
-		})
+	for _, want := range []string{"skills sync failed", "wb skills sync", "boom"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want %q", err, want)
+		}
 	}
 }
 
 func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
 	binary := fakeSelfUpdateBinary(t, `echo "skills-sync-output"`)
-	withSelfUpdateDetect(t, func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{Method: selfupdate.Managed, Path: "old-caskroom-wb"}, nil
-	})
-	withSelfUpdateLookPath(t, func(string) (string, error) { return binary, nil })
 	cmd := &cobra.Command{Use: "self-update"}
 	cmd.Flags().String("format", "text", "")
 	if err := cmd.Flags().Set("format", "json"); err != nil {
@@ -571,12 +405,15 @@ func TestSyncSkillsAfterSelfUpdateKeepsJSONStdoutSingleDocument(t *testing.T) {
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 
-	syncSkillsAfterSelfUpdate(cmd, newSelfUpdateConfig())
-
-	if stdout.Len() != 0 {
-		t.Errorf("stdout = %q, want no nested sync output in JSON mode", stdout.String())
+	if err := syncSkillsAfterSelfUpdate(cmd, context.Background(), successfulSelfUpdate(binary)); err != nil {
+		t.Fatal(err)
 	}
-	if got := stderr.String(); got != "skills-sync-output\n" {
-		t.Errorf("stderr = %q, want nested sync output", got)
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want no nested output in JSON mode", stdout.String())
+	}
+	for _, want := range []string{"Verified installed wb version: 0.96.3", "skills-sync-output"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want %q", stderr.String(), want)
+		}
 	}
 }

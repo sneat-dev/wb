@@ -3,14 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/strongo/cli-helpers/selfupdate"
 )
 
 type selfUpdateReleaseTransport func(*http.Request) (*http.Response, error)
@@ -22,11 +19,6 @@ func (f selfUpdateReleaseTransport) RoundTrip(req *http.Request) (*http.Response
 // Exercise WB's actual command binding without a real Homebrew process or
 // network. Only the test executable's install classification is configured.
 func TestSelfUpdateHomebrewDryRunReportsVersions(t *testing.T) {
-	oldDetect := selfUpdateDetect
-	t.Cleanup(func() { selfUpdateDetect = oldDetect })
-	selfUpdateDetect = func(selfupdate.Config) (selfupdate.Detection, error) {
-		return selfupdate.Detection{}, errors.New("no post-update work during this dry run")
-	}
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
