@@ -161,7 +161,8 @@ type PullRequestWaitOptions struct {
 	StableRereadDelay time.Duration
 	// Progress receives completed GitHub observations. It is diagnostic only;
 	// callers must use the returned result as the authoritative receipt.
-	Progress func(PullRequestWaitProgress)
+	Progress          func(PullRequestWaitProgress)
+	OperationProgress progress.Reporter
 }
 
 // PullRequestWaitProgress is one completed observation inside a bounded wait.

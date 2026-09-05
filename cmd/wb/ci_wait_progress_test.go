@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/orchestrate"
+	progresspkg "github.com/sneat-dev/wb/internal/progress"
 )
 
 func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
@@ -41,5 +42,23 @@ func TestCIWaitProgressShowsPollAndCheckState(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("progress output missing %q: %q", want, rendered)
 		}
+	}
+}
+
+func TestCIWaitOperationProgressUsesCallerLabel(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	progress := newCIWaitProgress(&out, true)
+	progress.operationReporter("ci wait")(progresspkg.Event{
+		Phase: "retry", Detail: "attempt 1/4 failed: HTTP 502; retrying in 250ms", State: progresspkg.Waiting,
+	})
+	progress.finishOperation("ci wait: complete")
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "ci wait: retry: attempt 1/4 failed: HTTP 502; retrying in 250ms: waiting") {
+		t.Fatalf("operation progress used the wrong label: %q", rendered)
+	}
+	if strings.Contains(rendered, "pr land") {
+		t.Fatalf("CI wait progress leaked PR-land label: %q", rendered)
 	}
 }
