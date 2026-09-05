@@ -81,7 +81,8 @@ it. This command never starts a detached watcher or background loop.`,
 			return validateCIWaitInputs(repository, pullRequest, target, head, slice, interval)
 		},
 		RunE: func(command *cobra.Command, args []string) error {
-			progress := newCIWaitProgress(command.ErrOrStderr(), console.Interactive(command.ErrOrStderr(), nonInteractive))
+			interactive := console.Interactive(command.ErrOrStderr(), nonInteractive)
+			progress := newCIWaitProgress(progressOutput(command.ErrOrStderr(), interactive), true)
 			progress.start(repository, pullRequest, target, head)
 			result, err := orchestrate.WaitForCommitChecks(command.Context(), orchestrate.PullRequestWaitOptions{
 				Repository: repository, PullRequest: pullRequest, Target: target, Head: strings.ToLower(head),

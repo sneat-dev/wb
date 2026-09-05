@@ -59,6 +59,22 @@ func TestCampaignProgressHeartbeatRefreshesAndStops(t *testing.T) {
 	}
 }
 
+func TestCampaignProgressHeartbeatDoesNotRepeatCompletedPhaseAsCurrent(t *testing.T) {
+	var output bytes.Buffer
+	campaign := newCampaignProgressWithHeartbeat(&output, true, "worktree merge", 5*time.Millisecond)
+	campaign.report(progress.Event{Phase: "sync_canonical", Detail: "fast_forwarded", State: progress.Completed})
+	time.Sleep(12 * time.Millisecond)
+	campaign.finish("completed")
+
+	got := output.String()
+	if !strings.Contains(got, "alive; last completed sync canonical") {
+		t.Fatalf("heartbeat did not distinguish current liveness from completed phase: %q", got)
+	}
+	if count := strings.Count(got, "sync canonical: fast_forwarded: completed"); count != 1 {
+		t.Fatalf("completed phase rendered %d times, want once: %q", count, got)
+	}
+}
+
 func TestCampaignProgressDisabledHasNoReporterOrOutput(t *testing.T) {
 	var output bytes.Buffer
 	campaign := newCampaignProgress(&output, false, "deps drift")

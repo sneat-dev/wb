@@ -12,6 +12,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
 	"github.com/sneat-dev/wb/internal/locallink"
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/streams"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
@@ -90,6 +91,7 @@ type PullRequestLandOptions struct {
 	Slice             time.Duration
 	CheckPollInterval time.Duration
 	Progress          func(PullRequestWaitProgress)
+	OperationProgress progress.Reporter
 	// Events receives one structured record per invocation, whatever the
 	// outcome. A refusal is the most useful event of all — it is the one that
 	// says a verb was reached and declined — so `--keep` and every refusal
@@ -224,10 +226,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 
 	// Re-read the pull request now. A value read at session start is a
 	// snapshot, and everything below is decided against the live one.
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_pull_request", progress.Started, options.Repository+"#"+number, 0, 0)
 	view, err := ReadPullRequest(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_pull_request", progress.Completed, shortMergeRevision(view.Head.SHA), 0, 0)
 	result.PullRequest = view.Number
 	result.URL = view.HTMLURL
 	result.Title = view.Title
@@ -265,10 +269,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		}), nil
 	}
 
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_changed_files", progress.Started, options.Repository+"#"+number, 0, 0)
 	files, err := pullRequestChangedFiles(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_changed_files", progress.Completed, "files", len(files), len(files))
 	for _, file := range files {
 		result.ChangedFiles = append(result.ChangedFiles, file.Filename)
 	}
@@ -300,10 +306,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		CheckPollInterval: options.CheckPollInterval,
 		Progress:          options.Progress,
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
 	waited, err := WaitForPullRequestChecks(ctx, waitOptions)
 	if err != nil {
 		return result, err
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Completed, string(waited.Status), len(waited.Checks), len(waited.Checks))
 	result.Checks = &waited
 	result.AbsorbedPolls = waited.StableObservations
 	switch waited.Status {
@@ -340,9 +348,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	// retiring the worktree; it does not opt out of the rule that a worktree
 	// building against an unpublished tree must not be landed, and reading it
 	// as a bypass would make the guard optional by accident.
+	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Started, view.Head.Ref, 0, 0)
 	if refusal := preflightLandingCleanup(ctx, options, view, number, options.Keep); refusal != nil {
 		return mergeRefusal(result, *refusal), nil
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "preflight_cleanup", progress.Completed, view.Head.Ref, 0, 0)
 
 	subject := strings.TrimSpace(options.Subject)
 	if subject == "" {
@@ -353,10 +363,12 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	}
 	result.Subject = subject
 
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Started, view.Head.Ref, 0, 0)
 	sourceCommits, err := pullRequestCommits(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "inspect_source_commits", progress.Completed, "commits", len(sourceCommits), len(sourceCommits))
 	body := aggregatedCommitMessage(view, sourceCommits, result.ApprovedBy, options.Reason)
 	head := view.Head.SHA
 	mergeMethod := options.MergeMethod
@@ -411,6 +423,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 	if options.beforeMerge != nil {
 		options.beforeMerge()
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Started, shortMergeRevision(head), 0, 0)
 	merge, refusal, err := mergePullRequest(ctx, options.Repository, number, head, mergeMethod, subject, body)
 	if err != nil {
 		return result, err
@@ -419,9 +432,11 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		return mergeRefusal(result, *refusal), nil
 	}
 	result.MergeSHA = merge
+	reportPullRequestLandProgress(options.OperationProgress, "merge_pull_request", progress.Completed, shortMergeRevision(merge), 0, 0)
 
 	// Assert the observable effect rather than the exit status of the call that
 	// was supposed to produce it.
+	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Started, view.Base.Ref, 0, 0)
 	landed, err := ReadPullRequest(ctx, options.Repository, number)
 	if err != nil {
 		return result, err
@@ -460,14 +475,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		result.SanctionedCommand = "wb pr land " + options.Repository + "#" + number
 		return withSavings(result), nil
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "verify_remote_landing", progress.Completed, shortMergeRevision(landed.MergeCommitSHA), 0, 0)
 
+	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Started, view.Head.Ref, 0, 0)
 	if deleted, deleteErr := deleteRemoteBranch(ctx, options.Repository, view, landed); deleteErr != nil {
 		return result, deleteErr
 	} else {
 		result.BranchDeleted = deleted
 	}
+	reportPullRequestLandProgress(options.OperationProgress, "delete_remote_branch", progress.Completed, view.Head.Ref, 0, 0)
 
 	if !options.Keep {
+		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Started, view.Head.Ref, 0, 0)
 		tasks, reports, cleanupErr := cleanupLandedWorktrees(ctx, options.ProjectsRoot, options.Repository, view.Head.Ref, view.Base.Ref, landed.MergeCommitSHA)
 		result.CleanedTasks = tasks
 		result.CleanupReports = reports
@@ -487,10 +506,18 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 			result.SanctionedCommand = "wb worktree gc --apply"
 			return withSavings(result), nil
 		}
+		reportPullRequestLandProgress(options.OperationProgress, "cleanup", progress.Completed, "tasks", len(tasks), len(tasks))
 	}
 
 	result.Outcome = LandSuccess
 	return withSavings(result), nil
+}
+
+func reportPullRequestLandProgress(reporter progress.Reporter, phase string, state progress.State, detail string, completed, total int) {
+	progress.Report(reporter, progress.Event{
+		Operation: "pr_land", Phase: phase, State: state, Detail: detail,
+		Completed: completed, Total: total,
+	})
 }
 
 type landRefusal struct {
