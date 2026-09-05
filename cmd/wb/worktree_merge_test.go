@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -261,6 +262,79 @@ func TestWorktreeMergeRecoveryApplyUsesAdmissionFlags(t *testing.T) {
 			t.Fatalf("decode supersede output %q: %v", stdout.String(), err)
 		}
 		assertCLIWorktreeMergeAcknowledgement(t, fixture.receiptPath, originalReceipt, acknowledgement.AcknowledgementPath)
+	})
+
+	t.Run("supersede-validation-failed legacy receipt derives candidate from validation revision", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 2)
+		legacy := fixture.receipt
+		if legacy.Validation.Path != legacy.Candidate.Worktree || legacy.Validation.Revision != legacy.Candidate.SHA {
+			t.Fatalf("fixture lacks candidate validation evidence: %#v", legacy.Validation)
+		}
+		legacy.Candidate.SHA = ""
+		legacyContents, err := json.MarshalIndent(legacy, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyContents = append(legacyContents, '\n')
+		if err := os.WriteFile(fixture.receiptPath, legacyContents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, source := range fixture.sources {
+			runCLIWorktreeGit(t, source.WorktreeDir, "push", "origin", source.Branch)
+		}
+		replacement := createCLIWorktreeSource(t, fixture, "legacy-supersede-replacement", "feature/legacy-supersede-replacement", "replacement.txt", "replacement\n")
+		for _, source := range fixture.sources {
+			runCLIWorktreeGit(t, replacement.WorktreeDir, "merge", "--no-edit", "origin/"+source.Branch)
+		}
+
+		var stdout, stderr bytes.Buffer
+		root := newRootCmd()
+		root.SetOut(&stdout)
+		root.SetErr(&stderr)
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, replacement.WorktreeDir,
+			"--apply", "--actor", "test-operator", "--reason", "legacy-receipt-regression",
+			"--format", "json",
+		})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("legacy supersede apply failed: %v\nstderr: %s", err, stderr.String())
+		}
+		var acknowledgement orchestrate.WorktreeMergeValidationFailureSupersession
+		if err := json.Unmarshal(stdout.Bytes(), &acknowledgement); err != nil {
+			t.Fatalf("decode legacy supersede output %q: %v", stdout.String(), err)
+		}
+		assertCLIWorktreeMergeAcknowledgement(t, fixture.receiptPath, legacyContents, acknowledgement.AcknowledgementPath)
+		if _, err := os.Stat(fixture.receiptPath + ".legacy-validation-failed.identity.ack.json"); err != nil {
+			t.Fatalf("legacy identity acknowledgement missing: %v", err)
+		}
+	})
+
+	t.Run("supersede-validation-failed legacy receipt refuses validation revision drift", func(t *testing.T) {
+		fixture := newCLIWorktreeMergeFixture(t, 1)
+		legacy := fixture.receipt
+		legacy.Candidate.SHA = ""
+		legacy.Validation.Revision = "0000000000000000000000000000000000000000"
+		contents, err := json.MarshalIndent(legacy, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		contents = append(contents, '\n')
+		if err := os.WriteFile(fixture.receiptPath, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		root := newRootCmd()
+		root.SetArgs([]string{
+			"--projects-root", fixture.projectsRoot, "--non-interactive",
+			"worktree", "merge", "supersede-validation-failed", fixture.receiptPath, fixture.sources[0].WorktreeDir,
+		})
+		err = root.Execute()
+		if err == nil || !strings.Contains(err.Error(), "does not match immutable validation revision") {
+			t.Fatalf("legacy drift error = %v", err)
+		}
+		if _, statErr := os.Stat(fixture.receiptPath + ".legacy-validation-failed.identity.ack.json"); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("legacy drift wrote an acknowledgement: %v", statErr)
+		}
 	})
 }
 
