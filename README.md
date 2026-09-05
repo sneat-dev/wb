@@ -4,20 +4,43 @@ Fleet-wide operations across **your** GitHub repositories, from the
 terminal: keep every local clone in sync with GitHub, and run config-driven
 recipes across every repo that matches — no per-repo scripting.
 
-Part of the [Sneat Developer Platform](https://sneat.dev/workbench/). The CLI
+Part of [Sneat.work](https://sneat.work/bench). The CLI
 and executable stay intentionally short: `wb`.
 
-The public [wb.sneat.dev](https://wb.sneat.dev) site is tracked in
-[`website/`](website/README.md). It has its own Astro build and CI gate while
-remaining versioned beside the CLI it presents.
+The canonical public Workbench site is [sneat.work/bench](https://sneat.work/bench).
 
 ## Install
+
+On macOS or Linux, install the published Homebrew cask:
+
+```sh
+brew install --cask sneat-dev/tap/wb
+```
+
+On macOS or Linux, the release installer selects the matching platform and
+architecture:
+
+```sh
+curl -fsSL https://sneat.work/bench/install/get-cli | sh
+```
+
+To build from source with Go instead:
 
 ```sh
 go install github.com/sneat-dev/wb/cmd/wb@latest
 ```
 
-A Homebrew cask (`brew install --cask sneat-dev/tap/wb`) is coming soon.
+On Windows, install [WSL](https://learn.microsoft.com/windows/wsl/install) from
+an administrator PowerShell session and complete its one-time setup after any
+prompted restart. Then install the supported Linux release through WSL:
+
+```powershell
+wsl --install
+wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'
+```
+
+Native Windows releases are not currently published; the supported Windows
+path is WB running in WSL.
 
 ## Agent skills
 

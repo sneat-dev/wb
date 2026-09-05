@@ -53,6 +53,41 @@ func TestReleaseSignsAndNotarizesMacOSArtifacts(t *testing.T) {
 	if !strings.Contains(string(goreleaserContents), "notarize:") {
 		t.Errorf("%s must enable the notarize: block for macOS artifacts", goreleaserPath)
 	}
+	if !strings.Contains(string(goreleaserContents), "homepage: https://sneat.work/bench") {
+		t.Errorf("%s must publish the canonical Workbench homepage", goreleaserPath)
+	}
+	if strings.Contains(string(goreleaserContents), "com.apple.quarantine") {
+		t.Errorf("%s must not bypass Gatekeeper for signed and notarized macOS artifacts", goreleaserPath)
+	}
+}
+
+func TestPublicInstallDocumentationMatchesReleaseContract(t *testing.T) {
+	repoRoot := filepath.Clean(filepath.Join("..", ".."))
+	readme, err := os.ReadFile(filepath.Join(repoRoot, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := string(readme)
+	for _, command := range []string{
+		selfUpdateHomebrewInstallCommand,
+		"curl -fsSL https://sneat.work/bench/install/get-cli | sh",
+		"go install github.com/sneat-dev/wb/cmd/wb@latest",
+	} {
+		if !strings.Contains(contents, command) {
+			t.Errorf("README.md must document supported install command %q", command)
+		}
+	}
+	if !strings.Contains(contents, "On macOS or Linux, install the published Homebrew cask") {
+		t.Error("README.md must document the Homebrew cask for macOS and Linux")
+	}
+	if !strings.Contains(contents, "Native Windows releases are not currently published") {
+		t.Error("README.md must state the current Windows release limitation")
+	}
+	if !strings.Contains(contents, "wsl --install") ||
+		!strings.Contains(contents, "wsl sh -lc 'curl -fsSL https://sneat.work/bench/install/get-cli | sh'") ||
+		!strings.Contains(contents, "WB running in WSL") {
+		t.Error("README.md must document WSL as the supported Windows installation path")
+	}
 }
 
 func TestReleaseEligibilityRestrictsPublicationRefs(t *testing.T) {
