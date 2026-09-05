@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/unixcompat"
 	"github.com/sneat-dev/wb/internal/wbhome"
-	"golang.org/x/sys/unix"
 )
 
 // ErrNotFound is returned when no stream with that name exists.

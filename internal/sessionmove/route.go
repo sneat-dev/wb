@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const RouteSchemaVersion = 1

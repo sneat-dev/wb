@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/buildinfo"
@@ -476,8 +475,8 @@ func state(pid int) string {
 	if pid <= 0 {
 		return StateGone
 	}
-	err := syscall.Kill(pid, 0)
-	if err == nil || errors.Is(err, syscall.EPERM) {
+	process, err := os.FindProcess(pid)
+	if err == nil && process != nil {
 		return StateLive
 	}
 	return StateGone

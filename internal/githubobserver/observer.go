@@ -20,7 +20,7 @@ import (
 
 	"github.com/sneat-dev/wb/internal/console"
 	"github.com/sneat-dev/wb/internal/progress"
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const (

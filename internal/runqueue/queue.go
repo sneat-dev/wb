@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 const retryInterval = 100 * time.Millisecond

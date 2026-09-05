@@ -230,7 +230,7 @@ func ownerPIDStatus(pid int) string {
 	if pid <= 0 {
 		return "unknown"
 	}
-	err := syscall.Kill(pid, 0)
+	err := processStatus(pid)
 	if err == nil || errors.Is(err, syscall.EPERM) {
 		return "active"
 	}

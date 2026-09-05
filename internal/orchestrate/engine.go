@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sneat-dev/wb/internal/githubobserver"
@@ -916,8 +915,7 @@ func operationLockMetadataPID(file *os.File, operation string) (int, bool) {
 // from a process that could still own it. A permission denial is ambiguous,
 // so recovery stays closed rather than guessing that the process is gone.
 func operationLockPIDMayBeLive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM) || !errors.Is(err, syscall.ESRCH)
+	return operationProcessMayBeLive(pid)
 }
 
 // Release retires the exact held lock inode. It is safe to call from defer and

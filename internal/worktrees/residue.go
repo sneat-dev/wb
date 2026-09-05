@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"golang.org/x/sys/unix"
+	"github.com/sneat-dev/wb/internal/unixcompat"
 )
 
 // Residue is what a failed `git worktree remove` leaves on disk.

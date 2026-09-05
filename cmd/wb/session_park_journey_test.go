@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -508,7 +507,7 @@ func terminateJourneyTmuxProcesses(t *testing.T, tmuxState string) {
 		raw, readErr := os.ReadFile(filepath.Join(tmuxState, entry.Name()))
 		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
 		if readErr == nil && parseErr == nil && pid > 0 {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
+			_ = terminateJourneyProcess(pid)
 		}
 	}
 }
