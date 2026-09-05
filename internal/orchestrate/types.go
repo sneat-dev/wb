@@ -125,6 +125,17 @@ type RemoteCheck struct {
 	AppID  int64  `json:"app_id,omitempty" yaml:"app_id,omitempty"`
 }
 
+// CIFailureDetail is a bounded diagnostic for one failed GitHub Actions job.
+// It deliberately carries an excerpt rather than the raw job log so a machine
+// receipt remains compact and does not become an accidental log archive.
+type CIFailureDetail struct {
+	Check   string `json:"check" yaml:"check"`
+	RunURL  string `json:"run_url,omitempty" yaml:"run_url,omitempty"`
+	JobURL  string `json:"job_url,omitempty" yaml:"job_url,omitempty"`
+	Excerpt string `json:"excerpt,omitempty" yaml:"excerpt,omitempty"`
+	Reason  string `json:"reason,omitempty" yaml:"reason,omitempty"`
+}
+
 // RequiredRemoteCheck is GitHub's target-policy expectation. IntegrationID
 // is non-zero when a ruleset pins the context to one GitHub App; every receipt
 // must then observe the matching exact-head check-run producer, not merely a
@@ -196,6 +207,7 @@ type PullRequestWaitResult struct {
 	TargetContainsHead         bool                  `json:"target_contains_head,omitempty" yaml:"target_contains_head,omitempty"`
 	TargetFreshnessAuthority   string                `json:"target_freshness_authority,omitempty" yaml:"target_freshness_authority,omitempty"`
 	Checks                     []RemoteCheck         `json:"checks,omitempty" yaml:"checks,omitempty"`
+	FailureDetails             []CIFailureDetail     `json:"failure_details,omitempty" yaml:"failure_details,omitempty"`
 	RequiredChecks             []RequiredRemoteCheck `json:"required_checks,omitempty" yaml:"required_checks,omitempty"`
 	RequiredChecksAuthority    string                `json:"required_checks_authority,omitempty" yaml:"required_checks_authority,omitempty"`
 	PolicyAuthorityUnavailable string                `json:"policy_authority_unavailable,omitempty" yaml:"policy_authority_unavailable,omitempty"`
