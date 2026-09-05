@@ -1002,7 +1002,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 		outcome.Artifacts = append(outcome.Artifacts, artifacts...)
 		outcome.Purged = append(outcome.Purged, purged...)
 	}
-	localLayouts, localDiscoveryDiagnostics := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot)
+	localLayouts, localDiscoveryDiagnostics := discoverCanonicalLocalWorktreeLayouts(ctx, projectsRoot, filter)
 	outcome.Diagnostics = append(outcome.Diagnostics, localDiscoveryDiagnostics...)
 	// A repository-local root contains candidates for only one canonical clone.
 	// Walking roots serially would therefore serialize every exact-target fetch
@@ -1100,7 +1100,7 @@ func ListWithDiagnostics(ctx context.Context, options ListOptions) (ListOutcome,
 // canonical clones that already contain the default `.worktrees` root. It
 // does not descend through repositories, so a task checkout can never be
 // discovered as another canonical clone.
-func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot string) ([]wbhome.Layout, []ListDiagnostic) {
+func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot, filter string) ([]wbhome.Layout, []ListDiagnostic) {
 	owners, err := os.ReadDir(projectsRoot)
 	if errors.Is(err, os.ErrNotExist) {
 		// An empty projects root is a normal filtered-inventory input. Legacy
@@ -1136,6 +1136,10 @@ func discoverCanonicalLocalWorktreeLayouts(ctx context.Context, projectsRoot str
 				continue
 			}
 			if !repositoryInfo.IsDir() || repositoryInfo.Mode()&os.ModeSymlink != 0 || !validRepositorySegment(repository.Name()) {
+				continue
+			}
+			slug := owner.Name() + "/" + repository.Name()
+			if !filterMatches(filter, slug, canonical) {
 				continue
 			}
 			root := filepath.Join(canonical, ".worktrees")
@@ -1264,6 +1268,9 @@ func listClaimedRegistryWorktrees(
 	}
 	pending := make([]pendingInspect, 0)
 	for _, clone := range clones {
+		if !filterMatches(filter, clone.repository, clone.path) {
+			continue
+		}
 		linked, err := linkedWorktreesOf(ctx, clone.path)
 		if err != nil {
 			diagnostics = append(diagnostics, listDiagnostic("", "", clone.path, fmt.Sprintf("read canonical Git worktree registry: %v", err)))
@@ -1911,6 +1918,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	if err != nil {
 		return CleanupOutcome{}, err
 	}
+	inventoryFilter := normalized.Filter
+	if normalized.ExactRepository != "" {
+		inventoryFilter = normalized.ExactRepository
+	}
 	resolution, err := wbhome.Resolve(normalized.ProjectsRoot)
 	if err != nil {
 		return CleanupOutcome{}, err
@@ -1926,7 +1937,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	}
 	// The authoritative inventory below reports discovery diagnostics with
 	// task scope. Alias expansion itself only uses roots it could validate.
-	localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, normalized.ProjectsRoot)
+	localLayouts, _ := discoverCanonicalLocalWorktreeLayouts(ctx, normalized.ProjectsRoot, inventoryFilter)
 	aliasLayouts = append(aliasLayouts, localLayouts...)
 	normalized.Tasks, err = resolveLogicalCleanupTasks(aliasLayouts, normalized.Tasks)
 	if err != nil {
@@ -1974,7 +1985,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 		ProjectsRoot:    normalized.ProjectsRoot,
 		Tasks:           normalized.Tasks,
 		Base:            normalized.Base,
-		Filter:          normalized.Filter,
+		Filter:          inventoryFilter,
 		AbsorbedBy:      normalized.AbsorbedBy,
 		GitHub:          true,
 		Progress:        normalized.Progress,
