@@ -693,10 +693,34 @@ func TestResumeWorktreeMergeStopBeforeMergePublishesAndPreservesExactPRHandoff(t
 		t.Fatalf("unchanged prepared validation was not reusable: reusable=%t err=%v", reusable, identityErr)
 	}
 	drifted := receipt
-	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", Toolchain: receipt.ValidationIdentity.Toolchain, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
+	drifted.ValidationIdentity = &WorktreeMergeValidationIdentity{CandidateSHA: receipt.Candidate.SHA, TargetSHA: receipt.TargetSHA, QualityPolicySHA: "drifted", WBBuild: receipt.ValidationIdentity.WBBuild, WBExecutableSHA: receipt.ValidationIdentity.WBExecutableSHA, Validators: receipt.ValidationIdentity.Validators, SourceSHAs: receipt.ValidationIdentity.SourceSHAs}
 	reusable, identityErr = preparedValidationStillValid(drifted)
 	if identityErr != nil || reusable {
 		t.Fatalf("validation identity drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	validatorDrifted := receipt
+	validatorIdentity := *receipt.ValidationIdentity
+	validatorIdentity.Validators = map[string]string{"go": "drifted"}
+	validatorDrifted.ValidationIdentity = &validatorIdentity
+	reusable, identityErr = preparedValidationStillValid(validatorDrifted)
+	if identityErr != nil || reusable {
+		t.Fatalf("validator executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	wbDrifted := receipt
+	wbIdentity := *receipt.ValidationIdentity
+	wbIdentity.WBExecutableSHA = "drifted"
+	wbDrifted.ValidationIdentity = &wbIdentity
+	reusable, identityErr = preparedValidationStillValid(wbDrifted)
+	if identityErr != nil || reusable {
+		t.Fatalf("WB executable drift was incorrectly reusable: reusable=%t err=%v", reusable, identityErr)
+	}
+	persistedPrepare, readErr := readWorktreeMergeReceipt(receipt.ReceiptPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if reusable, identityErr = preparedValidationStillValid(persistedPrepare); identityErr != nil || !reusable {
+		current, _ := worktreeMergeValidationIdentity(persistedPrepare)
+		t.Fatalf("persisted prepared validation was not reusable: reusable=%t err=%v status=%s phase=%s persisted=%+v current=%+v validation=%+v clean=%t", reusable, identityErr, persistedPrepare.Status, persistedPrepare.Phase, persistedPrepare.ValidationIdentity, current, persistedPrepare.Validation, persistedPrepare.Validation.WorkspaceClean)
 	}
 	installWorktreeMergePublishOnlyPRGH(t)
 	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
@@ -797,9 +821,9 @@ func TestPreparedValidationReuseAllowsPassedReceiptWithoutBaselineAndNonGoWorktr
 		TargetSHA: "target", Candidate: WorktreeMergeCandidate{SHA: "candidate", Worktree: candidate},
 		Validation: quality.VerificationReport{Revision: "candidate", WorkspaceClean: true, Status: quality.StatusPassed},
 	}
-	identity, err := worktreeMergeValidationIdentity(receipt)
-	if err != nil {
-		t.Fatal(err)
+	identity, fingerprintable := worktreeMergeValidationIdentity(receipt)
+	if !fingerprintable {
+		t.Fatal("non-Go worktree identity was not fingerprintable")
 	}
 	receipt.ValidationIdentity = &identity
 	reusable, err := preparedValidationStillValid(receipt)
