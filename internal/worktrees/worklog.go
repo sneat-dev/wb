@@ -2215,16 +2215,25 @@ func corroborateProjectionWithPrivateClaim(home, worktree string, projection wor
 }
 
 // corroborateClaimAtPath preserves the immutable claim's original path while
-// accepting a later path only when an append-only relocation receipt binds the
-// exact active claim to it. A physical layout move is not a new task or claim.
+// accepting a later path only when a completed append-only relocation receipt
+// binds the exact active claim to it. In the narrow crash window after Git has
+// moved the checkout, a matching durable intent plus the registry's live HEAD
+// gives retry enough evidence to append that completion. A physical layout
+// move is not a new task or claim.
 func corroborateClaimAtPath(home, worktree, finalCommit string, projection workLogProjection, claim workLogClaim) error {
 	if filepath.Clean(claim.Worktree) != filepath.Clean(worktree) {
 		receipt, _, err := latestRelocationReceipt(home, claim, worktree)
 		if err != nil {
 			return err
 		}
-		if receipt == nil || filepath.Clean(receipt.Source) == filepath.Clean(receipt.Destination) {
-			return fmt.Errorf("private work-log claim identity/path mismatch")
+		if receipt == nil {
+			intent, _, intentErr := pendingRelocationIntent(home, claim, worktree, claim.Branch, finalCommit)
+			if intentErr != nil {
+				return intentErr
+			}
+			if intent == nil {
+				return fmt.Errorf("private work-log claim identity/path mismatch")
+			}
 		}
 		return corroborateRelocatedClaim(worktree, finalCommit, projection, claim)
 	}

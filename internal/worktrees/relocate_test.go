@@ -2,8 +2,10 @@ package worktrees
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +65,51 @@ func TestRelocateMovesManagedSharedWorktreeToLocalAndPreservesClaim(t *testing.T
 	retry, err := Relocate(context.Background(), RelocateOptions{ProjectsRoot: fixture.projectsRoot, Task: "relocate-layout", To: "local", Apply: true})
 	if err != nil || len(retry.Results) != 1 || !retry.Results[0].AlreadyThere || retry.Results[0].Applied || retry.Results[0].ReceiptPath != again.Results[0].ReceiptPath {
 		t.Fatalf("relocation retry = %#v, err=%v", retry, err)
+	}
+}
+
+func TestRelocateFinalizesIntentAfterMoveCrashWindow(t *testing.T) {
+	fixture := newGitFixture(t)
+	configHome := t.TempDir()
+	shared := filepath.Join(t.TempDir(), "shared-worktrees")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	if err := os.MkdirAll(filepath.Join(configHome, "wb"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "wb", "worktrees.yaml"), []byte("version: 1\nworktrees:\n  root: "+shared+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "relocate-crash-window", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := created[0].WorktreeDir
+	_, err = Relocate(context.Background(), RelocateOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "relocate-crash-window", To: "local", Apply: true,
+		afterWorktreeMoveBeforeReceipt: func() error { return errors.New("simulated process interruption") },
+	})
+	if err == nil || !strings.Contains(err.Error(), "simulated process interruption") {
+		t.Fatalf("crash-window relocation error = %v", err)
+	}
+	destination := filepath.Join(fixture.canonical, ".worktrees", "relocate-crash-window")
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source remains after simulated interruption: %v", err)
+	}
+	if _, err := Guard(context.Background(), destination, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
+		t.Fatalf("guard must corroborate moved checkout through intent: %v", err)
+	}
+	listed, err := List(context.Background(), ListOptions{ProjectsRoot: fixture.projectsRoot, Task: "relocate-crash-window"})
+	if err != nil || len(listed) != 1 || listed[0].WorktreeDir != destination {
+		t.Fatalf("list must discover interrupted relocation = %#v, err=%v", listed, err)
+	}
+	retry, err := Relocate(context.Background(), RelocateOptions{ProjectsRoot: fixture.projectsRoot, Task: "relocate-crash-window", To: "local", Apply: true})
+	if err != nil || len(retry.Results) != 1 || !retry.Results[0].Applied || !retry.Results[0].Finalized || retry.Results[0].ReceiptPath == "" {
+		t.Fatalf("retry must finalize moved intent = %#v, err=%v", retry, err)
+	}
+	if _, err := Guard(context.Background(), destination, GuardOptions{ProjectsRoot: fixture.projectsRoot}); err != nil {
+		t.Fatalf("guard after finalization: %v", err)
 	}
 }
 
