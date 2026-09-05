@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/progress"
 )
 
 func TestGetRevalidatesStaleCacheWithConditionalHeaders(t *testing.T) {
@@ -216,6 +218,169 @@ func TestGetHonoursRetryAfterHTTPDateWithInjectedClock(t *testing.T) {
 	}
 	if len(sleeps) != 1 || sleeps[0] != 4*time.Second {
 		t.Fatalf("sleeps=%v, want one injected-clock Retry-After wait of 4s", sleeps)
+	}
+}
+
+func TestGetRetriesTransientGitHubServiceFailuresWithProgress(t *testing.T) {
+	statuses := []int{502, 503, 504, 200}
+	var sleeps []time.Duration
+	var events []progress.Event
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			status := statuses[0]
+			statuses = statuses[1:]
+			if status == 200 {
+				return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+			}
+			return commandResult{
+				Stdout:   []byte(fmt.Sprintf("HTTP/2 %d Service Unavailable\n\n{\"message\":\"temporary\"}", status)),
+				Stderr:   []byte(fmt.Sprintf("gh: HTTP %d", status)),
+				ExitCode: 1,
+				Err:      errors.New("exit status 1"),
+			}
+		},
+	}
+
+	response, err := observer.Get(context.Background(), GetRequest{
+		Repository: "acme/app",
+		Target:     "main",
+		Head:       strings.Repeat("c", 40),
+		Endpoint:   "repos/acme/app/compare/base...head",
+		Progress:   func(event progress.Event) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Body) != `{"ok":true}` || len(statuses) != 0 {
+		t.Fatalf("response=%s remaining statuses=%v", response.Body, statuses)
+	}
+	wantSleeps := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+	if !slices.Equal(sleeps, wantSleeps) {
+		t.Fatalf("sleeps=%v, want %v", sleeps, wantSleeps)
+	}
+	if len(events) != 3 {
+		t.Fatalf("progress events=%d, want 3: %+v", len(events), events)
+	}
+	for index, event := range events {
+		wantStatus := 502 + index
+		if event.Operation != "github_api" || event.Phase != "retry" || event.Repository != "acme/app" || event.State != progress.Waiting {
+			t.Fatalf("event %d metadata=%+v", index, event)
+		}
+		for _, fragment := range []string{fmt.Sprintf("attempt %d/4", index+1), fmt.Sprintf("HTTP %d", wantStatus), wantSleeps[index].String()} {
+			if !strings.Contains(event.Detail, fragment) {
+				t.Fatalf("event %d detail=%q, missing %q", index, event.Detail, fragment)
+			}
+		}
+	}
+}
+
+func TestGetRetriesTemporaryNetworkFailure(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	observer := &Observer{
+		StateDir: t.TempDir(),
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(int64) int64 { return 0 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if calls == 1 {
+				return commandResult{Stderr: []byte("error connecting to api.github.com"), ExitCode: 1, Err: errors.New("exit status 1")}
+			}
+			return commandResult{Stdout: []byte("HTTP/2 200 OK\n\n{\"ok\":true}")}
+		},
+	}
+
+	response, err := observer.Get(context.Background(), GetRequest{Endpoint: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(response.Body) != `{"ok":true}` || len(sleeps) != 1 {
+		t.Fatalf("calls=%d sleeps=%v response=%s", calls, sleeps, response.Body)
+	}
+}
+
+func TestGetDoesNotRetryAuthenticationOrOrdinaryForbiddenFailures(t *testing.T) {
+	for _, status := range []int{401, 403} {
+		t.Run(fmt.Sprintf("HTTP_%d", status), func(t *testing.T) {
+			calls := 0
+			observer := &Observer{
+				StateDir: t.TempDir(),
+				Sleep: func(_ context.Context, _ time.Duration) error {
+					t.Fatal("non-retryable failure slept")
+					return nil
+				},
+				Run: func(_ context.Context, _ string, _ ...string) commandResult {
+					calls++
+					return commandResult{
+						Stdout: []byte(fmt.Sprintf("HTTP/2 %d Forbidden\n\n{\"message\":\"authentication required\"}", status)),
+						Stderr: []byte("gh: authentication required"), ExitCode: 1, Err: errors.New("exit status 1"),
+					}
+				},
+			}
+			_, err := observer.Get(context.Background(), GetRequest{Endpoint: "user"})
+			if err == nil || calls != 1 {
+				t.Fatalf("err=%v calls=%d, want one terminal attempt", err, calls)
+			}
+		})
+	}
+}
+
+func TestReadRetriesTransientFailureAndReportsProgress(t *testing.T) {
+	var calls int
+	var sleeps []time.Duration
+	var events []progress.Event
+	observer := &Observer{
+		Sleep: func(_ context.Context, delay time.Duration) error {
+			sleeps = append(sleeps, delay)
+			return nil
+		},
+		RandomIntn: func(max int64) int64 { return max - 1 },
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			if calls == 1 {
+				return commandResult{Stderr: []byte("gh: HTTP 502"), ExitCode: 1, Err: errors.New("exit status 1")}
+			}
+			return commandResult{Stdout: []byte(`{"number":42}`)}
+		},
+	}
+	ctx := WithProgress(context.Background(), func(event progress.Event) { events = append(events, event) })
+
+	output, err := observer.Read(ctx, "", "pr", "view", "42", "--repo", "acme/app", "--json", "number")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || string(output) != `{"number":42}` || !slices.Equal(sleeps, []time.Duration{250 * time.Millisecond}) {
+		t.Fatalf("calls=%d sleeps=%v output=%s", calls, sleeps, output)
+	}
+	if len(events) != 1 || events[0].Operation != "github_read" || events[0].Repository != "acme/app" || !strings.Contains(events[0].Detail, "HTTP 502") {
+		t.Fatalf("progress=%+v", events)
+	}
+}
+
+func TestReadDoesNotRetryOrdinaryForbiddenFailure(t *testing.T) {
+	var calls int
+	observer := &Observer{
+		Sleep: func(context.Context, time.Duration) error {
+			t.Fatal("ordinary forbidden failure slept")
+			return nil
+		},
+		Run: func(_ context.Context, _ string, _ ...string) commandResult {
+			calls++
+			return commandResult{Stderr: []byte("gh: HTTP 403: resource not accessible"), ExitCode: 1, Err: errors.New("exit status 1")}
+		},
+	}
+	_, err := observer.Read(context.Background(), "", "repo", "view", "acme/app")
+	if err == nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want one terminal attempt", err, calls)
 	}
 }
 

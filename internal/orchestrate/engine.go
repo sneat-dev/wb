@@ -714,6 +714,7 @@ func waitAndMerge[T any](ctx context.Context, options Options, result *Result[T]
 		Head:              result.Commit,
 		Slice:             slice,
 		CheckPollInterval: interval,
+		OperationProgress: options.Progress,
 	})
 	if err != nil {
 		return err
@@ -754,7 +755,8 @@ func waitForPRChecks[T any](ctx context.Context, options Options, result *Result
 	receipt, err := WaitForCommitChecks(ctx, PullRequestWaitOptions{
 		Repository: result.Repository, PullRequest: result.PR, Target: result.Ref, Head: result.Commit,
 		AllowUnfenced: true, Slice: slice, CheckPollInterval: interval,
-		Progress: reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+		Progress:          reportWorktreeMergeCheckProgress(options.Progress, "pr_checks"),
+		OperationProgress: options.Progress,
 	})
 	if err != nil {
 		return err

@@ -309,6 +309,7 @@ func landPullRequest(ctx context.Context, options PullRequestLandOptions) (PullR
 		Slice:             options.Slice,
 		CheckPollInterval: options.CheckPollInterval,
 		Progress:          options.Progress,
+		OperationProgress: options.OperationProgress,
 	}
 	reportPullRequestLandProgress(options.OperationProgress, "candidate_checks", progress.Waiting, shortMergeRevision(view.Head.SHA), 0, 0)
 	waited, err := waitForPullRequestLandChecks(ctx, waitOptions)

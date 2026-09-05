@@ -566,6 +566,20 @@ and prints it with the exact run/job URL and retry or resume command. Raw full
 logs require an explicit opt-in and never enter JSON stdout or the durable event
 log by default.
 
+GitHub read observations use one bounded retry policy. The default is one
+initial attempt plus at most three retries with exponential full-jitter
+backoff. HTTP `429`, `502`, `503`, and `504`, a `403` carrying authoritative
+rate-limit evidence, and recognized temporary network failures are retryable.
+Authentication and authorization failures, ordinary `403` responses, policy
+refusals, exact-head or target drift, malformed responses, and other semantic
+failures terminate immediately. `Retry-After` and rate-limit reset headers take
+precedence over the jitter delay, but no wait or attempt may exceed the
+caller's total timeout. Every retry emits an immediate progress event naming
+the repository, failed attempt and maximum, cause, delay, and delay authority.
+GitHub mutations are not automatically replayed after an ambiguous transport
+failure; their existing receipt-specific recovery proves the remote effect
+before any retry.
+
 ### Durable Merger Lanes
 
 WB maintains one queue per `(canonical repository, target ref)`. It batches
@@ -951,6 +965,15 @@ When candidate validation transitions to target-baseline validation, or
 canonical synchronization transitions to cleanup, every subsequent heartbeat
 names the new active phase and never presents the completed predecessor as
 current. JSON stdout remains independently parseable.
+
+### AC: transient-github-read-recovers-in-process
+
+Given GitHub returns `502`, `503`, or `504` for an exact CI observation and a
+later attempt succeeds inside the command timeout, WB returns the successful
+observation without requiring another agent call. Each retry appears in stderr
+with attempt/max, cause, and delay. Given the same request returns `401`, an
+ordinary `403`, or exact-head drift, WB makes one attempt and returns the
+terminal failure unchanged.
 
 ### AC: lessons-are-curated-off-worker-path
 

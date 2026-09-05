@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/internal/console"
+	"github.com/sneat-dev/wb/internal/progress"
 	"golang.org/x/sys/unix"
 )
 
@@ -38,6 +40,7 @@ type GetRequest struct {
 	Query       map[string]string
 	Accept      string
 	FreshWindow time.Duration
+	Progress    progress.Reporter
 }
 
 type Response struct {
@@ -101,6 +104,17 @@ var (
 	defaultObserver *Observer
 )
 
+type progressContextKey struct{}
+
+// WithProgress attaches one transport-neutral progress sink to GitHub reads
+// made below ctx. An explicit GetRequest.Progress takes precedence.
+func WithProgress(ctx context.Context, reporter progress.Reporter) context.Context {
+	if reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, progressContextKey{}, reporter)
+}
+
 func Default() *Observer {
 	defaultOnce.Do(func() {
 		defaultObserver = &Observer{}
@@ -121,6 +135,9 @@ func Execute(ctx context.Context, dir string, args ...string) CommandResponse {
 }
 
 func (o *Observer) Get(ctx context.Context, request GetRequest) (response Response, err error) {
+	if request.Progress == nil {
+		request.Progress, _ = ctx.Value(progressContextKey{}).(progress.Reporter)
+	}
 	request.Endpoint = strings.TrimSpace(request.Endpoint)
 	if request.Endpoint == "" {
 		return Response{}, errors.New("GitHub endpoint is required")
@@ -180,7 +197,7 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (response Respon
 			headers["If-Modified-Since"] = entry.LastModified
 		}
 	}
-	httpResult, err := o.apiGet(ctx, request.Dir, request.Endpoint, request.Query, request.Accept, headers)
+	httpResult, err := o.apiGet(ctx, request, headers)
 	if err != nil {
 		return Response{}, err
 	}
@@ -237,21 +254,27 @@ func (o *Observer) Get(ctx context.Context, request GetRequest) (response Respon
 }
 
 func (o *Observer) Read(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	result := o.Execute(ctx, dir, args...)
-	if result.Err != nil {
-		message := strings.TrimSpace(string(result.Stderr))
-		if stdout := strings.TrimSpace(string(result.Stdout)); stdout != "" {
-			if message != "" {
-				message += ": "
-			}
-			message += stdout
+	requestCtx, cancelRequest := withCommandTimeout(ctx)
+	defer cancelRequest()
+	reporter, _ := ctx.Value(progressContextKey{}).(progress.Reporter)
+	maxAttempts := o.maxAttempts()
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		result := o.Execute(requestCtx, dir, args...)
+		if result.Err == nil {
+			return append([]byte(nil), result.Stdout...), nil
 		}
-		if message == "" {
-			message = result.Err.Error()
+		message := commandFailureMessage(result)
+		cause, retryable := retryableReadFailure(requestCtx, result, message)
+		if !retryable || attempt+1 >= maxAttempts {
+			return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), result.Err, message)
 		}
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), result.Err, message)
+		delay, reason := o.retryDelay(attempt, nil)
+		reportRetryProgress(reporter, repositoryArgument(args), "github_read", attempt+1, maxAttempts, cause, delay, reason)
+		if sleepErr := o.sleep(requestCtx, delay); sleepErr != nil {
+			return nil, fmt.Errorf("gh %s retry after %s: %w", strings.Join(args, " "), cause, sleepErr)
+		}
 	}
-	return append([]byte(nil), result.Stdout...), nil
+	return nil, fmt.Errorf("gh %s did not return a response", strings.Join(args, " "))
 }
 
 func (o *Observer) Execute(ctx context.Context, dir string, args ...string) CommandResponse {
@@ -262,7 +285,13 @@ func (o *Observer) Execute(ctx context.Context, dir string, args ...string) Comm
 	return CommandResponse{Stdout: append([]byte(nil), result.Stdout...), Stderr: append([]byte(nil), result.Stderr...), ExitCode: result.ExitCode, Err: result.Err}
 }
 
-func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[string]string, accept string, conditional map[string]string) (httpResponse, error) {
+func (o *Observer) apiGet(ctx context.Context, request GetRequest, conditional map[string]string) (httpResponse, error) {
+	requestCtx, cancelRequest := withCommandTimeout(ctx)
+	defer cancelRequest()
+	dir := request.Dir
+	endpoint := request.Endpoint
+	query := request.Query
+	accept := request.Accept
 	args := []string{"api", endpoint, "--include"}
 	if len(query) > 0 {
 		args = append(args, "--method", "GET")
@@ -289,10 +318,9 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		}
 	}
 	var lastErr error
-	for attempt := 0; attempt < o.maxAttempts(); attempt++ {
-		commandCtx, cancel := withCommandTimeout(ctx)
-		result := o.runner()(commandCtx, dir, args...)
-		cancel()
+	maxAttempts := o.maxAttempts()
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		result := o.runner()(requestCtx, dir, args...)
 		response, parseErr := parseIncludedResponse(result.Stdout)
 		commandOK := result.Err == nil && result.ExitCode == 0
 		if parseErr != nil && commandOK {
@@ -304,15 +332,17 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		if parseErr == nil && (commandOK || response.StatusCode == 304) {
 			return response, nil
 		}
-		if parseErr == nil && isThrottleStatus(response.StatusCode) {
+		if parseErr == nil && isRetryableHTTPResponse(response) {
 			delay, reason := o.retryDelay(attempt, response.Headers)
-			if attempt+1 >= o.maxAttempts() {
-				return httpResponse{}, fmt.Errorf("GitHub throttled %s after %d attempts: %s", endpoint, attempt+1, reason)
+			cause := fmt.Sprintf("HTTP %d", response.StatusCode)
+			if attempt+1 >= maxAttempts {
+				return httpResponse{}, fmt.Errorf("GitHub %s returned %s after %d attempts", endpoint, cause, attempt+1)
 			}
-			if sleepErr := o.sleep(ctx, delay); sleepErr != nil {
-				return httpResponse{}, sleepErr
+			reportRetry(request, attempt+1, maxAttempts, cause, delay, reason)
+			if sleepErr := o.sleep(requestCtx, delay); sleepErr != nil {
+				return httpResponse{}, fmt.Errorf("GitHub %s retry after %s: %w", endpoint, cause, sleepErr)
 			}
-			lastErr = fmt.Errorf("GitHub throttled %s: %s", endpoint, reason)
+			lastErr = fmt.Errorf("GitHub %s returned %s", endpoint, cause)
 			continue
 		}
 		if parseErr == nil {
@@ -330,6 +360,19 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 			if message == "" {
 				message = strings.TrimSpace(string(result.Stdout))
 			}
+			if isTemporaryCommandFailure(requestCtx, result.Err, message) {
+				delay, reason := o.retryDelay(attempt, nil)
+				cause := temporaryFailureCause(message, result.Err)
+				if attempt+1 >= maxAttempts {
+					return httpResponse{}, fmt.Errorf("gh api %s failed temporarily after %d attempts: %s", endpoint, attempt+1, cause)
+				}
+				reportRetry(request, attempt+1, maxAttempts, cause, delay, reason)
+				if sleepErr := o.sleep(requestCtx, delay); sleepErr != nil {
+					return httpResponse{}, fmt.Errorf("GitHub %s retry after %s: %w", endpoint, cause, sleepErr)
+				}
+				lastErr = fmt.Errorf("gh api %s failed temporarily: %s", endpoint, cause)
+				continue
+			}
 			return httpResponse{}, fmt.Errorf("gh api %s: %w: %s", endpoint, result.Err, message)
 		}
 		return httpResponse{}, parseErr
@@ -338,6 +381,132 @@ func (o *Observer) apiGet(ctx context.Context, dir, endpoint string, query map[s
 		return httpResponse{}, lastErr
 	}
 	return httpResponse{}, fmt.Errorf("GitHub did not return a response for %s", endpoint)
+}
+
+func reportRetry(request GetRequest, attempt, maxAttempts int, cause string, delay time.Duration, delayReason string) {
+	reportRetryProgress(request.Progress, request.Repository, "github_api", attempt, maxAttempts, cause, delay, delayReason)
+}
+
+func reportRetryProgress(reporter progress.Reporter, repository, operation string, attempt, maxAttempts int, cause string, delay time.Duration, delayReason string) {
+	detail := fmt.Sprintf("attempt %d/%d failed: %s; retrying in %s", attempt, maxAttempts, cause, delay)
+	if delayReason != "" {
+		detail += " (" + delayReason + ")"
+	}
+	progress.Report(reporter, progress.Event{
+		Operation: operation, Phase: "retry", Repository: repository,
+		Detail: detail, State: progress.Waiting,
+	})
+}
+
+func commandFailureMessage(result CommandResponse) string {
+	message := strings.TrimSpace(string(result.Stderr))
+	if stdout := strings.TrimSpace(string(result.Stdout)); stdout != "" {
+		if message != "" {
+			message += ": "
+		}
+		message += stdout
+	}
+	if message == "" && result.Err != nil {
+		message = result.Err.Error()
+	}
+	return message
+}
+
+func retryableReadFailure(ctx context.Context, result CommandResponse, message string) (string, bool) {
+	lower := strings.ToLower(message)
+	for _, status := range []int{429, 502, 503, 504} {
+		for _, marker := range []string{fmt.Sprintf("http %d", status), fmt.Sprintf("status code %d", status)} {
+			if strings.Contains(lower, marker) {
+				return fmt.Sprintf("HTTP %d", status), true
+			}
+		}
+	}
+	if strings.Contains(lower, "secondary rate limit") || strings.Contains(lower, "rate limit exceeded") {
+		return "GitHub rate limit", true
+	}
+	if isTemporaryCommandFailure(ctx, result.Err, message) {
+		return temporaryFailureCause(message, result.Err), true
+	}
+	return "", false
+}
+
+func repositoryArgument(args []string) string {
+	for index, arg := range args {
+		if arg == "--repo" && index+1 < len(args) {
+			return strings.TrimSpace(args[index+1])
+		}
+		if strings.HasPrefix(arg, "--repo=") {
+			return strings.TrimSpace(strings.TrimPrefix(arg, "--repo="))
+		}
+	}
+	return ""
+}
+
+func isRetryableHTTPResponse(response httpResponse) bool {
+	switch response.StatusCode {
+	case 429, 502, 503, 504:
+		return true
+	case 403:
+		if strings.TrimSpace(response.Headers["retry-after"]) != "" {
+			return true
+		}
+		if strings.TrimSpace(response.Headers["x-ratelimit-remaining"]) == "0" {
+			return true
+		}
+		body := strings.ToLower(string(response.Body))
+		return strings.Contains(body, "secondary rate limit") || strings.Contains(body, "rate limit exceeded")
+	default:
+		return false
+	}
+}
+
+func isTemporaryCommandFailure(ctx context.Context, err error, message string) bool {
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return true
+	}
+	message = strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
+	for _, fragment := range []string{
+		"error connecting to api.github.com",
+		"connection reset",
+		"connection refused",
+		"connection closed",
+		"server closed idle connection",
+		"temporary failure",
+		"temporarily unavailable",
+		"tls handshake timeout",
+		"i/o timeout",
+		"unexpected eof",
+	} {
+		if strings.Contains(message, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+func temporaryFailureCause(message string, err error) string {
+	normalized := strings.ToLower(strings.TrimSpace(message + " " + err.Error()))
+	for _, cause := range []string{
+		"error connecting to api.github.com",
+		"connection reset",
+		"connection refused",
+		"connection closed",
+		"server closed idle connection",
+		"temporary failure",
+		"temporarily unavailable",
+		"tls handshake timeout",
+		"i/o timeout",
+		"unexpected eof",
+	} {
+		if strings.Contains(normalized, cause) {
+			return cause
+		}
+	}
+	return "temporary network failure"
 }
 
 func (o *Observer) pathsForKey(key string) (cachePath, lockPath string, err error) {
@@ -663,10 +832,6 @@ func httpTime(value string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf("invalid HTTP time %q", value)
-}
-
-func isThrottleStatus(status int) bool {
-	return status == 403 || status == 429
 }
 
 func acquireLock(path string) (func() error, error) {

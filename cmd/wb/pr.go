@@ -119,7 +119,7 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 				Slice:             totalTimeout,
 				CheckPollInterval: pollInterval,
 				Progress:          progress.report,
-				OperationProgress: progress.operationReporter(),
+				OperationProgress: progress.operationReporter("pr land"),
 				Events:            events,
 				Stream:            streamName,
 			})

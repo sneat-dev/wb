@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/sneat-dev/wb/internal/githubobserver"
 )
 
 // MaxForegroundCheckWaitSlice keeps a single agent-tool call under the common
@@ -91,6 +93,7 @@ func WaitForCommitChecks(ctx context.Context, options PullRequestWaitOptions) (P
 	deadline := time.Now().Add(options.Slice)
 	sliceCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	sliceCtx = githubobserver.WithProgress(sliceCtx, options.OperationProgress)
 	stableFingerprint := ""
 	stableObservations := 0
 	observations := 0
