@@ -154,8 +154,8 @@ func newRootCmd() *cobra.Command {
 var persistentFlagSupport = map[string]map[string]bool{
 	"projects-root": {
 		"sync": true, "run": true, "migrate": true,
-		"daemon serve": true,
-		"deps graph":   true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
+		"daemon serve": true, "daemon start": true, "daemon status": true, "daemon stop": true, "daemon restart": true,
+		"deps graph": true, "deps set": true, "deps bump": true, "deps publish npm": true, "deps drift": true,
 		"deps propagate local": true,
 		"ci audit":             true,
 		"hooks install":        true, "hooks check": true, "hooks repair": true, "hooks run": true,

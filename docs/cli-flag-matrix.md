@@ -30,7 +30,7 @@ skill examples, resolves executable tests, and enforces sorted `wb.` IDs.
 |---|---:|---:|---:|---:|
 | `sync` | yes | yes | yes; both root and command-local spellings restrict owners | yes |
 | `run` | yes | yes | yes | yes |
-| `daemon serve` | yes | rejected | rejected | yes |
+| `daemon serve`, `start`, `status`, `stop`, `restart` | yes | rejected | rejected | yes |
 | `migrate` | yes | rejected | rejected | yes |
 | `deps graph`, `deps set`, `deps drift` | yes | yes | `--fleet` only | yes |
 | `deps propagate local` | yes | rejected | rejected | yes |

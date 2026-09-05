@@ -1284,6 +1284,18 @@
       "notes": "Reports can be emitted as Markdown, YAML, or JSON and persisted for resume."
     },
     {
+      "id": "wb.daemon.restart",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon restart", "flags": ["--format", "--if-running", "--json"], "modes": ["Restarts with a durable queue ownership handoff", "--if-running is safe after verified self-update"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon restart --help", "contains": ["--format", "--if-running", "--json"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon restart --if-running"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "A verified self-update invokes restart only when a managed daemon was already running."
+    },
+    {
       "id": "wb.daemon.serve",
       "feature_refs": [
         "spec/features/agent-sdlc-throughput/README.md"
@@ -1350,6 +1362,42 @@
         }
       },
       "notes": "Cloudflare Tunnel is a transport option; authorization remains separate and remote arbitrary argv is excluded."
+    },
+    {
+      "id": "wb.daemon.start",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon start", "flags": ["--format", "--json", "--listen"], "modes": ["Idempotently starts the loopback daemon and hands off an older installed executable"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon start --help", "contains": ["--format", "--json", "--listen"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon start"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The state record pins executable SHA-256, version, revision, and queue generation before a replacement starts."
+    },
+    {
+      "id": "wb.daemon.status",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon status", "flags": ["--format", "--json"], "modes": ["Reports daemon absence without starting one"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon status --help", "contains": ["--format", "--json", "provenance"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon status --format json"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStatusWorksWithoutDaemonAndSupportsJSONShortcut", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "Status is bootstrap-safe and does not auto-start the daemon."
+    },
+    {
+      "id": "wb.daemon.stop",
+      "feature_refs": ["spec/features/agent-sdlc-throughput/README.md"],
+      "since": "unreleased",
+      "surfaces": {
+        "runtime": {"status": "Full", "commands": [{"path": "wb daemon stop", "flags": ["--format", "--json"], "modes": ["Marks queue ownership draining before requesting process termination"]}], "limitation": null},
+        "help": {"status": "Full", "anchors": [{"command": "wb daemon stop --help", "contains": ["--format", "--json", "Drain"]}], "limitation": null},
+        "ai_skill": {"status": "Full", "skills": [{"path": "ai/skills/wb-daemon/SKILL.md", "marker": "# WB daemon", "examples": ["wb daemon stop"]}], "limitation": null},
+        "tests": {"status": "Full", "references": [{"path": "cmd/wb/daemon_test.go", "name": "TestDaemonStartIsIdempotentAndHandoffsChangedInstalledBinary", "kind": "unit"}], "limitation": null}
+      },
+      "notes": "The loopback MVP preserves the durable handoff record while draining."
     },
     {
       "id": "wb.deps.bump",
