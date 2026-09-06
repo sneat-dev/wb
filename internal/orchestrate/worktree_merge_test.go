@@ -2967,7 +2967,7 @@ case "$*" in
       status="diverged"
     fi
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
-  'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
+  'api --paginate repos/acme/app/commits/'*'/pulls'|'api repos/acme/app/commits/'*'/pulls?per_page=100 --include') printf '%s\n' '[]' ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
     printf '{"number":41,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
