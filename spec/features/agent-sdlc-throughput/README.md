@@ -264,6 +264,14 @@ transport: `<projects-root>/.wb/runtime/daemon.sock`, a mode-0600 Unix domain
 socket on macOS/Linux, or `\\.\pipe\wb-<user-SID>`, a current-user-only named
 pipe on Windows. A custom dialer changes only the transport; generated request,
 receipt, enum, error, deadline, and cancellation contracts remain identical.
+When a harness sandbox denies or cannot reach the protected socket, normal
+worker RPCs use an explicit project-root file bridge. The bridge carries those
+same Connect unary payloads in bounded, owner-only, atomically renamed
+envelopes under `<projects-root>/.wb/runtime/file-bridge`. HMAC authentication,
+payload digests, queue generation, and target worker identity fence every
+request and response. The daemon alone dispatches them into the queue service;
+the bridge never executes a command or persists environment overrides. Protocol
+or authentication failures do not select the fallback.
 The local channel accepts typed lifecycle operations and the local-only raw
 `wb run -- <argv>` compatibility gateway. `SubmitOperation` carries an
 idempotency key; `GetOperation`, `WaitOperation`, and `CancelOperation` own the
@@ -366,7 +374,8 @@ moves any operation still leased to the previous generation to
 Queued jobs remain queued across daemon generations and are leased after the
 same stable worker identity reconnects. The Windows client and listener retain the
 current-user named-pipe endpoint abstraction and fail closed while that native
-adapter is unavailable; no TCP fallback is permitted. The administrator-owned
+adapter and owner-only file ACL verification are unavailable; no TCP fallback
+is permitted. The administrator-owned
 WB v0.105.0 raw-execution policy remains available only through `wb daemon
 operation submit` as a trusted recovery fallback.
 
@@ -1076,6 +1085,30 @@ bounded durable receipt. If the daemon restarts, queued work is leased after
 reconnect; if the worker disconnects, misses its lease heartbeat, or reconnects
 under a new generation while work is running, that work becomes
 `recovery_required` and is never executed twice.
+
+### AC: sandbox-file-bridge-preserves-daemon-authority
+
+Given the daemon is healthy but a caller sandbox receives permission-denied or
+unreachable from the protected local socket, when `wb run --async --worker
+<stable-id>` or `wb worker connect` calls the daemon, then WB reports the
+fallback within nine seconds and exchanges the unchanged Connect RPC payload
+through owner-only atomic envelopes under the projects root. Every envelope is
+bounded and authenticated, includes an exact payload digest, scheduler
+generation, and target worker fence, and contains no environment override or
+owner token. The daemon remains the only scheduler and journal authority. A
+second worker sharing the root cannot claim the job; tampered, stale-generation,
+wrong-worker, raw-execution, and environment-bearing envelopes are refused. A
+queued request survives bridge or daemon restart and is leased once after the
+same stable worker reconnects, while an issued lease interrupted by restart
+becomes `recovery_required` and is never executed again. Cancellation crosses
+the bridge and prevents further heartbeat or lease progress. The owner-only
+bridge integrity key survives daemon owner-token and scheduler-generation
+rotation. A Submit with a lost response reuses its envelope-bound idempotency
+key on an exact retry; `--idempotency-key` distinguishes intentional identical
+submissions. Ambiguous Register, Lease, Heartbeat, Complete, and Disconnect
+outcomes require reconnect and are never replayed. Completed and orphaned
+envelopes expire after one day, unresolved recovery envelopes after seven
+days, and quarantine remains age- and count-bounded.
 
 ### AC: json-output-selection-is-consistent
 

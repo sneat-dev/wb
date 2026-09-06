@@ -5320,6 +5320,7 @@
                 "--config",
                 "--days",
                 "--history",
+                "--idempotency-key",
                 "--format",
                 "--json",
                 "--list",
@@ -5328,6 +5329,8 @@
               "modes": [
                 "Executes an argv command after -- while preserving standard streams and its exit code, recording privacy-safe timing and CPU receipts.",
                 "With --async --worker <stable-id>, durably persists bounded argv without environment for only that sandboxed worker identity and returns a JSON operation receipt without waiting; missing worker identity is rejected.",
+                "An exact retry after a lost file-bridge response reattaches to the unresolved envelope-bound idempotency key; --idempotency-key distinguishes intentional identical submissions.",
+                "Prefers the protected local socket and explicitly falls back on sandbox permission or reachability failures to authenticated atomic project-root envelopes fenced by scheduler generation, payload digest, and target worker identity.",
                 "Admits CPU-heavy commands against a cross-process CPUCount-1 budget and caps supported child parallelism to the allocated units.",
                 "Lists, previews, or applies a configured fleet recipe; preview is the default."
               ]
@@ -5345,6 +5348,7 @@
                 "--async",
                 "--config",
                 "--history",
+                "--idempotency-key",
                 "--list",
                 "--worker",
                 "run -- <command>"
@@ -7871,6 +7875,7 @@
               "modes": [
                 "Registers one stable sandbox worker with exact build, protocol, OS, architecture, CPU capacity, and explicitly permitted canonical roots.",
                 "Long-polls the authenticated local Connect RPC queue, independently refuses working directories outside the permitted roots, executes with the worker's inherited sandbox and environment, heartbeats every five seconds, and returns bounded terminal receipts.",
+                "Keeps execution inside the harness sandbox when local sockets are denied by using the authenticated, owner-only project-root file bridge without creating a second scheduler.",
                 "Reconnects after daemon handoff with a new worker generation; queued work remains eligible while interrupted running leases become recovery_required."
               ]
             }
@@ -7924,12 +7929,22 @@
               "path": "cmd/wb/worker_test.go",
               "name": "TestWorkerIndependentlyRefusesAssignedDirectoryOutsidePermittedRoots",
               "kind": "unit"
+            },
+            {
+              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "name": "TestDaemonFileBridgeTargetsOneOfTwoWorkersAndCancelsWithoutLease",
+              "kind": "integration"
+            },
+            {
+              "path": "cmd/wb/daemon_file_bridge_test.go",
+              "name": "TestDaemonFileBridgeQueuedWorkSurvivesRestartAndSameWorkerReconnects",
+              "kind": "integration"
             }
           ],
           "limitation": null
         }
       },
-      "notes": "Normal worker operations never persist environment overrides. The administrator-owned raw daemon execution policy remains a fallback only for wb daemon operation submit. Windows preserves the current-user named-pipe endpoint contract and fails closed until the native adapter is available."
+      "notes": "Normal worker operations never persist environment overrides. POSIX prefers the protected socket and uses the authenticated owner-only project-root file bridge only for sandbox permission or reachability failures. The administrator-owned raw daemon execution policy remains a fallback only for wb daemon operation submit. Windows preserves the current-user named-pipe endpoint contract and fails closed until native transport or owner-only bridge ACL verification is available."
     },
     {
       "id": "wb.worktree.abort",

@@ -57,7 +57,10 @@ func newWorkerConnectCmd(deps daemonDependencies) *cobra.Command {
 The daemon only schedules and journals normal jobs. This process independently
 checks every assigned working directory against --root, executes with its own
 inherited sandbox and environment, heartbeats every five seconds, and returns a
-bounded terminal receipt. Repeat --root to permit more canonical roots.`,
+bounded terminal receipt. It uses the protected local socket first; when the
+sandbox denies or cannot reach that socket, it reports the fallback and uses
+authenticated atomic envelopes under the projects root. Repeat --root to permit
+more canonical roots.`,
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			selected, err := daemonOutputFormat(format, jsonOut)
@@ -92,7 +95,7 @@ func connectWorker(command *cobra.Command, deps daemonDependencies, workerID str
 		if err := command.Context().Err(); err != nil {
 			return nil
 		}
-		client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
+		client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
 		if err == nil {
 			err = runWorkerConnection(command, client, workerID, roots, cpuCapacity, format, first)
 			first = false

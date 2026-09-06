@@ -71,7 +71,7 @@ func newDaemonOperationSubmitCmd(deps daemonDependencies) *cobra.Command {
 			if err := requireDaemonRawExecutionPolicy(deps, projectsRoot); err != nil {
 				return err
 			}
-			client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
+			client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -109,7 +109,7 @@ func newDaemonOperationGetCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
+			client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -140,7 +140,7 @@ func newDaemonOperationWaitCmd(deps daemonDependencies) *cobra.Command {
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			client, err := daemonOperationClient(ctx, deps, projectsRoot)
+			client, err := daemonOperationClient(ctx, deps, projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -166,7 +166,7 @@ func newDaemonOperationCancelCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
+			client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -251,17 +251,17 @@ func writeDaemonOperation(out io.Writer, format string, operation *daemonv1.Oper
 	return nil
 }
 
-func submitWorkerOperation(command *cobra.Command, deps daemonDependencies, targetWorkerID string, args []string) error {
+func submitWorkerOperation(command *cobra.Command, deps daemonDependencies, targetWorkerID, idempotencyKey string, args []string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	client, err := daemonOperationClient(command.Context(), deps, projectsRoot)
+	client, err := daemonOperationClient(command.Context(), deps, projectsRoot, command.ErrOrStderr())
 	if err != nil {
 		return err
 	}
 	response, err := client.SubmitOperation(command.Context(), connect.NewRequest(&daemonv1.SubmitOperationRequest{
-		WorkingDirectory: cwd, Argv: args, TargetWorkerId: targetWorkerID,
+		WorkingDirectory: cwd, Argv: args, TargetWorkerId: targetWorkerID, IdempotencyKey: idempotencyKey,
 	}))
 	if err != nil {
 		return err

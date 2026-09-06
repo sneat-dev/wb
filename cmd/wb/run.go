@@ -29,14 +29,15 @@ func newRunCmd() *cobra.Command {
 
 func newRunCmdWithDaemonDependencies(daemonDeps daemonDependencies) *cobra.Command {
 	var (
-		apply      bool
-		async      bool
-		configPath string
-		days       int
-		history    bool
-		jsonOut    bool
-		list       bool
-		workerID   string
+		apply          bool
+		async          bool
+		configPath     string
+		days           int
+		history        bool
+		jsonOut        bool
+		list           bool
+		idempotencyKey string
+		workerID       string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [recipe] | run -- <command> [args...]",
@@ -49,7 +50,9 @@ records privacy-safe receipts and admits CPU-heavy work against a machine-wide
 CPUCount-1 budget. It is synchronous by default; --async submits through the
 authenticated durable local daemon queue for the explicitly selected sandboxed
 wb worker connect process to execute. Command arguments are durable journal
-data; pass secrets through the worker's inherited environment, never argv.`,
+data; pass secrets through the worker's inherited environment, never argv. The
+client uses the protected local socket first and reports when sandbox transport
+denial selects the authenticated project-root file bridge.`,
 		Example: `# Discover configured recipes
 wb run --list
 
@@ -62,6 +65,9 @@ wb run -- go test ./internal/worktrees -run TestCreate
 
 # Submit without waiting; inspect with wb daemon operation get/wait/cancel
 wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate
+
+# Give intentionally identical submissions distinct durable identities
+wb run --async --worker codex-local --idempotency-key test-create-2 -- go test ./internal/worktrees -run TestCreate
 
 # Inspect command cost in this worktree
 wb run --history --days 7`,
@@ -79,8 +85,8 @@ wb run --history --days 7`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if history {
-				if apply || async || configPath != "" || list {
-					return usageError("--apply, --async, --config, and --list cannot be used with --history")
+				if apply || async || configPath != "" || idempotencyKey != "" || list {
+					return usageError("--apply, --async, --config, --idempotency-key, and --list cannot be used with --history")
 				}
 				return printRunHistory(cmd, days, jsonOut)
 			}
@@ -92,10 +98,13 @@ wb run --history --days 7`,
 					if strings.TrimSpace(workerID) == "" {
 						return usageError("--async requires --worker <stable-id>; WB never guesses which sandbox may execute the job")
 					}
-					return submitWorkerOperation(cmd, daemonDeps, strings.TrimSpace(workerID), args)
+					return submitWorkerOperation(cmd, daemonDeps, strings.TrimSpace(workerID), strings.TrimSpace(idempotencyKey), args)
 				}
 				if workerID != "" {
 					return usageError("--worker requires --async command mode")
+				}
+				if idempotencyKey != "" {
+					return usageError("--idempotency-key requires --async command mode")
 				}
 				return runExternalCommand(cmd, args)
 			}
@@ -104,6 +113,9 @@ wb run --history --days 7`,
 			}
 			if workerID != "" {
 				return usageError("--worker requires --async command mode")
+			}
+			if idempotencyKey != "" {
+				return usageError("--idempotency-key requires --async command mode")
 			}
 			if days != 14 || outputFormatChanged(cmd) {
 				return usageError("--days, --format=json, and --json require --history")
@@ -124,6 +136,7 @@ wb run --history --days 7`,
 	setDiscoveryTerms(cmd, "run recipe reusable fleet change apply dry run automation repeat command")
 	cmd.Flags().BoolVar(&apply, "apply", false, "commit & push changes (default: dry-run report)")
 	cmd.Flags().BoolVar(&async, "async", false, "submit for a sandboxed worker and return the durable queue receipt")
+	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "stable caller key for an intentional submission or exact retry")
 	cmd.Flags().StringVar(&workerID, "worker", "", "stable ID of the sandbox worker that must execute the async job")
 	cmd.Flags().StringVar(&configPath, "config", "", "path to wb.yaml (default: ~/.config/wb/wb.yaml)")
 	cmd.Flags().IntVar(&days, "days", 14, "history window in calendar days")
