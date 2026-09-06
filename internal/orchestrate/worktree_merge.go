@@ -371,7 +371,7 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 				if recheckErr != nil {
 					return existing, recheckErr
 				}
-				if current.RebatchOf != rechecked.ReceiptPath || current.Candidate.SHA == "" || len(current.RebatchedCandidates) != 1 || current.RebatchedCandidates[0] != rechecked.OriginalCandidate || !sameWorktreeMergeSources(current.Sources, sources) {
+				if current.RebatchOf != rechecked.ReceiptPath || current.TargetSHA != rechecked.CurrentTargetSHA || current.Candidate.SHA == "" || len(current.RebatchedCandidates) != 1 || current.RebatchedCandidates[0] != rechecked.OriginalCandidate || !sameWorktreeMergeSources(current.Sources, sources) {
 					return existing, fmt.Errorf("existing replacement receipt %s no longer matches the requested immutable rebatch", receiptPath)
 				}
 				if _, candidateErr := validateMergeAcknowledgementCandidate(ctx, projectsRoot, current, current.Candidate); candidateErr != nil {
@@ -662,6 +662,12 @@ func PrepareWorktreeMerge(ctx context.Context, options WorktreeMergePrepareOptio
 	}
 	if err := persistWorktreeMergeReceipt(receipt); err != nil {
 		return receipt, err
+	}
+	if rebatch != nil && candidate.BaseSHA != rebatch.CurrentTargetSHA {
+		// Creation already owns a durable worktree and claim. Preserve its exact
+		// identity in a failed receipt so the target race cannot orphan them.
+		receipt.Candidate.SHA = candidate.BaseSHA
+		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, fmt.Errorf("rebatch target changed during candidate creation from %s to %s", rebatch.CurrentTargetSHA, candidate.BaseSHA))
 	}
 	if err := requireCleanMergeWorktree(ctx, candidate.WorktreeDir); err != nil {
 		return failWorktreeMergeReceipt(receipt, WorktreeMergeConflict, err)
@@ -2491,6 +2497,12 @@ func validateRebatchedWorktreeMergeCleanup(ctx context.Context, projectsRoot str
 		!sameWorktreeMergeSources(rebatch.Sources, receipt.Sources) || len(receipt.RebatchedCandidates) != 1 ||
 		receipt.RebatchedCandidates[0] != original.Candidate {
 		return errors.New("replacement receipt does not carry the exact append-only rebatch cleanup proof")
+	}
+	if rebatch.ReceiptTargetSHA != rebatch.CurrentTargetSHA {
+		advanced, ancestryErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, rebatch.ReceiptTargetSHA, rebatch.CurrentTargetSHA)
+		if ancestryErr != nil || !advanced {
+			return fmt.Errorf("rebatch cleanup target is not a proven fast-forward: ancestor=%t err=%v", advanced, ancestryErr)
+		}
 	}
 	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, receipt.Target)
 	if err != nil {

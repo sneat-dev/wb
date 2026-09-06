@@ -2676,7 +2676,7 @@ func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testin
 		{name: "closed pull request", prState: "closed"},
 		{name: "merged pull request", prState: "closed", merged: true},
 		{name: "candidate ref drift", driftRemote: true},
-		{name: "target drift", driftTarget: true},
+		{name: "target divergence", driftTarget: true},
 		{name: "receipt candidate mismatch", badReceipt: true},
 		{name: "published pending candidate ref drift", status: WorktreeMergePublished, driftRemote: true},
 	} {
@@ -2713,10 +2713,8 @@ func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testin
 				runEngineGit(t, first.Candidate.Worktree, "push", "--force", "origin", secondHead+":refs/heads/"+first.Candidate.Branch)
 			}
 			if test.driftTarget {
-				writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "drift\n")
-				runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
-				runEngineGit(t, fixture.canonical, "commit", "-m", "test: drift target")
-				runEngineGit(t, fixture.canonical, "push", "origin", "main")
+				diverged := strings.TrimSpace(runEngineGit(t, fixture.canonical, "commit-tree", "HEAD^{tree}", "-m", "test: unrelated target root"))
+				runEngineGit(t, fixture.canonical, "push", "--force", "origin", diverged+":refs/heads/main")
 			}
 			_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath})
 			if err == nil {
