@@ -89,6 +89,12 @@ type workLogRelocationReceipt = workLogRelocationIntent
 const (
 	workLogRelocationIntentType = "worktree.relocation-intent"
 	workLogRelocationType       = "worktree.relocated"
+	// workLogRelocationLegacyCheckout marks an attestation for a checkout
+	// already found at a new repository identity before WB could record a
+	// repository-transfer receipt. It is deliberately not a transfer claim:
+	// the old origin is no longer observable, so WB records only the immutable
+	// old claim identity and the verified current origin.
+	workLogRelocationLegacyCheckout = "legacy_checkout"
 )
 
 func Relocate(ctx context.Context, options RelocateOptions) (RelocateOutcome, error) {
@@ -461,11 +467,11 @@ func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim
 	}
 	if record.Version != 1 || record.Type != wantType || !validSafeSegment(record.OperationID) || record.ClaimID != claim.ClaimID ||
 		record.Task != claim.Task || record.Repository != claim.Repository || record.Branch != claim.Branch || record.HeadSHA == "" ||
-		record.To != "local" && record.To != "shared" && record.To != "repository" || !canonicalRelocationPath(record.Source) ||
+		record.To != "local" && record.To != "shared" && record.To != "repository" && record.To != workLogRelocationLegacyCheckout || !canonicalRelocationPath(record.Source) ||
 		!canonicalRelocationPath(record.Destination) || record.At.IsZero() {
 		return errors.New("record identity is incomplete or does not match immutable claim")
 	}
-	if record.To == "repository" {
+	if record.To == "repository" || record.To == workLogRelocationLegacyCheckout {
 		if _, _, err := splitRepository(record.SourceRepository); err != nil {
 			return errors.New("repository relocation source identity is invalid")
 		}
@@ -479,7 +485,7 @@ func validateRelocationRecord(record workLogRelocationIntent, claim workLogClaim
 	} else if record.SourceRepository != "" || record.DestinationRepository != "" || record.RemoteURL != "" {
 		return errors.New("worktree relocation unexpectedly changes repository identity")
 	}
-	if record.To != "repository" && filepath.Clean(record.Source) == filepath.Clean(record.Destination) {
+	if record.To != "repository" && record.To != workLogRelocationLegacyCheckout && filepath.Clean(record.Source) == filepath.Clean(record.Destination) {
 		return errors.New("record source and destination are identical")
 	}
 	return nil
@@ -633,7 +639,7 @@ func latestRelocationResolution(home string, claim workLogClaim, destination str
 		if filepath.Clean(receipt.Source) != resolution.worktree {
 			return resolution, fmt.Errorf("relocation receipt %s does not continue the immutable claim path", receipt.OperationID)
 		}
-		if receipt.To == "repository" {
+		if receipt.To == "repository" || receipt.To == workLogRelocationLegacyCheckout {
 			if receipt.SourceRepository != resolution.repository {
 				return resolution, fmt.Errorf("repository relocation receipt %s does not continue the immutable claim repository", receipt.OperationID)
 			}

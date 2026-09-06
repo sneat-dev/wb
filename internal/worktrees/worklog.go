@@ -23,12 +23,13 @@ import (
 )
 
 const (
-	workLogProjectionDirectory  = ".wb-worklog"
-	workLogProjectionName       = "recovery.json"
-	workLogProjectionExclude    = "/.wb-worklog/"
-	worktreeInstructionsName    = ".worktree.md"
-	worktreeInstructionsExclude = "/.worktree.md"
-	legacyWorkLogProjectionName = ".wb-worklog.json"
+	workLogProjectionDirectory     = ".wb-worklog"
+	workLogProjectionName          = "recovery.json"
+	workLogProjectionExclude       = "/.wb-worklog/"
+	worktreeInstructionsName       = ".worktree.md"
+	worktreeInstructionsExclude    = "/.worktree.md"
+	legacyWorkLogProjectionName    = ".wb-worklog.json"
+	legacyWorkLogProjectionExclude = "/.wb-worklog.json"
 )
 
 const worktreeInstructions = `<!-- wb-managed-worktree -->
@@ -1780,7 +1781,7 @@ func ensureWorkLogProjectionExclude(worktree string) error {
 		return fmt.Errorf("read per-worktree exclude: %w", err)
 	}
 	updated := append([]byte(nil), exclude...)
-	for _, rule := range []string{workLogProjectionExclude, worktreeInstructionsExclude} {
+	for _, rule := range []string{workLogProjectionExclude, legacyWorkLogProjectionExclude, worktreeInstructionsExclude} {
 		if strings.Contains("\n"+string(updated)+"\n", "\n"+rule+"\n") {
 			continue
 		}
@@ -2314,11 +2315,18 @@ func preflightWorkLogSeal(home, worktree, finalCommit string) error {
 // appends that receipt only after normal cleanup has re-proved the exact head
 // is contained and its usual safety fences hold.
 func preflightWorkLogSealForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult) error {
-	ordinaryErr := preflightWorkLogSeal(home, entry.WorktreeDir, entry.HeadSHA)
+	projection, projectionErr := readWorkLogProjectionForReadOnlyClaim(entry.WorktreeDir)
+	if errors.Is(projectionErr, errWorkLogProjectionNotFound) {
+		return nil
+	}
+	if projectionErr != nil {
+		return projectionErr
+	}
+	ordinaryErr := corroborateWorkLogProjection(home, entry.WorktreeDir, entry.HeadSHA, projection)
 	if ordinaryErr == nil {
 		return nil
 	}
-	matched, recoveryErr := legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, false)
+	matched, recoveryErr := legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, false, nil)
 	if recoveryErr != nil {
 		return recoveryErr
 	}
@@ -2331,8 +2339,8 @@ func preflightWorkLogSealForCleanup(ctx context.Context, home, projectsRoot stri
 // recordLegacyRepositoryRelocationForCleanup records append-only transfer
 // evidence immediately before normal sealing. It never changes the immutable
 // claim, and a failed recovery leaves both claim and checkout untouched.
-func recordLegacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult) error {
-	matched, err := legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, true)
+func recordLegacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult, beforeReceipt func() error) error {
+	matched, err := legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, true, beforeReceipt)
 	if err != nil {
 		return err
 	}
@@ -2346,7 +2354,7 @@ func recordLegacyRepositoryRelocationForCleanup(ctx context.Context, home, proje
 // repository placement, a verified current origin, and the exact head that
 // cleanup already proved contained. Generic path mismatches, live pull
 // requests, and interrupted ordinary relocations still fail closed.
-func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult, record bool) (bool, error) {
+func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult, record bool, beforeReceipt func() error) (bool, error) {
 	if entry.OpenPullRequest != nil {
 		return false, fmt.Errorf("cannot recover legacy repository relocation while the branch has an open pull request: %s", entry.OpenPullRequest.URL)
 	}
@@ -2394,7 +2402,7 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 	if filepath.Clean(claim.Worktree) == filepath.Clean(entry.WorktreeDir) || claim.Repository == entry.Repository {
 		return false, nil
 	}
-	if claim.Branch != entry.Branch {
+	if claim.Task != entry.Task || claim.Branch != entry.Branch {
 		return false, fmt.Errorf("legacy repository relocation does not match the immutable claim branch")
 	}
 	baseContained, err := isAncestor(ctx, entry.WorktreeDir, claim.BaseSHA, entry.HeadSHA)
@@ -2409,30 +2417,58 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 	if resolution.receipt != nil {
 		return false, nil
 	}
-	pending, _, err := pendingRelocationIntent(home, claim, entry.WorktreeDir, claim.Branch, entry.HeadSHA)
-	if err != nil {
-		return false, err
-	}
-	if pending != nil {
-		return false, fmt.Errorf("an ordinary Work Log relocation is already pending")
-	}
 	if err := legacyRepositoryRelocationPaths(projectsRoot, entry, claim); err != nil {
 		return false, err
 	}
 	if err := corroborateRepositoryRelocation(ctx, entry.WorktreeDir, entry.Repository); err != nil {
 		return false, err
 	}
-	if !record {
-		return true, nil
-	}
 	urls, err := exactOriginURLs(ctx, entry.WorktreeDir, false)
 	if err != nil || len(urls) != 1 {
 		return false, fmt.Errorf("relocated repository origin is ambiguous")
 	}
-	intent, _, err := appendRelocationIntentForRepository(home, claim, claim.Worktree, entry.WorktreeDir, "repository", entry.HeadSHA,
-		claim.Repository, entry.Repository, urls[0], time.Now().UTC())
+	expected := workLogRelocationIntent{Version: 1, Type: workLogRelocationIntentType, ClaimID: claim.ClaimID, Task: claim.Task,
+		Repository: claim.Repository, Branch: claim.Branch, HeadSHA: entry.HeadSHA, Source: filepath.Clean(claim.Worktree),
+		Destination: filepath.Clean(entry.WorktreeDir), To: workLogRelocationLegacyCheckout,
+		SourceRepository: claim.Repository, DestinationRepository: entry.Repository, RemoteURL: urls[0]}
+	journal, err := openRelocationJournal(run, "", claim)
 	if err != nil {
-		return false, fmt.Errorf("append legacy repository relocation intent: %w", err)
+		return false, err
+	}
+	var intent *workLogRelocationIntent
+	for operationID, candidate := range journal.intents {
+		if _, complete := journal.receipts[operationID]; complete || filepath.Clean(candidate.Source) != expected.Source || filepath.Clean(candidate.Destination) != expected.Destination {
+			continue
+		}
+		if !sameLegacyRelocatedCheckoutIntent(candidate, expected) {
+			return false, fmt.Errorf("pending legacy checkout attestation does not match the revalidated immutable claim")
+		}
+		if intent != nil {
+			return false, fmt.Errorf("multiple pending legacy checkout attestations match the same immutable claim path")
+		}
+		copy := candidate
+		intent = &copy
+	}
+	if intent == nil && !record {
+		return true, nil
+	}
+	if intent == nil {
+		intent, _, err = appendRelocationIntentForRepository(home, claim, expected.Source, expected.Destination, expected.To, expected.HeadSHA,
+			expected.SourceRepository, expected.DestinationRepository, expected.RemoteURL, time.Now().UTC())
+		if err != nil {
+			return false, fmt.Errorf("append legacy checkout attestation intent: %w", err)
+		}
+	}
+	if !sameLegacyRelocatedCheckoutIntent(*intent, expected) {
+		return false, fmt.Errorf("durable legacy checkout attestation does not match the revalidated immutable claim")
+	}
+	if !record {
+		return true, nil
+	}
+	if beforeReceipt != nil {
+		if err := beforeReceipt(); err != nil {
+			return false, err
+		}
 	}
 	if _, _, err := appendRelocationReceipt(home, claim, intent, time.Now().UTC()); err != nil {
 		return false, fmt.Errorf("append legacy repository relocation receipt: %w", err)
@@ -2440,14 +2476,26 @@ func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoo
 	return true, nil
 }
 
+func sameLegacyRelocatedCheckoutIntent(actual, expected workLogRelocationIntent) bool {
+	return actual.Version == expected.Version && actual.Type == expected.Type && actual.ClaimID == expected.ClaimID &&
+		actual.Task == expected.Task && actual.Repository == expected.Repository && actual.Branch == expected.Branch &&
+		actual.HeadSHA == expected.HeadSHA && filepath.Clean(actual.Source) == expected.Source &&
+		filepath.Clean(actual.Destination) == expected.Destination && actual.To == expected.To &&
+		actual.SourceRepository == expected.SourceRepository && actual.DestinationRepository == expected.DestinationRepository &&
+		actual.RemoteURL == expected.RemoteURL && !actual.At.IsZero() && validSafeSegment(actual.OperationID)
+}
+
 func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, claim workLogClaim) error {
 	sourceCanonical, err := CanonicalRepositoryPath(projectsRoot, claim.Repository)
 	if err != nil {
 		return err
 	}
-	relative, err := filepath.Rel(entry.CanonicalDir, entry.WorktreeDir)
-	if err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) &&
-		filepath.Clean(claim.Worktree) == filepath.Join(sourceCanonical, relative) {
+	if entry.External || !filepath.IsAbs(entry.WorktreesRoot) || !validSafeSegment(entry.Task) {
+		return fmt.Errorf("legacy repository relocation is not in a supported managed-worktree layout")
+	}
+	if entry.Local && filepath.Clean(entry.WorktreesRoot) == filepath.Join(entry.CanonicalDir, ".worktrees") &&
+		filepath.Clean(entry.WorktreeDir) == filepath.Join(entry.WorktreesRoot, entry.Task) &&
+		filepath.Clean(claim.Worktree) == filepath.Join(sourceCanonical, ".worktrees", entry.Task) {
 		return nil
 	}
 	oldOwner, oldName, err := splitRepository(claim.Repository)
@@ -2458,7 +2506,7 @@ func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, clai
 	if err != nil {
 		return err
 	}
-	if filepath.Clean(entry.WorktreeDir) != filepath.Join(entry.WorktreesRoot, entry.Task, newOwner, newName) ||
+	if entry.Local || filepath.Clean(entry.WorktreeDir) != filepath.Join(entry.WorktreesRoot, entry.Task, newOwner, newName) ||
 		filepath.Clean(claim.Worktree) != filepath.Join(entry.WorktreesRoot, entry.Task, oldOwner, oldName) {
 		return fmt.Errorf("private work-log claim identity/path mismatch is not a deterministic repository-transfer placement")
 	}
@@ -2626,6 +2674,9 @@ func corroborateClaimAtPath(home, worktree, finalCommit string, projection workL
 			}
 			if intent == nil {
 				return fmt.Errorf("private work-log claim identity/path mismatch")
+			}
+			if intent.To == workLogRelocationLegacyCheckout {
+				return fmt.Errorf("legacy checkout attestation is pending its immutable completion")
 			}
 			if intent.To == "repository" {
 				if err := corroborateRepositoryRelocation(context.Background(), worktree, intent.DestinationRepository); err != nil {

@@ -480,6 +480,11 @@ type CleanupOptions struct {
 	// before Git removes a worktree. It proves the held descriptor identity is
 	// reauthorized immediately before destructive removal.
 	beforeCleanupWorktreeRemoval func(worktree string)
+	// beforeLegacyRelocationReceipt is a test-only seam after an immutable
+	// legacy-checkout intent is durable and before its completion is appended.
+	// It proves an interrupted recovery resumes the same evidence rather than
+	// minting a second claim or bypassing validation.
+	beforeLegacyRelocationReceipt func() error
 	// afterCleanupWorktreeRemoval simulates a crash/failure after Git removed
 	// the checkout but before the exact local branch deletion. The durable
 	// lifecycle backlog must make the next identical cleanup resumable.
@@ -2571,7 +2576,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				return err
 			}
 			if err := preflightWorkLogSeal(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
-				if recoveryErr := recordLegacyRepositoryRelocationForCleanup(ctx, resolution.Write.Home, normalized.ProjectsRoot, refreshed); recoveryErr != nil {
+				if recoveryErr := recordLegacyRepositoryRelocationForCleanup(ctx, resolution.Write.Home, normalized.ProjectsRoot, refreshed, normalized.beforeLegacyRelocationReceipt); recoveryErr != nil {
 					closeCanonical()
 					worktree.close()
 					return fmt.Errorf("recover legacy Work Log repository relocation before removing %s: %w", refreshed.WorktreeDir, recoveryErr)

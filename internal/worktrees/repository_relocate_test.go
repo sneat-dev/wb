@@ -172,6 +172,18 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 	gitTest(t, destination, "remote", "set-url", "origin", newRemote)
 	gitTest(t, destination, "remote", "set-url", "--push", "origin", newRemote)
 	gitTest(t, destination, "worktree", "repair", movedWorktree)
+	// The old pointer is the other observed failure mode: planning must inspect
+	// it without migrating or deleting it. Only apply may make that projection
+	// transition after its relocation attestation is complete.
+	if err := removeWorkLogProjection(movedWorktree); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSONAtomic(filepath.Join(movedWorktree, legacyWorkLogProjectionName), projection, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWorkLogProjectionExclude(movedWorktree); err != nil {
+		t.Fatal(err)
+	}
 	gitTest(t, destination, "merge", "--no-ff", created[0].Branch, "-m", "merge legacy transferred feature")
 	gitTest(t, destination, "push", "origin", "main")
 
@@ -183,6 +195,12 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 	})
 	if err != nil || len(blocked.Results) != 1 || blocked.Results[0].Eligible || blocked.Results[0].OpenPullRequest == nil {
 		t.Fatalf("legacy transfer cleanup bypassed open PR fence: %#v, err=%v", blocked, err)
+	}
+	if _, err := os.Stat(filepath.Join(movedWorktree, legacyWorkLogProjectionName)); err != nil {
+		t.Fatalf("read-only cleanup planning removed legacy projection: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(movedWorktree, workLogProjectionDirectory, workLogProjectionName)); !os.IsNotExist(err) {
+		t.Fatalf("read-only cleanup planning migrated legacy projection: %v", err)
 	}
 	if resolution, err := latestRelocationResolution(fixture.home, claim, movedWorktree); err != nil || resolution.receipt != nil {
 		t.Fatalf("open PR created legacy transfer evidence: %#v err=%v", resolution, err)
@@ -197,6 +215,28 @@ func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
 	}
 	if resolution, err := latestRelocationResolution(fixture.home, claim, movedWorktree); err != nil || resolution.receipt != nil {
 		t.Fatalf("legacy claim had transfer evidence before cleanup: %#v err=%v", resolution, err)
+	}
+
+	injected := errors.New("interrupted after durable legacy checkout attestation intent")
+	interrupted, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "legacy-transfer-cleanup", Base: "main", Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now:                           func() time.Time { return mergedAt.Add(time.Hour) },
+		beforeLegacyRelocationReceipt: func() error { return injected },
+	})
+	if !errors.Is(err, injected) || len(interrupted.Results) != 1 || interrupted.Results[0].Applied {
+		t.Fatalf("interrupted legacy attestation cleanup = %#v, err=%v", interrupted, err)
+	}
+	if _, statErr := os.Stat(movedWorktree); statErr != nil {
+		t.Fatalf("interrupted legacy attestation removed worktree: %v", statErr)
+	}
+	run, _, err := openWorkLogRun(fixture.home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, journalErr := openRelocationJournal(run, "", claim)
+	_ = run.Close()
+	if journalErr != nil || len(journal.intents) != 1 || len(journal.receipts) != 0 {
+		t.Fatalf("interrupted legacy attestation journal = %#v, err=%v", journal, journalErr)
 	}
 
 	applied, err := Cleanup(context.Background(), CleanupOptions{
