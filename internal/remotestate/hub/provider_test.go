@@ -152,6 +152,26 @@ func TestProviderRejectsInsecureOrAmbiguousConfiguration(t *testing.T) {
 	}
 }
 
+func TestProviderRejectsOversizedOrTrailingSuccessfulResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"oversized": strings.Repeat(" ", maxResponseBytes) + "{}",
+		"trailing":  `{"snapshots":[]} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return response(http.StatusOK, body), nil
+			})}
+			provider, err := New(Options{BaseURL: "https://hub.example", Machine: "laptop", Token: "token", Client: client})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := provider.List(context.Background()); err == nil {
+				t.Fatal("invalid successful response was accepted")
+			}
+		})
+	}
+}
+
 func TestProviderDoesNotRetryAuthenticationFailureOrLeakCredential(t *testing.T) {
 	attempts := 0
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {

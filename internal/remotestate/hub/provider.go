@@ -212,14 +212,27 @@ func (provider *Provider) doJSON(ctx context.Context, method, path string, input
 		}
 		response, requestErr := provider.client.Do(request)
 		if requestErr == nil && response.StatusCode >= 200 && response.StatusCode < 300 {
-			decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes))
-			decodeErr := decoder.Decode(output)
+			raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 			closeErr := response.Body.Close()
-			if decodeErr != nil {
-				return fmt.Errorf("decode successful hub response: %w", decodeErr)
+			if readErr != nil {
+				return fmt.Errorf("read successful hub response: %w", readErr)
+			}
+			if len(raw) > maxResponseBytes {
+				return fmt.Errorf("successful hub response exceeds %d bytes", maxResponseBytes)
 			}
 			if closeErr != nil {
 				return fmt.Errorf("close successful hub response: %w", closeErr)
+			}
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			if err := decoder.Decode(output); err != nil {
+				return fmt.Errorf("decode successful hub response: %w", err)
+			}
+			var trailing any
+			if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+				if err == nil {
+					err = errors.New("multiple JSON values")
+				}
+				return fmt.Errorf("decode successful hub response: trailing data: %w", err)
 			}
 			return nil
 		}

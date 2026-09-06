@@ -116,9 +116,19 @@ func validateRef(ref string) error {
 		return errors.New("must be a bounded full branch ref")
 	}
 	branch := strings.TrimPrefix(ref, "refs/heads/")
-	if strings.HasPrefix(branch, ".") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, "/") ||
+	if branch == "@" || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, "/") || strings.Contains(branch, "//") ||
 		strings.Contains(branch, "..") || strings.Contains(branch, "@{") || strings.ContainsAny(branch, " ~^:?*[\\\x00\r\n") {
 		return errors.New("must be a valid full branch ref")
+	}
+	for _, char := range []byte(branch) {
+		if char < 0x20 || char == 0x7f {
+			return errors.New("must be a valid full branch ref")
+		}
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return errors.New("must be a valid full branch ref")
+		}
 	}
 	return nil
 }

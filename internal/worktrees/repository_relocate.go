@@ -37,6 +37,9 @@ type RepositoryRelocateOptions struct {
 	// beforeReplacementCleanupCompleted is a test-only seam after secure
 	// retirement but before its immutable terminal evidence is appended.
 	beforeReplacementCleanupCompleted func() error
+	// beforeWorkLogCompletion is a test-only seam after Git relocation is
+	// verified and before each pending Work Log intent is completed.
+	beforeWorkLogCompletion func(string) error
 }
 
 type RepositoryRelocateResult struct {
@@ -304,6 +307,11 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 			return result, rollback(fmt.Errorf("verify relocated Git administration for %s", entry.destination))
 		}
 		if entry.claim != nil && entry.intent != nil {
+			if options.beforeWorkLogCompletion != nil {
+				if err := options.beforeWorkLogCompletion(entry.destination); err != nil {
+					return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, err)
+				}
+			}
 			_, receipt, receiptErr := appendRelocationReceipt(home, *entry.claim, entry.intent, options.Now().UTC())
 			if receiptErr != nil {
 				return result, fmt.Errorf("record repository relocation receipt for %s: %w", entry.destination, receiptErr)
@@ -343,6 +351,59 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		result.RecoveryCommand = ""
 	}
 	return result, nil
+}
+
+// FinalizeRepositoryTransferWorkLogs completes durable relocation intents left
+// after the repository and its linked worktrees moved successfully. Every
+// pending intent must bind the exact transfer identities and live destination
+// origin before WB appends its immutable completion.
+func FinalizeRepositoryTransferWorkLogs(ctx context.Context, options RepositoryRelocateOptions) ([]string, error) {
+	now := options.Now
+	if now == nil {
+		now = time.Now
+	}
+	destination, err := CanonicalRepositoryPath(options.ProjectsRoot, options.DestinationRepository)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := repositoryRelocateWorktrees(ctx, destination, destination)
+	if err != nil {
+		return nil, err
+	}
+	home, err := wbhome.Root(options.ProjectsRoot)
+	if err != nil {
+		return nil, err
+	}
+	var receipts []string
+	for _, entry := range entries {
+		claim, _, _, claimErr := activeWorkLogClaim(home, entry.destination)
+		if errors.Is(claimErr, errWorkLogProjectionNotFound) {
+			continue
+		}
+		if claimErr != nil {
+			return nil, fmt.Errorf("resolve transferred Work Log claim for %s: %w", entry.destination, claimErr)
+		}
+		intent, _, intentErr := pendingRelocationIntent(home, claim, entry.destination, claim.Branch, entry.head)
+		if intentErr != nil {
+			return nil, intentErr
+		}
+		if intent == nil {
+			continue
+		}
+		if intent.To != "repository" || intent.SourceRepository != options.SourceRepository ||
+			intent.DestinationRepository != options.DestinationRepository || intent.RemoteURL != options.RemoteURL {
+			return nil, fmt.Errorf("pending Work Log relocation intent does not match repository transfer")
+		}
+		if err := corroborateRepositoryRelocation(ctx, entry.destination, options.DestinationRepository); err != nil {
+			return nil, err
+		}
+		_, receiptPath, receiptErr := appendRelocationReceipt(home, claim, intent, now().UTC())
+		if receiptErr != nil {
+			return nil, fmt.Errorf("complete transferred Work Log intent for %s: %w", entry.destination, receiptErr)
+		}
+		receipts = append(receipts, receiptPath)
+	}
+	return receipts, nil
 }
 
 func exactOriginURLs(ctx context.Context, repository string, push bool) ([]string, error) {
@@ -438,9 +499,6 @@ func disposableDestinationReason(ctx context.Context, destination string, option
 	if err != nil || pushRemote.Identity.Repository != options.DestinationRepository {
 		return "push origin does not identify the destination repository"
 	}
-	if _, err := git(ctx, destination, "fetch", "--prune", "--tags", "origin"); err != nil {
-		return "cannot refresh destination from origin"
-	}
 	status, err := gitops.Status(destination)
 	if err != nil {
 		return "cannot inspect destination status"
@@ -460,27 +518,42 @@ func disposableDestinationReason(ctx context.Context, destination string, option
 	if err != nil || head != expectedHead {
 		return "destination HEAD differs from the canonical remote default branch"
 	}
-	branches, err := git(ctx, destination, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+	remoteOutput, err := gitRawOutput(ctx, destination, "ls-remote", "--refs", "origin")
 	if err != nil {
-		return "cannot inspect destination branches"
+		return "cannot inspect destination remote refs"
 	}
-	for _, local := range strings.Fields(branches) {
-		localHead, localErr := git(ctx, destination, "rev-parse", "refs/heads/"+local)
-		remoteHead, remoteErr := git(ctx, destination, "rev-parse", "refs/remotes/origin/"+local)
-		if localErr != nil || remoteErr != nil || localHead != remoteHead {
-			return "destination has a local-only or unpushed branch " + local
+	remoteRefs := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(remoteOutput), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !isGitObjectID(fields[0]) || !strings.HasPrefix(fields[1], "refs/") {
+			return "destination remote returned an invalid ref advertisement"
 		}
+		remoteRefs[fields[1]] = fields[0]
 	}
-	tags, err := git(ctx, destination, "for-each-ref", "--format=%(refname:short)", "refs/tags")
+	localOutput, err := gitRawOutput(ctx, destination, "for-each-ref", "--format=%(refname) %(objectname)")
 	if err != nil {
-		return "cannot inspect destination tags"
+		return "cannot inspect destination refs"
 	}
-	for _, tag := range strings.Fields(tags) {
-		local, localErr := git(ctx, destination, "rev-parse", "refs/tags/"+tag)
-		remoteOutput, remoteErr := git(ctx, destination, "ls-remote", "--tags", "origin", "refs/tags/"+tag)
-		fields := strings.Fields(remoteOutput)
-		if localErr != nil || remoteErr != nil || len(fields) != 2 || fields[0] != local {
-			return "destination has a local-only or changed tag " + tag
+	for _, line := range strings.Split(strings.TrimSpace(localOutput), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || !isGitObjectID(fields[1]) {
+			return "destination contains an invalid local ref"
+		}
+		ref, object := fields[0], fields[1]
+		switch {
+		case strings.HasPrefix(ref, "refs/remotes/origin/"):
+			// Remote-tracking refs are derived cache state. All other local refs
+			// must either match the live remote advertisement or be refused.
+		case strings.HasPrefix(ref, "refs/heads/"):
+			if remoteRefs[ref] != object {
+				return "destination has a local-only or unpushed branch " + strings.TrimPrefix(ref, "refs/heads/")
+			}
+		case strings.HasPrefix(ref, "refs/tags/"):
+			if remoteRefs[ref] != object {
+				return "destination has a local-only or changed tag " + strings.TrimPrefix(ref, "refs/tags/")
+			}
+		default:
+			return "destination has unsupported local ref " + ref
 		}
 	}
 	return ""

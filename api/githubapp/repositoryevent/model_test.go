@@ -20,6 +20,9 @@ func TestEventContractAllowsOnlySafeRepositoryMetadata(t *testing.T) {
 	for name, mutate := range map[string]func(*Event){
 		"path":                    func(event *Event) { event.Repository = "/Users/alice/private" },
 		"ref":                     func(event *Event) { event.Ref = "main" },
+		"dot-prefixed ref part":   func(event *Event) { event.Ref = "refs/heads/foo/.bar" },
+		"lock-suffixed ref":       func(event *Event) { event.Ref = "refs/heads/foo.lock" },
+		"empty ref part":          func(event *Event) { event.Ref = "refs/heads/foo//bar" },
 		"reason":                  func(event *Event) { event.Reason = "webhook_payload" },
 		"rename without previous": func(event *Event) { event.Reason = ReasonRepositoryRenamed },
 	} {

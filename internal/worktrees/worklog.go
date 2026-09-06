@@ -2484,6 +2484,11 @@ func corroborateClaimAtPath(home, worktree, finalCommit string, projection workL
 			if intent == nil {
 				return fmt.Errorf("private work-log claim identity/path mismatch")
 			}
+			if intent.To == "repository" {
+				if err := corroborateRepositoryRelocation(context.Background(), worktree, intent.DestinationRepository); err != nil {
+					return err
+				}
+			}
 		} else if resolution.repository != claim.Repository {
 			if err := corroborateRepositoryRelocation(context.Background(), worktree, resolution.repository); err != nil {
 				return err

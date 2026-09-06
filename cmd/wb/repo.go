@@ -39,7 +39,7 @@ func newRepoTransferCleanupCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			if receipt == "" {
-				return fmt.Errorf("--receipt is required")
+				return usageError("--receipt is required")
 			}
 			result, err := worktrees.RecoverRepositoryTransferCleanup(command.Context(), worktrees.RepositoryTransferCleanupOptions{
 				ProjectsRoot: projectsRoot, ReceiptPath: receipt, Apply: apply,

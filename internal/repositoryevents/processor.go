@@ -17,11 +17,12 @@ import (
 )
 
 type SyncProcessor struct {
-	ProjectsRoot   string
-	relocate       func(context.Context, worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error)
-	sync           func(context.Context, discover.Repo, string, bool, bool) fleetsync.Result
-	verifyOrigin   func(string, string) error
-	recoverCleanup func(context.Context, worktrees.RepositoryTransferCleanupOptions) (worktrees.RepositoryTransferCleanupResult, error)
+	ProjectsRoot       string
+	relocate           func(context.Context, worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error)
+	sync               func(context.Context, discover.Repo, string, bool, bool) fleetsync.Result
+	verifyOrigin       func(string, string) error
+	recoverCleanup     func(context.Context, worktrees.RepositoryTransferCleanupOptions) (worktrees.RepositoryTransferCleanupResult, error)
+	finalizeRelocation func(context.Context, worktrees.RepositoryRelocateOptions) ([]string, error)
 }
 
 func (processor SyncProcessor) Process(ctx context.Context, event repositoryevent.Event, state ProcessState) (ProcessResult, error) {
@@ -50,18 +51,19 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 	if event.Reason == repositoryevent.ReasonRepositoryRenamed {
 		oldOwner, oldName := repositoryParts(event.PreviousRepository)
 		oldPath := filepath.Join(processor.ProjectsRoot, oldOwner, oldName)
+		branch := strings.TrimPrefix(event.Ref, "refs/heads/")
+		relocationOptions := worktrees.RepositoryRelocateOptions{
+			ProjectsRoot: processor.ProjectsRoot, SourceRepository: strings.TrimPrefix(event.PreviousRepository, "github.com/"),
+			DestinationRepository: strings.TrimPrefix(event.Repository, "github.com/"),
+			RemoteURL:             githubSSHURL(event.Repository), DefaultBranch: branch, Apply: true,
+			OnCleanupPending: state.OnCleanupPending,
+		}
 		if _, err := os.Stat(oldPath); err == nil {
 			relocate := processor.relocate
 			if relocate == nil {
 				relocate = worktrees.RelocateRepository
 			}
-			branch := strings.TrimPrefix(event.Ref, "refs/heads/")
-			result, err := relocate(ctx, worktrees.RepositoryRelocateOptions{
-				ProjectsRoot: processor.ProjectsRoot, SourceRepository: strings.TrimPrefix(event.PreviousRepository, "github.com/"),
-				DestinationRepository: strings.TrimPrefix(event.Repository, "github.com/"),
-				RemoteURL:             githubSSHURL(event.Repository), DefaultBranch: branch, Apply: true,
-				OnCleanupPending: state.OnCleanupPending,
-			})
+			result, err := relocate(ctx, relocationOptions)
 			if err != nil {
 				return out, fmt.Errorf("relocate renamed repository: %w", err)
 			}
@@ -78,6 +80,20 @@ func (processor SyncProcessor) Process(ctx context.Context, event repositoryeven
 			relocated = true
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return out, err
+		} else {
+			owner, name := repositoryParts(event.Repository)
+			destination := filepath.Join(processor.ProjectsRoot, owner, name)
+			if info, destinationErr := os.Stat(destination); destinationErr == nil && info.IsDir() {
+				finalize := processor.finalizeRelocation
+				if finalize == nil {
+					finalize = worktrees.FinalizeRepositoryTransferWorkLogs
+				}
+				if _, finalizeErr := finalize(ctx, relocationOptions); finalizeErr != nil {
+					return out, fmt.Errorf("finalize renamed repository Work Logs: %w", finalizeErr)
+				}
+			} else if destinationErr != nil && !errors.Is(destinationErr, os.ErrNotExist) {
+				return out, destinationErr
+			}
 		}
 	}
 	owner, name := repositoryParts(event.Repository)

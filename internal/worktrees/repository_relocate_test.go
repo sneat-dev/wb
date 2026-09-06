@@ -296,3 +296,122 @@ func TestRelocateRepositoryRefusesDirtyOrOccupiedDestination(t *testing.T) {
 		t.Fatalf("collision result = %#v, err=%v", result, err)
 	}
 }
+
+func TestFinalizeRepositoryTransferWorkLogsRecoversInterruptedCompletionAndVerifiesOrigin(t *testing.T) {
+	fixture := newGitFixture(t)
+	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
+	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
+	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
+	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.remote, oldRemote); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "transfer-receipt-recovery", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldRemote, newRemote); err != nil {
+		t.Fatal(err)
+	}
+	forced := errors.New("forced Work Log completion interruption")
+	options := RepositoryRelocateOptions{
+		ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app", DestinationRepository: "newco/renamed",
+		RemoteURL: newRemote, DefaultBranch: "main", Apply: true,
+		beforeWorkLogCompletion: func(string) error { return forced },
+	}
+	if _, err := RelocateRepository(context.Background(), options); !errors.Is(err, forced) {
+		t.Fatalf("relocation interruption error = %v", err)
+	}
+	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
+	movedWorktree := filepath.Join(destination, ".worktrees", "transfer-receipt-recovery")
+	if _, err := os.Stat(created[0].WorktreeDir); !os.IsNotExist(err) {
+		t.Fatalf("source worktree remains after verified move: %v", err)
+	}
+	gitTest(t, destination, "remote", "set-url", "origin", "git@github.com:other/repository.git")
+	gitTest(t, destination, "remote", "set-url", "--push", "origin", "git@github.com:other/repository.git")
+	options.beforeWorkLogCompletion = nil
+	if _, err := FinalizeRepositoryTransferWorkLogs(context.Background(), options); err == nil || !strings.Contains(err.Error(), "does not identify") {
+		t.Fatalf("mismatched-origin recovery error = %v", err)
+	}
+	gitTest(t, destination, "remote", "set-url", "origin", newRemote)
+	gitTest(t, destination, "remote", "set-url", "--push", "origin", newRemote)
+	receipts, err := FinalizeRepositoryTransferWorkLogs(context.Background(), options)
+	if err != nil || len(receipts) != 1 {
+		t.Fatalf("receipt recovery = %v, %v", receipts, err)
+	}
+	if repeated, err := FinalizeRepositoryTransferWorkLogs(context.Background(), options); err != nil || len(repeated) != 0 {
+		t.Fatalf("repeated receipt recovery = %v, %v", repeated, err)
+	}
+	view, _, err := LogShow(context.Background(), fixture.projectsRoot, movedWorktree)
+	if err != nil || view.Claim == nil || view.Claim.Repository != "newco/renamed" {
+		t.Fatalf("recovered Work Log view = %#v, %v", view.Claim, err)
+	}
+}
+
+func TestRelocateRepositoryPlanDoesNotFetchDisposableDestination(t *testing.T) {
+	options, destination, remote := newRepositoryTransferCollisionFixture(t)
+	head := gitTestOutput(t, destination, "rev-parse", "HEAD")
+	gitTest(t, remote, "update-ref", "refs/heads/unseen", head)
+	before := gitTestOutput(t, destination, "show-ref")
+	if strings.Contains(before, "refs/remotes/origin/unseen") {
+		t.Fatal("fixture unexpectedly fetched unseen remote branch")
+	}
+	result, err := RelocateRepository(context.Background(), options)
+	if err != nil || !result.Eligible || result.Applied {
+		t.Fatalf("relocation plan = %#v, err=%v", result, err)
+	}
+	after := gitTestOutput(t, destination, "show-ref")
+	if after != before {
+		t.Fatalf("dry-run mutated destination refs\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestRelocateRepositoryRefusesCustomDestinationRef(t *testing.T) {
+	options, destination, _ := newRepositoryTransferCollisionFixture(t)
+	gitTest(t, destination, "update-ref", "refs/notes/review", "HEAD")
+	result, err := RelocateRepository(context.Background(), options)
+	if err != nil || result.Eligible || !strings.Contains(result.Reason, "unsupported local ref refs/notes/review") {
+		t.Fatalf("custom-ref plan = %#v, err=%v", result, err)
+	}
+	if got := gitTestOutput(t, destination, "rev-parse", "refs/notes/review"); got == "" {
+		t.Fatal("custom ref disappeared during plan")
+	}
+}
+
+func newRepositoryTransferCollisionFixture(t *testing.T) (RepositoryRelocateOptions, string, string) {
+	t.Helper()
+	fixture := newGitFixture(t)
+	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
+	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
+	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
+	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.remote, oldRemote); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldRemote, newRemote); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, filepath.Dir(destination), "clone", newRemote, destination)
+	return RepositoryRelocateOptions{
+		ProjectsRoot: fixture.projectsRoot, SourceRepository: "acme/app", DestinationRepository: "newco/renamed",
+		RemoteURL: newRemote, DefaultBranch: "main",
+	}, destination, newRemote
+}

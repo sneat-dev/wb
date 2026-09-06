@@ -223,6 +223,29 @@ func TestSyncProcessorPersistsAndRecoversExactPendingTransferCleanup(t *testing.
 	}
 }
 
+func TestSyncProcessorDoesNotAcknowledgeFailedWorkLogFinalization(t *testing.T) {
+	projects := t.TempDir()
+	newPath := filepath.Join(projects, "acme", "new-app")
+	if err := os.MkdirAll(newPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	forced := errors.New("forced Work Log finalization failure")
+	processor := SyncProcessor{
+		ProjectsRoot: projects,
+		finalizeRelocation: func(context.Context, worktrees.RepositoryRelocateOptions) ([]string, error) {
+			return nil, forced
+		},
+		sync: func(context.Context, discover.Repo, string, bool, bool) fleetsync.Result {
+			t.Fatal("sync ran before Work Log finalization succeeded")
+			return fleetsync.Result{}
+		},
+	}
+	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-finalize", Repository: "github.com/acme/new-app", PreviousRepository: "github.com/acme/old-app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonRepositoryRenamed}
+	if _, err := processor.Process(context.Background(), event, ProcessState{}); !errors.Is(err, forced) {
+		t.Fatalf("processor finalization error = %v", err)
+	}
+}
+
 func TestQueueCheckpointFailureRestoresReplacementBeforeRestart(t *testing.T) {
 	projects, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
