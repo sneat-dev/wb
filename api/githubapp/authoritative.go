@@ -81,20 +81,20 @@ func (reader GitHubRESTProjectionReader) RefreshAuthoritativeProjection(ctx cont
 		return ProjectionSnapshot{}, err
 	}
 	if reader.HTTP == nil || reader.Tokens == nil {
-		return ProjectionSnapshot{}, errors.New("GitHub REST reader requires HTTP and token sources")
+		return ProjectionSnapshot{}, errors.New("github REST reader requires HTTP and token sources")
 	}
 	token, err := reader.Tokens.Token(ctx, delivery)
 	if err != nil {
-		return ProjectionSnapshot{}, fmt.Errorf("resolve GitHub installation token: %w", err)
+		return ProjectionSnapshot{}, fmt.Errorf("resolve github installation token: %w", err)
 	}
 	var repository githubRepository
 	err = reader.get(ctx, token, "/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo), &repository)
 	if err != nil {
-		return ProjectionSnapshot{}, fmt.Errorf("read GitHub repository: %w", err)
+		return ProjectionSnapshot{}, fmt.Errorf("read github repository: %w", err)
 	}
 	canonical := "github.com/" + owner + "/" + repo
 	if repository.FullName != "" && !strings.EqualFold(repository.FullName, owner+"/"+repo) && !strings.EqualFold(repository.FullName, canonical) {
-		return ProjectionSnapshot{}, fmt.Errorf("GitHub repository identity %q does not match delivery %q", repository.FullName, canonical)
+		return ProjectionSnapshot{}, fmt.Errorf("github repository identity %q does not match delivery %q", repository.FullName, canonical)
 	}
 	verifiedAt := reader.now()
 	eligibility, eligibilityErr := reader.readEligibility(ctx, token, owner, repo, verifiedAt)
@@ -114,10 +114,14 @@ func (reader GitHubRESTProjectionReader) RefreshAuthoritativeProjection(ctx cont
 	if err != nil {
 		return ProjectionSnapshot{}, fmt.Errorf("read releases: %w", err)
 	}
-	summary := Summary{Repositories: 1, OpenPulls: openPRs, MergedPulls: mergedPRs, OpenIssues: repository.OpenIssues - openPRs, Releases: releases}
+	openIssues := repository.OpenIssues - openPRs
+	if openIssues < 0 {
+		openIssues = 0
+	}
+	summary := Summary{Repositories: 1, OpenPulls: openPRs, MergedPulls: mergedPRs, OpenIssues: openIssues, Releases: releases}
 	updated := verifiedAt
 	if repository.DefaultBranch == "" {
-		return ProjectionSnapshot{}, errors.New("GitHub repository has no default branch")
+		return ProjectionSnapshot{}, errors.New("github repository has no default branch")
 	}
 	document := ProjectionDocument{Scope: ScopeRepository, ID: canonical, DisplayName: repository.Name, Summary: summary, UpdatedAt: updated, PublicOptIn: public}
 	if public {
@@ -126,13 +130,16 @@ func (reader GitHubRESTProjectionReader) RefreshAuthoritativeProjection(ctx cont
 	var org githubOrganization
 	err = reader.get(ctx, token, "/orgs/"+url.PathEscape(owner), &org)
 	if err != nil {
-		return ProjectionSnapshot{}, fmt.Errorf("read GitHub organization: %w", err)
+		return ProjectionSnapshot{}, fmt.Errorf("read github organization: %w", err)
 	}
 	orgID := "github.com/" + org.Login
 	if org.Login == "" {
 		orgID = "github.com/" + owner
 	}
-	orgDoc := ProjectionDocument{Scope: ScopeOrganization, ID: orgID, DisplayName: owner, Summary: Summary{Repositories: org.PublicRepos}, UpdatedAt: updated}
+	// The organization endpoint exposes public_repos, not the installation's
+	// complete repository set. Omitting aggregate counts avoids presenting a
+	// partial public count as an exact organization projection.
+	orgDoc := ProjectionDocument{Scope: ScopeOrganization, ID: orgID, DisplayName: owner, UpdatedAt: updated}
 	merges, err := reader.latestMerges(ctx, token, owner, repo)
 	if err != nil {
 		return ProjectionSnapshot{}, fmt.Errorf("read latest merges: %w", err)
@@ -148,7 +155,7 @@ func (reader GitHubRESTProjectionReader) readEligibility(ctx context.Context, to
 		return PublicEligibility{}, fmt.Errorf("read root README commit: %w", err)
 	}
 	if len(commits) != 1 || len(commits[0].SHA) != 40 {
-		return PublicEligibility{}, errors.New("GitHub root README has no exact commit")
+		return PublicEligibility{}, errors.New("github root README has no exact commit")
 	}
 	sha := commits[0].SHA
 	var content githubContent
@@ -156,7 +163,7 @@ func (reader GitHubRESTProjectionReader) readEligibility(ctx context.Context, to
 		return PublicEligibility{}, fmt.Errorf("read root README at %s: %w", sha, err)
 	}
 	if content.Encoding != "base64" {
-		return PublicEligibility{}, errors.New("GitHub root README is not base64 encoded")
+		return PublicEligibility{}, errors.New("github root README is not base64 encoded")
 	}
 	markdown, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content.Content, "\n", ""))
 	if err != nil {
@@ -219,7 +226,7 @@ func (reader GitHubRESTProjectionReader) get(ctx context.Context, token, path st
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-		return fmt.Errorf("GitHub API %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("github API %s: %s", response.Status, strings.TrimSpace(string(body)))
 	}
 	return json.NewDecoder(response.Body).Decode(value)
 }
