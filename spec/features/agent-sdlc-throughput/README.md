@@ -134,9 +134,10 @@ commit hook should normally only verify it.
 
 The WB repository's non-stream pre-push template runs `go vet ./...` plus an
 eight-process coverage run. On a four-core VM this can oversubscribe the machine
-and duplicates pull-request CI. Coverage and nightly full race deliberately use
-`-count=1`, bypassing Go's test-result cache while retaining compiler and
-module caches. Focused development tests should allow Go's result cache.
+and duplicates pull-request CI. Default coverage omits `-count=1` so unchanged
+successful packages can use Go's test-result cache. `-count=1` is reserved for
+intentional fresh reruns; nightly full race deliberately retains it. Focused
+development tests also allow Go's result cache.
 
 GitHub CI is clear and usefully parallel: format/tidy, vet/build, lint,
 eight-shard coverage, and scoped race are separate, while full-module race is
@@ -245,7 +246,7 @@ repository-wide formatting, tests, coverage, or race.
 | Commit | Staged diff/format plus cheap touched-package static checks | Reuse native caches; no tests. |
 | Development | Named test or affected package/direct dependants through WB | Allow Go test-result cache. |
 | Land candidate | Changed-file format plus affected static/test scope; widen for shared/build surfaces | Reuse matching WB receipts and native caches. |
-| Pull-request CI | Full tests/coverage policy and scoped race | Fresh policy-defined run. |
+| Pull-request CI | Full tests/coverage policy and scoped race | Allow native caches unless policy explicitly requires a fresh run. |
 | Nightly/manual CI | Full-module race and other expensive assurance | Fresh deliberate run. |
 
 Module manifests, lockfiles, build tags, generators, CI, and shared public APIs
@@ -1011,6 +1012,13 @@ outside WB's budget.
 Given three sessions request the same test for the same exact tree, toolchain,
 dependencies, scope, policy, and environment, then one subprocess runs and all
 three consume its receipt. A later request reuses the success.
+
+### AC: unchanged-go-coverage-reuses-test-cache
+
+Given WB runs default Go coverage against an unchanged package, then its
+generated `go test` command omits `-count=1` so Go may reuse a successful package
+result. An intentional fresh rerun names `-count=1` explicitly, and nightly full
+race remains a deliberate fresh run.
 
 ### AC: landed-target-reaches-registered-machines
 

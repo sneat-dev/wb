@@ -135,7 +135,7 @@ func runShardedCoverageWithDiagnosticsAndProgressOptions(ctx context.Context, mo
 	}
 	if len(unsharded) > 0 {
 		profile := filepath.Join(temporaryDirectory, "unsharded.cov")
-		arguments := []string{"test", "-count=1", "-coverprofile=" + profile}
+		arguments := goCoverageArguments(profile)
 		arguments = append(arguments, unsharded...)
 		jobs = append(jobs, goCoverageJob{label: "unsharded packages", arguments: arguments, profilePath: profile})
 	}
@@ -164,7 +164,7 @@ func runShardedCoverageWithDiagnosticsAndProgressOptions(ctx context.Context, mo
 			pattern := "^(" + strings.Join(shard, "|") + ")$"
 			jobs = append(jobs, goCoverageJob{
 				label:       fmt.Sprintf("%s shard %d/%d", planned.packagePath, shardIndex+1, len(planned.shards)),
-				arguments:   []string{"test", planned.packagePath, "-run", pattern, "-count=1", "-coverprofile=" + profile},
+				arguments:   goCoverageArguments(profile, planned.packagePath, "-run", pattern),
 				profilePath: profile,
 			})
 		}
@@ -223,6 +223,13 @@ func runShardedCoverageWithDiagnosticsAndProgressOptions(ctx context.Context, mo
 		return output.String(), maxAttempts, err
 	}
 	return output.String(), maxAttempts, nil
+}
+
+func goCoverageArguments(profile string, arguments ...string) []string {
+	result := append([]string{"test"}, arguments...)
+	// Do not add -count=1 here: it disables Go's package test-result cache.
+	// Use it only when a caller intentionally requires a fresh rerun.
+	return append(result, "-coverprofile="+profile)
 }
 
 // summarizeCoverageFailures emits the complete compact failure index before
