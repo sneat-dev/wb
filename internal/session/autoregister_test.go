@@ -210,6 +210,27 @@ func TestFindHarnessAncestorNamesOnlyKnownHarnesses(t *testing.T) {
 	}
 }
 
+func TestRuntimeForProcessEvidenceKeepsCodexRoleExact(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		evidence ProcessEvidence
+		want     string
+		ok       bool
+	}{
+		{name: "codex app server", evidence: ProcessEvidence{Executable: "/Applications/ChatGPT.app/Contents/Resources/codex", Args: []string{"codex", "app-server"}}, want: "codex", ok: true},
+		{name: "codex cli", evidence: ProcessEvidence{Executable: "/usr/local/bin/codex", Args: []string{"codex", "exec"}}},
+		{name: "other named harness", evidence: ProcessEvidence{Executable: "/usr/local/bin/claude", Args: []string{"claude"}}, want: "claude-code", ok: true},
+		{name: "generic shell", evidence: ProcessEvidence{Executable: "/bin/zsh", Args: []string{"zsh"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := runtimeForProcessEvidence(test.evidence)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("runtimeForProcessEvidence() = (%q, %t), want (%q, %t)", got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
 func TestLookupByWBSessionIDIgnoresParkedAndUnknownSessions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "sessions")
 	if _, err := Register(dir, Record{PID: os.Getpid(), WBSessionID: "wbs-live", Runtime: "codex"}); err != nil {

@@ -2,12 +2,7 @@
 
 package session
 
-import (
-	"bytes"
-	"strings"
-
-	"golang.org/x/sys/unix"
-)
+import "golang.org/x/sys/unix"
 
 // parentPID reads a process's parent through sysctl, which is where macOS
 // keeps it: there is no /proc, so the Linux reader answers "unknown" for every
@@ -25,19 +20,4 @@ func parentPID(pid int) (int, bool) {
 		return 0, false
 	}
 	return parent, true
-}
-
-// processName reads a process's executable name through the same sysctl. The
-// kernel returns a fixed-width NUL-padded buffer, so the name ends at the first
-// NUL rather than at the end of the array.
-func processName(pid int) string {
-	process, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
-	if err != nil || process == nil {
-		return ""
-	}
-	name := process.Proc.P_comm[:]
-	if end := bytes.IndexByte(name, 0); end >= 0 {
-		name = name[:end]
-	}
-	return strings.TrimSpace(string(name))
 }

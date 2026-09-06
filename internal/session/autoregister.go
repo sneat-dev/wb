@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -185,7 +186,12 @@ func findHarnessAncestor(startPID int) (int, string) {
 		if !ok || parent <= 1 {
 			return 0, ""
 		}
-		if runtime, ok := runtimeForProcessName(processName(parent)); ok {
+		evidence, ok := processEvidence(parent)
+		if !ok {
+			pid = parent
+			continue
+		}
+		if runtime, ok := runtimeForProcessEvidence(evidence); ok {
 			return parent, runtime
 		}
 		pid = parent
@@ -216,6 +222,17 @@ func runtimeForProcessName(name string) (string, bool) {
 	name = strings.TrimSuffix(name, ".exe")
 	runtime, ok := knownHarnessProcessNames[name]
 	return runtime, ok
+}
+
+func runtimeForProcessEvidence(evidence ProcessEvidence) (string, bool) {
+	runtime, ok := runtimeForProcessName(filepath.Base(filepath.Clean(evidence.Executable)))
+	if !ok {
+		return "", false
+	}
+	if runtime == "codex" && !processEvidenceMatchesRuntime(evidence, runtime) {
+		return "", false
+	}
+	return runtime, true
 }
 
 // envPID reads WB_AGENT_PID. A missing, malformed, or non-positive value is
