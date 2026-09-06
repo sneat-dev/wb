@@ -229,7 +229,11 @@ func classify(ctx context.Context, repo discover.Repo, projectsRoot string, dryR
 		}
 		if dryRun {
 			res.Status = RepositoryTransferRequired
-			res.Reason = "dry-run: relocation is eligible but was not applied"
+			res.Reason = fmt.Sprintf("dry-run: move %s to %s; update origin fetch and push URLs to %s; repair and verify %d Git worktrees; fetch and verify origin/%s",
+				relocated.SourceDir, relocated.DestinationDir, relocated.RemoteURL, len(relocated.Worktrees), relocated.DefaultBranch)
+			if relocated.RetiredDestinationDir != "" {
+				res.Reason += "; first preserve the verified disposable destination clone at " + relocated.RetiredDestinationDir
+			}
 			return res
 		}
 		res.Status = RepositoryTransferred

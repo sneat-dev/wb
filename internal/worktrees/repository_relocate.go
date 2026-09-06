@@ -140,6 +140,11 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 			result.Reason = "destination is not safely replaceable: " + reason
 			return result, nil
 		}
+		result.RetiredDestinationDir = filepath.Join(filepath.Dir(result.DestinationDir), ".wb-replaced-"+filepath.Base(result.DestinationDir)+"-"+expectedRemoteHead[:12])
+		if _, statErr := os.Lstat(result.RetiredDestinationDir); !errors.Is(statErr, os.ErrNotExist) {
+			result.Reason = "replacement quarantine already exists: " + result.RetiredDestinationDir
+			return result, nil
+		}
 	}
 	home, err := wbhome.Root(options.ProjectsRoot)
 	if err != nil {
@@ -194,10 +199,6 @@ func RelocateRepository(ctx context.Context, options RepositoryRelocateOptions) 
 		entry.intent = intent
 	}
 	if destinationExists {
-		result.RetiredDestinationDir = filepath.Join(filepath.Dir(result.DestinationDir), ".wb-replaced-"+filepath.Base(result.DestinationDir)+"-"+expectedRemoteHead[:12])
-		if _, statErr := os.Lstat(result.RetiredDestinationDir); !errors.Is(statErr, os.ErrNotExist) {
-			return result, fmt.Errorf("replacement quarantine already exists: %s", result.RetiredDestinationDir)
-		}
 		retired, retireErr := moveRenameDirectory(result.DestinationDir, result.RetiredDestinationDir, nil)
 		if retireErr != nil {
 			return result, fmt.Errorf("preserve disposable destination: %w", retireErr)
