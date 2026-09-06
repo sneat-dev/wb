@@ -323,7 +323,7 @@ func TestDaemonRestartProgressIsPhaseAwareAndBounded(t *testing.T) {
 	}
 }
 
-func TestDaemonRestartTextReportsPhasesAndJSONSuppressesProgress(t *testing.T) {
+func TestDaemonRestartReportsPhasesAndKeepsJSONStdoutClean(t *testing.T) {
 	for _, format := range []string{"text", "json"} {
 		t.Run(format, func(t *testing.T) {
 			root := t.TempDir()
@@ -342,20 +342,17 @@ func TestDaemonRestartTextReportsPhasesAndJSONSuppressesProgress(t *testing.T) {
 			if err := command.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			if format == "json" {
-				if stderr.Len() != 0 {
-					t.Fatalf("JSON restart emitted progress: %q", stderr.String())
+			for _, want := range []string{"draining daemon pid", "starting replacement daemon"} {
+				if !strings.Contains(stderr.String(), want) {
+					t.Fatalf("%s progress %q does not contain %q", format, stderr.String(), want)
 				}
+			}
+			if format == "json" {
 				var result daemonResult
 				if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Action != "restart" {
 					t.Fatalf("JSON restart = %#v, %v; output=%s", result, err, stdout.String())
 				}
 				return
-			}
-			for _, want := range []string{"draining daemon pid", "starting replacement daemon"} {
-				if !strings.Contains(stderr.String(), want) {
-					t.Fatalf("text progress %q does not contain %q", stderr.String(), want)
-				}
 			}
 			if !strings.Contains(stdout.String(), "daemon restart:") {
 				t.Fatalf("text result = %q", stdout.String())

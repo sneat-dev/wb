@@ -236,11 +236,8 @@ func newDaemonRestartCmd(deps daemonDependencies) *cobra.Command {
 			if err != nil {
 				return usageError(err.Error())
 			}
-			var progress func(string)
-			if format == "text" {
-				progress = func(phase string) {
-					_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon restart: %s\n", phase)
-				}
+			progress := func(phase string) {
+				_, _ = fmt.Fprintf(command.ErrOrStderr(), "wb: daemon restart: %s\n", phase)
 			}
 			result, err := newDaemonController(deps, projectsRoot).RestartWithProgress(command.Context(), ifRunning, progress)
 			if err != nil {
