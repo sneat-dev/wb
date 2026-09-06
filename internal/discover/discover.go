@@ -112,10 +112,10 @@ func ResolveCanonicalRepository(ctx context.Context, repo Repo) (CanonicalReposi
 // remote-only identity into one repository. This must happen before sync's
 // worker pool so no worker clones the destination while another moves source.
 func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.Context, Repo) (CanonicalRepository, error)) []Repo {
-	remoteOnly := map[string]Repo{}
+	remoteTargets := map[string]Repo{}
 	for _, repo := range repos {
-		if repo.Remote && !repo.Local && repo.Path == "" {
-			remoteOnly[repo.Slug()] = repo
+		if repo.Remote {
+			remoteTargets[repo.Slug()] = repo
 		}
 	}
 	type candidate struct {
@@ -131,14 +131,14 @@ func ReconcileTransfers(ctx context.Context, repos []Repo, resolve func(context.
 		if err != nil || canonical.Slug == repo.Slug() {
 			continue
 		}
-		if _, exists := remoteOnly[canonical.Slug]; exists {
+		if _, exists := remoteTargets[canonical.Slug]; exists {
 			byTarget[canonical.Slug] = append(byTarget[canonical.Slug], candidate{source: repo, canonical: canonical})
 		}
 	}
 	consumed := map[string]bool{}
 	var out []Repo
 	for target, candidates := range byTarget {
-		remote := remoteOnly[target]
+		remote := remoteTargets[target]
 		consumed[target] = true
 		for _, candidate := range candidates {
 			combined := remote
