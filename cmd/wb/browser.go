@@ -2,21 +2,30 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 )
 
-func openBrowser(path string) error {
-	absolute, err := filepath.Abs(path)
+func openBrowser(target string) error {
+	resolved, err := browserTarget(target)
 	if err != nil {
 		return err
 	}
-	name, args, err := browserCommand(runtime.GOOS, absolute)
+	name, args, err := browserCommand(runtime.GOOS, resolved)
 	if err != nil {
 		return err
 	}
 	return exec.Command(name, args...).Start()
+}
+
+func browserTarget(target string) (string, error) {
+	parsed, err := url.Parse(target)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+		return target, nil
+	}
+	return filepath.Abs(target)
 }
 
 func browserCommand(goos, path string) (string, []string, error) {

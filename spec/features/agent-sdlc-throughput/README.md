@@ -541,6 +541,12 @@ The dashboard surface is `https://sneat.work/bench/dashboard`, implemented in
 `sneat-co/workbench-web`; it remains after the scheduler, telemetry, and event
 contracts in delivery order.
 
+`wb dashboard` opens that hosted cross-machine view in the platform browser.
+`wb dashboard --local` starts or reuses the current machine's loopback daemon
+and opens its local view. Non-interactive and `--format=json` invocations return
+the resolved URL without launching a browser, so agents and scripts can discover
+the same surface without a desktop side effect.
+
 The WB-owned provider layer keeps the host boundary narrow. Its durable
 projection documents retain canonical GitHub subject IDs and explicit public
 opt-in state; `ProjectionKey` hashes `(scope, subject ID)` for stable document
