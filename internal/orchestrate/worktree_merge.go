@@ -235,7 +235,7 @@ type WorktreeMergePrepareOptions struct {
 	Progress            progress.Reporter
 	ProgressRequested   bool
 	// RebatchReceipt is an immutable, still-unlanded prepared or exact published
-	// checks-failed receipt whose sources are replaced additively in this prepare.
+	// pending/failed-check receipt whose sources are replaced additively.
 	RebatchReceipt string
 }
 

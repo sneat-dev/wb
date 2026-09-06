@@ -167,6 +167,29 @@ func TestReceiptCollisionAcknowledgementRevalidatesClaimAtRebatchAndCleanup(t *t
 	}
 }
 
+func TestCollisionAcknowledgedPreparingReceiptWithPublishedFieldsCannotRebatch(t *testing.T) {
+	fixture, receipt, options := collisionAcknowledgementFixture(t)
+	receipt.PullRequest = "41"
+	receipt.PublishedCandidateSHA = receipt.Candidate.SHA
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	receiptHash, err := worktreeMergeReceiptSHA256(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options.ExpectedReceiptSHA256 = receiptHash
+	options.Apply, options.Actor, options.Reason = true, "reviewer", "audited historical prepare receipt collision"
+	if _, err := AcknowledgeWorktreeMergeReceiptCollision(context.Background(), options); err != nil {
+		t.Fatal(err)
+	}
+	extra := createMergeSource(t, fixture, "collision-published-extra", "feature/collision-published-extra", "extra.go", "package app\n")
+	_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{receipt.Sources[0].Worktree, extra.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+	if err == nil {
+		t.Fatal("acknowledged preparing receipt with published fields was accepted")
+	}
+}
+
 func TestAcknowledgeWorktreeMergeReceiptCollisionRefusesMismatchedEvidenceWithoutWrite(t *testing.T) {
 	_, receipt, options := collisionAcknowledgementFixture(t)
 	options.ExpectedCandidateSHA = strings.Repeat("f", 40)

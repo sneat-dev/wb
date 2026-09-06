@@ -2602,6 +2602,34 @@ func TestPrepareWorktreeMergeRebatchesExactOpenChecksFailedReceipt(t *testing.T)
 	}
 }
 
+func TestPrepareWorktreeMergeRebatchesExactOpenPublishedPendingReceipt(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "pending-rebatch-first", "feature/pending-rebatch-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "pending-rebatch-second", "feature/pending-rebatch-second", "second.txt", "second\n")
+	receipt, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, receipt.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+receipt.Candidate.Branch)
+	receipt.Phase, receipt.Status, receipt.PullRequest, receipt.PublishedCandidateSHA = WorktreeMergePhaseLand, WorktreeMergePublished, "41", receipt.Candidate.SHA
+	if err := persistWorktreeMergeReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(receipt.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", receipt.Candidate.SHA)
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: receipt.ReceiptPath})
+	if err != nil || replacement.RebatchOf != receipt.ReceiptPath {
+		t.Fatalf("published pending rebatch = %+v err=%v", replacement, err)
+	}
+	if current, readErr := os.ReadFile(receipt.ReceiptPath); readErr != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("published pending receipt changed: err=%v", readErr)
+	}
+}
+
 func TestPrepareWorktreeMergeRefusesMalformedPreparedReceipt(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -2641,12 +2669,14 @@ func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testin
 		driftRemote bool
 		driftTarget bool
 		badReceipt  bool
+		status      WorktreeMergeStatus
 	}{
 		{name: "closed pull request", prState: "closed"},
 		{name: "merged pull request", prState: "closed", merged: true},
 		{name: "candidate ref drift", driftRemote: true},
 		{name: "target drift", driftTarget: true},
 		{name: "receipt candidate mismatch", badReceipt: true},
+		{name: "published pending candidate ref drift", status: WorktreeMergePublished, driftRemote: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newEngineFixture(t)
@@ -2657,7 +2687,11 @@ func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testin
 				t.Fatal(err)
 			}
 			runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
-			first.Phase, first.Status, first.PullRequest, first.PublishedCandidateSHA = WorktreeMergePhaseLand, WorktreeMergeChecksFailed, "41", first.Candidate.SHA
+			status := test.status
+			if status == "" {
+				status = WorktreeMergeChecksFailed
+			}
+			first.Phase, first.Status, first.PullRequest, first.PublishedCandidateSHA = WorktreeMergePhaseLand, status, "41", first.Candidate.SHA
 			if test.badReceipt {
 				first.PublishedCandidateSHA = first.TargetSHA
 			}
