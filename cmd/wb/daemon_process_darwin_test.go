@@ -24,3 +24,13 @@ func TestLaunchdPlistUsesLaunchdDictionaryAndEscapesArguments(t *testing.T) {
 		t.Fatalf("plist arguments are not escaped: %s", text)
 	}
 }
+
+func TestLaunchdPIDFromAuthoritativeJobState(t *testing.T) {
+	output := "gui/501/dev.sneat.wb.daemon = {\n\tstate = running\n\tpid = 65918\n}"
+	if pid, ok := launchdPIDFromOutput(output); !ok || pid != 65918 {
+		t.Fatalf("launchd pid = %d, %t", pid, ok)
+	}
+	if pid, ok := launchdPIDFromOutput("state = exited\nlast exit code = 1"); ok || pid != 0 {
+		t.Fatalf("stopped launchd job reported pid = %d, %t", pid, ok)
+	}
+}
