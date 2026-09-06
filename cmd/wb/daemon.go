@@ -71,29 +71,31 @@ func publicDaemonState(state daemon.State) daemonPublicState {
 }
 
 type daemonDependencies struct {
-	now        func() time.Time
-	executable func() (string, error)
-	start      func(string, []string, string) (int, error)
-	alive      func(int) bool
-	stop       func(int) error
-	sleep      func(time.Duration)
-	version    func() versionInfo
-	token      func() (string, error)
-	health     func(context.Context, string) error
-	rawPolicy  func(string) (bool, string, error)
+	now         func() time.Time
+	executable  func() (string, error)
+	start       func(string, []string, string) (int, error)
+	alive       func(int) bool
+	stop        func(int) error
+	sleep       func(time.Duration)
+	version     func() versionInfo
+	token       func() (string, error)
+	health      func(context.Context, string) error
+	rawPolicy   func(string) (bool, string, error)
+	localClient func(string, string) (*http.Client, error)
 }
 
 func defaultDaemonDependencies() daemonDependencies {
 	return daemonDependencies{
-		now:        func() time.Time { return time.Now().UTC() },
-		executable: os.Executable,
-		start:      startDaemonProcess,
-		alive:      daemonProcessAlive,
-		stop:       stopDaemonProcess,
-		sleep:      time.Sleep,
-		version:    collectVersion,
-		token:      daemonOwnerToken,
-		health:     daemonHealthy,
+		now:         func() time.Time { return time.Now().UTC() },
+		executable:  os.Executable,
+		start:       startDaemonProcess,
+		alive:       daemonProcessAlive,
+		stop:        stopDaemonProcess,
+		sleep:       time.Sleep,
+		version:     collectVersion,
+		token:       daemonOwnerToken,
+		health:      daemonHealthy,
+		localClient: daemonLocalHTTPClient,
 		rawPolicy: func(root string) (bool, string, error) {
 			path, err := daemon.RawExecutionPolicyPath()
 			if err != nil {
@@ -576,6 +578,11 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 	rpcPath, rpcHandler := daemonv1connect.NewDaemonServiceHandler(queue)
 	rpcMux := http.NewServeMux()
 	rpcMux.Handle(rpcPath, authenticatedDaemonHandler(ownerToken, rpcHandler))
+	fileBridge, err := newDaemonFileBridgeServer(projectsRoot, ownerToken, fmt.Sprint(state.Queue.Generation), rpcMux)
+	if err != nil {
+		_ = listener.Close()
+		return fmt.Errorf("prepare daemon file bridge: %w", err)
+	}
 	rpcServer := &http.Server{Handler: rpcMux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signalDaemonContext(command.Context())
 	defer stop()
@@ -592,9 +599,10 @@ func serveDashboard(command *cobra.Command, deps daemonDependencies, address str
 		_ = listener.Close()
 		return err
 	}
-	errorsCh := make(chan error, 2)
+	errorsCh := make(chan error, 3)
 	go func() { errorsCh <- server.Serve(listener) }()
 	go func() { errorsCh <- rpcServer.Serve(localListener) }()
+	go func() { errorsCh <- fileBridge.Serve(ctx) }()
 	err = <-errorsCh
 	if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 		return nil

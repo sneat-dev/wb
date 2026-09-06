@@ -83,6 +83,17 @@ func TestRunWorkerFlagRequiresAsyncCommandMode(t *testing.T) {
 	}
 }
 
+func TestRunIdempotencyKeyRequiresAsyncCommandMode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"run", "--idempotency-key", "retry-1", "--", "go", "test"}, &stdout, &stderr)
+	if code != exitUsage {
+		t.Fatalf("exit code = %d, want usage code %d; stderr=%s", code, exitUsage, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--idempotency-key requires --async command mode") {
+		t.Errorf("stderr does not explain idempotency scope: %s", stderr.String())
+	}
+}
+
 func TestDaemonRawSubmitReportsAdministratorOptInWithoutWritingPolicy(t *testing.T) {
 	root := t.TempDir()
 	policyPath := filepath.Join(t.TempDir(), "daemon-raw-exec.json")

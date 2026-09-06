@@ -3,9 +3,13 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"connectrpc.com/connect"
@@ -49,7 +53,7 @@ func newDaemonOperationClient(root, token string) (daemonv1connect.DaemonService
 	return daemonv1connect.NewDaemonServiceClient(client, daemonRPCBaseURL), nil
 }
 
-func daemonOperationClient(ctx context.Context, deps daemonDependencies, root string) (daemonv1connect.DaemonServiceClient, error) {
+func daemonOperationClient(ctx context.Context, deps daemonDependencies, root string, progress io.Writer) (daemonv1connect.DaemonServiceClient, error) {
 	controller := newDaemonController(deps, root)
 	result, err := controller.Start(ctx, daemonDefaultListen)
 	if err != nil {
@@ -62,10 +66,15 @@ func daemonOperationClient(ctx context.Context, deps daemonDependencies, root st
 	if !found || state.Status != "ready" || !result.ProcessManagerRunning {
 		return nil, fmt.Errorf("local daemon is not ready")
 	}
-	client, err := newDaemonOperationClient(root, state.OwnerToken)
+	localClient := deps.localClient
+	if localClient == nil {
+		localClient = daemonLocalHTTPClient
+	}
+	httpClient, err := localClient(root, state.OwnerToken)
 	if err != nil {
 		return nil, err
 	}
+	client := daemonv1connect.NewDaemonServiceClient(httpClient, daemonRPCBaseURL)
 	deadline := time.Now().Add(time.Second)
 	var probeErr error
 	for {
@@ -73,7 +82,21 @@ func daemonOperationClient(ctx context.Context, deps daemonDependencies, root st
 			return client, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("connect to authenticated local daemon: %w", probeErr)
+			if !daemonFileBridgeFallbackAllowed(probeErr) {
+				return nil, fmt.Errorf("connect to authenticated local daemon: %w", probeErr)
+			}
+			bridgeHTTPClient, bridgeErr := newDaemonFileBridgeHTTPClient(root, fmt.Sprint(state.Queue.Generation))
+			if bridgeErr != nil {
+				return nil, fmt.Errorf("local daemon socket unavailable (%v) and protected file bridge unavailable: %w", probeErr, bridgeErr)
+			}
+			if progress != nil {
+				_, _ = fmt.Fprintln(progress, "wb: local daemon socket unavailable; using protected project-root file bridge")
+			}
+			bridgeClient := daemonv1connect.NewDaemonServiceClient(bridgeHTTPClient, daemonRPCBaseURL)
+			if _, bridgeErr = bridgeClient.GetDaemonInfo(ctx, connect.NewRequest(&daemonv1.GetDaemonInfoRequest{})); bridgeErr != nil {
+				return nil, fmt.Errorf("connect to daemon through protected file bridge: %w", bridgeErr)
+			}
+			return bridgeClient, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -81,4 +104,23 @@ func daemonOperationClient(ctx context.Context, deps daemonDependencies, root st
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+func daemonFileBridgeFallbackAllowed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if code := connect.CodeOf(err); code != connect.CodeUnknown && code != connect.CodeUnavailable {
+		return false
+	}
+	if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	for _, fragment := range []string{"operation not permitted", "permission denied", "connection refused", "no such file or directory"} {
+		if strings.Contains(lower, fragment) {
+			return true
+		}
+	}
+	return false
 }

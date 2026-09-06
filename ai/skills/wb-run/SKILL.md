@@ -12,6 +12,7 @@ without changing agent instructions:
 ```sh
 wb run -- go test ./internal/worktrees -run TestCreate
 wb run --async --worker codex-local -- go test ./internal/worktrees -run TestCreate
+wb run --async --worker codex-local --idempotency-key create-2 -- go test ./internal/worktrees -run TestCreate
 wb run -- git status --short
 wb run --history --days 7
 ```
@@ -20,6 +21,11 @@ Synchronous command mode preserves standard streams and the child exit code.
 `--async --worker <stable-id>` submits through the authenticated durable local
 daemon for only that worker identity and returns a JSON operation receipt. WB
 rejects a missing target rather than choosing another compatible sandbox.
+If a bridge response is lost, repeating the exact command reattaches to its
+unresolved envelope-bound idempotency key. Use a distinct
+`--idempotency-key` when intentionally submitting identical argv while an
+earlier identical request is unresolved. Recovery expires after seven days;
+completed and orphaned envelopes are removed after one day.
 Start a long-lived worker from inside the same harness sandbox before
 submitting daemon-backed work:
 
@@ -38,6 +44,12 @@ WB commands must not create it. CPU-heavy work shares a cross-process budget of
 admitted units to supported tools. `wb run --history` summarizes privacy-safe
 wall and CPU cost from the current worktree without exposing raw arguments or
 output. The filesystem lease remains the worker-level safety belt.
+
+Keep the worker inside the harness sandbox. WB prefers the local protected
+socket and reports an explicit project-root file-bridge fallback only for
+socket permission or reachability failures. The fallback keeps the same daemon
+queue authority and uses authenticated, generation- and worker-fenced atomic
+envelopes; it is never a reason to run the worker outside the sandbox.
 
 Use a recipe instead of re-reading and editing the same files repository by
 repository.

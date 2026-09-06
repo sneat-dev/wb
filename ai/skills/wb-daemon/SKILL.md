@@ -32,6 +32,15 @@ sandbox and environment, and returns a bounded receipt. A reconnect creates a
 new generation of the same stable identity. Queued work survives daemon
 restart; an interrupted running lease becomes `recovery_required`.
 
+WB tries the protected local socket first. If the harness sandbox returns a
+permission or reachability error, the client reports that it is using the
+project-root file bridge. Do not move the worker outside the sandbox. The bridge
+uses owner-only atomic request and response envelopes under
+`<projects-root>/.wb/runtime/file-bridge`; every envelope is authenticated and
+fenced to the scheduler generation and explicit worker ID. It carries no
+environment overrides. Authentication, protocol, or generation failures never
+trigger fallback or local execution.
+
 Raw command submission from the daemon process is a trusted fallback and is
 disabled by default. An administrator may opt in by creating
 `~/.config/wb/daemon-raw-exec.json` outside the projects root with mode `0600`
@@ -65,10 +74,19 @@ queue owner record to the installed executable. `stop` and `restart` preserve
 that handoff record; `restart --if-running` is safe for the verified
 self-update path because it never starts a daemon that was absent.
 
-The dashboard stays on read-only loopback HTTP. Mutating operation RPCs use a
-separate mode-0600 Unix socket plus the private lifecycle owner token. Windows
-builds expose the equivalent named-pipe endpoint contract and refuse rather
-than falling back to TCP until the native adapter is enabled.
+The dashboard stays on read-only loopback HTTP. Mutating operation RPCs prefer
+a separate mode-0600 Unix socket plus the private lifecycle owner token.
+Sandbox-denied socket calls use the authenticated owner-only project-root file
+bridge without moving execution outside the sandbox. Windows builds expose the
+equivalent named-pipe endpoint contract and fail closed until either its native
+adapter or owner-only bridge ACL verification is available; WB never falls back
+to TCP.
+
+The bridge uses a separate owner-only integrity key that survives daemon owner
+token and generation rotation. A lost Submit response is replayed only with the
+same envelope-bound idempotency key. Ambiguous worker mutation RPCs require
+reconnect and are never replayed; bounded stale envelope cleanup preserves a
+seven-day Submit recovery window.
 
 There is no remote mutation endpoint. Normal jobs are leased only to compatible
 registered workers over the protected local Connect RPC transport. The queue
