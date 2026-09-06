@@ -1,6 +1,7 @@
 package worktrees
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -112,6 +113,116 @@ func TestRelocateRepositoryMovesCanonicalAndNestedWorktreePreservingClaim(t *tes
 	if err != nil || len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].Repository != "newco/renamed" ||
 		planned.Results[0].WorktreeDir != movedWorktree || planned.Results[0].MergedPullRequest == nil || planned.Results[0].MergedPullRequest.Number != 8 {
 		t.Fatalf("transferred merged cleanup plan = %#v, err=%v", planned, err)
+	}
+}
+
+// TestCleanupRecoversLegacyRepositoryTransferClaim proves the dogfood failure
+// shape: the repository moved before WB started writing transfer receipts. The
+// immutable claim keeps its old repository/path, while Git and origin identify
+// the new repository. Cleanup must first prove this exact head landed, then
+// append the missing evidence without rewriting that claim.
+func TestCleanupRecoversLegacyRepositoryTransferClaim(t *testing.T) {
+	fixture := newGitFixture(t)
+	remoteRoot := filepath.Join(filepath.Dir(fixture.projectsRoot), "remotes")
+	oldRemote := filepath.Join(remoteRoot, "acme", "app.git")
+	newRemote := filepath.Join(remoteRoot, "newco", "renamed.git")
+	if err := os.MkdirAll(filepath.Dir(oldRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.remote, oldRemote); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, fixture.canonical, "remote", "set-url", "origin", oldRemote)
+	created, err := Create(context.Background(), []string{"acme/app"}, CreateOptions{
+		ProjectsRoot: fixture.projectsRoot, Operation: "legacy-transfer-cleanup", WorkLog: WorkLogOptions{Model: "unknown"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, projection, claimPath, err := activeWorkLogClaim(fixture.home, created[0].WorktreeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBefore, err := os.ReadFile(claimPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(created[0].WorktreeDir, "feature.txt"), []byte("legacy transfer\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTest(t, created[0].WorktreeDir, "add", "feature.txt")
+	gitTest(t, created[0].WorktreeDir, "commit", "-m", "legacy transferred feature")
+	head := gitTestOutput(t, created[0].WorktreeDir, "rev-parse", "HEAD")
+	gitTest(t, created[0].WorktreeDir, "push", "-u", "origin", created[0].Branch)
+
+	if err := os.MkdirAll(filepath.Dir(newRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldRemote, newRemote); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(fixture.projectsRoot, "newco", "renamed")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(fixture.canonical, destination); err != nil {
+		t.Fatal(err)
+	}
+	movedWorktree := filepath.Join(destination, ".worktrees", "legacy-transfer-cleanup")
+	gitTest(t, destination, "remote", "set-url", "origin", newRemote)
+	gitTest(t, destination, "remote", "set-url", "--push", "origin", newRemote)
+	gitTest(t, destination, "worktree", "repair", movedWorktree)
+	gitTest(t, destination, "merge", "--no-ff", created[0].Branch, "-m", "merge legacy transferred feature")
+	gitTest(t, destination, "push", "origin", "main")
+
+	mergedAt := time.Date(2026, time.September, 6, 20, 0, 0, 0, time.UTC)
+	installOpenAndMergedExactHeadPullRequestFixture(t, head, "main", "main", mergedAt)
+	blocked, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "legacy-transfer-cleanup", Base: "main", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil || len(blocked.Results) != 1 || blocked.Results[0].Eligible || blocked.Results[0].OpenPullRequest == nil {
+		t.Fatalf("legacy transfer cleanup bypassed open PR fence: %#v, err=%v", blocked, err)
+	}
+	if resolution, err := latestRelocationResolution(fixture.home, claim, movedWorktree); err != nil || resolution.receipt != nil {
+		t.Fatalf("open PR created legacy transfer evidence: %#v err=%v", resolution, err)
+	}
+	installTransferredPullRequestFixture(t, created[0].Branch, head, mergedAt)
+	planned, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "legacy-transfer-cleanup", Base: "main", OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil || len(planned.Results) != 1 || !planned.Results[0].Eligible || planned.Results[0].MergedPullRequest == nil || planned.Results[0].MergedPullRequest.Number != 8 {
+		t.Fatalf("legacy transfer cleanup plan = %#v, err=%v", planned, err)
+	}
+	if resolution, err := latestRelocationResolution(fixture.home, claim, movedWorktree); err != nil || resolution.receipt != nil {
+		t.Fatalf("legacy claim had transfer evidence before cleanup: %#v err=%v", resolution, err)
+	}
+
+	applied, err := Cleanup(context.Background(), CleanupOptions{
+		ProjectsRoot: fixture.projectsRoot, Task: "legacy-transfer-cleanup", Base: "main", Apply: true, DeleteRemote: true, OlderThan: 0,
+		Now: func() time.Time { return mergedAt.Add(time.Hour) },
+	})
+	if err != nil || len(applied.Results) != 1 || !applied.Results[0].Applied {
+		t.Fatalf("legacy transfer cleanup apply = %#v, err=%v", applied, err)
+	}
+	claimAfter, err := os.ReadFile(claimPath)
+	if err != nil || !bytes.Equal(claimBefore, claimAfter) {
+		t.Fatalf("immutable claim changed during recovery: err=%v", err)
+	}
+	resolution, err := latestRelocationResolution(fixture.home, claim, movedWorktree)
+	if err != nil || resolution.receipt == nil || resolution.repository != "newco/renamed" || resolution.worktree != movedWorktree {
+		t.Fatalf("legacy transfer recovery evidence = %#v, err=%v", resolution, err)
+	}
+	if _, statErr := os.Stat(movedWorktree); !os.IsNotExist(statErr) {
+		t.Fatalf("recovered worktree remains after cleanup: %v", statErr)
+	}
+	if got := remoteBranchForTest(t, destination, created[0].Branch); got != "" {
+		t.Fatalf("recovered source branch remains at %s", got)
+	}
+	terminalPath := filepath.Join(fixture.home, "worklogs", projection.EffortID, "runs", projection.RunID, "terminals", projection.ClaimID+".json")
+	if _, err := os.Stat(terminalPath); err != nil {
+		t.Fatalf("cleanup did not seal a terminal after recovery: %v", err)
 	}
 }
 

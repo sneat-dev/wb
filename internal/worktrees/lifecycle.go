@@ -2297,7 +2297,7 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 	for index, entry := range listed.Results {
 		eligible, reason := cleanupEligibility(entry, normalized, now)
 		if eligible {
-			if err := preflightWorkLogClaimReadOnly(resolution.Write.Home, entry.WorktreeDir, entry.HeadSHA); err != nil {
+			if err := preflightWorkLogSealForCleanup(ctx, resolution.Write.Home, normalized.ProjectsRoot, entry); err != nil {
 				eligible = false
 				reason = fmt.Sprintf("preflight Work Log for %s: %v", entry.Repository, err)
 			}
@@ -2569,6 +2569,13 @@ func Cleanup(ctx context.Context, options CleanupOptions) (CleanupOutcome, error
 				closeCanonical()
 				worktree.close()
 				return err
+			}
+			if err := preflightWorkLogSeal(resolution.Write.Home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
+				if recoveryErr := recordLegacyRepositoryRelocationForCleanup(ctx, resolution.Write.Home, normalized.ProjectsRoot, refreshed); recoveryErr != nil {
+					closeCanonical()
+					worktree.close()
+					return fmt.Errorf("recover legacy Work Log repository relocation before removing %s: %w", refreshed.WorktreeDir, recoveryErr)
+				}
 			}
 			// Archive the recoverable run record while every Git asset still
 			// exists. Remote branch deletion is destructive too, so it must never
@@ -4635,7 +4642,7 @@ func preflightCleanupRepository(
 	if err := canonical.validate(); err != nil {
 		return ListResult{}, fmt.Errorf("cleanup canonical repository changed during preflight: %w", err)
 	}
-	if err := preflightWorkLogSeal(home, refreshed.WorktreeDir, refreshed.HeadSHA); err != nil {
+	if err := preflightWorkLogSealForCleanup(ctx, home, options.ProjectsRoot, refreshed); err != nil {
 		return ListResult{}, fmt.Errorf("preflight Work Log for %s: %w", refreshed.Repository, err)
 	}
 	return refreshed, nil

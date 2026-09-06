@@ -1912,7 +1912,7 @@ func sealWorkLogForRecycleWithEvidence(home, worktree, finalCommit, disposition 
 	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
 		return fmt.Errorf("read immutable work-log claim: %w", err)
 	}
-	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
+	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
 	var sealedAt time.Time
@@ -2007,7 +2007,7 @@ func acceptExistingCleanupTerminal(home, worktree, finalCommit string) error {
 	if readClaimErr != nil {
 		return fmt.Errorf("read immutable work-log claim: %w", readClaimErr)
 	}
-	if err := corroborateClaim(worktree, finalCommit, projection, claim); err != nil {
+	if err := corroborateClaimAtPath(home, worktree, finalCommit, projection, claim); err != nil {
 		return err
 	}
 	terminals, err := openPrivateChild(runDir, "terminals", false)
@@ -2320,6 +2320,164 @@ func preflightWorkLogClaimReadOnly(home, worktree, finalCommit string) error {
 		return err
 	}
 	return corroborateWorkLogProjection(home, worktree, finalCommit, projection)
+}
+
+// preflightWorkLogSealForCleanup keeps ordinary Work Log corroboration intact
+// while recognizing one historical repository-transfer shape. Older WB
+// releases could move a repository after its GitHub transfer without the
+// relocation receipt current releases require. Planning never writes; apply
+// appends that receipt only after normal cleanup has re-proved the exact head
+// is contained and its usual safety fences hold.
+func preflightWorkLogSealForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult) error {
+	ordinaryErr := preflightWorkLogSeal(home, entry.WorktreeDir, entry.HeadSHA)
+	if ordinaryErr == nil {
+		return nil
+	}
+	matched, recoveryErr := legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, false)
+	if recoveryErr != nil {
+		return recoveryErr
+	}
+	if !matched {
+		return ordinaryErr
+	}
+	return nil
+}
+
+// recordLegacyRepositoryRelocationForCleanup records append-only transfer
+// evidence immediately before normal sealing. It never changes the immutable
+// claim, and a failed recovery leaves both claim and checkout untouched.
+func recordLegacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult) error {
+	matched, err := legacyRepositoryRelocationForCleanup(ctx, home, projectsRoot, entry, true)
+	if err != nil {
+		return err
+	}
+	if !matched {
+		return fmt.Errorf("private work-log claim identity/path mismatch is not an eligible legacy repository relocation")
+	}
+	return preflightWorkLogSeal(home, entry.WorktreeDir, entry.HeadSHA)
+}
+
+// legacyRepositoryRelocationForCleanup accepts only a deterministic old/new
+// repository placement, a verified current origin, and the exact head that
+// cleanup already proved contained. Generic path mismatches, live pull
+// requests, and interrupted ordinary relocations still fail closed.
+func legacyRepositoryRelocationForCleanup(ctx context.Context, home, projectsRoot string, entry ListResult, record bool) (bool, error) {
+	if entry.OpenPullRequest != nil {
+		return false, fmt.Errorf("cannot recover legacy repository relocation while the branch has an open pull request: %s", entry.OpenPullRequest.URL)
+	}
+	if !entry.IntegratedAtOrigin || entry.RemoteTargetSHA == "" {
+		return false, fmt.Errorf("cannot recover legacy repository relocation until the exact immutable head is contained in the fetched origin target")
+	}
+	if entry.HeadSHA == "" || !isGitObjectID(entry.HeadSHA) {
+		return false, fmt.Errorf("legacy repository relocation has no exact immutable head")
+	}
+	contained, err := isAncestor(ctx, entry.CanonicalDir, entry.HeadSHA, entry.RemoteTargetSHA)
+	if err != nil {
+		return false, fmt.Errorf("recheck exact immutable head containment: %w", err)
+	}
+	if !contained {
+		return false, fmt.Errorf("exact immutable head is no longer contained in the fetched origin target")
+	}
+
+	projection, err := readWorkLogProjectionForReadOnlyClaim(entry.WorktreeDir)
+	if errors.Is(err, errWorkLogProjectionNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if projection.Lifecycle != "active" {
+		return false, fmt.Errorf("work-log projection is %s, not active", projection.Lifecycle)
+	}
+	run, _, err := openWorkLogRun(home, projection.EffortID, projection.RunID, false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = run.Close() }()
+	claims, err := openPrivateChild(run, "claims", false)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = claims.Close() }()
+	var claim workLogClaim
+	if err := readJSONAt(claims, projection.ClaimID+".json", &claim); err != nil {
+		return false, err
+	}
+	if err := validateStaticWorkLogClaim(claim, projection.EffortID, projection.RunID); err != nil {
+		return false, err
+	}
+	if filepath.Clean(claim.Worktree) == filepath.Clean(entry.WorktreeDir) || claim.Repository == entry.Repository {
+		return false, nil
+	}
+	if claim.Branch != entry.Branch {
+		return false, fmt.Errorf("legacy repository relocation does not match the immutable claim branch")
+	}
+	baseContained, err := isAncestor(ctx, entry.WorktreeDir, claim.BaseSHA, entry.HeadSHA)
+	if err != nil || !baseContained {
+		return false, fmt.Errorf("exact immutable head is not descended from the claimed base %s", claim.BaseSHA)
+	}
+
+	resolution, err := latestRelocationResolution(home, claim, entry.WorktreeDir)
+	if err != nil {
+		return false, err
+	}
+	if resolution.receipt != nil {
+		return false, nil
+	}
+	pending, _, err := pendingRelocationIntent(home, claim, entry.WorktreeDir, claim.Branch, entry.HeadSHA)
+	if err != nil {
+		return false, err
+	}
+	if pending != nil {
+		return false, fmt.Errorf("an ordinary Work Log relocation is already pending")
+	}
+	if err := legacyRepositoryRelocationPaths(projectsRoot, entry, claim); err != nil {
+		return false, err
+	}
+	if err := corroborateRepositoryRelocation(ctx, entry.WorktreeDir, entry.Repository); err != nil {
+		return false, err
+	}
+	if !record {
+		return true, nil
+	}
+	urls, err := exactOriginURLs(ctx, entry.WorktreeDir, false)
+	if err != nil || len(urls) != 1 {
+		return false, fmt.Errorf("relocated repository origin is ambiguous")
+	}
+	intent, _, err := appendRelocationIntentForRepository(home, claim, claim.Worktree, entry.WorktreeDir, "repository", entry.HeadSHA,
+		claim.Repository, entry.Repository, urls[0], time.Now().UTC())
+	if err != nil {
+		return false, fmt.Errorf("append legacy repository relocation intent: %w", err)
+	}
+	if _, _, err := appendRelocationReceipt(home, claim, intent, time.Now().UTC()); err != nil {
+		return false, fmt.Errorf("append legacy repository relocation receipt: %w", err)
+	}
+	return true, nil
+}
+
+func legacyRepositoryRelocationPaths(projectsRoot string, entry ListResult, claim workLogClaim) error {
+	sourceCanonical, err := CanonicalRepositoryPath(projectsRoot, claim.Repository)
+	if err != nil {
+		return err
+	}
+	relative, err := filepath.Rel(entry.CanonicalDir, entry.WorktreeDir)
+	if err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator)) &&
+		filepath.Clean(claim.Worktree) == filepath.Join(sourceCanonical, relative) {
+		return nil
+	}
+	oldOwner, oldName, err := splitRepository(claim.Repository)
+	if err != nil {
+		return err
+	}
+	newOwner, newName, err := splitRepository(entry.Repository)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(entry.WorktreeDir) != filepath.Join(entry.WorktreesRoot, entry.Task, newOwner, newName) ||
+		filepath.Clean(claim.Worktree) != filepath.Join(entry.WorktreesRoot, entry.Task, oldOwner, oldName) {
+		return fmt.Errorf("private work-log claim identity/path mismatch is not a deterministic repository-transfer placement")
+	}
+	return nil
 }
 
 func corroborateWorkLogProjection(home, worktree, finalCommit string, projection workLogProjection) error {
