@@ -62,7 +62,7 @@ func hostedRepositories(source []string) []string {
 	seen := make(map[string]bool, len(source))
 	result := make([]string, 0, len(source))
 	for _, repository := range source {
-		canonical := repository
+		canonical := strings.ToLower(repository)
 		if !strings.HasPrefix(canonical, "github.com/") {
 			canonical = "github.com/" + canonical
 		}
@@ -78,7 +78,7 @@ func hostedRepositories(source []string) []string {
 func remoteRepositories(source []string) []string {
 	result := make([]string, len(source))
 	for index, repository := range source {
-		result[index] = strings.TrimPrefix(repository, "github.com/")
+		result[index] = strings.TrimPrefix(strings.ToLower(repository), "github.com/")
 	}
 	return result
 }

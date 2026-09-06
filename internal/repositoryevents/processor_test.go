@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/sneat-dev/wb/api/githubapp/repositoryevent"
+	"github.com/sneat-dev/wb/internal/discover"
+	"github.com/sneat-dev/wb/internal/fleetsync"
+	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
 func TestSyncProcessorFastForwardsCanonicalAndPreservesDirtyState(t *testing.T) {
@@ -117,7 +120,7 @@ func TestReceiverQueueAndProcessorFastForwardEndToEnd(t *testing.T) {
 	}
 }
 
-func TestSyncProcessorLeavesRenameQueuedForSharedGuardedRelocation(t *testing.T) {
+func TestSyncProcessorLeavesUnsafeRenameQueuedFromSharedGuard(t *testing.T) {
 	projects := t.TempDir()
 	oldPath := filepath.Join(projects, "acme", "old-app")
 	if err := os.MkdirAll(oldPath, 0o755); err != nil {
@@ -127,14 +130,50 @@ func TestSyncProcessorLeavesRenameQueuedForSharedGuardedRelocation(t *testing.T)
 	runGit(t, oldPath, "config", "user.email", "test@example.com")
 	runGit(t, oldPath, "config", "user.name", "Test")
 	writeCommit(t, oldPath, "one")
-	linked := filepath.Join(t.TempDir(), "linked")
-	runGit(t, oldPath, "worktree", "add", "-b", "feature/live", linked)
 	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-rename", Repository: "github.com/acme/new-app", PreviousRepository: "github.com/acme/old-app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonRepositoryRenamed}
-	if _, err := (SyncProcessor{ProjectsRoot: projects}).Process(context.Background(), event); err == nil || !strings.Contains(err.Error(), "shared guarded relocation") {
+	processor := SyncProcessor{ProjectsRoot: projects, relocate: func(_ context.Context, options worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error) {
+		if options.SourceRepository != "acme/old-app" || options.DestinationRepository != "acme/new-app" || options.RemoteURL != "git@github.com:acme/new-app.git" || options.DefaultBranch != "main" || !options.Apply {
+			t.Fatalf("relocation options = %+v", options)
+		}
+		return worktrees.RepositoryRelocateResult{Reason: "worktree has local changes"}, nil
+	}}
+	if _, err := processor.Process(context.Background(), event); err == nil || !strings.Contains(err.Error(), "worktree has local changes") {
 		t.Fatalf("rename error = %v", err)
 	}
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("old canonical path was moved")
+	}
+}
+
+func TestSyncProcessorUsesSharedRelocationThenSafeSync(t *testing.T) {
+	projects := t.TempDir()
+	oldPath := filepath.Join(projects, "acme", "old-app")
+	newPath := filepath.Join(projects, "acme", "new-app")
+	if err := os.MkdirAll(oldPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, oldPath, "init", "-b", "main")
+	runGit(t, oldPath, "config", "user.email", "test@example.com")
+	runGit(t, oldPath, "config", "user.name", "Test")
+	writeCommit(t, oldPath, "one")
+	processor := SyncProcessor{
+		ProjectsRoot: projects,
+		relocate: func(_ context.Context, _ worktrees.RepositoryRelocateOptions) (worktrees.RepositoryRelocateResult, error) {
+			if err := os.Rename(oldPath, newPath); err != nil {
+				t.Fatal(err)
+			}
+			return worktrees.RepositoryRelocateResult{Eligible: true, Applied: true}, nil
+		},
+		sync: func(_ context.Context, repo discover.Repo, root string, _, _ bool) fleetsync.Result {
+			if repo.Path != newPath || repo.CloneURL != "git@github.com:acme/new-app.git" || root != projects {
+				t.Fatalf("sync input = %+v, root=%q", repo, root)
+			}
+			return fleetsync.Result{Status: fleetsync.Pulled}
+		},
+	}
+	event := repositoryevent.Event{Version: repositoryevent.ContractVersion, ID: "event-rename", Repository: "github.com/acme/new-app", PreviousRepository: "github.com/acme/old-app", Ref: "refs/heads/main", Reason: repositoryevent.ReasonRepositoryRenamed}
+	if detail, err := processor.Process(context.Background(), event); err != nil || detail != "relocated; pulled" {
+		t.Fatalf("rename process = %q, %v", detail, err)
 	}
 }
 

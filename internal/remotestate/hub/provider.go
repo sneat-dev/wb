@@ -147,6 +147,15 @@ func (provider *Provider) Claims(context.Context) ([]remotestate.ClaimEntry, err
 }
 
 func (provider *Provider) PollRepositoryEvents(ctx context.Context, cursor string, limit int, wait time.Duration) (repositoryevent.PollResponse, error) {
+	if err := repositoryevent.ValidateCursor(cursor, false); err != nil {
+		return repositoryevent.PollResponse{}, err
+	}
+	if limit < 1 || limit > repositoryevent.MaxLimit {
+		return repositoryevent.PollResponse{}, fmt.Errorf("repository event limit must be between 1 and %d", repositoryevent.MaxLimit)
+	}
+	if wait < 0 || wait > repositoryevent.MaxWaitSeconds*time.Second {
+		return repositoryevent.PollResponse{}, fmt.Errorf("repository event wait must be between 0 and %d seconds", repositoryevent.MaxWaitSeconds)
+	}
 	query := url.Values{}
 	query.Set("cursor", cursor)
 	query.Set("limit", fmt.Sprint(limit))
@@ -157,6 +166,9 @@ func (provider *Provider) PollRepositoryEvents(ctx context.Context, cursor strin
 	}
 	if err := response.Validate(cursor); err != nil {
 		return repositoryevent.PollResponse{}, err
+	}
+	if len(response.Events) > limit {
+		return repositoryevent.PollResponse{}, errors.New("hub returned more repository events than requested")
 	}
 	return response, nil
 }
