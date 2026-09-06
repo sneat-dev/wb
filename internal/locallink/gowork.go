@@ -74,6 +74,7 @@ func (engine *Engine) linkGo(
 			Library:           library,
 			LibraryRepository: libraryRepository,
 			Mechanism:         streams.MechanismGoWork,
+			State:             streams.LinkStateApplied,
 			Identity:          declaration.Identity.Name,
 			PreviousVersion:   declaration.Version,
 			ContentHash:       hash,

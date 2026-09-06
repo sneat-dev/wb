@@ -674,7 +674,11 @@ every landed stream forever.
 `wb deps propagate local <library-worktree> --to <consumer-worktree>...` MUST
 discover the library's published identities from the library worktree itself:
 the Go module path from `backend/go.mod` (or the module root, where the
-repository has no `backend/`), and npm package names from `libs/**/package.json`.
+repository has no `backend/`), and npm package names from `libs/**/package.json`
+in every repository-owned npm workspace, including a nested `frontend/`
+workspace. The command MUST be invoked with the repository-root worktrees that
+the stream records; npm install, build, link, and undo operations MUST run in
+the specific nested workspace that owns each manifest.
 Discovery MUST be evidence-based and MUST NOT accept an operator-supplied
 package name as a substitute; a consumer that does not depend on any discovered
 identity MUST be reported and skipped rather than linked.
@@ -700,9 +704,19 @@ directive to `go.mod`.
 
 #### REQ: npm-consumers-link-through-a-built-dist
 
-For an npm consumer, WB MUST build the library using the repository's own build
-target, then link the built output into the consumer's `node_modules` using the
-package manager's own link mechanism, so no tracked file changes.
+For an npm consumer, WB MUST run a frozen install in each affected npm workspace,
+build the library from the npm workspace that owns the published package, then
+link the built output into the declaring consumer workspace's `node_modules`
+using the package manager's own link mechanism, so no tracked file changes. The
+built package MUST be staged inside the consumer's installed peer context before
+linking: linking directly to the provider's dist makes Node resolve Angular and
+other peer dependencies from the provider, creating duplicate framework
+singletons and incompatible private types. WB MUST preserve the original
+installed package and MUST NOT modify pnpm's global content-addressable store.
+WB MUST NOT silently delete framework build caches when the link topology
+changes. A running frontend build must be restarted; if its resolver cache
+retains the prior target, the operator explicitly clears that generated cache
+and rebuilds.
 
 The build MUST be **cached against the library's content hash** and rebuilt
 whenever that hash moves. Building once and reusing it across an iterative stream
@@ -758,6 +772,13 @@ and the dependency version that was in effect before linking. `--undo` MUST
 restore those published versions and remove the link. `--undo` MUST succeed even
 if the library worktree has since been removed, because the recorded state — not
 the library — is the source of truth for reversal.
+
+The record MUST distinguish a pre-operation intent from an applied npm link.
+Undoing an intent whose build failed before linking MUST preserve the published
+package already installed in `node_modules`. An applied npm link MUST leave an
+untracked marker beside the link and record the generated peer-context stage so
+an interrupted record update remains reversible without guessing whether the
+published package was replaced.
 
 #### REQ: merge-refuses-a-linked-worktree
 
@@ -1851,10 +1872,13 @@ the published version instead.
 
 **Requirements:** dependency-streams#req:npm-consumers-link-through-a-built-dist
 
-**Given** an npm consumer depending on a package the library publishes
+**Given** an npm consumer depending on a package the library publishes, with
+either or both repositories placing their npm workspace below `frontend/`
 **When** the operator links it locally
-**Then** the library is built once with the repository's own build target and
-linked from its dist into the consumer's `node_modules`; `pnpm-workspace.yaml`
+**Then** repository-root stream membership remains authoritative; the frozen
+install, library build, link, and undo run in the owning npm workspaces; the
+library is built once with that workspace's own build target and linked from its
+dist into the declaring workspace's `node_modules`; `pnpm-workspace.yaml`
 and every `package.json` are byte-identical to their committed contents; and no
 override, alias, or `workspace:` entry is introduced anywhere in tracked config.
 

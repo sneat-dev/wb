@@ -30,14 +30,18 @@ type Identity struct {
 	// Directory is the worktree-relative directory of the manifest. For a Go
 	// module it is the directory a workspace `use` entry names.
 	Directory string `json:"directory"`
+	// Workspace is the worktree-relative npm workspace that owns Manifest.
+	// It is "." for packages in a repository-root workspace.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // DiscoverPublished reads the identities a library worktree publishes.
 //
 // Discovery is evidence-based and reads the library worktree itself: the Go
 // module path from `backend/go.mod`, or from the module root where the
-// repository has no `backend/`, and npm package names from
-// `libs/**/package.json`. An operator-supplied package name is never accepted
+// repository has no `backend/`, and npm package names from `libs/**/package.json`
+// in every repository-owned npm workspace (including nested frontend/). An
+// operator-supplied package name is never accepted
 // as a substitute, because the whole value of a local link is that it exposes
 // what the library actually publishes.
 //
@@ -72,19 +76,19 @@ func DiscoverPublished(root string) ([]Identity, error) {
 		// The repository root manifest of a workspace is the workspace
 		// itself, not a published package; only a named, non-private
 		// manifest under libs/ is a published identity.
-		if manifest == "package.json" {
+		if manifest.Root {
 			continue
 		}
-		contents, err := os.ReadFile(filepath.Join(root, manifest))
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifest.Path)))
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", manifest, err)
+			return nil, fmt.Errorf("read %s: %w", manifest.Path, err)
 		}
 		var parsed struct {
 			Name    string `json:"name"`
 			Private bool   `json:"private"`
 		}
 		if err := json.Unmarshal(contents, &parsed); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", manifest, err)
+			return nil, fmt.Errorf("parse %s: %w", manifest.Path, err)
 		}
 		if parsed.Private || strings.TrimSpace(parsed.Name) == "" {
 			continue
@@ -92,8 +96,9 @@ func DiscoverPublished(root string) ([]Identity, error) {
 		identities = append(identities, Identity{
 			Ecosystem: EcosystemNpm,
 			Name:      parsed.Name,
-			Manifest:  manifest,
-			Directory: filepath.ToSlash(filepath.Dir(manifest)),
+			Manifest:  manifest.Path,
+			Directory: filepath.ToSlash(filepath.Dir(manifest.Path)),
+			Workspace: manifest.Workspace,
 		})
 	}
 	sort.Slice(identities, func(i, j int) bool {
@@ -114,6 +119,8 @@ type Declaration struct {
 	Version string `json:"version"`
 	// Section is the canonical dependency section the declaration came from.
 	Section string `json:"section,omitempty"`
+	// Workspace is the consumer-relative npm workspace that owns Manifest.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // npmDependencySections is the canonical dependency-field set. It is the same
@@ -156,13 +163,13 @@ func DiscoverDeclarations(root string, identities []Identity) ([]Declaration, er
 		return nil, err
 	}
 	for _, manifest := range npmManifests {
-		contents, err := os.ReadFile(filepath.Join(root, manifest))
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(manifest.Path)))
 		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", manifest, err)
+			return nil, fmt.Errorf("read %s: %w", manifest.Path, err)
 		}
 		var parsed map[string]json.RawMessage
 		if err := json.Unmarshal(contents, &parsed); err != nil {
-			return nil, fmt.Errorf("parse %s: %w", manifest, err)
+			return nil, fmt.Errorf("parse %s: %w", manifest.Path, err)
 		}
 		for _, section := range npmDependencySections {
 			raw, ok := parsed[section]
@@ -179,7 +186,8 @@ func DiscoverDeclarations(root string, identities []Identity) ([]Declaration, er
 					continue
 				}
 				declarations = append(declarations, Declaration{
-					Identity: identity, Manifest: manifest, Version: version, Section: section,
+					Identity: identity, Manifest: manifest.Path, Version: version, Section: section,
+					Workspace: manifest.Workspace,
 				})
 			}
 		}

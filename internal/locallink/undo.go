@@ -174,12 +174,36 @@ func (engine *Engine) undoMember(ctx context.Context, member streams.Member) (Co
 			}
 			removedWorkspace = true
 		case streams.MechanismPnpmLink:
+			if link.State != "" && link.State != streams.LinkStateIntent && link.State != streams.LinkStateApplied {
+				outcome.Errors = append(outcome.Errors, fmt.Sprintf("unknown link state %q for %s", link.State, link.Identity))
+				remaining = append(remaining, link)
+				continue
+			}
 			if engine.Node == nil {
 				outcome.Errors = append(outcome.Errors, fmt.Sprintf("no Node toolchain available to unlink %s", link.Identity))
 				remaining = append(remaining, link)
 				continue
 			}
-			if err := engine.Node.Unlink(ctx, member.Worktree, link.Identity); err != nil {
+			workspace, err := workspacePath(member.Worktree, link.Workspace)
+			if err != nil {
+				outcome.Errors = append(outcome.Errors, err.Error())
+				remaining = append(remaining, link)
+				continue
+			}
+			markerExists := fileExists(linkAppliedMarkerPath(workspace, link.Identity))
+			if link.State == streams.LinkStateIntent && !markerExists {
+				// The record was written before acting, but build/link never
+				// reached the filesystem. Preserve the published package already
+				// in node_modules and clear only the stale intent.
+				continue
+			}
+			if link.State == streams.LinkStateApplied && !markerExists {
+				outcome.Errors = append(outcome.Errors, fmt.Sprintf(
+					"applied link %s has no ownership marker; preserve node_modules and recovery evidence for inspection", link.Identity))
+				remaining = append(remaining, link)
+				continue
+			}
+			if err := engine.Node.Unlink(ctx, workspace, link.Identity); err != nil {
 				outcome.Errors = append(outcome.Errors, err.Error())
 				remaining = append(remaining, link)
 			}
