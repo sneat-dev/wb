@@ -516,3 +516,29 @@ func TestApplyMergePolicyStopsAdmissionAfterCheckpointFailure(t *testing.T) {
 		t.Fatalf("checkpoint calls = %d, want initial, failed, and drained retry", got)
 	}
 }
+
+func TestEnterpriseRuleThatAllowsMergeLeavesOnlyRepositorySettingsDrift(t *testing.T) {
+	original := mergePolicyRead
+	t.Cleanup(func() { mergePolicyRead = original })
+	mergePolicyRead = func(_ context.Context, endpoint string) ([]byte, error) {
+		switch endpoint {
+		case "repos/acme/app":
+			return []byte(`{"default_branch":"main","allow_merge_commit":false,"allow_squash_merge":true,"allow_rebase_merge":true,"merge_commit_title":"MERGE_MESSAGE","merge_commit_message":"PR_TITLE"}`), nil
+		case "repos/acme/app/branches/main/protection":
+			return nil, errors.New("gh: Not Found (HTTP 404)")
+		case "repos/acme/app/rules/branches/main?per_page=100":
+			return []byte(`[{"type":"pull_request","ruleset_source_type":"Enterprise","ruleset_source":"acme-enterprise","ruleset_id":19769717,"parameters":{"allowed_merge_methods":["merge","squash","rebase"]}}]`), nil
+		default:
+			return nil, errors.New("unexpected endpoint " + endpoint)
+		}
+	}
+	repo := inspectMergePolicyRepository(context.Background(), "acme/app")
+	if repo.Disposition != "drift" || len(repo.Conflicts) != 0 {
+		t.Fatalf("repository = %#v", repo)
+	}
+	report := mergePolicyReport{Repositories: []mergePolicyRepository{repo}}
+	buildMergePolicyRulesetPlan(context.Background(), &report)
+	if len(report.Rulesets) != 0 {
+		t.Fatalf("enterprise rule that already allows merge must not produce a shared plan: %#v", report.Rulesets)
+	}
+}

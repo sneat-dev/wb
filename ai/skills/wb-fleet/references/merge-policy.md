@@ -15,7 +15,9 @@ and body for the merge commit. The report includes repository setting drift and
 effective default-branch rules. Repository-owned required linear history is
 drift that apply removes through its dedicated classic endpoint or by deleting
 only that repository-ruleset rule. Merge queues and higher-level linear-history
-rules remain preserved blockers.
+rules remain preserved blockers. A higher-level pull-request rule conflicts
+only when it excludes `merge`; extra methods are narrowed by the repository
+merge settings and do not need a ruleset mutation.
 
 Apply only after reviewing the complete scope. WB writes its plan before the
 first mutation and re-observes repository settings before changing them:

@@ -445,9 +445,9 @@ func inspectMergePolicyRepository(ctx context.Context, slug string) mergePolicyR
 			ref.Methods = parameters.AllowedMergeMethods
 			if len(parameters.AllowedMergeMethods) == 0 {
 				result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "did not report allowed merge methods"))
-			} else if !mergeOnly(parameters.AllowedMergeMethods) {
+			} else if !allowsMerge(parameters.AllowedMergeMethods) {
 				if strings.EqualFold(rule.RulesetSourceType, "Repository") {
-					result.Drift = append(result.Drift, describeRuleConflict(rule, "allows "+strings.Join(parameters.AllowedMergeMethods, ",")+" instead of merge"))
+					result.Drift = append(result.Drift, describeRuleConflict(rule, "does not allow merge commits"))
 				} else {
 					result.Conflicts = append(result.Conflicts, describeRuleConflict(rule, "does not allow merge commits"))
 				}
@@ -507,7 +507,7 @@ func buildMergePolicyRulesetPlan(ctx context.Context, report *mergePolicyReport)
 	byKey := map[string]*mergePolicyRulesetChange{}
 	for _, repo := range report.Repositories {
 		for _, ref := range repo.Rulesets {
-			if (ref.Type != "pull_request" || mergeOnly(ref.Methods)) && ref.Type != "required_linear_history" {
+			if (ref.Type != "pull_request" || allowsMerge(ref.Methods)) && ref.Type != "required_linear_history" {
 				continue
 			}
 			key := fmt.Sprintf("%s/%s/%d", strings.ToLower(ref.SourceType), ref.Source, ref.ID)
@@ -879,7 +879,14 @@ func printMergePolicyReport(out io.Writer, report mergePolicyReport) error {
 	return nil
 }
 
-func mergeOnly(values []string) bool { return len(values) == 1 && values[0] == "merge" }
+func allowsMerge(values []string) bool {
+	for _, value := range values {
+		if value == "merge" {
+			return true
+		}
+	}
+	return false
+}
 func appendUnique(values []string, value string) []string {
 	for _, current := range values {
 		if current == value {
