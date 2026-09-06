@@ -2039,8 +2039,11 @@ func reportWorktreeMergeQualityProgress(reporter progress.Reporter) func(quality
 	}
 	return func(event quality.Progress) {
 		var state progress.State
-		if event.State == quality.ProgressStarted {
+		if event.State == quality.ProgressStarted || event.State == quality.ProgressRetrying {
 			state = progress.Started
+			if event.State == quality.ProgressRetrying {
+				state = progress.Running
+			}
 		} else if event.Status == quality.StatusFailed {
 			state = progress.Failed
 		} else {
