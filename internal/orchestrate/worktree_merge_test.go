@@ -2561,6 +2561,104 @@ func TestPrepareWorktreeMergeRebatchesPreparedReceiptAdditivelyAndPreservesOldEv
 	}
 }
 
+func TestPrepareWorktreeMergeRebatchesExactOpenChecksFailedReceipt(t *testing.T) {
+	fixture := newEngineFixture(t)
+	firstSource := createMergeSource(t, fixture, "checks-rebatch-first", "feature/checks-rebatch-first", "first.txt", "first\n")
+	secondSource := createMergeSource(t, fixture, "checks-rebatch-second", "feature/checks-rebatch-second", "second.txt", "second\n")
+	first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+	first.Phase = WorktreeMergePhaseLand
+	first.Status = WorktreeMergeChecksFailed
+	first.PullRequest = "41"
+	first.PublishedCandidateSHA = first.Candidate.SHA
+	first.Failure = "strict required-check fence unavailable"
+	if err := persistWorktreeMergeReceipt(first); err != nil {
+		t.Fatal(err)
+	}
+	originalReceipt, err := os.ReadFile(first.ReceiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdSource := createMergeSource(t, fixture, "checks-rebatch-third", "feature/checks-rebatch-third", "third.txt", "third\n")
+	installWorktreeMergeDirectGH(t)
+	t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+
+	replacement, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{
+		ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir, thirdSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.RebatchOf != first.ReceiptPath || len(replacement.RebatchedCandidates) != 1 || replacement.RebatchedCandidates[0] != first.Candidate {
+		t.Fatalf("replacement receipt = %+v", replacement)
+	}
+	if current, err := os.ReadFile(first.ReceiptPath); err != nil || !bytes.Equal(current, originalReceipt) {
+		t.Fatalf("checks-failed receipt changed: err=%v", err)
+	}
+}
+
+func TestPrepareWorktreeMergeRefusesClosedOrDriftedChecksFailedReceipt(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		prState     string
+		merged      bool
+		driftRemote bool
+		driftTarget bool
+		badReceipt  bool
+	}{
+		{name: "closed pull request", prState: "closed"},
+		{name: "merged pull request", prState: "closed", merged: true},
+		{name: "candidate ref drift", driftRemote: true},
+		{name: "target drift", driftTarget: true},
+		{name: "receipt candidate mismatch", badReceipt: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newEngineFixture(t)
+			firstSource := createMergeSource(t, fixture, "refuse-first", "feature/refuse-first", "first.txt", "first\n")
+			secondSource := createMergeSource(t, fixture, "refuse-second", "feature/refuse-second", "second.txt", "second\n")
+			first, err := PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			runEngineGit(t, first.Candidate.Worktree, "push", "origin", "HEAD:refs/heads/"+first.Candidate.Branch)
+			first.Phase, first.Status, first.PullRequest, first.PublishedCandidateSHA = WorktreeMergePhaseLand, WorktreeMergeChecksFailed, "41", first.Candidate.SHA
+			if test.badReceipt {
+				first.PublishedCandidateSHA = first.TargetSHA
+			}
+			if err := persistWorktreeMergeReceipt(first); err != nil {
+				t.Fatal(err)
+			}
+			installWorktreeMergeDirectGH(t)
+			t.Setenv("WB_TEST_CANDIDATE_SHA", first.Candidate.SHA)
+			if test.prState != "" {
+				t.Setenv("WB_TEST_PR_STATE", test.prState)
+			}
+			if test.merged {
+				t.Setenv("WB_TEST_PR_MERGED", "true")
+			}
+			if test.driftRemote {
+				secondHead := strings.TrimSpace(runEngineGit(t, secondSource.WorktreeDir, "rev-parse", "HEAD"))
+				runEngineGit(t, first.Candidate.Worktree, "push", "--force", "origin", secondHead+":refs/heads/"+first.Candidate.Branch)
+			}
+			if test.driftTarget {
+				writeEngineFile(t, filepath.Join(fixture.canonical, "target-drift.txt"), "drift\n")
+				runEngineGit(t, fixture.canonical, "add", "target-drift.txt")
+				runEngineGit(t, fixture.canonical, "commit", "-m", "test: drift target")
+				runEngineGit(t, fixture.canonical, "push", "origin", "main")
+			}
+			_, err = PrepareWorktreeMerge(context.Background(), WorktreeMergePrepareOptions{ProjectsRoot: fixture.githubDir, Sources: []string{firstSource.WorktreeDir, secondSource.WorktreeDir}, Target: "main", Model: "test-model", AgentRuntime: "test", RebatchReceipt: first.ReceiptPath})
+			if err == nil {
+				t.Fatal("unsafe checks-failed rebatch was accepted")
+			}
+		})
+	}
+}
+
 func TestActiveLaneReceiptSkipsUnusablePreparedRebatchSidecar(t *testing.T) {
 	fixture := newEngineFixture(t)
 	staleSource := createMergeSource(t, fixture, "stale-sidecar-source", "feature/stale-sidecar", "stale.txt", "stale\n")
@@ -2969,7 +3067,7 @@ case "$*" in
     printf '{"status":"%s","base_commit":{"sha":"%s"},"merge_base_commit":{"sha":"%s"}}\n' "$status" "$base" "$merge_base" ;;
   'api --paginate repos/acme/app/commits/'*'/pulls') printf '%s\n' '[]' ;;
   'api repos/acme/app/pulls/'*' --include'|'api repos/acme/app/pulls/'*)
-    printf '{"number":41,"state":"open","draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "$WB_TEST_CANDIDATE_SHA" ;;
+    printf '{"number":41,"state":"%s","merged":%s,"draft":false,"title":"candidate","head":{"ref":"candidate","sha":"%s","repo":{"full_name":"acme/app"}},"base":{"ref":"main","sha":""}}\n' "${WB_TEST_PR_STATE:-open}" "${WB_TEST_PR_MERGED:-false}" "$WB_TEST_CANDIDATE_SHA" ;;
   *'/check-runs?per_page=100 --include'|*'/check-runs?per_page=100') printf '%s\n' '{"total_count":0,"check_runs":[]}' ;;
   *'/status?per_page=100 --include'|*'/status?per_page=100') printf '%s\n' '{"total_count":0,"statuses":[]}' ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;

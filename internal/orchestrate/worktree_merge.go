@@ -234,8 +234,8 @@ type WorktreeMergePrepareOptions struct {
 	ShardAttemptTimeout time.Duration
 	Progress            progress.Reporter
 	ProgressRequested   bool
-	// RebatchReceipt is an immutable, still-unlanded prepared receipt whose
-	// sources are being replaced additively and/or extended in this prepare.
+	// RebatchReceipt is an immutable, still-unlanded prepared or exact published
+	// checks-failed receipt whose sources are replaced additively in this prepare.
 	RebatchReceipt string
 }
 

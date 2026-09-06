@@ -558,7 +558,7 @@ func validateReceiptCollisionAcknowledgement(ctx context.Context, projectsRoot s
 	return ack, nil
 }
 
-// validatePreparedWorktreeMergeRebatch proves that the old prepared lane is
+// validatePreparedWorktreeMergeRebatch proves that the old unlanded lane is
 // untouched and that the requested source list is a strict additive rebatch:
 // every old branch remains and may only advance by ancestry; new branches are
 // distinct. The remote target must not have moved because a rebatch is a
@@ -581,8 +581,10 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	}
 	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
 		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
-	if receipt.Phase != WorktreeMergePhasePrepare || !preparedOrAcknowledgedCollision || receipt.LandingSHA != "" ||
-		receipt.PullRequest != "" || receipt.PublishedCandidateSHA != "" || receipt.Repository != repository || receipt.Target != target ||
+	publishedChecksFailure := receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeChecksFailed &&
+		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA
+	if (!preparedOrAcknowledgedCollision && !publishedChecksFailure) || receipt.LandingSHA != "" ||
+		receipt.Repository != repository || receipt.Target != target ||
 		receipt.TargetSHA == "" || receipt.Candidate.Task == "" || receipt.Candidate.Worktree == "" || receipt.Candidate.Branch == "" || receipt.Candidate.SHA == "" || len(receipt.Sources) == 0 {
 		return nil, fmt.Errorf("rebatch receipt %s is not an unlanded prepared candidate with complete immutable identity", receiptPath)
 	}
@@ -592,12 +594,20 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 	if _, err := validateMergeAcknowledgementCandidate(ctx, projectsRoot, receipt, receipt.Candidate); err != nil {
 		return nil, fmt.Errorf("validate prepared rebatch candidate: %w", err)
 	}
+	if publishedChecksFailure {
+		if err := validatePublishedChecksFailedRebatch(ctx, receipt); err != nil {
+			return nil, err
+		}
+	}
 	currentTarget, err := fetchExactMergeTarget(ctx, receipt.Candidate.Worktree, target)
 	if err != nil {
 		return nil, err
 	}
 	if currentTarget != receipt.TargetSHA {
 		return nil, fmt.Errorf("rebatch refuses target drift from %s to %s", receipt.TargetSHA, currentTarget)
+	}
+	if landed, ancestorErr := isMergeAncestor(ctx, receipt.Candidate.Worktree, receipt.Candidate.SHA, currentTarget); ancestorErr != nil || landed {
+		return nil, fmt.Errorf("rebatch candidate must remain unlanded: ancestor=%t err=%v", landed, ancestorErr)
 	}
 	byBranch := make(map[string]WorktreeMergeSource, len(sources))
 	for _, source := range sources {
@@ -636,6 +646,25 @@ func validatePreparedWorktreeMergeRebatch(ctx context.Context, projectsRoot, rec
 		CurrentTargetSHA: currentTarget, OriginalCandidate: receipt.Candidate,
 		OriginalSources: append([]WorktreeMergeSource(nil), receipt.Sources...),
 	}, nil
+}
+
+func validatePublishedChecksFailedRebatch(ctx context.Context, receipt WorktreeMergeReceipt) error {
+	remote, _, err := runCommand(ctx, 30*time.Second, 0, receipt.Candidate.Worktree,
+		"git", "ls-remote", "--heads", "origin", "refs/heads/"+receipt.Candidate.Branch)
+	if err != nil {
+		return fmt.Errorf("read checks-failed candidate ref: %w", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(remote), receipt.Candidate.SHA+"\t") {
+		return fmt.Errorf("checks-failed candidate ref drifted from %s", receipt.Candidate.SHA)
+	}
+	view, err := ReadPullRequest(ctx, receipt.Repository, receipt.PullRequest)
+	if err != nil {
+		return fmt.Errorf("read checks-failed pull request: %w", err)
+	}
+	if !strings.EqualFold(view.State, "open") || view.Merged || view.Base.Ref != receipt.Target || view.Head.SHA != receipt.Candidate.SHA {
+		return fmt.Errorf("checks-failed pull request is not the exact open unmerged candidate")
+	}
+	return nil
 }
 
 func completePreparedWorktreeMergeRebatch(rebatch WorktreeMergePreparedRebatch, replacement WorktreeMergeReceipt) WorktreeMergePreparedRebatch {
@@ -749,9 +778,11 @@ func readPreparedWorktreeMergeRebatch(path string, receipt WorktreeMergeReceipt)
 	}
 	preparedOrAcknowledgedCollision := receipt.Status == WorktreeMergePrepared ||
 		(collisionAcknowledged && receipt.Phase == WorktreeMergePhasePrepare && receipt.Status == WorktreeMergePreparing)
+	publishedChecksFailure := receipt.Phase == WorktreeMergePhaseLand && receipt.Status == WorktreeMergeChecksFailed &&
+		receipt.PullRequest != "" && receipt.PublishedCandidateSHA == receipt.Candidate.SHA && receipt.LandingSHA == ""
 	if rebatch.SchemaVersion != worktreeMergePreparedRebatchSchemaVersion || rebatch.Status != "prepared_rebatched" ||
 		rebatch.AcknowledgementPath != path || rebatch.ReceiptPath != receipt.ReceiptPath || rebatch.ReceiptID != receipt.ID ||
-		rebatch.ReceiptSHA256 != receiptHash || !preparedOrAcknowledgedCollision || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
+		rebatch.ReceiptSHA256 != receiptHash || (!preparedOrAcknowledgedCollision && !publishedChecksFailure) || rebatch.ReceiptStatus != receipt.Status || rebatch.Lane != receipt.Lane ||
 		rebatch.Repository != receipt.Repository || rebatch.Target != receipt.Target || rebatch.ReceiptTargetSHA != receipt.TargetSHA ||
 		rebatch.CurrentTargetSHA != receipt.TargetSHA || rebatch.OriginalCandidate != receipt.Candidate ||
 		!sameWorktreeMergeSources(rebatch.OriginalSources, receipt.Sources) || rebatch.ReplacementReceiptPath == receipt.ReceiptPath ||

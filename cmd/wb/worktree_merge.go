@@ -304,7 +304,7 @@ func newWorktreeMergePrepareCmd() *cobra.Command {
 	}
 	markLandingGuard(command, landingGuardByWorktree)
 	bindWorktreeMergeFlags(command, &flags, true, false, false)
-	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable prepared receipt to replace with an additive source-set rebatch")
+	command.Flags().StringVar(&flags.rebatchReceipt, "rebatch-receipt", "", "immutable unlanded prepared or exact checks-failed receipt to replace with an additive source-set rebatch")
 	return command
 }
 
