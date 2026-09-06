@@ -207,11 +207,11 @@ func TestExecNodeLinkAndUnlinkRestoreTheInstalledPackage(t *testing.T) {
 	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
 	ctx := context.Background()
 
-	previous, err := node.Link(ctx, consumer, "@acme/core", dist)
+	result, err := node.Link(ctx, consumer, "@acme/core", dist)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if previous == "" {
+	if result.Previous == "" {
 		t.Fatal("Link did not record where the installed package went")
 	}
 	info, err := os.Lstat(installed)
@@ -245,6 +245,48 @@ func TestExecNodeBuildRefusesWithoutAContentHash(t *testing.T) {
 	}
 }
 
+func TestNodeBuildCommandSelectsThePackageNxTarget(t *testing.T) {
+	workspace := t.TempDir()
+	packageDir := filepath.Join(workspace, "libs", "extensions", "contactus", "runtime")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "pnpm-lock.yaml"), []byte("lockfileVersion: '9.0'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "project.json"), []byte(`{
+  "name": "ext-contactus-runtime",
+  "targets": {"build": {"executor": "@nx/angular:package"}}
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command, args, err := nodeBuildCommand(workspace, packageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != "pnpm" || strings.Join(args, " ") != "exec nx build ext-contactus-runtime" {
+		t.Fatalf("command = %s %v, want exact Nx project build", command, args)
+	}
+}
+
+func TestNodeBuildCommandFallsBackToWorkspaceBuildScript(t *testing.T) {
+	workspace := t.TempDir()
+	packageDir := filepath.Join(workspace, "libs", "core")
+	if err := os.MkdirAll(packageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "package.json"), []byte(`{"scripts":{"build":"tsc"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	command, args, err := nodeBuildCommand(workspace, packageDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != "npm" || strings.Join(args, " ") != "run build" {
+		t.Fatalf("command = %s %v, want workspace build script", command, args)
+	}
+}
+
 // The build cache is keyed by content hash: the same hash reuses the build,
 // and a moved hash rebuilds.
 func TestExecNodeBuildCacheIsKeyedByContentHash(t *testing.T) {
@@ -259,8 +301,6 @@ func TestExecNodeBuildCacheIsKeyedByContentHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := ExecNode{CacheRoot: cache, ContentHash: "hash-one", Timeout: 30 * time.Second}
-	// Seed the cache exactly as a successful build would, so the reuse path is
-	// exercised without needing a Node toolchain on the test machine.
 	// Seed the cache exactly as a successful build would, so the reuse path is
 	// exercised without needing a Node toolchain on the test machine.
 	seeded := filepath.Join(cache, node.ContentHash, buildCacheKey(node.ContentHash, packageDir))
@@ -320,12 +360,31 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash", Timeout: 30 * time.Second}
 	ctx := context.Background()
 
-	previous, err := node.Link(ctx, consumer, "@acme/core", dist)
+	result, err := node.Link(ctx, consumer, "@acme/core", dist)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if previous == "" {
+	if result.Previous == "" {
 		t.Fatal("Link did not record where the existing symlink pointed")
+	}
+	linkedTarget, err := os.Readlink(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(linkedTarget) != filepath.Dir(store) || !strings.HasSuffix(linkedTarget, ".wb-locallink-stage") {
+		t.Fatalf("linked target = %q, want staged sibling in the installed pnpm peer context %s", linkedTarget, filepath.Dir(store))
+	}
+	if len(result.Artifacts) < 4 || !containsAll(result.Artifacts,
+		"node_modules/@acme/core",
+		"node_modules/@acme/core"+linkAppliedMarkerSuffix,
+		filepath.ToSlash(filepath.Join("node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", ".core.wb-locallink-stage")),
+		"node_modules/@acme/core"+linkSymlinkBackupSuffix,
+	) {
+		t.Fatalf("artifacts = %v, want target, marker, peer-context stage and backup", result.Artifacts)
+	}
+	published, err := os.ReadFile(filepath.Join(store, "package.json"))
+	if err != nil || !strings.Contains(string(published), `"version":"1.0.0"`) {
+		t.Fatalf("published package was mutated: %s (err %v)", published, err)
 	}
 	linked, err := os.ReadFile(filepath.Join(target, "package.json"))
 	if err != nil {
@@ -359,6 +418,157 @@ func TestExecNodeLinkAndUnlinkRestoreAPnpmSymlink(t *testing.T) {
 	// No bookkeeping left behind.
 	if fileExists(target + linkSymlinkBackupSuffix) {
 		t.Error("the link record survived undo")
+	}
+	if fileExists(linkAppliedMarkerPath(consumer, "@acme/core")) {
+		t.Error("the applied-link marker survived undo")
+	}
+	if fileExists(linkedTarget) {
+		t.Error("the staged peer-context package survived undo")
+	}
+}
+
+func TestExecNodeLinkRejectsInstalledPackageSymlinkOutsideConsumer(t *testing.T) {
+	consumer := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(consumer, "node_modules", "@acme", "core")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, target); err != nil {
+		t.Fatal(err)
+	}
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{CacheRoot: t.TempDir(), ContentHash: "hash"}
+	if _, err := node.Link(context.Background(), consumer, "@acme/core", dist); err == nil || !strings.Contains(err.Error(), "outside consumer npm workspace") {
+		t.Fatalf("error = %v, want symlink-escape refusal", err)
+	}
+	if got, err := os.Readlink(target); err != nil || got != outside {
+		t.Fatalf("published link changed to %q (err %v)", got, err)
+	}
+}
+
+func TestExecNodeLinkPreservesUnexpectedStageAndRecoveryArtifacts(t *testing.T) {
+	newConsumer := func(t *testing.T) (consumer, target, stage string) {
+		t.Helper()
+		consumer = t.TempDir()
+		store := filepath.Join(consumer, "node_modules", ".pnpm", "@acme+core@1.0.0", "node_modules", "@acme", "core")
+		if err := os.MkdirAll(store, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(store, "package.json"), []byte(`{"name":"@acme/core","version":"1.0.0"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		target = filepath.Join(consumer, "node_modules", "@acme", "core")
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		relative, err := filepath.Rel(filepath.Dir(target), store)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(relative, target); err != nil {
+			t.Fatal(err)
+		}
+		stage = filepath.Join(filepath.Dir(store), ".core.wb-locallink-stage")
+		return consumer, target, stage
+	}
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "package.json"), []byte(`{"name":"@acme/core","version":"1.1.0-dev"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{}
+
+	t.Run("stage", func(t *testing.T) {
+		consumer, target, stage := newConsumer(t)
+		if err := os.MkdirAll(stage, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		sentinel := filepath.Join(stage, "keep.txt")
+		if err := os.WriteFile(sentinel, []byte("keep\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := node.Link(context.Background(), consumer, "@acme/core", dist); err == nil || !strings.Contains(err.Error(), "without replacing existing data") {
+			t.Fatalf("error = %v, want exclusive stage-claim refusal", err)
+		}
+		if !fileExists(sentinel) {
+			t.Fatal("failed Link deleted the pre-existing staged directory")
+		}
+		if contents, err := os.ReadFile(filepath.Join(target, "package.json")); err != nil || !strings.Contains(string(contents), `"version":"1.0.0"`) {
+			t.Fatalf("published package changed: %s (err %v)", contents, err)
+		}
+	})
+
+	t.Run("recovery artifact", func(t *testing.T) {
+		consumer, target, stage := newConsumer(t)
+		backup := target + linkSymlinkBackupSuffix
+		if err := os.WriteFile(backup, []byte("do-not-replace\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := node.Link(context.Background(), consumer, "@acme/core", dist); err == nil || !strings.Contains(err.Error(), "unexpected local-link recovery artifact") {
+			t.Fatalf("error = %v, want recovery-artifact refusal", err)
+		}
+		if contents, err := os.ReadFile(backup); err != nil || string(contents) != "do-not-replace\n" {
+			t.Fatalf("recovery evidence changed: %q (err %v)", contents, err)
+		}
+		if fileExists(stage) {
+			t.Fatal("Link claimed a stage despite pre-existing recovery evidence")
+		}
+		if contents, err := os.ReadFile(filepath.Join(target, "package.json")); err != nil || !strings.Contains(string(contents), `"version":"1.0.0"`) {
+			t.Fatalf("published package changed: %s (err %v)", contents, err)
+		}
+	})
+}
+
+func TestCopyBuiltPackageRejectsSymlinks(t *testing.T) {
+	source := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "package.json"), []byte(`{"name":"@acme/core"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	symlinkRoot := filepath.Join(t.TempDir(), "dist")
+	if err := os.Symlink(outside, symlinkRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyBuiltPackage(symlinkRoot, filepath.Join(t.TempDir(), "stage")); err == nil || !strings.Contains(err.Error(), "not a real directory") {
+		t.Fatalf("symlinked dist error = %v, want a source-boundary refusal", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(source, "package.json"), []byte(`{"name":"@acme/core"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "package.json"), filepath.Join(source, "escaped.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyBuiltPackage(source, filepath.Join(t.TempDir(), "stage")); err == nil || !strings.Contains(err.Error(), "unsupported symlink") {
+		t.Fatalf("nested symlink error = %v, want an entry-boundary refusal", err)
+	}
+}
+
+func TestUnlinkRejectsMarkerForAnotherStagedPath(t *testing.T) {
+	consumer := t.TempDir()
+	marker := linkAppliedMarkerPath(consumer, "@acme/core")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(consumer, "node_modules", ".another.wb-locallink-stage")
+	if err := os.MkdirAll(victim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(victim, "keep.txt"), []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(victim+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	node := ExecNode{}
+	if err := node.Unlink(context.Background(), consumer, "@acme/core"); err == nil || !strings.Contains(err.Error(), "invalid staged path") {
+		t.Fatalf("error = %v, want marker/path identity refusal", err)
+	}
+	if !fileExists(filepath.Join(victim, "keep.txt")) {
+		t.Fatal("undo removed a stage named by an invalid marker")
 	}
 }
 

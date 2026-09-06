@@ -160,7 +160,13 @@ func collectNpmPackageNames(input PreflightInput) ([]string, PreflightFinding) {
 	var names []string
 	var unnamed []string
 	for _, manifest := range manifests {
-		contents, err := os.ReadFile(filepath.Join(input.Path, manifest))
+		// Preserve the existing repository-root provider identity used by
+		// stream preflight. A nested workspace root describes that workspace,
+		// not a package published by the repository.
+		if manifest.Root && manifest.Workspace != "." {
+			continue
+		}
+		contents, err := os.ReadFile(filepath.Join(input.Path, filepath.FromSlash(manifest.Path)))
 		if err != nil {
 			return nil, PreflightFinding{Repository: input.Repository, Check: CheckNpmProviderIdentity, Status: PreflightUnknown, Detail: err.Error()}
 		}
@@ -169,13 +175,13 @@ func collectNpmPackageNames(input PreflightInput) ([]string, PreflightFinding) {
 			Private bool   `json:"private"`
 		}
 		if err := json.Unmarshal(contents, &parsed); err != nil {
-			return nil, PreflightFinding{Repository: input.Repository, Check: CheckNpmProviderIdentity, Status: PreflightUnknown, Detail: fmt.Sprintf("parse %s: %v", manifest, err)}
+			return nil, PreflightFinding{Repository: input.Repository, Check: CheckNpmProviderIdentity, Status: PreflightUnknown, Detail: fmt.Sprintf("parse %s: %v", manifest.Path, err)}
 		}
 		if parsed.Private {
 			continue
 		}
 		if strings.TrimSpace(parsed.Name) == "" {
-			unnamed = append(unnamed, manifest)
+			unnamed = append(unnamed, manifest.Path)
 			continue
 		}
 		names = append(names, parsed.Name)
@@ -284,41 +290,108 @@ func checkStreamConcurrency(input PreflightInput) PreflightFinding {
 	}
 }
 
-// npmPackageManifests lists the publishable package manifests of a repository:
-// `libs/**/package.json` plus the repository root, matching the canonical
-// dependency discovery used by `wb deps graph`.
-func npmPackageManifests(root string) ([]string, error) {
-	var manifests []string
-	if _, err := os.Stat(filepath.Join(root, "package.json")); err == nil {
-		manifests = append(manifests, "package.json")
-	}
-	libs := filepath.Join(root, "libs")
-	if _, err := os.Stat(libs); err != nil {
-		return manifests, nil
-	}
-	err := filepath.WalkDir(libs, func(path string, entry os.DirEntry, walkErr error) error {
+// npmPackageManifest identifies a package manifest and the independent npm
+// workspace that owns it. Paths are repository-relative and slash-separated.
+type npmPackageManifest struct {
+	Path      string
+	Workspace string
+	Root      bool
+}
+
+// npmPackageManifests lists workspace-root manifests and publishable
+// `libs/**/package.json` manifests across every independent workspace in a
+// repository. This follows the canonical dependency discovery's full-tree
+// model while retaining local-link's deliberate `libs/**` publication scope.
+func npmPackageManifests(root string) ([]npmPackageManifest, error) {
+	workspaceRoots := map[string]bool{".": true}
+	var packagePaths []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if entry.Name() == "node_modules" || entry.Name() == "dist" {
-				return filepath.SkipDir
+			if path != root {
+				if skippedNpmSourceDirectory(entry.Name()) {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
-		if entry.Name() != "package.json" {
+		if entry.Name() != "package.json" && entry.Name() != "pnpm-workspace.yaml" {
 			return nil
 		}
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		manifests = append(manifests, filepath.ToSlash(relative))
+		relative = filepath.ToSlash(relative)
+		if entry.Name() != "package.json" {
+			workspaceRoots[filepath.ToSlash(filepath.Dir(relative))] = true
+		} else {
+			packagePaths = append(packagePaths, relative)
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("scan npm manifests in %s: %w", root, err)
 	}
-	sort.Strings(manifests)
+	for _, path := range packagePaths {
+		contents, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		var parsed struct {
+			Workspaces json.RawMessage `json:"workspaces"`
+		}
+		if err := json.Unmarshal(contents, &parsed); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if len(parsed.Workspaces) > 0 && string(parsed.Workspaces) != "null" {
+			workspaceRoots[filepath.ToSlash(filepath.Dir(path))] = true
+		}
+	}
+	var manifests []npmPackageManifest
+	for _, path := range packagePaths {
+		workspace := owningNpmWorkspace(path, workspaceRoots)
+		relative, err := filepath.Rel(filepath.FromSlash(workspace), filepath.FromSlash(path))
+		if err != nil {
+			return nil, fmt.Errorf("resolve npm workspace for %s: %w", path, err)
+		}
+		relative = filepath.ToSlash(relative)
+		rootManifest := relative == "package.json"
+		if !rootManifest && !strings.HasPrefix(relative, "libs/") {
+			continue
+		}
+		manifests = append(manifests, npmPackageManifest{Path: path, Workspace: workspace, Root: rootManifest})
+	}
+	sort.Slice(manifests, func(i, j int) bool { return manifests[i].Path < manifests[j].Path })
 	return manifests, nil
+}
+
+// skippedNpmSourceDirectory matches the canonical dependency graph's checkout
+// exclusions and also omits generated frontend caches. Hidden directories are
+// never source package roots; this covers WB state and Angular/Nx caches
+// without allowing a stale managed checkout to become a provider identity.
+func skippedNpmSourceDirectory(name string) bool {
+	switch name {
+	case "node_modules", "vendor", "testdata", "dist", "coverage":
+		return true
+	}
+	return strings.HasPrefix(name, ".")
+}
+
+func owningNpmWorkspace(manifest string, roots map[string]bool) string {
+	workspace := "."
+	manifestDir := filepath.ToSlash(filepath.Dir(manifest))
+	for candidate := range roots {
+		if candidate == "." {
+			continue
+		}
+		if manifestDir == candidate || strings.HasPrefix(manifestDir, candidate+"/") {
+			if workspace == "." || len(candidate) > len(workspace) {
+				workspace = candidate
+			}
+		}
+	}
+	return workspace
 }

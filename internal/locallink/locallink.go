@@ -226,9 +226,9 @@ func linkPlan(identities []streams.Identity, verify bool) []string {
 			plan = append(plan, "write an excluded go.work naming every module in the consumer worktree plus "+identity.Name)
 		case streams.EcosystemNpm:
 			plan = append(plan,
-				"prove a clean frozen install of the unlinked consumer tree",
-				"build "+identity.Name+" once with the repository's own build target, cached by the library content hash",
-				"link the built dist into the consumer's node_modules without touching a tracked file")
+				"prove a clean frozen install of each affected unlinked npm workspace",
+				"build "+identity.Name+" from its owning npm workspace, cached by the library content hash",
+				"stage the built package in the consumer's installed peer context and link it into the declaring workspace without touching a tracked file")
 		}
 	}
 	plan = append(plan, "record every link in stream state so --undo can reverse it exactly")
@@ -280,9 +280,9 @@ func (engine *Engine) linkConsumer(
 	}
 	goDeclarations, npmDeclarations := splitDeclarations(declarations)
 
-	// The frozen install proves a clean install of the UNLINKED tree, so it
-	// runs once, before any mechanism touches node_modules. Running it per
-	// identity meant every install after the first ran against a tree that
+	// The frozen install proves a clean install of each UNLINKED npm workspace,
+	// so it runs once per workspace, before any mechanism touches node_modules.
+	// Running it per identity meant every install after the first ran against a tree that
 	// already carried a link — and a real `pnpm install --frozen-lockfile`
 	// reconciles node_modules against the lockfile, so it would typically
 	// remove that link again.
@@ -291,17 +291,24 @@ func (engine *Engine) linkConsumer(
 			outcome.Errors = append(outcome.Errors, "no Node toolchain available to link an npm package")
 			return outcome
 		}
-		if err := engine.Node.FrozenInstall(ctx, consumer); err != nil {
-			// A check that could not run is reported as skipped, not as a
-			// pass and not as a failure: the consumer has no lockfile, so
-			// there is no baseline to prove, and the operator has to see that
-			// rather than infer it from silence.
-			if skipped, wasSkipped := Skipped(err); wasSkipped {
-				outcome.SkippedChecks = append(outcome.SkippedChecks, skipped.Error())
-			} else {
-				outcome.Errors = append(outcome.Errors, fmt.Sprintf(
-					"prove a clean frozen install of %s before linking: %v", consumer, err))
+		for _, workspace := range declarationWorkspaces(npmDeclarations) {
+			workspaceDir, err := workspacePath(consumer, workspace)
+			if err != nil {
+				outcome.Errors = append(outcome.Errors, err.Error())
 				return outcome
+			}
+			if err := engine.Node.FrozenInstall(ctx, workspaceDir); err != nil {
+				// A check that could not run is reported as skipped, not as a
+				// pass and not as a failure: the consumer has no lockfile, so
+				// there is no baseline to prove, and the operator has to see that
+				// rather than infer it from silence.
+				if skipped, wasSkipped := Skipped(err); wasSkipped {
+					outcome.SkippedChecks = append(outcome.SkippedChecks, skipped.Error())
+				} else {
+					outcome.Errors = append(outcome.Errors, fmt.Sprintf(
+						"prove a clean frozen install of %s before linking: %v", workspaceDir, err))
+					return outcome
+				}
 			}
 		}
 	}
@@ -327,7 +334,7 @@ func (engine *Engine) linkConsumer(
 		applied = append(applied, links...)
 	}
 	for _, declaration := range npmDeclarations {
-		link, err := engine.linkNpm(ctx, options, library, consumer, declaration, result.LibraryRepository, hash)
+		link, err := engine.linkNpm(ctx, library, consumer, declaration, result.LibraryRepository, hash)
 		if err != nil {
 			outcome.Errors = append(outcome.Errors, err.Error())
 			continue
@@ -371,21 +378,39 @@ func intendedLinks(
 	for _, declaration := range goDeclarations {
 		links = append(links, streams.Link{
 			Library: library, LibraryRepository: libraryRepository,
-			Mechanism: streams.MechanismGoWork, Identity: declaration.Identity.Name,
+			Mechanism: streams.MechanismGoWork, State: streams.LinkStateIntent, Identity: declaration.Identity.Name,
 			PreviousVersion: declaration.Version, ContentHash: hash,
 			Artifacts: []string{streams.GoWorkFile, streams.GoWorkSum}, CreatedAt: now,
 		})
 	}
 	for _, declaration := range npmDeclarations {
+		artifact := filepath.Join(filepath.FromSlash(declaration.Workspace), "node_modules", filepath.FromSlash(declaration.Identity.Name))
 		links = append(links, streams.Link{
 			Library: library, LibraryRepository: libraryRepository,
-			Mechanism: streams.MechanismPnpmLink, Identity: declaration.Identity.Name,
+			Mechanism: streams.MechanismPnpmLink, State: streams.LinkStateIntent, Identity: declaration.Identity.Name,
 			PreviousVersion: declaration.Version, ContentHash: hash,
-			Artifacts: []string{filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(declaration.Identity.Name)))},
+			Artifacts: []string{filepath.ToSlash(filepath.Clean(artifact)), filepath.ToSlash(filepath.Clean(artifact)) + linkAppliedMarkerSuffix}, Workspace: declaration.Workspace,
 			CreatedAt: now,
 		})
 	}
 	return links
+}
+
+func declarationWorkspaces(declarations []streams.Declaration) []string {
+	seen := map[string]bool{}
+	var workspaces []string
+	for _, declaration := range declarations {
+		workspace := declaration.Workspace
+		if workspace == "" {
+			workspace = "."
+		}
+		if !seen[workspace] {
+			seen[workspace] = true
+			workspaces = append(workspaces, workspace)
+		}
+	}
+	sort.Strings(workspaces)
+	return workspaces
 }
 
 func splitDeclarations(declarations []streams.Declaration) (goDeclarations, npmDeclarations []streams.Declaration) {
@@ -560,7 +585,16 @@ func mergeLinks(existing, fresh []streams.Link) []streams.Link {
 	for _, link := range fresh {
 		replaced := false
 		for index := range merged {
-			if merged[index].Identity == link.Identity && merged[index].Mechanism == link.Mechanism {
+			if merged[index].Identity == link.Identity && merged[index].Mechanism == link.Mechanism &&
+				normalizedLinkWorkspace(merged[index].Workspace) == normalizedLinkWorkspace(link.Workspace) {
+				// Recording a refresh intent must not downgrade an existing
+				// applied link. The provider build happens after this write and
+				// may fail; the old marker/backups are still the recovery truth
+				// until a newly applied record replaces them.
+				if link.State == streams.LinkStateIntent && merged[index].State != streams.LinkStateIntent {
+					replaced = true
+					break
+				}
 				// Keep the version recorded first: it is the published version
 				// the consumer had before any link existed, and that is what
 				// --undo must restore.
@@ -575,6 +609,13 @@ func mergeLinks(existing, fresh []streams.Link) []streams.Link {
 		}
 	}
 	return merged
+}
+
+func normalizedLinkWorkspace(workspace string) string {
+	if strings.TrimSpace(workspace) == "" {
+		return "."
+	}
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(workspace)))
 }
 
 func sameWorktree(left, right string) bool {

@@ -24,7 +24,8 @@ name:
 
 - the Go module path from `backend/go.mod`, or from the module root where the
   repository has no `backend/`
-- npm package names from `libs/**/package.json`
+- npm package names from `libs/**/package.json` in each repository-owned npm
+  workspace, including nested `frontend/` workspaces
 
 A consumer that declares none of the discovered identities is **reported and
 skipped**, not linked to something it does not use. Declarations are read from
@@ -55,24 +56,40 @@ graph sets `GOWORK=off` itself.
 
 ## npm consumers
 
-1. A **clean frozen install of the unlinked tree** is proved first, so a link
-   never masks a lockfile or manifest mismatch. A failed frozen install stops
-   the link; nothing is built. It runs **once per consumer**, before any
-   linking — not once per package. A second install would run against a tree
+Invoke the command with the repository-root worktrees recorded by the stream.
+WB locates the owning npm workspace for each manifest; exact repository-root
+membership remains the link-record and merge-guard authority.
+
+1. A **clean frozen install of each affected unlinked npm workspace** is proved
+   first, so a link never masks a lockfile or manifest mismatch. A failed frozen
+   install stops the link; nothing is built. It runs **once per affected
+   workspace**, before any linking — not once per package. A second install
+   would run against a tree
    that already carries the first link, and `pnpm install --frozen-lockfile`
    reconciles `node_modules` against the lockfile, so it would remove the very
    link it was meant to validate.
-2. The library is built **once** with the repository's own build target, cached
+2. The library is built **once** from the workspace that owns the package, with
+   that workspace's own build target, cached
    against the library's **content hash** and rebuilt whenever that hash moves.
    Building once and reusing it would have consumers verifying against a stale
    `dist` and reporting false green.
-3. The built dist is linked into the consumer's `node_modules`. Whatever was
+3. The built dist is copied to an untracked stage beside the original package
+   in the consumer's installed peer context, then linked into the declaring
+   consumer workspace's `node_modules`. Staging there makes Node resolve
+   Angular and other peer dependencies from the consumer, avoiding duplicate
+   framework singletons and private types. The original installed package and
+   pnpm's global content-addressable store remain untouched. Whatever was
    there is preserved: pnpm's isolated store makes `node_modules/<pkg>` a
    **symlink** into `.pnpm/…`, and its target is recorded so `--undo` re-creates
    it exactly; npm's flat layout leaves a real directory, which is moved aside.
    If the recorded target was pruned while the link was live, `--undo` restores
    the link and then **reports it as dangling** — the published package is not
    actually back until you re-install.
+
+Restart an already-running frontend build after the link topology changes. If
+the build still resolves the previous package target, preserve any diagnostics
+you need, explicitly clear its generated resolver cache (for Angular,
+`.angular/cache`), and rebuild. WB does not silently delete framework caches.
 
 **No `pnpm` override, alias, or `workspace:` entry is ever written**, and no
 tracked file changes. `pnpm-workspace.yaml` and every `package.json` stay
@@ -119,6 +136,12 @@ merge guard and `wb stream end` must keep refusing; clearing the record would
 hide a live link from both, and an npm link has no filesystem signal to catch
 it later. Fix the cause and re-run `--undo`.
 
+An npm intent recorded before a provider build failure is cleared without
+touching the published package already installed in `node_modules`. Applied
+links carry an untracked marker and record the generated peer-context stage,
+allowing `--undo` to distinguish them without guessing and to recover an
+interrupted record update.
+
 `--undo` never edits a manifest, because linking never did: nothing changed a
 declared version, so there is no version to write back. "Restores the published
 versions" means the consumer resolves its published dependency again once the
@@ -130,8 +153,9 @@ untracked link artefacts are gone.
 |---|---|
 | `link-not-recordable` — no open stream has **the consumer** as a member | `wb stream join <name> <owner/repository>` the consumer first, or pass `--stream <name>`. Membership is checked per consumer, not from the library: a stream holding the library does not make a link into some other worktree recordable. A link WB cannot record cannot be undone and is invisible to the merge guard, so it is refused **before** anything is written, and one unrecordable consumer stops the whole invocation. |
 | `wb worktree merge` or `wb pr land` refuses a linked worktree | run the exact `wb deps propagate local <library> --to <consumer> --undo` the refusal names |
-| the library publishes no discoverable identity | fix the library's `backend/go.mod` or `libs/**/package.json`; WB will not accept a supplied name as a substitute |
+| the library publishes no discoverable identity | fix the library's `backend/go.mod` or a repository-owned npm workspace's `libs/**/package.json`; WB will not accept a supplied name as a substitute |
 | the frozen install failed | fix the consumer's lockfile (`pnpm install`, commit the lockfile) and re-run |
+| a restarted frontend still resolves the previous package target | preserve useful diagnostics, explicitly clear the framework's generated resolver cache (for Angular, `.angular/cache`), and rebuild; WB does not delete generated caches |
 | linking changed a tracked file | that is a defect — report it; a local link must never change tracked config |
 
 There is **no flag that both bypasses the merge guard and pushes**.
