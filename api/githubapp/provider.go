@@ -23,13 +23,13 @@ var ErrProjectionNotFound = errors.New("workbench projection not found")
 // Workbench-owned projector. Public responses require PublicOptIn; private
 // responses require the host membership resolver below.
 type ProjectionDocument struct {
-	Scope             Scope              `json:"scope"`
-	ID                string             `json:"id"`
-	DisplayName       string             `json:"display_name"`
-	Summary           Summary            `json:"summary"`
-	UpdatedAt         time.Time          `json:"updated_at"`
-	PublicOptIn       bool               `json:"public_opt_in"`
-	PublicEligibility *PublicEligibility `json:"public_eligibility,omitempty"`
+	Scope             Scope              `json:"scope" firestore:"scope"`
+	ID                string             `json:"id" firestore:"id"`
+	DisplayName       string             `json:"display_name" firestore:"display_name"`
+	Summary           Summary            `json:"summary" firestore:"summary"`
+	UpdatedAt         time.Time          `json:"updated_at" firestore:"updated_at"`
+	PublicOptIn       bool               `json:"public_opt_in" firestore:"public_opt_in"`
+	PublicEligibility *PublicEligibility `json:"public_eligibility,omitempty" firestore:"public_eligibility,omitempty"`
 }
 
 type SeriesDocument struct {

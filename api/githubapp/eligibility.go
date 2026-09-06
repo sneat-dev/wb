@@ -14,6 +14,7 @@ var (
 	markdownLink       = regexp.MustCompile(`\[[^\]]*\]\(\s*(?:<)?(https://[^\s)>]+)`)
 	autolink           = regexp.MustCompile(`<((?:https://)[^\s>]+)>`)
 	githubName         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	gitCommitSHA       = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
 // VerifyPublicEligibility returns auditable evidence only when the root README
@@ -58,8 +59,8 @@ func ValidatePublicEligibility(evidence PublicEligibility) error {
 		return errors.New("public eligibility README URL must identify the repository root README")
 	}
 	ref := strings.TrimSuffix(strings.TrimPrefix(readme.Path, prefix), "/README.md")
-	if strings.TrimSpace(ref) == "" || strings.Contains(ref, "/") {
-		return errors.New("public eligibility README URL must identify the root README at a canonical revision")
+	if !gitCommitSHA.MatchString(ref) {
+		return errors.New("public eligibility README URL must identify the root README at an exact 40-hex Git commit SHA")
 	}
 	return nil
 }
@@ -145,7 +146,7 @@ func workbenchURL(raw string) bool {
 	if err != nil {
 		return false
 	}
-	if link.Scheme != "https" || link.Host != "sneat.work" || link.User != nil {
+	if link.Scheme != "https" || link.Host != "sneat.work" || link.User != nil || link.RawQuery != "" || link.Fragment != "" {
 		return false
 	}
 	return link.Path == "/bench" || link.Path == "/bench/" || link.Path == "/bench/dashboard" || strings.HasPrefix(link.Path, "/bench/dashboard/") || link.Path == "/bench/repo" || strings.HasPrefix(link.Path, "/bench/repo/")

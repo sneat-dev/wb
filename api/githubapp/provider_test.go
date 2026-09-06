@@ -3,6 +3,7 @@ package githubapp
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -54,7 +55,7 @@ func (membership providerMembership) Member(context.Context, Viewer, Scope, stri
 func providerDocument(public bool) ProjectionDocument {
 	document := ProjectionDocument{Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "acme/widgets", UpdatedAt: time.Unix(10, 0), PublicOptIn: public, Summary: Summary{Repositories: 1, OpenPulls: 2, MergedPulls: 3, OpenIssues: 4, Releases: 5}}
 	if public {
-		document.PublicEligibility = &PublicEligibility{Repository: document.ID, READMEURL: "https://github.com/acme/widgets/blob/main/README.md", VerifiedAt: time.Unix(9, 0)}
+		document.PublicEligibility = &PublicEligibility{Repository: document.ID, READMEURL: "https://github.com/acme/widgets/blob/0123456789abcdef0123456789abcdef01234567/README.md", VerifiedAt: time.Unix(9, 0)}
 	}
 	return document
 }
@@ -68,9 +69,30 @@ func TestProjectionKeyAndValidation(t *testing.T) {
 	if err := ValidateProjectionDocument(valid); err != nil {
 		t.Fatal(err)
 	}
-	for _, invalid := range []ProjectionDocument{{}, {Scope: Scope("bad"), ID: "x", DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", DisplayName: "x"}, {Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets", UpdatedAt: time.Now(), PublicOptIn: true}, {Scope: ScopeOrganization, ID: "github.com/acme", DisplayName: "acme", UpdatedAt: time.Now(), PublicOptIn: true, PublicEligibility: &PublicEligibility{Repository: "github.com/acme", READMEURL: "https://github.com/acme/blob/main/README.md", VerifiedAt: time.Now()}}, {Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets", UpdatedAt: time.Now(), PublicOptIn: true, PublicEligibility: &PublicEligibility{Repository: "github.com/acme/other", READMEURL: "https://github.com/acme/other/blob/main/README.md", VerifiedAt: time.Now()}}} {
+	for _, invalid := range []ProjectionDocument{{}, {Scope: Scope("bad"), ID: "x", DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, DisplayName: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", UpdatedAt: time.Now()}, {Scope: ScopeRepository, ID: "x", DisplayName: "x"}, {Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets", UpdatedAt: time.Now(), PublicOptIn: true}, {Scope: ScopeOrganization, ID: "github.com/acme", DisplayName: "acme", UpdatedAt: time.Now(), PublicOptIn: true, PublicEligibility: &PublicEligibility{Repository: "github.com/acme", READMEURL: "https://github.com/acme/blob/0123456789abcdef0123456789abcdef01234567/README.md", VerifiedAt: time.Now()}}, {Scope: ScopeRepository, ID: "github.com/acme/widgets", DisplayName: "widgets", UpdatedAt: time.Now(), PublicOptIn: true, PublicEligibility: &PublicEligibility{Repository: "github.com/acme/other", READMEURL: "https://github.com/acme/other/blob/0123456789abcdef0123456789abcdef01234567/README.md", VerifiedAt: time.Now()}}} {
 		if err := ValidateProjectionDocument(invalid); err == nil {
 			t.Errorf("ValidateProjectionDocument(%#v) returned nil", invalid)
+		}
+	}
+}
+
+func TestProjectionEligibilityHasExplicitFirestoreSchema(t *testing.T) {
+	for _, typeAndFields := range []struct {
+		value  any
+		fields []string
+	}{
+		{ProjectionDocument{}, []string{"Scope", "ID", "DisplayName", "Summary", "UpdatedAt", "PublicOptIn", "PublicEligibility"}},
+		{PublicEligibility{}, []string{"Repository", "READMEURL", "VerifiedAt"}},
+	} {
+		typeOf := reflect.TypeOf(typeAndFields.value)
+		for _, name := range typeAndFields.fields {
+			field, ok := typeOf.FieldByName(name)
+			if !ok {
+				t.Fatalf("%s.%s is missing", typeOf.Name(), name)
+			}
+			if field.Tag.Get("firestore") == "" {
+				t.Errorf("%s.%s lacks a firestore tag", typeOf.Name(), name)
+			}
 		}
 	}
 }

@@ -1031,8 +1031,9 @@ Given an authoritative GitHub App refresh reads a repository root `README.md`,
 when an exact `## WB` or `## Workbench` section contains a Markdown or autolink
 to `https://sneat.work/bench`, including a dashboard or repository subpath,
 then WB records public eligibility with the canonical `github.com/<org>/<repo>`
-identity, canonical GitHub root-README URL, and verification time. Links outside
-that section or in fenced code do not opt in. A projection can set
+identity, canonical GitHub root-README URL pinned to an exact 40-hex commit SHA,
+and verification time. Links outside that section, in fenced code, or with a
+query or fragment do not opt in. A projection can set
 `public_opt_in` only when it carries valid eligibility evidence for that same
 repository; missing, mismatched, or non-canonical evidence fails validation.
 

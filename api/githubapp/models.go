@@ -46,9 +46,9 @@ type Viewer struct {
 // a repository can appear in unauthenticated results. It is not inferred from
 // GitHub repository visibility alone.
 type PublicEligibility struct {
-	Repository string    `json:"repository"`
-	READMEURL  string    `json:"readme_url"`
-	VerifiedAt time.Time `json:"verified_at"`
+	Repository string    `json:"repository" firestore:"repository"`
+	READMEURL  string    `json:"readme_url" firestore:"readme_url"`
+	VerifiedAt time.Time `json:"verified_at" firestore:"verified_at"`
 }
 
 // Link is a canonical GitHub, release, or Workbench receipt reference.
