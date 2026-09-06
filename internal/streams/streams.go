@@ -86,6 +86,15 @@ const (
 	MechanismPnpmLink Mechanism = "pnpm-link"
 )
 
+// LinkState distinguishes a record written before its filesystem operation
+// from one whose operation completed. Empty is a legacy applied record.
+type LinkState string
+
+const (
+	LinkStateIntent  LinkState = "intent"
+	LinkStateApplied LinkState = "applied"
+)
+
 // Stream is the durable record of one named cross-repository unit of work.
 type Stream struct {
 	SchemaVersion int       `json:"schema_version"`
@@ -167,6 +176,7 @@ type Link struct {
 	// worktree being removed.
 	LibraryRepository string    `json:"library_repository"`
 	Mechanism         Mechanism `json:"mechanism"`
+	State             LinkState `json:"state,omitempty"`
 	// Identity is the published identity being replaced: a Go module path or
 	// an npm package name.
 	Identity string `json:"identity"`
@@ -179,7 +189,10 @@ type Link struct {
 	ContentHash string `json:"content_hash,omitempty"`
 	// Artifacts are the untracked paths the link created, relative to the
 	// consumer worktree, so removal never guesses.
-	Artifacts []string  `json:"artifacts,omitempty"`
+	Artifacts []string `json:"artifacts,omitempty"`
+	// Workspace is the consumer-relative npm workspace containing the link.
+	// Empty and "." both mean the repository root for backward compatibility.
+	Workspace string    `json:"workspace,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 

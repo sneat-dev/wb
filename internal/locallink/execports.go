@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,7 +171,8 @@ func readLines(path string) ([]string, error) {
 // `npm-consumers-link-through-a-built-dist` requires that no tracked file
 // changes. What it does instead is exactly what the package manager's link
 // mechanism does to `node_modules` — replace the package directory with a
-// symlink to the built output — without the manifest edit.
+// symlink to a built package staged in the consumer's installed peer context —
+// without the manifest edit or provider-side peer resolution.
 type ExecNode struct {
 	// CacheRoot holds built dists keyed by the library's content hash.
 	CacheRoot string
@@ -230,11 +233,14 @@ func (node ExecNode) Build(ctx context.Context, libraryDir, packageDir string) (
 			}
 		}
 	}
-	manager := packageManager(libraryDir)
-	if _, err := exec.LookPath(manager); err != nil {
-		return "", fmt.Errorf("%s is required to build %s: %w", manager, packageDir, err)
+	command, args, err := nodeBuildCommand(libraryDir, packageDir)
+	if err != nil {
+		return "", err
 	}
-	if _, err := runBounded(ctx, node.Timeout, libraryDir, nil, manager, "run", "build"); err != nil {
+	if _, err := exec.LookPath(command); err != nil {
+		return "", fmt.Errorf("%s is required to build %s: %w", command, packageDir, err)
+	}
+	if _, err := runBounded(ctx, node.Timeout, libraryDir, nil, command, args...); err != nil {
 		return "", err
 	}
 	dist, err := builtDist(libraryDir, packageDir)
@@ -248,6 +254,50 @@ func (node ExecNode) Build(ctx context.Context, libraryDir, packageDir string) (
 		return "", fmt.Errorf("record the cached build: %w", err)
 	}
 	return dist, nil
+}
+
+func nodeBuildCommand(libraryDir, packageDir string) (string, []string, error) {
+	manager := packageManager(libraryDir)
+	projectPath := filepath.Join(packageDir, "project.json")
+	if contents, err := os.ReadFile(projectPath); err == nil {
+		var project struct {
+			Name    string                     `json:"name"`
+			Targets map[string]json.RawMessage `json:"targets"`
+		}
+		if err := json.Unmarshal(contents, &project); err != nil {
+			return "", nil, fmt.Errorf("parse %s: %w", projectPath, err)
+		}
+		if _, hasBuild := project.Targets["build"]; hasBuild {
+			if strings.TrimSpace(project.Name) == "" {
+				return "", nil, fmt.Errorf("%s declares a build target without a project name", projectPath)
+			}
+			switch manager {
+			case "pnpm":
+				return manager, []string{"exec", "nx", "build", project.Name}, nil
+			case "yarn":
+				return manager, []string{"nx", "build", project.Name}, nil
+			default:
+				return manager, []string{"exec", "nx", "--", "build", project.Name}, nil
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return "", nil, fmt.Errorf("read %s: %w", projectPath, err)
+	}
+	manifest := filepath.Join(libraryDir, "package.json")
+	contents, err := os.ReadFile(manifest)
+	if err != nil {
+		return "", nil, fmt.Errorf("read %s: %w", manifest, err)
+	}
+	var workspace struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(contents, &workspace); err != nil {
+		return "", nil, fmt.Errorf("parse %s: %w", manifest, err)
+	}
+	if strings.TrimSpace(workspace.Scripts["build"]) == "" {
+		return "", nil, fmt.Errorf("%s has neither an Nx project build target nor a workspace build script", packageDir)
+	}
+	return manager, []string{"run", "build"}, nil
 }
 
 // buildMarkerName records which dist a cached build produced.
@@ -308,6 +358,15 @@ const linkBackupSuffix = ".wb-locallink-backup"
 // pointed, so Unlink can re-create it exactly.
 const linkSymlinkBackupSuffix = ".wb-locallink-symlink"
 
+// linkAppliedMarkerSuffix proves that WB began applying this exact npm link.
+// Intent-only records have no marker, so undo preserves the published package.
+const linkAppliedMarkerSuffix = ".wb-locallink-applied"
+
+func linkAppliedMarkerPath(consumerDir, packageName string) string {
+	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
+	return target + linkAppliedMarkerSuffix
+}
+
 // Link implements Node.
 //
 // Both shapes a package manager leaves in node_modules are preserved. pnpm's
@@ -315,61 +374,263 @@ const linkSymlinkBackupSuffix = ".wb-locallink-symlink"
 // an earlier version simply deleted that symlink with no backup — so `--undo`
 // left the consumer with no package at all until someone re-installed. npm's
 // flat layout leaves a real directory, which is moved aside.
-func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist string) (string, error) {
+func (node ExecNode) Link(ctx context.Context, consumerDir, packageName, dist string) (result NodeLinkResult, returnedErr error) {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+		return result, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
 	}
-	previous := ""
-	info, err := os.Lstat(target)
+	marker := linkAppliedMarkerPath(consumerDir, packageName)
+	if fileExists(marker) {
+		if err := node.Unlink(ctx, consumerDir, packageName); err != nil {
+			return result, fmt.Errorf("restore the prior local link before refreshing %s: %w", packageName, err)
+		}
+	}
+	info, statErr := os.Lstat(target)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return result, fmt.Errorf("inspect %s: %w", target, statErr)
+	}
+	stage, err := nodeLinkStagePath(consumerDir, target, info)
+	if err != nil {
+		return result, err
+	}
+	symlinkBackup := target + linkSymlinkBackupSuffix
+	directoryBackup := target + linkBackupSuffix
+	for _, backup := range []string{symlinkBackup, directoryBackup} {
+		if fileExists(backup) {
+			return result, fmt.Errorf("refuse to replace unexpected local-link recovery artifact %s; inspect it or complete the prior undo", backup)
+		}
+	}
+	if err := validateBuiltPackageSource(dist); err != nil {
+		return result, fmt.Errorf("stage %s in the consumer's installed peer context: %w", packageName, err)
+	}
+	if err := os.Mkdir(stage, 0o755); err != nil {
+		return result, fmt.Errorf("claim the staged package path %s without replacing existing data: %w", stage, err)
+	}
+	markerFile, err := os.OpenFile(marker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		if cleanupErr := os.Remove(stage); cleanupErr != nil {
+			return result, fmt.Errorf("record the pending link for %s: %w; preserve unclaimed stage %s: %v", packageName, err, stage, cleanupErr)
+		}
+		return result, fmt.Errorf("record the pending link for %s (run --undo if a prior attempt was interrupted): %w", packageName, err)
+	}
+	if _, err := markerFile.WriteString(stage + "\n"); err != nil {
+		_ = markerFile.Close()
+		_ = os.Remove(marker)
+		_ = os.Remove(stage)
+		return result, fmt.Errorf("record the staged link path for %s: %w", packageName, err)
+	}
+	if err := markerFile.Close(); err != nil {
+		_ = os.Remove(marker)
+		_ = os.Remove(stage)
+		return result, fmt.Errorf("close the pending link marker for %s: %w", packageName, err)
+	}
+	defer func() {
+		if returnedErr == nil {
+			return
+		}
+		if cleanupErr := node.Unlink(ctx, consumerDir, packageName); cleanupErr != nil {
+			returnedErr = fmt.Errorf("%w; restore the published package after the failed link: %v", returnedErr, cleanupErr)
+		}
+	}()
+	if err := copyBuiltPackageContents(dist, stage); err != nil {
+		return result, fmt.Errorf("stage %s in the consumer's installed peer context: %w", packageName, err)
+	}
+	info, err = os.Lstat(target)
 	switch {
 	case err == nil && info.Mode()&os.ModeSymlink != 0:
 		// Record where it pointed before replacing it. Without this the
 		// installed package is unrecoverable on every pnpm consumer.
 		existing, readErr := os.Readlink(target)
 		if readErr != nil {
-			return "", fmt.Errorf("read the existing link at %s: %w", target, readErr)
+			return result, fmt.Errorf("read the existing link at %s: %w", target, readErr)
 		}
-		backup := target + linkSymlinkBackupSuffix
-		if err := os.RemoveAll(backup); err != nil {
-			return "", fmt.Errorf("clear the stale link record at %s: %w", backup, err)
+		backupFile, err := os.OpenFile(symlinkBackup, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err != nil {
+			return result, fmt.Errorf("claim the link recovery record %s without replacing existing data: %w", symlinkBackup, err)
 		}
-		if err := os.WriteFile(backup, []byte(existing), 0o644); err != nil {
-			return "", fmt.Errorf("record the existing link target of %s: %w", packageName, err)
+		if _, err := backupFile.WriteString(existing); err != nil {
+			_ = backupFile.Close()
+			_ = os.Remove(symlinkBackup)
+			return result, fmt.Errorf("record the existing link target of %s: %w", packageName, err)
+		}
+		if err := backupFile.Close(); err != nil {
+			_ = os.Remove(symlinkBackup)
+			return result, fmt.Errorf("close the existing link target record of %s: %w", packageName, err)
 		}
 		if err := os.Remove(target); err != nil {
-			return "", fmt.Errorf("replace the existing link at %s: %w", target, err)
+			return result, fmt.Errorf("replace the existing link at %s: %w", target, err)
 		}
-		previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkSymlinkBackupSuffix))
+		result.Previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkSymlinkBackupSuffix))
 	case err == nil:
-		backup := target + linkBackupSuffix
-		if err := os.RemoveAll(backup); err != nil {
-			return "", fmt.Errorf("clear the stale backup at %s: %w", backup, err)
+		if err := os.Rename(target, directoryBackup); err != nil {
+			return result, fmt.Errorf("set aside the installed %s: %w", packageName, err)
 		}
-		if err := os.Rename(target, backup); err != nil {
-			return "", fmt.Errorf("set aside the installed %s: %w", packageName, err)
-		}
-		previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkBackupSuffix))
+		result.Previous = filepath.ToSlash(filepath.Join("node_modules", filepath.FromSlash(packageName)+linkBackupSuffix))
 	case !os.IsNotExist(err):
-		return "", fmt.Errorf("inspect %s: %w", target, err)
+		return result, fmt.Errorf("inspect %s: %w", target, err)
 	}
-	if err := os.Symlink(dist, target); err != nil {
-		return "", fmt.Errorf("link %s to %s: %w", target, dist, err)
+	if err := os.Symlink(stage, target); err != nil {
+		return result, fmt.Errorf("link %s to staged package %s: %w", target, stage, err)
 	}
-	return previous, nil
+	for _, artifact := range []string{target, marker, stage, target + linkSymlinkBackupSuffix, target + linkBackupSuffix} {
+		if !fileExists(artifact) {
+			continue
+		}
+		relative, err := filepath.Rel(consumerDir, artifact)
+		if err != nil {
+			return result, fmt.Errorf("record generated path %s: %w", artifact, err)
+		}
+		result.Artifacts = append(result.Artifacts, filepath.ToSlash(relative))
+	}
+	return result, nil
+}
+
+func nodeLinkStagePath(consumerDir, target string, info os.FileInfo) (string, error) {
+	parent := filepath.Dir(target)
+	if info != nil && info.Mode()&os.ModeSymlink != 0 {
+		existing, err := os.Readlink(target)
+		if err != nil {
+			return "", fmt.Errorf("read the installed package link at %s: %w", target, err)
+		}
+		if !filepath.IsAbs(existing) {
+			existing = filepath.Join(filepath.Dir(target), existing)
+		}
+		parent = filepath.Dir(filepath.Clean(existing))
+	}
+	resolvedConsumer, err := filepath.EvalSymlinks(consumerDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve consumer npm workspace %s: %w", consumerDir, err)
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve installed peer context %s: %w", parent, err)
+	}
+	relative, err := filepath.Rel(resolvedConsumer, resolvedParent)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("installed peer context %s resolves outside consumer npm workspace %s", parent, consumerDir)
+	}
+	return filepath.Join(parent, "."+filepath.Base(target)+".wb-locallink-stage"), nil
+}
+
+func copyBuiltPackage(source, destination string) error {
+	if err := validateBuiltPackageSource(source); err != nil {
+		return err
+	}
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		return err
+	}
+	return copyBuiltPackageContents(source, destination)
+}
+
+func validateBuiltPackageSource(source string) error {
+	info, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("built package source %s is not a real directory", source)
+	}
+	return nil
+}
+
+func copyBuiltPackageContents(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == source {
+			return nil
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("built package contains unsupported symlink %s", path)
+		}
+		if entry.IsDir() {
+			return os.Mkdir(target, 0o755)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("built package contains unsupported non-regular file %s", path)
+		}
+		input, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		_, copyErr := io.Copy(output, input)
+		closeErr := output.Close()
+		_ = input.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
 }
 
 // Unlink implements Node, restoring whichever shape the link displaced.
 func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string) error {
 	target := filepath.Join(consumerDir, "node_modules", filepath.FromSlash(packageName))
+	marker := linkAppliedMarkerPath(consumerDir, packageName)
+	stage := ""
+	if contents, err := os.ReadFile(marker); err == nil {
+		var validateErr error
+		stage, validateErr = validateStagedLinkPath(consumerDir, target, strings.TrimSpace(string(contents)))
+		if validateErr != nil {
+			return validateErr
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read the applied-link marker for %s: %w", packageName, err)
+	}
+
 	info, err := os.Lstat(target)
 	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		actual, readErr := os.Readlink(target)
+		if readErr != nil {
+			return fmt.Errorf("read the active link at %s: %w", target, readErr)
+		}
+		actualPath := actual
+		if !filepath.IsAbs(actualPath) {
+			actualPath = filepath.Join(filepath.Dir(target), actualPath)
+		}
+		if stage != "" && filepath.Clean(actualPath) != stage {
+			symlinkBackup := target + linkSymlinkBackupSuffix
+			if original, backupErr := os.ReadFile(symlinkBackup); backupErr == nil && strings.TrimSpace(string(original)) == actual {
+				if _, statErr := os.Stat(target); statErr != nil {
+					return fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, actual, statErr)
+				}
+				if err := os.Remove(symlinkBackup); err != nil {
+					return fmt.Errorf("clear the link record for %s: %w", packageName, err)
+				}
+				return clearStagedLink(stage, marker)
+			}
+			if fileExists(symlinkBackup) || fileExists(target+linkBackupSuffix) {
+				return fmt.Errorf("%s no longer points to the WB-staged output; preserve its backups and inspect before undo", target)
+			}
+			return clearStagedLink(stage, marker)
+		}
 		if err := os.Remove(target); err != nil {
 			return fmt.Errorf("remove the link at %s: %w", target, err)
 		}
+	} else if err == nil && stage != "" {
+		if fileExists(target+linkSymlinkBackupSuffix) || fileExists(target+linkBackupSuffix) {
+			return fmt.Errorf("%s is no longer the WB-created symlink; preserve its backups and inspect before undo", target)
+		}
+		return clearStagedLink(stage, marker)
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", target, err)
 	}
+
 	// A recorded symlink target is restored first: on pnpm this is the normal
 	// case, and it is the one that used to be lost entirely.
 	symlinkBackup := target + linkSymlinkBackupSuffix
@@ -381,20 +642,13 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		if err := os.Symlink(original, target); err != nil {
 			return fmt.Errorf("restore the original link for %s: %w", packageName, err)
 		}
+		if _, statErr := os.Stat(target); statErr != nil {
+			return fmt.Errorf("restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w", packageName, original, statErr)
+		}
 		if err := os.Remove(symlinkBackup); err != nil {
 			return fmt.Errorf("clear the link record for %s: %w", packageName, err)
 		}
-		// The link is restored byte-for-byte, but the store entry it points at
-		// may have been pruned while the link was live (a `pnpm install`
-		// during the stream is enough). Reporting success on a dangling link
-		// would tell the operator the published package is back when it is
-		// not.
-		if _, statErr := os.Stat(target); statErr != nil {
-			return fmt.Errorf(
-				"restored the original link for %s but it is dangling — %s no longer resolves; re-install to recover the published package: %w",
-				packageName, original, statErr)
-		}
-		return nil
+		return clearStagedLink(stage, marker)
 	} else if !os.IsNotExist(readErr) {
 		return fmt.Errorf("read the link record for %s: %w", packageName, readErr)
 	}
@@ -403,6 +657,50 @@ func (node ExecNode) Unlink(ctx context.Context, consumerDir, packageName string
 		if err := os.Rename(directoryBackup, target); err != nil {
 			return fmt.Errorf("restore the installed %s: %w", packageName, err)
 		}
+	}
+	return clearStagedLink(stage, marker)
+}
+
+func validateStagedLinkPath(consumerDir, target, stage string) (string, error) {
+	stage = filepath.Clean(stage)
+	wantBase := "." + filepath.Base(target) + ".wb-locallink-stage"
+	if !filepath.IsAbs(stage) || filepath.Base(stage) != wantBase {
+		return "", fmt.Errorf("applied-link marker names invalid staged path %q", stage)
+	}
+	absoluteConsumer, err := filepath.Abs(consumerDir)
+	if err != nil {
+		return "", err
+	}
+	lexical, err := filepath.Rel(filepath.Join(absoluteConsumer, "node_modules"), stage)
+	if err != nil || lexical == ".." || strings.HasPrefix(lexical, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("staged package %s is outside consumer npm workspace %s", stage, consumerDir)
+	}
+	resolvedConsumer, err := filepath.EvalSymlinks(consumerDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve consumer npm workspace %s: %w", consumerDir, err)
+	}
+	resolvedParent, err := filepath.EvalSymlinks(filepath.Dir(stage))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return stage, nil
+		}
+		return "", fmt.Errorf("resolve staged package parent %s: %w", filepath.Dir(stage), err)
+	}
+	relative, err := filepath.Rel(resolvedConsumer, resolvedParent)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("staged package %s resolves outside consumer npm workspace %s", stage, consumerDir)
+	}
+	return stage, nil
+}
+
+func clearStagedLink(stage, marker string) error {
+	if stage != "" {
+		if err := os.RemoveAll(stage); err != nil {
+			return err
+		}
+	}
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }

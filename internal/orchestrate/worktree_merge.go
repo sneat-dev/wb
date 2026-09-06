@@ -3396,6 +3396,21 @@ func activeWorktreeMergeLaneReceipt(ctx context.Context, projectsRoot, reportsDi
 			receiptLane = worktreeMergeLaneID(receipt.Repository, receipt.Target)
 		}
 		if receiptLane == lane && receipt.Status != WorktreeMergeComplete {
+			// A valid immutable missing-cleanup acknowledgement proves the old
+			// landed receipt's assets are already terminal. It releases lane
+			// ownership even when nobody resumed the historical receipt merely to
+			// rewrite its derived status to complete.
+			if receipt.Status == WorktreeMergeLanded && receipt.LandingSHA != "" && receipt.Cleanup {
+				ackPath := receipt.ReceiptPath + worktreeMergeMissingCleanupAcknowledgementSuffix
+				if _, statErr := os.Stat(ackPath); statErr == nil {
+					if _, ackErr := validateMissingCleanupAcknowledgement(ctx, projectsRoot, receipt, ackPath, 0, 0); ackErr != nil {
+						return nil, fmt.Errorf("validate missing-cleanup acknowledgement for %s: %w", receipt.ReceiptPath, ackErr)
+					}
+					continue
+				} else if !os.IsNotExist(statErr) {
+					return nil, fmt.Errorf("inspect missing-cleanup acknowledgement %s: %w", ackPath, statErr)
+				}
+			}
 			acknowledged, ackErr := hasLandedFailureAcknowledgement(receipt)
 			if ackErr != nil {
 				return nil, ackErr
