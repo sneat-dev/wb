@@ -47,20 +47,18 @@ installed.
 CLEANUP IS THE DEFAULT. The task's worktree is retired and its claim released
 unless --keep is passed. An opt-in cleanup is a cleanup that does not happen.
 
-SQUASH IS THE DEFAULT, and the squash message AGGREGATES the branch: the
-subject is the pull request's title — GitHub otherwise substitutes the branch's
-first commit subject, which is how a "wip(...)" message lands on main and
-cannot be corrected without rewriting history — and the body carries the pull
-request's summary, one line per source commit, the pull request number, and the
-review that authorized it.
+MERGE COMMIT IS THE DEFAULT. It keeps the reviewed commits and records the pull
+request boundary without rewriting either. Use --merge-method squash when one
+aggregated commit is intentional; WB then builds its subject and body from the
+pull request and source commits rather than accepting an accidental first
+commit message. Explicit --merge-method rebase remains available.
 
---keep-commits <sha>[,<sha>...] --reason "<text>" is the exception: wb rebuilds
-the branch so those commits land as their own commits, in order, with the rest
-squashed into one aggregated commit that records the reason. --reason is
-mandatory, because a commit standing alone in the history of a default branch
-has to say why. Each kept commit must build on its own; one that does not is
-refused, naming a smaller set, because a commit that does not build is not a
-place anyone can bisect to.
+--keep-commits <sha>[,<sha>...] is the explicit squash hybrid and therefore
+requires --merge-method squash plus --reason "<text>". wb rebuilds the branch so
+those commits land as their own commits, in order, with the rest squashed into
+one aggregated commit that records the reason. Each kept commit must build on
+its own; one that does not is refused, naming a smaller set, because a commit
+that does not build is not a place anyone can bisect to.
 
 REVIEW. A mechanical dependency bump — a diff touching only go.mod, go.sum,
 package.json dependency fields, pnpm-lock.yaml, pnpm-workspace.yaml — lands on
@@ -79,7 +77,8 @@ wb pr land sneat-co/sneat-go#1041 --approved-by review-sneat-go-1041.md
 
 # Keep one commit in its own place in the history
 wb pr land sneat-co/sneat-go#1041 --approved-by review.md \
-  --keep-commits 4f2a1c9 --reason "the migration must be revertable on its own"
+  --merge-method squash --keep-commits 4f2a1c9 \
+  --reason "the migration must be revertable on its own"
 
 # Machine-readable envelope
 wb pr land sneat-co/sneat-go#1041 --format json`,
@@ -87,6 +86,9 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := requireOutputFormat(format, "text", "json"); err != nil {
 				return err
+			}
+			if len(splitCommaSeparated(keepCommits)) > 0 && (!command.Flags().Changed("merge-method") || mergeMethod != "squash") {
+				return usageError("--keep-commits requires explicit --merge-method squash")
 			}
 			repository, number, err := splitPullRequestSelector(args[0])
 			if err != nil {
@@ -106,22 +108,23 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 			progress.live.update("pr land: local link preflight: " + repository + ": completed")
 			events, streamName := landingEventLog(repository)
 			result, err := orchestrate.LandPullRequest(command.Context(), orchestrate.PullRequestLandOptions{
-				Repository:        repository,
-				PullRequest:       number,
-				ProjectsRoot:      projectsRoot,
-				Keep:              keep,
-				ApprovedBy:        approvedBy,
-				MergeMethod:       mergeMethod,
-				Subject:           subject,
-				KeepCommits:       splitCommaSeparated(keepCommits),
-				Reason:            reason,
-				AllowUnfenced:     allowUnfenced,
-				Slice:             totalTimeout,
-				CheckPollInterval: pollInterval,
-				Progress:          progress.report,
-				OperationProgress: progress.operationReporter("pr land"),
-				Events:            events,
-				Stream:            streamName,
+				Repository:          repository,
+				PullRequest:         number,
+				ProjectsRoot:        projectsRoot,
+				Keep:                keep,
+				ApprovedBy:          approvedBy,
+				MergeMethod:         mergeMethod,
+				MergeMethodExplicit: command.Flags().Changed("merge-method"),
+				Subject:             subject,
+				KeepCommits:         splitCommaSeparated(keepCommits),
+				Reason:              reason,
+				AllowUnfenced:       allowUnfenced,
+				Slice:               totalTimeout,
+				CheckPollInterval:   pollInterval,
+				Progress:            progress.report,
+				OperationProgress:   progress.operationReporter("pr land"),
+				Events:              events,
+				Stream:              streamName,
 			})
 			if err != nil {
 				progress.fail(err)
@@ -157,10 +160,10 @@ wb pr land sneat-co/sneat-go#1041 --format json`,
 	}
 	command.Flags().BoolVar(&keep, "keep", false, "retain the task's worktree and claim instead of retiring them")
 	command.Flags().StringVar(&approvedBy, "approved-by", "", "the recorded review that authorized a non-mechanical change: a review file or a comment URL")
-	command.Flags().StringVar(&subject, "subject", "", "override the squash subject (default: the pull request title)")
-	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land as their own commits; requires --reason")
+	command.Flags().StringVar(&subject, "subject", "", "override the squash commit subject; used with --merge-method squash")
+	command.Flags().StringSliceVar(&keepCommits, "keep-commits", nil, "source commits that must land separately; requires explicit --merge-method squash and --reason")
 	command.Flags().StringVar(&reason, "reason", "", "why the kept commits stand alone; recorded in the aggregated commit and the receipt")
-	command.Flags().StringVar(&mergeMethod, "merge-method", "squash", "squash, merge, or rebase")
+	command.Flags().StringVar(&mergeMethod, "merge-method", "merge", "merge (default), squash, or rebase")
 	command.Flags().BoolVar(&allowUnfenced, "allow-unfenced", false, "land on observed checks where the target has no server-enforced strict up-to-date policy")
 	command.Flags().DurationVar(&pollInterval, "poll-interval", orchestrate.DefaultCheckPollInterval, "interval between check observations")
 	command.Flags().DurationVar(&totalTimeout, "timeout", defaultCIWaitSlice, "total foreground wait budget; WB uses bounded resumable CI observation slices internally")

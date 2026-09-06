@@ -431,8 +431,11 @@ the folded bodies.
 
 #### REQ: keeping-a-commit-separate-is-reasoned-and-must-build
 
-An agent MAY keep specific commits out of the aggregate:
-`--keep-commits <sha>[,<sha>...] --reason "<text>"`. WB MUST then rebase the
+An agent MAY keep specific commits out of an explicitly selected squash:
+`--merge-method squash --keep-commits <sha>[,<sha>...] --reason "<text>"`.
+WB MUST refuse `--keep-commits` with the default merge method, explicit merge,
+or explicit rebase; merge already preserves all reviewed commits and rebase is
+a different landing contract. WB MUST then rebase the
 pull request so the kept commits land as their **own commits, in their original
 relative order**, with everything else squashed into one aggregated commit, and
 MUST record the source→landed SHA pairs in the stream ledger — a rebase landing
@@ -1613,9 +1616,9 @@ Applications of `one-verb-per-operation`, each derived from a multi-call
 sequence performed by hand during the 2026-09-02/03 release night. Each is its
 own Feature, not part of this one:
 
-- **`wb pr land <repo#n>`** — verify head, mergeability and green checks, squash
-  with the pull request title as the subject, delete the branch, report the
-  resulting commit SHA.
+- **`wb pr land <repo#n>`** — verify head, mergeability and green checks, create
+  a merge commit by default (or honor an explicit squash/rebase method), delete
+  the branch, report the resulting commit SHA.
 - **`wb release verify <repo>`** — confirm the tag, the publish workflow run, and
   the registry `dist-tags` agree, and name the one that disagrees.
 - **`wb deploy watch <repo>`** — follow the CI and deploy runs to a green result
@@ -1715,7 +1718,7 @@ and `--force` proceeds with the reason recorded.
 **Requirements:** dependency-streams#req:the-squash-message-aggregates-the-source-commits, dependency-streams#req:keeping-a-commit-separate-is-reasoned-and-must-build
 
 **Given** a reviewed pull request whose branch carries five commits
-**When** it is landed with `--keep-commits <two of those shas> --reason "…"`
+**When** it is landed with `--merge-method squash --keep-commits <two of those shas> --reason "…"`
 **Then** the base receives **three** commits — the two kept ones, in their
 original relative order, and one aggregated commit whose body lists the other
 three by short SHA and subject and carries the reason; the ledger records each
@@ -2163,7 +2166,7 @@ worktree hard-links into it, and `~/.wb/worklogs`, `~/.wb/sessions`,
 **Given** a green pull request with a claimed worktree, on a machine with `gh`
 2.45 installed
 **When** the operator runs `wb pr land` with no flags
-**Then** the pull request lands without falling back to raw `gh pr merge`, the
+**Then** the pull request lands with a merge commit without falling back to raw `gh pr merge`, the
 worktree is removed and its claim released, `--keep` is the only way to retain
 them; and after `wb stream end`, none of the stream's worktrees remain.
 
@@ -2431,15 +2434,11 @@ if the ledger shows it pays**. The ledger specified above is what would answer
 that, which is the reason to ship it first.
 
 *(The former question 3 — whether agent pull requests should be squashed or have
-their raw commits kept — is **resolved**. Founder, 2026-09-03: squash by default,
-and the squash message **aggregates** the source commits, so the branch's own
-messages survive inside one commit rather than being discarded by the squash or
-scattered across the history by a rebase. An agent may promote specific commits
-to their own place with `--keep-commits … --reason …`, which is reasoned rather
-than default, and each promoted commit must build on its own. See
-`the-squash-message-aggregates-the-source-commits` and
-`keeping-a-commit-separate-is-reasoned-and-must-build`, with
-AC `five-commits-land-as-three-with-the-aggregate-naming-the-rest`.)*
+their raw commits kept — was superseded by the founder's 2026-09-06 tooling
+policy: merge commit by default. The merge commit preserves the reviewed pull
+request boundary and its commits. Explicit `--merge-method squash` retains the
+aggregated-message contract, while explicit rebase and reasoned
+`--merge-method squash --keep-commits … --reason …` remain available.)*
 
 *(The former question 4 — whether own-library bumps keep flowing through
 Renovate — is **resolved**. Founder, 2026-09-03: "Yes, renovate should bump deps

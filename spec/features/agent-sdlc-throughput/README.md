@@ -104,6 +104,13 @@ A read-only September 4, 2026 scan found:
 | WB local-link progress landing | 6 min 17 s | Candidate CI consumed 5 min 27 s; exact-repository preflight cleanup took 10.5 s and terminal cleanup took about 34 s. The release smoke emitted immediately, heartbeated at 10 s, and finished the local-link preflight at 10.35 s. |
 | WB local-link progress main/release CI | 6 min 1 s | Fourteen exact-main checks passed and published WB v0.96.3. |
 | Shared self-update provider landing | 2 min | Exact candidate CI consumed 1 min 34 s; merge and remote verification took under 4 s; terminal cleanup took about 22 s. |
+| Sneat Go PR #1070 first consumer | Prior `main` (`7286108c…`): 9 min 33 s Go CI, 15 min 37 s end to end, 21 min 28 s aggregate runner. Merge commit `3649e98ac974c5049fdfbd6ecfa51584c4017c3a`: 5 min 1 s Go CI, 8 min 13 s end to end, 8 min 1 s aggregate runner. | Reuse reduced wall time about 47% and aggregate runner time about 63%. Exact job steps skipped lint, tests, coverage, Coveralls, and Java/Node/Firebase setup while the exact-main build, artifact, deploy, health, and Chatwright smoke passed. |
+
+Sneat Go PR #1070 is the first measured consumer evidence for
+`pr-land-syncs-and-main-reuses-exact-validation`: the merge-commit receipt is
+`3649e98ac974c5049fdfbd6ecfa51584c4017c3a`, and the passing deployment path
+retained build and production smoke proof while omitting only work already
+covered by the reusable exact validation receipt.
 
 During this investigation the shared `/Users/alex/.local/bin/wb` changed from
 the released `sneat-dev/wb` revision `6217a510` to feature-build revision
@@ -1305,6 +1312,51 @@ observation without requiring another agent call. Each retry appears in stderr
 with attempt/max, cause, and delay. Given the same request returns `401`, an
 ordinary `403`, or exact-head drift, WB makes one attempt and returns the
 terminal failure unchanged.
+
+### AC: tooling-friendly-merge-policy-is-auditable-before-apply
+
+Given a fleet whose repositories have mixed merge settings and whose effective
+default-branch rules include repository, organization, and enterprise rulesets,
+when the operator runs `wb fleet merge-policy`, WB reads every selected
+repository and reports the desired merge-commit-only settings, repository-owned
+required-linear-history and pull-request-method drift, and every higher-level
+required-linear-history, merge-queue, or pull-request-method conflict without
+mutation. `--format=json` and `--json` emit the same versioned report;
+noninteractive text remains unstyled and readable.
+
+When `--apply` is explicit, WB persists the complete selected scope before its
+first mutation, rechecks observed repository settings before changing them,
+uses bounded parallel reads and repository-setting mutations with progress gaps
+no longer than nine seconds, and changes only merge settings. Shared ruleset
+mutation remains serialized. Classic branch protection is read separately from
+rulesets. Apply removes repository-owned required linear history through the
+dedicated classic-protection endpoint, removes only the corresponding repository
+ruleset rule, and preserves all other protection fields and rules. A merge-queue
+requirement or a higher-level linear-history rule blocks apply.
+The default parallelism is WB's current CPU budget (logical CPU count minus one,
+with a minimum of one); explicit `--parallel` remains authoritative.
+Repository rulesets preserve all unrelated conditions, bypass actors,
+enforcement, review requirements, status checks, and other rules while their
+pull-request rule is set to merge-only.
+Organization and enterprise rulesets take precedence and remain audit-only in
+this slice; any conflicting higher-level rule blocks repository fallback.
+
+Enterprise rulesets have highest precedence, followed by organization rulesets,
+repository rulesets, classic branch protection, then repository merge settings.
+WB may change an organization or enterprise ruleset only after a future
+supported implementation can deterministically evaluate its documented
+repository conditions against complete owner inventory and preview that whole
+scope. Until then it reports the blocker and leaves every level unchanged. Any
+repository-setting, ruleset, or classic-protection drift fails closed and a
+resumed run re-observes all authorities instead of trusting its old snapshot.
+The durable report is checkpointed after every mutation so partial progress
+remains visible across interruption.
+
+A selector-free audit may inventory the authenticated user and all member
+organizations because it is read-only. Apply MUST require explicit command-local
+scope through repeatable `--org/-o`, exact `--repo owner/repository`, or `--user`.
+An explicit organization list restricts owners and MUST NOT add organizations
+from membership discovery or persistent defaults.
 
 ### AC: lessons-are-curated-off-worker-path
 
