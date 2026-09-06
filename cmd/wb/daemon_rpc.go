@@ -20,6 +20,8 @@ import (
 
 const daemonRPCBaseURL = "http://wb.local"
 
+const daemonStatusBridgeTimeout = 2 * time.Second
+
 type daemonAuthenticatedTransport struct {
 	token string
 	base  http.RoundTripper
@@ -104,6 +106,22 @@ func daemonOperationClient(ctx context.Context, deps daemonDependencies, root st
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+func daemonFileBridgeHealthy(ctx context.Context, root, generation string) error {
+	httpClient, err := newDaemonFileBridgeHTTPClientWithTimeout(root, generation, daemonStatusBridgeTimeout)
+	if err != nil {
+		return err
+	}
+	client := daemonv1connect.NewDaemonServiceClient(httpClient, daemonRPCBaseURL)
+	response, err := client.GetDaemonInfo(ctx, connect.NewRequest(&daemonv1.GetDaemonInfoRequest{}))
+	if err != nil {
+		return err
+	}
+	if response.Msg.SchedulerGeneration != generation {
+		return fmt.Errorf("daemon file bridge scheduler generation is %s, want %s", response.Msg.SchedulerGeneration, generation)
+	}
+	return nil
 }
 
 func daemonFileBridgeFallbackAllowed(err error) bool {
