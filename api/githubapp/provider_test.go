@@ -56,8 +56,9 @@ func providerDocument(public bool) ProjectionDocument {
 }
 
 func TestProjectionKeyAndValidation(t *testing.T) {
-	if ProjectionKey(ScopeRepository, "github.com/acme/widgets") != ProjectionKey(ScopeRepository, "github.com/acme/widgets") {
-		t.Fatal("projection key is not stable")
+	key := ProjectionKey(ScopeRepository, "github.com/acme/widgets")
+	if key == "" || key == ProjectionKey(ScopeRepository, "github.com/acme/other") {
+		t.Fatal("projection key is not stable or unique")
 	}
 	valid := providerDocument(true)
 	if err := ValidateProjectionDocument(valid); err != nil {
