@@ -13,7 +13,16 @@ import (
 type ProjectionSnapshot struct {
 	Repositories  []ProjectionDocument
 	Organizations []ProjectionDocument
-	LatestMerges  []LatestMerge
+	LatestMerges  *RepositoryLatestMerges
+}
+
+// RepositoryLatestMerges is one repository's complete contribution to the
+// anonymous latest-merge view. PublicOptIn false removes any earlier public
+// contribution for the repository without publishing private merge details.
+type RepositoryLatestMerges struct {
+	Repository  string
+	PublicOptIn bool
+	Entries     []LatestMerge
 }
 
 // ProjectionReader refreshes and returns the authoritative records for a
@@ -38,7 +47,7 @@ type AuthoritativeProjectionReader interface {
 type ProjectionWriter interface {
 	WriteRepositories(context.Context, string, []ProjectionDocument) error
 	WriteOrganizations(context.Context, string, []ProjectionDocument) error
-	WriteLatestMerges(context.Context, string, []LatestMerge) error
+	WriteLatestMerges(context.Context, string, RepositoryLatestMerges) error
 }
 
 // ProjectionDeliveryStore extends DeliveryStore with an atomic in-flight
@@ -124,8 +133,10 @@ func (engine ProjectionEngine) Process(ctx context.Context, delivery WebhookDeli
 	if err := engine.Writer.WriteOrganizations(ctx, delivery.ID, snapshot.Organizations); err != nil {
 		return false, fmt.Errorf("write organization projections: %w", err)
 	}
-	if err := engine.Writer.WriteLatestMerges(ctx, delivery.ID, snapshot.LatestMerges); err != nil {
-		return false, fmt.Errorf("write latest merges: %w", err)
+	if snapshot.LatestMerges != nil {
+		if err := engine.Writer.WriteLatestMerges(ctx, delivery.ID, *snapshot.LatestMerges); err != nil {
+			return false, fmt.Errorf("write latest merges: %w", err)
+		}
 	}
 	key := strings.TrimSpace(delivery.Repository)
 	if key == "" {
@@ -156,9 +167,21 @@ func validateProjectionSnapshot(snapshot ProjectionSnapshot) error {
 			return fmt.Errorf("%w: organization record: %v", ErrInvalidProjection, err)
 		}
 	}
-	for _, merge := range snapshot.LatestMerges {
+	if snapshot.LatestMerges == nil {
+		return nil
+	}
+	if _, _, err := canonicalGitHubRepository(snapshot.LatestMerges.Repository); err != nil {
+		return fmt.Errorf("%w: latest-merge repository: %v", ErrInvalidProjection, err)
+	}
+	if !snapshot.LatestMerges.PublicOptIn && len(snapshot.LatestMerges.Entries) > 0 {
+		return fmt.Errorf("%w: private repository has public latest merges", ErrInvalidProjection)
+	}
+	for _, merge := range snapshot.LatestMerges.Entries {
 		if strings.TrimSpace(merge.Repository) == "" || merge.PullRequest <= 0 {
 			return fmt.Errorf("%w: latest merge repository and pull request are required", ErrInvalidProjection)
+		}
+		if !strings.EqualFold(merge.Repository, snapshot.LatestMerges.Repository) {
+			return fmt.Errorf("%w: latest merge repository %q does not match batch %q", ErrInvalidProjection, merge.Repository, snapshot.LatestMerges.Repository)
 		}
 	}
 	return nil

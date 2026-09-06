@@ -110,6 +110,12 @@ retryable work. Hosts supply the actual Firestore client and
 transaction implementation; this package contains no Firebase or Firestore
 SDK dependency.
 
+The public merge document is a bounded, newest-first aggregate. Each eligible
+repository refresh atomically replaces only that repository's contribution and
+retains other eligible repositories. A refresh without verified public opt-in
+removes the repository's earlier contribution without fetching or persisting
+its private merge details.
+
 ## Projection delivery boundary
 
 The projector uses a `ProjectionDeliveryStore` claim before refresh. The claim
@@ -118,4 +124,6 @@ refreshes or writes retryable while preserving the append-only delivery audit.
 The writer receives the delivery ID with each repository, organization, and
 latest-merge batch and must make those operations idempotent. The final
 `CommitDeliveryAndWakeup` call records the terminal delivery and coalesced
-wakeup only after all projection writes succeed.
+wakeup only after all projection writes succeed. A Firestore backend may retry
+an atomic callback after a conflict; claim and commit outcomes therefore track
+the final callback attempt rather than an aborted predecessor.

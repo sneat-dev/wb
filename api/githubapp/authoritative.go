@@ -122,9 +122,12 @@ func (reader GitHubRESTProjectionReader) RefreshAuthoritativeProjection(ctx cont
 	if public {
 		document.PublicEligibility = &eligibility
 	}
-	merges, err := reader.latestMerges(ctx, token, owner, repo)
-	if err != nil {
-		return ProjectionSnapshot{}, fmt.Errorf("read latest merges: %w", err)
+	merges := &RepositoryLatestMerges{Repository: canonical, PublicOptIn: public}
+	if public {
+		merges.Entries, err = reader.latestMerges(ctx, token, owner, repo)
+		if err != nil {
+			return ProjectionSnapshot{}, fmt.Errorf("read latest merges: %w", err)
+		}
 	}
 	// Organization projections are intentionally omitted until the host can
 	// supply an installation-scoped complete repository aggregation. A zero

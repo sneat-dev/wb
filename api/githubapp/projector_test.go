@@ -88,8 +88,8 @@ func (w *projectorWriter) WriteOrganizations(_ context.Context, _ string, record
 	w.organizations = len(records)
 	return w.err
 }
-func (w *projectorWriter) WriteLatestMerges(_ context.Context, _ string, records []LatestMerge) error {
-	w.merges = len(records)
+func (w *projectorWriter) WriteLatestMerges(_ context.Context, _ string, batch RepositoryLatestMerges) error {
+	w.merges = len(batch.Entries)
 	return w.err
 }
 
@@ -103,7 +103,7 @@ func validProjectionSnapshot() ProjectionSnapshot {
 	return ProjectionSnapshot{
 		Repositories:  []ProjectionDocument{{Scope: ScopeRepository, ID: "github.com/acme/app", DisplayName: "app", UpdatedAt: time.Unix(1, 0)}},
 		Organizations: []ProjectionDocument{{Scope: ScopeOrganization, ID: "github.com/acme", DisplayName: "acme", UpdatedAt: time.Unix(1, 0)}},
-		LatestMerges:  []LatestMerge{{Repository: "github.com/acme/app", PullRequest: 1}},
+		LatestMerges:  &RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: []LatestMerge{{Repository: "github.com/acme/app", PullRequest: 1}}},
 	}
 }
 
@@ -265,7 +265,7 @@ func (w projectorSelectiveWriter) WriteRepositories(context.Context, string, []P
 func (w projectorSelectiveWriter) WriteOrganizations(context.Context, string, []ProjectionDocument) error {
 	return w.orgErr
 }
-func (w projectorSelectiveWriter) WriteLatestMerges(context.Context, string, []LatestMerge) error {
+func (w projectorSelectiveWriter) WriteLatestMerges(context.Context, string, RepositoryLatestMerges) error {
 	return w.mergeErr
 }
 
@@ -275,12 +275,18 @@ func TestValidateProjectionSnapshotRejectsMismatchedRecords(t *testing.T) {
 		{Repositories: []ProjectionDocument{{Scope: ScopeRepository}}},
 		{Organizations: []ProjectionDocument{{Scope: ScopeRepository, ID: "id", DisplayName: "x", UpdatedAt: time.Unix(1, 0)}}},
 		{Organizations: []ProjectionDocument{{Scope: ScopeOrganization}}},
-		{LatestMerges: []LatestMerge{{Repository: "", PullRequest: 1}}},
-		{LatestMerges: []LatestMerge{{Repository: "repo"}}},
+		{LatestMerges: &RepositoryLatestMerges{Repository: "repo"}},
+		{LatestMerges: &RepositoryLatestMerges{Repository: "github.com/acme/app", Entries: []LatestMerge{{Repository: "github.com/acme/app", PullRequest: 1}}}},
+		{LatestMerges: &RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: []LatestMerge{{Repository: "", PullRequest: 1}}}},
+		{LatestMerges: &RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: []LatestMerge{{Repository: "repo"}}}},
+		{LatestMerges: &RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: []LatestMerge{{Repository: "github.com/acme/other", PullRequest: 1}}}},
 	}
 	for i, snapshot := range cases {
 		if err := validateProjectionSnapshot(snapshot); err == nil || !strings.Contains(err.Error(), "invalid workbench projection snapshot") {
 			t.Errorf("case %d err = %v", i, err)
 		}
+	}
+	if err := validateProjectionSnapshot(ProjectionSnapshot{}); err != nil {
+		t.Fatalf("empty snapshot = %v", err)
 	}
 }

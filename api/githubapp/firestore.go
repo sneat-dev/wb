@@ -6,19 +6,22 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
 
 const (
-	deliveryCollection   = "workbench_deliveries"
-	wakeupCollection     = "workbench_wakeups"
-	latestMergesDocument = "public"
+	deliveryCollection    = "workbench_deliveries"
+	wakeupCollection      = "workbench_wakeups"
+	latestMergesDocument  = "public"
+	maxPublicLatestMerges = 100
 )
 
 // FirestoreBackend is the deliberately small seam implemented by the host's
 // Firestore client. Values are decoded into out by the backend. UpdateAtomic
-// must provide Firestore transaction semantics.
+// must provide Firestore transaction semantics and may invoke its callback
+// more than once when the storage engine retries a conflict.
 type FirestoreBackend interface {
 	Get(context.Context, string, string, any) (bool, error)
 	Query(context.Context, string, map[string]any, int, any) error
@@ -120,17 +123,44 @@ func (writer FirestoreProjectionWriter) WriteRepositories(ctx context.Context, d
 func (writer FirestoreProjectionWriter) WriteOrganizations(ctx context.Context, deliveryID string, records []ProjectionDocument) error {
 	return writer.writeDocuments(ctx, deliveryID, ScopeOrganization, records)
 }
-func (writer FirestoreProjectionWriter) WriteLatestMerges(ctx context.Context, deliveryID string, records []LatestMerge) error {
+func (writer FirestoreProjectionWriter) WriteLatestMerges(ctx context.Context, deliveryID string, batch RepositoryLatestMerges) error {
 	if writer.Backend == nil {
 		return errors.New("firestore projection backend is not configured")
 	}
 	if err := validateProjectionDeliveryID(deliveryID); err != nil {
 		return err
 	}
-	if err := writer.Backend.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: records}); err != nil {
+	if err := validateProjectionSnapshot(ProjectionSnapshot{LatestMerges: &batch}); err != nil {
 		return err
 	}
-	return nil
+	return writer.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+		var current PublicLatestMerges
+		if _, err := tx.Get(ctx, MergeCollection, latestMergesDocument, &current); err != nil {
+			return err
+		}
+		entries := make([]LatestMerge, 0, len(current.Entries)+len(batch.Entries))
+		for _, merge := range current.Entries {
+			if !strings.EqualFold(merge.Repository, batch.Repository) {
+				entries = append(entries, merge)
+			}
+		}
+		if batch.PublicOptIn {
+			entries = append(entries, batch.Entries...)
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if !entries[i].MergedAt.Equal(entries[j].MergedAt) {
+				return entries[i].MergedAt.After(entries[j].MergedAt)
+			}
+			if entries[i].Repository != entries[j].Repository {
+				return entries[i].Repository < entries[j].Repository
+			}
+			return entries[i].PullRequest > entries[j].PullRequest
+		})
+		if len(entries) > maxPublicLatestMerges {
+			entries = entries[:maxPublicLatestMerges]
+		}
+		return tx.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: entries})
+	})
 }
 func (writer FirestoreProjectionWriter) writeDocuments(ctx context.Context, deliveryID string, scope Scope, records []ProjectionDocument) error {
 	if writer.Backend == nil {
@@ -196,6 +226,7 @@ func (store FirestoreProjectionDeliveryStore) ClaimDelivery(ctx context.Context,
 	}
 	claimed := false
 	err := store.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+		claimed = false
 		var record firestoreDeliveryRecord
 		found, err := tx.Get(ctx, deliveryCollection, id, &record)
 		if err != nil {
@@ -223,6 +254,7 @@ func (store FirestoreProjectionDeliveryStore) CommitDeliveryAndWakeup(ctx contex
 	}
 	committed := false
 	err := store.Backend.UpdateAtomic(ctx, func(tx FirestoreTransaction) error {
+		committed = false
 		var record firestoreDeliveryRecord
 		found, err := tx.Get(ctx, deliveryCollection, id, &record)
 		if err != nil {

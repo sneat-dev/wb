@@ -646,6 +646,13 @@ GitHub mutations are not automatically replayed after an ambiguous transport
 failure; their existing receipt-specific recovery proves the remote effect
 before any retry.
 
+After an ordinary descendant push advances a previously published integration
+candidate, the durable push gate and exact remote branch ref authorize a
+separate bounded identity reread when GitHub briefly reports the gate's exact
+predecessor as the pull-request head. WB accepts only the new candidate head,
+emits progress before every wait with no gap above ten seconds, and still
+rejects any other head immediately.
+
 ### Durable Merger Lanes
 
 WB maintains one queue per `(canonical repository, target ref)`. It batches
@@ -883,8 +890,8 @@ a worktree.
 - [x] Add the WB-owned deterministic projection engine behind the relay: an
   authoritative refresh produces validated repository and organization
   snapshots, idempotent durable writes are keyed by delivery ID, public latest
-  merges are replaced coherently, and the delivery ledger commits only after
-  projection writes succeed.
+  merges are filtered by verified repository opt-in and aggregated coherently,
+  and the delivery ledger commits only after projection writes succeed.
 - [x] Add the host-neutral authoritative GitHub REST projection reader with
   injected transport and installation-token seams, immutable root-README
   eligibility evidence, repository/latest-merge snapshots, and a request-scoped
@@ -1135,18 +1142,24 @@ organization projection documents plus latest-merge records, applies the
 snapshot through delivery-keyed idempotent durable writer operations, and only
 then commits one coalesced wakeup. A redelivery or concurrent duplicate does no
 second refresh or write. A refresh, validation, or write failure leaves the
-delivery uncommitted so GitHub retry can recover it. Hosts supply the reader
-and writer adapters; WB does not import Firebase, Firestore, or GitHub clients.
+delivery uncommitted so GitHub retry can recover it. When the storage engine
+retries a transaction callback, the claim and commit result reflect only the
+final attempt; an aborted attempt cannot leave a stale successful outcome.
+Hosts supply the reader and writer adapters; WB does not import Firebase,
+Firestore, or GitHub clients.
 
 ### AC: github-firestore-adapter-contract
 
 Given a host Firestore client implements the narrow backend seam, then
 projection reads and writes use the documented Workbench collection and stable
-hashed subject keys, public latest merges use one replaceable snapshot, and
-delivery claims are atomic with a bounded recoverable lease. A live claim blocks
-duplicates, an expired or released claim can retry, and commit records the
-delivery plus one coalesced wakeup transactionally. The provider package stays
-portable and has no cloud SDK dependency.
+hashed subject keys. Each verified public repository atomically replaces its
+own contribution to the bounded, newest-first public latest-merge snapshot while
+retaining other opted-in repositories; a missing or removed opt-in deletes that
+repository's earlier contribution and can never publish its private merge
+details. Delivery claims are atomic with a bounded recoverable lease. A live
+claim blocks duplicates, an expired or released claim can retry, and commit
+records the delivery plus one coalesced wakeup transactionally. The provider
+package stays portable and has no cloud SDK dependency.
 
 ### AC: telemetry-supports-causal-analysis
 

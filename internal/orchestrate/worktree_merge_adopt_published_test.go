@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sneat-dev/wb/internal/progress"
 	"github.com/sneat-dev/wb/internal/worktrees"
 )
 
@@ -25,7 +26,11 @@ case "$*" in
   'api repos/acme/app/branches/main --include'|'api repos/acme/app/branches/main') printf '%s\n' '{"protected":true,"protection":{"required_pull_request_reviews":{}}}' ;;
   'api repos/acme/app/rules/branches/main?per_page=100 --include'|'api repos/acme/app/rules/branches/main?per_page=100') printf '%s\n' '[]' ;;
   'pr view 7 --repo acme/app --json state,headRefOid,baseRefName')
-    printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main"}\n' "$head_sha" ;;
+	if [ -n "${WB_TEST_STALE_PR_HEAD_FILE:-}" ] && [ ! -f "$WB_TEST_STALE_PR_HEAD_FILE" ]; then
+		touch "$WB_TEST_STALE_PR_HEAD_FILE"
+		head_sha="$WB_TEST_PREDECESSOR_SHA"
+	fi
+	printf '{"state":"OPEN","headRefOid":"%s","baseRefName":"main"}\n' "$head_sha" ;;
   *) echo "unexpected gh command: $*" >&2; exit 2 ;;
 esac
 `
@@ -140,9 +145,17 @@ func TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh(t *test
 	installAdoptedCandidateResumeGH(t)
 	t.Setenv("WB_TEST_REMOTE", fixture.repository.CloneURL)
 	t.Setenv("WB_TEST_PR_BRANCH", refreshed.Candidate.Branch)
+	t.Setenv("WB_TEST_STALE_PR_HEAD_FILE", filepath.Join(t.TempDir(), "observed"))
+	t.Setenv("WB_TEST_PREDECESSOR_SHA", receipt.Candidate.SHA)
+	var progressEvents []string
 	published, err := ResumeWorktreeMerge(context.Background(), WorktreeMergeLandOptions{
 		ProjectsRoot: fixture.githubDir, Receipt: refreshed.ReceiptPath, Route: WorktreeMergeRoutePullRequest,
 		StopBeforeMerge: true, Timeout: 5 * time.Second, CheckPollInterval: time.Millisecond,
+		Progress: func(event progress.Event) {
+			if event.Phase == "verify_pull_request_head" {
+				progressEvents = append(progressEvents, event.Detail)
+			}
+		},
 	})
 	if err != nil {
 		t.Fatalf("resume did not publish adopted candidate descendant: receipt=%+v err=%v", published, err)
@@ -152,6 +165,9 @@ func TestAdoptPublishedCandidatePreservesPRAcrossDescendantSourceRefresh(t *test
 	}
 	if published.PushGate == nil || published.PushGate.Status != "passed" || published.PushGate.PreviousRemoteSHA != receipt.Candidate.SHA || published.PushGate.LocalSHA != refreshed.Candidate.SHA {
 		t.Fatalf("published descendant push gate = %+v", published.PushGate)
+	}
+	if len(progressEvents) != 1 || !strings.Contains(progressEvents[0], "observation 1/4") {
+		t.Fatalf("stale pull-request head retry progress = %v", progressEvents)
 	}
 	remote = strings.TrimSpace(runEngineGit(t, refreshed.Candidate.Worktree, "ls-remote", "origin", "refs/heads/"+refreshed.Candidate.Branch))
 	if !strings.HasPrefix(remote, refreshed.Candidate.SHA+"\t") {

@@ -16,12 +16,18 @@ type firestoreQuery struct {
 }
 
 type firestoreFake struct {
-	documents map[string]json.RawMessage
-	queries   []firestoreQuery
+	documents    map[string]json.RawMessage
+	queries      []firestoreQuery
+	updateAtomic func(context.Context, func(FirestoreTransaction) error) error
+	getErr       error
+	setErr       error
 }
 
 func (fake *firestoreFake) key(collection, id string) string { return collection + "\x00" + id }
 func (fake *firestoreFake) Get(_ context.Context, collection, id string, out any) (bool, error) {
+	if fake.getErr != nil {
+		return false, fake.getErr
+	}
 	raw, ok := fake.documents[fake.key(collection, id)]
 	if !ok {
 		return false, nil
@@ -57,6 +63,9 @@ func (fake *firestoreFake) Query(_ context.Context, collection string, equals ma
 	return json.Unmarshal(mustJSON(values), out)
 }
 func (fake *firestoreFake) Set(_ context.Context, collection, id string, value any) error {
+	if fake.setErr != nil {
+		return fake.setErr
+	}
 	raw, err := json.Marshal(value)
 	if err == nil {
 		fake.documents[fake.key(collection, id)] = raw
@@ -64,6 +73,9 @@ func (fake *firestoreFake) Set(_ context.Context, collection, id string, value a
 	return err
 }
 func (fake *firestoreFake) UpdateAtomic(ctx context.Context, fn func(FirestoreTransaction) error) error {
+	if fake.updateAtomic != nil {
+		return fake.updateAtomic(ctx, fn)
+	}
 	return fn(fake)
 }
 
@@ -133,7 +145,7 @@ func TestFirestoreProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 	if err := writer.WriteOrganizations(ctx, "delivery-1", []ProjectionDocument{{Scope: ScopeOrganization, ID: "github.com/acme", DisplayName: "acme", UpdatedAt: time.Unix(1, 0)}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.WriteLatestMerges(ctx, "delivery-1", []LatestMerge{{Repository: record.ID, PullRequest: 1}}); err != nil {
+	if err := writer.WriteLatestMerges(ctx, "delivery-1", RepositoryLatestMerges{Repository: record.ID, PublicOptIn: true, Entries: []LatestMerge{{Repository: record.ID, PullRequest: 1}}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := fake.documents[fake.key("workbench_projection_deliveries", "delivery-1")]; ok {
@@ -141,6 +153,108 @@ func TestFirestoreProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 	}
 	if err := writer.WriteRepositories(ctx, "delivery-1", []ProjectionDocument{{Scope: ScopeOrganization, ID: "wrong", DisplayName: "wrong", UpdatedAt: time.Unix(1, 0)}}); err == nil {
 		t.Fatal("scope mismatch accepted")
+	}
+}
+
+func TestFirestoreProjectionWriterAggregatesPublicLatestMergesAndRemovesOptOut(t *testing.T) {
+	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
+	ctx := context.Background()
+	other := LatestMerge{Repository: "github.com/acme/other", PullRequest: 2, MergedAt: time.Unix(20, 0)}
+	sameTimeOther := LatestMerge{Repository: "github.com/acme/zebra", PullRequest: 4, MergedAt: time.Unix(30, 0)}
+	stale := LatestMerge{Repository: "github.com/acme/app", PullRequest: 1, MergedAt: time.Unix(10, 0)}
+	if err := fake.Set(ctx, MergeCollection, latestMergesDocument, PublicLatestMerges{Entries: []LatestMerge{stale, other, sameTimeOther}}); err != nil {
+		t.Fatal(err)
+	}
+	writer := FirestoreProjectionWriter{Backend: fake}
+	replacement := LatestMerge{Repository: "github.com/acme/app", PullRequest: 3, MergedAt: time.Unix(30, 0)}
+	batch := RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: []LatestMerge{replacement}}
+	if err := writer.WriteLatestMerges(ctx, "delivery-public", batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteLatestMerges(ctx, "delivery-public", batch); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (FirestoreProjectionStore{Backend: fake}).ListPublicLatestMerges(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Entries) != 3 || got.Entries[0].PullRequest != 3 || got.Entries[1].Repository != sameTimeOther.Repository || got.Entries[2].Repository != other.Repository {
+		t.Fatalf("aggregated merges = %#v", got.Entries)
+	}
+	if err := writer.WriteLatestMerges(ctx, "delivery-private", RepositoryLatestMerges{Repository: "github.com/ACME/app"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = (FirestoreProjectionStore{Backend: fake}).ListPublicLatestMerges(ctx, 100)
+	if err != nil || len(got.Entries) != 2 || got.Entries[0].Repository != sameTimeOther.Repository || got.Entries[1].Repository != other.Repository {
+		t.Fatalf("after opt-out = %#v, %v", got.Entries, err)
+	}
+}
+
+func TestFirestoreProjectionWriterRejectsInvalidAndFailedLatestMergeUpdates(t *testing.T) {
+	ctx := context.Background()
+	valid := RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true}
+	for name, writer := range map[string]FirestoreProjectionWriter{
+		"missing backend": {},
+		"read failure":    {Backend: &firestoreFake{documents: map[string]json.RawMessage{}, getErr: errors.New("read")}},
+		"write failure":   {Backend: &firestoreFake{documents: map[string]json.RawMessage{}, setErr: errors.New("write")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := writer.WriteLatestMerges(ctx, "delivery", valid); err == nil {
+				t.Fatal("expected latest-merge write failure")
+			}
+		})
+	}
+	writer := FirestoreProjectionWriter{Backend: &firestoreFake{documents: map[string]json.RawMessage{}}}
+	if err := writer.WriteLatestMerges(ctx, "", valid); err == nil {
+		t.Fatal("empty delivery ID accepted")
+	}
+	if err := writer.WriteLatestMerges(ctx, "delivery", RepositoryLatestMerges{}); err == nil {
+		t.Fatal("invalid latest-merge batch accepted")
+	}
+}
+
+func TestFirestoreProjectionWriterBoundsAndDeterministicallySortsLatestMerges(t *testing.T) {
+	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
+	entries := make([]LatestMerge, maxPublicLatestMerges+1)
+	for i := range entries {
+		entries[i] = LatestMerge{Repository: "github.com/acme/app", PullRequest: i + 1, MergedAt: time.Unix(1, 0)}
+	}
+	writer := FirestoreProjectionWriter{Backend: fake}
+	if err := writer.WriteLatestMerges(context.Background(), "delivery", RepositoryLatestMerges{Repository: "github.com/acme/app", PublicOptIn: true, Entries: entries}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := (FirestoreProjectionStore{Backend: fake}).ListPublicLatestMerges(context.Background(), maxPublicLatestMerges)
+	if err != nil || len(got.Entries) != maxPublicLatestMerges || got.Entries[0].PullRequest != maxPublicLatestMerges+1 {
+		t.Fatalf("bounded merges = %#v, %v", got.Entries, err)
+	}
+}
+
+func TestFirestoreDeliveryOutcomesFollowFinalTransactionAttempt(t *testing.T) {
+	now := time.Unix(100, 0)
+	first := &firestoreFake{documents: map[string]json.RawMessage{}}
+	second := &firestoreFake{documents: map[string]json.RawMessage{}}
+	backend := &firestoreFake{documents: map[string]json.RawMessage{}}
+	backend.updateAtomic = func(ctx context.Context, fn func(FirestoreTransaction) error) error {
+		if err := fn(first); err != nil {
+			return err
+		}
+		return fn(second)
+	}
+	store := FirestoreProjectionDeliveryStore{Backend: backend, Now: func() time.Time { return now }, Lease: time.Minute}
+	if err := second.Set(context.Background(), deliveryCollection, "claim", firestoreDeliveryRecord{Status: "claimed", LeaseUntil: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := store.ClaimDelivery(context.Background(), "claim"); err != nil || claimed {
+		t.Fatalf("retried claim = %v, %v", claimed, err)
+	}
+	if err := first.Set(context.Background(), deliveryCollection, "commit", firestoreDeliveryRecord{Status: "claimed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Set(context.Background(), deliveryCollection, "commit", firestoreDeliveryRecord{Status: "committed"}); err != nil {
+		t.Fatal(err)
+	}
+	if committed, err := store.CommitDeliveryAndWakeup(context.Background(), "commit", Wakeup{Key: "github.com/acme/app"}); err != nil || committed {
+		t.Fatalf("retried commit = %v, %v", committed, err)
 	}
 }
 
