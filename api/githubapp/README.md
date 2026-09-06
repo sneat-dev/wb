@@ -19,6 +19,8 @@ The host supplies three narrow ports:
 The API provides the dashboard summary, repository/organization/user stats,
 time series usable as tables or graphs, leaderboards, and latest merges with
 pull request, issue, merge commit, release, and Workbench receipt URLs.
+The stats route uses a remainder wildcard so canonical IDs such as
+`github.com/acme/app` round-trip without dropping path segments.
 
 `GET /v0/workbench/events` is the default server-to-browser transport. It is
 resumable SSE: `after` (or `Last-Event-ID`) replays durable events with strictly

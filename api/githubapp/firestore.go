@@ -21,6 +21,7 @@ const (
 type FirestoreBackend interface {
 	Get(context.Context, string, string, any) (bool, error)
 	List(context.Context, string, any) error
+	Query(context.Context, string, map[string]any, int, any) error
 	Set(context.Context, string, string, any) error
 	UpdateAtomic(context.Context, func(FirestoreTransaction) error) error
 }
@@ -40,16 +41,10 @@ func (store FirestoreProjectionStore) ListProjections(ctx context.Context, scope
 		return nil, errors.New("firestore projection backend is not configured")
 	}
 	var documents []ProjectionDocument
-	if err := store.Backend.List(ctx, ProjectionCollection, &documents); err != nil {
+	if err := store.Backend.Query(ctx, ProjectionCollection, map[string]any{"scope": scope}, 0, &documents); err != nil {
 		return nil, err
 	}
-	filtered := documents[:0]
-	for _, document := range documents {
-		if document.Scope == scope {
-			filtered = append(filtered, document)
-		}
-	}
-	return filtered, nil
+	return documents, nil
 }
 
 func (store FirestoreProjectionStore) GetProjection(ctx context.Context, scope Scope, id string) (ProjectionDocument, error) {
@@ -72,13 +67,11 @@ func (store FirestoreProjectionStore) ListSeries(ctx context.Context, scope Scop
 		return SeriesDocument{}, errors.New("firestore projection backend is not configured")
 	}
 	var documents []SeriesDocument
-	if err := store.Backend.List(ctx, SeriesCollection, &documents); err != nil {
+	if err := store.Backend.Query(ctx, SeriesCollection, map[string]any{"scope": scope, "id": id, "metric": metric}, 1, &documents); err != nil {
 		return SeriesDocument{}, err
 	}
-	for _, document := range documents {
-		if document.Scope == scope && document.ID == id && document.Metric == metric {
-			return document, nil
-		}
+	if len(documents) == 1 {
+		return documents[0], nil
 	}
 	return SeriesDocument{}, ErrProjectionNotFound
 }
@@ -184,6 +177,9 @@ func (store FirestoreProjectionDeliveryStore) lease() time.Duration {
 	return 5 * time.Minute
 }
 func (store FirestoreProjectionDeliveryStore) HasDelivery(ctx context.Context, id string) (bool, error) {
+	if store.Backend == nil {
+		return false, errors.New("firestore delivery backend is not configured")
+	}
 	var record firestoreDeliveryRecord
 	found, err := store.Backend.Get(ctx, deliveryCollection, id, &record)
 	return found && record.Status == "committed", err

@@ -34,7 +34,7 @@ func NewHandler(options HandlerOptions) http.Handler {
 	handler := apiHandler{options: options}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+APIPrefix+"/dashboard", handler.dashboard)
-	mux.HandleFunc("GET "+APIPrefix+"/stats/{scope}/{id}", handler.stats)
+	mux.HandleFunc("GET "+APIPrefix+"/stats/{scope}/{id...}", handler.stats)
 	mux.HandleFunc("GET "+APIPrefix+"/series", handler.series)
 	mux.HandleFunc("GET "+APIPrefix+"/leaderboards", handler.leaderboard)
 	mux.HandleFunc("GET "+APIPrefix+"/latest-merges", handler.latestMerges)

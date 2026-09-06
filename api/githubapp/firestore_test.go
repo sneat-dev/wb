@@ -4,11 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
 
-type firestoreFake struct{ documents map[string]json.RawMessage }
+type firestoreQuery struct {
+	collection string
+	equals     map[string]any
+	limit      int
+}
+
+type firestoreFake struct {
+	documents map[string]json.RawMessage
+	queries   []firestoreQuery
+}
 
 func (fake *firestoreFake) key(collection, id string) string { return collection + "\x00" + id }
 func (fake *firestoreFake) Get(_ context.Context, collection, id string, out any) (bool, error) {
@@ -25,6 +35,34 @@ func (fake *firestoreFake) List(_ context.Context, collection string, out any) e
 		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
 			values = append(values, raw)
 		}
+	}
+	return json.Unmarshal(mustJSON(values), out)
+}
+func (fake *firestoreFake) Query(_ context.Context, collection string, equals map[string]any, limit int, out any) error {
+	fake.queries = append(fake.queries, firestoreQuery{collection: collection, equals: equals, limit: limit})
+	values := make([]json.RawMessage, 0)
+	prefix := collection + "\x00"
+	for key, raw := range fake.documents {
+		if len(key) < len(prefix) || key[:len(prefix)] != prefix {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			return err
+		}
+		match := true
+		for field, want := range equals {
+			if fmt.Sprint(fields[field]) != fmt.Sprint(want) {
+				match = false
+				break
+			}
+		}
+		if match {
+			values = append(values, raw)
+		}
+	}
+	if limit > 0 && len(values) > limit {
+		values = values[:limit]
 	}
 	return json.Unmarshal(mustJSON(values), out)
 }
@@ -77,6 +115,15 @@ func TestFirestoreProjectionStoreReadsDocumentContracts(t *testing.T) {
 	if got, err := store.ListPublicLatestMerges(ctx, 1); err != nil || len(got.Entries) != 1 {
 		t.Fatalf("ListPublicLatestMerges = %#v, %v", got, err)
 	}
+	if len(fake.queries) != 2 {
+		t.Fatalf("queries = %#v", fake.queries)
+	}
+	if fake.queries[0].collection != ProjectionCollection || fake.queries[0].equals["scope"] != ScopeOrganization || fake.queries[0].limit != 0 {
+		t.Fatalf("projection query = %#v", fake.queries[0])
+	}
+	if fake.queries[1].collection != SeriesCollection || fake.queries[1].equals["scope"] != ScopeRepository || fake.queries[1].equals["id"] != repository.ID || fake.queries[1].equals["metric"] != "merged" || fake.queries[1].limit != 1 {
+		t.Fatalf("series query = %#v", fake.queries[1])
+	}
 	if _, err := store.GetProjection(ctx, ScopeUser, "missing"); !errors.Is(err, ErrProjectionNotFound) {
 		t.Fatalf("missing projection error = %v", err)
 	}
@@ -108,6 +155,9 @@ func TestFirestoreProjectionWriterIsIdempotentByStableKeys(t *testing.T) {
 }
 
 func TestFirestoreProjectionDeliveryStoreClaimsWithRecoverableLease(t *testing.T) {
+	if _, err := (FirestoreProjectionDeliveryStore{}).HasDelivery(context.Background(), "missing"); err == nil {
+		t.Fatal("nil delivery backend did not fail closed")
+	}
 	fake := &firestoreFake{documents: map[string]json.RawMessage{}}
 	now := time.Unix(100, 0)
 	store := FirestoreProjectionDeliveryStore{Backend: fake, Now: func() time.Time { return now }, Lease: time.Minute}

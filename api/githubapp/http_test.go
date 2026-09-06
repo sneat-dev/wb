@@ -141,6 +141,16 @@ func TestHandlerHidesPrivateSubjectsFromAnonymousViewer(t *testing.T) {
 	}
 }
 
+func TestHandlerStatsRoundTripsCanonicalRepositoryID(t *testing.T) {
+	handler := NewHandler(HandlerOptions{Service: Service{ReadModel: testReadModel{visibility: VisibilityPublic}}})
+	request := httptest.NewRequest(http.MethodGet, APIPrefix+"/stats/repository/github.com/acme/app", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":"github.com/acme/app"`) {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
 func TestHandlerRejectsUnapprovedCORSPreflight(t *testing.T) {
 	handler := NewHandler(HandlerOptions{})
 	request := httptest.NewRequest(http.MethodOptions, APIPrefix+"/dashboard", nil)
